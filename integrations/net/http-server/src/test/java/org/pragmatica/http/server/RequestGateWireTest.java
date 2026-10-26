@@ -224,6 +224,25 @@ class RequestGateWireTest {
         assertThat(invocations.get()).isZero();
     }
 
+    /// The output is shut down with the answer: the client reads the 413 and then end of stream at once, not when the linger
+    /// ends and the close follows. The linger is stretched to 10 s so only the shutdown can end the stream in time.
+    @Test
+    void refusedRequest_endsTheStreamWithTheAnswer_notWhenTheLingerExpires() throws IOException {
+        RequestGate.lingerMillisForTest(10_000);
+        try {
+            start();
+
+            try (var socket = open()) {
+                socket.setSoTimeout(3_000);
+                send(socket, "POST /small HTTP/1.1\r\nHost: x\r\nContent-Length: " + 2 * MIB + "\r\n\r\n");
+
+                assertThat(readUntilClosed(socket)).as("the answer, then end of stream well inside the 10 s linger").startsWith("HTTP/1.1 413");
+            }
+        } finally {
+            RequestGate.lingerMillisForTest(RequestGate.LINGER_MILLIS);
+        }
+    }
+
     /// Upload bounds answer 408 and close: a body trickling at 10 B/s is far below the 1000 B/s minimum.
     @Test
     void uploadBodyBelowTheMinimumRate_isAnswered408_andNeverDispatched() throws IOException, InterruptedException {

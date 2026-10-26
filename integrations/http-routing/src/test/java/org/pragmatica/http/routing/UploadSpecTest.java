@@ -82,19 +82,26 @@ class UploadSpecTest {
         assertThat(Route.mountInHeaderMode(route, "/api").uploadSpec()).as("header mode").isEqualTo(DECLARED);
     }
 
-    // ---- multipart part limits
+    // ---- multipart part limits: counted and sized from the framing scan of the aggregated body
 
-    private static FileUpload file(int bytes) {
-        return FileUpload.fileUpload("f", "f.bin", "application/octet-stream", new byte[bytes]);
+    private static final String CONTENT_TYPE = "multipart/form-data; boundary=XB";
+
+    private static String file(int bytes) {
+        return "--XB\r\nContent-Disposition: form-data; name=\"f\"; filename=\"f.bin\"\r\n"
+               + "Content-Type: application/octet-stream\r\n\r\n" + "x".repeat(bytes) + "\r\n";
     }
 
-    private static MultipartRequest body(java.util.Map<String, java.util.List<String>> fields, java.util.List<FileUpload> files) {
-        return new MultipartRequest(fields, files);
+    private static String field(String name, String value) {
+        return "--XB\r\nContent-Disposition: form-data; name=\"" + name + "\"\r\n\r\n" + value + "\r\n";
+    }
+
+    private static byte[] body(String... parts) {
+        return (String.join("", parts) + "--XB--\r\n").getBytes(java.nio.charset.StandardCharsets.UTF_8);
     }
 
     /// The message of the breach, or the empty string when the body is within every declared limit.
-    private static String breachOf(UploadSpec spec, MultipartRequest request) {
-        return spec.partBreach(request).map(MultipartError.LimitExceeded::message).or("");
+    private static String breachOf(UploadSpec spec, byte[] body) {
+        return spec.partBreach(body, CONTENT_TYPE).map(MultipartError.LimitExceeded::message).or("");
     }
 
     private static UploadSpec parts(long maxFiles, long maxFileBytes, long maxFields, long maxFieldBytes) {
@@ -105,53 +112,111 @@ class UploadSpecTest {
     void partBreach_maxFiles_allowsTheLimitAndRefusesOneMore() {
         var spec = parts(2, 0, 0, 0);
 
-        assertThat(breachOf(spec, body(java.util.Map.of(), java.util.List.of(file(1), file(1))))).isEmpty();
-        assertThat(breachOf(spec, body(java.util.Map.of(), java.util.List.of(file(1), file(1), file(1))))).isEqualTo("Multipart body has more than 2 files");
+        assertThat(breachOf(spec, body(file(1), file(1)))).isEmpty();
+        assertThat(breachOf(spec, body(file(1), file(1), file(1)))).isEqualTo("Multipart body has more than 2 files");
     }
 
     @Test
     void partBreach_maxFileSize_allowsTheLimitAndRefusesOneByteMore() {
         var spec = parts(0, 100, 0, 0);
 
-        assertThat(breachOf(spec, body(java.util.Map.of(), java.util.List.of(file(100))))).isEmpty();
-        assertThat(breachOf(spec, body(java.util.Map.of(), java.util.List.of(file(1), file(101))))).isEqualTo("A file in the multipart body is larger than 100 bytes");
+        assertThat(breachOf(spec, body(file(100)))).as("the size is the bytes between the header block and the delimiter").isEmpty();
+        assertThat(breachOf(spec, body(file(1), file(101)))).isEqualTo("A file in the multipart body is larger than 100 bytes");
     }
 
     @Test
-    void partBreach_maxFields_countsEveryValueOfEveryName() {
+    void partBreach_maxFields_countsEveryPart_evenOfOneName() {
         var spec = parts(0, 0, 2, 0);
 
-        assertThat(breachOf(spec, body(java.util.Map.of("a", java.util.List.of("1", "2")), java.util.List.of()))).isEmpty();
-        assertThat(breachOf(spec, body(java.util.Map.of("a", java.util.List.of("1", "2"), "b", java.util.List.of("3")), java.util.List.of()))).isEqualTo("Multipart body has more than 2 fields");
-        assertThat(breachOf(spec, body(java.util.Map.of("a", java.util.List.of("1", "2", "3")), java.util.List.of())))
+        assertThat(breachOf(spec, body(field("a", "1"), field("a", "2")))).isEmpty();
+        assertThat(breachOf(spec, body(field("a", "1"), field("b", "2"), field("c", "3")))).isEqualTo("Multipart body has more than 2 fields");
+        assertThat(breachOf(spec, body(field("a", "1"), field("a", "2"), field("a", "3"))))
             .as("one name repeated is still three fields").isEqualTo("Multipart body has more than 2 fields");
     }
 
     @Test
-    void partBreach_maxFieldSize_measuresUtf8Bytes() {
+    void partBreach_maxFieldSize_measuresTheBytesOnTheWire() {
         var spec = parts(0, 0, 0, 4);
 
-        assertThat(breachOf(spec, body(java.util.Map.of("a", java.util.List.of("abcd")), java.util.List.of()))).isEmpty();
-        assertThat(breachOf(spec, body(java.util.Map.of("a", java.util.List.of("abcde")), java.util.List.of()))).isEqualTo("A field in the multipart body is larger than 4 bytes");
-        assertThat(breachOf(spec, body(java.util.Map.of("a", java.util.List.of("ééé")), java.util.List.of())))
-            .as("three two-byte characters are six bytes, not three").isNotEmpty();
+        assertThat(breachOf(spec, body(field("a", "abcd")))).isEmpty();
+        assertThat(breachOf(spec, body(field("a", "abcde")))).isEqualTo("A field in the multipart body is larger than 4 bytes");
+        assertThat(breachOf(spec, body(field("a", "ééé")))).as("three two-byte characters are six bytes, not three").isNotEmpty();
     }
 
     @Test
     void partBreach_undeclaredLimitsRefuseNothing() {
-        var many = java.util.stream.IntStream.range(0, 50).mapToObj(_ -> file(10_000)).toList();
-        var fields = java.util.Map.of("a", java.util.List.of("x".repeat(100_000)));
+        var many = java.util.stream.IntStream.range(0, 50).mapToObj(_ -> file(10_000)).toArray(String[]::new);
+        var manyBody = body(many);
 
-        assertThat(breachOf(UploadSpec.uploadSpec(true, 0, 0), body(fields, many))).isEmpty();
-        assertThat(breachOf(UploadSpec.NONE, body(fields, many))).isEmpty();
+        assertThat(breachOf(UploadSpec.uploadSpec(true, 0, 0), manyBody)).isEmpty();
+        assertThat(breachOf(UploadSpec.NONE, manyBody)).isEmpty();
     }
 
     @Test
     void partBreach_eachLimitIsIndependent() {
-        var oneFileTooBig = body(java.util.Map.of("a", java.util.List.of("x")), java.util.List.of(file(500)));
+        var oneFileTooBig = body(field("a", "x"), file(500));
 
         assertThat(breachOf(parts(5, 0, 5, 5), oneFileTooBig)).as("only size-of-file would refuse it, and it is not declared").isEmpty();
         assertThat(breachOf(parts(5, 100, 5, 5), oneFileTooBig)).isNotEmpty();
+    }
+
+    @Test
+    void partBreach_anEmptyPartHasSizeZero_withOrWithoutTheLineBreakBeforeTheDelimiter() {
+        var spec = parts(0, 0, 0, 1);
+        var crlfThenDelimiter = field("a", "");
+        var delimiterRightAfterTheHeaderBlock = "--XB\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n";
+
+        assertThat(breachOf(spec, body(crlfThenDelimiter))).isEmpty();
+        assertThat(breachOf(spec, body(delimiterRightAfterTheHeaderBlock))).isEmpty();
+    }
+
+    @Test
+    void partBreach_lineFeedOnlyBreaksAreSizedWithoutTheirLineFeed() {
+        var spec = parts(0, 0, 0, 3);
+        var lfBody = "--XB\nContent-Disposition: form-data; name=\"a\"\n\nabc\n--XB--\n";
+        var oneMore = "--XB\nContent-Disposition: form-data; name=\"a\"\n\nabcd\n--XB--\n";
+
+        assertThat(breachOf(spec, lfBody.getBytes(java.nio.charset.StandardCharsets.UTF_8))).isEmpty();
+        assertThat(breachOf(spec, oneMore.getBytes(java.nio.charset.StandardCharsets.UTF_8))).isNotEmpty();
+    }
+
+    @Test
+    void partBreach_aFilenameLessPartWithANonTextType_isAFile() {
+        var blob = "--XB\r\nContent-Disposition: form-data; name=\"b\"\r\nContent-Type: image/png\r\n\r\nPNG\r\n";
+        var text = "--XB\r\nContent-Disposition: form-data; name=\"t\"\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nabc\r\n";
+
+        assertThat(breachOf(parts(1, 0, 0, 0), body(blob, blob))).isEqualTo("Multipart body has more than 1 files");
+        assertThat(breachOf(parts(0, 0, 1, 0), body(text, text))).isEqualTo("Multipart body has more than 1 fields");
+        assertThat(breachOf(parts(1, 0, 0, 0), body(text, text, blob))).as("text/plain parts are fields").isEmpty();
+    }
+
+    @Test
+    void partBreach_aDelimiterInsideAPartThatIsNotAtALineStartDoesNotSplitIt() {
+        var inside = "--XB\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nab--XBcd\r\n";
+
+        assertThat(breachOf(parts(0, 0, 0, 7), body(inside))).as("one part of 8 bytes: ab--XBcd").isNotEmpty();
+        assertThat(breachOf(parts(0, 0, 0, 8), body(inside))).isEmpty();
+    }
+
+    @Test
+    void partBreach_moreThanTheDecoderPartCap_isAPartsBreach() {
+        var spec = parts(0, 0, 200, 0);
+        var many = java.util.stream.IntStream.range(0, 201).mapToObj(_ -> field("a", "1")).toArray(String[]::new);
+        var withinCap = java.util.stream.IntStream.range(0, 200).mapToObj(_ -> field("a", "1")).toArray(String[]::new);
+
+        assertThat(breachOf(spec, body(many))).isEqualTo("Multipart body has more than 200 parts");
+        assertThat(breachOf(spec, body(withinCap))).isEmpty();
+    }
+
+    @Test
+    void partBreach_aBodyThatIsNotAClosedMultipart_isNotABreach() {
+        var spec = parts(1, 1, 1, 1);
+        var unclosed = (file(10) + file(10)).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+        assertThat(breachOf(spec, unclosed)).as("no close delimiter: the reader answers it").isEmpty();
+        assertThat(spec.partBreach(body(file(10), file(10)), "application/octet-stream").isPresent()).as("not multipart").isFalse();
+        assertThat(spec.partBreach(body(file(10), file(10)), "multipart/form-data").isPresent()).as("no boundary").isFalse();
+        assertThat(spec.partBreach(body(file(10), file(10)), "MULTIPART/Form-Data; Boundary=XB").isPresent()).as("letter case").isTrue();
     }
 
     @Test
@@ -178,7 +243,7 @@ class UploadSpecTest {
 
     @Test
     void aPartBreach_isA413_andAsHttpErrorKeepsTheStatusAndTheFixedText() {
-        var breach = parts(1, 0, 0, 0).partBreach(body(java.util.Map.of(), java.util.List.of(file(1), file(1)))).unwrap();
+        var breach = parts(1, 0, 0, 0).partBreach(body(file(1), file(1)), CONTENT_TYPE).unwrap();
         var wrapped = (org.pragmatica.http.HttpError) MultipartError.asHttpError(breach);
 
         assertThat(breach.httpStatus()).isEqualTo(org.pragmatica.http.HttpStatus.REQUEST_ENTITY_TOO_LARGE);

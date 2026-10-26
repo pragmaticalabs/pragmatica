@@ -20,6 +20,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.handler.codec.DecoderResult;
 import io.netty.handler.codec.http.DefaultHttpContent;
 import io.netty.handler.codec.http.DefaultHttpRequest;
 import io.netty.handler.codec.http.DefaultLastHttpContent;
@@ -274,6 +275,59 @@ class RequestGateVirtualTimeTest {
 
         assertThat(response.status().code()).isEqualTo(413);
         response.release();
+        channel.finishAndReleaseAll();
+    }
+
+    // ---- the defensive lines of the gate, each pinned by what goes wrong without it
+
+    /// A head that arrives while the previous request's body is unfinished (the codec delivers the last chunk first, so only
+    /// a misbehaving upstream does this) must not strand the previous request's permit.
+    @Test
+    void aNewHead_returnsThePreviousRequestsPermit_whenItsBodyNeverFinished() {
+        var channel = channel(1_000_000, uploadBounds());
+
+        channel.writeInbound(head(HttpHeaderNames.CONTENT_LENGTH.toString(), "1000"));
+        channel.writeInbound(chunk(10));
+        assertThat(releases.get()).as("control: the first request is still open").isZero();
+
+        channel.writeInbound(head(HttpHeaderNames.CONTENT_LENGTH.toString(), "5"));
+
+        assertThat(releases.get()).as("the next head returned the first request's permit").isEqualTo(1);
+        assertThat(classifications.get()).isEqualTo(2);
+        channel.finishAndReleaseAll();
+        assertThat(releases.get()).as("and the second one's, once, when the connection ended").isEqualTo(2);
+    }
+
+    /// Removing the gate from the pipeline (a protocol switch, a teardown) returns the permit of the request in progress.
+    @Test
+    void removingTheGate_returnsThePermitOfTheRequestInProgress() {
+        var channel = channel(1_000_000, uploadBounds());
+
+        channel.writeInbound(head(HttpHeaderNames.CONTENT_LENGTH.toString(), "1000"));
+        assertThat(releases.get()).isZero();
+
+        channel.pipeline().remove(RequestGate.class);
+
+        assertThat(releases.get()).as("the gate's removal stopped the guard").isEqualTo(1);
+        channel.finishAndReleaseAll();
+        assertThat(releases.get()).as("and nothing released it twice").isEqualTo(1);
+    }
+
+    /// A head the codec could not decode is not classified: its route is unknowable, and the codec's own failure is what
+    /// answers it. It is forwarded untouched, and so is the body chunk that follows (no guard exists to count it).
+    @Test
+    void aMalformedHead_isNotClassified_andItsContentIsForwardedUncounted() {
+        var channel = channel(1_000_000, uploadBounds());
+        var malformed = head(HttpHeaderNames.CONTENT_LENGTH.toString(), "1000");
+
+        malformed.setDecoderResult(DecoderResult.failure(new IllegalArgumentException("malformed")));
+        channel.writeInbound(malformed);
+        channel.writeInbound(chunk(10));
+
+        assertThat(classifications.get()).as("not classified").isZero();
+        assertThat(channel.<Object>readInbound()).as("forwarded as it came").isSameAs(malformed);
+        assertThat(forwardedBytes(channel)).as("its content is not refused for want of a guard").isEqualTo(10);
+        assertThat(releases.get()).isZero();
         channel.finishAndReleaseAll();
     }
 }

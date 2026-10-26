@@ -28,7 +28,8 @@ class UploadConfigTest {
         var upload = load("").appHttp().upload();
 
         assertThat(upload).isEqualTo(UploadConfig.DEFAULT);
-        assertThat(upload.maxSizeCeiling()).isEqualTo(5L * 1024 * 1024 * 1024);
+        assertThat(upload.maxSizeCeiling()).as("256 MiB until streaming storage").isEqualTo(256L * 1024 * 1024);
+        assertThat(upload.maxInFlightBytes()).as("a quarter of the maximum heap").isEqualTo(Runtime.getRuntime().maxMemory() / 4);
         assertThat(upload.maxConcurrent()).isEqualTo(64);
         assertThat(upload.maxConcurrentPerPrincipal()).isEqualTo(8);
         assertThat(upload.idleTimeout().millis()).isEqualTo(30_000);
@@ -50,6 +51,7 @@ class UploadConfigTest {
                           max_concurrent_per_principal = 3
                           idle_timeout = "45s"
                           min_body_rate = "4KB"
+                          max_in_flight_size = "512MB"
                           """).appHttp().upload();
 
         assertThat(upload.maxSizeCeiling()).isEqualTo(2L * 1024 * 1024 * 1024);
@@ -57,6 +59,7 @@ class UploadConfigTest {
         assertThat(upload.maxConcurrentPerPrincipal()).isEqualTo(3);
         assertThat(upload.idleTimeout().millis()).isEqualTo(45_000);
         assertThat(upload.minBodyRate()).isEqualTo(4096);
+        assertThat(upload.maxInFlightBytes()).isEqualTo(512L * 1024 * 1024);
     }
 
     @Test
@@ -82,6 +85,7 @@ class UploadConfigTest {
                                                  max_concurrent_per_principal = 0
                                                  idle_timeout = "0s"
                                                  min_body_rate = 0
+                                                 max_in_flight_size = 0
                                                  """);
 
         assertThat(result.isFailure()).isTrue();
@@ -89,7 +93,8 @@ class UploadConfigTest {
                                                              .contains("max_concurrent must")
                                                              .contains("max_concurrent_per_principal")
                                                              .contains("idle_timeout")
-                                                             .contains("min_body_rate"));
+                                                             .contains("min_body_rate")
+                                                             .contains("max_in_flight_size"));
     }
 
     @Test

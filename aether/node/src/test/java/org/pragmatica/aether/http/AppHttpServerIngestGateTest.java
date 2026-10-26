@@ -13,6 +13,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -111,6 +113,9 @@ class AppHttpServerIngestGateTest {
 
     private final AtomicInteger served = new AtomicInteger();
     private final AtomicLong servedBytes = new AtomicLong();
+    private final AtomicReference<String> dispatchThread = new AtomicReference<>("");
+    private final AtomicInteger entered = new AtomicInteger();
+    private volatile CountDownLatch gate = new CountDownLatch(0);
     private final HttpRouteRegistry registry = HttpRouteRegistry.httpRouteRegistry();
     private AppHttpServer server;
     private int port;
@@ -515,6 +520,9 @@ class AppHttpServerIngestGateTest {
 
         /// Posts `body` with the given Content-Type, declared length.
         Reply postBody(String path, String key, String contentType, byte[] body) throws Exception;
+
+        /// Sends only the head of a POST declaring `length` bytes, and reads the answer.
+        Reply postDeclaredOnly(String path, String key, long length) throws Exception;
     }
 
     private Client client(Protocol protocol) {
@@ -523,9 +531,20 @@ class AppHttpServerIngestGateTest {
                : new H3Client();
     }
 
+    private void awaitGate() {
+        try {
+            assertThat(gate.await(30, TimeUnit.SECONDS)).as("the gate was opened").isTrue();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     private final class CountingRouter implements SliceRouter {
         @Override
         public Promise<HttpResponseData> handle(HttpRequestContext request) {
+            dispatchThread.set(Thread.currentThread().getName());
+            entered.incrementAndGet();
+            awaitGate();
             served.incrementAndGet();
             servedBytes.set(request.body().length);
 
@@ -614,7 +633,7 @@ class AppHttpServerIngestGateTest {
                     var reply = post(path, Option.some(other), 16, Mode.DECLARED);
 
                     during.add(reply.status());
-                    if (reply.status() == 429 && refusal.isEmpty()) {
+                    if ((reply.status() == 429 || reply.status() == 503) && refusal.isEmpty()) {
                         refusal.append(reply.text());
                     }
                 }
@@ -669,6 +688,17 @@ class AppHttpServerIngestGateTest {
                 send(socket, head);
                 socket.getOutputStream().write(body);
                 socket.getOutputStream().flush();
+                var text = readResponse(socket);
+
+                return new Reply(status(text), text);
+            }
+        }
+
+        @Override
+        public Reply postDeclaredOnly(String path, String key, long length) throws Exception {
+            try (var socket = new Socket("127.0.0.1", port)) {
+                socket.setSoTimeout(15_000);
+                send(socket, head(path, Option.some(key), "Content-Length: " + length, ""));
                 var text = readResponse(socket);
 
                 return new Reply(status(text), text);
@@ -853,6 +883,13 @@ class AppHttpServerIngestGateTest {
                 stream.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(body))).sync();
                 stream.shutdownOutput();
             });
+
+            return new Reply(Integer.parseInt(answer.status()), answer.body());
+        }
+
+        @Override
+        public Reply postDeclaredOnly(String path, String key, long length) throws Exception {
+            var answer = H3Probe.exchange(port, stream -> stream.writeAndFlush(headers(path, Option.some(key), length)).sync());
 
             return new Reply(Integer.parseInt(answer.status()), answer.body());
         }
@@ -1195,6 +1232,167 @@ class AppHttpServerIngestGateTest {
         assertThat(client(protocol).post("/api/undeclared/", Option.some(KEY_A), 512 * 1024, Mode.DECLARED).status()).as("over max_request_size: 413 as before").isEqualTo(413);
         assertThat(client(protocol).post("/api/undeclared/", Option.none(), 16, Mode.DECLARED).status()).as("authentication as before").isEqualTo(401);
         assertThat(served.get()).as("the three admitted requests were served, the refused two were not").isEqualTo(3);
+    }
+
+    // ---- F1: the part-limit check leaves the event loop; F2/F3: the memory model's bounds
+
+    private static boolean onPartLimitWorker(String thread) {
+        return thread.startsWith("app-http-part-limit-");
+    }
+
+    private void partLimitedMultipart_isCheckedAndDispatchedOffTheEventLoop(Protocol protocol) throws Exception {
+        start(protocol, defaults(), 10 * MIB);
+
+        assertThat(statusOf(protocol, "/api/files/", multipart(Part.file("a", 10), Part.file("b", 10)))).isEqualTo(200);
+        assertThat(onPartLimitWorker(dispatchThread.get())).as("a part-limited multipart body is checked on the worker, dispatched from it: " + dispatchThread.get()).isTrue();
+        assertThat(statusOf(protocol, "/api/upload/", multipart(Part.file("a", 10), Part.file("b", 10)))).isEqualTo(200);
+        assertThat(onPartLimitWorker(dispatchThread.get())).as("an upload route without part limits is dispatched where it arrived: " + dispatchThread.get()).isFalse();
+        assertThat(client(protocol).postBody("/api/files/", KEY_A, "application/octet-stream", new byte[100]).status()).isEqualTo(200);
+        assertThat(onPartLimitWorker(dispatchThread.get())).as("a part-limited route's non-multipart body has nothing to scan: " + dispatchThread.get()).isFalse();
+    }
+
+    @Test
+    void partLimitedMultipart_isCheckedAndDispatchedOffTheEventLoop_overHttp1() throws Exception {
+        partLimitedMultipart_isCheckedAndDispatchedOffTheEventLoop(Protocol.H1);
+    }
+
+    @Test
+    void partLimitedMultipart_isCheckedAndDispatchedOffTheEventLoop_overHttp3() throws Exception {
+        partLimitedMultipart_isCheckedAndDispatchedOffTheEventLoop(Protocol.H3);
+    }
+
+    /// One worker and one queued check: the third multipart body is refused 503 with `Retry-After`, and the two held ones
+    /// are answered once the gate opens.
+    private void partLimitExecutorFull_isRefused503_andTheAcceptedOnesAreAnswered(Protocol protocol) throws Exception {
+        start(protocol, defaults(), 10 * MIB);
+        ((AppHttpServerAdapter) server).usePartLimitExecutorForTest(PartLimitExecutor.partLimitExecutor(1, 1));
+        gate = new CountDownLatch(1);
+        var body = multipart(Part.file("a", 10));
+        var held = new ArrayList<java.util.concurrent.CompletableFuture<Reply>>();
+
+        held.add(java.util.concurrent.CompletableFuture.supplyAsync(() -> post(protocol, "/api/files/", body)));
+        awaitEntered(1);
+        held.add(java.util.concurrent.CompletableFuture.supplyAsync(() -> post(protocol, "/api/files/", body)));
+        Thread.sleep(500);
+
+        var refused = client(protocol).postBody("/api/files/", KEY_A, MULTIPART, body);
+
+        assertThat(refused.status()).as("worker busy and queue full").isEqualTo(503);
+        if (protocol == Protocol.H1) {
+            assertThat(refused.text()).containsIgnoringCase("retry-after: 5");
+        }
+
+        gate.countDown();
+        for (var future : held) {
+            assertThat(future.get(20, TimeUnit.SECONDS).status()).as("the accepted ones are answered").isEqualTo(200);
+        }
+
+        assertThat(served.get()).as("the refused one never reached the slice").isEqualTo(2);
+    }
+
+    private Reply post(Protocol protocol, String path, byte[] body) {
+        try {
+            return client(protocol).postBody(path, KEY_A, MULTIPART, body);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private void awaitEntered(int count) throws InterruptedException {
+        for (int attempt = 0; attempt < 200 && entered.get() < count; attempt++) {
+            Thread.sleep(50);
+        }
+
+        assertThat(entered.get()).as("the router was entered").isGreaterThanOrEqualTo(count);
+    }
+
+    @Test
+    void partLimitExecutorFull_isRefused503_andTheAcceptedOnesAreAnswered_overHttp1() throws Exception {
+        partLimitExecutorFull_isRefused503_andTheAcceptedOnesAreAnswered(Protocol.H1);
+    }
+
+    @Test
+    void partLimitExecutorFull_isRefused503_andTheAcceptedOnesAreAnswered_overHttp3() throws Exception {
+        partLimitExecutorFull_isRefused503_andTheAcceptedOnesAreAnswered(Protocol.H3);
+    }
+
+    /// The default ceiling is 256 MiB until streaming storage (U2); a route declaring more is capped to it.
+    @Test
+    void defaultCeiling_is256MiB() {
+        assertThat(UploadConfig.DEFAULT.maxSizeCeiling()).isEqualTo(256L * MIB);
+        assertThat(UploadConfig.DEFAULT.maxInFlightBytes()).as("a quarter of the maximum heap").isEqualTo(Runtime.getRuntime().maxMemory() / 4);
+    }
+
+    /// A `Content-Length` above 2 GiB, and above Integer.MAX_VALUE, on a route that declares more (4 GiB, under a raised 8 GiB
+    /// ceiling) is refused 413 on the head: the effective limit never passes what one in-memory array holds.
+    private void contentLengthOverTwoGiB_isRefused413OnTheHead_withoutOverflow(Protocol protocol) throws Exception {
+        start(protocol, defaults().withMaxSizeCeiling(8L * 1024 * MIB), 10 * MIB);
+        var client = client(protocol);
+
+        assertThat(client.postDeclaredOnly("/api/huge/", KEY_A, (long) Integer.MAX_VALUE + 1).status()).as("2 GiB").isEqualTo(413);
+        assertThat(client.postDeclaredOnly("/api/huge/", KEY_A, 3L * 1024 * MIB).status()).as("3 GiB").isEqualTo(413);
+        assertThat(client.postDeclaredOnly("/api/huge/", KEY_A, 4L * 1024 * MIB).status()).as("exactly what the route declares").isEqualTo(413);
+        assertThat(client.postDeclaredOnly("/api/huge/", KEY_A, Long.MAX_VALUE).status()).as("a length that would overflow an int a thousand times").isIn(400, 413);
+        assertThat(uploadAdmissionOf().inFlight()).as("every refusal returned its permit").isZero();
+        assertThat(uploadAdmissionOf().reservedBytes()).as("and its reserved bytes").isZero();
+        assertThat(client.post("/api/huge/", Option.some(KEY_A), 1024, Mode.DECLARED).status()).as("control: a small body on the same route").isEqualTo(200);
+    }
+
+    private UploadAdmission uploadAdmissionOf() {
+        return ((AppHttpServerAdapter) server).uploadAdmissionForTest();
+    }
+
+    @Test
+    void contentLengthOverTwoGiB_isRefused413OnTheHead_withoutOverflow_overHttp1() throws Exception {
+        contentLengthOverTwoGiB_isRefused413OnTheHead_withoutOverflow(Protocol.H1);
+    }
+
+    @Test
+    void contentLengthOverTwoGiB_isRefused413OnTheHead_withoutOverflow_overHttp3() throws Exception {
+        contentLengthOverTwoGiB_isRefused413OnTheHead_withoutOverflow(Protocol.H3);
+    }
+
+    // ---- F3: the node-wide budget of declared bytes in flight
+
+    private static final String EXHAUSTED = OperatorWarningCode.UPLOAD_BYTE_BUDGET_EXHAUSTED.code();
+    private static final String BUDGET_RESTORED = OperatorWarningCode.UPLOAD_BYTE_BUDGET_RESTORED.code();
+
+    /// The holder declares 10 bytes of a 20-byte budget: a 16-byte upload does not fit and is refused 503 on its head, with
+    /// one event for the four refusals; once the holder is done the budget is free again and says so.
+    private void byteBudget_refuses503OnTheHead_raisesOneEventPerEpisode(Protocol protocol) throws Exception {
+        start(protocol, defaults().withMaxInFlightBytes(20), 10 * MIB);
+        var warnings = new CopyOnWriteArrayList<OperatorWarning>();
+
+        server.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+        var run = client(protocol).holdOne("/api/upload/", KEY_A, List.of(KEY_B, KEY_B, KEY_B, KEY_B));
+
+        assertThat(run.duringStatuses()).as("four refusals by the budget, not by a count").containsExactly(503, 503, 503, 503);
+        assertThat(run.afterReleaseStatus()).as("admitted once the holder's bytes are back").isEqualTo(200);
+        awaitCodes(warnings, 2);
+        assertThat(codesOf(warnings)).containsExactly(EXHAUSTED, BUDGET_RESTORED);
+        assertThat(warnings.getFirst().subject()).isEqualTo("ingest-gate-node");
+        assertThat(warnings.getFirst().message()).contains("max_in_flight_size").contains("20");
+        assertThat(uploadAdmissionOf().reservedBytes()).as("nothing stays reserved").isZero();
+    }
+
+    @Test
+    void byteBudget_refuses503OnTheHead_raisesOneEventPerEpisode_overHttp1() throws Exception {
+        byteBudget_refuses503OnTheHead_raisesOneEventPerEpisode(Protocol.H1);
+    }
+
+    @Test
+    void byteBudget_refuses503OnTheHead_raisesOneEventPerEpisode_overHttp3() throws Exception {
+        byteBudget_refuses503OnTheHead_raisesOneEventPerEpisode(Protocol.H3);
+    }
+
+    @Test
+    void byteBudget_answersWithRetryAfter_overHttp1() throws Exception {
+        start(Protocol.H1, defaults().withMaxInFlightBytes(20), 10 * MIB);
+
+        var run = client(Protocol.H1).holdOne("/api/upload/", KEY_A, List.of(KEY_B));
+
+        assertThat(run.duringStatuses()).containsExactly(503);
+        assertThat(run.firstRefusalText()).containsIgnoringCase("retry-after: 5").contains("Too many bytes of uploads in flight on this node");
     }
 
     // ---- operator events: node-cap saturation only, once per episode

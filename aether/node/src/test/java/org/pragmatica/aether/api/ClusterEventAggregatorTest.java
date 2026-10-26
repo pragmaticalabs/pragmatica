@@ -2454,6 +2454,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.WORKER_ASSIGNED,
                 OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED,
                 OperatorWarningCode.UPLOAD_NODE_CAP_RESTORED,
+                OperatorWarningCode.UPLOAD_BYTE_BUDGET_RESTORED,
                 OperatorWarningCode.JSON_CONFIG_APPLIED,
             });
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
@@ -2497,6 +2498,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.TOPIC_TIER_MISMATCH,
                 OperatorWarningCode.JSON_CONFIG_REJECTED,
                 OperatorWarningCode.UPLOAD_NODE_CAP_SATURATED,
+                OperatorWarningCode.UPLOAD_BYTE_BUDGET_EXHAUSTED,
             });
         var recoveries = java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).count();
         var t = new AtomicLong(1_000_000L);

@@ -52,7 +52,7 @@ import org.pragmatica.net.tcp.TlsConfig;
 /// Routes, each with its declared ingest limits, all behind an API key:
 /// `/api/small/` 1 MiB; `/api/big/` 100 MiB; `/api/undeclared/` none; `/api/upload/` an upload route;
 /// `/api/timed/` an upload route with `max_duration = 1500 ms`; `/api/files/` `max_files = 2`; `/api/filesize/`
-/// `max_file_size = 100`; `/api/fields/` `max_fields = 2`; `/api/fieldsize/` `max_field_size = 10` (each an upload route); `/upload/` 1 MiB, for tests that post to it; `/api/admin/` requires the role `admin`.
+/// `max_file_size = 100`; `/api/fields/` `max_fields = 2`; `/api/fieldsize/` `max_field_size = 10` (each an upload route); `/api/huge/` an upload route declaring 4 GiB; `/upload/` 1 MiB, for tests that post to it; `/api/admin/` requires the role `admin`.
 record IngestGateRoutes(SliceRouter router, SecurityPolicy security) implements HttpRoutePublisher {
     private static final int MIB = 1024 * 1024;
     private static final Artifact ARTIFACT = Artifact.artifact("com.example:svc:1.0.0").unwrap();
@@ -67,6 +67,7 @@ record IngestGateRoutes(SliceRouter router, SecurityPolicy security) implements 
                                                                        Map.entry("/api/filesize/", UploadSpec.uploadSpec(true, 100L * MIB, 0, 0, 100, 0, 0)),
                                                                        Map.entry("/api/fields/", UploadSpec.uploadSpec(true, 100L * MIB, 0, 0, 0, 2, 0)),
                                                                        Map.entry("/api/fieldsize/", UploadSpec.uploadSpec(true, 100L * MIB, 0, 0, 0, 0, 10)),
+                                                                       Map.entry("/api/huge/", UploadSpec.uploadSpec(true, 4L * 1024 * MIB, 0)),
                                                                        Map.entry("/api/manyfiles/", UploadSpec.uploadSpec(true, 100L * MIB, 0, 200, 0, 0, 0)));
 
     private Option<LocalRouteInfo> routeFor(String method, String path) {

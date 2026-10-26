@@ -207,4 +207,189 @@ class UploadAdmissionTest {
         assertThat(episodes.saturated.get()).isZero();
         assertThat(episodes.restored.get()).isZero();
     }
+
+    // ---- the principal map holds only principals with an upload in flight
+
+    @Test
+    void principalEntries_areRemovedWhenTheirLastPermitIsReturned() {
+        var admission = admission(100, 3);
+        var alicePermits = new ArrayList<Runnable>();
+
+        for (int index = 0; index < 3; index++) {
+            alicePermits.add(admission.tryAcquire("alice").unwrap());
+        }
+
+        var manyPrincipals = new ArrayList<Runnable>();
+
+        for (int index = 0; index < 50; index++) {
+            manyPrincipals.add(admission.tryAcquire("jwt-subject-" + index).unwrap());
+        }
+
+        assertThat(admission.principalEntries()).as("alice and fifty others").isEqualTo(51);
+        alicePermits.forEach(Runnable::run);
+        manyPrincipals.forEach(Runnable::run);
+
+        assertThat(admission.principalEntries()).as("nothing in flight, nothing retained").isZero();
+        assertThat(admission.inFlight()).isZero();
+    }
+
+    @Test
+    void principalEntries_aRefusedPrincipalLeavesNoEntry() {
+        var admission = admission(1, 1);
+
+        admission.tryAcquire("alice").unwrap();
+        admission.tryAcquire("bob");
+
+        assertThat(admission.principalEntries()).as("only alice, the permit holder").isEqualTo(1);
+    }
+
+    // ---- the node's byte budget: declared bytes in flight
+
+    private static UploadAdmission budget(long bytes, Runnable onExhausted, Runnable onRestored) {
+        return UploadAdmission.uploadAdmission(UploadConfig.DEFAULT.withMaxInFlightBytes(bytes),
+                                               () -> {},
+                                               () -> {},
+                                               onExhausted,
+                                               onRestored);
+    }
+
+    @Test
+    void byteBudget_refusesWhatDoesNotFit_andTakesTheBytesBackOnRelease() {
+        var admission = budget(100, () -> {}, () -> {});
+        var first = admission.tryAcquire("alice", 60).unwrap();
+
+        assertThat(refusalOf(admission.tryAcquire("bob", 41))).as("60 + 41 passes 100").isSameAs(UploadAdmission.BYTE_BUDGET);
+        assertThat(admission.tryAcquire("bob", 40).isSuccess()).as("60 + 40 is exactly the budget").isTrue();
+        assertThat(admission.reservedBytes()).isEqualTo(100);
+        assertThat(admission.inFlight()).as("the refused upload took no permit").isEqualTo(2);
+        first.run();
+        first.run();
+        assertThat(admission.reservedBytes()).as("returned once").isEqualTo(40);
+        assertThat(admission.tryAcquire("carol", 60).isSuccess()).isTrue();
+    }
+
+    @Test
+    void byteBudget_aDeclarationBeyondTheWholeBudget_reservesTheBudget_andNeverOverflows() {
+        var admission = budget(1_000, () -> {}, () -> {});
+        var alone = admission.tryAcquire("alice", Long.MAX_VALUE).unwrap();
+
+        assertThat(admission.reservedBytes()).as("the whole budget, not a long that wrapped").isEqualTo(1_000);
+        assertThat(refusalOf(admission.tryAcquire("bob", Long.MAX_VALUE))).isSameAs(UploadAdmission.BYTE_BUDGET);
+        assertThat(refusalOf(admission.tryAcquire("bob", 1))).isSameAs(UploadAdmission.BYTE_BUDGET);
+        alone.run();
+        assertThat(admission.reservedBytes()).isZero();
+        assertThat(admission.tryAcquire("bob", Long.MAX_VALUE).isSuccess()).as("alone again").isTrue();
+        assertThat(admission.tryAcquire("carol", -5).isSuccess()).as("a negative declaration reserves nothing").isTrue();
+    }
+
+    @Test
+    void byteBudget_theCountCapsAreCheckedFirst() {
+        var admission = UploadAdmission.uploadAdmission(UploadConfig.DEFAULT.withMaxConcurrent(1)
+                                                                          .withMaxConcurrentPerPrincipal(1)
+                                                                          .withMaxInFlightBytes(10));
+
+        admission.tryAcquire("alice", 10).unwrap();
+
+        assertThat(refusalOf(admission.tryAcquire("alice", 10))).as("the node is at its count and the budget: the count answers").isSameAs(UploadAdmission.NODE_LIMIT);
+
+        var wide = UploadAdmission.uploadAdmission(UploadConfig.DEFAULT.withMaxConcurrentPerPrincipal(1).withMaxInFlightBytes(10));
+
+        wide.tryAcquire("alice", 10).unwrap();
+        assertThat(refusalOf(wide.tryAcquire("alice", 10))).as("the principal is at its count and the budget: the count answers").isSameAs(UploadAdmission.PRINCIPAL_LIMIT);
+    }
+
+    @Test
+    void byteBudget_reportsExhaustionOncePerEpisode_andRecoveryOnceHalfIsFree() {
+        var exhausted = new AtomicInteger();
+        var restored = new AtomicInteger();
+        var admission = budget(100, exhausted::incrementAndGet, restored::incrementAndGet);
+        var a = admission.tryAcquire("a", 50).unwrap();
+        var b = admission.tryAcquire("b", 50).unwrap();
+
+        for (int refusal = 0; refusal < 5; refusal++) {
+            admission.tryAcquire("c", 10);
+        }
+
+        assertThat(exhausted.get()).as("five refusals, one exhaustion").isEqualTo(1);
+        assertThat(restored.get()).isZero();
+        a.run();
+        assertThat(restored.get()).as("50 of 100 reserved, at half: restored").isEqualTo(1);
+        b.run();
+        assertThat(restored.get()).as("a second release adds nothing").isEqualTo(1);
+        admission.tryAcquire("d", 100).unwrap();
+        admission.tryAcquire("e", 1);
+        assertThat(exhausted.get()).as("a new episode is a new report").isEqualTo(2);
+    }
+
+    @Test
+    void byteBudget_staysExhaustedWhileMoreThanHalfIsReserved() {
+        var restored = new AtomicInteger();
+        var admission = budget(100, () -> {}, restored::incrementAndGet);
+        var a = admission.tryAcquire("a", 30).unwrap();
+        var b = admission.tryAcquire("b", 30).unwrap();
+
+        admission.tryAcquire("c", 40).unwrap();
+        admission.tryAcquire("d", 10);
+        assertThat(admission.budgetExhausted()).isTrue();
+        a.run();
+        assertThat(restored.get()).as("70 of 100 reserved: still exhausted").isZero();
+        assertThat(admission.budgetExhausted()).isTrue();
+        b.run();
+        assertThat(restored.get()).as("40 of 100 reserved: restored").isEqualTo(1);
+        assertThat(admission.budgetExhausted()).isFalse();
+    }
+
+    @Test
+    void byteBudget_reportsNothingWhileItWasNeverExhausted() {
+        var exhausted = new AtomicInteger();
+        var restored = new AtomicInteger();
+        var admission = budget(100, exhausted::incrementAndGet, restored::incrementAndGet);
+
+        admission.tryAcquire("a", 100).unwrap().run();
+
+        assertThat(exhausted.get()).isZero();
+        assertThat(restored.get()).as("a release is not a recovery without an exhaustion").isZero();
+    }
+
+    @Test
+    void underContention_theReservationNeverPassesTheBudget_andReturnsToZero() throws Exception {
+        var budget = 1_000L;
+        var admission = budget(budget, () -> {}, () -> {});
+        var overshoot = new AtomicBoolean();
+        var start = new CountDownLatch(1);
+        var pool = Executors.newFixedThreadPool(16);
+        var futures = new ArrayList<java.util.concurrent.Future<?>>();
+
+        try {
+            for (int worker = 0; worker < 16; worker++) {
+                var principal = "p" + worker;
+
+                futures.add(pool.submit(() -> {
+                    start.await();
+                    for (int round = 0; round < 2_000; round++) {
+                        admission.tryAcquire(principal, 300).onSuccess(permit -> {
+                            if (admission.reservedBytes() > budget) {
+                                overshoot.set(true);
+                            }
+
+                            permit.run();
+                        });
+                    }
+
+                    return null;
+                }));
+            }
+
+            start.countDown();
+            for (var future : futures) {
+                future.get();
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+
+        assertThat(overshoot.get()).as("reserved bytes never exceeded the budget").isFalse();
+        assertThat(admission.reservedBytes()).isZero();
+        assertThat(admission.principalEntries()).isZero();
+    }
 }
