@@ -1570,7 +1570,8 @@ public final class EmberCluster {
         var certificateProvider = SelfSignedCertificateProvider.selfSignedCertificateProvider(clusterSecret.get()).unwrap();
         var quicTls = buildForgeQuicTls(nodeId, certificateProvider);
         var config = new AetherNodeConfig(topology,
-                                          ProtocolConfig.testConfig(participationMarker(nodeId), identityLedgerFile(nodeId)),
+                                          ProtocolConfig.testConfig(participationMarker(nodeId),
+                                                                    identityLedgerFile(nodeId)),
                                           SliceActionConfig.sliceActionConfig(),
                                           SliceConfig.sliceConfig(),
                                           mgmtPort,
