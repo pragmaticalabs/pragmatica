@@ -14,7 +14,7 @@ Two other mappers are separate, documented tables for failure classes that are n
 
 ## Publish keeps its statuses
 
-A publish is not idempotent. On the stream publish route a raw stream engine refusal may answer a retry-inviting status (503, 429) only when it is on the pre-append refusal list (nothing was written): `StreamConfigNotYetVisible`, `OwnerNotActivated`, `NotOwnerAppend`, plus the replica-count and remote-retryable refusals. Every other raw stream error on publish answers 500, as it did before stream errors were classified. The stream rows below therefore apply to every route except publish.
+A publish is not idempotent. On the stream publish route a raw stream engine refusal answers a retry-inviting status (503, 429) only when it is refused before anything is written. Those are the causes the partition owner itself answers a forwarded publish with the retryable response for (`StreamForwardHandler.isRetryable`), so a refusal answers the same 503 whether the publisher is the owner or a forwarder: `StreamConfigNotYetVisible`, `OwnerNotActivated`, `NotOwnerAppend`, `NOT_ENOUGH_REPLICAS`, and the transient capacity refusals `ReshufflePaced`, `MaterializeBudgetExceeded`, `STREAM_MEMORY_EXCEEDED`, `SEALING_BEHIND`, `SEGMENT_TIER_FULL`. Every other raw stream error on publish answers 500, as it did before stream errors were classified. The stream rows below therefore apply to every route except publish. On publish the capacity refusals above moved from 500 to 503.
 
 ## Statuses that changed
 

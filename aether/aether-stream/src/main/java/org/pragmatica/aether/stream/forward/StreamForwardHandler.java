@@ -384,7 +384,11 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                  errorMessage);
     }
 
-    private static boolean isRetryable(Cause cause) {
+    /// Whether a publish failure was refused before anything reached the ring, the WAL or a replica, so the publisher may
+    /// retry it. The owner answers a forwarded publish with the retryable response for exactly these causes, and the
+    /// management publish route uses the same predicate for a publish the owner serves itself, so a refusal answers the same
+    /// status whether the publisher is the owner or a forwarder.
+    public static boolean isRetryable(Cause cause) {
         return cause instanceof StreamError.StreamConfigNotYetVisible || cause instanceof StreamError.NotOwnerAppend || cause instanceof StreamError.OwnerNotActivated || cause == ReplicationError.General.NOT_ENOUGH_REPLICAS || ResourceCapacityExhausted.isTransientCapacity(cause);
     }
 
