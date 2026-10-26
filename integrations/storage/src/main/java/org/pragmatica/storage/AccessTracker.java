@@ -26,6 +26,7 @@ public final class AccessTracker {
     public record Access(long lastAccessedAt, int count) {}
 
     private final ConcurrentHashMap<BlockId, Access> seen = new ConcurrentHashMap<>();
+
     private static final long NANOS_PER_MILLI = 1_000_000L;
 
     private final LongSupplier clock;

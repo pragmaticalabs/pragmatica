@@ -202,7 +202,6 @@ final class DefaultDemotionManager implements DemotionManager {
     private List<BlockLifecycle> selectCandidates(TierLevel tierLevel) {
         var candidates = metadataStore.listBlocksByTier(tierLevel);
         var access = metadataStore.accessTracker();
-
         var heldBack = readsDecide()
                        ? candidates.stream()
                                    .filter(access::isHeldBack)
@@ -211,7 +210,8 @@ final class DefaultDemotionManager implements DemotionManager {
                        : Set.<BlockId> of();
 
         return candidates.stream()
-                         .sorted(rankingFor(heldBack, comparatorForStrategy(access)))
+                         .sorted(rankingFor(heldBack,
+                                            comparatorForStrategy(access)))
                          .limit(config.batchSize())
                          .toList();
     }
@@ -222,11 +222,13 @@ final class DefaultDemotionManager implements DemotionManager {
     /// is the last thing demoted, and nothing is demoted in a different order than it was created for want of reads.
     private static Comparator<BlockLifecycle> rankingFor(Set<BlockId> heldBack, Comparator<BlockLifecycle> byStrategy) {
         Comparator<BlockLifecycle> byCreation = Comparator.comparingLong(BlockLifecycle::createdAt);
+        Comparator<BlockLifecycle> heldBackLast = Comparator.comparingInt(lc -> heldBack.contains(lc.blockId())
+                                                                                ? 1
+                                                                                : 0);
 
-        return Comparator.<BlockLifecycle> comparingInt(lc -> heldBack.contains(lc.blockId()) ? 1 : 0)
-                         .thenComparing((a, b) -> heldBack.contains(a.blockId())
-                                                  ? byCreation.compare(a, b)
-                                                  : byStrategy.compare(a, b));
+        return heldBackLast.thenComparing((a, b) -> heldBack.contains(a.blockId())
+                                                    ? byCreation.compare(a, b)
+                                                    : byStrategy.compare(a, b));
     }
 
     /// Whether the strategy ranks by reads. AGE ranks by creation alone, so it has no use for access and an

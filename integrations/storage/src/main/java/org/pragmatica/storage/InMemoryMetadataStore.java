@@ -82,8 +82,7 @@ final class InMemoryMetadataStore implements MetadataStore {
     public boolean claimUnacknowledged(BlockId blockId, BlockLifecycle sentinel) {
         var claimed = new AtomicBoolean();
 
-        lifecycle.compute(blockId, (_, existing) -> claimOrKeep(existing, sentinel, claimed));
-
+        lifecycle.compute(blockId, (_, existing) -> claimOrKeep(option(existing), sentinel, claimed));
         if (claimed.get() && !sentinel.cacheOnly()) {
             epoch.incrementAndGet();
         }
@@ -91,19 +90,20 @@ final class InMemoryMetadataStore implements MetadataStore {
         return claimed.get();
     }
 
-    private BlockLifecycle claimOrKeep(BlockLifecycle existing, BlockLifecycle sentinel, AtomicBoolean claimed) {
-        var replacesMarker = existing != null && existing.cacheOnly() && !sentinel.cacheOnly();
+    private BlockLifecycle claimOrKeep(Option<BlockLifecycle> existing,
+                                       BlockLifecycle sentinel,
+                                       AtomicBoolean claimed) {
+        return existing.fold(() -> marked(sentinel, sentinel, claimed),
+                             held -> held.cacheOnly() && !sentinel.cacheOnly()
+                                     ? marked(sentinel.withPresenceOf(held), sentinel, claimed)
+                                     : held);
+    }
 
-        if (existing != null && !replacesMarker) {
-            return existing;
-        }
-
+    private BlockLifecycle marked(BlockLifecycle record, BlockLifecycle sentinel, AtomicBoolean claimed) {
         claimed.set(true);
         unacknowledged.add(sentinel.blockId());
 
-        return existing == null
-               ? sentinel
-               : sentinel.withPresenceOf(existing);
+        return record;
     }
 
     @Override
