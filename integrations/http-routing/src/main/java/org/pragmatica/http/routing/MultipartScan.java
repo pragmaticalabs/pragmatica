@@ -139,7 +139,6 @@ sealed interface MultipartScan {
             }
 
             closePart(parts, body, openStart, openKind, position);
-
             if (parts.size() > maxParts) {
                 return Parts.parts(false, fieldTypes, parts, true);
             }
@@ -152,7 +151,6 @@ sealed interface MultipartScan {
 
             openKind = recordPart(new String(body, headersStart, headersEnd - headersStart, StandardCharsets.UTF_8),
                                   fieldTypes);
-
             if (stopAtNested && openKind == Kind.NESTED) {
                 parts.add(Part.part(Kind.NESTED, 0));
 
@@ -168,11 +166,7 @@ sealed interface MultipartScan {
 
     /// Ends the open part, if any, at the delimiter found at `delimiterPosition`: its content stops before the line
     /// break that begins the delimiter.
-    private static void closePart(List<Part> parts,
-                                  byte[] body,
-                                  int openStart,
-                                  Kind openKind,
-                                  int delimiterPosition) {
+    private static void closePart(List<Part> parts, byte[] body, int openStart, Kind openKind, int delimiterPosition) {
         if (openStart < 0) {
             return;
         }

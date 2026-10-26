@@ -89,10 +89,10 @@ public record UploadSpec(boolean upload,
     Option<MultipartError> partBreach(MultipartScan.Parts scanned) {
         return scanned.closed() || scanned.stopped()
                ? nestedPart(scanned).orElse(() -> tooManyParts(scanned))
-                                    .orElse(() -> fileCountBreach(scanned))
-                                    .orElse(() -> fileSizeBreach(scanned))
-                                    .orElse(() -> fieldCountBreach(scanned))
-                                    .orElse(() -> fieldSizeBreach(scanned))
+                           .orElse(() -> fileCountBreach(scanned))
+                           .orElse(() -> fileSizeBreach(scanned))
+                           .orElse(() -> fieldCountBreach(scanned))
+                           .orElse(() -> fieldSizeBreach(scanned))
                : Option.none();
     }
 
@@ -106,9 +106,7 @@ public record UploadSpec(boolean upload,
     /// A nested `multipart/*` part: the decoder returns its inner parts as files and fields of their own, which the scan does
     /// not count, so a route with part limits refuses it (400) rather than let it past `max_files`.
     private Option<MultipartError> nestedPart(MultipartScan.Parts scanned) {
-        return breach(scanned.parts()
-                             .stream()
-                             .anyMatch(part -> part.kind() == MultipartScan.Kind.NESTED),
+        return breach(scanned.parts().stream().anyMatch(part -> part.kind() == MultipartScan.Kind.NESTED),
                       MultipartError.General.NESTED_MULTIPART);
     }
 
