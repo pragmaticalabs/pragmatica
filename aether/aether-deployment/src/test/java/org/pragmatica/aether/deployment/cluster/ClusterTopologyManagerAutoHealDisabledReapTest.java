@@ -318,6 +318,72 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
         await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
     }
 
+    /// `drainNode` itself refuses a voter, so a drain reaches its grace reap refused only when the node became a voter after the drain was
+    /// accepted: the first answer is "not a voter", every later one "still a voter" until the test releases it.
+    private void voterAfterTheDrainWasAccepted() {
+        var asked = new AtomicInteger();
+
+        refusal.set(Option.some("still an installed voter"));
+        ctm.setRetirementRefusal(_ -> asked.getAndIncrement() == 0 ? Option.none() : refusal.get());
+    }
+
+    /// The exemption follows the reap's origin, not the entry it comes in through: an operator's drain is refused at its grace reap,
+    /// auto-heal is disabled meanwhile, and the retry reaps it all the same.
+    @Test
+    void operatorDrainedVoter_refusedThenRetried_isReapedWithAutoHealDisabled() {
+        voterAfterTheDrainWasAccepted();
+        disableAutoHeal();
+        ctm.drainNode(LOST, DrainReason.OPERATOR_COMMAND);
+        await().atMost(Duration.ofSeconds(5)).until(() -> warned("REFUSED"));
+        assertThat(terminates.get()).as("arming: refused while it votes").isZero();
+
+        refusal.set(Option.none());
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+        assertThat(eventSeen(OperatorWarningCode.INSTANCE_REAP_HELD)).isFalse();
+    }
+
+    @Test
+    void replacedVoter_refusedThenRetried_isReapedWithAutoHealDisabled() {
+        voterAfterTheDrainWasAccepted();
+        disableAutoHeal();
+        ctm.drainNode(LOST, DrainReason.REPLACED);
+        await().atMost(Duration.ofSeconds(5)).until(() -> warned("REFUSED"));
+
+        refusal.set(Option.none());
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+    }
+
+    /// The same refusal path, an automatic origin: held.
+    @Test
+    void joinGraceVoter_refusedThenRetried_isHeldWithAutoHealDisabled() {
+        voterAfterTheDrainWasAccepted();
+        disableAutoHeal();
+        ctm.drainNode(LOST, DrainReason.JOIN_GRACE_REAP);
+        await().atMost(Duration.ofSeconds(5)).until(() -> warned("REFUSED"));
+
+        refusal.set(Option.none());
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> eventSeen(OperatorWarningCode.INSTANCE_REAP_HELD));
+        settle();
+        assertThat(terminates.get()).isZero();
+    }
+
+    /// The recheck carries the origin too: a directed reap whose termination was left unconfirmed is re-checked with auto-heal disabled.
+    @Test
+    void recheckOfADirectedReap_autoHealDisabled_terminates() {
+        var record = (ClusterTopologyManagerRecord) ctm;
+
+        disableAutoHeal();
+        record.directedReaps().add(LOST);
+        record.seenInstances().add(LOST);
+        record.unconfirmedReaps().add(LOST);
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+        assertThat(eventSeen(OperatorWarningCode.INSTANCE_REAP_HELD)).isFalse();
+    }
+
     /// Entry: the drain-grace reap of a never-joined zombie is the cluster's own decision, so it is held like a departed node's reap.
     @Test
     void joinGraceReap_autoHealDisabled_terminatesNothing_andIsHeld() {

@@ -2396,23 +2396,25 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
 
+        markDirected(targetNodeId, drainReason);
         retirementRefusal.get()
                          .apply(targetNodeId)
                          .onPresent(reason -> parkRefusedReap(targetNodeId, reason))
-                         .onEmpty(() -> terminateDrained(targetNodeId, drainReason));
+                         .onEmpty(() -> terminateDrained(targetNodeId));
     }
 
     @Contract
-    private void terminateDrained(NodeId targetNodeId, DrainReason reason) {
+    private void terminateDrained(NodeId targetNodeId) {
         log.info("CTM v2: drain grace expired for {} — reaping container + clearing DRAIN command", targetNodeId);
         drainGraceChains.add(targetNodeId);
-        markDirected(targetNodeId, reason);
         confirmedReap(targetNodeId, activationEpoch.get(), incarnation(targetNodeId), FAILED_REAP_RETRIES);
     }
 
     /// #1038: a retirement an operator or the replacement protocol asked for is a directed reap, not the cluster acting on its own, and is the
     /// only kind [#confirmedReap] does not hold while auto-heal is disabled. Every other drain reason that reaches the grace backstop
     /// (`JOIN_GRACE_REAP`, a never-joined zombie; the surplus trims) is the cluster's own decision and is held like a departed node's reap.
+    /// The origin is recorded when the drain's grace expires, before the refusal check, and travels with the reap through a refusal retry and
+    /// the unconfirmed re-check; the cluster's own reap ([#terminateDeparted]) replaces it.
     private void markDirected(NodeId nodeId, DrainReason reason) {
         if (reason == DrainReason.OPERATOR_COMMAND || reason == DrainReason.REPLACED) {
             directedReaps.add(nodeId);
@@ -2602,7 +2604,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         if (!active.get()) {
             return;
         }
-
+        // The cluster's own reap begins here: any directed origin an earlier drain of this node left no longer describes it.
+        directedReaps.remove(nodeId);
         retirementRefusal.get()
                          .apply(nodeId)
                          .onPresent(reason -> parkRefusedReap(nodeId, reason))
@@ -2673,7 +2676,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         refusedReaps.remove(nodeId);
         failedReaps.remove(nodeId);
         drainGraceChains.remove(nodeId);
-        directedReaps.remove(nodeId);
         confirmedReap(nodeId, activationEpoch.get(), incarnation(nodeId), FAILED_REAP_RETRIES);
     }
 
@@ -3062,8 +3064,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         if (!seen && absent) {
             return;
         }
-        // #1038: the re-check terminates the instance again, which is an automatic deletion; the mark's own warning stays open meanwhile.
-        if (!reapMayProceed(nodeId, "re-check of an unconfirmed termination")) {
+        // #1038: the re-check terminates the instance again. It is held like any automatic deletion unless the reap it repeats was directed
+        // (the origin is carried in memory, so a re-check under a new leader holds it); the mark's own warning stays open meanwhile.
+        if (!directedReaps.contains(nodeId) && !reapMayProceed(nodeId, "re-check of an unconfirmed termination")) {
             return;
         }
 
