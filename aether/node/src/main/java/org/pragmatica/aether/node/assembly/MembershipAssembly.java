@@ -820,6 +820,18 @@ public sealed interface MembershipAssembly {
         Option.option(leaderReconcilerRef.get()).onPresent(LeaderReconciler::onTopologyUnhealthy);
     }
 
+    /// #2429: the node's identity ledger is attached to the shared boot-token registry and loaded here, at assembly, before the
+    /// transport starts and admission can consult it. A worker holds no ledger (it keeps per-observer admission).
+    private static Unit attachIdentityLedger(AetherNodeConfig config,
+                                             CoreSwimHealthDetector swimHealthDetector,
+                                             OperatorWarningSink operatorWarningSink) {
+        return configuredWorker(config)
+               ? Unit.unit()
+               : swimHealthDetector.bootTokens()
+                                   .map(tokens -> IdentityLedgerWiring.wire(config, tokens, operatorWarningSink))
+                                   .or(Unit.unit());
+    }
+
     /// The quorum-loss detector's member count, DERIVED FROM CURRENT STATE each time the detector evaluates it
     /// (#1853). It used to be PUSHED: `propagateMemberCount` computed it from a `voters` snapshot the trigger
     /// passed in and stored the result in the detector. Its inputs are the FSM's strict core members, their
@@ -858,18 +870,6 @@ public sealed interface MembershipAssembly {
     /// the detector's monitor while the co-confirmation supplier walks the same member map) and the management
     /// reads, which hold no lock. Evaluations per second are the old trigger rate plus health/status polls.
     /// [unverified: no microbenchmark was run; the claim is the pass count and allocation, not a timing]
-    /// #2429: the node's identity ledger is attached to the shared boot-token registry and loaded here, at assembly, before the
-    /// transport starts and admission can consult it. A worker holds no ledger (it keeps per-observer admission).
-    private static Unit attachIdentityLedger(AetherNodeConfig config,
-                                             CoreSwimHealthDetector swimHealthDetector,
-                                             OperatorWarningSink operatorWarningSink) {
-        return configuredWorker(config)
-               ? Unit.unit()
-               : swimHealthDetector.bootTokens()
-                                   .map(tokens -> IdentityLedgerWiring.wire(config, tokens, operatorWarningSink))
-                                   .or(Unit.unit());
-    }
-
     static int derivedMemberCount(Option<MembershipFsm> membershipFsm, NodeId self, Option<VoterConfiguration> voters) {
         return Option.all(membershipFsm, voters)
                      .map((fsm, electorate) -> fsm.strictCoreObservedVoterCount(self, electorate::contains))

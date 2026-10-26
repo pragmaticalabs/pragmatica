@@ -219,10 +219,15 @@ final class IdentityRestartHarness {
     }
 
     /// As [#launchRetiredNodeId], for a `watcher` that has no other live peer, so any CONNECTED link of it is a link to X.
-    /// `connectedNodeCount` counts the CONNECTED phase only: a dial that was refused or dropped leaves its peer EVICTED
-    /// (in `connectedPeerIds`, never connected), and that is not an admission.
     Verdict launchRetiredNodeIdAlone(AetherNode watcher) {
-        return launchRetiredNodeId(watcher, node -> node.connectedNodeCount() > 0);
+        return launchRetiredNodeIdAmong(watcher, 0);
+    }
+
+    /// As [#launchRetiredNodeId], for a `watcher` that has `otherLinks` CONNECTED links to peers other than X (the caller
+    /// waits for them first): X is linked when the watcher holds more. `connectedNodeCount` counts the CONNECTED phase only,
+    /// whereas `connectedPeerIds` also lists a peer a failed dial left EVICTED, which is not an admission.
+    Verdict launchRetiredNodeIdAmong(AetherNode watcher, int otherLinks) {
+        return launchRetiredNodeId(watcher, node -> node.connectedNodeCount() > otherLinks);
     }
 
     private Verdict launchRetiredNodeId(AetherNode watcher, Predicate<AetherNode> linked) {

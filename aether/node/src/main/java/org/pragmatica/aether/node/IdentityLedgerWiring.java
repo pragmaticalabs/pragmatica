@@ -33,12 +33,12 @@ import org.slf4j.LoggerFactory;
 /// share a process, and is stable across a restart of the same node id. Deleting it makes the node WIPED; losing it
 /// on every core is a new cluster. The in-JVM harness states its own file through `ProtocolConfig`.
 ///
-/// **Operator-set versus synthesized (the A0b boot rule).** A data path the operator set, or one the harness stated,
-/// must be usable: a ledger directory that cannot be created or forced fails the boot with a named cause
-/// ([#verifyBootable]). A synthesized default degrades instead: the node runs without the restart protection, with a
-/// WARN, the `identity_ledger_durable` gauge at 0 and an `identity-ledger-not-durable` event; the protection is OFF on
-/// that node. "Operator-set" is read as "differs from the built-in default path" [guess: rc5 records no
-/// provenance of `disk_path`].
+/// **Operator-set versus synthesized.** A data path the operator wrote (`StorageConfig.diskPathExplicit`, also when
+/// it equals the built-in default), or one the harness stated, must be usable on EVERY boot: a ledger directory that
+/// cannot be created, written or forced fails the boot with a named cause ([#verifyBootable]), whether or not a ledger
+/// file already exists there. A synthesized default degrades instead: the node runs without the restart protection, with
+/// a WARN, the `identity_ledger_durable` gauge at 0 and an `identity-ledger-not-durable` event; the protection is OFF on
+/// that node.
 public sealed interface IdentityLedgerWiring {
     Logger log = LoggerFactory.getLogger(IdentityLedgerWiring.class);
 
@@ -74,8 +74,7 @@ public sealed interface IdentityLedgerWiring {
         var artifacts = Option.option(storage.get("artifacts")).or(defaults);
         var file = Path.of(artifacts.diskPath()).resolveSibling("identity").resolve(self.id()).resolve("ledger");
 
-        return new Location(file,
-                            !artifacts.diskPath().equals(defaults.diskPath()));
+        return new Location(file, artifacts.diskPathExplicit());
     }
 
     /// The boot gate: a stated location must be usable. Nothing is checked for a synthesized one.
@@ -132,9 +131,10 @@ public sealed interface IdentityLedgerWiring {
                                           OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE,
                                           subject,
                                           "The identity ledger {} is missing on a node that is not new, so this node cannot tell which"
-                                         + " NodeIds it retired before: it admits no NEW peer until it has merged with a peer's ledger."
-                                         + " Restart protection against a retired NodeId is off on this node until then."
-                                         + " To start it as a NEW node instead, stop it and delete the directory {}.",
+                                         + " NodeIds it retired before. Until the merge of ledgers at join exists (a follow-up of #2429) it admits no peer at all,"
+                                         + " so it is ISOLATED from the cluster and restart protection is off on it."
+                                         + " The safe remedy is to stop it and rejoin it under a NEW node id."
+                                         + " Deleting the directory {} starts it as a new node and joins the cluster, but turns the protection off for this node.",
                                           location.file(),
                                           location.file().getParent());
         }

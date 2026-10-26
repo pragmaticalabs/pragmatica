@@ -580,16 +580,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             // serving peers that are already bound.
             bootTokens.admitDurably(hello.sender(),
                                     hello.bootToken())
-                      .onSuccess(admission -> onEventLoop(ctx,
-                                                          () -> completeHello(ctx, hello, admission)));
-        }
-
-        private void onEventLoop(ChannelHandlerContext ctx, Runnable action) {
-            if (ctx.executor().inEventLoop()) {
-                action.run();
-            } else {
-                ctx.executor().execute(action);
-            }
+                      .onSuccess(admission -> ctx.executor().execute(() -> completeHello(ctx, hello, admission)));
         }
 
         private void completeHello(ChannelHandlerContext ctx,
@@ -612,10 +603,8 @@ final class QuicClusterServerInstance implements QuicClusterServer {
                 return;
             }
 
-            if (ctx.channel().isActive()) {
-                sendHelloResponse(ctx);
-                registerPeerConnection(ctx, hello);
-            }
+            sendHelloResponse(ctx);
+            registerPeerConnection(ctx, hello);
         }
 
         /// The registry cannot answer yet (ledger not loaded, not writable, or the node is wiped): close WITHOUT a

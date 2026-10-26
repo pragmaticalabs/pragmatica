@@ -62,23 +62,35 @@ class IdentityLedgerTest {
         final DurableWriter real = DurableWriter.fileOps();
         volatile CountDownLatch holdDirectoryForce = new CountDownLatch(0);
         final AtomicBoolean failWrites = new AtomicBoolean();
+        /// The file is written, then the force "fails": a temp file is left behind for the ledger to clean up.
+        final AtomicBoolean failAfterWriting = new AtomicBoolean();
+        final AtomicBoolean failMoves = new AtomicBoolean();
         final AtomicInteger writes = new AtomicInteger();
+        final AtomicInteger inFlight = new AtomicInteger();
+        final AtomicInteger maxInFlight = new AtomicInteger();
+        final List<Path[]> moves = Collections.synchronizedList(new ArrayList<>());
 
         @Override
         public Result<Unit> writeForced(Path file, byte[] content) {
             steps.add("F1");
             writes.incrementAndGet();
+            maxInFlight.accumulateAndGet(inFlight.incrementAndGet(), Math::max);
 
             return failWrites.get()
-                   ? DISK_FULL.result()
-                   : real.writeForced(file, content);
+                   ? ended(DISK_FULL.result())
+                   : failAfterWriting.get()
+                     ? ended(real.writeForced(file, content).flatMap(_ -> DISK_FULL.<Unit> result()))
+                     : real.writeForced(file, content);
         }
 
         @Override
         public Result<Unit> moveAtomic(Path source, Path target) {
             steps.add("F2");
+            moves.add(new Path[]{source, target});
 
-            return real.moveAtomic(source, target);
+            return failMoves.get()
+                   ? ended(DISK_FULL.result())
+                   : real.moveAtomic(source, target);
         }
 
         @Override
@@ -86,7 +98,13 @@ class IdentityLedgerTest {
             steps.add("F3");
             await(holdDirectoryForce);
 
-            return real.forceDirectory(dir);
+            return ended(real.forceDirectory(dir));
+        }
+
+        private Result<Unit> ended(Result<Unit> outcome) {
+            inFlight.decrementAndGet();
+
+            return outcome;
         }
 
         private static void await(CountDownLatch latch) {
@@ -213,6 +231,9 @@ class IdentityLedgerTest {
         var ledger = IdentityLedger.identityLedger(ledgerFile(), writer);
 
         ledger.open(true);
+        // The steps of the opening write are history: waiting for "F3" without clearing them returns before the first
+        // write below has even started, and the queued facts would then join it.
+        writer.steps.clear();
         writer.holdDirectoryForce = new CountDownLatch(1);
         writer.writes.set(0);
 
@@ -268,6 +289,184 @@ class IdentityLedgerTest {
 
         assertThat(loading.unwritable().isPresent()).isTrue();
         assertThat(ledger.durable()).isFalse();
+    }
+
+    @Test
+    void record_afterALoad_writesTheLoadedRetirementsToo() {
+        var first = IdentityLedger.identityLedger(ledgerFile(), DurableWriter.fileOps());
+
+        first.open(true);
+        first.record(IdentityFacts.terminated(node("a"), "TOKEN_CONFLICT")).await(BOUND);
+
+        var restarted = IdentityLedger.identityLedger(ledgerFile(), DurableWriter.fileOps());
+
+        restarted.open(false);
+        restarted.record(IdentityFacts.terminated(node("b"), "TOKEN_CONFLICT")).await(BOUND);
+
+        assertThat(restarted.facts().retired()).as("the loaded fact is still in the ledger's own state").containsExactlyInAnyOrder(node("a"), node("b"));
+        assertThat(IdentityLedger.identityLedger(ledgerFile(), DurableWriter.fileOps()).open(false).facts().retired())
+            .as("and in the file the next write produced")
+            .containsExactlyInAnyOrder(node("a"), node("b"));
+    }
+
+    @Test
+    void facts_afterARecord_holdTheRecordedRetirement() {
+        var ledger = IdentityLedger.identityLedger(ledgerFile(), DurableWriter.fileOps());
+
+        ledger.open(true);
+        ledger.record(IdentityFacts.terminated(node("a"), "TOKEN_CONFLICT")).await(BOUND);
+
+        assertThat(ledger.facts().retired()).containsExactly(node("a"));
+    }
+
+    @Test
+    void open_aLoadedLedger_onAnUnwritableDirectory_reportsItUnwritable_andIsNotDurable() {
+        var seeded = IdentityLedger.identityLedger(ledgerFile(), DurableWriter.fileOps());
+
+        seeded.open(true);
+        seeded.record(IdentityFacts.terminated(node("a"), "TOKEN_CONFLICT")).await(BOUND);
+
+        var writer = new RecordingWriter();
+        var restarted = IdentityLedger.identityLedger(ledgerFile(), writer);
+
+        writer.failWrites.set(true);
+        var loading = restarted.open(false);
+
+        assertThat(loading.origin()).as("the file still parses").isEqualTo(Origin.LOADED);
+        assertThat(loading.facts().isTerminated(node("a"))).isTrue();
+        assertThat(loading.unwritable().isPresent()).as("a read-only volume with an existing ledger is still unwritable").isTrue();
+        assertThat(restarted.durable()).isFalse();
+    }
+
+    @Test
+    void open_aLoadedLedger_onAWritableDirectory_isDurable_andLeavesNoProbeFile() throws Exception {
+        var seeded = IdentityLedger.identityLedger(ledgerFile(), DurableWriter.fileOps());
+
+        seeded.open(true);
+
+        var restarted = IdentityLedger.identityLedger(ledgerFile(), DurableWriter.fileOps());
+        var loading = restarted.open(false);
+
+        assertThat(loading.unwritable().isEmpty()).isTrue();
+        assertThat(restarted.durable()).isTrue();
+        assertThat(leftoverTempFiles()).isEmpty();
+    }
+
+    @Test
+    void open_aWipedLedger_isNotDurable_andLeavesNoProbeFile() throws Exception {
+        var ledger = IdentityLedger.identityLedger(ledgerFile(), DurableWriter.fileOps());
+        var loading = ledger.open(false);
+
+        assertThat(loading.origin()).isEqualTo(Origin.WIPED);
+        assertThat(ledger.durable()).as("a wiped node does not claim the protection").isFalse();
+        assertThat(leftoverTempFiles()).isEmpty();
+    }
+
+    @Test
+    void open_aWipedLedger_onAnUnwritableDirectory_reportsItUnwritable() {
+        var writer = new RecordingWriter();
+        var ledger = IdentityLedger.identityLedger(ledgerFile(), writer);
+
+        writer.failWrites.set(true);
+
+        assertThat(ledger.open(false).unwritable().isPresent()).isTrue();
+    }
+
+    @Test
+    void record_afterAFailedWrite_leavesNoTempFile() throws Exception {
+        var writer = new RecordingWriter();
+        var ledger = IdentityLedger.identityLedger(ledgerFile(), writer);
+
+        ledger.open(true);
+        writer.failAfterWriting.set(true);
+
+        assertThat(ledger.record(IdentityFacts.terminated(node("a"), "TOKEN_CONFLICT")).await(BOUND).isFailure()).isTrue();
+        assertThat(leftoverTempFiles()).isEmpty();
+    }
+
+    @Test
+    void record_afterAFailedRename_leavesNoTempFile() throws Exception {
+        var writer = new RecordingWriter();
+        var ledger = IdentityLedger.identityLedger(ledgerFile(), writer);
+
+        ledger.open(true);
+        writer.failMoves.set(true);
+
+        assertThat(ledger.record(IdentityFacts.terminated(node("a"), "TOKEN_CONFLICT")).await(BOUND).isFailure()).isTrue();
+        assertThat(leftoverTempFiles()).isEmpty();
+    }
+
+    @Test
+    void record_publishesFromASiblingOfTheLedger_soTheRenameStaysOnOneFileSystem() {
+        var writer = new RecordingWriter();
+        var ledger = IdentityLedger.identityLedger(ledgerFile(), writer);
+
+        ledger.open(true);
+        writer.moves.clear();
+        ledger.record(IdentityFacts.terminated(node("a"), "TOKEN_CONFLICT")).await(BOUND);
+
+        assertThat(writer.moves).hasSize(1);
+        assertThat(writer.moves.get(0)[0].getParent()).isEqualTo(ledgerFile().getParent());
+        assertThat(writer.moves.get(0)[1]).isEqualTo(ledgerFile());
+    }
+
+    @Test
+    void record_whenTheWriteFails_carriesTheFileSystemCauseAsTheOrigin() {
+        var writer = new RecordingWriter();
+        var ledger = IdentityLedger.identityLedger(ledgerFile(), writer);
+
+        ledger.open(true);
+        writer.failWrites.set(true);
+
+        ledger.record(IdentityFacts.terminated(node("a"), "TOKEN_CONFLICT"))
+              .await(BOUND)
+              .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("the write was made to fail"))
+              .onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(IdentityLedger.WriteFailed.class,
+                                                                           failed -> assertThat(failed.origin()).isSameAs(DISK_FULL)));
+    }
+
+    /// One writer thread publishes a snapshot at a time: two writers could publish an older snapshot last.
+    @Test
+    void record_fromManyThreads_neverRunsTwoWritesAtOnce() throws Exception {
+        var writer = new RecordingWriter();
+        var ledger = IdentityLedger.identityLedger(ledgerFile(), writer);
+
+        ledger.open(true);
+        writer.steps.clear();
+        writer.holdDirectoryForce = new CountDownLatch(1);
+
+        var first = ledger.record(IdentityFacts.terminated(node("n0"), "TOKEN_CONFLICT"));
+
+        awaitStep(writer, "F3");
+
+        var pending = Collections.synchronizedList(new ArrayList<org.pragmatica.lang.Promise<Unit>>());
+        var threads = new ArrayList<Thread>();
+
+        for (var i = 1; i <= 4; i++) {
+            var id = "n" + i;
+            var thread = Thread.ofPlatform().start(() -> pending.add(ledger.record(IdentityFacts.terminated(node(id), "TOKEN_CONFLICT"))));
+
+            threads.add(thread);
+        }
+        for (var thread : threads) {
+            thread.join();
+        }
+        Thread.sleep(300);
+        writer.holdDirectoryForce.countDown();
+        first.await(BOUND);
+        pending.forEach(each -> each.await(BOUND));
+
+        assertThat(writer.maxInFlight.get()).as("writes in flight at once").isEqualTo(1);
+        assertThat(IdentityLedger.identityLedger(ledgerFile(), DurableWriter.fileOps()).open(false).facts().retired()).hasSize(5);
+    }
+
+    private List<String> leftoverTempFiles() throws Exception {
+        if (!Files.isDirectory(ledgerFile().getParent())) {
+            return List.of();
+        }
+        try (var entries = Files.list(ledgerFile().getParent())) {
+            return entries.map(path -> path.getFileName().toString()).filter(name -> name.endsWith(".tmp")).toList();
+        }
     }
 
     private static void awaitStep(RecordingWriter writer, String step) throws InterruptedException {

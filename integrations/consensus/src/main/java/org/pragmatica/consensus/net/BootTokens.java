@@ -79,6 +79,11 @@ public interface BootTokens {
     /// retirement is durable in the identity ledger (write-ahead, #2429). Never blocks the caller; completes at once for
     /// every other presentation.
     Promise<Admission> admitDurably(NodeId peer, long token);
+    /// Completes once the retirement of `peer` is durable (or its write has failed: the retirement stands and is announced
+    /// all the same, see the registry's conflict handling). Completes at once for a NodeId whose retirement needs no write
+    /// of its own: one loaded from the ledger at boot, one merged from a peer, or any NodeId on a node without a ledger.
+    /// A caller that answers a refusal to the process itself waits on this, so the answer never precedes the disk (#2429).
+    Promise<Unit> retirementDurable(NodeId peer);
     /// Attach this node's identity ledger. From here on the registry answers [Admission#UNAVAILABLE] until
     /// [#preload] has loaded the ledger's facts: it fails closed, never open.
     Unit attachLedger(IdentityLedger ledger);
@@ -111,7 +116,8 @@ public interface BootTokens {
                         AtomicBoolean refusedSelf,
                         AtomicReference<Option<IdentityLedger>> ledger,
                         AtomicBoolean ready,
-                        AtomicBoolean wiped) implements BootTokens {
+                        AtomicBoolean wiped,
+                        Map<NodeId, Promise<Unit>> writes) implements BootTokens {
             @Override
             public Admission admit(NodeId peer, long token) {
                 var screened = screen(peer, token);
@@ -170,20 +176,34 @@ public interface BootTokens {
             /// Write-ahead: the retirement stands in memory at once (every later piece of evidence is refused), but it is
             /// announced, and this caller answered, only after the ledger holds it.
             private Promise<Admission> conflict(NodeId peer) {
-                if (!retired.add(peer)) {
+                var write = Promise.<Unit> promise();
+                // The entry is published BEFORE the NodeId counts as retired, so a thread that sees the retirement can always
+                // find the write it has to wait for ([#retirementDurable]).
+                if (writes.putIfAbsent(peer, write) != null || !retired.add(peer)) {
                     return Promise.success(refused(Admission.RETIRED));
                 }
                 // FER: the retirement already stands in memory and is announced even when its ledger write fails; what is
                 // lost is protection across a restart of every holder, reported through the ledger's durability listener.
                 return ledger.get()
-                             .fold(() -> Promise.success(announceRetirement(peer)),
-                                   held -> retireDurably(held, peer));
+                             .fold(() -> settled(write).map(_ -> announceRetirement(peer)),
+                                   held -> retireDurably(held, peer, write));
             }
 
-            private Promise<Admission> retireDurably(IdentityLedger held, NodeId peer) {
+            private Promise<Unit> settled(Promise<Unit> write) {
+                return write.succeed(Unit.unit());
+            }
+
+            private Promise<Admission> retireDurably(IdentityLedger held, NodeId peer, Promise<Unit> write) {
                 return held.record(IdentityFacts.terminated(peer, TOKEN_CONFLICT))
                            .recover(_ -> Unit.unit())
+                           .flatMap(_ -> settled(write))
                            .map(_ -> announceRetirement(peer));
+            }
+
+            @Override
+            public Promise<Unit> retirementDurable(NodeId peer) {
+                return Option.option(writes.get(peer))
+                             .or(() -> Promise.success(Unit.unit()));
             }
 
             private Admission announceRetirement(NodeId peer) {
@@ -290,6 +310,7 @@ public interface BootTokens {
                             new AtomicBoolean(),
                             new AtomicReference<>(Option.none()),
                             new AtomicBoolean(true),
-                            new AtomicBoolean());
+                            new AtomicBoolean(),
+                            new ConcurrentHashMap<>());
     }
 }

@@ -149,17 +149,24 @@ public interface IdentityLedger {
 
             loaded.onPresent(this::adopt);
 
-            return loaded.map(facts -> new Loading(facts,
-                                                   Origin.LOADED,
-                                                   Option.none()))
+            return loaded.map(this::loadedLedger)
                          .or(() -> settleMissing(createdNow));
         }
 
+        /// A ledger that parsed can still sit on a directory that is no longer writable (a volume remounted read-only before
+        /// a restart): writability is probed on every boot, and the durability flag starts from that probe.
+        private Loading loadedLedger(IdentityFacts facts) {
+            var cause = causeOf(probeWritable());
+
+            durableFlag.set(cause.isEmpty());
+
+            return new Loading(facts, Origin.LOADED, cause);
+        }
+
         private Loading settleMissing(boolean createdNow) {
-            var unwritable = createdNow
-                             ? writeCurrent()
-                             : probeWritable();
-            var cause = unwritable.fold(Option::<Cause> some, _ -> Option.<Cause> none());
+            var cause = causeOf(createdNow
+                                ? writeCurrent()
+                                : probeWritable());
 
             durableFlag.set(createdNow && cause.isEmpty());
 
@@ -168,6 +175,10 @@ public interface IdentityLedger {
                                ? Origin.CREATED
                                : Origin.WIPED,
                                cause);
+        }
+
+        private static Option<Cause> causeOf(Result<Unit> outcome) {
+            return outcome.fold(Option::<Cause> some, _ -> Option.<Cause> none());
         }
 
         /// A WIPED ledger must stay unwritten until a merge completes, so writability is probed with a throwaway file.

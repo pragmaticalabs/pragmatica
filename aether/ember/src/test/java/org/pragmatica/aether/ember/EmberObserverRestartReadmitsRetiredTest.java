@@ -12,7 +12,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// #2429 — a restarted observer still refuses what it retired before the restart. The boot-token registry used to be
 /// process memory (nothing survived a restart, the first token seen won again), so an observer restarted after every other
-/// holder of a retirement was gone admitted a process for a NodeId it had retired (found by the MS-0a experiment; this
+/// holder of a retirement was gone admitted a process for a NodeId it had retired (found by the experiment of #2428; this
 /// class was its flip). The retirement now rests in the observer's identity ledger, loaded before admission opens.
 ///
 /// The sequence, three cores `obs-1` (A), `obs-2` (B, the observer) and `obs-3` (X):

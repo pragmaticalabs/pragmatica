@@ -15,11 +15,14 @@
  */
 package org.pragmatica.consensus.net;
 
+import java.util.Map;
 import java.util.Random;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -27,6 +30,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// form reads back whole or not at all.
 class IdentityFactsTest {
     private static final int TRIALS = 200;
+    private static final String GOLDEN_TWO_FACTS = "aether-identity-ledger-v1\n"
+                                                   + "T\tnode+b\tx+y\n"
+                                                   + "T\tnode-a\tTOKEN_CONFLICT\n"
+                                                   + "D\te6e8012919992a3c3508e4ec6503b9c55de6299b4c82f72ca90266265d291ec1\n";
 
     private static NodeId node(String id) {
         return new NodeId(id);
@@ -70,10 +77,52 @@ class IdentityFactsTest {
 
     @Test
     void parse_rejectsAFactOfAnUnknownKind_evenWithAValidDigest() {
-        var body = "aether-identity-ledger-v1\nB\tember-1\t42\n";
-        var digest = IdentityFacts.identityFacts().render().lines().reduce((first, second) -> second).orElse("");
+        assertThat(IdentityFacts.parse(withValidDigest("B\tember-1\t42")).isFailure()).isTrue();
+        assertThat(IdentityFacts.parse(withValidDigest("X\tember-1\tTOKEN_CONFLICT")).isFailure())
+            .as("a future three-field kind is not read as a retirement")
+            .isTrue();
+    }
 
-        assertThat(IdentityFacts.parse(body + digest + "\n").isFailure()).isTrue();
+    @Test
+    void parse_rejectsARetirementWithAnExtraField_evenWithAValidDigest() {
+        assertThat(IdentityFacts.parse(withValidDigest("T\tember-1\tTOKEN_CONFLICT\textra")).isFailure()).isTrue();
+        assertThat(IdentityFacts.parse(withValidDigest("T\tember-1\tTOKEN_CONFLICT")).isSuccess()).as("control").isTrue();
+    }
+
+    /// The `aether-identity-ledger-v1` format, byte for byte: a ledger written by one version must be read by the next, or
+    /// every node would read its own file as lost after an upgrade.
+    @Test
+    void render_ofATwoFactLedger_isTheV1FormatByteForByte() {
+        var facts = IdentityFacts.terminated(node("node-a"), "TOKEN_CONFLICT").merge(IdentityFacts.terminated(node("node b"), "x y"));
+
+        assertThat(facts.render()).isEqualTo(GOLDEN_TWO_FACTS);
+    }
+
+    @Test
+    void parse_ofTheV1GoldenBytes_yieldsTheTwoFacts() {
+        IdentityFacts.parse(GOLDEN_TWO_FACTS)
+                     .onFailure(cause -> Assertions.fail(cause.message()))
+                     .onSuccess(parsed -> assertThat(parsed.terminated()).containsOnly(Map.entry(node("node-a"), "TOKEN_CONFLICT"),
+                                                                                       Map.entry(node("node b"), "x y")));
+    }
+
+    @Test
+    void render_parse_keepsAnEmptyCause() {
+        IdentityFacts.parse(IdentityFacts.terminated(node("a"), "").render())
+                     .onFailure(cause -> Assertions.fail(cause.message()))
+                     .onSuccess(parsed -> assertThat(parsed.terminated()).containsOnly(Map.entry(node("a"), "")));
+    }
+
+    @Test
+    void facts_doNotChange_whenTheMapTheyWereBuiltFromChanges() {
+        var source = new java.util.HashMap<NodeId, String>();
+
+        source.put(node("a"), "TOKEN_CONFLICT");
+        var facts = new IdentityFacts(source);
+
+        source.put(node("b"), "TOKEN_CONFLICT");
+
+        assertThat(facts.retired()).containsExactly(node("a"));
     }
 
     @Test
@@ -123,5 +172,18 @@ class IdentityFactsTest {
         }
 
         return facts;
+    }
+
+    /// A ledger body with the given fact lines and a correct digest, so only the line under test can make it malformed.
+    private static String withValidDigest(String... factLines) {
+        var body = "aether-identity-ledger-v1\n" + String.join("", java.util.Arrays.stream(factLines).map(line -> line + "\n").toList());
+
+        return body + "D\t" + sha256(body) + "\n";
+    }
+
+    private static String sha256(String body) {
+        return Result.lift(Causes::fromThrowable, () -> java.security.MessageDigest.getInstance("SHA-256").digest(body.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                     .map(java.util.HexFormat.of()::formatHex)
+                     .or("");
     }
 }

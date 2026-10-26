@@ -17,7 +17,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 ///   restarted cores admit a process for the retired NodeId. The cluster that forms is new; there are no identities left to
 ///   protect, which is also how a cluster behaved before the ledger existed.
 /// - **One holder's ledger FILE is lost while its directory stays**: the node is not new and its facts are gone, so it is
-///   WIPED. It admits no new peer (it cannot tell which NodeIds it retired), and it does so quietly: the process that arrives
+///   WIPED. It admits no peer (after a restart every peer is new to it, so it is isolated until the merge at join exists), and it does so quietly: the process that arrives
 ///   is not told its identity is retired (that would make it exit), its connection is closed and it keeps redialing.
 ///   Recovering the fact from a peer is the merge at join, which is not part of this change: that arm is disabled below.
 @PortBudget
@@ -38,9 +38,14 @@ class EmberLedgerLostTest {
         harness.deleteLedgerDirectory(harness.coreA);
         harness.deleteLedgerDirectory(harness.observer);
 
-        harness.relaunch(harness.coreA);
+        var restartedA = harness.relaunch(harness.coreA);
         var restartedB = harness.relaunch(harness.observer);
-        var verdict = harness.launchRetiredNodeId(restartedB);
+
+        IdentityRestartHarness.awaitCondition("the restarted holders link to each other",
+                                              () -> restartedA.connectedNodeCount() >= 1 && restartedB.connectedNodeCount() >= 1,
+                                              120_000L);
+
+        var verdict = harness.launchRetiredNodeIdAmong(restartedB, 1);
 
         assertThat(verdict.processExited()).as("nothing remembers the retirement: the process stays up").isFalse();
         assertThat(verdict.linked()).as("and the restarted holder links to it").isTrue();
@@ -64,7 +69,7 @@ class EmberLedgerLostTest {
         assertThat(verdict.refusalsAdded()).as("an unavailable registry is not a refusal").isZero();
     }
 
-    @Disabled("enable with the merge at join (ID-1c): a wiped holder regains the retirement from a peer's ledger, then refuses the retired NodeId")
+    @Disabled("enable with the merge of ledgers at join (follow-up of #2429): a wiped holder regains the retirement from a peer's ledger, then refuses the retired NodeId")
     @Test
     @Timeout(1200)
     void oneHoldersLedgerFileLost_regainsTheRetirementFromAPeer_thenRefuses() {

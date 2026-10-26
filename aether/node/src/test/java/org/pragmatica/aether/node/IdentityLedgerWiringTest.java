@@ -41,8 +41,9 @@ class IdentityLedgerWiringTest {
     private final List<OperatorWarning> events = Collections.synchronizedList(new ArrayList<>());
     private final OperatorWarningSink sink = OperatorWarningSink.handingOffTo(events::add);
 
+    /// A disk path the operator wrote.
     private Map<String, StorageConfig> storageAt(Path diskPath) {
-        return Map.of("artifacts", withDiskPath(diskPath));
+        return Map.of("artifacts", withDiskPath(diskPath).withDiskPathExplicit());
     }
 
     private static StorageConfig withDiskPath(Path diskPath) {
@@ -89,7 +90,22 @@ class IdentityLedgerWiringTest {
         var location = IdentityLedgerWiring.location(SELF, Option.none(), storageAt(directory.resolve("data").resolve("storage")));
 
         assertThat(location.file()).isEqualTo(directory.resolve("data").resolve("identity").resolve("n1").resolve("ledger"));
-        assertThat(location.stated()).as("a disk_path that differs from the built-in default was set by the operator").isTrue();
+        assertThat(location.stated()).as("a disk_path the operator wrote").isTrue();
+    }
+
+    @Test
+    void location_aDiskPathNotWrittenByTheOperator_isNotStated_evenWhenItDiffersFromTheDefault() {
+        var location = IdentityLedgerWiring.location(SELF, Option.none(), Map.of("artifacts", withDiskPath(directory.resolve("derived"))));
+
+        assertThat(location.stated()).as("provenance decides, not the value").isFalse();
+    }
+
+    @Test
+    void location_theDefaultPathWrittenExplicitly_isStated() {
+        var written = StorageConfig.storageConfig().withDiskPathExplicit();
+        var location = IdentityLedgerWiring.location(SELF, Option.none(), Map.of("artifacts", written));
+
+        assertThat(location.stated()).as("an explicitly written default path also refuses when unusable").isTrue();
     }
 
     @Test
@@ -130,10 +146,67 @@ class IdentityLedgerWiringTest {
         verdict.onFailure(cause -> assertThat(cause.message()).contains(location.file().toString()).contains("disk_path"));
     }
 
+    /// A volume remounted read-only before a restart: the ledger file is there and parses, the directory no longer takes writes.
+    @Test
+    void verifyBootable_aStatedLocationWhoseLedgerExistsButWhoseDirectoryIsReadOnly_fails() throws Exception {
+        var location = new IdentityLedgerWiring.Location(directory.resolve("id").resolve("ledger"), true);
+
+        assertThat(IdentityLedgerWiring.verifyBootable(location).isSuccess()).as("control: the first boot creates the ledger").isTrue();
+        var ledgerDirectory = directory.resolve("id").toFile();
+
+        ledgerDirectory.setWritable(false);
+        try {
+            org.junit.jupiter.api.Assumptions.assumeFalse(Files.isWritable(ledgerDirectory.toPath()), "running as a user the permission does not bind");
+
+            assertThat(IdentityLedgerWiring.verifyBootable(location).isFailure()).as("the ledger exists, the directory is read-only").isTrue();
+        } finally {
+            ledgerDirectory.setWritable(true);
+        }
+    }
+
+    @Test
+    void wire_aLoadedLedgerOnAnUnwritableDirectory_raisesNotDurable_andTheGaugeReadsZero() throws Exception {
+        var location = new IdentityLedgerWiring.Location(directory.resolve("id").resolve("ledger"), false);
+
+        IdentityLedgerWiring.wire(location, SELF, BootTokens.bootTokens(1L), sink);
+        var ledgerDirectory = directory.resolve("id").toFile();
+        var tokens = BootTokens.bootTokens(2L);
+
+        ledgerDirectory.setWritable(false);
+        try {
+            org.junit.jupiter.api.Assumptions.assumeFalse(Files.isWritable(ledgerDirectory.toPath()), "running as a user the permission does not bind");
+
+            IdentityLedgerWiring.wire(location, SELF, tokens, sink);
+
+            assertThat(tokens.ledgerDurable()).as("durable follows the writability probe, not the parse").isFalse();
+            await("the not-durable event", () -> raised(OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE));
+        } finally {
+            ledgerDirectory.setWritable(true);
+        }
+    }
+
     @Test
     void verifyBootable_aStatedLocationThatCanBeWritten_passes() {
         assertThat(IdentityLedgerWiring.verifyBootable(new IdentityLedgerWiring.Location(directory.resolve("id").resolve("ledger"), true)).isSuccess())
             .isTrue();
+    }
+
+    @Test
+    void verifyBootable_aStatedLocationOnANewNode_createsTheLedger_asBootWould() {
+        var location = new IdentityLedgerWiring.Location(directory.resolve("fresh").resolve("ledger"), true);
+
+        assertThat(IdentityLedgerWiring.verifyBootable(location).isSuccess()).isTrue();
+        assertThat(Files.isRegularFile(location.file())).as("a directory that did not exist is a node being created: CREATED, written empty").isTrue();
+    }
+
+    @Test
+    void verifyBootable_aStatedLocationWhoseLedgerFileIsMissing_leavesItMissing_theNodeIsWipedNotCreated() throws Exception {
+        var location = new IdentityLedgerWiring.Location(directory.resolve("existing").resolve("ledger"), true);
+
+        Files.createDirectories(location.file().getParent());
+
+        assertThat(IdentityLedgerWiring.verifyBootable(location).isSuccess()).isTrue();
+        assertThat(Files.exists(location.file())).as("a wiped ledger stays unwritten; the gate only probes").isFalse();
     }
 
     @Test
@@ -203,6 +276,12 @@ class IdentityLedgerWiringTest {
         await("the wiped event", () -> raised(OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE));
         assertThat(tokens.admit(PEER_A, 10L)).isEqualTo(Admission.UNAVAILABLE);
         assertThat(Files.exists(location.file())).as("not rewritten empty").isFalse();
+        assertThat(tokens.ledgerDurable()).as("a wiped node does not claim the protection: the gauge reads 0").isFalse();
+        assertThat(events).singleElement().satisfies(event -> {
+            assertThat(event.code()).isEqualTo(OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE);
+            assertThat(event.subject()).as("the node's own id").isEqualTo(SELF.id());
+            assertThat(event.message()).as("isolation, and the remedy that is safe").contains("ISOLATED").contains("NEW node id");
+        });
     }
 
     @Test
@@ -228,6 +307,9 @@ class IdentityLedgerWiringTest {
         assertThat(tokens.admitDurably(PEER_B, 21L).await(BOUND).unwrap()).isEqualTo(Admission.CONFLICT);
         await("the recovery event", () -> raised(OperatorWarningCode.IDENTITY_LEDGER_DURABLE));
         assertThat(tokens.ledgerDurable()).isTrue();
+        synchronized (events) {
+            assertThat(events).as("both transitions are about this node").allSatisfy(event -> assertThat(event.subject()).isEqualTo(SELF.id()));
+        }
     }
 
     private static String readFile(Path file) {

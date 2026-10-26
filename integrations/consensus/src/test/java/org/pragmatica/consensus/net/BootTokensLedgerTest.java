@@ -251,6 +251,49 @@ class BootTokensLedgerTest {
         assertThat(boot(DurableWriter.fileOps(), false).isRetired(new NodeId("gone"))).as("and written, so a restart is not wiped again").isTrue();
     }
 
+    /// SWIM answers a refused announcer only after this completes (write-ahead): it must stay open for as long as the write is.
+    @Test
+    void retirementDurable_stayOpenWhileTheRetirementIsBeingWritten_andCompletesWhenItIsDurable() {
+        var writer = new GatedWriter();
+        var registry = boot(writer, true);
+
+        registry.admit(PEER, FIRST);
+        writer.gate = new CountDownLatch(1);
+        registry.admit(PEER, OTHER);
+
+        assertThat(registry.isRetired(PEER)).as("retired in memory at once").isTrue();
+        assertThat(registry.retirementDurable(PEER).isResolved()).as("but not yet durable").isFalse();
+
+        writer.gate.countDown();
+
+        assertThat(registry.retirementDurable(PEER).await(BOUND).isSuccess()).isTrue();
+    }
+
+    @Test
+    void retirementDurable_ofAnIdThatNeededNoWrite_completesAtOnce() {
+        var registry = boot();
+
+        assertThat(registry.retirementDurable(PEER).isResolved()).as("never retired").isTrue();
+
+        var restarted = boot(DurableWriter.fileOps(), false);
+
+        restarted.admit(PEER, FIRST);
+        assertThat(restarted.retirementDurable(PEER).isResolved()).isTrue();
+    }
+
+    @Test
+    void retirementDurable_whenTheWriteFails_stillCompletes_theRetirementStandsAndIsAnnounced() {
+        var writer = new GatedWriter();
+        var registry = boot(writer, true);
+
+        registry.admit(PEER, FIRST);
+        writer.failing.set(true);
+        registry.admitDurably(PEER, OTHER).await(BOUND);
+
+        assertThat(registry.retirementDurable(PEER).await(BOUND).isSuccess()).isTrue();
+        assertThat(registry.isRetired(PEER)).isTrue();
+    }
+
     @Test
     void admit_tokenZero_isStillAdmitted_andRecordsNothing() {
         var registry = boot();
