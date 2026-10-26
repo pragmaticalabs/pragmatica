@@ -92,7 +92,7 @@ public final class AccessTracker {
         return ! seen.containsKey(lifecycle.blockId()) && lifecycle.createdAt() < bootedAt;
     }
 
-    /// Whether demotion ranks this block last now: its access is unknown and the warm-up window is open.
+    /// Whether demotion holds this block back now (ranks it among the unknown ones): its access is unknown and the warm-up window is open.
     public boolean isHeldBack(BlockLifecycle lifecycle) {
         return isUnknown(lifecycle) && (monotonicNanos.getAsLong() - bootedAtNanos) / NANOS_PER_MILLI < warmUpMs;
     }

@@ -216,19 +216,20 @@ final class DefaultDemotionManager implements DemotionManager {
                          .toList();
     }
 
-    /// Candidates are only selected for a tier above its high watermark, so a block whose access is unknown is
-    /// still eligible: pressure overrides the hold-back. The hold-back only orders them -- after every block
-    /// whose reads are known, oldest-created first among themselves -- so the working set a restart forgot
-    /// is the last thing demoted, and nothing is demoted in a different order than it was created for want of reads.
+    /// Candidates are only selected for a tier above its high watermark (see [#demoteTier]), so a block whose
+    /// access is unknown is still eligible: pressure overrides the hold-back. The hold-back only orders them --
+    /// before every block whose reads are known, oldest-created first among themselves. A block read since boot
+    /// is proven active inside the window, an unknown one is colder evidence, so the unknown ones go first and the
+    /// blocks read since boot keep the order the strategy gives them.
     private static Comparator<BlockLifecycle> rankingFor(Set<BlockId> heldBack, Comparator<BlockLifecycle> byStrategy) {
         Comparator<BlockLifecycle> byCreation = Comparator.comparingLong(BlockLifecycle::createdAt);
-        Comparator<BlockLifecycle> heldBackLast = Comparator.comparingInt(lc -> heldBack.contains(lc.blockId())
-                                                                                ? 1
-                                                                                : 0);
+        Comparator<BlockLifecycle> heldBackFirst = Comparator.comparingInt(lc -> heldBack.contains(lc.blockId())
+                                                                                 ? 0
+                                                                                 : 1);
 
-        return heldBackLast.thenComparing((a, b) -> heldBack.contains(a.blockId())
-                                                    ? byCreation.compare(a, b)
-                                                    : byStrategy.compare(a, b));
+        return heldBackFirst.thenComparing((a, b) -> heldBack.contains(a.blockId())
+                                                     ? byCreation.compare(a, b)
+                                                     : byStrategy.compare(a, b));
     }
 
     /// Whether the strategy ranks by reads. AGE ranks by creation alone, so it has no use for access and an
