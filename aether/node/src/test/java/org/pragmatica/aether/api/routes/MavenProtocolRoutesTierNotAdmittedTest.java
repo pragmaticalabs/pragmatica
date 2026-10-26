@@ -78,6 +78,7 @@ class MavenProtocolRoutesTierNotAdmittedTest {
         routes.handle(getRequest(), response);
 
         assertThat(response.awaitStatus()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(response.body()).as("problem body names the request path and id").contains("\"instance\":\"" + GET_PATH + "\"").contains("req_test");
     }
 
     @Test
@@ -180,6 +181,11 @@ class MavenProtocolRoutesTierNotAdmittedTest {
         private final java.util.concurrent.CountDownLatch written = new java.util.concurrent.CountDownLatch(1);
         private final Map<String, String> headers = new LinkedHashMap<>();
         private volatile HttpStatus status;
+        private volatile String body = "";
+
+        String body() {
+            return body;
+        }
 
         HttpStatus awaitStatus() {
             try {
@@ -197,6 +203,7 @@ class MavenProtocolRoutesTierNotAdmittedTest {
 
         @Override
         public void write(HttpStatus status, byte[] body, ContentType contentType) {
+            this.body = new String(body, java.nio.charset.StandardCharsets.UTF_8);
             this.status = status;
             written.countDown();
         }
