@@ -1409,6 +1409,40 @@ class AppHttpServerIngestGateTest {
         byteBudget_refuses503OnTheHead_raisesOneEventPerEpisode(Protocol.H3);
     }
 
+    /// What an upload reserves from the budget: its `Content-Length` (never more than the route's limit), the route's limit
+    /// when it declares none (chunked), nothing for an empty body. The test holds part of a 150 MiB budget itself.
+    private void byteBudget_reservesTheDeclaredLength_theRouteLimitWhenUndeclared_nothingForAnEmptyBody(Protocol protocol) throws Exception {
+        start(protocol, defaults().withMaxInFlightBytes(150L * MIB), 10 * MIB);
+        var client = client(protocol);
+        var held = uploadAdmissionOf().tryAcquire("someone", 60L * MIB).unwrap();
+
+        assertThat(client.post("/api/upload/", Option.some(KEY_A), 1024, Mode.DECLARED).status()).as("1 KiB of the 90 MiB left").isEqualTo(200);
+        assertThat(client.post("/api/upload/", Option.some(KEY_A), 0, Mode.DECLARED).status()).as("an empty body").isEqualTo(200);
+        assertThat(client.post("/api/upload/", Option.some(KEY_A), 1024, Mode.UNDECLARED).status())
+            .as("chunked: the route's 100 MiB is reserved, 60 + 100 passes 150").isEqualTo(503);
+        assertThat(client.postDeclaredOnly("/api/upload/", KEY_A, 1024L * MIB).status())
+            .as("1 GiB declared on a 100 MiB route reserves 100 MiB: 60 + 100 passes 150").isEqualTo(503);
+        held.run();
+
+        var fortyMiB = uploadAdmissionOf().tryAcquire("someone", 40L * MIB).unwrap();
+
+        assertThat(client.postDeclaredOnly("/api/upload/", KEY_A, 1024L * MIB).status())
+            .as("40 + 100 fits 150, so the answer is the size refusal, and not the budget's").isEqualTo(413);
+        assertThat(uploadAdmissionOf().reservedBytes()).as("the refusal returned its bytes; the held ones remain").isEqualTo(40L * MIB);
+        fortyMiB.run();
+        assertThat(uploadAdmissionOf().reservedBytes()).isZero();
+    }
+
+    @Test
+    void byteBudget_reservesTheDeclaredLength_theRouteLimitWhenUndeclared_nothingForAnEmptyBody_overHttp1() throws Exception {
+        byteBudget_reservesTheDeclaredLength_theRouteLimitWhenUndeclared_nothingForAnEmptyBody(Protocol.H1);
+    }
+
+    @Test
+    void byteBudget_reservesTheDeclaredLength_theRouteLimitWhenUndeclared_nothingForAnEmptyBody_overHttp3() throws Exception {
+        byteBudget_reservesTheDeclaredLength_theRouteLimitWhenUndeclared_nothingForAnEmptyBody(Protocol.H3);
+    }
+
     @Test
     void byteBudget_answersWithRetryAfter_overHttp1() throws Exception {
         start(Protocol.H1, defaults().withMaxInFlightBytes(20), 10 * MIB);

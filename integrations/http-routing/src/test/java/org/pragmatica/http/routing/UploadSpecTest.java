@@ -220,6 +220,39 @@ class UploadSpecTest {
     }
 
     @Test
+    void partBreach_aContentTypeThatIsNotMultipart_isNeverScanned_evenWithABoundary() {
+        var spec = parts(1, 1, 1, 1);
+
+        assertThat(spec.partBreach(body(file(10), file(10)), "text/plain; boundary=XB").isPresent()).isFalse();
+        assertThat(spec.partBreach(body(file(10), file(10)), "multipart/mixed; boundary=XB").isPresent()).isFalse();
+    }
+
+    @Test
+    void partBreach_aRouteWithNoPartLimits_scansNothing() {
+        var many = java.util.stream.IntStream.range(0, 300).mapToObj(_ -> field("a", "1")).toArray(String[]::new);
+
+        assertThat(UploadSpec.uploadSpec(true, 0, 0).partBreach(body(many), CONTENT_TYPE).isPresent())
+            .as("300 parts is over the decoder's cap, but only a route that declares part limits is checked").isFalse();
+    }
+
+    @Test
+    void partBreach_aFilenameStarPart_isAFile() {
+        var star = "--XB\r\nContent-Disposition: form-data; name=\"f\"; filename*=UTF-8''a.bin\r\n\r\nx\r\n";
+
+        assertThat(breachOf(parts(1, 0, 0, 0), body(star, star))).isEqualTo("Multipart body has more than 1 files");
+        assertThat(breachOf(parts(0, 0, 1, 0), body(star, star))).as("and not a field").isEmpty();
+    }
+
+    @Test
+    void partBreach_anEmptyPartWithNoLineBreakBeforeTheNextDelimiter_isStillCounted() {
+        var bare = "--XB\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n";
+
+        assertThat(breachOf(parts(0, 0, 1, 0), body(bare, field("b", ""))))
+            .as("the delimiter right after the header block is a delimiter: two fields").isEqualTo("Multipart body has more than 1 fields");
+        assertThat(breachOf(parts(0, 0, 2, 0), body(bare, bare, bare))).isEqualTo("Multipart body has more than 2 fields");
+    }
+
+    @Test
     void stricter_takesTheSmallerDeclaredPartLimit_andZeroNeverRelaxes() {
         var left = parts(2, 0, 10, 100);
         var right = parts(5, 50, 0, 40);

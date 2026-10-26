@@ -101,4 +101,19 @@ class UploadConfigTest {
     void defaultBounds_pass_validation() {
         assertThat(ConfigValidator.validate(load("")).isSuccess()).isTrue();
     }
+
+    @Test
+    void everyWith_changesItsOwnField_andKeepsTheOthers() {
+        var base = UploadConfig.DEFAULT.withMaxInFlightBytes(7_000);
+
+        assertThat(base.withMaxConcurrent(2).maxInFlightBytes()).isEqualTo(7_000);
+        assertThat(base.withMaxConcurrentPerPrincipal(2).maxInFlightBytes()).isEqualTo(7_000);
+        assertThat(base.withMaxSizeCeiling(2).maxInFlightBytes()).isEqualTo(7_000);
+        assertThat(base.withIdleTimeout(base.idleTimeout()).maxInFlightBytes()).isEqualTo(7_000);
+        assertThat(base.withMinBodyRate(2).maxInFlightBytes()).isEqualTo(7_000);
+        assertThat(base.withMaxInFlightBytes(9).maxSizeCeiling()).isEqualTo(UploadConfig.DEFAULT_MAX_SIZE_CEILING);
+        assertThat(base.withMaxInFlightBytes(9).maxConcurrent()).isEqualTo(UploadConfig.DEFAULT_MAX_CONCURRENT);
+        assertThat(base.withMaxInFlightBytes(9).minBodyRate()).isEqualTo(UploadConfig.DEFAULT_MIN_BODY_RATE);
+        assertThat(base.withMaxInFlightBytes(9).maxInFlightBytes()).isEqualTo(9);
+    }
 }
