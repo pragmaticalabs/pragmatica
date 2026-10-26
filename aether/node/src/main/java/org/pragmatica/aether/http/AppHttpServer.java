@@ -86,6 +86,8 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.parse.Number;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.utility.warning.OperatorWarningCode;
@@ -316,6 +318,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     private final AppHttpContext context;
     private final TimeSpan requestBudget;
     private final UploadAdmission uploadAdmission;
+    private volatile PartLimitExecutor partLimitExecutor = PartLimitExecutor.partLimitExecutor();
 
     private final AtomicReference<OperatorWarningSink> warningSink = new AtomicReference<>(OperatorWarningSink.logOnly());
 
@@ -380,7 +383,9 @@ class AppHttpServerAdapter implements AppHttpServer {
         this.requestBudget = forwardingTimeouts.requestBudget();
         this.uploadAdmission = UploadAdmission.uploadAdmission(config.upload(),
                                                                this::uploadNodeCapSaturated,
-                                                               this::uploadNodeCapRestored);
+                                                               this::uploadNodeCapRestored,
+                                                               this::uploadByteBudgetExhausted,
+                                                               this::uploadByteBudgetRestored);
     }
 
     private record FsmAndContext(Fsm<AppHttpState, ClusterFsmEvent> fsm, AppHttpContext context) {}
@@ -542,6 +547,17 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                           cause.message()));
     }
 
+    /// Test seam: replaces the part-limit executor, so a test can make it small enough to fill.
+    @Contract
+    void usePartLimitExecutorForTest(PartLimitExecutor executor) {
+        partLimitExecutor = executor;
+    }
+
+    /// Test seam: the node's upload admission, to read its counts.
+    UploadAdmission uploadAdmissionForTest() {
+        return uploadAdmission;
+    }
+
     /// #1456 test seam — see [#beforePublish].
     @Contract
     void beforePublishForTest(Runnable hook) {
@@ -697,6 +713,24 @@ class AppHttpServerAdapter implements AppHttpServer {
                                OperatorWarningCode.UPLOAD_NODE_CAP_RESTORED,
                                selfNodeId.id(),
                                "Upload cap no longer reached: this node accepts new uploads again");
+    }
+
+    /// The node's in-flight byte budget was reached: one operator event for the episode, not one per refused request.
+    private void uploadByteBudgetExhausted() {
+        OperatorWarnings.raise(log,
+                               warningSink.get(),
+                               OperatorWarningCode.UPLOAD_BYTE_BUDGET_EXHAUSTED,
+                               selfNodeId.id(),
+                               "Upload byte budget reached: the uploads in flight on this node declare {} bytes, the most [app-http.upload] max_in_flight_size allows; refusing new uploads with 503 until some finish",
+                               config.upload().maxInFlightBytes());
+    }
+
+    private void uploadByteBudgetRestored() {
+        OperatorWarnings.raise(log,
+                               warningSink.get(),
+                               OperatorWarningCode.UPLOAD_BYTE_BUDGET_RESTORED,
+                               selfNodeId.id(),
+                               "Upload byte budget no longer reached: this node accepts new uploads again");
     }
 
     private Promise<Unit> rotateValidated(CertificateBundle newBundle) {
@@ -941,6 +975,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                 .flatMap(ctx -> enforceRoleIfRequired(ctx, effectivePolicy))
                                 .fold(cause -> refuseWith(cause, path, requestId, method),
                                       ctx -> admit(ctx,
+                                                   head,
                                                    uploadSpecOf(local, routeTable, method, normalizedPath),
                                                    path,
                                                    requestId));
@@ -969,28 +1004,45 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                      .or(UploadSpec.NONE));
     }
 
-    private Disposition admit(SecurityContext securityContext, UploadSpec spec, String path, String requestId) {
+    private Disposition admit(SecurityContext securityContext,
+                              HttpRequest head,
+                              UploadSpec spec,
+                              String path,
+                              String requestId) {
         var maxBytes = effectiveMaxBytes(spec);
 
         if (!spec.upload()) {
             return Disposition.aggregate(maxBytes);
         }
 
-        return uploadAdmission.tryAcquire(securityContext.principal().value())
+        return uploadAdmission.tryAcquire(securityContext.principal().value(),
+                                          declaredBytes(head, maxBytes))
                               .fold(cause -> tooManyUploads(cause, path, requestId),
                                     release -> Disposition.aggregate(maxBytes,
                                                                      uploadBounds(spec),
                                                                      release));
     }
 
-    /// `min(declared or the listener's `max_request_size`, ceiling)`: the operator's ceiling caps what a slice declares.
+    /// What an upload reserves from the byte budget: its `Content-Length` when it declares one that is a size, else the most
+    /// the route accepts. A declared length over the route's limit reserves the limit (the gate refuses it 413 anyway).
+    private static long declaredBytes(HttpRequest head, long maxBytes) {
+        return head.headers()
+                   .get("content-length")
+                   .flatMap(value -> Number.parseLong(value.strip())
+                                           .option())
+                   .filter(length -> length >= 0)
+                   .map(length -> Math.min(length, maxBytes))
+                   .or(maxBytes);
+    }
+
+    /// `min(declared or the listener's `max_request_size`, ceiling, IN_MEMORY_LIMIT)`: the operator's ceiling caps what a
+    /// slice declares, and no ceiling lifts a body past what one in-memory array can hold.
     private long effectiveMaxBytes(UploadSpec spec) {
         var declared = spec.maxBodyBytes() > 0
                        ? spec.maxBodyBytes()
                        : config.maxRequestSize();
 
-        return Math.min(declared,
-                        config.upload().maxSizeCeiling());
+        return Math.min(Math.min(declared, config.upload().maxSizeCeiling()), IN_MEMORY_LIMIT);
     }
 
     private BodyBounds uploadBounds(UploadSpec spec) {
@@ -1006,11 +1058,18 @@ class AppHttpServerAdapter implements AppHttpServer {
                                      maxDuration);
     }
 
+    /// 429 when a count cap refused the upload, 503 when the node's byte budget did: both say when to try again.
     private Disposition tooManyUploads(Cause cause, String path, String requestId) {
-        return Disposition.reject(response -> {
-            response.header("Retry-After", String.valueOf(UploadConfig.RETRY_AFTER_SECONDS));
-            sendProblem(response, HttpStatus.TOO_MANY_REQUESTS, HttpError.clientMessage(cause), path, requestId);
-        });
+        var status = cause == UploadAdmission.BYTE_BUDGET
+                     ? HttpStatus.SERVICE_UNAVAILABLE
+                     : HttpStatus.TOO_MANY_REQUESTS;
+
+        return Disposition.reject(response -> retryLater(response, status, cause, path, requestId));
+    }
+
+    private void retryLater(ResponseWriter response, HttpStatus status, Cause cause, String path, String requestId) {
+        response.header("Retry-After", String.valueOf(UploadConfig.RETRY_AFTER_SECONDS));
+        sendProblem(response, status, HttpError.clientMessage(cause), path, requestId);
     }
 
     private void handleRequest(HttpRequest request, ResponseWriter response) {
@@ -1143,6 +1202,8 @@ class AppHttpServerAdapter implements AppHttpServer {
         return Result.success(context);
     }
 
+    /// A multipart request to a route that declares part limits is checked on a bounded blocking executor, so the scan over
+    /// a body of hundreds of MiB never holds the event loop; every other request dispatches where it arrived.
     @Contract
     private void dispatchAuthenticated(HttpRequest request,
                                        ResponseWriter response,
@@ -1153,6 +1214,56 @@ class AppHttpServerAdapter implements AppHttpServer {
                                        String path,
                                        String requestId,
                                        Option<LocalResolution> local) {
+        Runnable scoped = () -> dispatchScoped(request,
+                                               response,
+                                               routeTable,
+                                               securityContext,
+                                               method,
+                                               normalizedPath,
+                                               path,
+                                               requestId,
+                                               local);
+
+        if (needsPartCheck(request, uploadSpecOf(local, routeTable, method, normalizedPath))) {
+            partLimitExecutor.submit(() -> runGuarded(scoped, response, requestId))
+                             .onFailure(cause -> refuseBusy(cause, response, path, requestId));
+        } else {
+            scoped.run();
+        }
+    }
+
+    private static boolean needsPartCheck(HttpRequest request, UploadSpec spec) {
+        return spec.hasPartLimits() && MultipartParser.isMultipart(request.headers().get("content-type"));
+    }
+
+    /// 503 with `Retry-After`: every part-limit worker is busy and the queue is full.
+    private void refuseBusy(Cause cause, ResponseWriter response, String path, String requestId) {
+        log.warn("[{}] Multipart part-limit check refused, workers and queue are full: {}", requestId, cause.message());
+        retryLater(response, HttpStatus.SERVICE_UNAVAILABLE, PART_LIMIT_BUSY, path, requestId);
+    }
+
+    /// The executor boundary: what a worker throws is answered 500 here, because nothing above it would answer.
+    @Contract
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})  // executor boundary: an exception must be answered, not lost with the worker
+    private void runGuarded(Runnable task, ResponseWriter response, String requestId) {
+        try {
+            task.run();
+        } catch (Exception e) {
+            log.error("[{}] Error dispatching a multipart request", requestId, e);
+            sendPlainError(response, HttpStatus.INTERNAL_SERVER_ERROR, requestId);
+        }
+    }
+
+    @Contract
+    private void dispatchScoped(HttpRequest request,
+                                ResponseWriter response,
+                                RouteTable routeTable,
+                                SecurityContext securityContext,
+                                String method,
+                                String normalizedPath,
+                                String path,
+                                String requestId,
+                                Option<LocalResolution> local) {
         var principal = securityContext.principal().value();
 
         if (config.securityEnabled()) {
@@ -1178,9 +1289,9 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     /// A multipart body is already bounded by the route's `max_size`; the route's part limits (`max_files`,
-    /// `max_file_size`, `max_fields`, `max_field_size`) are checked on its decoded form, here, before the request is
-    /// dispatched, so a request that breaks one is answered 413 whether the slice runs on this node or another. The
-    /// slice decodes the body again when it reads it.
+    /// `max_file_size`, `max_fields`, `max_field_size`) are checked on its framing (a scan, no decode, no copy), here,
+    /// before the request is dispatched, so a request that breaks one is answered 413 whether the slice runs on this node
+    /// or another. The body is decoded once, by whoever reads it.
     private void dispatchWithinPartLimits(HttpRequest request,
                                           ResponseWriter response,
                                           RouteTable routeTable,
@@ -1205,25 +1316,11 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                        requestId));
     }
 
-    /// The part limit a multipart `request` exceeds, if the route declares any. A body that is not multipart, or does not
-    /// decode, is not a breach: the handler answers it as it always has.
+    /// The part limit a multipart `request` exceeds, if the route declares any. A body that is not multipart, or is not a
+    /// closed multipart, is not a breach: the handler answers it as it always has.
     private static Option<MultipartError.LimitExceeded> partLimitBreach(HttpRequest request, UploadSpec spec) {
-        if (!spec.hasPartLimits()) {
-            return Option.none();
-        }
-
-        var partCap = (int) Math.min(Integer.MAX_VALUE,
-                                     Math.max(MultipartParser.DEFAULT_MAX_PARTS,
-                                              spec.maxFiles() + spec.maxFields()));
-
-        return MultipartParser.parse(request.body(),
-                                     request.headers().get("content-type").or(""),
-                                     request.path(),
-                                     partCap)
-                              .fold(cause -> cause instanceof MultipartError.TooManyParts
-                                             ? Option.some(MultipartError.LimitExceeded.PARTS.apply((long) partCap))
-                                             : Option.none(),
-                                    parsed -> spec.partBreach(parsed));
+        return spec.partBreach(request.body(),
+                               request.headers().get("content-type").or(""));
     }
 
     private void dispatchToRoute(HttpRequest request,
@@ -2231,6 +2328,11 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private static final int MAX_WARN_BODY_LENGTH = 200;
+    /// The most one aggregated body can hold: the array a request body is copied into cannot exceed an int, so no
+    /// declaration or ceiling lifts the effective limit past it (a `Content-Length` over it is refused 413 on the head,
+    /// never counted in an int). Streaming storage (U2) lifts it.
+    static final long IN_MEMORY_LIMIT = Integer.MAX_VALUE - 8L;
+    private static final Cause PART_LIMIT_BUSY = Causes.cause("Too many multipart uploads are being checked at once; retry shortly");
 
     private void sendResponse(ResponseWriter response, HttpResponseData responseData, String requestId) {
         if (responseData.statusCode() >= 400) {

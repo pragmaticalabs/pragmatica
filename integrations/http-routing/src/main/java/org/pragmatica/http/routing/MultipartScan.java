@@ -22,6 +22,11 @@ import static org.pragmatica.lang.Option.option;
 /// rest), falls back to urlencoded decoding when the boundary parameter is absent or the media type is not
 /// lowercase, and decodes every filename-less part as a text attribute, whatever its Content-Type. This scan only
 /// reads part headers and delimiter lines; Netty still decodes the bodies.
+///
+/// A part's size is the number of bytes between the empty line that ends its header block and the line break that
+/// precedes the next delimiter (RFC 2046 §5.1.1: that line break belongs to the delimiter). It is the size on the wire:
+/// RFC 7578 §4.7 forbids a `Content-Transfer-Encoding` on a part, so it is also the size of the content. Nothing is
+/// copied: a part limit is checked from the scan alone, without decoding the body.
 sealed interface MultipartScan {
     record unused() implements MultipartScan {}
 
@@ -41,12 +46,21 @@ sealed interface MultipartScan {
         }
     }
 
-    /// What the scan found. `fieldTypes` holds, per field name and in body order, one entry for each filename-less
+    /// One part: whether it is a file (it has a filename, or a filename-less part with a Content-Type other than
+    /// `text/plain`, as [MultipartParser] reads it; a nested `multipart/*` part counts as one file) and its size in
+    /// bytes.
+    record Part(boolean file, long size) {
+        static Part part(boolean file, long size) {
+            return new Part(file, size);
+        }
+    }
+
+    /// What the scan found. `parts` lists every part in body order. `fieldTypes` holds, per field name and in body order, one entry for each filename-less
     /// part: its Content-Type when it declared one other than `text/plain`, empty otherwise. Thread-confined working
     /// data of one parse, consumed by [#nextFieldType(String)].
-    record Parts(boolean closed, Map<String, Deque<Option<String>>> fieldTypes) {
-        static Parts parts(boolean closed, Map<String, Deque<Option<String>>> fieldTypes) {
-            return new Parts(closed, fieldTypes);
+    record Parts(boolean closed, Map<String, Deque<Option<String>>> fieldTypes, List<Part> parts) {
+        static Parts parts(boolean closed, Map<String, Deque<Option<String>>> fieldTypes, List<Part> parts) {
+            return new Parts(closed, fieldTypes, parts);
         }
 
         /// The declared Content-Type of the next filename-less part named `name`, in body order.
@@ -77,7 +91,10 @@ sealed interface MultipartScan {
     static Parts scan(byte[] body, String boundary) {
         var delimiter = ("--" + boundary).getBytes(StandardCharsets.ISO_8859_1);
         var fieldTypes = new HashMap<String, Deque<Option<String>>>();
+        var parts = new ArrayList<Part>();
         var position = indexOf(body, delimiter, 0);
+        var openStart = -1;
+        var openFile = false;
 
         while (position >= 0) {
             var after = position + delimiter.length;
@@ -88,7 +105,9 @@ sealed interface MultipartScan {
             }
 
             if (startsWith(body, after, "--")) {
-                return Parts.parts(true, fieldTypes);
+                closePart(parts, body, openStart, openFile, position);
+
+                return Parts.parts(true, fieldTypes, parts);
             }
 
             var headersStart = delimiterLineEnd(body, after);
@@ -98,29 +117,59 @@ sealed interface MultipartScan {
                 continue;
             }
 
+            closePart(parts, body, openStart, openFile, position);
+
             var headersEnd = headerBlockEnd(body, headersStart);
 
             if (headersEnd < 0) {
-                return Parts.parts(false, fieldTypes);
+                return Parts.parts(false, fieldTypes, parts);
             }
 
-            recordPart(new String(body, headersStart, headersEnd - headersStart, StandardCharsets.UTF_8), fieldTypes);
-            position = indexOf(body, delimiter, headersEnd);
+            openFile = recordPart(new String(body, headersStart, headersEnd - headersStart, StandardCharsets.UTF_8),
+                                  fieldTypes);
+            openStart = contentStart(body, headersEnd);
+            position = indexOf(body, delimiter, openStart);
         }
 
-        return Parts.parts(false, fieldTypes);
+        return Parts.parts(false, fieldTypes, parts);
     }
 
-    /// One part's header block. A part with a filename is a file to Netty already and is not recorded; a nested
-    /// `multipart/*` part becomes files inside Netty too.
-    private static void recordPart(String headerBlock, Map<String, Deque<Option<String>>> fieldTypes) {
+    /// Ends the open part, if any, at the delimiter found at `delimiterPosition`: its content stops before the line
+    /// break that begins the delimiter.
+    private static void closePart(List<Part> parts, byte[] body, int openStart, boolean openFile, int delimiterPosition) {
+        if (openStart < 0) {
+            return;
+        }
+
+        var lineBreak = delimiterPosition >= 2 && body[delimiterPosition - 2] == '\r'
+                        ? 2
+                        : 1;
+
+        parts.add(Part.part(openFile, Math.max(0, delimiterPosition - lineBreak - openStart)));
+    }
+
+    /// The index of the first content byte: after the empty line that ends the header block, which starts at `headersEnd`.
+    private static int contentStart(byte[] body, int headersEnd) {
+        return body[headersEnd] == '\r'
+               ? headersEnd + 2
+               : headersEnd + 1;
+    }
+
+    /// One part's header block; true when the part is a file. A part with a filename is a file to Netty already and is
+    /// not recorded as a field; a nested `multipart/*` part becomes files inside Netty too.
+    private static boolean recordPart(String headerBlock, Map<String, Deque<Option<String>>> fieldTypes) {
         var headers = partHeaders(headerBlock);
         var contentType = option(headers.get("content-type"));
+        var disposition = option(headers.get("content-disposition")).map(MultipartScan::parameters);
 
-        option(headers.get("content-disposition")).map(MultipartScan::parameters)
-              .filter(params -> !params.containsKey("filename") && !params.containsKey("filename*"))
-              .flatMap(params -> option(params.get("name")))
-              .onPresent(fieldName -> recordField(fieldTypes, fieldName, contentType));
+        if (disposition.filter(params -> params.containsKey("filename") || params.containsKey("filename*")).isPresent()) {
+            return true;
+        }
+
+        disposition.flatMap(params -> option(params.get("name")))
+                   .onPresent(fieldName -> recordField(fieldTypes, fieldName, contentType));
+
+        return contentType.map(MultipartScan::mediaType).filter(type -> !type.equals("text/plain")).isPresent();
     }
 
     /// Lowercase header names to values; the first occurrence of a name wins.

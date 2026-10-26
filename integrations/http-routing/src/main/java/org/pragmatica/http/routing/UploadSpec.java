@@ -1,8 +1,5 @@
 package org.pragmatica.http.routing;
 
-import java.nio.charset.StandardCharsets;
-import java.util.List;
-
 import org.pragmatica.lang.Option;
 
 /// The ingest limits a route declares in `routes.toml` (`max_size`, `max_duration`, and the multipart part limits
@@ -11,8 +8,8 @@ import org.pragmatica.lang.Option;
 ///
 /// `upload` marks a route that receives an upload body (`consumes` is binary or multipart, or the route declares a limit
 /// key): such a route gets the upload idle, minimum-rate and duration bounds instead of the listener's general ones.
-/// A limit of zero is "not declared": the listener's default applies. The part limits are checked on the decoded body,
-/// which `max_size` has already bounded.
+/// A limit of zero is "not declared": the listener's default applies. The part limits are checked on the aggregated body,
+/// which `max_size` has already bounded, from its multipart framing (see [#partBreach(byte[], String)]).
 ///
 /// @param upload            the route receives an upload body
 /// @param maxBodyBytes      `max_size` in bytes, zero when not declared
@@ -67,33 +64,63 @@ public record UploadSpec(boolean upload,
         return maxFiles > 0 || maxFileBytes > 0 || maxFields > 0 || maxFieldBytes > 0;
     }
 
-    /// The first part limit the decoded multipart body exceeds, or empty when it is within all of them.
-    public Option<MultipartError.LimitExceeded> partBreach(MultipartRequest request) {
-        return breach(request.files().size() > limitOrMax(maxFiles),
-                      MultipartError.LimitExceeded.FILES.apply(maxFiles)).orElse(() -> fileSizeBreach(request))
-                                                                         .orElse(() -> fieldCountBreach(request))
-                                                                         .orElse(() -> fieldSizeBreach(request));
+    /// The first part limit a multipart body exceeds, or empty when it is within all of them or the route declares none.
+    ///
+    /// Counts and sizes come from the framing scan alone ([MultipartScan]): the body is not decoded and no part content
+    /// is copied, so the check costs one pass over the bytes and holds nothing. A body that is not multipart/form-data,
+    /// has no boundary or is not closed is not a breach: whoever reads the body answers it as it always has. Blocking
+    /// work proportional to the body: call it off the event loop.
+    ///
+    /// @param body        the aggregated request body
+    /// @param contentType the Content-Type header value
+    public Option<MultipartError.LimitExceeded> partBreach(byte[] body, String contentType) {
+        return hasPartLimits() && MultipartParser.isMultipart(contentType)
+               ? MultipartScan.framing(contentType).flatMap(framing -> partBreach(MultipartScan.scan(body, framing.boundary())))
+               : Option.none();
     }
 
-    private Option<MultipartError.LimitExceeded> fileSizeBreach(MultipartRequest request) {
-        return breach(request.files()
-                             .stream()
-                             .anyMatch(file -> file.content().length > limitOrMax(maxFileBytes)),
+    Option<MultipartError.LimitExceeded> partBreach(MultipartScan.Parts scanned) {
+        return scanned.closed()
+               ? tooManyParts(scanned).orElse(() -> fileCountBreach(scanned))
+                                      .orElse(() -> fileSizeBreach(scanned))
+                                      .orElse(() -> fieldCountBreach(scanned))
+                                      .orElse(() -> fieldSizeBreach(scanned))
+               : Option.none();
+    }
+
+    /// More parts than [MultipartParser#DEFAULT_MAX_PARTS] and the declared counts together allow: the slice's own
+    /// decoder would refuse the body, so the gate refuses it first, with the same bound.
+    private Option<MultipartError.LimitExceeded> tooManyParts(MultipartScan.Parts scanned) {
+        var cap = (int) Math.min(Integer.MAX_VALUE,
+                                 Math.max(MultipartParser.DEFAULT_MAX_PARTS, maxFiles + maxFields));
+
+        return breach(scanned.parts().size() > cap, MultipartError.LimitExceeded.PARTS.apply((long) cap));
+    }
+
+    private Option<MultipartError.LimitExceeded> fileCountBreach(MultipartScan.Parts scanned) {
+        return breach(count(scanned, true) > limitOrMax(maxFiles), MultipartError.LimitExceeded.FILES.apply(maxFiles));
+    }
+
+    private Option<MultipartError.LimitExceeded> fileSizeBreach(MultipartScan.Parts scanned) {
+        return breach(largest(scanned, true) > limitOrMax(maxFileBytes),
                       MultipartError.LimitExceeded.FILE_SIZE.apply(maxFileBytes));
     }
 
-    private Option<MultipartError.LimitExceeded> fieldCountBreach(MultipartRequest request) {
-        return breach(request.fieldValues().values().stream().mapToLong(List::size).sum() > limitOrMax(maxFields),
-                      MultipartError.LimitExceeded.FIELDS.apply(maxFields));
+    private Option<MultipartError.LimitExceeded> fieldCountBreach(MultipartScan.Parts scanned) {
+        return breach(count(scanned, false) > limitOrMax(maxFields), MultipartError.LimitExceeded.FIELDS.apply(maxFields));
     }
 
-    private Option<MultipartError.LimitExceeded> fieldSizeBreach(MultipartRequest request) {
-        return breach(request.fieldValues()
-                             .values()
-                             .stream()
-                             .flatMap(List::stream)
-                             .anyMatch(value -> value.getBytes(StandardCharsets.UTF_8).length > limitOrMax(maxFieldBytes)),
+    private Option<MultipartError.LimitExceeded> fieldSizeBreach(MultipartScan.Parts scanned) {
+        return breach(largest(scanned, false) > limitOrMax(maxFieldBytes),
                       MultipartError.LimitExceeded.FIELD_SIZE.apply(maxFieldBytes));
+    }
+
+    private static long count(MultipartScan.Parts scanned, boolean file) {
+        return scanned.parts().stream().filter(part -> part.file() == file).count();
+    }
+
+    private static long largest(MultipartScan.Parts scanned, boolean file) {
+        return scanned.parts().stream().filter(part -> part.file() == file).mapToLong(MultipartScan.Part::size).max().orElse(0);
     }
 
     private static Option<MultipartError.LimitExceeded> breach(boolean exceeded, MultipartError.LimitExceeded error) {

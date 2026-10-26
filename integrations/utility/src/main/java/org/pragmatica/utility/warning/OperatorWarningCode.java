@@ -460,6 +460,14 @@ public enum OperatorWarningCode {
     /// The recovery of [#UPLOAD_NODE_CAP_SATURATED], same subject (#2410): an upload finished and a slot is free again. INFO,
     /// published only after a published saturation event for the node (#752 mechanism).
     UPLOAD_NODE_CAP_RESTORED("upload-node-cap-restored", "http-ingest", WarningLevel.INFO, UPLOAD_NODE_CAP_SATURATED),
+    /// An upload was refused 503 because the declared bytes of the uploads in flight on this node reached `[app-http.upload]
+    /// max_in_flight_size` (#2410): an upload body is aggregated in memory, so the node holds as much as it allows. Subject is
+    /// the node. Raised once, on the transition into exhaustion, per node, not per refused request. Closed by
+    /// [#UPLOAD_BYTE_BUDGET_RESTORED].
+    UPLOAD_BYTE_BUDGET_EXHAUSTED("upload-byte-budget-exhausted", "http-ingest", WarningLevel.WARNING),
+    /// The recovery of [#UPLOAD_BYTE_BUDGET_EXHAUSTED], same subject (#2410): uploads finished and at most half of the budget is
+    /// reserved again. INFO, published only after a published exhaustion event for the node (#752 mechanism).
+    UPLOAD_BYTE_BUDGET_RESTORED("upload-byte-budget-restored", "http-ingest", WarningLevel.INFO, UPLOAD_BYTE_BUDGET_EXHAUSTED),
     /// A committed `[json]` configuration change was refused for a slice (#2378): the slice's HTTP routes keep the
     /// JSON codec selection they had. Subject is `<slice artifact>/json`; the message names every refused key, its
     /// value and why, and the selection kept. Raised once, on the transition into refusal, per node. The same

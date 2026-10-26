@@ -184,7 +184,7 @@ public final class ConfigValidator {
     /// refuse one (a ceiling), so each is refused here rather than floored.
     private static void uploadErrors(UploadConfig upload, List<String> errors) {
         if (upload.maxSizeCeiling() < 1) {
-            errors.add("[app-http.upload] max_size_ceiling must be a positive size such as \"5GB\". Got: " + upload.maxSizeCeiling());
+            errors.add("[app-http.upload] max_size_ceiling must be a positive size such as \"256MB\". Got: " + upload.maxSizeCeiling());
         }
 
         if (upload.maxConcurrent() < 1) {
@@ -201,6 +201,10 @@ public final class ConfigValidator {
 
         if (upload.minBodyRate() < 1) {
             errors.add("[app-http.upload] min_body_rate must be a positive size such as \"1KB\". Got: " + upload.minBodyRate());
+        }
+
+        if (upload.maxInFlightBytes() < 1) {
+            errors.add("[app-http.upload] max_in_flight_size must be a positive size such as \"512MB\". Got: " + upload.maxInFlightBytes());
         }
     }
 

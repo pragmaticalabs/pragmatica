@@ -69,6 +69,7 @@ final class RequestGate extends ChannelInboundHandlerAdapter {
     /// a client to read the response and close on a loopback or LAN link, short enough that a client that keeps sending
     /// is cut within a second.
     static final long LINGER_MILLIS = 250;
+    private static volatile long lingerMillis = LINGER_MILLIS;
     private static final TimeSpan NO_BOUND = TimeSpan.timeSpan(0).millis();
 
     private final HttpServerConfig config;
@@ -206,6 +207,13 @@ final class RequestGate extends ChannelInboundHandlerAdapter {
         guard = none();
     }
 
+    /// Test seam: a linger long enough that a client seeing end of stream before it can only have been sent one by the
+    /// output shutdown, not by the close. Restore [#LINGER_MILLIS] when done.
+    @Contract
+    static void lingerMillisForTest(long millis) {
+        lingerMillis = millis;
+    }
+
     /// Closes after sending what is queued: the output is shut down (the client sees the response and then end of
     /// stream), reading stops (what the client still sends waits in the kernel's buffer, so its sending stalls instead of
     /// being read into memory), and the connection is closed when the linger ends.
@@ -218,7 +226,7 @@ final class RequestGate extends ChannelInboundHandlerAdapter {
         var deadline = channel.eventLoop().schedule(() -> {
                                                         channel.close();
                                                     },
-                                                    LINGER_MILLIS,
+                                                    lingerMillis,
                                                     TimeUnit.MILLISECONDS);
 
         channel.closeFuture().addListener(_ -> deadline.cancel(false));
