@@ -64,17 +64,22 @@ class AppHttpStateTotalityTest {
         IGNORED
     }
 
-    private record Cell(Kind kind, Class<? extends AppHttpState> target, String reason) {
+    private record Cell(Kind kind, Class<? extends AppHttpState> target, String reason, boolean retires) {
         static Cell to(Class<? extends AppHttpState> target) {
-            return new Cell(Kind.TRANSITION, target, "");
+            return new Cell(Kind.TRANSITION, target, "", false);
+        }
+
+        /// A replacement that also closes the pair the state held (a rotation report replacing it).
+        Cell retiring() {
+            return new Cell(kind, target, reason, true);
         }
 
         static Cell closes(String reason) {
-            return new Cell(Kind.HANDLED, null, reason);
+            return new Cell(Kind.HANDLED, null, reason, false);
         }
 
         static Cell ignored(String reason) {
-            return new Cell(Kind.IGNORED, null, reason);
+            return new Cell(Kind.IGNORED, null, reason, false);
         }
     }
 
@@ -159,7 +164,7 @@ class AppHttpStateTotalityTest {
                      Cell.to(AppHttpState.Dual.class),
                      Cell.to(AppHttpState.RouteReady.class),
                      Cell.ignored(NO_ROUTES_YET),
-                     Cell.to(AppHttpState.RouteReady.class),
+                     Cell.to(AppHttpState.RouteReady.class).retiring(),
                      Cell.to(AppHttpState.Stopped.class),
                      Cell.to(AppHttpState.Stopped.class),
                      Cell.to(AppHttpState.RouteReady.class),
@@ -171,7 +176,7 @@ class AppHttpStateTotalityTest {
                      Cell.closes(SURPLUS),
                      Cell.to(AppHttpState.RouteReady.class),
                      Cell.ignored(NO_ROUTES_YET),
-                     Cell.to(AppHttpState.RouteReady.class),
+                     Cell.to(AppHttpState.RouteReady.class).retiring(),
                      Cell.to(AppHttpState.Stopped.class),
                      Cell.to(AppHttpState.Stopped.class),
                      Cell.to(AppHttpState.RouteReady.class),
@@ -183,7 +188,7 @@ class AppHttpStateTotalityTest {
                      Cell.closes(SURPLUS),
                      Cell.to(AppHttpState.RouteReady.class),
                      Cell.ignored(NO_ROUTES_YET),
-                     Cell.to(AppHttpState.RouteReady.class),
+                     Cell.to(AppHttpState.RouteReady.class).retiring(),
                      Cell.to(AppHttpState.Stopped.class),
                      Cell.to(AppHttpState.Stopped.class),
                      Cell.to(AppHttpState.RouteReady.class),
@@ -195,7 +200,7 @@ class AppHttpStateTotalityTest {
                      Cell.to(AppHttpState.RouteReady.class),
                      Cell.to(AppHttpState.RouteReady.class),
                      Cell.to(AppHttpState.CertRotating.class),
-                     Cell.to(AppHttpState.RouteReady.class),
+                     Cell.to(AppHttpState.RouteReady.class).retiring(),
                      Cell.to(AppHttpState.Stopped.class),
                      Cell.to(AppHttpState.Stopped.class),
                      Cell.ignored(ALREADY_ESTABLISHED),
@@ -207,7 +212,7 @@ class AppHttpStateTotalityTest {
                      Cell.closes(SURPLUS),
                      Cell.to(AppHttpState.CertRotating.class),
                      Cell.ignored(ROTATION_IN_FLIGHT),
-                     Cell.to(AppHttpState.RouteReady.class),
+                     Cell.to(AppHttpState.RouteReady.class).retiring(),
                      Cell.to(AppHttpState.Stopped.class),
                      Cell.to(AppHttpState.Stopped.class),
                      Cell.ignored(ROTATION_IN_FLIGHT),
@@ -219,7 +224,7 @@ class AppHttpStateTotalityTest {
                      Cell.to(AppHttpState.Quiesced.class),
                      Cell.ignored(ALREADY_QUIESCED),
                      Cell.ignored(QUIESCED_ROTATION),
-                     Cell.to(AppHttpState.Quiesced.class),
+                     Cell.to(AppHttpState.Quiesced.class).retiring(),
                      Cell.to(AppHttpState.Stopped.class),
                      Cell.to(AppHttpState.Stopped.class),
                      Cell.to(AppHttpState.RouteReady.class),
@@ -339,8 +344,24 @@ class AppHttpStateTotalityTest {
         if (cell.kind() == Kind.IGNORED) {
             assertThat(harness.state()).isInstanceOf(stateType);
         }
+        if (isListenerReport(eventName)) {
+            heldBy(stateType, held1, held3).forEach(server -> assertThat(server.isStopped()).as("held listener closed")
+                                                                                          .isEqualTo(cell.retires()));
+        }
         probe.carried().forEach(server -> assertThat(server.isStopped()).as("carried listener closed")
                                                                           .isEqualTo(cell.kind() == Kind.HANDLED));
+    }
+
+    private static boolean isListenerReport(String eventName) {
+        return eventName.equals("H1Ready") || eventName.equals("H3Ready") || eventName.equals("CertRotationApplied");
+    }
+
+    /// The listeners the state under test holds (the fixture pair, narrowed to what each state's record carries).
+    private static List<FakeServer> heldBy(Class<? extends AppHttpState> type, FakeServer held1, FakeServer held3) {
+        if (type == AppHttpState.Stopped.class || type == AppHttpState.Starting.class) return List.of();
+        if (type == AppHttpState.H1Only.class) return List.of(held1);
+        if (type == AppHttpState.H3Only.class) return List.of(held3);
+        return List.of(held1, held3);
     }
 
     private static CertificateBundle dummyBundle() {

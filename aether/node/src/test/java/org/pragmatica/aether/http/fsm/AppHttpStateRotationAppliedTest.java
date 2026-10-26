@@ -194,6 +194,49 @@ class AppHttpStateRotationAppliedTest {
     }
 
     @Test
+    void h3Only_onCertRotationApplied_withOnlyH3_adoptsTheH3() {
+        var newH3 = new FakeServer(4);
+        var harness = harnessIn(ctx -> new AppHttpState.H3Only(ctx, new FakeServer(2)));
+
+        harness.dispatch(new AppHttpEvents.CertRotationApplied(Option.none(), Option.some(newH3), RouteTable.empty()));
+
+        var routeReady = (AppHttpState.RouteReady) harness.state();
+        assertThat(routeReady.server().isEmpty()).isTrue();
+        assertThat(routeReady.h3().unwrap()).isSameAs(newH3);
+    }
+
+    @Test
+    void h3Only_onCertRotationApplied_withOnlyH1_adoptsTheH1() {
+        var newH1 = new FakeServer(3);
+        var harness = harnessIn(ctx -> new AppHttpState.H3Only(ctx, new FakeServer(2)));
+
+        harness.dispatch(new AppHttpEvents.CertRotationApplied(Option.some(newH1), Option.none(), RouteTable.empty()));
+
+        var routeReady = (AppHttpState.RouteReady) harness.state();
+        assertThat(routeReady.server().unwrap()).isSameAs(newH1);
+        assertThat(routeReady.h3().isEmpty()).isTrue();
+    }
+
+    @Test
+    void isRotationDiscarded_isTrueWhereTheReportIsClosed_andFalseWhereItIsKept() {
+        assertThat(discardedAfterApplied(ctx -> ctx.stopped())).as("Stopped").isTrue();
+        assertThat(discardedAfterApplied(ctx -> ctx.starting())).as("Starting").isTrue();
+        assertThat(discardedAfterApplied(ctx -> new AppHttpState.Quiesced(ctx, Option.none(), Option.none()))).as("Quiesced").isFalse();
+        assertThat(discardedAfterApplied(ctx -> new AppHttpState.RouteReady(ctx, Option.none(), Option.none(), RouteTable.empty()))).as("RouteReady").isFalse();
+    }
+
+    private static boolean discardedAfterApplied(Function<AppHttpContext, AppHttpState> state) {
+        var holder = new java.util.concurrent.atomic.AtomicReference<AppHttpContext>();
+        var harness = harnessIn(ctx -> {
+            holder.set(ctx);
+            return state.apply(ctx);
+        });
+
+        harness.dispatch(applied(new FakeServer(3), new FakeServer(4)));
+        return holder.get().isRotationDiscarded();
+    }
+
+    @Test
     void dual_onCertRotationApplied_withBoth_adoptsBoth() {
         var newH1 = new FakeServer(3);
         var newH3 = new FakeServer(4);

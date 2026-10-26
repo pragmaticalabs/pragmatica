@@ -66,7 +66,10 @@ class AppHttpServerRotationRaceTest {
 
         assertThat(rotation.isResolved()).as("the stop must land mid-rotation").isFalse();
         server.stop().await(timeSpan(30).seconds());
-        rotation.await(timeSpan(60).seconds());
+        var outcome = rotation.await(timeSpan(60).seconds());
+
+        assertThat(outcome.isFailure()).as("a rotation whose new listeners were closed is not reported as applied").isTrue();
+        outcome.onFailure(cause -> assertThat(cause).isSameAs(AppHttpRotationError.General.ROTATION_DISCARDED));
 
         assertThat(TlsProbe.eventually(() -> !isListening(port), CLOSE_BUDGET_MS))
             .as("the listener the rotation bound after stop() is closed").isTrue();
