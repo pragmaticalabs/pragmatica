@@ -823,8 +823,8 @@ public sealed interface MembershipAssembly {
     /// #2429: the node's identity ledger is attached to the shared boot-token registry and loaded here, at assembly, before the
     /// transport starts and admission can consult it. A worker holds no ledger (it keeps per-observer admission).
     static Unit attachIdentityLedger(AetherNodeConfig config,
-                                             CoreSwimHealthDetector swimHealthDetector,
-                                             OperatorWarningSink operatorWarningSink) {
+                                     CoreSwimHealthDetector swimHealthDetector,
+                                     OperatorWarningSink operatorWarningSink) {
         return configuredWorker(config)
                ? Unit.unit()
                : swimHealthDetector.bootTokens()
