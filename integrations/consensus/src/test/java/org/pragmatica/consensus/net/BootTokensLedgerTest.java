@@ -177,6 +177,27 @@ class BootTokensLedgerTest {
         assertThat(registry.admit(PEER, OTHER)).isEqualTo(Admission.UNAVAILABLE);
 
         writer.gate.countDown();
+        awaitRefusals(registry, 1L);
+    }
+
+    private static void sleepBriefly() {
+        try {
+            Thread.sleep(5);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /// The conflict verdict is counted when the retirement has been written: wait for it, so the test does not leave a
+    /// write running under its temp directory.
+    private static void awaitRefusals(BootTokens registry, long expected) {
+        var deadline = System.nanoTime() + BOUND.nanos();
+
+        while (registry.refusals() < expected && System.nanoTime() < deadline) {
+            sleepBriefly();
+        }
+
+        assertThat(registry.refusals()).isGreaterThanOrEqualTo(expected);
     }
 
     @Test

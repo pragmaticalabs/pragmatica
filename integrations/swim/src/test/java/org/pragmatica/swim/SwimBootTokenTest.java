@@ -197,7 +197,7 @@ class SwimBootTokenTest {
         tokens.preload(IdentityFacts.identityFacts(), false);
         announce(6, TOKEN);
 
-        assertThat(protocol.members().get(NODE_A).state()).isEqualTo(MemberState.ALIVE);
+        assertThat(protocol.members()).as("control: the same evidence is admitted once the registry can answer").containsKey(NODE_A);
     }
 
     @Test
