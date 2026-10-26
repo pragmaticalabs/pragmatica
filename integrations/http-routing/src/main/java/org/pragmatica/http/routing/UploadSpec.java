@@ -76,11 +76,14 @@ public record UploadSpec(boolean upload,
     /// @param contentType the Content-Type header value
     public Option<MultipartError> partBreach(byte[] body, String contentType) {
         return hasPartLimits() && MultipartParser.isMultipart(contentType)
-               ? MultipartScan.framing(contentType).flatMap(framing -> partBreach(MultipartScan.scan(body,
-                                                                                                     framing.boundary(),
-                                                                                                     partCap(),
-                                                                                                     true)))
+               ? MultipartScan.framing(contentType).flatMap(framing -> partBreach(scanForLimits(body, framing.boundary())))
                : Option.none();
+    }
+
+    /// The scan the limits are checked on: it stops at the first part past the cap and at the first nested part, so its
+    /// cost does not depend on how many parts the body claims.
+    MultipartScan.Parts scanForLimits(byte[] body, String boundary) {
+        return MultipartScan.scan(body, boundary, partCap(), true);
     }
 
     Option<MultipartError> partBreach(MultipartScan.Parts scanned) {

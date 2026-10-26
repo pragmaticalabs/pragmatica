@@ -254,14 +254,23 @@ class UploadSpecTest {
     }
 
     @Test
+    void scanForLimits_stopsAtTheFirstNestedPart() {
+        var scanned = parts(2, 0, 0, 0).scanForLimits(body(file(1), nestedWith(50), file(1)), "XB");
+
+        assertThat(scanned.stopped()).isTrue();
+        assertThat(scanned.parts()).hasSize(2);
+    }
+
+    @Test
     void scan_stopsAtThePartCap_withMemoryProportionalToTheCap() {
         var tiny = (field("a", "1").repeat(200_000) + "--XB--\r\n").getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        var bounded = allocatedBy(() -> MultipartScan.scan(tiny, "XB", 128, true));
+        var bounded = allocatedBy(() -> parts(2, 0, 0, 0).scanForLimits(tiny, "XB"));
         var unbounded = allocatedBy(() -> MultipartScan.scan(tiny, "XB"));
-        var scanned = MultipartScan.scan(tiny, "XB", 128, true);
+        var scanned = parts(2, 0, 0, 0).scanForLimits(tiny, "XB");
 
         assertThat(scanned.stopped()).isTrue();
         assertThat(scanned.parts()).as("cap + 1 records, no more").hasSize(129);
+        assertThat(parts(2, 0, 200, 0).scanForLimits(tiny, "XB").parts()).as("the cap follows the declared counts").hasSize(203);
         assertThat(parts(2, 0, 0, 0).partBreach(tiny, CONTENT_TYPE).map(MultipartError::message).or(""))
             .isEqualTo("Multipart body has more than 128 parts");
         assertThat(bounded).as("allocated bytes of the bounded scan " + bounded + " against " + unbounded + " unbounded")
