@@ -292,6 +292,56 @@ class IdentityLedgerTest {
     }
 
     @Test
+    void record_ofAFactTheLoadedFileHolds_completesAtOnce_withoutAWrite() {
+        var seeded = IdentityLedger.identityLedger(ledgerFile(), DurableWriter.fileOps());
+
+        seeded.open(true);
+        seeded.record(IdentityFacts.terminated(node("a"), "TOKEN_CONFLICT")).await(BOUND);
+
+        var writer = new RecordingWriter();
+        var restarted = IdentityLedger.identityLedger(ledgerFile(), writer);
+
+        restarted.open(false);
+        writer.writes.set(0);
+
+        var again = restarted.record(IdentityFacts.terminated(node("a"), "TOKEN_CONFLICT"));
+
+        assertThat(again.isResolved()).as("the file already holds it").isTrue();
+        assertThat(writer.writes.get()).isZero();
+    }
+
+    /// A merge with a peer that has no retirements must still end the WIPED state: the file has to exist afterwards, or the next
+    /// restart reads the node as wiped again.
+    @Test
+    void record_ofNothing_onAWipedLedger_stillWritesTheFile() {
+        var ledger = IdentityLedger.identityLedger(ledgerFile(), DurableWriter.fileOps());
+
+        ledger.open(false);
+        assertThat(Files.exists(ledgerFile())).as("control: a wiped ledger is not written").isFalse();
+
+        ledger.record(IdentityFacts.identityFacts()).await(BOUND);
+
+        assertThat(Files.isRegularFile(ledgerFile())).isTrue();
+        assertThat(IdentityLedger.identityLedger(ledgerFile(), DurableWriter.fileOps()).open(false).origin()).isEqualTo(Origin.LOADED);
+    }
+
+    @Test
+    void facts_includeARetirementWhoseWriteIsStillInFlight() {
+        var writer = new RecordingWriter();
+        var ledger = IdentityLedger.identityLedger(ledgerFile(), writer);
+
+        ledger.open(true);
+        writer.holdDirectoryForce = new CountDownLatch(1);
+
+        var pending = ledger.record(IdentityFacts.terminated(node("a"), "TOKEN_CONFLICT"));
+
+        assertThat(ledger.facts().isTerminated(node("a"))).as("held in memory before it is durable").isTrue();
+
+        writer.holdDirectoryForce.countDown();
+        pending.await(BOUND);
+    }
+
+    @Test
     void record_afterALoad_writesTheLoadedRetirementsToo() {
         var first = IdentityLedger.identityLedger(ledgerFile(), DurableWriter.fileOps());
 

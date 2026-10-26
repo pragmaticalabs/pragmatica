@@ -295,6 +295,16 @@ class BootTokensLedgerTest {
     }
 
     @Test
+    void admit_aConflict_recordsTheTokenConflictCause() throws Exception {
+        var registry = boot();
+
+        registry.admit(PEER, FIRST);
+        registry.admitDurably(PEER, OTHER).await(BOUND);
+
+        assertThat(java.nio.file.Files.readString(file())).contains("T\tpeer-1\tTOKEN_CONFLICT");
+    }
+
+    @Test
     void admit_tokenZero_isStillAdmitted_andRecordsNothing() {
         var registry = boot();
 
