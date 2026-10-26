@@ -114,40 +114,56 @@ public interface BootTokens {
                         AtomicBoolean wiped) implements BootTokens {
             @Override
             public Admission admit(NodeId peer, long token) {
-                var answer = new AtomicReference<>(Admission.UNAVAILABLE);
+                var screened = screen(peer, token);
 
-                admitDurably(peer, token).onSuccess(answer::set);
-
-                return answer.get();
+                return screened == Admission.CONFLICT
+                       ? answeredNow(conflict(peer))
+                       : screened;
             }
 
             @Override
             public Promise<Admission> admitDurably(NodeId peer, long token) {
+                var screened = screen(peer, token);
+
+                return screened == Admission.CONFLICT
+                       ? conflict(peer)
+                       : Promise.success(screened);
+            }
+
+            /// A synchronous caller takes the verdict only if it is already known; a retirement still being written is
+            /// UNAVAILABLE to it, and is announced when it is durable.
+            private Admission answeredNow(Promise<Admission> verdict) {
+                var answer = new AtomicReference<>(Admission.UNAVAILABLE);
+
+                verdict.onSuccess(answer::set);
+
+                return answer.get();
+            }
+
+            /// Every outcome that needs no write. [Admission#CONFLICT] here only means "a different process, not yet
+            /// retired": the caller retires it and answers with the real verdict. Nothing is allocated on the common path.
+            private Admission screen(NodeId peer, long token) {
                 if (!ready.get()) {
-                    return Promise.success(Admission.UNAVAILABLE);
+                    return Admission.UNAVAILABLE;
                 }
 
                 if (retired.contains(peer)) {
-                    return Promise.success(refused(Admission.RETIRED));
+                    return refused(Admission.RETIRED);
                 }
 
                 if (token == 0L) {
-                    return Promise.success(Admission.ADMITTED);
+                    return Admission.ADMITTED;
                 }
 
-                return admitInMemory(peer, token);
-            }
-
-            private Promise<Admission> admitInMemory(NodeId peer, long token) {
                 if (wiped.get() && !tokens.containsKey(peer)) {
-                    return Promise.success(Admission.UNAVAILABLE);
+                    return Admission.UNAVAILABLE;
                 }
 
                 var known = tokens.putIfAbsent(peer, token);
 
                 return known == null || known == token
-                       ? Promise.success(Admission.ADMITTED)
-                       : conflict(peer);
+                       ? Admission.ADMITTED
+                       : Admission.CONFLICT;
             }
 
             /// Write-ahead: the retirement stands in memory at once (every later piece of evidence is refused), but it is
@@ -195,8 +211,10 @@ public interface BootTokens {
                 return Unit.unit();
             }
 
-            private void apply(IdentityFacts facts) {
+            private Unit apply(IdentityFacts facts) {
                 retired.addAll(facts.retired());
+
+                return Unit.unit();
             }
 
             @Override
@@ -207,9 +225,10 @@ public interface BootTokens {
                              .onSuccess(_ -> adoptMerge(peerFacts));
             }
 
-            private void adoptMerge(IdentityFacts peerFacts) {
-                apply(peerFacts);
+            private Unit adoptMerge(IdentityFacts peerFacts) {
                 wiped.set(false);
+
+                return apply(peerFacts);
             }
 
             @Override

@@ -26,7 +26,7 @@ import java.util.function.Consumer;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Fn1;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -145,7 +145,7 @@ public interface IdentityLedger {
                       AtomicReference<IdentityFacts> state,
                       AtomicReference<IdentityFacts> written,
                       AtomicBoolean fileCurrent,
-                      AtomicBoolean durable,
+                      AtomicBoolean durableFlag,
                       AtomicBoolean draining,
                       ConcurrentLinkedQueue<Promise<Unit>> queue,
                       ConcurrentLinkedQueue<Consumer<Option<Cause>>> listeners) implements IdentityLedger {
@@ -165,7 +165,7 @@ public interface IdentityLedger {
                              : probeWritable();
             var cause = unwritable.fold(Option::<Cause>some, _ -> Option.<Cause>none());
 
-            durable.set(createdNow && cause.isEmpty());
+            durableFlag.set(createdNow && cause.isEmpty());
 
             return new Loading(IdentityFacts.identityFacts(),
                                createdNow
@@ -192,10 +192,12 @@ public interface IdentityLedger {
                           .option();
         }
 
-        private void adopt(IdentityFacts facts) {
+        private Unit adopt(IdentityFacts facts) {
             state.set(facts);
             written.set(facts);
             fileCurrent.set(true);
+
+            return Unit.unit();
         }
 
         @Override
@@ -220,13 +222,15 @@ public interface IdentityLedger {
             return pending;
         }
 
-        private void startDrain() {
+        private Unit startDrain() {
             if (draining.compareAndSet(false, true)) {
                 Thread.ofPlatform()
                       .daemon()
                       .name("identity-ledger-writer")
                       .start(this::drain);
             }
+
+            return Unit.unit();
         }
 
         @Contract
@@ -237,22 +241,22 @@ public interface IdentityLedger {
             } while (!queue.isEmpty() && draining.compareAndSet(false, true));
         }
 
-        private void writeBatch() {
+        private Unit writeBatch() {
             var batch = new ArrayList<Promise<Unit>>();
 
             for (var next = queue.poll(); next != null; next = queue.poll()) {
                 batch.add(next);
             }
 
-            if (batch.isEmpty()) {
-                return;
+            if (!batch.isEmpty()) {
+                var result = writeCurrent().onSuccess(_ -> markDurable())
+                                           .onFailure(this::markNotDurable)
+                                           .mapError(WriteFailed.FACTORY);
+
+                batch.forEach(pending -> pending.resolve(result));
             }
 
-            var result = writeCurrent().onSuccess(_ -> markDurable())
-                                       .onFailure(this::markNotDurable)
-                                       .mapError(WriteFailed.FACTORY);
-
-            batch.forEach(pending -> pending.resolve(result));
+            return Unit.unit();
         }
 
         private Result<Unit> writeCurrent() {
@@ -277,30 +281,34 @@ public interface IdentityLedger {
             FileOps.deleteIfExists(temp);
         }
 
-        private void published(IdentityFacts snapshot) {
+        private Unit published(IdentityFacts snapshot) {
             written.set(snapshot);
             fileCurrent.set(true);
+
+            return Unit.unit();
         }
 
-        private void markDurable() {
-            if (!durable.getAndSet(true)) {
-                notifyListeners(Option.none());
-            }
+        private Unit markDurable() {
+            return durableFlag.getAndSet(true)
+                   ? Unit.unit()
+                   : notifyListeners(Option.none());
         }
 
-        private void markNotDurable(Cause cause) {
-            if (durable.getAndSet(false)) {
-                notifyListeners(Option.some(cause));
-            }
+        private Unit markNotDurable(Cause cause) {
+            return durableFlag.getAndSet(false)
+                   ? notifyListeners(Option.some(cause))
+                   : Unit.unit();
         }
 
-        private void notifyListeners(Option<Cause> change) {
+        private Unit notifyListeners(Option<Cause> change) {
             listeners.forEach(listener -> listener.accept(change));
+
+            return Unit.unit();
         }
 
         @Override
         public boolean durable() {
-            return durable.get();
+            return durableFlag.get();
         }
 
         @Override

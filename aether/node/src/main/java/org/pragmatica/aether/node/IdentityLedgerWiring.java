@@ -6,8 +6,10 @@ package org.pragmatica.aether.node;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 
 import org.pragmatica.aether.config.StorageConfig;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.IdentityLedger;
 import org.pragmatica.lang.Cause;
@@ -53,21 +55,26 @@ public sealed interface IdentityLedgerWiring {
     }
 
     static Location location(AetherNodeConfig config) {
-        return config.protocol()
-                     .identityLedgerFile()
-                     .map(file -> new Location(file, true))
-                     .or(() -> derivedLocation(config));
+        return location(config.self(),
+                        config.protocol()
+                              .identityLedgerFile(),
+                        config.storageConfig());
     }
 
-    private static Location derivedLocation(AetherNodeConfig config) {
+    /// The location a node with these inputs uses: the harness-stated file when there is one, else the file derived from the
+    /// artifacts disk path.
+    static Location location(NodeId self, Option<Path> stated, Map<String, StorageConfig> storage) {
+        return stated.map(file -> new Location(file, true))
+                     .or(() -> derivedLocation(self, storage));
+    }
+
+    private static Location derivedLocation(NodeId self, Map<String, StorageConfig> storage) {
         var defaults = StorageConfig.storageConfig();
-        var artifacts = Option.option(config.storageConfig()
-                                            .get("artifacts"))
+        var artifacts = Option.option(storage.get("artifacts"))
                               .or(defaults);
         var file = Path.of(artifacts.diskPath())
                        .resolveSibling("identity")
-                       .resolve(config.self()
-                                      .id())
+                       .resolve(self.id())
                        .resolve("ledger");
 
         return new Location(file,
@@ -77,8 +84,10 @@ public sealed interface IdentityLedgerWiring {
 
     /// The boot gate: a stated location must be usable. Nothing is checked for a synthesized one.
     static Result<Unit> verifyBootable(AetherNodeConfig config) {
-        var location = location(config);
+        return verifyBootable(location(config));
+    }
 
+    static Result<Unit> verifyBootable(Location location) {
         return location.stated()
                ? unusableCause(location).fold(Result::unitResult,
                                               cause -> LedgerUnusable.ledgerUnusable(location.file(), cause)
@@ -94,10 +103,12 @@ public sealed interface IdentityLedgerWiring {
 
     /// Attach the ledger to the registry and load it, before the node starts: admission answers UNAVAILABLE in between.
     static Unit wire(AetherNodeConfig config, BootTokens tokens, OperatorWarningSink sink) {
-        var location = location(config);
+        return wire(location(config), config.self(), tokens, sink);
+    }
+
+    static Unit wire(Location location, NodeId self, BootTokens tokens, OperatorWarningSink sink) {
         var ledger = IdentityLedger.identityLedger(location.file(), IdentityLedger.DurableWriter.fileOps());
-        var subject = config.self()
-                            .id();
+        var subject = self.id();
 
         tokens.attachLedger(ledger);
         var loading = ledger.open(isNewDirectory(location));
@@ -123,8 +134,11 @@ public sealed interface IdentityLedgerWiring {
                                           subject,
                                           "The identity ledger {} is missing on a node that is not new, so this node cannot tell which"
                                           + " NodeIds it retired before: it admits no NEW peer until it has merged with a peer's ledger."
-                                          + " Restart protection against a retired NodeId is off on this node until then.",
-                                          location.file());
+                                          + " Restart protection against a retired NodeId is off on this node until then."
+                                          + " To start it as a NEW node instead, stop it and delete the directory {}.",
+                                          location.file(),
+                                          location.file()
+                                                  .getParent());
         }
 
         return loading.unwritable()

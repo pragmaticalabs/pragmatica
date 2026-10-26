@@ -1,15 +1,19 @@
 package org.pragmatica.swim;
 
 import java.net.InetSocketAddress;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.BootTokens;
+import org.pragmatica.consensus.net.IdentityFacts;
+import org.pragmatica.consensus.net.IdentityLedger;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.swim.SwimAnnounceClusterGateTest.RecordingListener;
@@ -173,6 +177,27 @@ class SwimBootTokenTest {
         assertThat(protocol.members().get(NODE_A).state()).isEqualTo(MemberState.ALIVE);
         assertThat(protocol.members().get(NODE_A).incarnation()).isEqualTo(7);
         assertThat(protocol.bootTokenRefusals()).isZero();
+    }
+
+    /// #2429: a registry that has not loaded its identity ledger answers UNAVAILABLE. That is neither admission nor refusal:
+    /// the evidence is dropped, nothing is retired or counted, and the next round is admitted once the ledger is loaded.
+    @Test
+    void unavailableRegistry_dropsTheEvidence_withoutARefusal_andAdmitsOnceTheLedgerIsLoaded(@TempDir Path directory) {
+        var tokens = BootTokens.bootTokens(0x5E1FL);
+
+        tokens.attachLedger(IdentityLedger.identityLedger(directory.resolve("ledger"), IdentityLedger.DurableWriter.fileOps()));
+        protocol.setBootTokens(tokens);
+
+        announce(5, TOKEN);
+
+        assertThat(protocol.members()).as("not admitted while the registry cannot answer").doesNotContainKey(NODE_A);
+        assertThat(protocol.bootTokenRefusals()).as("and not a refusal").isZero();
+        assertThat(tokens.isRetired(NODE_A)).isFalse();
+
+        tokens.preload(IdentityFacts.identityFacts(), false);
+        announce(6, TOKEN);
+
+        assertThat(protocol.members().get(NODE_A).state()).isEqualTo(MemberState.ALIVE);
     }
 
     @Test
