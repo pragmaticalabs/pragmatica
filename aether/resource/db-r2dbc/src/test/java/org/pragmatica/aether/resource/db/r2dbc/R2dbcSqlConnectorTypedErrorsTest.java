@@ -212,6 +212,40 @@ class R2dbcSqlConnectorTypedErrorsTest {
     }
 
     @Test
+    void everyOperation_driverFailure_reachesCallerAsAQueryFailureKeepingItsSqlState() {
+        RowMapper<String> mapper = row -> row.getString("name");
+
+        assertSyntaxError(connector.queryOne("SELEC 1", mapper));
+        assertSyntaxError(connector.queryOptional("SELEC 1", mapper));
+        assertSyntaxError(connector.queryList("SELEC 1", mapper));
+        assertSyntaxError(connector.update("SELEC 1"));
+        assertSyntaxError(connector.batch("SELEC 1", java.util.List.of(new Object[0])));
+    }
+
+    @Test
+    void transactional_driverFailureOfEachOperation_reachesCallerAsAQueryFailureKeepingItsSqlState() {
+        RowMapper<String> mapper = row -> row.getString("name");
+
+        assertSyntaxError(connector.transactional(tx -> tx.queryOne("SELEC 1", mapper)));
+        assertSyntaxError(connector.transactional(tx -> tx.queryOptional("SELEC 1", mapper)));
+        assertSyntaxError(connector.transactional(tx -> tx.queryList("SELEC 1", mapper)));
+        assertSyntaxError(connector.transactional(tx -> tx.update("SELEC 1")));
+        assertSyntaxError(connector.transactional(tx -> tx.batch("SELEC 1", java.util.List.of(new Object[0]))));
+    }
+
+    @Test
+    void transactional_failedCommit_keepsTheServersSqlState() {
+        connector.update("DROP TABLE IF EXISTS deferred_unique").await().unwrap();
+        connector.update("CREATE TABLE deferred_unique(id INT, CONSTRAINT deferred_unique_pk UNIQUE (id) DEFERRABLE INITIALLY DEFERRED)").await().unwrap();
+
+        var cause = failureOf(connector.transactional(tx -> tx.update("INSERT INTO deferred_unique VALUES (1)")
+                                                              .flatMap(_ -> tx.update("INSERT INTO deferred_unique VALUES (1)"))));
+
+        assertThat(cause).isInstanceOf(DatabaseConnectorError.ConstraintViolation.class);
+        assertThat(((DatabaseConnectorError) cause).sqlState()).isEqualTo(some("23505"));
+    }
+
+    @Test
     void transactional_rowDecodeFailureInCallback_reachesCallerUnchanged() {
         var decodeFailure = new RowDecodeError.RowDecode("name", Causes.cause("corrupt value"));
 
@@ -249,6 +283,13 @@ class R2dbcSqlConnectorTypedErrorsTest {
         var cause = failureOf(connector.queryOne("SELECT name FROM typed_errors WHERE id = 1", mapper));
 
         assertThat(cause).isSameAs(typed);
+    }
+
+    private static void assertSyntaxError(Promise<?> promise) {
+        var cause = failureOf(promise);
+
+        assertThat(cause).isInstanceOf(DatabaseConnectorError.QueryFailed.class);
+        assertThat(((DatabaseConnectorError) cause).sqlState()).isEqualTo(some("42601"));
     }
 
     private static void assertRowDecode(Cause cause) {
