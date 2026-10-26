@@ -237,11 +237,11 @@ class R2dbcSqlConnectorTypedErrorsTest {
     void transactional_callbackSeesTheConnectorErrorOfEachOperation() {
         RowMapper<String> mapper = row -> row.getString("name");
 
-        assertThat(kindSeenByCallback(tx -> tx.queryOne("SELEC 1", mapper))).isEqualTo("QueryFailed");
-        assertThat(kindSeenByCallback(tx -> tx.queryOptional("SELEC 1", mapper))).isEqualTo("QueryFailed");
-        assertThat(kindSeenByCallback(tx -> tx.queryList("SELEC 1", mapper))).isEqualTo("QueryFailed");
-        assertThat(kindSeenByCallback(tx -> tx.update("SELEC 1"))).isEqualTo("QueryFailed");
-        assertThat(kindSeenByCallback(tx -> tx.batch("SELEC 1", java.util.List.<Object[]> of(new Object[0])))).isEqualTo("QueryFailed");
+        assertThat(kindSeenByCallback(tx -> tx.queryOne("SELEC 1", mapper))).isEqualTo(DatabaseConnectorError.QueryFailed.class.getName());
+        assertThat(kindSeenByCallback(tx -> tx.queryOptional("SELEC 1", mapper))).isEqualTo(DatabaseConnectorError.QueryFailed.class.getName());
+        assertThat(kindSeenByCallback(tx -> tx.queryList("SELEC 1", mapper))).isEqualTo(DatabaseConnectorError.QueryFailed.class.getName());
+        assertThat(kindSeenByCallback(tx -> tx.update("SELEC 1"))).isEqualTo(DatabaseConnectorError.QueryFailed.class.getName());
+        assertThat(kindSeenByCallback(tx -> tx.batch("SELEC 1", java.util.List.<Object[]> of(new Object[0])))).isEqualTo(DatabaseConnectorError.QueryFailed.class.getName());
     }
 
     @Test
@@ -299,7 +299,7 @@ class R2dbcSqlConnectorTypedErrorsTest {
     /// What the transaction callback itself observes when an operation fails and it recovers, before the failure leaves
     /// the transaction: the connector error, not the driver layer's.
     private static String kindSeenByCallback(Fn1<Promise<?>, SqlConnector> operation) {
-        return connector.transactional(tx -> operation.apply(tx).map(_ -> "succeeded").recover(cause -> cause.getClass().getSimpleName()))
+        return connector.transactional(tx -> operation.apply(tx).map(_ -> "succeeded").recover(cause -> cause.getClass().getName()))
                         .await()
                         .unwrap();
     }
