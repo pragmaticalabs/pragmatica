@@ -219,7 +219,7 @@ class R2dbcSqlConnectorTypedErrorsTest {
         assertSyntaxError(connector.queryOptional("SELEC 1", mapper));
         assertSyntaxError(connector.queryList("SELEC 1", mapper));
         assertSyntaxError(connector.update("SELEC 1"));
-        assertSyntaxError(connector.batch("SELEC 1", java.util.List.of(new Object[0])));
+        assertSyntaxError(connector.batch("SELEC 1", java.util.List.<Object[]> of(new Object[0])));
     }
 
     @Test
@@ -230,7 +230,7 @@ class R2dbcSqlConnectorTypedErrorsTest {
         assertSyntaxError(connector.transactional(tx -> tx.queryOptional("SELEC 1", mapper)));
         assertSyntaxError(connector.transactional(tx -> tx.queryList("SELEC 1", mapper)));
         assertSyntaxError(connector.transactional(tx -> tx.update("SELEC 1")));
-        assertSyntaxError(connector.transactional(tx -> tx.batch("SELEC 1", java.util.List.of(new Object[0]))));
+        assertSyntaxError(connector.transactional(tx -> tx.batch("SELEC 1", java.util.List.<Object[]> of(new Object[0]))));
     }
 
     @Test
