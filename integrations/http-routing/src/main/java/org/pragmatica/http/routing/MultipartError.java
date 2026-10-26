@@ -94,12 +94,16 @@ public sealed interface MultipartError extends HttpStatusAware {
     record LimitExceeded(long limit, String message) implements MultipartError {
         public static final Fn1<LimitExceeded, Long> FILES = Causes.forOneValue("Multipart body has more than %d files",
                                                                                 LimitExceeded::new);
+
         public static final Fn1<LimitExceeded, Long> FILE_SIZE = Causes.forOneValue("A file in the multipart body is larger than %d bytes",
                                                                                     LimitExceeded::new);
+
         public static final Fn1<LimitExceeded, Long> FIELDS = Causes.forOneValue("Multipart body has more than %d fields",
                                                                                  LimitExceeded::new);
+
         public static final Fn1<LimitExceeded, Long> PARTS = Causes.forOneValue("Multipart body has more than %d parts",
                                                                                 LimitExceeded::new);
+
         public static final Fn1<LimitExceeded, Long> FIELD_SIZE = Causes.forOneValue("A field in the multipart body is larger than %d bytes",
                                                                                      LimitExceeded::new);
 

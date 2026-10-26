@@ -245,6 +245,7 @@ final class Http3Server {
             this.streamWriteInterceptor = streamWriteInterceptor;
         }
 
+        @Contract
         @Override
         protected void initChannel(QuicChannel ch) {
             ch.pipeline()
@@ -272,6 +273,7 @@ final class Http3Server {
         }
 
         /// #2386: the frame-boundary guard goes first, ahead of Netty's frame codec, so it sees the stream's bytes.
+        @Contract
         @Override
         protected void initChannel(Channel ch) {
             ch.pipeline().addFirst(new Http3FrameBoundaryGuard());
@@ -351,6 +353,7 @@ final class Http3Server {
         /// The first one is classified here, before any body frame is read: a rejected request is answered at once and
         /// its input reset, and an admitted one is bounded by what the classifier said (size, idle, minimum rate,
         /// duration).
+        @Contract
         @Override
         protected void channelRead(ChannelHandlerContext ctx, Http3HeadersFrame frame) {
             if (headersFrame == null) {
@@ -391,6 +394,7 @@ final class Http3Server {
             guard = none();
         }
 
+        @Contract
         @Override
         protected void channelRead(ChannelHandlerContext ctx, Http3DataFrame dataFrame) {
             if (!rejected && guard.map(active -> active.onBytes(dataFrame.content().readableBytes())).or(true)) {
@@ -400,6 +404,7 @@ final class Http3Server {
             ReferenceCountUtil.release(dataFrame);
         }
 
+        @Contract
         @Override
         protected void channelInputClosed(ChannelHandlerContext ctx) {
             stopTimers();
@@ -408,6 +413,7 @@ final class Http3Server {
         /// #2386: dispatch waits for [ChannelInputShutdownReadComplete], the event after the input-shutdown one. Netty's
         /// request-stream validation checks the body against `content-length` only when the input ends, and on a
         /// mismatch raises the error and withholds this event; dispatching on input shutdown came before that check.
+        @Contract
         @Override
         public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
             if (evt == ChannelInputShutdownReadComplete.INSTANCE) {
@@ -592,6 +598,7 @@ final class Http3Server {
         /// offending frame and so before the stream's input can end. Marking the stream rejected is what keeps its
         /// valid prefix from being dispatched: closing it is not enough, because when the bad bytes and the `FIN`
         /// arrive in one read, the transport still delivers the input-shutdown events after the close.
+        @Contract
         @Override
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
             rejected = true;
@@ -652,6 +659,7 @@ final class Http3Server {
             return this;
         }
 
+        @Contract
         @Override
         public void write(HttpStatus status, byte[] body, ContentType contentType) {
             writeAsync(status, body, contentType);

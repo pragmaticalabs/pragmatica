@@ -39,9 +39,7 @@ public interface TestSlice {
     Promise<UploadResponse> uploadText(String body);
     // consumes multipart/form-data (MultipartRequest param)
     Promise<UploadResponse> uploadForm(MultipartRequest request);
-
     Promise<UploadResponse> uploadBlob(byte[] body);
-
     // consumes multipart/form-data with part limits
     Promise<UploadResponse> uploadParts(MultipartRequest request);
 

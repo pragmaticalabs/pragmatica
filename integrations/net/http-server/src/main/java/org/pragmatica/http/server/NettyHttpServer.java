@@ -280,6 +280,7 @@ final class NettyHttpServer implements HttpServer {
             }
         }
 
+        @Contract
         @Override
         protected void initChannel(SocketChannel ch) {
             var pipeline = ch.pipeline();
@@ -423,6 +424,7 @@ final class NettyHttpServer implements HttpServer {
             this.wsEndpoints = wsEndpoints;
         }
 
+        @Contract
         @Override
         protected void channelRead0(ChannelHandlerContext ctx, Object msg) {
             if (msg instanceof FullHttpRequest request) {
@@ -532,20 +534,21 @@ final class NettyHttpServer implements HttpServer {
                   .flatMap(opt -> opt)
                   .onPresent(state -> {
                                  if (frame instanceof TextWebSocketFrame textFrame) {
-                                 state.handler.handle(state.session,
-                                                      new WebSocketMessage.Text(textFrame.text()));
-                             } else if (frame instanceof BinaryWebSocketFrame binaryFrame) {
-                                 var bytes = new byte[binaryFrame.content()
-                                                                 .readableBytes()];
+                                     state.handler.handle(state.session,
+                                                          new WebSocketMessage.Text(textFrame.text()));
+                                 } else if (frame instanceof BinaryWebSocketFrame binaryFrame) {
+                                     var bytes = new byte[binaryFrame.content()
+                                                                     .readableBytes()];
 
-                                 binaryFrame.content()
-                                            .readBytes(bytes);
-                                 state.handler.handle(state.session,
-                                                      new WebSocketMessage.Binary(bytes));
-                             }
+                                     binaryFrame.content()
+                                                .readBytes(bytes);
+                                     state.handler.handle(state.session,
+                                                          new WebSocketMessage.Binary(bytes));
+                                 }
                              });
         }
 
+        @Contract
         @Override
         public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
             if (evt instanceof WebSocketServerProtocolHandler.HandshakeComplete handshake) {
@@ -598,6 +601,7 @@ final class NettyHttpServer implements HttpServer {
             ctx.fireChannelInactive();
         }
 
+        @Contract
         @Override
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
             log.error("Error in HTTP handler", cause);
@@ -705,6 +709,7 @@ final class NettyHttpServer implements HttpServer {
             return this;
         }
 
+        @Contract
         @Override
         public void write(HttpStatus status, byte[] body, ContentType contentType) {
             writeAsync(status, body, contentType);
@@ -795,6 +800,7 @@ final class NettyHttpServer implements HttpServer {
             return id;
         }
 
+        @Contract
         @Override
         public void send(String text) {
             if (channel.isActive()) {
@@ -802,6 +808,7 @@ final class NettyHttpServer implements HttpServer {
             }
         }
 
+        @Contract
         @Override
         public void send(byte[] binary) {
             if (channel.isActive()) {
@@ -809,6 +816,7 @@ final class NettyHttpServer implements HttpServer {
             }
         }
 
+        @Contract
         @Override
         public void close() {
             if (channel.isActive()) {

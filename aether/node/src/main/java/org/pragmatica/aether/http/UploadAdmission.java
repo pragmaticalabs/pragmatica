@@ -114,7 +114,6 @@ final class UploadAdmission {
         inFlight++;
         reservedBytes += reserved;
         byPrincipal.merge(principal, 1, Integer::sum);
-
         var released = new AtomicBoolean();
 
         return Result.success(() -> release(principal, reserved, released));

@@ -31,13 +31,13 @@ final class PartLimitExecutor {
 
     private final ThreadPoolExecutor executor;
 
-    private PartLimitExecutor(int threads, int queueLength) {
+    private PartLimitExecutor(int threads, int queueLength, long idleSeconds) {
         var number = new AtomicInteger();
         ThreadFactory factory = task -> daemon(task, number.incrementAndGet());
 
         this.executor = new ThreadPoolExecutor(threads,
                                                threads,
-                                               IDLE_SECONDS,
+                                               idleSeconds,
                                                TimeUnit.SECONDS,
                                                new ArrayBlockingQueue<>(queueLength),
                                                factory);
@@ -48,14 +48,17 @@ final class PartLimitExecutor {
     static PartLimitExecutor partLimitExecutor() {
         var threads = Math.max(2,
                                Math.min(MAX_THREADS,
-                                        Runtime.getRuntime()
-                                               .availableProcessors() / 2));
+                                        Runtime.getRuntime().availableProcessors() / 2));
 
         return partLimitExecutor(threads, threads * QUEUE_PER_THREAD);
     }
 
     static PartLimitExecutor partLimitExecutor(int threads, int queueLength) {
-        return new PartLimitExecutor(threads, queueLength);
+        return partLimitExecutor(threads, queueLength, IDLE_SECONDS);
+    }
+
+    static PartLimitExecutor partLimitExecutor(int threads, int queueLength, long idleSeconds) {
+        return new PartLimitExecutor(threads, queueLength, idleSeconds);
     }
 
     /// Runs `task` on a worker, or fails when every worker is busy and the queue is full.
@@ -63,13 +66,29 @@ final class PartLimitExecutor {
         return Result.lift(PartLimitExecutor::refusal, () -> executor.execute(task));
     }
 
-    /// Test seam: stops the workers.
-    void shutdownNow() {
-        executor.shutdownNow();
+    /// Test seam: the workers now alive.
+    int workers() {
+        return executor.getPoolSize();
+    }
+
+    /// Test seam: the checks waiting for a worker.
+    int queued() {
+        return executor.getQueue().size();
+    }
+
+    /// Test seam: how many workers the pool grows to.
+    int threads() {
+        return executor.getCorePoolSize();
+    }
+
+    /// Test seam: how many checks may wait.
+    int queueCapacity() {
+        return executor.getQueue().remainingCapacity() + executor.getQueue().size();
     }
 
     private static Cause refusal(Throwable rejected) {
-        return Causes.cause(REFUSED, Option.some(Causes.fromThrowable(rejected)));
+        return Causes.cause(REFUSED,
+                            Option.some(Causes.fromThrowable(rejected)));
     }
 
     private static Thread daemon(Runnable task, int number) {

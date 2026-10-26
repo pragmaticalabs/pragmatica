@@ -58,19 +58,6 @@ public record UploadConfig(long maxSizeCeiling,
                                             int maxConcurrent,
                                             int maxConcurrentPerPrincipal,
                                             TimeSpan idleTimeout,
-                                            int minBodyRate) {
-        return new UploadConfig(maxSizeCeiling,
-                                maxConcurrent,
-                                maxConcurrentPerPrincipal,
-                                idleTimeout,
-                                minBodyRate,
-                                DEFAULT_MAX_IN_FLIGHT_BYTES);
-    }
-
-    public static UploadConfig uploadConfig(long maxSizeCeiling,
-                                            int maxConcurrent,
-                                            int maxConcurrentPerPrincipal,
-                                            TimeSpan idleTimeout,
                                             int minBodyRate,
                                             long maxInFlightBytes) {
         return new UploadConfig(maxSizeCeiling,
@@ -91,22 +78,47 @@ public record UploadConfig(long maxSizeCeiling,
     }
 
     public UploadConfig withMaxConcurrent(int maxConcurrent) {
-        return new UploadConfig(maxSizeCeiling, maxConcurrent, maxConcurrentPerPrincipal, idleTimeout, minBodyRate, maxInFlightBytes);
+        return new UploadConfig(maxSizeCeiling,
+                                maxConcurrent,
+                                maxConcurrentPerPrincipal,
+                                idleTimeout,
+                                minBodyRate,
+                                maxInFlightBytes);
     }
 
     public UploadConfig withMaxConcurrentPerPrincipal(int maxConcurrentPerPrincipal) {
-        return new UploadConfig(maxSizeCeiling, maxConcurrent, maxConcurrentPerPrincipal, idleTimeout, minBodyRate, maxInFlightBytes);
+        return new UploadConfig(maxSizeCeiling,
+                                maxConcurrent,
+                                maxConcurrentPerPrincipal,
+                                idleTimeout,
+                                minBodyRate,
+                                maxInFlightBytes);
     }
 
     public UploadConfig withMaxSizeCeiling(long maxSizeCeiling) {
-        return new UploadConfig(maxSizeCeiling, maxConcurrent, maxConcurrentPerPrincipal, idleTimeout, minBodyRate, maxInFlightBytes);
+        return new UploadConfig(maxSizeCeiling,
+                                maxConcurrent,
+                                maxConcurrentPerPrincipal,
+                                idleTimeout,
+                                minBodyRate,
+                                maxInFlightBytes);
     }
 
     public UploadConfig withIdleTimeout(TimeSpan idleTimeout) {
-        return new UploadConfig(maxSizeCeiling, maxConcurrent, maxConcurrentPerPrincipal, idleTimeout, minBodyRate, maxInFlightBytes);
+        return new UploadConfig(maxSizeCeiling,
+                                maxConcurrent,
+                                maxConcurrentPerPrincipal,
+                                idleTimeout,
+                                minBodyRate,
+                                maxInFlightBytes);
     }
 
     public UploadConfig withMinBodyRate(int minBodyRate) {
-        return new UploadConfig(maxSizeCeiling, maxConcurrent, maxConcurrentPerPrincipal, idleTimeout, minBodyRate, maxInFlightBytes);
+        return new UploadConfig(maxSizeCeiling,
+                                maxConcurrent,
+                                maxConcurrentPerPrincipal,
+                                idleTimeout,
+                                minBodyRate,
+                                maxInFlightBytes);
     }
 }

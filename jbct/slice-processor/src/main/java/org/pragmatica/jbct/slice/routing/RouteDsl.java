@@ -10,6 +10,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
@@ -73,11 +74,16 @@ public record RouteDsl(String method,
     /// The bare-string and array route forms call [#parse(String)], which defaults both to
     /// [MediaType#JSON] (JSON in, JSON out) — preserving backward compatibility.
     public static Result<RouteDsl> parse(String dsl, MediaType consumes, MediaType produces) {
-        if (dsl == null || dsl.isBlank()) {
-            return EMPTY_DSL.result();
-        }
+        return Option.option(dsl)
+                     .filter(text -> !text.isBlank())
+                     .toResult(EMPTY_DSL)
+                     .flatMap(text -> parseTrimmed(text.trim(),
+                                                   consumes,
+                                                   produces));
+    }
 
-        var matcher = DSL_PATTERN.matcher(dsl.trim());
+    private static Result<RouteDsl> parseTrimmed(String dsl, MediaType consumes, MediaType produces) {
+        var matcher = DSL_PATTERN.matcher(dsl);
 
         if (!matcher.matches()) {
             return INVALID_FORMAT.result();
@@ -122,10 +128,13 @@ public record RouteDsl(String method,
     }
 
     private static List<QueryParam> parseQueryParams(String queryPart) {
-        if (queryPart == null || queryPart.isBlank()) {
-            return List.of();
-        }
+        return Option.option(queryPart)
+                     .filter(part -> !part.isBlank())
+                     .map(RouteDsl::queryParamsOf)
+                     .or(List.of());
+    }
 
+    private static List<QueryParam> queryParamsOf(String queryPart) {
         var params = new ArrayList<QueryParam>();
 
         for (var paramSpec : queryPart.split("&")) {

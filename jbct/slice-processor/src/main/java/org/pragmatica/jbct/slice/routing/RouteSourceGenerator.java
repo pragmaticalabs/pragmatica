@@ -462,25 +462,34 @@ public class RouteSourceGenerator {
     /// generated codecs under its options, with Jackson under the same naming and options as their fallback, or
     /// Jackson alone. Naming is the build's (`[json] naming` in routes.toml), compiled in as a literal.
     private static void generateJsonCodecMethods(PrintWriter out, Option<String> jsonCodecs, NamingStrategy naming) {
-        out.println("    private static " + ADAPTER + "JsonCodecSource jsonCodecs(Object slice, JsonMapper jsonMapper) {");
+        out.println("    private static " + ADAPTER
+                   + "JsonCodecSource jsonCodecs(Object slice, JsonMapper jsonMapper) {");
         out.println("        return slice instanceof org.pragmatica.aether.slice.Slice deployed");
-        out.println("               ? " + ADAPTER + "SelectionCachingJsonCodecSource.selectionCachingJsonCodecSource(deployed.jsonCodecSettings()::current,");
+        out.println("               ? " + ADAPTER
+                   + "SelectionCachingJsonCodecSource.selectionCachingJsonCodecSource(deployed.jsonCodecSettings()::current,");
         out.println("                                                                                                   selection -> jsonCodec(selection, jsonMapper))");
-        out.println("               : " + ADAPTER + "JsonCodecSource.constant(jsonCodec(" + SELECTION + ".DEFAULT, jsonMapper));");
+        out.println("               : " + ADAPTER
+                   + "JsonCodecSource.constant(jsonCodec(" + SELECTION
+                   + ".DEFAULT, jsonMapper));");
         out.println("    }");
         out.println();
-        out.println("    private static org.pragmatica.http.JsonCodec jsonCodec(" + SELECTION + " selection, JsonMapper jsonMapper) {");
-        out.println("        var fallback = org.pragmatica.http.routing.JsonCodecAdapter.forMapper(" + fallbackMapper(naming) + ");");
+        out.println("    private static org.pragmatica.http.JsonCodec jsonCodec(" + SELECTION
+                   + " selection, JsonMapper jsonMapper) {");
+        out.println("        var fallback = org.pragmatica.http.routing.JsonCodecAdapter.forMapper(" + fallbackMapper(naming)
+                   + ");");
         jsonCodecs.onPresent(holder -> {
-                      out.println();
-                      out.println("        return switch (selection.implementation()) {");
-                      out.println("            case GENERATED -> " + ADAPTER + "GeneratedJsonCodec.generatedJsonCodec(" + holder + ".CODECS,");
-                      out.println("                                                                                    " + holder + ".CONTAINERS,");
-                      out.println("                                                                                    fallback,");
-                      out.println("                                                                                    selection.options());");
-                      out.println("            case JACKSON -> fallback;");
-                      out.println("        };");
-                  })
+                                 out.println();
+                                 out.println("        return switch (selection.implementation()) {");
+                                 out.println("            case GENERATED -> " + ADAPTER
+                                            + "GeneratedJsonCodec.generatedJsonCodec(" + holder
+                                            + ".CODECS,");
+                                 out.println("                                                                                    " + holder
+                                            + ".CONTAINERS,");
+                                 out.println("                                                                                    fallback,");
+                                 out.println("                                                                                    selection.options());");
+                                 out.println("            case JACKSON -> fallback;");
+                                 out.println("        };");
+                             })
                   .onEmpty(() -> {
                       out.println();
                       out.println("        return fallback;");
@@ -494,7 +503,7 @@ public class RouteSourceGenerator {
     // Jackson mapper's read limits cannot be changed on an existing instance.
     private static String fallbackMapper(NamingStrategy naming) {
         var configured = "JsonMapper.valueObjectJsonMapper(org.pragmatica.serialization.json.NamingStrategy." + naming.name()
-                         + ", selection.options())";
+                       + ", selection.options())";
 
         return naming == NamingStrategy.AS_DECLARED
                ? "selection.options().equals(org.pragmatica.serialization.json.JsonOptions.DEFAULTS) ? jsonMapper : " + configured
@@ -910,9 +919,9 @@ public class RouteSourceGenerator {
                                                       ? method.businessParameterType()
                                                       : method.parameterType());
 
-        return !components.isEmpty() && pathQueryParamNames(routeDsl).containsAll(components.stream()
-                                                                                          .map(MethodModel.RecordComponent::name)
-                                                                                          .toList());
+        return ! components.isEmpty() && pathQueryParamNames(routeDsl).containsAll(components.stream()
+                                                                                             .map(MethodModel.RecordComponent::name)
+                                                                                             .toList());
     }
 
     /// Resolve the value-object bindings for a route method's path/query parameters (#397 §4.2):
@@ -997,8 +1006,11 @@ public class RouteSourceGenerator {
         var limits = routeDsl.limits();
 
         return upload || limits.declared()
-               ? ".withUpload(org.pragmatica.http.routing.UploadSpec.uploadSpec(" + upload + ", " + limits.maxSizeBytes()
-                 + "L, " + limits.maxDurationMillis() + "L" + partLimitArguments(limits) + "))"
+               ? ".withUpload(org.pragmatica.http.routing.UploadSpec.uploadSpec(" + upload
+                + ", " + limits.maxSizeBytes()
+                + "L, " + limits.maxDurationMillis()
+                + "L" + partLimitArguments(limits)
+                + "))"
                : "";
     }
 
@@ -1006,8 +1018,11 @@ public class RouteSourceGenerator {
     /// same source it always did.
     private String partLimitArguments(RouteLimits limits) {
         return limits.hasPartLimits()
-               ? ", " + limits.maxFiles() + "L, " + limits.maxFileBytes() + "L, " + limits.maxFields() + "L, "
-                 + limits.maxFieldBytes() + "L"
+               ? ", " + limits.maxFiles()
+                + "L, " + limits.maxFileBytes()
+                + "L, " + limits.maxFields()
+                + "L, " + limits.maxFieldBytes()
+                + "L"
                : "";
     }
 
@@ -1066,10 +1081,9 @@ public class RouteSourceGenerator {
             return false;
         }
 
-        return !MethodModel.recordComponents(method.hasSecurityParams()
-                                             ? method.businessParameterType()
-                                             : method.parameterType())
-                           .isEmpty();
+        return ! MethodModel.recordComponents(method.hasSecurityParams()
+                                              ? method.businessParameterType()
+                                              : method.parameterType()).isEmpty();
     }
 
     /// Resolve the parameter type used for `consumes` validation, preferring the business
@@ -1169,6 +1183,7 @@ public class RouteSourceGenerator {
     /// Non-JSON bodies never reach the accessor decomposition: [MediaTypeTypeChecker] already
     /// constrains a text, binary or multipart `consumes` to `String`/`byte[]`/`MultipartRequest`,
     /// none of which is a record, so detection returns none for them.
+    @SuppressWarnings("JBCT-TOT-02")  // declaredFactory is total: it reads matched.getFirst() only after the isEmpty() guard returns none
     private Option<BodyFactory> validatingFactory(String parameterType) {
         return Option.option(elements.getTypeElement(erasedTypeName(parameterType)))
                      .filter(element -> element.getKind() == ElementKind.RECORD)
@@ -1186,13 +1201,13 @@ public class RouteSourceGenerator {
 
     private Option<BodyFactory> declaredFactory(TypeElement record) {
         var components = record.getRecordComponents();
-        var componentTypes = components.stream()
-                                       .map(component -> component.asType())
-                                       .toList();
+        var componentTypes = components.stream().map(component -> component.asType()).toList();
         var recordName = record.getQualifiedName().toString();
         var candidates = ElementFilter.methodsIn(record.getEnclosedElements())
                                       .stream()
-                                      .filter(method -> isFactoryShaped(method, record, componentTypes.size()))
+                                      .filter(method -> isFactoryShaped(method,
+                                                                        record,
+                                                                        componentTypes.size()))
                                       .toList();
         var matched = candidates.stream()
                                 .filter(method -> isValidatingFactory(method, record, recordName, componentTypes))
@@ -1200,27 +1215,24 @@ public class RouteSourceGenerator {
 
         if (matched.isEmpty()) {
             candidates.forEach(candidate -> warnUnmatchedFactory(record, recordName, candidate, componentTypes));
+
             return Option.none();
         }
 
         if (matched.size() > 1) {
             messager.printMessage(Diagnostic.Kind.WARNING,
                                   "Record " + recordName
-                                 + " declares more than one validating factory ('"
-                                 + matched.getFirst().getSimpleName()
+                                 + " declares more than one validating factory ('" + matched.getFirst().getSimpleName()
                                  + "' and '" + matched.get(1).getSimpleName()
                                  + "'); route generation uses '" + matched.getFirst().getSimpleName()
                                  + "'.",
                                   record);
         }
 
-        var accessors = components.stream()
-                                  .map(component -> component.getSimpleName().toString())
-                                  .toList();
+        var accessors = components.stream().map(component -> component.getSimpleName()
+                                                                      .toString()).toList();
 
-        return Option.some(new BodyFactory(matched.getFirst()
-                                                  .getSimpleName()
-                                                  .toString(),
+        return Option.some(new BodyFactory(matched.getFirst().getSimpleName().toString(),
                                            accessors));
     }
 
@@ -1233,11 +1245,12 @@ public class RouteSourceGenerator {
                                       ExecutableElement candidate,
                                       List<TypeMirror> componentTypes) {
         messager.printMessage(Diagnostic.Kind.WARNING,
-                              "Record " + recordName + ": method '" + candidate.getSimpleName()
+                              "Record " + recordName
+                             + ": method '" + candidate.getSimpleName()
                              + "' looks like a validating factory but does not match — expected"
                              + " parameter types (" + typeNames(componentTypes)
-                             + "), the record components in declaration order; found ("
-                             + String.join(", ", parameterTypeNames(candidate))
+                             + "), the record components in declaration order; found (" + String.join(", ",
+                                                                                                      parameterTypeNames(candidate))
                              + ") returning " + candidate.getReturnType()
                              + ". Routes fall back to the canonical constructor, so this factory's"
                              + " validation is skipped.",
@@ -1255,29 +1268,34 @@ public class RouteSourceGenerator {
     /// gate (#662): helpers with a different arity or carrying a different type are not near-misses
     /// and stay silent.
     private boolean isFactoryShaped(ExecutableElement method, TypeElement record, int componentCount) {
-        return method.getModifiers().contains(Modifier.STATIC)
-              && method.getParameters().size() == componentCount
-              && method.getReturnType() instanceof DeclaredType declared
-              && declared.asElement() instanceof TypeElement carrier
-              && RESULT_TYPE.equals(carrier.getQualifiedName().toString())
-              && declared.getTypeArguments().size() == 1
-              && declared.getTypeArguments().getFirst() instanceof DeclaredType carried
-              && carried.asElement() instanceof TypeElement carriedElement
-              && record.getQualifiedName().contentEquals(carriedElement.getQualifiedName());
+        return method.getModifiers()
+                     .contains(Modifier.STATIC)
+               && method.getParameters()
+                        .size() == componentCount
+               && method.getReturnType() instanceof DeclaredType declared
+               && declared.asElement() instanceof TypeElement carrier
+               && RESULT_TYPE.equals(carrier.getQualifiedName().toString())
+               && declared.getTypeArguments()
+                          .size() == 1
+               && declared.getTypeArguments()
+                          .getFirst() instanceof DeclaredType carried
+               && carried.asElement() instanceof TypeElement carriedElement
+               && record.getQualifiedName()
+                        .contentEquals(carriedElement.getQualifiedName());
     }
 
     private boolean isValidatingFactory(ExecutableElement method,
                                         TypeElement record,
                                         String recordName,
                                         List<TypeMirror> componentTypes) {
-        return returnsResultOf(method.getReturnType(), record, recordName)
-              && parameterTypesMatch(method, componentTypes);
+        return returnsResultOf(method.getReturnType(), record, recordName) && parameterTypesMatch(method, componentTypes);
     }
 
     private List<String> parameterTypeNames(ExecutableElement method) {
         return method.getParameters()
                      .stream()
-                     .map(parameter -> parameter.asType().toString())
+                     .map(parameter -> parameter.asType()
+                                                .toString())
                      .toList();
     }
 
@@ -1289,7 +1307,8 @@ public class RouteSourceGenerator {
         }
 
         for (var index = 0; index < componentTypes.size(); index++) {
-            if (!sameComponentType(parameters.get(index).asType(), componentTypes.get(index))) {
+            if (!sameComponentType(parameters.get(index).asType(),
+                                   componentTypes.get(index))) {
                 return false;
             }
         }
@@ -1307,9 +1326,8 @@ public class RouteSourceGenerator {
     /// spelling (a wildcard is not the same type as anything, itself included), so a component and
     /// parameter both spelled e.g. `List<? extends Foo>` match only textually.
     private boolean sameComponentType(TypeMirror parameter, TypeMirror component) {
-        return types.isSameType(parameter, component)
-              || boxedParameterOverPrimitiveComponent(parameter, component)
-              || parameter.toString().equals(component.toString());
+        return types.isSameType(parameter, component) || boxedParameterOverPrimitiveComponent(parameter, component) || parameter.toString()
+                                                                                                                                .equals(component.toString());
     }
 
     /// Boxing is accepted in one direction only: a boxed factory parameter (`Integer`) over a
@@ -1319,8 +1337,8 @@ public class RouteSourceGenerator {
     /// site's auto-unboxing would turn that into an NPE → 500 instead of the typed 400 the
     /// factory path exists to produce; refused, it warns as a near-miss (#710 review).
     private boolean boxedParameterOverPrimitiveComponent(TypeMirror parameter, TypeMirror component) {
-        return component instanceof PrimitiveType primitive
-              && types.isSameType(parameter, types.boxedClass(primitive).asType());
+        return component instanceof PrimitiveType primitive && types.isSameType(parameter,
+                                                                                types.boxedClass(primitive).asType());
     }
 
     /// The carried type argument must be this record — same type per `Types.isSameType`, with the
@@ -1329,15 +1347,17 @@ public class RouteSourceGenerator {
     /// refuses; such factories never matched and still do not — but now warn as near-misses).
     private boolean returnsResultOf(TypeMirror returnType, TypeElement record, String recordName) {
         return returnType instanceof DeclaredType declared
-              && declared.asElement() instanceof TypeElement erasure
-              && RESULT_TYPE.equals(erasure.getQualifiedName().toString())
-              && declared.getTypeArguments().size() == 1
-              && carriesRecordType(declared.getTypeArguments().getFirst(), record, recordName);
+               && declared.asElement() instanceof TypeElement erasure
+               && RESULT_TYPE.equals(erasure.getQualifiedName().toString())
+               && declared.getTypeArguments()
+                          .size() == 1
+               && carriesRecordType(declared.getTypeArguments().getFirst(),
+                                    record,
+                                    recordName);
     }
 
     private boolean carriesRecordType(TypeMirror carried, TypeElement record, String recordName) {
-        return types.isSameType(carried, record.asType())
-              || recordName.equals(carried.toString());
+        return types.isSameType(carried, record.asType()) || recordName.equals(carried.toString());
     }
 
     /// Emit the delegate call for a route that builds the request record from path/query arguments.
@@ -1351,16 +1371,19 @@ public class RouteSourceGenerator {
     /// or query. Only the slice method's own throw is a defect; building the request is client input.
     private String constructAndDelegate(String parameterType, String args, Function<String, String> delegateCallFor) {
         return validatingFactory(parameterType).map(factory -> validatedChain(parameterType,
-                                                                             factory.name(),
-                                                                             args,
-                                                                             delegateCallFor))
-                                               .or(() -> constructedChain(parameterType, args, delegateCallFor));
+                                                                              factory.name(),
+                                                                              args,
+                                                                              delegateCallFor))
+                                .or(() -> constructedChain(parameterType, args, delegateCallFor));
     }
 
-    private static String constructedChain(String parameterType, String args, Function<String, String> delegateCallFor) {
-        return "org.pragmatica.lang.Result.lift(__thrown -> HttpStatus.BAD_REQUEST.with(__thrown), () -> new "
-              + parameterType + "(" + args
-              + ")).async().flatMap(__constructed -> " + delegateCallFor.apply("__constructed") + ")";
+    private static String constructedChain(String parameterType,
+                                           String args,
+                                           Function<String, String> delegateCallFor) {
+        return "org.pragmatica.lang.Result.lift(__thrown -> HttpStatus.BAD_REQUEST.with(__thrown), () -> new " + parameterType
+             + "(" + args
+             + ")).async().flatMap(__constructed -> " + delegateCallFor.apply("__constructed")
+             + ")";
     }
 
     /// Emit the delegate call for a pure-body route. Jackson has already built the record, so a
@@ -1368,20 +1391,21 @@ public class RouteSourceGenerator {
     /// the deserialized value is handed to the delegate untouched -- no reconstruction.
     private String bodyHandlerExpr(String parameterType, Function<String, String> delegateCallFor) {
         return validatingFactory(parameterType).map(factory -> validatedChain(parameterType,
-                                                                             factory.name(),
-                                                                             accessorArgs(factory),
-                                                                             delegateCallFor))
-                                               .or(() -> delegateCallFor.apply("request"));
+                                                                              factory.name(),
+                                                                              accessorArgs(factory),
+                                                                              delegateCallFor))
+                                .or(() -> delegateCallFor.apply("request"));
     }
 
     private String validatedChain(String parameterType,
                                   String factoryName,
                                   String args,
                                   Function<String, String> delegateCallFor) {
-        return parameterType + "." + factoryName
-              + "(" + args
-              + ").mapError(cause -> HttpStatus.BAD_REQUEST.with(cause)).async().flatMap(__validated -> "
-              + delegateCallFor.apply("__validated") + ")";
+        return parameterType
+             + "." + factoryName
+             + "(" + args
+             + ").mapError(cause -> HttpStatus.BAD_REQUEST.with(cause)).async().flatMap(__validated -> " + delegateCallFor.apply("__validated")
+             + ")";
     }
 
     private String accessorArgs(BodyFactory factory) {
@@ -1398,13 +1422,10 @@ public class RouteSourceGenerator {
                                               List<String> pathParamNames,
                                               List<String> queryParamNames,
                                               Function<String, String> delegateCallFor) {
-        return buildMergedConstructorArgs(parameterType,
-                                          method,
-                                          pathParamNames,
-                                          queryParamNames).map(args -> constructAndDelegate(parameterType,
-                                                                                            args,
-                                                                                            delegateCallFor))
-                                                          .or(() -> delegateCallFor.apply("body"));
+        return buildMergedConstructorArgs(parameterType, method, pathParamNames, queryParamNames).map(args -> constructAndDelegate(parameterType,
+                                                                                                                                   args,
+                                                                                                                                   delegateCallFor))
+                                         .or(() -> delegateCallFor.apply("body"));
     }
 
     /// Build the delegate method call with security params injected in the correct positions.
@@ -1473,10 +1494,11 @@ public class RouteSourceGenerator {
         } else if (method.parameters().isEmpty()) {
             out.println("                 .to(_ -> delegate." + method.name() + "())");
         } else {
-            out.println("                 .to(_ -> "
-                       + constructAndDelegate(method.parameterType().toString(),
-                                              "",
-                                              expr -> "delegate." + method.name() + "(" + expr + ")")
+            out.println("                 .to(_ -> " + constructAndDelegate(method.parameterType().toString(),
+                                                                            "",
+                                                                            expr -> "delegate." + method.name()
+                                                                                   + "(" + expr
+                                                                                   + ")")
                        + ")");
         }
 
@@ -1516,10 +1538,11 @@ public class RouteSourceGenerator {
 
             generateSecurityLambda(out, handler, delegateCall);
         } else {
-            out.println("                 .to(" + handler
-                       + constructAndDelegate(parameterType,
-                                              constructorArgs,
-                                              expr -> "delegate." + method.name() + "(" + expr + ")")
+            out.println("                 .to(" + handler + constructAndDelegate(parameterType,
+                                                                                 constructorArgs,
+                                                                                 expr -> "delegate." + method.name()
+                                                                                        + "(" + expr
+                                                                                        + ")")
                        + ")");
         }
 
@@ -1559,10 +1582,11 @@ public class RouteSourceGenerator {
 
             generateSecurityLambda(out, handler, delegateCall);
         } else {
-            out.println("                 .to(" + handler
-                       + constructAndDelegate(parameterType,
-                                              constructorArgs,
-                                              expr -> "delegate." + method.name() + "(" + expr + ")")
+            out.println("                 .to(" + handler + constructAndDelegate(parameterType,
+                                                                                 constructorArgs,
+                                                                                 expr -> "delegate." + method.name()
+                                                                                        + "(" + expr
+                                                                                        + ")")
                        + ")");
         }
 
@@ -1588,9 +1612,10 @@ public class RouteSourceGenerator {
 
             generateSecurityLambda(out, "request ->", delegateCall);
         } else {
-            out.println("                 .to(request -> "
-                       + bodyHandlerExpr(parameterType,
-                                         expr -> "delegate." + method.name() + "(" + expr + ")")
+            out.println("                 .to(request -> " + bodyHandlerExpr(parameterType,
+                                                                             expr -> "delegate." + method.name()
+                                                                                    + "(" + expr
+                                                                                    + ")")
                        + ")");
         }
 
@@ -1627,18 +1652,16 @@ public class RouteSourceGenerator {
                                                           pathParamNames,
                                                           List.of(),
                                                           expr -> delegateCallWithSecurity(method,
-                                                                                           Map.of(bizParam.name(),
-                                                                                                  expr)));
+                                                                                           Map.of(bizParam.name(), expr)));
 
             generateSecurityLambda(out, "(" + handlerParams + ") ->", delegateCall);
         } else {
             out.println("                 .to((" + handlerParams
-                       + ") -> "
-                       + mergedConstructAndDelegate(parameterType,
-                                                    method,
-                                                    pathParamNames,
-                                                    List.of(),
-                                                    expr -> "delegate." + method.name() + "(" + expr + ")")
+                       + ") -> " + mergedConstructAndDelegate(parameterType,
+                                                              method,
+                                                              pathParamNames,
+                                                              List.of(),
+                                                              expr -> "delegate." + method.name() + "(" + expr + ")")
                        + ")");
         }
 
@@ -1674,18 +1697,16 @@ public class RouteSourceGenerator {
                                                           List.of(),
                                                           queryParamNames,
                                                           expr -> delegateCallWithSecurity(method,
-                                                                                           Map.of(bizParam.name(),
-                                                                                                  expr)));
+                                                                                           Map.of(bizParam.name(), expr)));
 
             generateSecurityLambda(out, "(" + handlerParams + ") ->", delegateCall);
         } else {
             out.println("                 .to((" + handlerParams
-                       + ") -> "
-                       + mergedConstructAndDelegate(parameterType,
-                                                    method,
-                                                    List.of(),
-                                                    queryParamNames,
-                                                    expr -> "delegate." + method.name() + "(" + expr + ")")
+                       + ") -> " + mergedConstructAndDelegate(parameterType,
+                                                              method,
+                                                              List.of(),
+                                                              queryParamNames,
+                                                              expr -> "delegate." + method.name() + "(" + expr + ")")
                        + ")");
         }
 
@@ -1734,10 +1755,9 @@ public class RouteSourceGenerator {
             generateSecurityLambda(out, "(" + handlerParams + ") ->", delegateCall);
         } else {
             out.println("                 .to((" + handlerParams
-                       + ") -> "
-                       + constructAndDelegate(parameterType,
-                                              constructorArgs,
-                                              expr -> "delegate." + method.name() + "(" + expr + ")")
+                       + ") -> " + constructAndDelegate(parameterType,
+                                                        constructorArgs,
+                                                        expr -> "delegate." + method.name() + "(" + expr + ")")
                        + ")");
         }
 
@@ -1778,18 +1798,16 @@ public class RouteSourceGenerator {
                                                           pathParamNames,
                                                           queryParamNames,
                                                           expr -> delegateCallWithSecurity(method,
-                                                                                           Map.of(bizParam.name(),
-                                                                                                  expr)));
+                                                                                           Map.of(bizParam.name(), expr)));
 
             generateSecurityLambda(out, "(" + handlerParams + ") ->", delegateCall);
         } else {
             out.println("                 .to((" + handlerParams
-                       + ") -> "
-                       + mergedConstructAndDelegate(parameterType,
-                                                    method,
-                                                    pathParamNames,
-                                                    queryParamNames,
-                                                    expr -> "delegate." + method.name() + "(" + expr + ")")
+                       + ") -> " + mergedConstructAndDelegate(parameterType,
+                                                              method,
+                                                              pathParamNames,
+                                                              queryParamNames,
+                                                              expr -> "delegate." + method.name() + "(" + expr + ")")
                        + ")");
         }
 

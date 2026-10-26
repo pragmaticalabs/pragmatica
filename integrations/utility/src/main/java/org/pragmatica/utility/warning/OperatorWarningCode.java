@@ -467,7 +467,10 @@ public enum OperatorWarningCode {
     UPLOAD_BYTE_BUDGET_EXHAUSTED("upload-byte-budget-exhausted", "http-ingest", WarningLevel.WARNING),
     /// The recovery of [#UPLOAD_BYTE_BUDGET_EXHAUSTED], same subject (#2410): uploads finished and at most half of the budget is
     /// reserved again. INFO, published only after a published exhaustion event for the node (#752 mechanism).
-    UPLOAD_BYTE_BUDGET_RESTORED("upload-byte-budget-restored", "http-ingest", WarningLevel.INFO, UPLOAD_BYTE_BUDGET_EXHAUSTED),
+    UPLOAD_BYTE_BUDGET_RESTORED("upload-byte-budget-restored",
+                                "http-ingest",
+                                WarningLevel.INFO,
+                                UPLOAD_BYTE_BUDGET_EXHAUSTED),
     /// A committed `[json]` configuration change was refused for a slice (#2378): the slice's HTTP routes keep the
     /// JSON codec selection they had. Subject is `<slice artifact>/json`; the message names every refused key, its
     /// value and why, and the selection kept. Raised once, on the transition into refusal, per node. The same

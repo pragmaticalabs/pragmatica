@@ -118,7 +118,6 @@ sealed interface MultipartScan {
             }
 
             closePart(parts, body, openStart, openFile, position);
-
             var headersEnd = headerBlockEnd(body, headersStart);
 
             if (headersEnd < 0) {
@@ -136,7 +135,11 @@ sealed interface MultipartScan {
 
     /// Ends the open part, if any, at the delimiter found at `delimiterPosition`: its content stops before the line
     /// break that begins the delimiter.
-    private static void closePart(List<Part> parts, byte[] body, int openStart, boolean openFile, int delimiterPosition) {
+    private static void closePart(List<Part> parts,
+                                  byte[] body,
+                                  int openStart,
+                                  boolean openFile,
+                                  int delimiterPosition) {
         if (openStart < 0) {
             return;
         }
@@ -169,7 +172,9 @@ sealed interface MultipartScan {
         disposition.flatMap(params -> option(params.get("name")))
                    .onPresent(fieldName -> recordField(fieldTypes, fieldName, contentType));
 
-        return contentType.map(MultipartScan::mediaType).filter(type -> !type.equals("text/plain")).isPresent();
+        return contentType.map(MultipartScan::mediaType)
+                          .filter(type -> !type.equals("text/plain"))
+                          .isPresent();
     }
 
     /// Lowercase header names to values; the first occurrence of a name wins.

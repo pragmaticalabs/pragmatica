@@ -2,6 +2,7 @@ package org.pragmatica.http.routing;
 
 import org.pragmatica.lang.Option;
 
+
 /// The ingest limits a route declares in `routes.toml` (`max_size`, `max_duration`, and the multipart part limits
 /// `max_files`, `max_file_size`, `max_fields`, `max_field_size`), carried from the slice to the node that accepts the
 /// connection, so an ingress that does not host the slice enforces them too.
@@ -56,7 +57,7 @@ public record UploadSpec(boolean upload,
         return ! upload
                && maxBodyBytes == 0
                && maxDurationMillis == 0
-               && ! hasPartLimits();
+               && !hasPartLimits();
     }
 
     /// Whether any of the four multipart part limits is declared.
@@ -75,26 +76,27 @@ public record UploadSpec(boolean upload,
     /// @param contentType the Content-Type header value
     public Option<MultipartError.LimitExceeded> partBreach(byte[] body, String contentType) {
         return hasPartLimits() && MultipartParser.isMultipart(contentType)
-               ? MultipartScan.framing(contentType).flatMap(framing -> partBreach(MultipartScan.scan(body, framing.boundary())))
+               ? MultipartScan.framing(contentType).flatMap(framing -> partBreach(MultipartScan.scan(body,
+                                                                                                     framing.boundary())))
                : Option.none();
     }
 
     Option<MultipartError.LimitExceeded> partBreach(MultipartScan.Parts scanned) {
         return scanned.closed()
                ? tooManyParts(scanned).orElse(() -> fileCountBreach(scanned))
-                                      .orElse(() -> fileSizeBreach(scanned))
-                                      .orElse(() -> fieldCountBreach(scanned))
-                                      .orElse(() -> fieldSizeBreach(scanned))
+                             .orElse(() -> fileSizeBreach(scanned))
+                             .orElse(() -> fieldCountBreach(scanned))
+                             .orElse(() -> fieldSizeBreach(scanned))
                : Option.none();
     }
 
     /// More parts than [MultipartParser#DEFAULT_MAX_PARTS] and the declared counts together allow: the slice's own
     /// decoder would refuse the body, so the gate refuses it first, with the same bound.
     private Option<MultipartError.LimitExceeded> tooManyParts(MultipartScan.Parts scanned) {
-        var cap = (int) Math.min(Integer.MAX_VALUE,
-                                 Math.max(MultipartParser.DEFAULT_MAX_PARTS, maxFiles + maxFields));
+        var cap = (int) Math.min(Integer.MAX_VALUE, Math.max(MultipartParser.DEFAULT_MAX_PARTS, maxFiles + maxFields));
 
-        return breach(scanned.parts().size() > cap, MultipartError.LimitExceeded.PARTS.apply((long) cap));
+        return breach(scanned.parts().size() > cap,
+                      MultipartError.LimitExceeded.PARTS.apply((long) cap));
     }
 
     private Option<MultipartError.LimitExceeded> fileCountBreach(MultipartScan.Parts scanned) {
@@ -107,7 +109,8 @@ public record UploadSpec(boolean upload,
     }
 
     private Option<MultipartError.LimitExceeded> fieldCountBreach(MultipartScan.Parts scanned) {
-        return breach(count(scanned, false) > limitOrMax(maxFields), MultipartError.LimitExceeded.FIELDS.apply(maxFields));
+        return breach(count(scanned, false) > limitOrMax(maxFields),
+                      MultipartError.LimitExceeded.FIELDS.apply(maxFields));
     }
 
     private Option<MultipartError.LimitExceeded> fieldSizeBreach(MultipartScan.Parts scanned) {
@@ -116,11 +119,19 @@ public record UploadSpec(boolean upload,
     }
 
     private static long count(MultipartScan.Parts scanned, boolean file) {
-        return scanned.parts().stream().filter(part -> part.file() == file).count();
+        return scanned.parts()
+                      .stream()
+                      .filter(part -> part.file() == file)
+                      .count();
     }
 
     private static long largest(MultipartScan.Parts scanned, boolean file) {
-        return scanned.parts().stream().filter(part -> part.file() == file).mapToLong(MultipartScan.Part::size).max().orElse(0);
+        return scanned.parts()
+                      .stream()
+                      .filter(part -> part.file() == file)
+                      .mapToLong(MultipartScan.Part::size)
+                      .max()
+                      .orElse(0);
     }
 
     private static Option<MultipartError.LimitExceeded> breach(boolean exceeded, MultipartError.LimitExceeded error) {

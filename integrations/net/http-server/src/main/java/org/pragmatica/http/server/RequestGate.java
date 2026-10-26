@@ -217,6 +217,7 @@ final class RequestGate extends ChannelInboundHandlerAdapter {
     /// Closes after sending what is queued: the output is shut down (the client sees the response and then end of
     /// stream), reading stops (what the client still sends waits in the kernel's buffer, so its sending stalls instead of
     /// being read into memory), and the connection is closed when the linger ends.
+    @Contract
     static void lingerClose(Channel channel) {
         if (channel instanceof SocketChannel socket && socket.isActive()) {
             socket.config().setAutoRead(false);

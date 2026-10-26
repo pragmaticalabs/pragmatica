@@ -1028,8 +1028,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     private static long declaredBytes(HttpRequest head, long maxBytes) {
         return head.headers()
                    .get("content-length")
-                   .flatMap(value -> Number.parseLong(value.strip())
-                                           .option())
+                   .flatMap(value -> Number.parseLong(value.strip()).option())
                    .filter(length -> length >= 0)
                    .map(length -> Math.min(length, maxBytes))
                    .or(maxBytes);
@@ -1042,7 +1041,9 @@ class AppHttpServerAdapter implements AppHttpServer {
                        ? spec.maxBodyBytes()
                        : config.maxRequestSize();
 
-        return Math.min(Math.min(declared, config.upload().maxSizeCeiling()), IN_MEMORY_LIMIT);
+        return Math.min(Math.min(declared,
+                                 config.upload().maxSizeCeiling()),
+                        IN_MEMORY_LIMIT);
     }
 
     private BodyBounds uploadBounds(UploadSpec spec) {
@@ -2332,6 +2333,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     /// declaration or ceiling lifts the effective limit past it (a `Content-Length` over it is refused 413 on the head,
     /// never counted in an int). Streaming storage (U2) lifts it.
     static final long IN_MEMORY_LIMIT = Integer.MAX_VALUE - 8L;
+
     private static final Cause PART_LIMIT_BUSY = Causes.cause("Too many multipart uploads are being checked at once; retry shortly");
 
     private void sendResponse(ResponseWriter response, HttpResponseData responseData, String requestId) {

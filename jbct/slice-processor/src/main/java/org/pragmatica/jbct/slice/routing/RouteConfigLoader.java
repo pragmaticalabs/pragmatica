@@ -382,11 +382,8 @@ public final class RouteConfigLoader {
     private static Result<ParsedRoute> parseInlineTableRoute(String key, Map<String, Object> table) {
         return checkInlineKeys(key, table).flatMap(_ -> Option.option(table.get("route"))
                                                               .map(Object::toString)
-                                                              .toResult(Causes.cause("Inline-table route must have a 'route' field: "
-                                                                                     + key))
-                                                              .flatMap(routeStr -> buildInlineRoute(key,
-                                                                                                    table,
-                                                                                                    routeStr)));
+                                                              .toResult(Causes.cause("Inline-table route must have a 'route' field: " + key))
+                                                              .flatMap(routeStr -> buildInlineRoute(key, table, routeStr)));
     }
 
     /// The keys an inline-table route accepts. `max_size` and `max_duration` are the per-route ingest limits;
@@ -402,6 +399,7 @@ public final class RouteConfigLoader {
                                                                 "max_file_size",
                                                                 "max_fields",
                                                                 "max_field_size");
+
     /// Upload keys that are specified but need the streaming ingest path (resumable uploads, unclaimed retention). They
     /// are refused, not accepted and ignored: a limit that is declared but never enforced is worse than none.
     private static final Set<String> NOT_YET_INLINE_ROUTE_KEYS = Set.of("resumable", "unclaimed_ttl");
@@ -417,17 +415,19 @@ public final class RouteConfigLoader {
                            .toList();
 
         if (!unknown.isEmpty()) {
-            return Causes.cause("Route '" + key + "' has unknown key(s) " + unknown + "; valid keys: "
-                               + new TreeSet<>(INLINE_ROUTE_KEYS)).result();
+            return Causes.cause("Route '" + key
+                               + "' has unknown key(s) " + unknown
+                               + "; valid keys: " + new TreeSet<>(INLINE_ROUTE_KEYS)).result();
         }
 
         return notYet.isEmpty()
                ? Result.success(table)
-               : Causes.cause("Route '" + key + "' declares " + notYet
-                             + ", which this build does not enforce yet (they need streaming ingest); remove "
-                             + (notYet.size() == 1
-                                ? "it"
-                                : "them") + " rather than have the limit silently ignored").result();
+               : Causes.cause("Route '" + key
+                             + "' declares " + notYet
+                             + ", which this build does not enforce yet (they need streaming ingest); remove " + (notYet.size() == 1
+                                                                                                                  ? "it"
+                                                                                                                  : "them")
+                             + " rather than have the limit silently ignored").result();
     }
 
     /// `max_size`: a size string (`"5GB"`) or an integer number of bytes, greater than zero.
@@ -456,12 +456,12 @@ public final class RouteConfigLoader {
 
     private static Result<Long> toMillis(String key, Object raw) {
         if (raw instanceof Number) {
-            return Causes.cause("Route '" + key + "' max_duration must be a duration string such as \"6h\" or \"90s\"")
-                         .result();
+            return Causes.cause("Route '" + key + "' max_duration must be a duration string such as \"6h\" or \"90s\"").result();
         }
 
         return TimeSpan.timeSpan(raw.toString())
-                       .map(span -> span.duration().toMillis())
+                       .map(span -> span.duration()
+                                        .toMillis())
                        .mapError(cause -> Causes.cause("Route '" + key + "' max_duration: " + cause.message()))
                        .flatMap(value -> positive(key, "max_duration", value));
     }
@@ -508,11 +508,11 @@ public final class RouteConfigLoader {
                           resolveMedia(table, "produces"),
                           resolveInlineSecurity(table),
                           parseLimits(key, table)).flatMap((consumes, produces, security, limits) -> RouteDsl.parse(routeStr,
-                                                                                                                  consumes,
-                                                                                                                  produces).map(dsl -> new ParsedRoute(key,
-                                                                                                                                                       dsl.withLimits(limits),
-                                                                                                                                                       security,
-                                                                                                                                                       methodOverride)));
+                                                                                                                    consumes,
+                                                                                                                    produces).map(dsl -> new ParsedRoute(key,
+                                                                                                                                                         dsl.withLimits(limits),
+                                                                                                                                                         security,
+                                                                                                                                                         methodOverride)));
     }
 
     private static Result<RouteLimits> parseLimits(String key, Map<String, Object> table) {
