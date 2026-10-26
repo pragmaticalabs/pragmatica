@@ -21,8 +21,8 @@ import static org.pragmatica.lang.utils.Causes.fromThrowable;
 /// A failure keeps what the database reported: the SQLSTATE of a server-side error is readable through
 /// [#sqlState()], and whether a retry may help is carried by [Cause.Transient] on the type, never by message
 /// text. [#fromSqlState(Option, String, String, Option)] is the one classification of a SQLSTATE every connector
-/// the JDBC, R2DBC and jOOQ connectors share, so the same server error reads the same through each (postgres-async
-/// surfaces its driver's own `SqlError`, classified on the same states). A connector never replaces a typed
+/// the JDBC and jOOQ connectors use; the driver-layer errors the R2DBC and postgres-async connectors surface
+/// (`R2dbcError`, `SqlError`) keep their own types and are held to the same retry decision by test. A connector never replaces a typed
 /// cause with a message-only [DatabaseFailure]: causes that are already typed (row-decode failures, this
 /// interface's own variants) reach the caller unchanged.
 public sealed interface DatabaseConnectorError extends Cause {

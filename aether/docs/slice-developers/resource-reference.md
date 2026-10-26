@@ -531,12 +531,12 @@ A failure keeps what the database reported:
 - A cause that is already typed reaches the caller unchanged: a `RowDecodeError.RowDecode` from a generated row mapper, a `ResultNotFound`, or a failure your transaction callback returns. No connector reduces a cause to its message.
 - `DatabaseFailure` carries the original `Throwable` of a failure no variant describes; it is never built from a message.
 
-The SQLSTATE mapping is one function (`DatabaseConnectorError.fromSqlState`) used by the JDBC, R2DBC and jOOQ connectors, so a server error reads the same through each. postgres-async (`async_url`) surfaces its driver's own typed `SqlError` instead (`SqlError.ServerError` with `response().code()` as the SQLSTATE, `Cause.Transient` on the same states and with the same `08007`/`08P01`/`57014` exclusions); it is not remapped.
+Each connector family keeps its own error types (no second mapping into `DatabaseConnectorError`), but whether a SQLSTATE is worth a retry is one decision, `DatabaseConnectorError.fromSqlState`, whatever type a connector returns (a test pins R2DBC to it). postgres-async (`async_url`) surfaces its driver's `SqlError` (`SqlError.ServerError` with `response().code()` as the SQLSTATE, `Cause.Transient` on the same states and with the same `08007`/`08P01`/`57014` exclusions); R2DBC surfaces `R2dbcError`.
 
 | Connector | Driver failures a slice sees | Row-decode failure | No row for `queryOne` |
 |-----------|------------------------------|--------------------|-----------------------|
 | postgres-async (`async_url`) | `SqlError` | `RowDecodeError` | `DatabaseConnectorError.ResultNotFound` |
-| R2DBC (`r2dbc_url`) | `DatabaseConnectorError` | `RowDecodeError` | `DatabaseConnectorError.ResultNotFound` |
+| R2DBC (`r2dbc_url`) | `R2dbcError` (`ConstraintViolation`, `ConnectionFailed`, `Timeout`, `QueryFailed`, each with `sqlState()`) | `RowDecodeError` | `R2dbcError.NoResult` |
 | JDBC (`jdbc_url`) | `DatabaseConnectorError` | `RowDecodeError` | `DatabaseConnectorError.ResultNotFound` |
 | jOOQ over JDBC | `DatabaseConnectorError` | a failure your transaction callback returns is passed through | `DatabaseConnectorError.ResultNotFound` |
 | jOOQ over R2DBC or postgres-async | **cannot run a query today (#2431)**; the error mapping is verified only at the `toConnectorError` level, not through `fetchOne`/`fetch`/`execute` | a failure your transaction callback returns is passed through | not reachable until #2431 is fixed |
