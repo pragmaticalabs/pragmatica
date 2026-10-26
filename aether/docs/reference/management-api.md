@@ -526,6 +526,8 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `json-config-applied` (INFO — the recovery: a valid `[json]` configuration was adopted after a refusal; published only after a published `json-config-rejected` for the same `subject`)
 - `upload-node-cap-saturated` (WARNING — an upload was refused `429` because the node holds `[app-http.upload] max_concurrent` uploads; `subject` is the node; raised once per episode on the first refusal, not once per refused request; a per-principal refusal raises nothing; issue #2410)
 - `upload-node-cap-restored` (INFO — the recovery: an upload finished and the node accepts uploads again; published only after a published `upload-node-cap-saturated` for the same `subject`)
+- `upload-byte-budget-exhausted` (WARNING — an upload was refused `503` because the declared bytes of the uploads in flight reached `[app-http.upload] max_in_flight_size`; `subject` is the node; raised once per episode on the first refusal, not once per refused request; issue #2410)
+- `upload-byte-budget-restored` (INFO — the recovery: releases left at most half of the budget reserved; published only after a published `upload-byte-budget-exhausted` for the same `subject`)
 - `storage-disk-tier-unavailable` (CRITICAL — a storage instance's disk tier could not be opened and the instance runs on memory plus the shared tier, so its writes are acknowledged without a durable local copy; raised for the instances the node placed itself (the synthesized `artifacts` and `content`, a derived path) and for `streams` on a directly built node, while an operator-written `disk_path` that does not exist or cannot open refuses the boot; `subject` is the instance, gauge `aether.storage.disk.degraded{instance}` is 1; fixed by repairing the path and restarting, so it has no recovery event)
 - `storage-memory-tier-clamped` (WARNING — an instance's configured `memory_max_bytes` was cut because the memory tiers of all instances exceeded 25% of the maximum heap; `subject` is the instance, the message names the configured and effective bytes and the heap; boot-time, so it has no recovery event)
 - `storage-demotion-refused` (WARNING — a durable tier is above its high watermark and holds the only durable copy of its blocks, so nothing is demoted; writes that need it fail with `TierFull` once it is full; `subject` is the instance; raised once per episode)
@@ -6619,26 +6621,28 @@ The app listener decides what to do with a request from its HEADERS alone, befor
 
 - **Auth before body.** An unauthenticated request to a protected route is answered `401` (`403` for a missing role) on its headers. A client that sent `Expect: 100-continue` is never told to continue. The connection is closed without reading the body.
 - **Per-route body limit.** A route declares `max_size` in `routes.toml` (see below). A declared `Content-Length` over the limit is answered `413` on the headers. A body without one (chunked on HTTP/1.1, an HTTP/3 stream with no `content-length`) is answered `413` at the byte that crosses the limit. Either way the connection is closed within about a second, and the rest of the body is never read into memory. A route that declares no `max_size` takes `[app-http] max_request_size`.
-- **The ceiling.** `[app-http.upload] max_size_ceiling` caps what any route may declare: the limit in force is the smaller of the route's `max_size` and the ceiling.
+- **The ceiling.** `[app-http.upload] max_size_ceiling` caps what any route may declare: the limit in force is the smaller of the route's `max_size` and the ceiling, and never more than one in-memory array can hold (2 GiB less 8 bytes). The ceiling defaults to 256 MiB until streaming storage exists, because every upload body is held in memory (see the known limits below). A `Content-Length` above the limit in force, including one above 2 GiB, is answered `413` on the headers, whatever the route declares.
 - **Ingress that does not host the route.** The limits travel with the replicated route entry, so a node that forwards a request enforces them before it reads the body, with the strictest limits any serving node declared.
 
 An **upload route** is one whose `consumes` is binary or multipart. It additionally takes concurrency caps and its own timing bounds:
 
 ```toml
 [app-http.upload]
-max_size_ceiling = "5GB"             # Default: 5GB. The largest max_size any route may declare.
+max_size_ceiling = "256MB"           # Default: 256MB until streaming storage. The largest max_size any route may declare.
 max_concurrent = 64                  # Default: 64. Uploads in flight on this node.
 max_concurrent_per_principal = 8     # Default: 8. Uploads in flight for one principal (API key name or JWT subject).
 idle_timeout = "30s"                 # Default: 30s. A body that delivers no byte for this long is refused.
 min_body_rate = "1KB"                # Default: 1KB per second, after a first 30 s, averaged over each following 30 s.
+max_in_flight_size = "512MB"         # Default: a quarter of the JVM's maximum heap. Declared body bytes in flight on this node.
 ```
 
 | Condition | Answer |
 |---|---|
 | more than `max_concurrent`, or `max_concurrent_per_principal`, uploads in flight | `429 Too Many Requests` with `Retry-After: 5`, on the headers |
+| the declared bytes of the uploads in flight would pass `max_in_flight_size` | `503 Service Unavailable` with `Retry-After: 5`, on the headers |
 | the body is idle for `idle_timeout`, below `min_body_rate`, or past the route's `max_duration` (default 6 hours) | `408 Request Timeout`, then the connection is closed (over HTTP/3, the stream's input is reset) |
 
-A slot is held from the request headers until the body has been received (or the request ends without it), so the caps bound the bodies being buffered at once. All five keys must be positive; an unknown key in `[app-http.upload]` refuses the configuration. Routes that are not upload routes keep the general `read_timeout` and `min_body_rate` above.
+A slot is held from the request headers until the body has been received (or the request ends without it), so the caps bound the bodies being buffered at once. The byte budget is taken the same way: an upload reserves its `Content-Length` (the route's limit in force when it declares none; never more than the budget itself, so one upload larger than the budget runs alone) and returns it with its slot. All six keys must be positive; an unknown key in `[app-http.upload]` refuses the configuration. Routes that are not upload routes keep the general `read_timeout` and `min_body_rate` above.
 
 Per-route keys, on an inline-table route in `routes.toml`:
 
@@ -6649,20 +6653,23 @@ importCsv = { route = "POST /import", consumes = "multipart/form-data", max_size
 
 | Key | Meaning |
 |---|---|
-| `max_size` | The request body limit: a size string (`"5GB"`, `"512KB"`) or an integer number of bytes, greater than zero |
+| `max_size` | The request body limit: a size string (`"256MB"`, `"512KB"`) or an integer number of bytes, greater than zero; capped by `[app-http.upload] max_size_ceiling` |
 | `max_duration` | The longest the whole body may take: a duration string (`"6h"`, `"90s"`), greater than zero. Upload routes only take effect; default 6 hours |
 | `max_files` | The most file parts a multipart body may carry: a whole number greater than zero |
 | `max_file_size` | The most bytes in one file part: a size string or an integer number of bytes, greater than zero |
 | `max_fields` | The most text fields a multipart body may carry (every value of a repeated name counts): a whole number greater than zero |
-| `max_field_size` | The most bytes (UTF-8) in one text field value: a size string or an integer number of bytes, greater than zero |
+| `max_field_size` | The most bytes in one text field value, as sent: a size string or an integer number of bytes, greater than zero |
 
-The four part keys are checked on the decoded body, which `max_size` has already bounded: a multipart request that breaks one is answered `413 Request Entity Too Large` before it reaches the slice, whether the slice runs on the accepting node or another. A body with more parts than the decoder's cap (128, or `max_files + max_fields` when larger) on a route that declares part limits is answered `413` as well. A request that is not `multipart/form-data`, or whose body does not decode, is left to the handler as before. The body is decoded once for the check and again when the slice reads it.
+The four part keys are checked on the aggregated body, which `max_size` has already bounded: a multipart request that breaks one is answered `413 Request Entity Too Large` before it reaches the slice, whether the slice runs on the accepting node or another. A file is a part with a filename, or a part without one that declares a Content-Type other than `text/plain`; every other part is a field. A part's size is the number of bytes between its header block and the next delimiter, the size on the wire (RFC 7578 allows no `Content-Transfer-Encoding`). The check reads the multipart framing only: the body is not decoded and no part content is copied, so it is decoded once, by whoever reads it. It runs on a bounded blocking executor, never on the event loop; when every worker is busy and its queue is full the request is answered `503` with `Retry-After`. A body with more parts than the decoder's cap (128, or `max_files + max_fields` when larger) on a route that declares part limits is answered `413` as well. A request that is not `multipart/form-data`, or is not a closed multipart body, is left to the handler as before.
 
 An unknown key on an inline-table route is a compile error, because the loader used to ignore it and a mistyped `max_size` left the route at the default limit. `resumable` and `unclaimed_ttl` are refused too: they need the streaming upload path, which is not in this release, and a limit that is declared but not enforced is worse than none.
 
-When the node's own upload cap (`max_concurrent`) is reached, the first refused upload raises one operator event, `upload-node-cap-saturated` (WARNING, subject: the node), instead of one per refused request; the first upload to finish after it raises its recovery, `upload-node-cap-restored`. A refusal for one principal's cap (`max_concurrent_per_principal`), an over-size `413` and a `408` are client errors and raise no event. The header-read timeout is not an upload key: it stays under `[app-http] read_timeout`.
+When the node's own upload cap (`max_concurrent`) is reached, the first refused upload raises one operator event, `upload-node-cap-saturated` (WARNING, subject: the node), instead of one per refused request; the first upload to finish after it raises its recovery, `upload-node-cap-restored`. When the byte budget (`max_in_flight_size`) is reached, the first refused upload raises `upload-byte-budget-exhausted` (WARNING, subject: the node), once for the episode; its recovery, `upload-byte-budget-restored`, is raised by the first release that leaves at most half of the budget reserved. A refusal for one principal's cap (`max_concurrent_per_principal`), an over-size `413` and a `408` are client errors and raise no event. The header-read timeout is not an upload key: it stays under `[app-http] read_timeout`.
 
-Upload routes still read the whole body into memory before the slice runs: the limits above bound that memory per request and per node, they do not stream it. Size `max_size`, `max_concurrent` and the node's heap together.
+**Known limits until streaming storage (U2).** Upload routes still read the whole body into memory before the slice runs: the limits above bound that memory per request and per node, they do not stream it. Two costs follow, both measured on one host with 64 other connections sampled every 20 ms:
+
+- Aggregating the body into one array holds the event loop that carries the upload's connection. Other connections on that loop stall by about 42, 160 and 320 ms for bodies of 100, 300 and 500 MiB. This is the remaining stall; the multipart part-limit check adds none of its own, because it runs off the loop.
+- A multipart body of 500 MiB needed about 1.6 GiB of heap and 1 GiB of direct memory in the same measurement. Size `max_size`, `max_concurrent`, `max_in_flight_size` and the node's heap together; the 256 MiB ceiling and the byte budget keep the defaults inside a node's heap, they do not make a smaller heap safe.
 
 ### Multipart File Upload
 
