@@ -20,6 +20,7 @@ import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SecurityMode;
+import org.pragmatica.aether.config.UploadConfig;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.aether.http.fsm.AppHttpContext;
 import org.pragmatica.aether.http.fsm.AppHttpEvents;
@@ -65,6 +66,11 @@ import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.ProblemDetail;
+import org.pragmatica.http.routing.MultipartError;
+import org.pragmatica.http.routing.MultipartParser;
+import org.pragmatica.http.routing.UploadSpec;
+import org.pragmatica.http.server.BodyBounds;
+import org.pragmatica.http.server.Disposition;
 import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.http.server.HttpServerError;
 import org.pragmatica.http.server.BodyRateLimit;
@@ -80,9 +86,13 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.parse.Number;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 import org.pragmatica.net.tcp.ClientAuthPolicy;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.net.tcp.TlsConfig;
@@ -105,7 +115,7 @@ public interface AppHttpServer {
     Promise<Unit> stop();
     Promise<Unit> rotateCertificate(CertificateBundle newBundle);
 
-    /// Binds the operator-event sink for certificate-rotation refusals (and their recovery).
+    /// Binds the operator-event sink for certificate-rotation refusals and the upload node-cap saturation (and their recoveries).
     @Contract
     void setOperatorWarningSink(OperatorWarningSink sink);
 
@@ -307,6 +317,10 @@ class AppHttpServerAdapter implements AppHttpServer {
     private final Option<HttpForwarder> httpForwarder;
     private final AppHttpContext context;
     private final TimeSpan requestBudget;
+    private final UploadAdmission uploadAdmission;
+    private volatile PartLimitExecutor partLimitExecutor = PartLimitExecutor.partLimitExecutor();
+
+    private final AtomicReference<OperatorWarningSink> warningSink = new AtomicReference<>(OperatorWarningSink.logOnly());
 
     private volatile org.pragmatica.aether.invoke.InvocationAdmission invocationAdmission = org.pragmatica.aether.invoke.InvocationAdmission.open();
 
@@ -367,6 +381,11 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                 accessibilityFilter);
         this.context = buildContext(selfNodeId, this::computeRouteTable, () -> quorumEstablished);
         this.requestBudget = forwardingTimeouts.requestBudget();
+        this.uploadAdmission = UploadAdmission.uploadAdmission(config.upload(),
+                                                               this::uploadNodeCapSaturated,
+                                                               this::uploadNodeCapRestored,
+                                                               this::uploadByteBudgetExhausted,
+                                                               this::uploadByteBudgetRestored);
     }
 
     private record FsmAndContext(Fsm<AppHttpState, ClusterFsmEvent> fsm, AppHttpContext context) {}
@@ -528,6 +547,17 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                           cause.message()));
     }
 
+    /// Test seam: replaces the part-limit executor, so a test can make it small enough to fill.
+    @Contract
+    void usePartLimitExecutorForTest(PartLimitExecutor executor) {
+        partLimitExecutor = executor;
+    }
+
+    /// Test seam: the node's upload admission, to read its counts.
+    UploadAdmission uploadAdmissionForTest() {
+        return uploadAdmission;
+    }
+
     /// #1456 test seam — see [#beforePublish].
     @Contract
     void beforePublishForTest(Runnable hook) {
@@ -575,7 +605,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private Promise<Unit> startH3WithSslContext(io.netty.handler.codec.quic.QuicSslContext quicSslContext) {
-        var serverConfig = serverConfig("app-http-h3", config);
+        var serverConfig = serverConfig("app-http-h3", config).withClassifier(this::classify);
         var serverPromise = workerGroup.map(wg -> HttpServer.http3Server(serverConfig,
                                                                          quicSslContext,
                                                                          this::handleRequest,
@@ -606,7 +636,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private HttpServerConfig buildServerConfig() {
-        var serverConfig = serverConfig("app-http", config);
+        var serverConfig = serverConfig("app-http", config).withClassifier(this::classify);
         // #967: never demand a client certificate from callers of a USER-facing listener. The node's
         // cluster TlsConfig is Mutual, so building this listener from it made every slice request
         // require a cluster-CA client cert — a certificate that, under `auto_generate`, is derived
@@ -662,7 +692,45 @@ class AppHttpServerAdapter implements AppHttpServer {
     @Contract
     @Override
     public void setOperatorWarningSink(OperatorWarningSink sink) {
+        warningSink.set(sink);
         tlsRotation.useSink(sink);
+    }
+
+    /// The node's upload cap was reached: one operator event for the episode, not one per refused request (the
+    /// per-principal cap and the size and time refusals are client errors and raise nothing).
+    private void uploadNodeCapSaturated() {
+        OperatorWarnings.raise(log,
+                               warningSink.get(),
+                               OperatorWarningCode.UPLOAD_NODE_CAP_SATURATED,
+                               selfNodeId.id(),
+                               "Upload cap reached: this node holds {} concurrent uploads, the most [app-http.upload] max_concurrent allows; refusing new uploads with 429 until one finishes",
+                               config.upload().maxConcurrent());
+    }
+
+    private void uploadNodeCapRestored() {
+        OperatorWarnings.raise(log,
+                               warningSink.get(),
+                               OperatorWarningCode.UPLOAD_NODE_CAP_RESTORED,
+                               selfNodeId.id(),
+                               "Upload cap no longer reached: this node accepts new uploads again");
+    }
+
+    /// The node's in-flight byte budget was reached: one operator event for the episode, not one per refused request.
+    private void uploadByteBudgetExhausted() {
+        OperatorWarnings.raise(log,
+                               warningSink.get(),
+                               OperatorWarningCode.UPLOAD_BYTE_BUDGET_EXHAUSTED,
+                               selfNodeId.id(),
+                               "Upload byte budget reached: the uploads in flight on this node declare {} bytes, the most [app-http.upload] max_in_flight_size allows; refusing new uploads with 503 until some finish",
+                               config.upload().maxInFlightBytes());
+    }
+
+    private void uploadByteBudgetRestored() {
+        OperatorWarnings.raise(log,
+                               warningSink.get(),
+                               OperatorWarningCode.UPLOAD_BYTE_BUDGET_RESTORED,
+                               selfNodeId.id(),
+                               "Upload byte budget no longer reached: this node accepts new uploads again");
     }
 
     private Promise<Unit> rotateValidated(CertificateBundle newBundle) {
@@ -728,7 +796,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private Promise<Option<HttpServer>> restartH1WithTls(Option<TlsConfig> newTls) {
-        var serverConfig = serverConfig("app-http", config);
+        var serverConfig = serverConfig("app-http", config).withClassifier(this::classify);
         var finalConfig = newTls.map(serverConfig::withTls).or(serverConfig);
         java.util.function.BiConsumer<HttpRequest, ResponseWriter> handler = config.httpProtocol() == HttpProtocol.BOTH
                                                                              ? this::handleRequestWithAltSvc
@@ -764,7 +832,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private Promise<Option<HttpServer>> startH3WithSslContextReturningServer(io.netty.handler.codec.quic.QuicSslContext quicSslContext) {
-        var serverConfig = serverConfig("app-http-h3", config);
+        var serverConfig = serverConfig("app-http-h3", config).withClassifier(this::classify);
         var serverPromise = workerGroup.map(wg -> HttpServer.http3Server(serverConfig,
                                                                          quicSslContext,
                                                                          this::handleRequest,
@@ -873,6 +941,136 @@ class AppHttpServerAdapter implements AppHttpServer {
     public void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
         log.debug("NodeRoutesKey removed, rebuilding router");
         publishRouteTable();
+    }
+
+    // ---- The ingest gate: what the listener does with a request on its head, before any body byte is read ----
+    /// Decides from the request HEAD alone, on HTTP/1.1 and HTTP/3 alike, in the order the handler decides it: the health
+    /// check, route resolution, the effective policy, authentication and the role check. A request that fails any of them
+    /// is answered at once, with the response the handler would have written, and its body is never read. A request that
+    /// passes is bounded by its route's `max_size` (capped by `[app-http.upload] max_size_ceiling`) and, on an upload
+    /// route, by a concurrency permit and the upload idle, minimum-rate and duration bounds.
+    ///
+    /// The handler validates again on dispatch (header-only, so repeating it is harmless): the classification's
+    /// `SecurityContext` is not carried into dispatch.
+    Disposition classify(HttpRequest head) {
+        var method = head.method().name();
+        var path = head.path();
+        var normalizedPath = normalizePath(path);
+
+        if (isHealthEndpoint(normalizedPath)) {
+            return Disposition.aggregate(config.maxRequestSize());
+        }
+
+        var routeTable = context.currentRoutes();
+        var local = httpRoutePublisher.flatMap(pub -> pub.resolveLocal(method, normalizedPath));
+        var effectivePolicy = resolveEffectivePolicy(method, normalizedPath, routeTable, local);
+        var requestId = head.requestId();
+
+        if (requiresAuthentication(effectivePolicy) && config.securityMode() == SecurityMode.NONE) {
+            return refuseWith(SecurityError.NO_VALIDATOR_CONFIGURED, path, requestId, method);
+        }
+
+        return securityValidator.validate(toHttpRequestContext(head, requestId),
+                                          effectivePolicy)
+                                .flatMap(ctx -> enforceRoleIfRequired(ctx, effectivePolicy))
+                                .fold(cause -> refuseWith(cause, path, requestId, method),
+                                      ctx -> admit(ctx,
+                                                   head,
+                                                   uploadSpecOf(local, routeTable, method, normalizedPath),
+                                                   path,
+                                                   requestId));
+    }
+
+    private Disposition refuseWith(Cause cause, String path, String requestId, String method) {
+        return Disposition.reject(response -> InvocationContext.runWithRequestId(requestId,
+                                                                                 () -> handleSecurityFailure(response,
+                                                                                                             cause,
+                                                                                                             path,
+                                                                                                             requestId,
+                                                                                                             method)));
+    }
+
+    /// The ingest limits of the route that will serve the request: the local route's, else the strictest any serving node
+    /// published for the remote one. A request no route matches has none (it will be answered 404 by the handler).
+    private UploadSpec uploadSpecOf(Option<LocalResolution> local,
+                                    RouteTable routeTable,
+                                    String method,
+                                    String normalizedPath) {
+        return local.map(resolution -> resolution.route()
+                                                 .uploadSpec())
+                    .or(() -> findMatchingRemoteRoute(routeTable.remoteRoutes(),
+                                                      method,
+                                                      normalizedPath).map(HttpRouteRegistry.RouteInfo::uploadSpec)
+                                                     .or(UploadSpec.NONE));
+    }
+
+    private Disposition admit(SecurityContext securityContext,
+                              HttpRequest head,
+                              UploadSpec spec,
+                              String path,
+                              String requestId) {
+        var maxBytes = effectiveMaxBytes(spec);
+
+        if (!spec.upload()) {
+            return Disposition.aggregate(maxBytes);
+        }
+
+        return uploadAdmission.tryAcquire(securityContext.principal().value(),
+                                          declaredBytes(head, maxBytes))
+                              .fold(cause -> tooManyUploads(cause, path, requestId),
+                                    release -> Disposition.aggregate(maxBytes,
+                                                                     uploadBounds(spec),
+                                                                     release));
+    }
+
+    /// What an upload reserves from the byte budget: its `Content-Length` when it declares one that is a size, else the most
+    /// the route accepts. A declared length over the route's limit reserves the limit (the gate refuses it 413 anyway).
+    private static long declaredBytes(HttpRequest head, long maxBytes) {
+        return head.headers()
+                   .get("content-length")
+                   .flatMap(value -> Number.parseLong(value.strip()).option())
+                   .filter(length -> length >= 0)
+                   .map(length -> Math.min(length, maxBytes))
+                   .or(maxBytes);
+    }
+
+    /// `min(declared or the listener's `max_request_size`, ceiling, IN_MEMORY_LIMIT)`: the operator's ceiling caps what a
+    /// slice declares, and no ceiling lifts a body past what one in-memory array can hold.
+    private long effectiveMaxBytes(UploadSpec spec) {
+        var declared = spec.maxBodyBytes() > 0
+                       ? spec.maxBodyBytes()
+                       : config.maxRequestSize();
+
+        return Math.min(Math.min(declared,
+                                 config.upload().maxSizeCeiling()),
+                        IN_MEMORY_LIMIT);
+    }
+
+    private BodyBounds uploadBounds(UploadSpec spec) {
+        var upload = config.upload();
+        var maxDuration = spec.maxDurationMillis() > 0
+                          ? TimeSpan.timeSpan(spec.maxDurationMillis()).millis()
+                          : UploadConfig.DEFAULT_MAX_DURATION;
+
+        return BodyBounds.bodyBounds(upload.idleTimeout(),
+                                     BodyRateLimit.bodyRateLimit(upload.minBodyRate(),
+                                                                 UploadConfig.RATE_WINDOW,
+                                                                 UploadConfig.RATE_WINDOW),
+                                     maxDuration);
+    }
+
+    /// 429 when a count cap refused the upload, 503 when the node's byte budget did: both say when to try again.
+    private Disposition tooManyUploads(Cause cause, String path, String requestId) {
+        var status = cause == UploadAdmission.BYTE_BUDGET
+                     ? HttpStatus.SERVICE_UNAVAILABLE
+                     : HttpStatus.TOO_MANY_REQUESTS;
+
+        return Disposition.reject(response -> retryLater(response, status, cause, path, requestId));
+    }
+
+    private void retryLater(ResponseWriter response, HttpStatus status, Cause cause, String path, String requestId) {
+        response.header("Retry-After", String.valueOf(UploadConfig.RETRY_AFTER_SECONDS));
+        sendProblem(response, status, HttpError.clientMessage(cause), path, requestId);
     }
 
     private void handleRequest(HttpRequest request, ResponseWriter response) {
@@ -1005,6 +1203,8 @@ class AppHttpServerAdapter implements AppHttpServer {
         return Result.success(context);
     }
 
+    /// A multipart request to a route that declares part limits is checked on a bounded blocking executor, so the scan over
+    /// a body of hundreds of MiB never holds the event loop; every other request dispatches where it arrived.
     @Contract
     private void dispatchAuthenticated(HttpRequest request,
                                        ResponseWriter response,
@@ -1015,6 +1215,56 @@ class AppHttpServerAdapter implements AppHttpServer {
                                        String path,
                                        String requestId,
                                        Option<LocalResolution> local) {
+        Runnable scoped = () -> dispatchScoped(request,
+                                               response,
+                                               routeTable,
+                                               securityContext,
+                                               method,
+                                               normalizedPath,
+                                               path,
+                                               requestId,
+                                               local);
+
+        if (needsPartCheck(request, uploadSpecOf(local, routeTable, method, normalizedPath))) {
+            partLimitExecutor.submit(() -> runGuarded(scoped, response, requestId))
+                             .onFailure(cause -> refuseBusy(cause, response, path, requestId));
+        } else {
+            scoped.run();
+        }
+    }
+
+    private static boolean needsPartCheck(HttpRequest request, UploadSpec spec) {
+        return spec.hasPartLimits() && MultipartParser.isMultipart(request.headers().get("content-type"));
+    }
+
+    /// 503 with `Retry-After`: every part-limit worker is busy and the queue is full.
+    private void refuseBusy(Cause cause, ResponseWriter response, String path, String requestId) {
+        log.warn("[{}] Multipart part-limit check refused, workers and queue are full: {}", requestId, cause.message());
+        retryLater(response, HttpStatus.SERVICE_UNAVAILABLE, PART_LIMIT_BUSY, path, requestId);
+    }
+
+    /// The executor boundary: what a worker throws is answered 500 here, because nothing above it would answer.
+    @Contract
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})  // executor boundary: an exception must be answered, not lost with the worker
+    private void runGuarded(Runnable task, ResponseWriter response, String requestId) {
+        try {
+            task.run();
+        } catch (Exception e) {
+            log.error("[{}] Error dispatching a multipart request", requestId, e);
+            sendPlainError(response, HttpStatus.INTERNAL_SERVER_ERROR, requestId);
+        }
+    }
+
+    @Contract
+    private void dispatchScoped(HttpRequest request,
+                                ResponseWriter response,
+                                RouteTable routeTable,
+                                SecurityContext securityContext,
+                                String method,
+                                String normalizedPath,
+                                String path,
+                                String requestId,
+                                Option<LocalResolution> local) {
         var principal = securityContext.principal().value();
 
         if (config.securityEnabled()) {
@@ -1029,13 +1279,49 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                                0,
                                                                true,
                                                                () -> Deadline.runWith(Deadline.startingNow(requestBudget),
-                                                                                      () -> dispatchToRoute(request,
-                                                                                                            response,
-                                                                                                            routeTable,
-                                                                                                            method,
-                                                                                                            normalizedPath,
-                                                                                                            requestId,
-                                                                                                            local))));
+                                                                                      () -> dispatchWithinPartLimits(request,
+                                                                                                                     response,
+                                                                                                                     routeTable,
+                                                                                                                     method,
+                                                                                                                     normalizedPath,
+                                                                                                                     path,
+                                                                                                                     requestId,
+                                                                                                                     local))));
+    }
+
+    /// A multipart body is already bounded by the route's `max_size`; the route's part limits (`max_files`,
+    /// `max_file_size`, `max_fields`, `max_field_size`) are checked on its framing (a scan, no decode, no copy), here,
+    /// before the request is dispatched, so a request that breaks one is answered 413 whether the slice runs on this node
+    /// or another. The body is decoded once, by whoever reads it.
+    private void dispatchWithinPartLimits(HttpRequest request,
+                                          ResponseWriter response,
+                                          RouteTable routeTable,
+                                          String method,
+                                          String normalizedPath,
+                                          String path,
+                                          String requestId,
+                                          Option<LocalResolution> local) {
+        var spec = uploadSpecOf(local, routeTable, method, normalizedPath);
+
+        partLimitBreach(request, spec).onEmpty(() -> dispatchToRoute(request,
+                                                                     response,
+                                                                     routeTable,
+                                                                     method,
+                                                                     normalizedPath,
+                                                                     requestId,
+                                                                     local))
+                       .onPresent(cause -> sendProblem(response,
+                                                       cause.httpStatus(),
+                                                       HttpError.clientMessage(cause),
+                                                       path,
+                                                       requestId));
+    }
+
+    /// The part limit a multipart `request` exceeds, or the nested part it carries (400), if the route declares any. A body that is not multipart, or is not a
+    /// closed multipart, is not a breach: the handler answers it as it always has.
+    private static Option<MultipartError> partLimitBreach(HttpRequest request, UploadSpec spec) {
+        return spec.partBreach(request.body(),
+                               request.headers().get("content-type").or(""));
     }
 
     private void dispatchToRoute(HttpRequest request,
@@ -2000,6 +2286,8 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                                                                            org.pragmatica.http.HttpStatus.METHOD_NOT_ALLOWED),
                                                                                                  Map.entry(409,
                                                                                                            org.pragmatica.http.HttpStatus.CONFLICT),
+                                                                                                 Map.entry(413,
+                                                                                                           org.pragmatica.http.HttpStatus.REQUEST_ENTITY_TOO_LARGE),
                                                                                                  Map.entry(422,
                                                                                                            org.pragmatica.http.HttpStatus.UNPROCESSABLE_ENTITY),
                                                                                                  Map.entry(429,
@@ -2041,6 +2329,12 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private static final int MAX_WARN_BODY_LENGTH = 200;
+    /// The most one aggregated body can hold: the array a request body is copied into cannot exceed an int, so no
+    /// declaration or ceiling lifts the effective limit past it (a `Content-Length` over it is refused 413 on the head,
+    /// never counted in an int). Streaming storage (U2) lifts it.
+    static final long IN_MEMORY_LIMIT = Integer.MAX_VALUE - 8L;
+
+    private static final Cause PART_LIMIT_BUSY = Causes.cause("Too many multipart uploads are being checked at once; retry shortly");
 
     private void sendResponse(ResponseWriter response, HttpResponseData responseData, String requestId) {
         if (responseData.statusCode() >= 400) {

@@ -50,6 +50,7 @@ import org.pragmatica.http.routing.RouteMounting;
 import org.pragmatica.http.routing.RouteShapeSelector;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.http.routing.SliceVersionRegistry;
+import org.pragmatica.http.routing.UploadSpec;
 import org.pragmatica.http.routing.VersioningMetricsSink;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
@@ -166,13 +167,24 @@ public interface HttpRoutePublisher {
                           String pathPrefix,
                           String artifactCoord,
                           String sliceMethod,
-                          SecurityPolicy security) {
+                          SecurityPolicy security,
+                          UploadSpec uploadSpec) {
+        /// A route that declares no ingest limits.
+        public LocalRouteInfo(String httpMethod,
+                              String pathPrefix,
+                              String artifactCoord,
+                              String sliceMethod,
+                              SecurityPolicy security) {
+            this(httpMethod, pathPrefix, artifactCoord, sliceMethod, security, UploadSpec.NONE);
+        }
+
         public static LocalRouteInfo localRouteInfo(HttpRouteDefinition def) {
             return new LocalRouteInfo(def.httpMethod(),
                                       def.pathPrefix(),
                                       def.artifactCoord(),
                                       def.sliceMethod(),
-                                      def.security());
+                                      def.security(),
+                                      def.uploadSpec());
         }
     }
 
@@ -515,7 +527,14 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                                       declared.security().asString(),
                                       effective.pathArity(),
                                       effective.spacers(),
-                                      effective.spacerSlots());
+                                      effective.spacerSlots(),
+                                      effective.uploadSpec().upload(),
+                                      effective.uploadSpec().maxBodyBytes(),
+                                      effective.uploadSpec().maxDurationMillis(),
+                                      effective.uploadSpec().maxFiles(),
+                                      effective.uploadSpec().maxFileBytes(),
+                                      effective.uploadSpec().maxFields(),
+                                      effective.uploadSpec().maxFieldBytes());
     }
 
     @Override
@@ -641,7 +660,8 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                            route.security(),
                            route.version(),
                            route.pathParamCount(),
-                           route.spacerSlots());
+                           route.spacerSlots(),
+                           route.uploadSpec());
     }
 
     /// #1573 B1: runs the route and records its outcome ([ExecutionOutcome] has the classification).

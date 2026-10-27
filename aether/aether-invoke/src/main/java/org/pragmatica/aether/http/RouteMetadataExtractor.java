@@ -41,7 +41,8 @@ class RouteMetadataExtractorImpl implements RouteMetadataExtractor {
                                    security,
                                    route.pathParamCount(),
                                    route.spacers(),
-                                   route.spacerSlots());
+                                   route.spacerSlots(),
+                                   route.uploadSpec());
     }
 
     private static SecurityPolicy resolveSecurityPolicy(Route<?> route) {

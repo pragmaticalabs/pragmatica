@@ -168,6 +168,21 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.JSON_CONFIG_APPLIED.code()).isEqualTo("json-config-applied");
     }
 
+    /// #2410: the upload node cap and the upload byte budget each warn once per episode and are closed by an INFO recovery
+    /// of their own subject.
+    @Test
+    void uploadCapAndByteBudget_areWarnings_closedByInfoRecoveriesOfTheirOwn() {
+        assertThat(OperatorWarningCode.UPLOAD_NODE_CAP_SATURATED.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.UPLOAD_NODE_CAP_SATURATED.code()).isEqualTo("upload-node-cap-saturated");
+        assertThat(OperatorWarningCode.UPLOAD_NODE_CAP_RESTORED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.UPLOAD_NODE_CAP_SATURATED);
+        assertThat(OperatorWarningCode.UPLOAD_NODE_CAP_RESTORED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.UPLOAD_BYTE_BUDGET_EXHAUSTED.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.UPLOAD_BYTE_BUDGET_EXHAUSTED.code()).isEqualTo("upload-byte-budget-exhausted");
+        assertThat(OperatorWarningCode.UPLOAD_BYTE_BUDGET_RESTORED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.UPLOAD_BYTE_BUDGET_EXHAUSTED);
+        assertThat(OperatorWarningCode.UPLOAD_BYTE_BUDGET_RESTORED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.UPLOAD_BYTE_BUDGET_RESTORED.code()).isEqualTo("upload-byte-budget-restored");
+    }
+
     private static final Set<OperatorWarningCode> UNCLOSED_BEFORE_THE_RULE = Set.of(
         // A0b, added on purpose: facts about one boot with no runtime recovery. The disk tier and the memory budget are fixed when
         // the instance is built and a snapshot is restored once; the only end of each is a restart, which starts a new event log slice.

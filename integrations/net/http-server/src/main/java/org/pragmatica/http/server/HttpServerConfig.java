@@ -41,6 +41,8 @@ import org.pragmatica.net.tcp.TlsConfig;
 ///                             408 and its input reset. WebSocket connections are exempt once upgraded.
 /// @param bodyRateLimit        the minimum rate a request body must arrive at, the same on both protocols (see
 ///                             [BodyRateLimit]): it bounds a client that trickles just inside the idle bound.
+/// @param classifier           consulted on the request HEADERS, before any body byte is read (see [RequestClassifier]);
+///                             none means every request is aggregated up to `maxContentLength`.
 public record HttpServerConfig(String name,
                                int port,
                                Option<TlsConfig> tls,
@@ -49,7 +51,8 @@ public record HttpServerConfig(String name,
                                boolean chunkedWriteEnabled,
                                SocketOptions socketOptions,
                                TimeSpan readTimeout,
-                               BodyRateLimit bodyRateLimit) {
+                               BodyRateLimit bodyRateLimit,
+                               Option<RequestClassifier> classifier) {
     private static final int DEFAULT_MAX_CONTENT_LENGTH = 65536;
     /// 60 s mirrors nginx's `client_body_timeout` default. It is a guess, not a measurement: long enough for a
     /// client on a slow link to send a 10 MiB body over HTTP/3 (about 1.4 Mbit/s), short enough that a stalled
@@ -58,6 +61,28 @@ public record HttpServerConfig(String name,
 
     public HttpServerConfig {
         webSocketEndpoints = List.copyOf(webSocketEndpoints);
+    }
+
+    /// The shape before request classification existed: every request is aggregated up to `maxContentLength`.
+    public HttpServerConfig(String name,
+                            int port,
+                            Option<TlsConfig> tls,
+                            int maxContentLength,
+                            List<WebSocketEndpoint> webSocketEndpoints,
+                            boolean chunkedWriteEnabled,
+                            SocketOptions socketOptions,
+                            TimeSpan readTimeout,
+                            BodyRateLimit bodyRateLimit) {
+        this(name,
+             port,
+             tls,
+             maxContentLength,
+             webSocketEndpoints,
+             chunkedWriteEnabled,
+             socketOptions,
+             readTimeout,
+             bodyRateLimit,
+             Option.empty());
     }
 
     public static HttpServerConfig httpServerConfig(String name, int port) {
@@ -69,7 +94,8 @@ public record HttpServerConfig(String name,
                                     false,
                                     SocketOptions.defaultConfig(),
                                     DEFAULT_READ_TIMEOUT,
-                                    BodyRateLimit.DEFAULT);
+                                    BodyRateLimit.DEFAULT,
+                                    Option.empty());
     }
 
     public HttpServerConfig withTls(TlsConfig tls) {
@@ -81,7 +107,8 @@ public record HttpServerConfig(String name,
                                     chunkedWriteEnabled,
                                     socketOptions,
                                     readTimeout,
-                                    bodyRateLimit);
+                                    bodyRateLimit,
+                                    classifier);
     }
 
     public HttpServerConfig withMaxContentLength(int maxContentLength) {
@@ -93,7 +120,8 @@ public record HttpServerConfig(String name,
                                     chunkedWriteEnabled,
                                     socketOptions,
                                     readTimeout,
-                                    bodyRateLimit);
+                                    bodyRateLimit,
+                                    classifier);
     }
 
     public HttpServerConfig withWebSocket(WebSocketEndpoint endpoint) {
@@ -109,7 +137,8 @@ public record HttpServerConfig(String name,
                                     chunkedWriteEnabled,
                                     socketOptions,
                                     readTimeout,
-                                    bodyRateLimit);
+                                    bodyRateLimit,
+                                    classifier);
     }
 
     public HttpServerConfig withChunkedWrite() {
@@ -121,7 +150,8 @@ public record HttpServerConfig(String name,
                                     true,
                                     socketOptions,
                                     readTimeout,
-                                    bodyRateLimit);
+                                    bodyRateLimit,
+                                    classifier);
     }
 
     public HttpServerConfig withBodyRateLimit(BodyRateLimit bodyRateLimit) {
@@ -133,7 +163,8 @@ public record HttpServerConfig(String name,
                                     chunkedWriteEnabled,
                                     socketOptions,
                                     readTimeout,
-                                    bodyRateLimit);
+                                    bodyRateLimit,
+                                    classifier);
     }
 
     public HttpServerConfig withReadTimeout(TimeSpan readTimeout) {
@@ -145,6 +176,26 @@ public record HttpServerConfig(String name,
                                     chunkedWriteEnabled,
                                     socketOptions,
                                     readTimeout,
-                                    bodyRateLimit);
+                                    bodyRateLimit,
+                                    classifier);
+    }
+
+    /// Classify every request on its HEADERS (see [RequestClassifier]).
+    public HttpServerConfig withClassifier(RequestClassifier classifier) {
+        return new HttpServerConfig(name,
+                                    port,
+                                    tls,
+                                    maxContentLength,
+                                    webSocketEndpoints,
+                                    chunkedWriteEnabled,
+                                    socketOptions,
+                                    readTimeout,
+                                    bodyRateLimit,
+                                    Option.some(classifier));
+    }
+
+    /// The classifier in force: the configured one, else one that aggregates every request up to `maxContentLength`.
+    public RequestClassifier effectiveClassifier() {
+        return classifier.or(() -> RequestClassifier.aggregateAll(maxContentLength));
     }
 }
