@@ -92,29 +92,28 @@ public interface EntitySlice {
     /// times the request is repeated. That is the property a lost acknowledgement makes load-bearing, and
     /// it cannot be exercised through an entry that mints internally.
     ///
-    /// Both are declared as REFERENCE types, and `delayMillis` deliberately so. Jackson refuses an ABSENT
-    /// creator property of primitive type outright — `Type mismatch: expected long, got unknown`, a 500
-    /// rather than a default — so a `long` here would have made the field mandatory in fact while reading
-    /// as optional. A boxed `Long` arrives null when the field is omitted, which is what an omitted field
-    /// means, and [Option#option] mints the optionality at the boundary where the nullable actually is.
-    record TimerRequest(String orderId, Long delayMillis, String token) {
+    /// Both are declared as [Option] because absence is what an omitted field means, and [Option] is the only
+    /// type that says so. The generated slice JSON codec (#2229) treats every non-[Option] record component
+    /// as required and refuses its absence with a 400 (`Missing required field: ...`), so a boxed `Long` or a
+    /// `String` here would make the field mandatory in fact while reading as optional. An [Option] component
+    /// decodes an omitted field as [Option#none()], so the optionality is minted by the codec at the HTTP
+    /// boundary and nothing downstream has to ask.
+    record TimerRequest(String orderId, Option<Long> delayMillis, Option<String> token) {
         /// The pre-I4 hardcoded value, kept as the default so every caller that supplies no delay is
         /// unchanged by the field's arrival.
         private static final Duration DEFAULT_DELAY = Duration.ofMinutes(5);
 
         Duration delay() {
-            return Option.option(delayMillis)
-                         .filter(Verify.Is::positive)
-                         .map(Duration::ofMillis)
-                         .or(DEFAULT_DELAY);
+            return delayMillis.filter(Verify.Is::positive)
+                              .map(Duration::ofMillis)
+                              .or(DEFAULT_DELAY);
         }
 
-        /// An absent JSON field arrives as null here — the HTTP boundary is exactly where [Option] is minted
-        /// from a nullable, so nothing downstream has to ask.
+        /// An omitted JSON field arrives as [Option#none()]; a supplied but blank one is treated the same, so
+        /// only a token with content re-presents a schedule.
         Option<DurableEntity.TimerToken> callerToken() {
-            return Option.option(token)
-                         .filter(Verify.Is::present)
-                         .map(DurableEntity.TimerToken::timerToken);
+            return token.filter(Verify.Is::present)
+                        .map(DurableEntity.TimerToken::timerToken);
         }
     }
 

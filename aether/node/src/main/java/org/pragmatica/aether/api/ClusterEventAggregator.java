@@ -173,6 +173,9 @@ public final class ClusterEventAggregator {
     /// True while THIS node drains because the leader commanded it (#2014); wired by `AetherNode`.
     private final java.util.concurrent.atomic.AtomicReference<BooleanSupplier> selfCommandedDrain = new java.util.concurrent.atomic.AtomicReference<>(() -> false);
 
+    /// True while THIS node dissolves itself on core absence (the `CORE_ABSENCE` fence, #2439); wired by `AetherNode`.
+    private final java.util.concurrent.atomic.AtomicReference<BooleanSupplier> selfCoreAbsenceDrain = new java.util.concurrent.atomic.AtomicReference<>(() -> false);
+
     /// True while THIS node is in the voter roster; wired by `AetherNode`. Defaults to true, so an unwired aggregator keeps
     /// the strict reading: a PASSIVE is a quorum loss. `QUORUM_LOST` is a statement about voters (#2306).
     private final java.util.concurrent.atomic.AtomicReference<BooleanSupplier> selfIsVoter = new java.util.concurrent.atomic.AtomicReference<>(() -> true);
@@ -1259,10 +1262,29 @@ public final class ClusterEventAggregator {
                                                          + " is not applying consensus decisions while it catches up; it is not a voter, so this is not a quorum loss"));
     }
 
+    /// #2439: an observer that went passive because it fenced ITSELF on core absence is dissolving, not catching up. The
+    /// lag warning would say the opposite, and as the newest raise it would displace the CRITICAL `core-absence-fence` that
+    /// explains the state, so it is withheld. Scoped to the observer branch: a voter's PASSIVE is never decided here.
+    private void onObserverPassive() {
+        if (selfCoreAbsenceDrain.get().getAsBoolean()) {
+            LOG.info("Observer {} went passive because it is dissolving on core absence — fenced, not lagging", selfNode.id());
+
+            return;
+        }
+
+        raiseObserverLagging();
+    }
+
     /// Wire the "this node is draining by command" probe (#2014), from the local `DrainProcedure`.
     @Contract
     public void bindSelfCommandedDrain(BooleanSupplier selfCommandedDrain) {
         this.selfCommandedDrain.set(selfCommandedDrain);
+    }
+
+    /// Wire the "this node is dissolving on core absence" probe (#2439), from the local `DrainProcedure`.
+    @Contract
+    public void bindSelfCoreAbsenceDrain(BooleanSupplier selfCoreAbsenceDrain) {
+        this.selfCoreAbsenceDrain.set(selfCoreAbsenceDrain);
     }
 
     /// Wire the "this node is in the voter roster" probe (#2306), from the installed voter configuration.
@@ -1335,7 +1357,7 @@ public final class ClusterEventAggregator {
                 }
 
                 if (!selfIsVoter.get().getAsBoolean()) {
-                    raiseObserverLagging();
+                    onObserverPassive();
 
                     return;
                 }

@@ -784,6 +784,54 @@ class ClusterEventAggregatorTest {
         assertThat(h.events()).isEmpty();
     }
 
+    /// #2439 — a worker that fenced itself on core absence is dissolving, not catching up: its PASSIVE raises no lag
+    /// warning, so the CRITICAL `core-absence-fence` stays the last raised warning. Removing the `selfCoreAbsenceDrain`
+    /// guard in `onObserverPassive` turns this red.
+    @Test
+    void coreAbsenceDrainPassive_onAnObserver_raisesNoLagWarning_andTheFenceStaysLastRaised() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().bindSelfIsVoter(() -> false);
+        h.aggregator().bindSelfCoreAbsenceDrain(() -> true);
+        h.aggregator().onOperatorWarning(coreAbsenceFence());
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.passive());
+
+        assertThat(codes(h)).containsExactly("core-absence-fence");
+        assertThat(h.aggregator().lastRaisedOperatorWarning().map(e -> e.details().get("code"))).isEqualTo(Option.some("core-absence-fence"));
+    }
+
+    /// #2439 — the control: an observer that is NOT dissolving on core absence still raises the lag warning on PASSIVE,
+    /// and it does become the last raised warning. Blanket suppression of the lag warning turns this red.
+    @Test
+    void observerPassive_whileNotCoreAbsenceDraining_stillRaisesTheLagWarning() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().bindSelfIsVoter(() -> false);
+        h.aggregator().bindSelfCoreAbsenceDrain(() -> false);
+        h.aggregator().onOperatorWarning(coreAbsenceFence());
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.passive());
+
+        assertThat(codes(h)).containsExactly("core-absence-fence", "observer-consensus-lagging");
+        assertThat(h.aggregator().lastRaisedOperatorWarning().map(e -> e.details().get("code"))).isEqualTo(Option.some("observer-consensus-lagging"));
+    }
+
+    /// #2439 — the exemption is scoped to the observer branch: a VOTER whose PASSIVE arrives during a core-absence drain
+    /// still raises CRITICAL `QuorumLost`. Hoisting the guard above the voter check turns this red.
+    @Test
+    void voterPassive_whileCoreAbsenceDraining_stillEmitsCriticalQuorumLost() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().bindSelfIsVoter(() -> true);
+        h.aggregator().bindSelfCoreAbsenceDrain(() -> true);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.passive());
+
+        var events = h.events();
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst()).isInstanceOf(ClusterEvent.QuorumLost.class);
+        assertThat(events.getFirst().severity()).isEqualTo(ClusterEvent.Severity.CRITICAL);
+    }
+
+    private static OperatorWarning coreAbsenceFence() {
+        return OperatorWarning.operatorWarning(OperatorWarningCode.CORE_ABSENCE_FENCE, "core", "CORE ABSENCE fence firing");
+    }
+
     /// #2306 — the recovery of the lag warning: an observer that lagged and is observing again publishes an INFO
     /// `observer-consensus-resumed`. Without it the operator sees the warning enter and never leave.
     @Test

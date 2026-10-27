@@ -65,6 +65,38 @@ class DrainProcedureTest {
         }
     }
 
+    /// #2439: only a CORE_ABSENCE drain counts as a self-fence for observer-lag suppression. Returning `true` for every
+    /// reason turns the second test red.
+    @Nested
+    class CoreAbsenceDrain {
+        private DrainProcedure procedure() {
+            return DrainProcedure.drainProcedure(InFlightRequestTracker.inFlightRequestTracker(), () -> {}, () -> {}, timeSpan(5).seconds());
+        }
+
+        @Test
+        void coreAbsence_isCoreAbsenceOnlyAfterInitiate() {
+            var procedure = procedure();
+
+            assertThat(procedure.isCoreAbsenceDrain()).isFalse();
+            procedure.initiate(DrainReason.CORE_ABSENCE);
+            assertThat(procedure.isCoreAbsenceDrain()).isTrue();
+        }
+
+        @Test
+        void commandedQuorumLossAndOtherReasons_areNotCoreAbsence() {
+            for (var reason : DrainReason.values()) {
+                if (reason == DrainReason.CORE_ABSENCE) {
+                    continue;
+                }
+
+                var procedure = procedure();
+
+                procedure.initiate(reason);
+                assertThat(procedure.isCoreAbsenceDrain()).as("reason %s", reason).isFalse();
+            }
+        }
+    }
+
     @Nested
     class SingleShot {
         @Test
