@@ -277,7 +277,7 @@ class RemoteTierS3IntegrationTest {
                   .onSuccess(opt -> assertThat(Arrays.equals(opt.or(new byte[0]), payload)).as("read back from S3 alone").isTrue());
 
             var chunkKeys = s3Client.listObjects(prefix, 1000).await().fold(cause -> fail(cause.message()), keys -> keys);
-            assertThat(chunkKeys).as("6 chunks plus a manifest, an object entry and a name binding").hasSize(9);
+            assertThat(chunkKeys).as("6 chunks, a manifest, a name binding and the 3 versions of the object entry that naming it wrote (none collected yet)").hasSize(11);
             var firstChunk = Arrays.copyOfRange(payload, 0, CHUNK);
             s3Client.putObject(keyOf(blockIdOf(firstChunk)), "tampered".getBytes(StandardCharsets.UTF_8), "application/octet-stream")
                     .await()
