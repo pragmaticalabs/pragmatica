@@ -3,6 +3,8 @@ package org.pragmatica.storage;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 import java.util.stream.Stream;
 
 import org.pragmatica.lang.Option;
@@ -311,6 +313,13 @@ final class LocalContentStore implements ContentStoreV2 {
 
     /// All of `promises`, in order, without chaining them: a namespace or an object of any size resolves in constant stack.
     static <T> Promise<List<T>> gather(List<Promise<T>> promises) {
+        return gather(promises, Promise::onResult);
+    }
+
+    /// `subscribe` registers a handler on an input; the seam lets a test run the handlers in an order a real promise never
+    /// produces on demand (a handler registered while its input is being resolved runs before the ones registered earlier).
+    static <T> Promise<List<T>> gather(List<Promise<T>> promises,
+                                       BiConsumer<Promise<T>, Consumer<Result<T>>> subscribe) {
         if (promises.isEmpty()) {
             return Promise.success(List.of());
         }
@@ -323,24 +332,24 @@ final class LocalContentStore implements ContentStoreV2 {
         for (var i = 0; i < promises.size(); i++) {
             var index = i;
             // detached: `all` is what callers wait on and it resolves inside the last callback; nothing chains on one promise
-            promises.get(index)
-                    .onResult(result -> {
-                                  result.onSuccess(value -> results.set(index, value))
-                                        .onFailure(cause -> {
-                                      if (failed.compareAndSet(false, true)) {
-                                          all.fail(cause);
-                                      }
-                                  });
-                                  if (remaining.decrementAndGet() == 0 && !failed.get()) {
-                                      var values = new ArrayList<T>(results.length());
+            subscribe.accept(promises.get(index),
+                             result -> {
+                                 result.onSuccess(value -> results.set(index, value))
+                                       .onFailure(cause -> {
+                                     if (failed.compareAndSet(false, true)) {
+                                         all.fail(cause);
+                                     }
+                                 });
+                                 if (remaining.decrementAndGet() == 0 && !failed.get()) {
+                                     var values = new ArrayList<T>(results.length());
 
-                                      for (var j = 0; j < results.length(); j++) {
-                                          values.add(results.get(j));
-                                      }
+                                     for (var j = 0; j < results.length(); j++) {
+                                         values.add(results.get(j));
+                                     }
 
-                                      all.succeed(values);
-                                  }
-                              });
+                                     all.succeed(values);
+                                 }
+                             });
         }
 
         return all;
