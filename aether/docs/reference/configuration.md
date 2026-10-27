@@ -568,7 +568,7 @@ same `ContentStoreConfig` section; each has a default, so an existing section bi
 
 **Renaming an object (local mode).** `bind` of a second name to a named object is never unnamed: it binds the new name first, then
 retires the old one, and returns after both. While it runs, and after a crash between the two steps, both names resolve to the
-same object; no block is reclaimed in either case. Objects hold one name outside that window. A later cluster catalog makes the
+same object; no block is reclaimed in either case, and deleting the object retires both names. A binding whose object was deleted reads as not found and is replaced by the next bind of that name. Objects hold one name outside that window. A later cluster catalog makes the
 rename atomic.
 
 ## Environment Variables
