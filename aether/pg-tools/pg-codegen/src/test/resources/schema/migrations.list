@@ -1,2 +1,4 @@
 V001__init.sql
 V002__documents.sql
+V003__pairing.sql
+V004__public.sql

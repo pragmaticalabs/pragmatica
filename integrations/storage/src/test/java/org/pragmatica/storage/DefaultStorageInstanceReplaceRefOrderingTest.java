@@ -106,6 +106,31 @@ class DefaultStorageInstanceReplaceRefOrderingTest {
         }
 
         @Override
+        public boolean claimUnacknowledged(BlockId blockId, BlockLifecycle sentinel) {
+            return delegate.claimUnacknowledged(blockId, sentinel);
+        }
+
+        @Override
+        public void acknowledgeClaim(BlockId blockId) {
+            delegate.acknowledgeClaim(blockId);
+        }
+
+        @Override
+        public boolean isUnacknowledged(BlockId blockId) {
+            return delegate.isUnacknowledged(blockId);
+        }
+
+        @Override
+        public AccessTracker accessTracker() {
+            return delegate.accessTracker();
+        }
+
+        @Override
+        public Option<BlockLifecycle> observeLifecycle(BlockId blockId, UnaryOperator<BlockLifecycle> updater) {
+            return delegate.observeLifecycle(blockId, updater);
+        }
+
+        @Override
         public boolean releaseClaim(BlockId blockId, BlockLifecycle sentinel) {
             return delegate.releaseClaim(blockId, sentinel);
         }

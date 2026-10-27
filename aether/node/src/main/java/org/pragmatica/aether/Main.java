@@ -54,6 +54,7 @@ import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
 import org.pragmatica.aether.environment.PeerInfo;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
+import org.pragmatica.aether.node.IdentityLedgerWiring;
 import org.pragmatica.aether.node.NodeCodecs;
 import org.pragmatica.aether.node.OwnRestoreWatchdog;
 import org.pragmatica.aether.node.StorageFactory;
@@ -136,6 +137,7 @@ public record Main(String[] args) {
 
         config = withResolvedClusterSecret(config, aetherConfig);
         enforceWalDurabilityBootable(config);
+        enforceIdentityLedgerBootable(config);
         // Review catch (#634 batch): assembly failures — the routed-type codec guard included — get
         // the same FATAL + exit shape as the other boot gates, not an uncaught-exception stack trace.
         var node = AetherNode.aetherNode(config).onFailure(this::abortBoot).expect("unreachable: abortBoot exits");
@@ -350,6 +352,14 @@ public record Main(String[] args) {
         AetherNode.verifyWalBootable(config)
                   .flatMap(_ -> AetherNode.verifyStreamSegmentsBootable(config))
                   .onFailure(this::abortBoot);
+    }
+
+    /// Boot gate (#2429): a stated data path whose identity-ledger directory cannot be created or forced to disk
+    /// refuses the boot with a named cause; a synthesized default path never does (it degrades, see
+    /// [IdentityLedgerWiring]). The same `verify* -> abortBoot` idiom as the gates above.
+    @Contract
+    private void enforceIdentityLedgerBootable(AetherNodeConfig config) {
+        IdentityLedgerWiring.verifyBootable(config).onFailure(this::abortBoot);
     }
 
     /// Boot gate: insecure dev-mode must be fundamentally incompatible with a real

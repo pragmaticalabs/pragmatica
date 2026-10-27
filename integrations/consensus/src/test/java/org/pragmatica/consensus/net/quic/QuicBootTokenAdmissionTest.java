@@ -17,18 +17,28 @@ package org.pragmatica.consensus.net.quic;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.consensus.ConsensusCodecs;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.BootTokens;
+import org.pragmatica.consensus.net.IdentityFacts;
+import org.pragmatica.consensus.net.IdentityLedger;
 import org.pragmatica.consensus.net.NetCodecs;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.TlsConfig;
@@ -152,6 +162,143 @@ class QuicBootTokenAdmissionTest {
         assertThat(clientTokens.isRetired(SERVER_NODE)).isFalse();
     }
 
+    /// #2429: a registry that cannot answer yet (its identity ledger is not loaded) is not a verdict. The acceptor closes the
+    /// connection WITHOUT a HelloRefused, which would make the dialer believe its identity is retired and exit.
+    @Test
+    void acceptor_unavailableRegistry_closesWithoutTellingTheProcessItsIdentityIsRetired(@TempDir Path directory) {
+        var serverTokens = BootTokens.bootTokens(SERVER_TOKEN);
+
+        serverTokens.attachLedger(IdentityLedger.identityLedger(directory.resolve("ledger"), IdentityLedger.DurableWriter.fileOps()));
+        var port = startServer(serverTokens);
+        var dialerTokens = BootTokens.bootTokens(CLIENT_TOKEN);
+        var told = new CopyOnWriteArrayList<String>();
+
+        dialerTokens.onSelfRefused(told::add);
+
+        var outcome = connectResult(dialerTokens, port);
+
+        assertThat(outcome.isFailure()).as("not admitted while the registry cannot answer").isTrue();
+        outcome.onFailure(cause -> assertThat(cause.message()).as("the acceptor CLOSED the connection (a dial left open would only time out)")
+                                                              .contains("closed the connection"));
+        assertThat(told).as("and not told its identity is retired").isEmpty();
+        assertThat(registered.get()).isZero();
+        assertThat(serverTokens.refusals()).as("not a refusal").isZero();
+        assertThat(serverTokens.isRetired(CLIENT_NODE)).isFalse();
+    }
+
+    /// #2429 write-ahead: a conflicting process is refused only once its retirement is durable in the acceptor's ledger. While
+    /// the write is held the dial stays undecided and nothing is registered; when it completes the process is refused AND told.
+    @Test
+    void acceptor_conflictWaitsForTheLedger_thenRefusesAndTellsTheProcess(@TempDir Path directory) throws Exception {
+        var writer = new HeldDirectoryForce();
+        var serverTokens = BootTokens.bootTokens(SERVER_TOKEN);
+        var ledger = IdentityLedger.identityLedger(directory.resolve("ledger"), writer);
+
+        serverTokens.attachLedger(ledger);
+        serverTokens.preload(ledger.open(true).facts(), false);
+        serverTokens.admit(CLIENT_NODE, CLIENT_TOKEN);
+        writer.hold();
+        var port = startServer(serverTokens);
+        var refusedTokens = BootTokens.bootTokens(OTHER_TOKEN);
+        var told = new CopyOnWriteArrayList<String>();
+
+        refusedTokens.onSelfRefused(told::add);
+        var dial = CompletableFuture.supplyAsync(() -> connects(refusedTokens, port));
+
+        Thread.sleep(1500);
+        assertThat(dial.isDone()).as("undecided while the retirement is not durable").isFalse();
+        assertThat(told).isEmpty();
+        assertThat(registered.get()).isZero();
+
+        writer.release();
+
+        assertThat(dial.get(15, TimeUnit.SECONDS)).isFalse();
+        assertThat(told).singleElement().asString().contains("fresh identity");
+        assertThat(serverTokens.isRetired(CLIENT_NODE)).isTrue();
+    }
+
+    /// #2429, the dialer's side: a registry that cannot answer yet fails the dial on the ordinary connect-failure path. It does
+    /// not retire the server's NodeId and counts no refusal; once the ledger is loaded the same dial connects.
+    @Test
+    void dialer_unavailableRegistry_failsTheDialWithoutRetiringTheServer_andConnectsOnceLoaded(@TempDir Path directory) {
+        var port = startServer(BootTokens.bootTokens(SERVER_TOKEN));
+        var clientTokens = BootTokens.bootTokens(CLIENT_TOKEN);
+
+        clientTokens.attachLedger(IdentityLedger.identityLedger(directory.resolve("ledger"), IdentityLedger.DurableWriter.fileOps()));
+
+        assertThat(connects(clientTokens, port)).as("the dial fails while the registry cannot answer").isFalse();
+        assertThat(clientTokens.isRetired(SERVER_NODE)).as("and the server's NodeId is not retired").isFalse();
+        assertThat(clientTokens.refusals()).isZero();
+
+        clientTokens.preload(IdentityFacts.identityFacts(), false);
+
+        assertThat(connects(clientTokens, port)).as("control: the same dial connects once the ledger is loaded").isTrue();
+    }
+
+    /// #2429 write-ahead, the dialer's side: a different process answering as a known NodeId is refused only once its
+    /// retirement is durable in the DIALER's ledger. While the write is held the dial stays undecided; afterwards it fails
+    /// and the NodeId is retired.
+    @Test
+    void dialer_conflictWaitsForTheLedger_thenRefusesAndRetires(@TempDir Path directory) throws Exception {
+        var writer = new HeldDirectoryForce();
+        var clientTokens = BootTokens.bootTokens(CLIENT_TOKEN);
+        var ledger = IdentityLedger.identityLedger(directory.resolve("ledger"), writer);
+
+        clientTokens.attachLedger(ledger);
+        clientTokens.preload(ledger.open(true).facts(), false);
+        clientTokens.admit(SERVER_NODE, SERVER_TOKEN);
+        writer.hold();
+        var port = startServer(BootTokens.bootTokens(OTHER_TOKEN));
+        var dial = CompletableFuture.supplyAsync(() -> connects(clientTokens, port));
+
+        Thread.sleep(1500);
+        assertThat(dial.isDone()).as("undecided while the retirement is not durable").isFalse();
+
+        writer.release();
+
+        assertThat(dial.get(15, TimeUnit.SECONDS)).isFalse();
+        assertThat(clientTokens.isRetired(SERVER_NODE)).isTrue();
+    }
+
+    /// Forces and renames as usual, but holds the directory force while the gate is closed.
+    private static final class HeldDirectoryForce implements IdentityLedger.DurableWriter {
+        private final IdentityLedger.DurableWriter real = IdentityLedger.DurableWriter.fileOps();
+        private volatile CountDownLatch gate = new CountDownLatch(0);
+
+        void hold() {
+            gate = new CountDownLatch(1);
+        }
+
+        void release() {
+            gate.countDown();
+        }
+
+        @Override
+        public Result<Unit> writeForced(Path file, byte[] content) {
+            return real.writeForced(file, content);
+        }
+
+        @Override
+        public Result<Unit> moveAtomic(Path source, Path target) {
+            return real.moveAtomic(source, target);
+        }
+
+        @Override
+        public Result<Unit> forceDirectory(Path directory) {
+            awaitGate();
+
+            return real.forceDirectory(directory);
+        }
+
+        private void awaitGate() {
+            try {
+                gate.await(30, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
     private static BootTokens serverRegistryKnowingClientAs(long clientToken) {
         var tokens = BootTokens.bootTokens(SERVER_TOKEN);
 
@@ -180,6 +327,10 @@ class QuicBootTokenAdmissionTest {
     }
 
     private boolean connects(BootTokens tokens, int port) {
+        return connectResult(tokens, port).isSuccess();
+    }
+
+    private Result<?> connectResult(BootTokens tokens, int port) {
         if (client != null) {
             client.close().await(AWAIT_TIMEOUT);
         }
@@ -196,8 +347,7 @@ class QuicBootTokenAdmissionTest {
                                                      tokens);
 
         return client.connect(SERVER_NODE, new InetSocketAddress("127.0.0.1", port))
-                     .await(AWAIT_TIMEOUT)
-                     .fold(_ -> false, _ -> true);
+                     .await(AWAIT_TIMEOUT);
     }
 
     private static java.util.List<SliceCodec.TypeCodec<?>> combinedCodecs() {

@@ -22,9 +22,12 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 
@@ -37,7 +40,16 @@ import org.pragmatica.lang.Unit;
 /// The first non-zero token seen for a NodeId is recorded; an equal token is the same process. A
 /// different token retires the NodeId for the life of this process: the known process is treated as
 /// dead and every later piece of evidence for that NodeId — from either process — is refused.
+///
+/// **Durability (#2429).** Without an identity ledger this registry is process memory: a restarted node knows nothing
+/// of what it retired. With one ([#attachLedger], [#preload]) the same two stores are loaded from the node's disk
+/// before admission opens, and a retirement is written to it BEFORE the registry answers the refusal or announces the
+/// retirement. Only retirements are kept: the boot token a peer presented is not, because a restarted node carries a new
+/// one and a registry that remembered the old would refuse every restarted peer. The comparison rule above is unchanged.
 public interface BootTokens {
+    /// The cause recorded in the ledger when a different process presented a token for a bound NodeId.
+    String TOKEN_CONFLICT = "TOKEN_CONFLICT";
+
     /// Outcome of presenting a token for a peer.
     enum Admission {
         /// Unknown, first-seen or equal token — the same process.
@@ -45,7 +57,12 @@ public interface BootTokens {
         /// A different token for a known NodeId: the NodeId was retired by THIS call.
         CONFLICT,
         /// The NodeId was already retired by an earlier conflict.
-        RETIRED;
+        RETIRED,
+        /// Neither admitted nor refused (#2429): the registry cannot yet answer, because it is not loaded from the identity
+        /// ledger, the node is WIPED and admits no new peer until a merge completed, or (for the synchronous [#admit] only)
+        /// the answer waits for a retirement to become durable. The evidence is presented again later; it is not counted as
+        /// a refusal.
+        UNAVAILABLE;
         public boolean admitted() {
             return this == ADMITTED;
         }
@@ -58,6 +75,25 @@ public interface BootTokens {
     boolean isRetired(NodeId peer);
     /// The token recorded for `peer`, `0` when none.
     long tokenOf(NodeId peer);
+    /// [#admit] for a caller that can wait: a conflicting token is answered, and its retirement announced, only once the
+    /// retirement is durable in the identity ledger (write-ahead, #2429). Never blocks the caller; completes at once for
+    /// every other presentation.
+    Promise<Admission> admitDurably(NodeId peer, long token);
+    /// Completes once the retirement of `peer` is durable (or its write has failed: the retirement stands and is announced
+    /// all the same, see the registry's conflict handling). Completes at once for a NodeId whose retirement needs no write
+    /// of its own: one loaded from the ledger at boot, one merged from a peer, or any NodeId on a node without a ledger.
+    /// A caller that answers a refusal to the process itself waits on this, so the answer never precedes the disk (#2429).
+    Promise<Unit> retirementDurable(NodeId peer);
+    /// Attach this node's identity ledger. From here on the registry answers [Admission#UNAVAILABLE] until
+    /// [#preload] has loaded the ledger's facts: it fails closed, never open.
+    Unit attachLedger(IdentityLedger ledger);
+    /// Load the facts the ledger held at boot and open admission. `wiped` means the ledger was lost (not created
+    /// now): the registry then admits no new peer until [#merged] reports a completed merge with a peer's facts.
+    Unit preload(IdentityFacts facts, boolean wiped);
+    /// A peer's facts were merged into this node's: apply them, make them durable, and end a WIPED state.
+    Promise<Unit> merged(IdentityFacts peerFacts);
+    /// Whether the identity ledger is attached and its last write left it current. False without a ledger.
+    boolean ledgerDurable();
     /// Count of refused admissions — observability for the terminal-removal rule.
     long refusals();
     /// Register a listener invoked once per NodeId, on the admission that retires it — whichever
@@ -77,9 +113,47 @@ public interface BootTokens {
                         AtomicLong refusalCount,
                         List<Consumer<NodeId>> retirementListeners,
                         List<Consumer<String>> selfRefusalListeners,
-                        AtomicBoolean refusedSelf) implements BootTokens {
+                        AtomicBoolean refusedSelf,
+                        AtomicReference<Option<IdentityLedger>> ledger,
+                        AtomicBoolean ready,
+                        AtomicBoolean wiped,
+                        Map<NodeId, Promise<Unit>> writes) implements BootTokens {
             @Override
             public Admission admit(NodeId peer, long token) {
+                var screened = screen(peer, token);
+
+                return screened == Admission.CONFLICT
+                       ? answeredNow(conflict(peer))
+                       : screened;
+            }
+
+            @Override
+            public Promise<Admission> admitDurably(NodeId peer, long token) {
+                var screened = screen(peer, token);
+
+                return screened == Admission.CONFLICT
+                       ? conflict(peer)
+                       : Promise.success(screened);
+            }
+
+            /// A synchronous caller takes the verdict only if it is already known; a retirement still being written is
+            /// UNAVAILABLE to it, and is announced when it is durable.
+            private Admission answeredNow(Promise<Admission> verdict) {
+                var answer = new AtomicReference<>(Admission.UNAVAILABLE);
+
+                return verdict.onSuccess(answer::set)
+                              .isResolved()
+                       ? answer.get()
+                       : Admission.UNAVAILABLE;
+            }
+
+            /// Every outcome that needs no write. [Admission#CONFLICT] here only means "a different process, not yet
+            /// retired": the caller retires it and answers with the real verdict. Nothing is allocated on the common path.
+            private Admission screen(NodeId peer, long token) {
+                if (!ready.get()) {
+                    return Admission.UNAVAILABLE;
+                }
+
                 if (retired.contains(peer)) {
                     return refused(Admission.RETIRED);
                 }
@@ -88,17 +162,47 @@ public interface BootTokens {
                     return Admission.ADMITTED;
                 }
 
+                if (wiped.get() && !tokens.containsKey(peer)) {
+                    return Admission.UNAVAILABLE;
+                }
+
                 var known = tokens.putIfAbsent(peer, token);
 
                 return known == null || known == token
                        ? Admission.ADMITTED
-                       : conflict(peer);
+                       : Admission.CONFLICT;
             }
 
-            private Admission conflict(NodeId peer) {
-                return retired.add(peer)
-                       ? announceRetirement(peer)
-                       : refused(Admission.RETIRED);
+            /// Write-ahead: the retirement stands in memory at once (every later piece of evidence is refused), but it is
+            /// announced, and this caller answered, only after the ledger holds it.
+            private Promise<Admission> conflict(NodeId peer) {
+                var write = Promise.<Unit> promise();
+                // The entry is published BEFORE the NodeId counts as retired, so a thread that sees the retirement can always
+                // find the write it has to wait for ([#retirementDurable]).
+                if (writes.putIfAbsent(peer, write) != null || !retired.add(peer)) {
+                    return Promise.success(refused(Admission.RETIRED));
+                }
+                // FER: the retirement already stands in memory and is announced even when its ledger write fails; what is
+                // lost is protection across a restart of every holder, reported through the ledger's durability listener.
+                return ledger.get()
+                             .fold(() -> settled(write).map(_ -> announceRetirement(peer)),
+                                   held -> retireDurably(held, peer, write));
+            }
+
+            private Promise<Unit> settled(Promise<Unit> write) {
+                return write.succeed(Unit.unit());
+            }
+
+            private Promise<Admission> retireDurably(IdentityLedger held, NodeId peer, Promise<Unit> write) {
+                return held.record(IdentityFacts.terminated(peer, TOKEN_CONFLICT))
+                           .recover(_ -> Unit.unit())
+                           .flatMap(_ -> settled(write))
+                           .map(_ -> announceRetirement(peer));
+            }
+
+            @Override
+            public Promise<Unit> retirementDurable(NodeId peer) {
+                return Option.option(writes.get(peer)).or(() -> Promise.success(Unit.unit()));
             }
 
             private Admission announceRetirement(NodeId peer) {
@@ -111,6 +215,50 @@ public interface BootTokens {
                 refusalCount.incrementAndGet();
 
                 return admission;
+            }
+
+            @Override
+            public Unit attachLedger(IdentityLedger attached) {
+                ready.set(false);
+                ledger.set(Option.some(attached));
+
+                return Unit.unit();
+            }
+
+            @Override
+            public Unit preload(IdentityFacts facts, boolean lost) {
+                apply(facts);
+                wiped.set(lost);
+                ready.set(true);
+
+                return Unit.unit();
+            }
+
+            private Unit apply(IdentityFacts facts) {
+                retired.addAll(facts.retired());
+
+                return Unit.unit();
+            }
+
+            @Override
+            public Promise<Unit> merged(IdentityFacts peerFacts) {
+                return ledger.get()
+                             .fold(() -> Promise.success(Unit.unit()),
+                                   attached -> attached.record(peerFacts))
+                             .map(_ -> adoptMerge(peerFacts));
+            }
+
+            private Unit adoptMerge(IdentityFacts peerFacts) {
+                wiped.set(false);
+
+                return apply(peerFacts);
+            }
+
+            @Override
+            public boolean ledgerDurable() {
+                return ledger.get()
+                             .map(IdentityLedger::durable)
+                             .or(false);
             }
 
             @Override
@@ -158,6 +306,10 @@ public interface BootTokens {
                             new AtomicLong(),
                             new CopyOnWriteArrayList<>(),
                             new CopyOnWriteArrayList<>(),
-                            new AtomicBoolean());
+                            new AtomicBoolean(),
+                            new AtomicReference<>(Option.none()),
+                            new AtomicBoolean(true),
+                            new AtomicBoolean(),
+                            new ConcurrentHashMap<>());
     }
 }

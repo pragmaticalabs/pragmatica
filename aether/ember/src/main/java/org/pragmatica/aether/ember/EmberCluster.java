@@ -1570,7 +1570,8 @@ public final class EmberCluster {
         var certificateProvider = SelfSignedCertificateProvider.selfSignedCertificateProvider(clusterSecret.get()).unwrap();
         var quicTls = buildForgeQuicTls(nodeId, certificateProvider);
         var config = new AetherNodeConfig(topology,
-                                          ProtocolConfig.testConfig(participationMarker(nodeId)),
+                                          ProtocolConfig.testConfig(participationMarker(nodeId),
+                                                                    identityLedgerFile(nodeId)),
                                           SliceActionConfig.sliceActionConfig(),
                                           SliceConfig.sliceConfig(),
                                           mgmtPort,
@@ -1654,6 +1655,21 @@ public final class EmberCluster {
         return base.map(dir -> dir.resolve(nodeId.id())
                                   .resolve(".aether-participation"))
                    .map(path -> ParticipationMarker.fileBacked(path, true));
+    }
+
+    /// #2429 — the node's identity ledger, beside its participation marker and for the same reason: the id-keyed directory is
+    /// restart-stable, so a node that is stopped and started again (an operator restarting a container) loads what it had
+    /// retired before. A directory that does not exist yet is a node being created now, which is exactly what a first
+    /// start of a harness node is. [Option#none] when no base directory exists: the node then derives its own location.
+    Option<Path> identityLedgerFile(NodeId nodeId) {
+        var configured = dataBaseDir.get();
+        var base = configured.isPresent()
+                   ? configured
+                   : participationMarkerBaseDir;
+
+        return base.map(dir -> dir.resolve(nodeId.id())
+                                  .resolve(".aether-identity")
+                                  .resolve("ledger"));
     }
 
     /// [Option#none] when the temp dir cannot be created — the nodes then get no marker at all and

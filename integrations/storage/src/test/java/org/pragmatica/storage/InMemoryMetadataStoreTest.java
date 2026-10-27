@@ -198,6 +198,227 @@ class InMemoryMetadataStoreTest {
         }
     }
 
+    /// SB-02: a claim records that a write has begun, not that its bytes are held. Until the ack point it is not
+    /// listed (so no snapshot captures it) and is reported unacknowledged (so no presence check reads it).
+    @Nested
+    class UnacknowledgedClaimTests {
+
+        @Test
+        void claimUnacknowledged_isNotListed_untilAcknowledged() {
+            var id = blockIdOf(CONTENT_A);
+
+            assertThat(store.claimUnacknowledged(id, BlockLifecycle.blockLifecycle(id, TierLevel.LOCAL_DISK))).isTrue();
+
+            assertThat(store.isUnacknowledged(id)).isTrue();
+            assertThat(store.getLifecycle(id).isPresent()).as("the writer's own bookkeeping still reads it").isTrue();
+            assertThat(store.listAllLifecycles()).isEmpty();
+
+            store.acknowledgeClaim(id);
+
+            assertThat(store.isUnacknowledged(id)).isFalse();
+            assertThat(store.listAllLifecycles()).extracting(BlockLifecycle::blockId).containsExactly(id);
+        }
+
+        /// A claim for a real block replaces a cache-only marker and keeps the presence the marker recorded;
+        /// the replacement is a visible-to-nobody claim until acknowledged, and the epoch moves once, on the ack.
+        @Test
+        void claimUnacknowledged_overACacheMarker_replacesItKeepingItsPresence() {
+            var id = blockIdOf(CONTENT_A);
+
+            store.claimBlock(id, BlockLifecycle.cacheOnlyLifecycle(id, java.util.Set.of(TierLevel.REMOTE)));
+
+            assertThat(store.claimUnacknowledged(id, BlockLifecycle.blockLifecycle(id, TierLevel.LOCAL_DISK))).isTrue();
+
+            var record = store.getLifecycle(id).unwrap();
+
+            assertThat(record.cacheOnly()).isFalse();
+            assertThat(record.presentIn()).containsExactlyInAnyOrder(TierLevel.REMOTE, TierLevel.LOCAL_DISK);
+            assertThat(store.isUnacknowledged(id)).isTrue();
+        }
+
+        /// A claim for a cache-only marker counts no epoch step, as for any marker: it is not a write.
+        @Test
+        void claimUnacknowledged_ofACacheMarker_movesNoEpoch() {
+            var id = blockIdOf(CONTENT_A);
+            var before = store.currentEpoch();
+
+            assertThat(store.claimUnacknowledged(id, BlockLifecycle.cacheOnlyLifecycle(id, java.util.Set.of(TierLevel.REMOTE)))).isTrue();
+            assertThat(store.currentEpoch()).isEqualTo(before);
+        }
+
+        /// A claim that LOSES (the duplicate put of a block already recorded) is no write: the epoch, which drives the
+        /// snapshot trigger, moves once for the winning claim and not at all for the losers. Control: the winner moves it.
+        @Test
+        void claimUnacknowledged_thatLoses_leavesTheEpochUnchanged() {
+            var id = blockIdOf(CONTENT_A);
+            var sentinel = BlockLifecycle.blockLifecycle(id, TierLevel.LOCAL_DISK);
+            var beforeWinner = store.currentEpoch();
+
+            assertThat(store.claimUnacknowledged(id, sentinel)).isTrue();
+
+            var afterWinner = store.currentEpoch();
+
+            assertThat(afterWinner).as("control: the winning claim is a write").isEqualTo(beforeWinner + 1);
+            assertThat(store.claimUnacknowledged(id, sentinel)).isFalse();
+            assertThat(store.claimUnacknowledged(id, sentinel)).isFalse();
+            assertThat(store.currentEpoch()).as("two lost claims").isEqualTo(afterWinner);
+
+            store.acknowledgeClaim(id);
+
+            var afterAck = store.currentEpoch();
+
+            assertThat(store.claimUnacknowledged(id, sentinel)).isFalse();
+            assertThat(store.currentEpoch()).as("a claim lost to an acknowledged record").isEqualTo(afterAck);
+        }
+
+        /// A marker never replaces a marker: the second claim for one marker loses, as one real claim loses to another.
+        @Test
+        void claimUnacknowledged_ofACacheMarker_overACacheMarker_loses() {
+            var id = blockIdOf(CONTENT_A);
+            var marker = BlockLifecycle.cacheOnlyLifecycle(id, java.util.Set.of(TierLevel.REMOTE));
+
+            assertThat(store.claimUnacknowledged(id, marker)).isTrue();
+            assertThat(store.claimUnacknowledged(id, marker)).isFalse();
+        }
+
+        @Test
+        void acknowledgeClaim_advancesTheEpoch_becauseTheRecordBecomesVisibleToSnapshots() {
+            var id = blockIdOf(CONTENT_A);
+
+            store.claimUnacknowledged(id, BlockLifecycle.blockLifecycle(id, TierLevel.LOCAL_DISK));
+
+            var before = store.currentEpoch();
+
+            store.acknowledgeClaim(id);
+
+            assertThat(store.currentEpoch()).isEqualTo(before + 1);
+        }
+
+        @Test
+        void claimUnacknowledged_losingToAnInFlightClaim_leavesTheOwnersClaimUnacknowledged() {
+            var id = blockIdOf(CONTENT_A);
+            var sentinel = BlockLifecycle.blockLifecycle(id, TierLevel.LOCAL_DISK);
+
+            store.claimUnacknowledged(id, sentinel);
+
+            assertThat(store.claimUnacknowledged(id, sentinel)).isFalse();
+            assertThat(store.isUnacknowledged(id)).as("the loser must not unmark the owner").isTrue();
+            assertThat(store.listAllLifecycles()).isEmpty();
+        }
+
+        @Test
+        void claimUnacknowledged_losingToAnAcknowledgedRecord_doesNotHideIt() {
+            var id = blockIdOf(CONTENT_A);
+            var sentinel = BlockLifecycle.blockLifecycle(id, TierLevel.LOCAL_DISK);
+
+            store.claimUnacknowledged(id, sentinel);
+            store.acknowledgeClaim(id);
+
+            assertThat(store.claimUnacknowledged(id, sentinel)).isFalse();
+            assertThat(store.isUnacknowledged(id)).as("a dedup must not re-hide an acknowledged block").isFalse();
+            assertThat(store.listAllLifecycles()).extracting(BlockLifecycle::blockId).containsExactly(id);
+        }
+
+        @Test
+        void acknowledgeClaim_ofABlockWithNoClaim_isANoOp() {
+            var id = blockIdOf(CONTENT_A);
+
+            store.createLifecycle(BlockLifecycle.blockLifecycle(id, TierLevel.LOCAL_DISK));
+
+            var before = store.currentEpoch();
+
+            store.acknowledgeClaim(id);
+
+            assertThat(store.currentEpoch()).isEqualTo(before);
+        }
+
+        @Test
+        void releaseClaim_andRemoveLifecycle_dropTheClaimMark() {
+            var released = blockIdOf(CONTENT_A);
+            var removed = blockIdOf("metadata-store-bravo".getBytes(StandardCharsets.UTF_8));
+            var sentinel = BlockLifecycle.blockLifecycle(released, TierLevel.LOCAL_DISK);
+
+            store.claimUnacknowledged(released, sentinel);
+            store.claimUnacknowledged(removed, BlockLifecycle.blockLifecycle(removed, TierLevel.LOCAL_DISK));
+            store.releaseClaim(released, sentinel);
+            store.removeLifecycle(removed);
+
+            assertThat(store.isUnacknowledged(released)).isFalse();
+            assertThat(store.isUnacknowledged(removed)).isFalse();
+        }
+
+        @Test
+        void releaseClaim_andRemoveLifecycle_forgetTheReadsSeen() {
+            var released = blockIdOf(CONTENT_A);
+            var removed = blockIdOf("metadata-store-bravo".getBytes(StandardCharsets.UTF_8));
+            var sentinel = BlockLifecycle.blockLifecycle(released, TierLevel.LOCAL_DISK);
+
+            store.claimUnacknowledged(released, sentinel);
+            store.createLifecycle(BlockLifecycle.blockLifecycle(removed, TierLevel.LOCAL_DISK));
+            store.accessTracker().record(released);
+            store.accessTracker().record(removed);
+            store.releaseClaim(released, sentinel);
+            store.removeLifecycle(removed);
+
+            assertThat(store.accessTracker().of(released).isEmpty()).isTrue();
+            assertThat(store.accessTracker().of(removed).isEmpty()).isTrue();
+        }
+
+        @Test
+        void restoreLifecycles_dropsEveryClaimMark() {
+            var id = blockIdOf(CONTENT_A);
+
+            store.claimUnacknowledged(id, BlockLifecycle.blockLifecycle(id, TierLevel.LOCAL_DISK));
+            store.restoreLifecycles(java.util.List.of());
+
+            assertThat(store.isUnacknowledged(id)).isFalse();
+        }
+    }
+
+    /// C-08: an observation updates the record without advancing the epoch that triggers snapshots.
+    @Nested
+    class ObservationTests {
+
+        @Test
+        void observeLifecycle_updatesTheRecord_withoutAdvancingTheEpoch() {
+            var id = blockIdOf(CONTENT_A);
+
+            store.createLifecycle(BlockLifecycle.blockLifecycle(id, TierLevel.LOCAL_DISK));
+
+            var before = store.currentEpoch();
+
+            store.observeLifecycle(id, BlockLifecycle::withAccessTimestamp);
+
+            assertThat(store.getLifecycle(id).unwrap().accessCount()).isEqualTo(1);
+            assertThat(store.currentEpoch()).isEqualTo(before);
+        }
+
+        @Test
+        void computeLifecycle_stillAdvancesTheEpoch() {
+            var id = blockIdOf(CONTENT_A);
+
+            store.createLifecycle(BlockLifecycle.blockLifecycle(id, TierLevel.LOCAL_DISK));
+
+            var before = store.currentEpoch();
+
+            store.computeLifecycle(id, BlockLifecycle::withAccessTimestamp);
+
+            assertThat(store.currentEpoch()).isEqualTo(before + 1);
+        }
+
+        @Test
+        void claimAndReleaseOfACacheOnlyMarker_doNotAdvanceTheEpoch() {
+            var id = blockIdOf(CONTENT_A);
+            var marker = BlockLifecycle.cacheOnlyLifecycle(id, java.util.EnumSet.of(TierLevel.MEMORY));
+            var before = store.currentEpoch();
+
+            assertThat(store.claimBlock(id, marker)).isTrue();
+            assertThat(store.releaseClaim(id, marker)).isTrue();
+
+            assertThat(store.currentEpoch()).isEqualTo(before);
+        }
+    }
+
     @Nested
     class InstanceNameTests {
 

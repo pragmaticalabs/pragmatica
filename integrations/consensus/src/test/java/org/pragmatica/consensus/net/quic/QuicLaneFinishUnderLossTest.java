@@ -34,6 +34,7 @@ import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.RepetitionInfo;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.StreamType;
@@ -55,6 +56,12 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// really finished the stand-in, and the finish landed MID-burst: at the pivot the burst waits until the dialer's stand-in
 /// has shut its output (the acceptor's FIN arrived and ours went out), so the writes after it fail visibly (failed > 0)
 /// while the writes before it are still in flight under loss. Every write the dialer saw succeed must reach the acceptor.
+///
+/// #2444 — "succeeded" means netty accepted the bytes into quiche's send buffer, not that they reached the peer; under
+/// loss delivery needs a driven transport. Production drives it with the activity kick (`QuicClusterNetwork.installActivityKick`,
+/// fed by `noteLaneWrite` on every lane data write), the mitigation for netty-quic stranded loss. This harness builds the
+/// transport directly, so it installs the kick on both ends exactly as production does and notes every lane data write
+/// (a FIN is not one: production never kicks on a bare close).
 @Timeout(120)
 class QuicLaneFinishUnderLossTest {
     private static final NodeId ACCEPTOR = new NodeId("lf-acceptor");
@@ -134,7 +141,7 @@ class QuicLaneFinishUnderLossTest {
 
         server = QuicClusterServer.quicClusterServer(ACCEPTOR, UNUSED_ADDRESS, Map.of(), codec, codec,
                                                      QuicTransportMetrics.quicTransportMetrics(), serverSsl, Option.empty(),
-                                                     (connection, _, _) -> acceptorSide.set(connection),
+                                                     (connection, _, _) -> acceptorAttached(connection),
                                                      (_, message) -> receivedByAcceptor.add(message));
         server.start(0).await(AWAIT).onFailure(cause -> fail("server start: " + cause.message()));
         var port = server.boundPort().fold(() -> fail("server not bound"), bound -> bound);
@@ -145,9 +152,20 @@ class QuicLaneFinishUnderLossTest {
                                                      (_, message) -> receivedByDialer.add(message));
         dialerSide = client.connect(ACCEPTOR, new InetSocketAddress("127.0.0.1", relay.port())).await(AWAIT)
                            .fold(cause -> fail("dial: " + cause.message()), connection -> connection);
+        installActivityKick(dialerSide, DIALER);
         awaitTrue(() -> acceptorSide.get() != null
                         && java.util.Arrays.stream(StreamType.values()).allMatch(lane -> acceptorSide.get().stream(lane).isPresent()),
                   "the acceptor registered every lane the dialer opened");
+    }
+
+    private void acceptorAttached(QuicPeerConnection connection) {
+        installActivityKick(connection, ACCEPTOR);
+        acceptorSide.set(connection);
+    }
+
+    /// As `QuicClusterNetwork.installActivityKick`: the encoded KeepAlive as the kick frame, never suppressed (no blackhole here).
+    private void installActivityKick(QuicPeerConnection connection, NodeId self) {
+        connection.activityKick(codec.encode(new NetworkMessage.KeepAlive(self)), () -> false);
     }
 
     private String stats() {
@@ -193,6 +211,7 @@ class QuicLaneFinishUnderLossTest {
         awaitTrue(() -> acceptorSide.get().stream(LANE).map(current -> current != lostAtAcceptor).or(true),
                   "the acceptor releases FORWARD once the dialer's stream for it ends");
         openLane(acceptorSide.get());
+        acceptorSide.get().noteLaneWrite();
         acceptorSide.get().stream(LANE).unwrap()
                     .writeAndFlush(Unpooled.wrappedBuffer(codec.encode(LaneProbe.laneProbe(ACCEPTOR, LANE, "adopt-stand-in"))));
         awaitTrue(this::sameStreamAtBothEnds, "the dialer adopts the acceptor's stand-in for FORWARD");
@@ -204,6 +223,7 @@ class QuicLaneFinishUnderLossTest {
             // Hold the burst until the finish has really happened, so it lands mid-burst at any drop rate.
             awaitTrue(stream::isOutputShutdown, "the peer finished the stand-in and the dialer answered with its FIN (mid-burst)");
         }
+        dialerSide.noteLaneWrite();
         stream.writeAndFlush(Unpooled.wrappedBuffer(codec.encode(LaneProbe.laneProbe(DIALER, LANE, "fin-" + index + "|" + padding))))
               .addListener(future -> {
                   if (future.isSuccess()) {

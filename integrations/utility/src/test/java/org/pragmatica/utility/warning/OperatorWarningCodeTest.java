@@ -102,6 +102,18 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING.level()).isEqualTo(WarningLevel.WARNING);
     }
 
+    /// #2429: the identity ledger's two codes are what the operator and the events API see: the strings, the level and the
+    /// recovery relation are a contract.
+    @Test
+    void identityLedger_notDurableIsAWarning_andIsClosedByAnInfoRecoveryOfTheSameSubsystem() {
+        assertThat(OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE.code()).isEqualTo("identity-ledger-not-durable");
+        assertThat(OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.IDENTITY_LEDGER_DURABLE.code()).isEqualTo("identity-ledger-durable");
+        assertThat(OperatorWarningCode.IDENTITY_LEDGER_DURABLE.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.IDENTITY_LEDGER_DURABLE.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE);
+        assertThat(OperatorWarningCode.IDENTITY_LEDGER_DURABLE.subsystem()).isEqualTo(OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE.subsystem());
+    }
+
     /// #241: a refused join into a full source is a WARNING with an INFO recovery for the same subject.
     @Test
     void communityGrowthBlocked_isClosedByAnInfoRecovery() {
