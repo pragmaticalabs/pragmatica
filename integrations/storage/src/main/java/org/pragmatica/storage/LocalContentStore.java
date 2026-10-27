@@ -3,6 +3,7 @@ package org.pragmatica.storage;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.stream.Stream;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -89,9 +90,12 @@ final class LocalContentStore implements ContentStoreV2 {
     // --- Read ---
     @Override
     public Promise<ChunkStream> open(ObjectRef ref, ByteRange range) {
-        return readBlock(ref.manifest()).flatMap(bytes -> ContentManifest.fromBytes(bytes)
-                                                                         .async(MANIFEST_PARSE_FAILED))
-                        .flatMap(manifest -> LocalChunkStream.chunkStream(storage, framing, manifest, range, config.readAhead())
+        return readBlock(ref.manifest()).flatMap(bytes -> ContentManifest.fromBytes(bytes).async(MANIFEST_PARSE_FAILED))
+                        .flatMap(manifest -> LocalChunkStream.chunkStream(storage,
+                                                                          framing,
+                                                                          manifest,
+                                                                          range,
+                                                                          config.readAhead())
                                                              .async());
     }
 
@@ -99,54 +103,61 @@ final class LocalContentStore implements ContentStoreV2 {
     /// point back at the object is not reported.
     @Override
     public Promise<Option<ObjectInfo>> stat(ObjectId id) {
-        return readEntry(id).flatMap(entry -> entry.fold(() -> Promise.success(Option.<ObjectInfo>none()),
+        return readEntry(id).flatMap(entry -> entry.fold(() -> Promise.success(Option.<ObjectInfo> none()),
                                                          found -> confirmedName(id, found).map(confirmed -> some(confirmed.info(namespace.value(),
-                                                                                                                            id)))));
+                                                                                                                                id)))));
     }
 
     private Promise<ObjectEntry> confirmedName(ObjectId id, ObjectEntry entry) {
         return entry.name()
                     .fold(() -> Promise.success(entry),
-                          name -> holderOf(name).map(holder -> holder.filter(id::equals).isPresent()
+                          name -> holderOf(name).map(holder -> holder.filter(id::equals)
+                                                                     .isPresent()
                                                                ? entry
-                                                               : entry.named(none(), entry.alsoBound()).withVersion(entry.catalogVersion())));
+                                                               : entry.named(none(),
+                                                                             entry.alsoBound())
+                                                                      .withVersion(entry.catalogVersion())));
     }
 
     /// The object a name points at, resolved through that name's own binding: during a rename both the old and the new
     /// name find the object, each reported under the name it was looked up by.
     @Override
     public Promise<Option<ObjectInfo>> lookup(ObjectName name, Option<Long> minVersion) {
-        return holderOf(name).flatMap(holder -> holder.fold(() -> Promise.success(Option.<ObjectInfo>none()),
-                                                            id -> readEntry(id).map(entry -> entry.map(found -> found.named(some(name), found.alsoBound())
-                                                                                                                 .withVersion(found.catalogVersion())
-                                                                                                                 .info(namespace.value(), id)))));
+        return holderOf(name).flatMap(holder -> holder.fold(() -> Promise.success(Option.<ObjectInfo> none()),
+                                                            id -> readEntry(id).map(entry -> entry.map(found -> found.named(some(name),
+                                                                                                                            found.alsoBound())
+                                                                                                                     .withVersion(found.catalogVersion())
+                                                                                                                     .info(namespace.value(),
+                                                                                                                           id)))));
     }
 
     private Promise<Option<ObjectEntry>> readEntry(ObjectId id) {
         return storage.resolveRef(entryRef(id))
-                      .fold(() -> Promise.success(Option.<ObjectEntry>none()),
+                      .fold(() -> Promise.success(Option.<ObjectEntry> none()),
                             blockId -> readBlock(blockId).flatMap(bytes -> ObjectEntry.fromBytes(bytes).async())
-                                                         .map(Option::some));
+                                                .map(Option::some));
     }
 
     private Promise<byte[]> readBlock(BlockId blockId) {
-        return storage.get(blockId).flatMap(block -> block.async(CONTENT_NOT_FOUND));
+        return storage.get(blockId)
+                      .flatMap(block -> block.async(CONTENT_NOT_FOUND));
     }
 
     /// The object `name` is bound to, if any.
     private Promise<Option<ObjectId>> holderOf(ObjectName name) {
         return storage.resolveRef(nameRef(name))
-                      .fold(() -> Promise.success(Option.<ObjectId>none()),
-                            blockId -> readBlock(blockId).flatMap(this::objectIdOf).map(Option::some));
+                      .fold(() -> Promise.success(Option.<ObjectId> none()),
+                            blockId -> readBlock(blockId).flatMap(this::objectIdOf)
+                                                .map(Option::some));
     }
 
     /// The object a name points at, if that object still exists: a binding whose entry is gone (a delete raced the bind that
     /// wrote it) holds no name. Cleaned up lazily: the next bind of the name swaps it away.
     private Promise<Option<ObjectId>> liveHolderOf(ObjectName name) {
-        return holderOf(name).flatMap(holder -> holder.fold(() -> Promise.success(Option.<ObjectId>none()),
+        return holderOf(name).flatMap(holder -> holder.fold(() -> Promise.success(Option.<ObjectId> none()),
                                                             id -> readEntry(id).map(entry -> entry.isPresent()
                                                                                              ? holder
-                                                                                             : Option.<ObjectId>none())));
+                                                                                             : Option.<ObjectId> none())));
     }
 
     private Promise<ObjectId> objectIdOf(byte[] block) {
@@ -160,11 +171,11 @@ final class LocalContentStore implements ContentStoreV2 {
     @Override
     public Promise<ObjectInfo> bind(ObjectName name, ObjectId id, Precondition precondition) {
         return readEntry(id).flatMap(entry -> entry.async(ContentStoreError.ObjectNotFound.objectNotFound(id.asString())))
-                            .flatMap(entry -> liveHolderOf(name).flatMap(holder -> checked(precondition, name, holder).async()
-                                                                                                                  .flatMap(_ -> rebind(name,
-                                                                                                                                      id,
-                                                                                                                                      entry,
-                                                                                                                                      holder))));
+                        .flatMap(entry -> liveHolderOf(name).flatMap(holder -> checked(precondition, name, holder).async()
+                                                                                      .flatMap(_ -> rebind(name,
+                                                                                                           id,
+                                                                                                           entry,
+                                                                                                           holder))));
     }
 
     private Result<Unit> checked(Precondition precondition, ObjectName name, Option<ObjectId> holder) {
@@ -198,36 +209,44 @@ final class LocalContentStore implements ContentStoreV2 {
         var settled = renamed.named(some(name), none());
 
         return retireLeftover(name, id, entry).flatMap(_ -> writeEntry(id, intent))
-                                              .flatMap(_ -> storage.swapRef(nameRef(name), ContentEnvelope.wrap(ContentEnvelope.NAME, id.bytes())))
-                                              .flatMap(_ -> writeEntry(id, renamed))
-                                              .flatMap(_ -> dropFormerName(name, id, entry))
-                                              .flatMap(_ -> former.isEmpty()
-                                                            ? Promise.success(renamed.info(namespace.value(), id))
-                                                            : writeEntry(id, settled));
+                             .flatMap(_ -> storage.swapRef(nameRef(name),
+                                                           ContentEnvelope.wrap(ContentEnvelope.NAME,
+                                                                                id.bytes())))
+                             .flatMap(_ -> writeEntry(id, renamed))
+                             .flatMap(_ -> dropFormerName(name, id, entry))
+                             .flatMap(_ -> former.isEmpty()
+                                           ? Promise.success(renamed.info(namespace.value(),
+                                                                          id))
+                                           : writeEntry(id, settled));
     }
 
     private Promise<Unit> retireLeftover(ObjectName name, ObjectId id, ObjectEntry entry) {
         return entry.alsoBound()
                     .filter(leftover -> !leftover.equals(name))
-                    .fold(() -> Promise.success(unit()), leftover -> dropNameIfBoundTo(leftover, id));
+                    .fold(() -> Promise.success(unit()),
+                          leftover -> dropNameIfBoundTo(leftover, id));
     }
 
     private Promise<Unit> dropFormerName(ObjectName name, ObjectId id, ObjectEntry entry) {
         return entry.name()
                     .filter(former -> !former.equals(name))
-                    .fold(() -> Promise.success(unit()), former -> dropNameIfBoundTo(former, id));
+                    .fold(() -> Promise.success(unit()),
+                          former -> dropNameIfBoundTo(former, id));
     }
 
     private Promise<Unit> dropNameIfBoundTo(ObjectName name, ObjectId id) {
-        return holderOf(name).flatMap(holder -> holder.filter(id::equals).isPresent()
-                                                 ? storage.dropRef(nameRef(name)).map(_ -> unit())
-                                                 : Promise.success(unit()));
+        return holderOf(name).flatMap(holder -> holder.filter(id::equals)
+                                                      .isPresent()
+                                                ? storage.dropRef(nameRef(name))
+                                                         .map(_ -> unit())
+                                                : Promise.success(unit()));
     }
 
     @Override
     public Promise<ObjectInfo> update(ObjectId id, MetaPatch patch) {
         return readEntry(id).flatMap(entry -> entry.async(ContentStoreError.ObjectNotFound.objectNotFound(id.asString())))
-                            .flatMap(entry -> writeEntry(id, entry.patched(patch)));
+                        .flatMap(entry -> writeEntry(id,
+                                                     entry.patched(patch)));
     }
 
     /// Replaces the entry of an object that exists. An entry swapped in where none was (the object was deleted since it
@@ -236,11 +255,14 @@ final class LocalContentStore implements ContentStoreV2 {
     private Promise<ObjectInfo> writeEntry(ObjectId id, ObjectEntry entry) {
         return entry.toBytes()
                     .async()
-                    .flatMap(bytes -> storage.swapRef(entryRef(id), bytes))
-                    .flatMap(swap -> swap.displaced().isPresent()
-                                     ? Promise.success(entry.info(namespace.value(), id))
+                    .flatMap(bytes -> storage.swapRef(entryRef(id),
+                                                      bytes))
+                    .flatMap(swap -> swap.displaced()
+                                         .isPresent()
+                                     ? Promise.success(entry.info(namespace.value(),
+                                                                  id))
                                      : storage.dropRef(entryRef(id))
-                                              .flatMap(_ -> ContentStoreError.ObjectNotFound.objectNotFound(id.asString()).<ObjectInfo>promise()));
+                                              .flatMap(_ -> ContentStoreError.ObjectNotFound.objectNotFound(id.asString()).<ObjectInfo> promise()));
     }
 
     // --- Delete ---
@@ -255,24 +277,27 @@ final class LocalContentStore implements ContentStoreV2 {
 
     private Promise<Unit> deleteEntry(ObjectId id, ObjectEntry entry) {
         return readBlock(entry.manifest()).flatMap(bytes -> ContentManifest.fromBytes(bytes).async(MANIFEST_PARSE_FAILED))
-                                          .flatMap(manifest -> storage.dropRef(entryRef(id))
-                                                                      .flatMap(displaced -> displaced.fold(() -> Promise.success(unit()),
-                                                                                                           _ -> dropName(id, entry).flatMap(_ -> releaseObject(entry.manifest(),
-                                                                                                                                                              manifest)))));
+                        .flatMap(manifest -> storage.dropRef(entryRef(id))
+                                                    .flatMap(displaced -> displaced.fold(() -> Promise.success(unit()),
+                                                                                         _ -> dropName(id, entry).flatMap(_ -> releaseObject(entry.manifest(),
+                                                                                                                                             manifest)))));
     }
 
     private Promise<Unit> dropName(ObjectId id, ObjectEntry entry) {
         return entry.name()
-                    .fold(() -> Promise.success(unit()), name -> dropNameIfBoundTo(name, id))
-                    .flatMap(_ -> entry.alsoBound().fold(() -> Promise.success(unit()), other -> dropNameIfBoundTo(other, id)));
+                    .fold(() -> Promise.success(unit()),
+                          name -> dropNameIfBoundTo(name, id))
+                    .flatMap(_ -> entry.alsoBound()
+                                       .fold(() -> Promise.success(unit()),
+                                             other -> dropNameIfBoundTo(other, id)));
     }
 
     private Promise<Unit> releaseObject(BlockId manifestId, ContentManifest manifest) {
-        var ids = new ArrayList<BlockId>();
-
-        for (var hex : manifest.chunkBlockIds()) {
-            BlockId.fromHex(hex).onSuccess(ids::add);
-        }
+        var ids = new ArrayList<>(manifest.chunkBlockIds()
+                                          .stream()
+                                          .flatMap(hex -> BlockId.fromHex(hex).fold(_ -> Stream.<BlockId> empty(),
+                                                                                    Stream::of))
+                                          .toList());
 
         ids.add(manifestId);
 
@@ -290,31 +315,32 @@ final class LocalContentStore implements ContentStoreV2 {
             return Promise.success(List.of());
         }
 
-        var all = Promise.<List<T>>promise();
+        var all = Promise.<List<T>> promise();
         var results = new java.util.concurrent.atomic.AtomicReferenceArray<T>(promises.size());
         var remaining = new java.util.concurrent.atomic.AtomicInteger(promises.size());
         var failed = new java.util.concurrent.atomic.AtomicBoolean();
 
         for (var i = 0; i < promises.size(); i++) {
             var index = i;
+            // detached: `all` is what callers wait on and it resolves inside the last callback; nothing chains on one promise
+            promises.get(index)
+                    .onResult(result -> {
+                                  result.onSuccess(value -> results.set(index, value))
+                                        .onFailure(cause -> {
+                                      if (failed.compareAndSet(false, true)) {
+                                          all.fail(cause);
+                                      }
+                                  });
+                                  if (remaining.decrementAndGet() == 0 && !failed.get()) {
+                                      var values = new ArrayList<T>(results.length());
 
-            promises.get(index).onResult(result -> result.onSuccess(value -> results.set(index, value))
-                                                          .onFailure(cause -> {
-                                                              if (failed.compareAndSet(false, true)) {
-                                                                  all.fail(cause);
-                                                              }
-                                                          }));
-            promises.get(index).onResult(_ -> {
-                if (remaining.decrementAndGet() == 0 && !failed.get()) {
-                    var values = new ArrayList<T>(results.length());
+                                      for (var j = 0; j < results.length(); j++) {
+                                          values.add(results.get(j));
+                                      }
 
-                    for (var j = 0; j < results.length(); j++) {
-                        values.add(results.get(j));
-                    }
-
-                    all.succeed(values);
-                }
-            });
+                                      all.succeed(values);
+                                  }
+                              });
         }
 
         return all;
@@ -336,30 +362,45 @@ final class LocalContentStore implements ContentStoreV2 {
         var prefix = entryPrefix();
         var reads = storage.listRefs(prefix)
                            .stream()
-                           .map(ref -> ObjectId.objectId(ref.substring(prefix.length()))
-                                               .fold(_ -> Promise.success(Option.<ObjectInfo>none()), this::stat))
+                           .map(ref -> ObjectId.objectId(ref.substring(prefix.length())).fold(_ -> Promise.success(Option.<ObjectInfo> none()),
+                                                                                              this::stat))
                            .toList();
 
-        return gather(reads).map(found -> found.stream().flatMap(info -> info.fold(java.util.stream.Stream::<ObjectInfo>empty, java.util.stream.Stream::of)).toList());
+        return gather(reads).map(found -> found.stream()
+                                               .flatMap(info -> info.fold(java.util.stream.Stream::<ObjectInfo> empty,
+                                                                          java.util.stream.Stream::of))
+                                               .toList());
     }
 
-    private static Page<ObjectInfo> pageOf(List<ObjectInfo> objects, Option<String> namePrefix, Option<Cursor> after, int limit) {
+    private static Page<ObjectInfo> pageOf(List<ObjectInfo> objects,
+                                           Option<String> namePrefix,
+                                           Option<Cursor> after,
+                                           int limit) {
         var ordered = objects.stream()
                              .filter(info -> namePrefix.fold(() -> true,
-                                                             wanted -> info.name().filter(name -> name.value().startsWith(wanted)).isPresent()))
+                                                             wanted -> info.name()
+                                                                           .filter(name -> name.value()
+                                                                                               .startsWith(wanted))
+                                                                           .isPresent()))
                              .sorted(Comparator.comparing(LocalContentStore::sortKey))
-                             .filter(info -> after.fold(() -> true, cursor -> sortKey(info).compareTo(cursor.value()) > 0))
+                             .filter(info -> after.fold(() -> true,
+                                                        cursor -> sortKey(info).compareTo(cursor.value()) > 0))
                              .limit(limit + 1L)
                              .toList();
-        var items = ordered.subList(0, Math.min(limit, ordered.size()));
+        var items = ordered.subList(0,
+                                    Math.min(limit, ordered.size()));
         var next = ordered.size() > limit
                    ? some(Cursor.cursor(sortKey(items.getLast())))
-                   : Option.<Cursor>none();
+                   : Option.<Cursor> none();
 
         return Page.page(items, next);
     }
 
     private static String sortKey(ObjectInfo info) {
-        return info.name().map(ObjectName::value).or("") + "\u0000" + info.ref().id().asString();
+        return info.name()
+                   .map(ObjectName::value)
+                   .or("") + "\u0000" + info.ref()
+                                            .id()
+                                            .asString();
     }
 }

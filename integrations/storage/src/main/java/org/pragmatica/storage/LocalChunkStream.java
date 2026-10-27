@@ -50,8 +50,8 @@ final class LocalChunkStream implements ChunkStream {
         this.first = first;
         this.last = last;
         this.readAhead = readAhead;
-        this.firstIndex = (int) (first / chunkSize);
-        this.lastIndex = (int) (last / chunkSize);
+        this.firstIndex = (int)(first / chunkSize);
+        this.lastIndex = (int)(last / chunkSize);
         this.nextIndex = firstIndex;
     }
 
@@ -70,9 +70,12 @@ final class LocalChunkStream implements ChunkStream {
     /// The manifest's own numbers must agree: a chunk size, and exactly the blocks the total size needs (one empty block
     /// for an empty object).
     private static Result<ContentManifest> consistent(ContentManifest manifest) {
-        var expectedBlocks = Math.max(1, (manifest.totalSize() + manifest.chunkSize() - 1) / Math.max(1, manifest.chunkSize()));
+        var expectedBlocks = Math.max(1,
+                                      (manifest.totalSize() + manifest.chunkSize() - 1) / Math.max(1,
+                                                                                                   manifest.chunkSize()));
 
-        return manifest.chunkSize() >= 1 && manifest.totalSize() >= 0 && expectedBlocks == manifest.chunkBlockIds().size()
+        return manifest.chunkSize() >= 1 && manifest.totalSize() >= 0 && expectedBlocks == manifest.chunkBlockIds()
+                                                                                                   .size()
                ? Result.success(manifest)
                : MANIFEST_PARSE_FAILED.result();
     }
@@ -87,7 +90,7 @@ final class LocalChunkStream implements ChunkStream {
                 return MANIFEST_PARSE_FAILED.result();
             }
 
-            parsed.onSuccess(ids::add);
+            ids.add(parsed.unwrap());
         }
 
         return Result.success(ids);
@@ -113,14 +116,16 @@ final class LocalChunkStream implements ChunkStream {
         }
 
         return range.first() >= total
-               ? ContentStoreError.InvalidRange.invalidRange("first " + range.first() + " is past the end of " + total + " bytes").result()
+               ? ContentStoreError.InvalidRange.invalidRange("first " + range.first()
+                                                            + " is past the end of " + total
+                                                            + " bytes").result()
                : Result.success(new LocalChunkStream(storage,
-                                                      framing,
-                                                      manifest,
-                                                      ids,
-                                                      range.first(),
-                                                      Math.min(requestedLast, total - 1),
-                                                      readAhead));
+                                                     framing,
+                                                     manifest,
+                                                     ids,
+                                                     range.first(),
+                                                     Math.min(requestedLast, total - 1),
+                                                     readAhead));
     }
 
     @Override
@@ -134,7 +139,6 @@ final class LocalChunkStream implements ChunkStream {
 
             fill(1);
             head = ahead.poll();
-
             if (head != null) {
                 fill(readAhead);
             }
@@ -142,7 +146,9 @@ final class LocalChunkStream implements ChunkStream {
 
         return head == null
                ? Promise.success(none())
-               : head.block().map(bytes -> some(slice(head.index(), bytes)));
+               : head.block()
+                     .map(bytes -> some(slice(head.index(),
+                                              bytes)));
     }
 
     private void fill(int target) {
@@ -155,7 +161,8 @@ final class LocalChunkStream implements ChunkStream {
     private Promise<byte[]> fetch(int index) {
         return storage.get(blockIds.get(index))
                       .flatMap(block -> block.async(CHUNK_MISSING))
-                      .flatMap(framed -> framing.unframe(framed).async())
+                      .flatMap(framed -> framing.unframe(framed)
+                                                .async())
                       .flatMap(chunk -> chunk.length == expectedLength(index)
                                         ? Promise.success(chunk)
                                         : MANIFEST_PARSE_FAILED.promise());
@@ -164,18 +171,20 @@ final class LocalChunkStream implements ChunkStream {
     private int expectedLength(int index) {
         return index < blockIds.size() - 1
                ? chunkSize
-               : (int) (totalSize - (long) (blockIds.size() - 1) * chunkSize);
+               : (int)(totalSize - (long)(blockIds.size() - 1) * chunkSize);
     }
 
     private ByteBuffer slice(int index, byte[] chunk) {
         var start = index == firstIndex
-                    ? (int) (first % chunkSize)
+                    ? (int)(first % chunkSize)
                     : 0;
         var end = index == lastIndex
-                  ? (int) (last % chunkSize) + 1
+                  ? (int)(last % chunkSize) + 1
                   : chunk.length;
 
-        return ByteBuffer.wrap(chunk, start, end - start).slice().asReadOnlyBuffer();
+        return ByteBuffer.wrap(chunk, start, end - start)
+                         .slice()
+                         .asReadOnlyBuffer();
     }
 
     @Override

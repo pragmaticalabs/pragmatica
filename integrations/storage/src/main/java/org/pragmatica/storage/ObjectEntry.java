@@ -28,7 +28,12 @@ import static org.pragmatica.lang.Option.some;
 ///
 /// The same block, moved into catalog pages, is what the clustered catalog will hold, so its layout is the one a page
 /// leaf needs.
-record ObjectEntry(BlockId manifest, long catalogVersion, Option<ObjectName> name, Option<ObjectName> alsoBound, ObjectMeta meta) {
+@SuppressWarnings("JBCT-EX-01")  // binary codec leaf over java.io Data streams; toBytes and fromBytes lift it into Result
+record ObjectEntry(BlockId manifest,
+                   long catalogVersion,
+                   Option<ObjectName> name,
+                   Option<ObjectName> alsoBound,
+                   ObjectMeta meta) {
     static final byte FORMAT_VERSION = 1;
 
     static ObjectEntry objectEntry(BlockId manifest, ObjectMeta meta) {
@@ -77,7 +82,6 @@ record ObjectEntry(BlockId manifest, long catalogVersion, Option<ObjectName> nam
         out.writeBoolean(meta.expiresAt().isPresent());
         meta.expiresAt().onPresent(expiry -> writeInstantUnchecked(out, expiry));
         out.writeInt(meta.attributes().size());
-
         for (var attribute : meta.attributes().entrySet()) {
             out.writeUTF(attribute.getKey());
             out.writeUTF(attribute.getValue());
@@ -88,9 +92,10 @@ record ObjectEntry(BlockId manifest, long catalogVersion, Option<ObjectName> nam
 
     static Result<ObjectEntry> fromBytes(byte[] block) {
         return ContentEnvelope.payloadOf(ContentEnvelope.ENTRY, block)
-                             .toResult(ContentStoreError.General.ENTRY_PARSE_FAILED)
-                             .flatMap(payload -> Result.lift(Causes::fromThrowable, () -> decode(payload)))
-                             .mapError(_ -> ContentStoreError.General.ENTRY_PARSE_FAILED);
+                              .toResult(ContentStoreError.General.ENTRY_PARSE_FAILED)
+                              .flatMap(payload -> Result.lift(Causes::fromThrowable,
+                                                              () -> decode(payload)))
+                              .mapError(_ -> ContentStoreError.General.ENTRY_PARSE_FAILED);
     }
 
     private static ObjectEntry decode(byte[] payload) throws IOException {
@@ -112,7 +117,7 @@ record ObjectEntry(BlockId manifest, long catalogVersion, Option<ObjectName> nam
         var createdAt = readInstant(in);
         var expiresAt = in.readBoolean()
                         ? some(readInstant(in))
-                        : Option.<Instant>none();
+                        : Option.<Instant> none();
         var attributes = readAttributes(in);
 
         if (in.available() > 0 || manifest.hash().length != Sha256.LENGTH || digest.bytes().length != Sha256.LENGTH) {
@@ -123,7 +128,14 @@ record ObjectEntry(BlockId manifest, long catalogVersion, Option<ObjectName> nam
                                version,
                                name,
                                alsoBound,
-                               new ObjectMeta(displayName, contentType, size, digest, owner, createdAt, expiresAt, attributes));
+                               new ObjectMeta(displayName,
+                                              contentType,
+                                              size,
+                                              digest,
+                                              owner,
+                                              createdAt,
+                                              expiresAt,
+                                              attributes));
     }
 
     private static Map<String, String> readAttributes(DataInputStream in) throws IOException {
@@ -139,7 +151,6 @@ record ObjectEntry(BlockId manifest, long catalogVersion, Option<ObjectName> nam
 
     private static void writeOption(DataOutputStream out, Option<String> value) throws IOException {
         out.writeBoolean(value.isPresent());
-
         if (value.isPresent()) {
             out.writeUTF(value.or(""));
         }

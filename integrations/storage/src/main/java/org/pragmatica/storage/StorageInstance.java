@@ -95,12 +95,14 @@ public interface StorageInstance {
     Promise<Unit> createRef(String name, BlockId id);
     /// Resolve a named reference to its block ID.
     Option<BlockId> resolveRef(String name);
+
     /// The names of the references this instance holds that start with `prefix`, in no particular order. The v2 content store
     /// lists its objects from this; the default lists nothing, so a double that delegates to a real instance must delegate
     /// this too.
     default List<String> listRefs(String prefix) {
         return List.of();
     }
+
     /// Delete a named reference.
     Promise<Unit> deleteRef(String name);
 
@@ -721,7 +723,11 @@ final class DefaultStorageInstance implements StorageInstance {
 
     @Override
     public List<String> listRefs(String prefix) {
-        return metadataStore.listAllRefs().keySet().stream().filter(name -> name.startsWith(prefix)).toList();
+        return metadataStore.listAllRefs()
+                            .keySet()
+                            .stream()
+                            .filter(name -> name.startsWith(prefix))
+                            .toList();
     }
 
     @Override

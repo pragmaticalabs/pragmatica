@@ -97,7 +97,6 @@ final class LocalObjectWriter implements ObjectWriter {
         }
 
         pumping = true;
-
         try {
             settleWrite();
         } finally {
@@ -118,7 +117,6 @@ final class LocalObjectWriter implements ObjectWriter {
 
             pendingWrite = null;
             input = null;
-
             if (cause == null) {
                 done.succeed(unit());
             } else {
@@ -135,7 +133,6 @@ final class LocalObjectWriter implements ObjectWriter {
                 }
 
                 dispatch();
-
                 if (failure != null) {
                     return false;
                 }
@@ -151,7 +148,7 @@ final class LocalObjectWriter implements ObjectWriter {
     }
 
     /// Hashes, frames and starts storing the current chunk. Called with the lock held.
-    private void dispatch() {
+    private Unit dispatch() {
         var chunk = buffer;
         var length = fill;
 
@@ -160,15 +157,14 @@ final class LocalObjectWriter implements ObjectWriter {
         buffer = new byte[config.chunkSizeBytes()];
         fill = 0;
 
-        framing.frame(chunk, length)
-               .onSuccess(block -> startStoring(block))
-               .onFailure(this::markFailed);
+        return framing.frame(chunk, length)
+                      .fold(this::markFailed, this::startStoring);
     }
 
     /// The first failure is the writer's. Unless a commit or abort already owns the cleanup, the writer unwinds itself: it
     /// is closed, and once every block store has settled it gives back the credits of those that succeeded. Called with the
     /// lock held.
-    private void markFailed(Cause cause) {
+    private Unit markFailed(Cause cause) {
         if (failure == null) {
             failure = cause;
         }
@@ -177,20 +173,21 @@ final class LocalObjectWriter implements ObjectWriter {
             closed = true;
             unwinding = settled(List.copyOf(stored)).flatMap(results -> rollBack(creditedBy(results)));
         }
+
+        return unit();
     }
 
-    private void startStoring(byte[] block) {
-        var put = storage.put(block);
-
-        stored.add(put);
+    private Unit startStoring(byte[] block) {
         inFlight++;
-        put.onResult(this::blockSettled);
+        stored.add(storage.put(block).withResult(this::blockSettled));
+
+        return unit();
     }
 
     private void blockSettled(Result<BlockId> result) {
         synchronized (lock) {
             inFlight--;
-            result.onFailure(this::markFailed);
+            result.fold(this::markFailed, _ -> unit());
             pump();
         }
     }
@@ -209,12 +206,11 @@ final class LocalObjectWriter implements ObjectWriter {
         synchronized (lock) {
             if (closed) {
                 return unwinding != null
-                       ? unwinding.flatMap(_ -> failure.<ObjectInfo>promise())
+                       ? unwinding.flatMap(_ -> failure.<ObjectInfo> promise())
                        : WRITER_CLOSED.promise();
             }
 
             closed = true;
-
             if (failure == null && (fill > 0 || stored.isEmpty())) {
                 dispatch();
             }
@@ -227,7 +223,10 @@ final class LocalObjectWriter implements ObjectWriter {
         return settled(blocks).flatMap(results -> finish(results, digest, size, expected));
     }
 
-    private Promise<ObjectInfo> finish(List<Result<BlockId>> results, Sha256 digest, long size, Option<Sha256> expected) {
+    private Promise<ObjectInfo> finish(List<Result<BlockId>> results,
+                                       Sha256 digest,
+                                       long size,
+                                       Option<Sha256> expected) {
         var credited = creditedBy(results);
 
         return problemWith(results, digest, size, expected).fold(() -> writeManifestAndEntry(credited, digest, size),
@@ -244,7 +243,10 @@ final class LocalObjectWriter implements ObjectWriter {
 
     /// Why this object cannot be committed, if it cannot: a block that failed, a length other than the declared one, or
     /// bytes whose digest is not the expected one.
-    private Option<Cause> problemWith(List<Result<BlockId>> results, Sha256 digest, long size, Option<Sha256> expected) {
+    private Option<Cause> problemWith(List<Result<BlockId>> results,
+                                      Sha256 digest,
+                                      long size,
+                                      Option<Sha256> expected) {
         synchronized (lock) {
             if (failure != null) {
                 return Option.some(failure);
@@ -252,7 +254,7 @@ final class LocalObjectWriter implements ObjectWriter {
         }
 
         for (var result : results) {
-            var failed = result.fold(Option::some, _ -> Option.<Cause>none());
+            var failed = result.fold(Option::some, _ -> Option.<Cause> none());
 
             if (failed.isPresent()) {
                 return failed;
@@ -261,10 +263,10 @@ final class LocalObjectWriter implements ObjectWriter {
 
         return spec.declaredLength()
                    .filter(declared -> declared != size)
-                   .<Cause>map(declared -> ContentStoreError.LengthMismatch.lengthMismatch(declared, size))
+                   .<Cause> map(declared -> ContentStoreError.LengthMismatch.lengthMismatch(declared, size))
                    .orElse(() -> expected.filter(sha -> !sha.equals(digest))
                                          .map(sha -> ContentStoreError.DigestMismatch.digestMismatch(sha.hexString(),
-                                                                                                       digest.hexString())));
+                                                                                                     digest.hexString())));
     }
 
     /// The manifest first (its own credit, released with the object), then the entry, in one write-and-ref call: the pair
@@ -295,12 +297,14 @@ final class LocalObjectWriter implements ObjectWriter {
 
         return entry.toBytes()
                     .async()
-                    .flatMap(bytes -> storage.swapRef(store.entryRef(id), bytes))
-                    .map(_ -> entry.info(store.namespaceValue(), id));
+                    .flatMap(bytes -> storage.swapRef(store.entryRef(id),
+                                                      bytes))
+                    .map(_ -> entry.info(store.namespaceValue(),
+                                         id));
     }
 
     private <T> Promise<T> unwindOnFailure(Promise<T> attempt, List<BlockId> credited) {
-        var outcome = Promise.<T>promise();
+        var outcome = Promise.<T> promise();
 
         attempt.onResult(result -> result.onSuccess(outcome::succeed)
                                          .onFailure(cause -> rollBack(credited).onResult(_ -> outcome.fail(cause))));
@@ -330,7 +334,7 @@ final class LocalObjectWriter implements ObjectWriter {
 
     /// Waits for every block store to finish, successful or not: a rollback must know which credits were really taken.
     private static Promise<List<Result<BlockId>>> settled(List<Promise<BlockId>> blocks) {
-        var all = Promise.<List<Result<BlockId>>>promise();
+        var all = Promise.<List<Result<BlockId>>> promise();
         var results = new ArrayList<Result<BlockId>>();
 
         for (var i = 0; i < blocks.size(); i++) {
@@ -345,16 +349,17 @@ final class LocalObjectWriter implements ObjectWriter {
 
         for (var i = 0; i < blocks.size(); i++) {
             var index = i;
+            // detached: `all` is what callers wait on and it resolves inside the last callback; nothing chains on one block
+            blocks.get(index)
+                  .onResult(result -> {
+                                synchronized (results) {
+                                    results.set(index, result);
+                                }
 
-            blocks.get(index).onResult(result -> {
-                synchronized (results) {
-                    results.set(index, result);
-                }
-
-                if (remaining.decrementAndGet() == 0) {
-                    all.succeed(List.copyOf(results));
-                }
-            });
+                                if (remaining.decrementAndGet() == 0) {
+                                    all.succeed(List.copyOf(results));
+                                }
+                            });
         }
 
         return all;
@@ -370,15 +375,15 @@ final class LocalObjectWriter implements ObjectWriter {
 
     /// A release that fails is logged and does not mask the failure that caused the rollback.
     private Promise<Unit> release(BlockId id) {
-        var done = Promise.<Unit>promise();
+        var done = Promise.<Unit> promise();
 
         storage.release(id)
                .onResult(result -> {
-                   result.onFailure(cause -> log.warn("Rollback of a failed object write could not release {}: {}",
-                                                      id,
-                                                      cause.message()));
-                   done.succeed(unit());
-               });
+                             result.onFailure(cause -> log.warn("Rollback of a failed object write could not release {}: {}",
+                                                                id,
+                                                                cause.message()));
+                             done.succeed(unit());
+                         });
 
         return done;
     }

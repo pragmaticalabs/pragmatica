@@ -29,7 +29,8 @@ public record ObjectId(byte[] bytes) {
     public static Result<ObjectId> objectId(String text) {
         return decode(text).filter(ContentStoreError.InvalidIdentifier.invalidIdentifier("object id",
                                                                                          "not a canonical base32 id: " + text),
-                                   id -> id.asString().equals(text));
+                                   id -> id.asString()
+                                           .equals(text));
     }
 
     private static Result<ObjectId> decode(String text) {
@@ -51,10 +52,9 @@ public record ObjectId(byte[] bytes) {
 
             buffer = (buffer << 5) | digit;
             bits += 5;
-
             if (bits >= 8 && out < LENGTH) {
                 bits -= 8;
-                bytes[out++] = (byte) (buffer >> bits);
+                bytes[out++] = (byte)(buffer >> bits);
                 buffer &= (1 << bits) - 1;
             }
         }
@@ -70,7 +70,6 @@ public record ObjectId(byte[] bytes) {
         for (var b : bytes) {
             buffer = (buffer << 8) | (b & 0xFF);
             bits += 8;
-
             while (bits >= 5) {
                 bits -= 5;
                 builder.append(ALPHABET.charAt((buffer >> bits) & 31));

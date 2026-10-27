@@ -17,14 +17,11 @@ import org.pragmatica.lang.Unit;
 /// took.
 public interface ObjectWriter {
     Promise<Unit> write(ByteBuffer bytes);
-
     /// Not available in local mode: resolves to [ContentStoreError.NotSupported].
     Promise<WriteCheckpoint> checkpoint();
-
     /// Seals the object. `expected`, when present, is compared with the SHA-256 of the bytes received, and a mismatch
     /// fails the commit and releases everything the writer stored.
     Promise<ObjectInfo> commit(Option<Sha256> expected);
-
     /// Gives back what the writer stored. A writer already committed or aborted is left as it is.
     Promise<Unit> abort();
 }

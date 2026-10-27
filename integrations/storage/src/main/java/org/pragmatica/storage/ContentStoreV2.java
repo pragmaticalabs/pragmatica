@@ -22,38 +22,30 @@ import org.pragmatica.lang.Unit;
 /// - `resume` and `link` answer [ContentStoreError.NotSupported].
 public interface ContentStoreV2 {
     Promise<ObjectWriter> create(ObjectSpec spec);
-
     Promise<ObjectWriter> resume(WriteSessionId id);
-
     /// Reads by reference, across namespaces.
     Promise<ChunkStream> open(ObjectRef ref, ByteRange range);
-
     Promise<Option<ObjectInfo>> stat(ObjectId id);
-
     /// `minVersion` is a read-your-writes bound for clustered catalogs; local mode always reads the current entry.
     Promise<Option<ObjectInfo>> lookup(ObjectName name, Option<Long> minVersion);
-
     /// Binds `name` to `id`, replacing the binding the precondition allows. Outside a rename window or crash recovery an
     /// object has one name: binding a second name moves it, and rebinding a name takes it from its previous object. In local
     /// mode a rename is never unnamed and may briefly carry both names: the new name is bound first, the old one retired
     /// after, and the call returns after both. A crash between the steps leaves both names resolving to the object. A
     /// later cluster catalog makes the rename atomic.
     Promise<ObjectInfo> bind(ObjectName name, ObjectId id, Precondition precondition);
-
     Promise<ObjectInfo> update(ObjectId id, MetaPatch patch);
-
     Promise<ObjectInfo> link(ObjectRef foreign);
-
     /// Idempotent: deleting an id this namespace does not hold succeeds and changes nothing.
     Promise<Unit> delete(ObjectId id);
-
     Promise<Page<ObjectInfo>> list(Option<String> namePrefix, Option<Cursor> after, int limit);
 
     /// A store over `storage` bound to the namespace and tuned by the settings of `config`, which are validated against
     /// the instance ([ContentStoreConfig#validatedAgainst]).
     static Result<ContentStoreV2> contentStoreV2(StorageInstance storage, ContentStoreConfig config) {
         return config.validatedAgainst(storage.maxBlockBytes())
-                     .flatMap(valid -> Namespace.namespace(valid.namespace())
-                                                .map(namespace -> new LocalContentStore(storage, valid, namespace)));
+                     .flatMap(valid -> Namespace.namespace(valid.namespace()).map(namespace -> new LocalContentStore(storage,
+                                                                                                                     valid,
+                                                                                                                     namespace)));
     }
 }

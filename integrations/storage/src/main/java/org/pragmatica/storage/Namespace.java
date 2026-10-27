@@ -15,6 +15,7 @@ public record Namespace(String value) {
         return VALID.matcher(value).matches()
                ? Result.success(new Namespace(value))
                : ContentStoreError.InvalidConfig.invalidConfig("namespace",
-                                                              "'" + value + "' must match " + VALID.pattern()).result();
+                                                               "'" + value + "' must match " + VALID.pattern())
+                                                .result();
     }
 }

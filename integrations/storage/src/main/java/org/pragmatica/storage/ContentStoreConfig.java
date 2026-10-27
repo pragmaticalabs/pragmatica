@@ -68,12 +68,13 @@ public record ContentStoreConfig(int chunkSizeBytes,
 
     /// The namespace must be a valid [Namespace]; the window must allow one block in flight and the read-ahead may be zero.
     private Result<ContentStoreConfig> validatedStreamingSettings() {
-        return Namespace.namespace(namespace)
-                        .flatMap(_ -> writeWindow < 1
-                                      ? ContentStoreError.InvalidConfig.invalidConfig("writeWindow", "must be at least 1").result()
-                                      : readAhead < 0
-                                        ? ContentStoreError.InvalidConfig.invalidConfig("readAhead", "must not be negative").result()
-                                        : Result.success(this));
+        return Namespace.namespace(namespace).flatMap(_ -> writeWindow < 1
+                                                           ? ContentStoreError.InvalidConfig.invalidConfig("writeWindow",
+                                                                                                           "must be at least 1").result()
+                                                           : readAhead < 0
+                                                             ? ContentStoreError.InvalidConfig.invalidConfig("readAhead",
+                                                                                                             "must not be negative").result()
+                                                             : Result.success(this));
     }
 
     private Result<ContentStoreConfig> validatedAgainstBlockLimit(int maxBlockBytes) {

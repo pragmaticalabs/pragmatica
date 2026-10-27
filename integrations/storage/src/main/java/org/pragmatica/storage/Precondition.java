@@ -1,6 +1,5 @@
 package org.pragmatica.storage;
 
-
 /// What a name must look like for a bind to go through.
 public sealed interface Precondition {
     /// Whatever the name is bound to now, if anything, is replaced.

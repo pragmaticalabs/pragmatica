@@ -19,14 +19,16 @@ public record Sha256(byte[] bytes) {
 
     /// The digest of `content`.
     public static Result<Sha256> sha256(byte[] content) {
-        return Result.lift(() -> MessageDigest.getInstance("SHA-256")).map(digest -> digest.digest(content))
+        return Result.lift(() -> MessageDigest.getInstance("SHA-256"))
+                     .map(digest -> digest.digest(content))
                      .map(Sha256::new);
     }
 
     /// A digest from its 64 hex characters.
     public static Result<Sha256> fromHex(String hex) {
         return Result.lift(() -> HEX.parseHex(hex))
-                     .filter(Causes.cause("A SHA-256 is 64 hex characters"), bytes -> bytes.length == LENGTH)
+                     .filter(Causes.cause("A SHA-256 is 64 hex characters"),
+                             bytes -> bytes.length == LENGTH)
                      .map(Sha256::new);
     }
 

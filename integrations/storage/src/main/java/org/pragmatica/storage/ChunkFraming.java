@@ -23,7 +23,8 @@ record ChunkFraming(CompressionCodec codec, boolean compressed) {
                       : Arrays.copyOf(chunk, length);
 
         return compressed
-               ? codec.compress(content).map(packed -> prependOriginalSize(length, packed))
+               ? codec.compress(content)
+                      .map(packed -> prependOriginalSize(length, packed))
                : Result.success(content);
     }
 

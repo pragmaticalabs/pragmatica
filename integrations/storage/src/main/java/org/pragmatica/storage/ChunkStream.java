@@ -12,6 +12,5 @@ import org.pragmatica.lang.Unit;
 /// fails the `next` that reaches it.
 public interface ChunkStream {
     Promise<Option<ByteBuffer>> next();
-
     Promise<Unit> close();
 }
