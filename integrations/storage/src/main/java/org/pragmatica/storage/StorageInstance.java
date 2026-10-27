@@ -546,10 +546,13 @@ final class DefaultStorageInstance implements StorageInstance {
 
     /// "Exists" means readable. A cache-only marker records that the block was read here once; the shared copy it
     /// pointed at may be gone, so a marker does not make the block exist -- the tiers are asked.
+    ///
+    /// A claim whose write has not reached its ack point is no record of a block either (SB-02): the tiers are
+    /// asked, so `exists` answers what `get` would find.
     private boolean holdsOwnedRecord(BlockId id) {
-        return metadataStore.getLifecycle(id)
-                            .map(lc -> !lc.cacheOnly())
-                            .or(false);
+        return ! metadataStore.isUnacknowledged(id) && metadataStore.getLifecycle(id)
+                                                                    .map(lc -> !lc.cacheOnly())
+                                                                    .or(false);
     }
 
     /// Fetches the block through the read waterfall only when no node-private tier holds it, and copies it
@@ -909,7 +912,7 @@ final class DefaultStorageInstance implements StorageInstance {
                                            Promise<Unit> mine,
                                            Fn2<Promise<BlockId>, BlockId, byte[]> write,
                                            Fn2<Promise<BlockId>, BlockId, byte[]> deduplicate) {
-        if (!metadataStore.claimBlock(id, sentinel)) {
+        if (!metadataStore.claimUnacknowledged(id, sentinel)) {
             finishWriting(id, mine, Result.unitResult());
 
             return deduplicate.apply(id, content);
@@ -1003,7 +1006,10 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     /// The claim IS the block's lifecycle record -- there is no second one. It names the tier the
-    /// active policy writes first, and [#trackNewBlock] finalizes it in place once the write lands.
+    /// active policy writes first, and [#trackNewBlock] finalizes it in place once the write lands. Until then
+    /// it is an unacknowledged claim ([MetadataStore#claimUnacknowledged]): the record asserts "durably held
+    /// per the ack point" and the write has not reached it, so no snapshot captures the claim and nothing
+    /// reads it as the block (SB-02).
     private BlockLifecycle sentinelFor(BlockId id) {
         return BlockLifecycle.blockLifecycle(id, initialTier());
     }
@@ -1303,10 +1309,14 @@ final class DefaultStorageInstance implements StorageInstance {
     /// The add is idempotent by construction (the claim names the same tier); the fallback keeps
     /// the pre-existing post-condition that a successful put always leaves a record, for the one
     /// case where the claim can vanish mid-write (a metadata restore that clears the map).
+    ///
+    /// This is the ack point: the claim is acknowledged last, once the record holds everything the write
+    /// established, which is what makes it visible to snapshots and to presence checks (SB-02).
     private BlockId trackNewBlock(BlockId id, TierLevel initialTier) {
         metadataStore.computeLifecycle(id,
                                        lc -> lc.withTierAdded(initialTier))
                      .onEmpty(() -> metadataStore.createLifecycle(BlockLifecycle.blockLifecycle(id, initialTier)));
+        metadataStore.acknowledgeClaim(id);
         log.debug("Block {} stored in tier {}", id, initialTier);
 
         return id;
@@ -1493,8 +1503,10 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     // --- Lifecycle helpers ---
+    /// A read is an observation, not a metadata mutation (C-08): it lands in the metadata store's in-memory
+    /// [AccessTracker], never in the block record, so it cannot move the snapshot trigger or the snapshot's bytes.
     private void recordAccess(BlockId id) {
-        metadataStore.computeLifecycle(id, BlockLifecycle::withAccessTimestamp);
+        metadataStore.accessTracker().record(id);
         accessListener.accept(id);
     }
 
@@ -1516,7 +1528,7 @@ final class DefaultStorageInstance implements StorageInstance {
     /// cache would let demotion evict the only durable copy), or the instance has no shared tier (nothing else
     /// holds the block, so this node's copy is the block).
     private void recordReadPresence(BlockId id, StorageTier tier) {
-        metadataStore.computeLifecycle(id,
+        metadataStore.observeLifecycle(id,
                                        lc -> lc.withTierAdded(tier.level()))
                      .onEmpty(() -> trackReadOnlyBlock(id, tier));
     }
@@ -1535,7 +1547,7 @@ final class DefaultStorageInstance implements StorageInstance {
             confirmMarkerSlot();
         } else {
             giveBackMarkerSlot();
-            recordTierPresence(id, level);
+            metadataStore.observeLifecycle(id, lc -> lc.withTierAdded(level));
         }
     }
 
@@ -1634,7 +1646,8 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     private boolean isIdleSharedOnly(BlockLifecycle marker, long now) {
-        return now - marker.lastAccessedAt() >= markerLimits.idleMs() && sharedLevels.containsAll(marker.presentIn());
+        return now - metadataStore.accessTracker()
+                                  .lastAccessedAt(marker) >= markerLimits.idleMs() && sharedLevels.containsAll(marker.presentIn());
     }
 
     private void recordTierPresence(BlockId id, TierLevel tier) {

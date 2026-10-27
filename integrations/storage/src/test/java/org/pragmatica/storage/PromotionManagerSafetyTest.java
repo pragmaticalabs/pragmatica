@@ -266,6 +266,7 @@ class PromotionManagerSafetyTest {
             var id = BlockId.blockId(block(1)).unwrap();
 
             metadata.createLifecycle(BlockLifecycle.blockLifecycle(id, EnumSet.of(TierLevel.LOCAL_DISK), 1, now, now, 100));
+            reads(id, 100);
 
             var pm = promotionManager(List.of(memory, disk), metadata, promotionConfig(5, 300_000L, 10));
 
@@ -339,6 +340,12 @@ class PromotionManagerSafetyTest {
         tier.put(filler, new byte[bytes]).await();
     }
 
+    private void reads(BlockId id, int count) {
+        for (var i = 0; i < count; i++) {
+            metadata.accessTracker().record(id);
+        }
+    }
+
     private BlockId storeHot(StorageTier tier, Set<TierLevel> presentIn, byte[] content, StorageTier... alsoOn) {
         var id = BlockId.blockId(content).unwrap();
         var now = System.currentTimeMillis();
@@ -346,6 +353,7 @@ class PromotionManagerSafetyTest {
         tier.put(id, content).await();
         List.of(alsoOn).forEach(other -> other.put(id, content).await());
         metadata.createLifecycle(BlockLifecycle.blockLifecycle(id, presentIn, 1, now, now, 100));
+        reads(id, 100);
 
         return id;
     }
