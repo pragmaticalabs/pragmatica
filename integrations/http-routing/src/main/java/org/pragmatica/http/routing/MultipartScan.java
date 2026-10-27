@@ -192,7 +192,6 @@ sealed interface MultipartScan {
         var headers = partHeaders(headerBlock);
         var contentType = option(headers.get("content-type"));
         var disposition = option(headers.get("content-disposition")).map(MultipartScan::parameters);
-
         var type = kindOf(contentType.map(MultipartScan::mediaType));
 
         if (type == Kind.NESTED) {
