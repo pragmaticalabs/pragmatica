@@ -39,14 +39,18 @@ class JsonbCrossModuleTest {
     private static final String REPO = """
         package test;
 
+        import org.pragmatica.aether.pg.codegen.annotation.Query;
         import org.pragmatica.aether.resource.db.PgSql;
         import org.pragmatica.lang.Option;
         import org.pragmatica.lang.Promise;
         import xmod.DocumentRow;
 
+        // A @Query result: its column types are unknown to the processor, so only the marker makes these documents
+        // (a CRUD method would infer them from the table, marker or not).
         @PgSql
         public interface CrossRepo {
-            Promise<Option<DocumentRow>> findById(long id);
+            @Query("SELECT id, profile, previous FROM documents WHERE id = :id")
+            Promise<Option<DocumentRow>> find(long id);
         }
         """;
 
