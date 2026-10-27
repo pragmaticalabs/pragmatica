@@ -8,6 +8,7 @@ public enum DemotionStrategy {
     LFU,
     /// Least recently used (by lastAccessedAt).
     LRU,
-    /// Largest blocks first (by block data size in the tier).
+    /// Meant to take the largest blocks first, but a block carries no size yet, so it behaves as [#LRU]: least recently
+    /// read first (by the reads the access tracker saw). The size key arrives with the snapshot format change (#2443).
     SIZE_PRESSURE
 }

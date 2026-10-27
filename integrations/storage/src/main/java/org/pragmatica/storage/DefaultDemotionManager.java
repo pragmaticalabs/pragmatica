@@ -243,7 +243,7 @@ final class DefaultDemotionManager implements DemotionManager {
             case AGE -> Comparator.comparingLong(BlockLifecycle::createdAt);
             case LFU -> Comparator.comparingInt(access::accessCount);
             case LRU -> Comparator.comparingLong(access::lastAccessedAt);
-            case SIZE_PRESSURE -> Comparator.<BlockLifecycle> comparingLong(access::lastAccessedAt).reversed();
+            case SIZE_PRESSURE -> Comparator.comparingLong(access::lastAccessedAt);
         };
     }
 
