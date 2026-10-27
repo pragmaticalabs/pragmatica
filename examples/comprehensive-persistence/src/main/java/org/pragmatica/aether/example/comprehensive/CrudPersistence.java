@@ -12,6 +12,11 @@ import org.pragmatica.lang.Unit;
 
 @PgSql
 public interface CrudPersistence {
+    /// Stored in the jsonb column `customers.preferences`. The CRUD table says the column is jsonb, so the record is
+    /// read and written as a JSON document without `@Jsonb`. A document written before a component existed decodes
+    /// with it empty, which is why every component is an `Option`.
+    record Preferences(Option<String> theme, Option<String> language) {}
+
     record CustomerRow(long id,
                        String name,
                        String email,
@@ -19,7 +24,7 @@ public interface CrudPersistence {
                        Instant createdAt,
                        Instant deletedAt,
                        String tier,
-                       String preferences) {}
+                       Preferences preferences) {}
 
     Promise<CustomerRow> save(CustomerRow customer);
 

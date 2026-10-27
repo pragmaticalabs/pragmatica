@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
+import org.pragmatica.aether.pg.codegen.annotation.Jsonb;
 import org.pragmatica.aether.pg.codegen.annotation.Query;
 import org.pragmatica.aether.pg.codegen.annotation.Table;
 import org.pragmatica.aether.resource.db.PgSql;
@@ -15,12 +16,17 @@ import org.pragmatica.lang.Unit;
 
 @PgSql
 public interface OrderPersistence {
+    /// Stored in the jsonb column `orders.metadata`.
+    record OrderMetadata(Option<String> channel, Option<String> note) {}
+
+    // `metadata` is marked because `createOrder` returns this record from a @Query, whose result column types the
+    // processor does not know; the CRUD methods alone would infer it from the table.
     record OrderRow(long id,
                     long userId,
                     BigDecimal total,
                     String status,
                     Instant createdAt,
-                    String metadata,
+                    @Jsonb OrderMetadata metadata,
                     UUID correlationId,
                     BigDecimal totalWithTax) {}
 
