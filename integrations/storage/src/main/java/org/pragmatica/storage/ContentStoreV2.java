@@ -33,8 +33,11 @@ public interface ContentStoreV2 {
     /// `minVersion` is a read-your-writes bound for clustered catalogs; local mode always reads the current entry.
     Promise<Option<ObjectInfo>> lookup(ObjectName name, Option<Long> minVersion);
 
-    /// Binds `name` to `id`, replacing the binding the precondition allows. An object has at most one name: binding a
-    /// second name moves it, and rebinding a name takes it from its previous object.
+    /// Binds `name` to `id`, replacing the binding the precondition allows. Outside a rename window or crash recovery an
+    /// object has one name: binding a second name moves it, and rebinding a name takes it from its previous object. In local
+    /// mode a rename is never unnamed and may briefly carry both names: the new name is bound first, the old one retired
+    /// after, and the call returns after both. A crash between the steps leaves both names resolving to the object. A
+    /// later cluster catalog makes the rename atomic.
     Promise<ObjectInfo> bind(ObjectName name, ObjectId id, Precondition precondition);
 
     Promise<ObjectInfo> update(ObjectId id, MetaPatch patch);

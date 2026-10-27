@@ -112,13 +112,14 @@ final class LocalContentStore implements ContentStoreV2 {
                                                                : entry.named(none()).withVersion(entry.catalogVersion())));
     }
 
-    /// The object a name points at, if its entry records that name: a binding left behind by a rename (dropped last) finds
-    /// nothing.
+    /// The object a name points at, resolved through that name's own binding: during a rename both the old and the new
+    /// name find the object, each reported under the name it was looked up by.
     @Override
     public Promise<Option<ObjectInfo>> lookup(ObjectName name, Option<Long> minVersion) {
         return holderOf(name).flatMap(holder -> holder.fold(() -> Promise.success(Option.<ObjectInfo>none()),
-                                                            id -> readEntry(id).map(entry -> entry.filter(found -> found.name().filter(name::equals).isPresent())
-                                                                                                  .map(found -> found.info(namespace.value(), id)))));
+                                                            id -> readEntry(id).map(entry -> entry.map(found -> found.named(some(name))
+                                                                                                                 .withVersion(found.catalogVersion())
+                                                                                                                 .info(namespace.value(), id)))));
     }
 
     private Promise<Option<ObjectEntry>> readEntry(ObjectId id) {
@@ -169,21 +170,23 @@ final class LocalContentStore implements ContentStoreV2 {
         };
     }
 
-    /// The name binding is the one commit point, written last. In this order:
-    /// 1. the entry records the new name (a hint: [#stat] does not report it until the binding points back);
-    /// 2. `n/<namespace>/<name>` is swapped to point at the object -- from here the object is named and the name's previous
-    ///    object is not;
-    /// 3. the binding of the name the object had before, if any, is dropped.
-    /// Observable to a concurrent reader: binding an unnamed object, or taking a name from another object, shows the old
-    /// state, then the new one. Renaming an already-named object passes through "unnamed" between steps 1 and 2 (the old
-    /// binding stops finding the object once its entry records the new name). A crash after step 1 leaves a hint nothing
-    /// reports; after step 2, a stale old binding that [#lookup] ignores because the entry no longer records its name.
+    /// Local-mode rename is never unnamed; it may briefly carry both names. In this order:
+    /// 1. `n/<namespace>/<name>` is swapped to point at the object -- from here the new name finds it, and the name's
+    ///    previous object (if another) no longer does;
+    /// 2. the entry records the new name (a hint: [#stat] reports it only while the binding points back);
+    /// 3. the binding of the name the object had before, if any, is retired.
+    /// The call returns after step 3. A concurrent reader finds the object under the old name until step 3 and under the
+    /// new one from step 1. A crash after step 1 or 2 leaves both names resolving to the one object (the entry reports the
+    /// name last recorded); both bindings hold their own credit, so nothing is reclaimed. A later cluster catalog makes the
+    /// rename one atomic step. A crash does not retire the leftover binding: nothing in local mode does, and deleting the
+    /// object retires only the name its entry records.
     private Promise<ObjectInfo> rebind(ObjectName name, ObjectId id, ObjectEntry entry, Option<ObjectId> holder) {
         var named = entry.named(some(name));
 
-        return writeEntry(id, named).flatMap(_ -> storage.swapRef(nameRef(name), ContentEnvelope.wrap(ContentEnvelope.NAME, id.bytes())))
-                                    .flatMap(_ -> dropFormerName(name, id, entry))
-                                    .map(_ -> named.info(namespace.value(), id));
+        return storage.swapRef(nameRef(name), ContentEnvelope.wrap(ContentEnvelope.NAME, id.bytes()))
+                      .flatMap(_ -> writeEntry(id, named))
+                      .flatMap(_ -> dropFormerName(name, id, entry))
+                      .map(_ -> named.info(namespace.value(), id));
     }
 
     private Promise<Unit> dropFormerName(ObjectName name, ObjectId id, ObjectEntry entry) {
