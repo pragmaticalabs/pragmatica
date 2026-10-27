@@ -81,6 +81,28 @@ class ContentStoreFactoryTest {
     }
 
     @Test
+    void provision_refusesANamespaceThatIsNotValid_namingTheSetting() {
+        provisionOnDefaultInstance(ContentStoreConfig.contentStoreConfig(1024, Compression.NONE, "Not/Valid", 4, 2))
+            .await()
+            .onSuccess(_ -> fail("a namespace with a slash and capitals must be refused when the store is provisioned"))
+            .onFailure(cause -> {
+                assertThat(cause).isInstanceOf(ContentStoreError.InvalidConfig.class);
+                assertThat(cause.message()).contains("namespace").contains("Not/Valid");
+            });
+    }
+
+    @Test
+    void provision_refusesAWriteWindowOfZero_andAcceptsAValidNamespace() {
+        provisionOnDefaultInstance(ContentStoreConfig.contentStoreConfig(1024, Compression.NONE, "tenant-1", 0, 2))
+            .await()
+            .onSuccess(_ -> fail("a write window of 0 admits no block in flight"))
+            .onFailure(cause -> assertThat(cause.message()).contains("writeWindow"));
+        provisionOnDefaultInstance(ContentStoreConfig.contentStoreConfig(1024, Compression.NONE, "tenant-1", 4, 2))
+            .await()
+            .onFailure(cause -> fail("a valid namespace must provision: " + cause.message()));
+    }
+
+    @Test
     void provision_judgesAgainstTheInstancesOwnCap_notTheDefault() {
         var smallCap = StorageInstance.storageInstance("small",
                                                        List.of(MemoryTier.memoryTier(MEMORY_BYTES)),
