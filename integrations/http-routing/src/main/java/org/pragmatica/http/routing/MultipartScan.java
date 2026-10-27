@@ -185,12 +185,19 @@ sealed interface MultipartScan {
                : headersEnd + 1;
     }
 
-    /// One part's header block, and what the part is. A part with a filename is a file to Netty already and is not
-    /// recorded as a field; a nested `multipart/*` part becomes files and fields inside Netty.
+    /// One part's header block, and what the part is. The Content-Type is read first: a `multipart/*` part is nested
+    /// whatever its disposition, filename included, because Netty reads it as a nested body and returns its inner parts.
+    /// Otherwise a part with a filename is a file and is not recorded as a field.
     private static Kind recordPart(String headerBlock, Map<String, Deque<Option<String>>> fieldTypes) {
         var headers = partHeaders(headerBlock);
         var contentType = option(headers.get("content-type"));
         var disposition = option(headers.get("content-disposition")).map(MultipartScan::parameters);
+
+        var type = kindOf(contentType.map(MultipartScan::mediaType));
+
+        if (type == Kind.NESTED) {
+            return Kind.NESTED;
+        }
 
         if (disposition.filter(params -> params.containsKey("filename") || params.containsKey("filename*")).isPresent()) {
             return Kind.FILE;
@@ -199,7 +206,7 @@ sealed interface MultipartScan {
         disposition.flatMap(params -> option(params.get("name")))
                    .onPresent(fieldName -> recordField(fieldTypes, fieldName, contentType));
 
-        return kindOf(contentType.map(MultipartScan::mediaType));
+        return type;
     }
 
     private static Kind kindOf(Option<String> mediaType) {

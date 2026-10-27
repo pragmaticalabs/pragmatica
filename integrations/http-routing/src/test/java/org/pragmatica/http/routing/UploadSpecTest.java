@@ -244,6 +244,41 @@ class UploadSpecTest {
             .as("a route with no part limits is not checked").isFalse();
     }
 
+    private static String nestedWithFilename(int innerFiles, String subtype) {
+        return nestedWith(innerFiles).replace("name=\"n\"", "name=\"n\"; filename=\"n.mix\"").replace("multipart/mixed", "multipart/" + subtype);
+    }
+
+    @Test
+    void partBreach_aNestedPartWithAFilename_isNestedToo_notAFile() {
+        var spec = parts(2, 0, 0, 0);
+
+        assertThat(spec.partBreach(body(nestedWithFilename(20, "mixed")), CONTENT_TYPE).unwrap()).isSameAs(MultipartError.General.NESTED_MULTIPART);
+        assertThat(parts(0, 0, 2, 0).partBreach(body(nestedWithFilename(20, "mixed")), CONTENT_TYPE).unwrap())
+            .as("max_fields declared: the same refusal").isSameAs(MultipartError.General.NESTED_MULTIPART);
+        assertThat(parts(0, 0, 2, 0).partBreach(body(nestedWith(20)), CONTENT_TYPE).unwrap())
+            .as("max_fields through a filename-less nested part").isSameAs(MultipartError.General.NESTED_MULTIPART);
+    }
+
+    @Test
+    void partBreach_everyMultipartSubtypeIsNested_alternativeIncluded() {
+        assertThat(parts(2, 0, 0, 0).partBreach(body(nestedWith(1).replace("multipart/mixed", "multipart/alternative")), CONTENT_TYPE).unwrap())
+            .isSameAs(MultipartError.General.NESTED_MULTIPART);
+        assertThat(parts(2, 0, 0, 0).partBreach(body(nestedWithFilename(1, "Related")), CONTENT_TYPE).unwrap())
+            .as("subtype in any letter case").isSameAs(MultipartError.General.NESTED_MULTIPART);
+    }
+
+    @Test
+    void partBreach_aBodyBothNestedAndOverThePartCap_getsTheNested400() {
+        var tiny = field("a", "1").repeat(300);
+
+        assertThat(parts(2, 0, 0, 0).partBreach(body(nestedWith(1), tiny), CONTENT_TYPE).unwrap())
+            .as("the nested part comes within the first parts: its 400 answers, not the 413 for the cap")
+            .isSameAs(MultipartError.General.NESTED_MULTIPART);
+        assertThat(parts(2, 0, 0, 0).partBreach(body(tiny, nestedWith(1)), CONTENT_TYPE).unwrap().httpStatus())
+            .as("nested only after the cap (marked guess: the scan stops at cap + 1 parts, so the cap's 413 answers)")
+            .isEqualTo(org.pragmatica.http.HttpStatus.REQUEST_ENTITY_TOO_LARGE);
+    }
+
     @Test
     void scan_stopsAtTheFirstNestedPart_whenAskedTo() {
         var scanned = MultipartScan.scan(body(file(1), nestedWith(50), file(1)), "XB", 128, true);

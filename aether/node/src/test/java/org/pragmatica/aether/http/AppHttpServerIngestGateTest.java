@@ -1335,6 +1335,11 @@ class AppHttpServerIngestGateTest {
         var nested = ("--" + BOUNDARY + "\r\nContent-Disposition: form-data; name=\"n\"\r\nContent-Type: multipart/mixed; boundary=IN\r\n\r\n"
                       + inner + "--IN--\r\n\r\n--" + BOUNDARY + "--\r\n").getBytes(StandardCharsets.ISO_8859_1);
 
+        var withFilename = new String(nested, StandardCharsets.ISO_8859_1)
+            .replace("name=\"n\"", "name=\"n\"; filename=\"n.mix\"").getBytes(StandardCharsets.ISO_8859_1);
+
+        assertThat(statusOf(protocol, "/api/files/", withFilename)).as("the same nested part with a filename").isEqualTo(400);
+        assertThat(statusOf(protocol, "/api/fields/", withFilename)).as("max_fields = 2 through a nested part").isEqualTo(400);
         assertThat(statusOf(protocol, "/api/files/", nested)).as("20 inner files, max_files = 2").isEqualTo(400);
         assertThat(served.get()).as("never dispatched").isZero();
         assertThat(statusOf(protocol, "/api/upload/", nested)).as("a route with no part limits is as before").isEqualTo(200);
