@@ -60,7 +60,8 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// #2444 — "succeeded" means netty accepted the bytes into quiche's send buffer, not that they reached the peer; under
 /// loss delivery needs a driven transport. Production drives it with the activity kick (`QuicClusterNetwork.installActivityKick`,
 /// fed by `noteLaneWrite` on every lane data write), the mitigation for netty-quic stranded loss. This harness builds the
-/// transport directly, so it installs the kick on both ends exactly as production does and notes every lane data write.
+/// transport directly, so it installs the kick on both ends exactly as production does and notes every lane data write
+/// (a FIN is not one: production never kicks on a bare close).
 @Timeout(120)
 class QuicLaneFinishUnderLossTest {
     private static final NodeId ACCEPTOR = new NodeId("lf-acceptor");
@@ -206,7 +207,6 @@ class QuicLaneFinishUnderLossTest {
         var lost = dialerSide.stream(LANE).unwrap();
         var lostAtAcceptor = acceptorSide.get().stream(LANE).unwrap();
 
-        dialerSide.noteLaneWrite();
         lost.close().awaitUninterruptibly(AWAIT.millis());
         awaitTrue(() -> acceptorSide.get().stream(LANE).map(current -> current != lostAtAcceptor).or(true),
                   "the acceptor releases FORWARD once the dialer's stream for it ends");
