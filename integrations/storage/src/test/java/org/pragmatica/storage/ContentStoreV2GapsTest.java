@@ -63,9 +63,9 @@ class ContentStoreV2GapsTest {
         id.bytes()[1] = 9;
 
         assertThat(ObjectId.objectId(text).isSuccess()).isTrue();
-        assertThat(ObjectId.objectId(text.substring(1)).isFailure()).isTrue();
-        assertThat(ObjectId.objectId(text + "a").isFailure()).isTrue();
-        assertThat(ObjectId.objectId("1" + text.substring(1)).isFailure()).isTrue();
+        assertThat(failureOf(ObjectId.objectId(text.substring(1)))).hasMessageContaining("26 characters");
+        assertThat(failureOf(ObjectId.objectId(text + "a"))).hasMessageContaining("26 characters");
+        assertThat(failureOf(ObjectId.objectId("1" + text.substring(1)))).hasMessageContaining("unknown character");
         assertThat(ObjectId.objectId("A" + text.substring(1)).isFailure()).isTrue();
         assertThat(ObjectId.objectId(lastDiffers).isFailure()).as("a spelling with stray low bits is not canonical").isTrue();
         assertThat(id.bytes()[0]).isEqualTo((byte) 1);
@@ -96,6 +96,7 @@ class ContentStoreV2GapsTest {
         assertThat(ContentEnvelope.payloadOf(ContentEnvelope.ENTRY, binding).isEmpty()).isTrue();
         assertThat(ContentEnvelope.payloadOf(ContentEnvelope.NAME, entry).isEmpty()).isTrue();
         assertThat(ContentEnvelope.payloadOf(ContentEnvelope.MANIFEST, entry).isEmpty()).isTrue();
+        assertThat(ContentEnvelope.payloadOf(ContentEnvelope.MANIFEST, binding).isEmpty()).isTrue();
         assertThat(ContentEnvelope.payloadOf(ContentEnvelope.ENTRY, entry).isPresent()).isTrue();
     }
 
@@ -139,10 +140,10 @@ class ContentStoreV2GapsTest {
     // --- reads ---
     @Test
     void aRangeStartingAtTheEnd_isRefused_aReadBufferIsReadOnly_andAClosedStreamIsEmpty() {
-        var info = uploaded(store, payload(40, 2));
+        var info = uploaded(store, payload(V2Fixture.CHUNK * 8, 2));
         var stream = store.open(info.ref(), ByteRange.whole()).await().unwrap();
 
-        assertThat(failureOf(store.open(info.ref(), ByteRange.byteRange(40, none())))).isInstanceOf(ContentStoreError.InvalidRange.class);
+        assertThat(failureOf(store.open(info.ref(), ByteRange.byteRange(V2Fixture.CHUNK * 8, some(V2Fixture.CHUNK * 8L + 5))))).isInstanceOf(ContentStoreError.InvalidRange.class);
         assertThat(stream.next().await().unwrap().or((ByteBuffer) null).isReadOnly()).isTrue();
 
         stream.close().await().unwrap();
