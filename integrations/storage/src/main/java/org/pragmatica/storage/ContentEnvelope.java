@@ -20,6 +20,7 @@ sealed interface ContentEnvelope {
     byte ENTRY = 'E';
     /// A name binding of the v2 store: the id of the object a name points at.
     byte NAME = 'N';
+
     static byte[] marker() {
         return new byte[]{0x00, 'A', 'H', 'S', 'E', 0x02};
     }
