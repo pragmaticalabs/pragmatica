@@ -58,7 +58,7 @@ public final class LargeObjectProbe {
         var dir = Path.of(args[1]);
         var tier = LocalDiskTier.localDiskTier(dir, size + 256L * 1024 * 1024).unwrap();
         var storage = StorageInstance.storageInstance("probe", List.of(tier));
-        var store = ContentStoreV2.contentStoreV2(storage, ContentStoreConfig.contentStoreConfig()).unwrap();
+        var store = ContentStore.contentStore(storage, ContentStoreConfig.contentStoreConfig()).unwrap();
         var written = MessageDigest.getInstance("SHA-256");
         var writer = store.create(ObjectSpec.objectSpec("application/octet-stream")).await().unwrap();
         var started = System.nanoTime();
@@ -106,7 +106,7 @@ public final class LargeObjectProbe {
         System.out.println("DONE");
     }
 
-    private static boolean rangeMatches(ContentStoreV2 store, ObjectInfo info, long first, long last) {
+    private static boolean rangeMatches(ContentStore store, ObjectInfo info, long first, long last) {
         var stream = store.open(info.ref(), ByteRange.byteRange(first, some(last))).await().unwrap();
         var out = new byte[(int) (last - first + 1)];
         var filled = 0;

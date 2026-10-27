@@ -12,30 +12,30 @@ import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.storage.ContentStoreError.General.CONTENT_NOT_FOUND;
 
 
-/// Whole-content access by name over a [ContentStoreV2], for the tests that pin store properties through "put a document
+/// Whole-content access by name over a [ContentStore], for the tests that pin store properties through "put a document
 /// under a name, read it back, overwrite it, delete it". The store has no overwrite: a put uploads a new object, binds the
 /// name to it and then deletes the object the name held before, so the previous document's blocks are released only after
 /// the new one is stored and named. Every property such a test pins is a property of the store's upload, bind and delete.
 final class NamedContent {
     private static final int PIECE = 65_539;
 
-    private final ContentStoreV2 store;
+    private final ContentStore store;
 
-    NamedContent(ContentStoreV2 store) {
+    NamedContent(ContentStore store) {
         this.store = store;
     }
 
     static NamedContent namedContent(StorageInstance storage, ContentStoreConfig config) {
-        return new NamedContent(ContentStoreV2.contentStoreV2(storage, config).unwrap());
+        return new NamedContent(ContentStore.contentStore(storage, config).unwrap());
     }
 
-    ContentStoreV2 store() {
+    ContentStore store() {
         return store;
     }
 
     /// The hex id of the manifest block of the stored document.
     Promise<String> put(String name, byte[] content) {
-        return V2Fixture.upload(store, ObjectSpec.objectSpec("application/octet-stream"), content, PIECE)
+        return ContentFixture.upload(store, ObjectSpec.objectSpec("application/octet-stream"), content, PIECE)
                         .flatMap(info -> replaceHolder(name, info));
     }
 

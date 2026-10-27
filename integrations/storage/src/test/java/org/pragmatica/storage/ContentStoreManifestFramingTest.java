@@ -95,7 +95,7 @@ class ContentStoreManifestFramingTest {
     }
 
     @Test
-    void forgedV2ManifestUpload_readsBackVerbatim() {
+    void forgedManifestUpload_readsBackVerbatim() {
         var victim = content(2 * CHUNK_SIZE + 5, 3);
 
         put("victim", victim);

@@ -21,7 +21,7 @@ import static org.pragmatica.storage.StorageGarbageCollector.storageGarbageColle
 /// #812 -- the content store paired [StorageInstance#put] with [StorageInstance#createRef]. Each
 /// credits the block, so one named block sat at refCount 2, an explicit `deleteRef` only
 /// brought it back to 1, and the block could never report [BlockLifecycle#isOrphaned] -- making EVERY
-/// content-store block permanently uncollectable by the production [StorageGarbageCollector]. On [ContentStoreV2] the
+/// content-store block permanently uncollectable by the production [StorageGarbageCollector]. On [ContentStore] the
 /// named blocks are the object entry and the name binding, written with one swap each.
 ///
 /// What is pinned is the CONSEQUENCE, not the arithmetic: each test runs a real `collectGarbage` cycle

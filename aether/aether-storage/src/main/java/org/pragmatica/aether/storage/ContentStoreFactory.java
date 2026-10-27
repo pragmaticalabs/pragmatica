@@ -8,17 +8,17 @@ import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.utils.Causes;
-import org.pragmatica.storage.ContentStoreV2;
+import org.pragmatica.storage.ContentStore;
 import org.pragmatica.storage.ContentStoreConfig;
 import org.pragmatica.storage.StorageInstance;
 
 
-public final class ContentStoreFactory implements ResourceFactory<ContentStoreV2, ContentStoreConfig> {
-    private static final Cause REQUIRES_CONTEXT = Causes.cause("ContentStoreV2 requires ProvisioningContext with StorageInstance extension");
+public final class ContentStoreFactory implements ResourceFactory<ContentStore, ContentStoreConfig> {
+    private static final Cause REQUIRES_CONTEXT = Causes.cause("ContentStore requires ProvisioningContext with StorageInstance extension");
 
     @Override
-    public Class<ContentStoreV2> resourceType() {
-        return ContentStoreV2.class;
+    public Class<ContentStore> resourceType() {
+        return ContentStore.class;
     }
 
     @Override
@@ -27,14 +27,14 @@ public final class ContentStoreFactory implements ResourceFactory<ContentStoreV2
     }
 
     @Override
-    public Promise<ContentStoreV2> provision(ContentStoreConfig config) {
+    public Promise<ContentStore> provision(ContentStoreConfig config) {
         return REQUIRES_CONTEXT.promise();
     }
 
     @Override
-    public Promise<ContentStoreV2> provision(ContentStoreConfig config, ProvisioningContext context) {
+    public Promise<ContentStore> provision(ContentStoreConfig config, ProvisioningContext context) {
         return context.extension(StorageInstance.class)
-                      .flatMap(instance -> ContentStoreV2.contentStoreV2(instance, config))
+                      .flatMap(instance -> ContentStore.contentStore(instance, config))
                       .async();
     }
     // No close override, deliberately (#893). A content store owns nothing releasable: the

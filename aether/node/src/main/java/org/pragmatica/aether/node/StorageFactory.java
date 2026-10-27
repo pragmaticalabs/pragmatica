@@ -759,7 +759,7 @@ public final class StorageFactory {
                                   keyring,
                                   clamps));
         }
-        // #783 ruling (2026-09-04): `content` -- the shared per-node StorageInstance ContentStoreV2
+        // #783 ruling (2026-09-04): `content` -- the shared per-node StorageInstance ContentStore
         // resources provision through (registered as an SPI extension in AetherNode) -- used to be
         // built by a separate, keyring-less `defaultContentStorage` entirely outside this map: no
         // MetadataStore, no DemotionManager/StorageGarbageCollector, so `StorageMaintenanceDriver`

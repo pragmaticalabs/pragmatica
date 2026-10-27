@@ -30,16 +30,16 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
-import static org.pragmatica.storage.V2Fixture.failureOf;
-import static org.pragmatica.storage.V2Fixture.payload;
-import static org.pragmatica.storage.V2Fixture.uploaded;
+import static org.pragmatica.storage.ContentFixture.failureOf;
+import static org.pragmatica.storage.ContentFixture.payload;
+import static org.pragmatica.storage.ContentFixture.uploaded;
 
 
 /// Properties of the v2 store that the larger tests leave to chance: the bounds of the value types, the manifest checks, the
 /// ordering and paging rules of `list`, the version a read reports, what a crash in the middle of a bind leaves behind, the
 /// window and read-ahead bounds, and what a failed writer does on its own.
 @Timeout(value = 15, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
-class ContentStoreV2GapsTest {
+class ContentStoreGapsTest {
     private static ObjectName name(String value) {
         return ObjectName.objectName(value).unwrap();
     }
@@ -48,8 +48,8 @@ class ContentStoreV2GapsTest {
         return result.fold(cause -> cause, _ -> null);
     }
 
-    private final V2Fixture fixture = V2Fixture.v2Fixture();
-    private final ContentStoreV2 store = fixture.store("alpha");
+    private final ContentFixture fixture = ContentFixture.contentFixture();
+    private final ContentStore store = fixture.store("alpha");
 
     // --- value types ---
     @Test
@@ -151,7 +151,7 @@ class ContentStoreV2GapsTest {
     void aStoreIsRefusedForAChunkSizeTheInstanceCannotTake() {
         var config = ContentStoreConfig.contentStoreConfig(fixture.storage.maxBlockBytes() + 1, Compression.NONE, "alpha", 2, 2);
 
-        assertThat(ContentStoreV2.contentStoreV2(fixture.storage, config).isFailure()).isTrue();
+        assertThat(ContentStore.contentStore(fixture.storage, config).isFailure()).isTrue();
     }
 
     @Test
@@ -167,10 +167,10 @@ class ContentStoreV2GapsTest {
     // --- reads ---
     @Test
     void aRangeStartingAtTheEnd_isRefused_aReadBufferIsReadOnly_andAClosedStreamIsEmpty() {
-        var info = uploaded(store, payload(V2Fixture.CHUNK * 8, 2));
+        var info = uploaded(store, payload(ContentFixture.CHUNK * 8, 2));
         var stream = store.open(info.ref(), ByteRange.whole()).await().unwrap();
 
-        assertThat(failureOf(store.open(info.ref(), ByteRange.byteRange(V2Fixture.CHUNK * 8, some(V2Fixture.CHUNK * 8L + 5))))).isInstanceOf(ContentStoreError.InvalidRange.class);
+        assertThat(failureOf(store.open(info.ref(), ByteRange.byteRange(ContentFixture.CHUNK * 8, some(ContentFixture.CHUNK * 8L + 5))))).isInstanceOf(ContentStoreError.InvalidRange.class);
         assertThat(stream.next().await().unwrap().or((ByteBuffer) null).isReadOnly()).isTrue();
 
         stream.close().await().unwrap();
@@ -273,9 +273,9 @@ class ContentStoreV2GapsTest {
     @Test
     void aStreamFetchesExactlyReadAheadBlocksBeyondTheOneItServes() {
         var counting = tier((_, _) -> Promise.success(unit()));
-        var counted = new V2Fixture(counting);
-        var countedStore = counted.store(ContentStoreConfig.contentStoreConfig(V2Fixture.CHUNK, Compression.NONE, "alpha", 2, 2));
-        var info = uploaded(countedStore, payload(V2Fixture.CHUNK * 8, 3));
+        var counted = new ContentFixture(counting);
+        var countedStore = counted.store(ContentStoreConfig.contentStoreConfig(ContentFixture.CHUNK, Compression.NONE, "alpha", 2, 2));
+        var info = uploaded(countedStore, payload(ContentFixture.CHUNK * 8, 3));
         var stream = countedStore.open(info.ref(), ByteRange.whole()).await().unwrap();
         var before = counting.gets.get();
 
@@ -295,8 +295,8 @@ class ContentStoreV2GapsTest {
     private final AtomicInteger started = new AtomicInteger();
 
     /// A fixture whose every block put waits on its own gate, in the order the puts start.
-    private V2Fixture gatedFixture() {
-        return new V2Fixture(tier((_, _) -> {
+    private ContentFixture gatedFixture() {
+        return new ContentFixture(tier((_, _) -> {
             started.incrementAndGet();
 
             var gate = Promise.<Unit>promise();
@@ -311,7 +311,7 @@ class ContentStoreV2GapsTest {
     void aWriter_hasAtMostWriteWindowBlocksBeingStored_andHoldsTheWriteBack() {
         var gated = gatedFixture();
         var writer = gated.store("alpha").create(ObjectSpec.objectSpec("t")).await().unwrap();
-        var write = writer.write(ByteBuffer.wrap(payload(V2Fixture.CHUNK * 6, 4)));
+        var write = writer.write(ByteBuffer.wrap(payload(ContentFixture.CHUNK * 6, 4)));
 
         for (var i = 0; i < 40 && started.get() < 2; i++) {
             pause(50);
@@ -329,7 +329,7 @@ class ContentStoreV2GapsTest {
         write.await().unwrap();
     }
 
-    private ObjectWriter writerOver(V2Fixture target) {
+    private ObjectWriter writerOver(ContentFixture target) {
         return target.store("alpha").create(ObjectSpec.objectSpec("t")).await().unwrap();
     }
 
@@ -340,7 +340,7 @@ class ContentStoreV2GapsTest {
         var first = Causes.cause("first");
         var second = Causes.cause("second");
 
-        writer.write(ByteBuffer.wrap(payload(V2Fixture.CHUNK * 2 + 1, 5)));
+        writer.write(ByteBuffer.wrap(payload(ContentFixture.CHUNK * 2 + 1, 5)));
 
         for (var i = 0; i < 40 && gates.size() < 2; i++) {
             pause(50);
@@ -360,7 +360,7 @@ class ContentStoreV2GapsTest {
         var writer = writerOver(gated);
         var cause = Causes.cause("boom");
 
-        writer.write(ByteBuffer.wrap(payload(V2Fixture.CHUNK * 2 + 1, 6)));
+        writer.write(ByteBuffer.wrap(payload(ContentFixture.CHUNK * 2 + 1, 6)));
 
         for (var i = 0; i < 40 && gates.size() < 2; i++) {
             pause(50);
@@ -383,11 +383,11 @@ class ContentStoreV2GapsTest {
     @Test
     void aWriterThatFails_givesBackTheCreditsOfItsStoredBlocks_withNoCommitOrAbort() {
         var puts = new AtomicInteger();
-        var failing = new V2Fixture(tier((_, _) -> puts.incrementAndGet() == 2
+        var failing = new ContentFixture(tier((_, _) -> puts.incrementAndGet() == 2
                                                   ? Causes.cause("refused").promise()
                                                   : Promise.success(unit())));
-        var data = payload(V2Fixture.CHUNK * 2 + 1, 7);
-        var firstBlock = BlockId.blockId(Arrays.copyOf(data, V2Fixture.CHUNK)).unwrap();
+        var data = payload(ContentFixture.CHUNK * 2 + 1, 7);
+        var firstBlock = BlockId.blockId(Arrays.copyOf(data, ContentFixture.CHUNK)).unwrap();
         var writer = writerOver(failing);
 
         writer.write(ByteBuffer.wrap(data));
@@ -401,13 +401,13 @@ class ContentStoreV2GapsTest {
 
     /// A store of 16-byte chunks and a window of one, whose first block put waits for `held` and whose other puts complete
     /// inline.
-    private static ContentStoreV2 storeWithFirstBlockHeld(Promise<Unit> held) {
+    private static ContentStore storeWithFirstBlockHeld(Promise<Unit> held) {
         var puts = new AtomicInteger();
 
-        return new V2Fixture(tier((_, _) -> puts.incrementAndGet() == 1
+        return new ContentFixture(tier((_, _) -> puts.incrementAndGet() == 1
                                             ? held
                                             : Promise.success(unit())))
-            .store(ContentStoreConfig.contentStoreConfig(V2Fixture.CHUNK, Compression.NONE, "alpha", 1, 2));
+            .store(ContentStoreConfig.contentStoreConfig(ContentFixture.CHUNK, Compression.NONE, "alpha", 1, 2));
     }
 
     /// B-1, one interleaving: the second write waits for the window and is resolved on the test thread by the block that
@@ -429,7 +429,7 @@ class ContentStoreV2GapsTest {
         held.succeed(unit());
 
         assertThat(chain.await(timeSpan(3).seconds()).isSuccess()).as("the third write resolved").isTrue();
-        assertThat(V2Fixture.read(target, writer.commit(none()).await().unwrap().ref(), ByteRange.whole())).isEqualTo(data);
+        assertThat(ContentFixture.read(target, writer.commit(none()).await().unwrap().ref(), ByteRange.whole())).isEqualTo(data);
     }
 
     /// B-1 over many interleavings: every other block store completes inline, the rest a moment later on another thread, and
@@ -442,11 +442,11 @@ class ContentStoreV2GapsTest {
         try {
             for (var upload = 0; upload < 100; upload++) {
                 var puts = new AtomicInteger();
-                var mixed = new V2Fixture(tier((_, _) -> puts.incrementAndGet() % 2 == 0
+                var mixed = new ContentFixture(tier((_, _) -> puts.incrementAndGet() % 2 == 0
                                                          ? Promise.success(unit())
                                                          : later(scheduler)));
                 var window = 1 + random.nextInt(3);
-                var target = mixed.store(ContentStoreConfig.contentStoreConfig(V2Fixture.CHUNK, Compression.NONE, "alpha", window, 2));
+                var target = mixed.store(ContentStoreConfig.contentStoreConfig(ContentFixture.CHUNK, Compression.NONE, "alpha", window, 2));
                 var data = payload(200, upload);
                 var pieces = new ArrayList<Integer>();
 
@@ -501,7 +501,7 @@ class ContentStoreV2GapsTest {
         write.await(timeSpan(3).seconds()).unwrap();
         Arrays.fill(data, (byte) 0);
 
-        assertThat(V2Fixture.read(target, writer.commit(none()).await().unwrap().ref(), ByteRange.whole())).isEqualTo(original);
+        assertThat(ContentFixture.read(target, writer.commit(none()).await().unwrap().ref(), ByteRange.whole())).isEqualTo(original);
     }
 
     /// An ingress that aborts on disconnect may still be awaiting a write the window holds back: the abort fails it.
@@ -535,7 +535,7 @@ class ContentStoreV2GapsTest {
                 return Causes.cause("codec").result();
             }
         };
-        var config = ContentStoreConfig.contentStoreConfig(V2Fixture.CHUNK, Compression.NONE, "alpha", 2, 2);
+        var config = ContentStoreConfig.contentStoreConfig(ContentFixture.CHUNK, Compression.NONE, "alpha", 2, 2);
         var writer = new LocalObjectWriter((LocalContentStore) store,
                                            fixture.storage,
                                            config,
@@ -555,7 +555,7 @@ class ContentStoreV2GapsTest {
         return ObjectEntry.fromBytes(fixture.storage.get(block).await().unwrap().unwrap()).unwrap();
     }
 
-    private Option<ObjectId> found(ContentStoreV2 target, ObjectName name) {
+    private Option<ObjectId> found(ContentStore target, ObjectName name) {
         return target.lookup(name, none()).await().unwrap().map(info -> info.ref().id());
     }
 
@@ -563,7 +563,7 @@ class ContentStoreV2GapsTest {
 
     /// A store whose retire of a name binding fails (the crash), and, when `crashAfterBind`, whose bind of a name fails after
     /// the binding was written.
-    private ContentStoreV2 crashing(boolean crashAfterBind) {
+    private ContentStore crashing(boolean crashAfterBind) {
         var hooked = (StorageInstance) Proxy.newProxyInstance(StorageInstance.class.getClassLoader(),
                                                               new Class<?>[]{StorageInstance.class},
                                                               (_, method, args) -> {
@@ -584,7 +584,7 @@ class ContentStoreV2GapsTest {
                                                                   }
                                                               });
 
-        return ContentStoreV2.contentStoreV2(hooked, ContentStoreConfig.contentStoreConfig(V2Fixture.CHUNK, Compression.NONE, "alpha", 2, 2)).unwrap();
+        return ContentStore.contentStore(hooked, ContentStoreConfig.contentStoreConfig(ContentFixture.CHUNK, Compression.NONE, "alpha", 2, 2)).unwrap();
     }
 
     @Test
@@ -706,7 +706,7 @@ class ContentStoreV2GapsTest {
     }
 
     // --- list ---
-    private ObjectInfo named(ContentStoreV2 target, String value, long seed) {
+    private ObjectInfo named(ContentStore target, String value, long seed) {
         var info = uploaded(target, payload(20, seed));
 
         target.bind(name(value), info.ref().id(), Precondition.nameFree()).await().unwrap();

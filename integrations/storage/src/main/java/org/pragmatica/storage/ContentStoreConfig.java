@@ -10,7 +10,7 @@ import org.pragmatica.lang.Result;
 /// ([ContentEnvelope]); a compressed block adds the original-size header and whatever the codec adds to data it cannot
 /// shrink. [#validatedAgainst] refuses, when the store is provisioned, a chunk size whose blocks would not fit.
 ///
-/// The streaming store ([ContentStoreV2]) adds three settings, each with a default so an existing `[storage]` section binds
+/// The streaming store ([ContentStore]) adds three settings, each with a default so an existing `[storage]` section binds
 /// unchanged: `namespace` is the scope the store is bound to (validated by [#validatedAgainst]), `writeWindow` the number of
 /// blocks a writer may have in flight beyond the one it is filling, `readAhead` the number of blocks a read stream fetches
 /// ahead of the one it is serving.

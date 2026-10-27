@@ -13,14 +13,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 
 /// The 5 GiB write and ranged read under `-Xmx256m` that the streaming store must sustain. The same child-JVM probe as
-/// [ContentStoreV2LargeObjectTest], 13 times the size: tagged `Slow`, so the default build excludes it (the root pom's
+/// [ContentStoreLargeObjectTest], 13 times the size: tagged `Slow`, so the default build excludes it (the root pom's
 /// `surefire.excludedGroups`), and run on a build host with
-/// `mvn test -pl integrations/storage -Dtest=ContentStoreV2FiveGiBTest -Dgroups=Slow -Dsurefire.excludedGroups=`.
+/// `mvn test -pl integrations/storage -Dtest=ContentStoreFiveGiBTest -Dgroups=Slow -Dsurefire.excludedGroups=`.
 /// It needs about 5 GiB of free disk; `-Dstorage.largeObject.dir=<dir>` places that data somewhere other than the JVM's
 /// temporary directory.
 @Tag("Slow")
 @Timeout(value = 30, unit = TimeUnit.MINUTES, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
-class ContentStoreV2FiveGiBTest {
+class ContentStoreFiveGiBTest {
     private static final long SIZE = 5L * 1024 * 1024 * 1024;
     private static final long BLOCK = 4L * 1024 * 1024;
 

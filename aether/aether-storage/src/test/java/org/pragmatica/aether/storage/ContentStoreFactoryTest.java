@@ -9,7 +9,7 @@ import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.storage.ByteRange;
-import org.pragmatica.storage.ContentStoreV2;
+import org.pragmatica.storage.ContentStore;
 import org.pragmatica.storage.ObjectName;
 import org.pragmatica.storage.ObjectSpec;
 import org.pragmatica.storage.Precondition;
@@ -26,7 +26,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
-/// Reproduces #251 (#99 regression): ContentStoreV2 provisioning requires a `StorageInstance`
+/// Reproduces #251 (#99 regression): ContentStore provisioning requires a `StorageInstance`
 /// extension on the `ProvisioningContext`. When the node registers that extension, provisioning
 /// succeeds and a blob round-trips through the provisioned store.
 class ContentStoreFactoryTest {
@@ -123,7 +123,7 @@ class ContentStoreFactoryTest {
                .onFailure(cause -> assertThat(cause.message()).contains("chunkSizeBytes 4194304").contains("maximum block size of 1048576"));
     }
 
-    private Promise<ContentStoreV2> provisionOnDefaultInstance(ContentStoreConfig config) {
+    private Promise<ContentStore> provisionOnDefaultInstance(ContentStoreConfig config) {
         var storage = StorageInstance.storageInstance("content", List.of(MemoryTier.memoryTier(MEMORY_BYTES * 8)));
         var context = ProvisioningContext.provisioningContext().withExtension(StorageInstance.class, storage);
 
@@ -131,7 +131,7 @@ class ContentStoreFactoryTest {
     }
 
     /// Writes `content` as one object bound to `CONTENT_NAME`, looks it up by that name and reads its first piece.
-    private static Promise<Option<byte[]>> storeAndReadBack(ContentStoreV2 store, byte[] content) {
+    private static Promise<Option<byte[]>> storeAndReadBack(ContentStore store, byte[] content) {
         var name = ObjectName.objectName(CONTENT_NAME).unwrap();
 
         return store.create(ObjectSpec.objectSpec("text/plain"))
@@ -155,7 +155,7 @@ class ContentStoreFactoryTest {
         content.onPresent(bytes -> assertThat(bytes).isEqualTo(SAMPLE_CONTENT));
     }
 
-    private Promise<ContentStoreV2> provisionContentStore() {
+    private Promise<ContentStore> provisionContentStore() {
         var storage = StorageInstance.storageInstance("content", List.of(MemoryTier.memoryTier(MEMORY_BYTES)));
         var context = ProvisioningContext.provisioningContext().withExtension(StorageInstance.class, storage);
 

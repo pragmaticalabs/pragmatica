@@ -12,7 +12,7 @@ import org.junit.jupiter.api.io.TempDir;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
-/// Integration tests for ContentStoreV2 through a multi-tier StorageInstance (Memory + LocalDisk).
+/// Integration tests for ContentStore through a multi-tier StorageInstance (Memory + LocalDisk).
 class ContentStoreIntegrationTest {
 
     private static final long MEMORY_MAX = 1024 * 1024;

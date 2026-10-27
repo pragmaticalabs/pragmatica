@@ -22,7 +22,7 @@ import org.pragmatica.lang.Unit;
 ///   ref swaps, not one transaction; concurrent writers to the same object or name are last-writer-wins on each step.
 /// - `lookup` and `list` see this node only.
 /// - `resume` and `link` answer [ContentStoreError.NotSupported].
-public interface ContentStoreV2 {
+public interface ContentStore {
     Promise<ObjectWriter> create(ObjectSpec spec);
     Promise<ObjectWriter> resume(WriteSessionId id);
     /// Reads by reference, across namespaces.
@@ -44,7 +44,7 @@ public interface ContentStoreV2 {
 
     /// A store over `storage` bound to the namespace and tuned by the settings of `config`, which are validated against
     /// the instance ([ContentStoreConfig#validatedAgainst]).
-    static Result<ContentStoreV2> contentStoreV2(StorageInstance storage, ContentStoreConfig config) {
+    static Result<ContentStore> contentStore(StorageInstance storage, ContentStoreConfig config) {
         return config.validatedAgainst(storage.maxBlockBytes())
                      .flatMap(valid -> Namespace.namespace(valid.namespace()).map(namespace -> new LocalContentStore(storage,
                                                                                                                      valid,

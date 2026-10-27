@@ -20,7 +20,7 @@ import static org.pragmatica.storage.ContentStoreError.General.ENTRY_PARSE_FAILE
 import static org.pragmatica.storage.ContentStoreError.General.MANIFEST_PARSE_FAILED;
 
 
-/// [ContentStoreV2] over one [StorageInstance] on one node.
+/// [ContentStore] over one [StorageInstance] on one node.
 ///
 /// Keys, all inside the instance's ref table and all carrying the namespace, so a store can address its own namespace and
 /// no other:
@@ -30,7 +30,7 @@ import static org.pragmatica.storage.ContentStoreError.General.MANIFEST_PARSE_FA
 /// Credits, which delete gives back exactly once: each chunk block and the manifest block hold the credit their `put`
 /// took; the entry and the name binding hold the credit of the ref that names them. The chunks' and the manifest's
 /// credits are released with the object, so two objects with identical content share blocks and each frees only its own.
-final class LocalContentStore implements ContentStoreV2 {
+final class LocalContentStore implements ContentStore {
     private static final String ENTRY_PREFIX = "o/";
     private static final String NAME_PREFIX = "n/";
     private static final int MAX_PAGE = 1000;

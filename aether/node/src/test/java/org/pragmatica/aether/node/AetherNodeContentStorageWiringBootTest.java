@@ -109,7 +109,7 @@ class AetherNodeContentStorageWiringBootTest {
                                                          + "extension (#251) -- " + cause.message()))
                                 .unwrap();
 
-        assertThat(extension).as("#783: the StorageInstance every ContentStoreV2 provisions through must be the "
+        assertThat(extension).as("#783: the StorageInstance every ContentStore provisions through must be the "
                                  + "`content` setup's own instance -- the one StorageMaintenanceDriver ticks and "
                                  + "the keyring wraps -- not `artifacts`' and not a bare instance built outside "
                                  + "storageSetups")

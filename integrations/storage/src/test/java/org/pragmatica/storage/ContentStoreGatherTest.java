@@ -23,7 +23,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// test records the handlers and runs them in the order it chooses: the last registered handler of every input first, the
 /// others after, so the last input's count is reached before an earlier input's result was stored.
 @Timeout(value = 15, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
-class ContentStoreV2GatherTest {
+class ContentStoreGatherTest {
     private final Map<Promise<String>, List<Consumer<Result<String>>>> handlers = new IdentityHashMap<>();
 
     @Test

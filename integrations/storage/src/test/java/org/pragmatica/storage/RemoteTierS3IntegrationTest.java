@@ -257,7 +257,7 @@ class RemoteTierS3IntegrationTest {
             s3Client.headObject(keyOf(id)).await().onSuccess(found -> assertThat(found).as("delete reaches the bucket").isFalse());
         }
 
-        /// A multi-chunk ContentStoreV2 object written through memory + S3 reads back from S3 alone (a second
+        /// A multi-chunk ContentStore object written through memory + S3 reads back from S3 alone (a second
         /// instance over the same metadata, with no other tier), and a corrupted chunk in the bucket fails the
         /// read with an integrity error instead of returning wrong bytes.
         @Test
