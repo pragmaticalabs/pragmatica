@@ -566,6 +566,11 @@ same `ContentStoreConfig` section; each has a default, so an existing section bi
 | `write_window` | 4 | Blocks a writer may have being stored while it fills the next one. At least 1. A writer holds at most `write_window + 1` chunks of the object on the heap |
 | `read_ahead` | 2 | Blocks a read stream fetches ahead of the one being served. 0 or more. A stream holds at most `read_ahead + 1` blocks on the heap |
 
+**Renaming an object (local mode).** `bind` of a second name to a named object is never unnamed: it binds the new name first, then
+retires the old one, and returns after both. While it runs, and after a crash between the two steps, both names resolve to the
+same object; no block is reclaimed in either case. Objects hold one name outside that window. A later cluster catalog makes the
+rename atomic.
+
 ## Environment Variables
 
 For container deployment, configuration via environment variables:
