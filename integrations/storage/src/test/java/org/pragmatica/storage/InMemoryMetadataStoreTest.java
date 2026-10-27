@@ -246,6 +246,31 @@ class InMemoryMetadataStoreTest {
             assertThat(store.currentEpoch()).isEqualTo(before);
         }
 
+        /// A claim that LOSES (the duplicate put of a block already recorded) is no write: the epoch, which drives the
+        /// snapshot trigger, moves once for the winning claim and not at all for the losers. Control: the winner moves it.
+        @Test
+        void claimUnacknowledged_thatLoses_leavesTheEpochUnchanged() {
+            var id = blockIdOf(CONTENT_A);
+            var sentinel = BlockLifecycle.blockLifecycle(id, TierLevel.LOCAL_DISK);
+            var beforeWinner = store.currentEpoch();
+
+            assertThat(store.claimUnacknowledged(id, sentinel)).isTrue();
+
+            var afterWinner = store.currentEpoch();
+
+            assertThat(afterWinner).as("control: the winning claim is a write").isEqualTo(beforeWinner + 1);
+            assertThat(store.claimUnacknowledged(id, sentinel)).isFalse();
+            assertThat(store.claimUnacknowledged(id, sentinel)).isFalse();
+            assertThat(store.currentEpoch()).as("two lost claims").isEqualTo(afterWinner);
+
+            store.acknowledgeClaim(id);
+
+            var afterAck = store.currentEpoch();
+
+            assertThat(store.claimUnacknowledged(id, sentinel)).isFalse();
+            assertThat(store.currentEpoch()).as("a claim lost to an acknowledged record").isEqualTo(afterAck);
+        }
+
         /// A marker never replaces a marker: the second claim for one marker loses, as one real claim loses to another.
         @Test
         void claimUnacknowledged_ofACacheMarker_overACacheMarker_loses() {

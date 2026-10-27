@@ -242,6 +242,46 @@ class StorageInstanceAccessTrackingTest {
         assertThat(tracker2.isHeldBack(record)).as("-1 h wall step: the window did not stretch").isFalse();
     }
 
+    /// The end of the warm-up window is the switch between two orders. Inside it an unknown block goes before one
+    /// read since boot; from the first instant after it each strategy's own order applies. The read block's stamp is
+    /// older than the unknown block's creation (the wall clock stepped back before the read), so LRU and size pressure
+    /// rank it first once the window is over, and the two orders name different blocks.
+    @Test
+    void warmUpWindowEnd_switchesFromUnknownFirstToTheStrategysOwnOrder_lru() {
+        windowEndSwitchesTheOrder(DemotionStrategy.LRU);
+    }
+
+    @Test
+    void warmUpWindowEnd_switchesFromUnknownFirstToTheStrategysOwnOrder_sizePressure() {
+        windowEndSwitchesTheOrder(DemotionStrategy.SIZE_PRESSURE);
+    }
+
+    private static void windowEndSwitchesTheOrder(DemotionStrategy strategy) {
+        assertThat(demotedWhenWindowAgeIs(strategy, 0)).as("at boot").isEqualTo("unknown");
+        assertThat(demotedWhenWindowAgeIs(strategy, WARM_UP_MS - 1)).as("one ms short of the window").isEqualTo("unknown");
+        assertThat(demotedWhenWindowAgeIs(strategy, WARM_UP_MS)).as("the window has ended").isEqualTo("read");
+        assertThat(demotedWhenWindowAgeIs(strategy, WARM_UP_MS + 60_000)).as("long after the window").isEqualTo("read");
+    }
+
+    private static String demotedWhenWindowAgeIs(DemotionStrategy strategy, long ageMs) {
+        var wall = new AtomicLong(1_000_000);
+        var nanos = new AtomicLong(7_000_000_000L);
+        var tracker = AccessTracker.accessTracker(WARM_UP_MS, wall::get, nanos::get);
+        var fixture = new Restored(tracker);
+        var read = fixture.add("restored read", 100L);
+        var unknown = fixture.add("restored unknown", 700L);
+
+        wall.set(300);
+        tracker.record(read);
+        wall.set(1_000_000);
+        step(wall, nanos, ageMs);
+
+        assertThat(fixture.demotion(strategy, 1).demote()).isEqualTo(1);
+        assertThat(fixture.stillInMemory(read) != fixture.stillInMemory(unknown)).as("exactly one went").isTrue();
+
+        return fixture.stillInMemory(unknown) ? "read" : "unknown";
+    }
+
     private static void step(AtomicLong wall, AtomicLong nanos, long ms) {
         wall.addAndGet(ms);
         nanos.addAndGet(ms * 1_000_000L);
@@ -317,8 +357,8 @@ class StorageInstanceAccessTrackingTest {
         assertThat(store.getLifecycle(neverRead).unwrap().presentIn()).doesNotContain(TierLevel.MEMORY);
     }
 
-    /// SIZE_PRESSURE demotes the most recently read first, and what was read is in the tracker: the block
-    /// written first but read last goes, the unread newer one stays, though its record is the newer.
+    /// SIZE_PRESSURE behaves as LRU until a block carries a size (#2443): the least recently read goes first, and what
+    /// was read is in the tracker. The block written first but read last stays, the unread newer one goes.
     @Test
     void sizePressureDemotion_ranksByTheReadsTheTrackerSaw() throws InterruptedException {
         var memory = MemoryTier.memoryTier(200, TierLevel.MEMORY);
@@ -341,8 +381,34 @@ class StorageInstanceAccessTrackingTest {
         manager.activate();
         manager.demote();
 
-        assertThat(store.getLifecycle(readLast).unwrap().presentIn()).doesNotContain(TierLevel.MEMORY);
-        assertThat(store.getLifecycle(neverRead).unwrap().presentIn()).contains(TierLevel.MEMORY);
+        assertThat(store.getLifecycle(readLast).unwrap().presentIn()).contains(TierLevel.MEMORY);
+        assertThat(store.getLifecycle(neverRead).unwrap().presentIn()).doesNotContain(TierLevel.MEMORY);
+    }
+
+    /// Among blocks all read since boot, SIZE_PRESSURE takes them oldest-read first: K1 (read first), then K2, then
+    /// K3 stays: the order LRU gives, not its reverse.
+    @Test
+    void sizePressureDemotion_takesTheOldestReadFirst_k1BeforeK2BeforeK3() {
+        var clock = new AtomicLong(1_000_000);
+        var tracker = AccessTracker.accessTracker(WARM_UP_MS, clock::get);
+        var fixture = new Restored(tracker);
+        var k1 = fixture.add("restored k1", 500L);
+        var k2 = fixture.add("restored k2", 500L);
+        var k3 = fixture.add("restored k3", 500L);
+
+        tracker.record(k1);
+        clock.addAndGet(5);
+        tracker.record(k2);
+        clock.addAndGet(5);
+        tracker.record(k3);
+
+        assertThat(fixture.demotion(DemotionStrategy.SIZE_PRESSURE, 1).demote()).isEqualTo(1);
+        assertThat(fixture.stillInMemory(k1)).as("K1, read first, goes first").isFalse();
+        assertThat(fixture.stillInMemory(k2)).isTrue();
+        assertThat(fixture.stillInMemory(k3)).isTrue();
+        assertThat(fixture.demotion(DemotionStrategy.SIZE_PRESSURE, 1).demote()).isEqualTo(1);
+        assertThat(fixture.stillInMemory(k2)).as("then K2").isFalse();
+        assertThat(fixture.stillInMemory(k3)).as("K3, read last, stays").isTrue();
     }
 
     /// The record's own access fields are frozen at creation: reads leave the record exactly as it was, and
