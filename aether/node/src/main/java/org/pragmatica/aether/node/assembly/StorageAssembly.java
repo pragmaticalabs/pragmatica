@@ -140,7 +140,7 @@ public sealed interface StorageAssembly {
         // whenever `[storage.content]` wasn't explicit, so its absence here would mean
         // `baseStorageSetupsResult` should already have failed at the guard above. Replaces the old
         // keyring-less `StorageFactory.defaultContentStorage(dhtClientOption)` call at the
-        // `registerRuntimeExtensions` site below, which built ContentStore's StorageInstance entirely
+        // `registerRuntimeExtensions` site below, which built ContentStoreV2's StorageInstance entirely
         // outside `storageSetups` -- no MetadataStore, no demotion/GC, never encrypted (#250/#803,
         // #253's WARN at that site is retired along with it).
         var contentStorage = Objects.requireNonNull(storageSetups.get("content"),

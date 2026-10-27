@@ -14,7 +14,7 @@ import org.pragmatica.storage.StorageInstance;
 
 
 public final class ContentStoreFactory implements ResourceFactory<ContentStoreV2, ContentStoreConfig> {
-    private static final Cause REQUIRES_CONTEXT = Causes.cause("ContentStore requires ProvisioningContext with StorageInstance extension");
+    private static final Cause REQUIRES_CONTEXT = Causes.cause("ContentStoreV2 requires ProvisioningContext with StorageInstance extension");
 
     @Override
     public Class<ContentStoreV2> resourceType() {
