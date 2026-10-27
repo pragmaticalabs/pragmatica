@@ -408,8 +408,7 @@ class ContentStoreV2Test {
             assertThat(fixture.metadata.listAllLifecycles().stream().filter(lifecycle -> lifecycle.refCount() > 0).toList()).isEmpty();
         }
 
-        /// Binding is not one swap, so a crash between its steps is observable only as a hint nothing reports: the entry
-        /// records the new name, the binding was never written. Mutation: report the entry's recorded name as it stands.
+        /// A bind whose first step (the name binding) fails leaves the old state visible: nothing was recorded.
         @Test
         void aBindThatStopsBeforeTheBindingIsWritten_leavesTheOldStateVisible() {
             var refuseNames = new java.util.concurrent.atomic.AtomicBoolean();
