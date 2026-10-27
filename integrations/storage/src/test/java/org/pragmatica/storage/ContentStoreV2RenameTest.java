@@ -33,21 +33,31 @@ class ContentStoreV2RenameTest {
 
     private final V2Fixture fixture = V2Fixture.v2Fixture();
     private final ContentStoreV2 plain = fixture.store("alpha");
+    private final java.util.concurrent.atomic.AtomicReference<ObjectId> idOf = new java.util.concurrent.atomic.AtomicReference<>();
 
     /// A store over the fixture's instance whose retire of a name binding first waits for `beforeRetire`; a failed hook
     /// stands for a crash at that point: the retire never happens.
     private ContentStoreV2 storeWithRetireHook(Function<String, Promise<Unit>> beforeRetire) {
+        return storeWithHooks(beforeRetire, _ -> Promise.success(unit()));
+    }
+
+    /// As [#storeWithRetireHook], and a swap of a name binding (the bind step) first waits for `beforeBind`.
+    private ContentStoreV2 storeWithHooks(Function<String, Promise<Unit>> beforeRetire, Function<String, Promise<Unit>> beforeBind) {
         var hooked = (StorageInstance) Proxy.newProxyInstance(StorageInstance.class.getClassLoader(),
                                                               new Class<?>[]{StorageInstance.class},
-                                                              (_, method, args) -> invoke(beforeRetire, method, args));
+                                                              (_, method, args) -> invoke(beforeRetire, beforeBind, method, args));
 
         return ContentStoreV2.contentStoreV2(hooked, ContentStoreConfig.contentStoreConfig(V2Fixture.CHUNK, Compression.NONE, "alpha", 2, 2)).unwrap();
     }
 
-    private Object invoke(Function<String, Promise<Unit>> beforeRetire, java.lang.reflect.Method method, Object[] args) throws Throwable {
+    private Object invoke(Function<String, Promise<Unit>> beforeRetire, Function<String, Promise<Unit>> beforeBind, java.lang.reflect.Method method, Object[] args) throws Throwable {
         try {
             if (method.getName().equals("dropRef") && args[0] instanceof String ref && ref.startsWith("n/")) {
                 return beforeRetire.apply(ref).flatMap(_ -> fixture.storage.dropRef(ref));
+            }
+
+            if (method.getName().equals("swapRef") && args[0] instanceof String ref && ref.startsWith("n/")) {
+                return beforeBind.apply(ref).flatMap(_ -> fixture.storage.swapRef(ref, (byte[]) args[1]));
             }
 
             return method.invoke(fixture.storage, args);
@@ -141,5 +151,46 @@ class ContentStoreV2RenameTest {
 
         assertThat(order).containsExactly("retire", "returned");
         assertThat(found(store, OLD)).isEqualTo(none());
+    }
+
+    /// A crash between the steps, then a delete: no binding resolves to the deleted object and no credit is left holding it.
+    /// Mutation `deleteonlyname` (delete retires only the name the entry records) -> red.
+    @Test
+    void aCrashBetweenTheSteps_thenDelete_leavesNoBindingAndNoCredit() {
+        var crashed = storeWithRetireHook(_ -> Causes.cause("crash after the bind").promise());
+        var info = namedAs(crashed, OLD, payload(40, 44));
+        var id = info.ref().id();
+
+        assertThat(failureOf(crashed.bind(NEW, id, Precondition.nameFree()))).isNotNull();
+        plain.delete(id).await().unwrap();
+
+        assertThat(found(plain, OLD)).isEqualTo(none());
+        assertThat(found(plain, NEW)).isEqualTo(none());
+        assertThat(fixture.storage.resolveRef("n/alpha/old")).as("no binding left behind").isEqualTo(none());
+        assertThat(fixture.storage.resolveRef("n/alpha/new")).as("no binding left behind").isEqualTo(none());
+        assertThat(fixture.metadata.listAllLifecycles().stream().filter(lifecycle -> lifecycle.refCount() > 0).toList())
+            .as("credits balanced: nothing holds the deleted object").isEmpty();
+    }
+
+    /// A delete racing a bind, after the entry was read and before the name binding is written, leaves a binding whose entry
+    /// is gone. It reads as not found (not an error, not a stale object), and a later bind of the name succeeds: the dangling
+    /// binding is cleaned up lazily, by that bind's swap. Mutations `lookuptrusts` (a binding without an entry is an error)
+    /// and `deadholder` (the precondition counts a binding without an entry) -> red.
+    @Test
+    void aDeleteRacingABind_leavesABindingThatReadsAsNotFound_andALaterBindSucceeds() {
+        var racing = storeWithHooks(_ -> Promise.success(unit()), _ -> plain.delete(idOf.get()).map(_ -> unit()));
+        var doomed = namedAs(plain, OLD, payload(8, 45));
+        var survivor = uploaded(plain, payload(9, 46));
+
+        idOf.set(doomed.ref().id());
+
+        assertThat(failureOf(racing.bind(NEW, doomed.ref().id(), Precondition.nameFree()))).isInstanceOf(ContentStoreError.ObjectNotFound.class);
+
+        assertThat(fixture.storage.resolveRef("n/alpha/new")).as("the dangling binding is left until the next bind").isNotEqualTo(none());
+        assertThat(plain.lookup(NEW, none()).await().unwrap()).as("reads as not found").isEqualTo(none());
+
+        plain.bind(NEW, survivor.ref().id(), Precondition.nameFree()).await().unwrap();
+
+        assertThat(found(plain, NEW)).isEqualTo(Option.some(survivor.ref().id()));
     }
 }
