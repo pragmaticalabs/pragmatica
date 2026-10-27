@@ -575,8 +575,34 @@ final class QuicClusterServerInstance implements QuicClusterServer {
 
                 return;
             }
+            // Write-ahead (#2429): a first binding is answered only once the identity ledger holds it. The answer
+            // is asynchronous, so a stalled ledger writer parks this Hello and nothing else: the I/O loop keeps
+            // serving peers that are already bound.
+            bootTokens.admitDurably(hello.sender(),
+                                    hello.bootToken())
+                      .onSuccess(admission -> onEventLoop(ctx,
+                                                          () -> completeHello(ctx, hello, admission)));
+        }
 
-            var admission = bootTokens.admit(hello.sender(), hello.bootToken());
+        /// The answer of a conflict verdict arrives on the ledger's writer thread and is handed to the event loop. An answer that
+        /// is already known arrives on the event loop itself and runs in place, exactly when the synchronous check used to run:
+        /// the common path keeps its timing relative to the other I/O of the link.
+        private void onEventLoop(ChannelHandlerContext ctx, Runnable action) {
+            if (ctx.executor().inEventLoop()) {
+                action.run();
+            } else {
+                ctx.executor().execute(action);
+            }
+        }
+
+        private void completeHello(ChannelHandlerContext ctx,
+                                   NetworkMessage.Hello hello,
+                                   BootTokens.Admission admission) {
+            if (admission == BootTokens.Admission.UNAVAILABLE) {
+                dropHelloUnanswered(ctx, hello);
+
+                return;
+            }
 
             if (!admission.admitted()) {
                 log.warn("QUIC acceptor refused Hello from {} (token {}) by the boot-token gate: {} (refusals={})",
@@ -591,6 +617,15 @@ final class QuicClusterServerInstance implements QuicClusterServer {
 
             sendHelloResponse(ctx);
             registerPeerConnection(ctx, hello);
+        }
+
+        /// The registry cannot answer yet (ledger not loaded, not writable, or the node is wiped): close WITHOUT a
+        /// refusal. A [NetworkMessage.HelloRefused] would tell the dialer its identity is retired and make it exit;
+        /// this is not a verdict, and the dialer redials on its ordinary connect-failure path.
+        private void dropHelloUnanswered(ChannelHandlerContext ctx, NetworkMessage.Hello hello) {
+            log.warn("QUIC acceptor could not answer Hello from {}: the identity ledger is unavailable; closing so the peer redials",
+                     hello.sender());
+            ctx.channel().parent().close();
         }
 
         /// A Hello naming a different intended peer than this node was dialed at an address that now

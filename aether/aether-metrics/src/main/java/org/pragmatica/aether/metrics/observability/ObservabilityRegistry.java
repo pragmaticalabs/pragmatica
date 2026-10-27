@@ -142,6 +142,9 @@ public interface ObservabilityRegistry {
                                    metricsSupplier);
             registerTransportGauge("quic_write_failures_total", "QUIC write failures", metricsSupplier);
             registerTransportGauge("quic_backpressure_drops_total", "QUIC backpressure drops", metricsSupplier);
+            registerTransportGauge("identity_ledger_durable",
+                                   "#2429: 1 when this core's identity ledger (its record of retired NodeIds) was written successfully, 0 when it is lost, unwritable or absent",
+                                   metricsSupplier);
 
             return unitResult();
         }

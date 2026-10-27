@@ -49,6 +49,7 @@ import org.pragmatica.aether.node.AetherNode.QuicTransportCause;
 import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.aether.node.CoreAdmission;
 import org.pragmatica.aether.node.DhtReplicationSettlement;
+import org.pragmatica.aether.node.IdentityLedgerWiring;
 import org.pragmatica.aether.node.ObservedIncarnation;
 import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
@@ -459,6 +460,8 @@ public sealed interface MembershipAssembly {
         var communityDirectory = in.communityDirectory();
         var allEntries = in.allEntries();
         var swimHealthDetector = in.swimHealthDetector();
+
+        attachIdentityLedger(config, swimHealthDetector, operatorWarningSink);
         var presenceSampler = in.presenceSampler();
         var membershipFsm = in.membershipFsm();
         var routingCoreIds = in.routingCoreIds();
@@ -815,6 +818,18 @@ public sealed interface MembershipAssembly {
                                AtomicReference<LeaderReconciler> leaderReconcilerRef) {
         Option.option(quorumLossDetectorRef.get()).onPresent(QuorumLossDetector::reevaluate);
         Option.option(leaderReconcilerRef.get()).onPresent(LeaderReconciler::onTopologyUnhealthy);
+    }
+
+    /// #2429: the node's identity ledger is attached to the shared boot-token registry and loaded here, at assembly, before the
+    /// transport starts and admission can consult it. A worker holds no ledger (it keeps per-observer admission).
+    static Unit attachIdentityLedger(AetherNodeConfig config,
+                                     CoreSwimHealthDetector swimHealthDetector,
+                                     OperatorWarningSink operatorWarningSink) {
+        return configuredWorker(config)
+               ? Unit.unit()
+               : swimHealthDetector.bootTokens()
+                                   .map(tokens -> IdentityLedgerWiring.wire(config, tokens, operatorWarningSink))
+                                   .or(Unit.unit());
     }
 
     /// The quorum-loss detector's member count, DERIVED FROM CURRENT STATE each time the detector evaluates it

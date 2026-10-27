@@ -1,5 +1,6 @@
 # Measured wall seconds per Consensus test class (#2414). Source: CI build-and-test run 40193494341 (rc5 fe25a2796), surefire suite times summed per top-level class (@Nested included), rounded up.
 # Used only to balance shards; a class missing here still runs, at the default weight (the largest measured class).
+# BootTokensLedgerTest, DurableWriterAdapterTest, IdentityFactsTest, IdentityLedgerTest, ProtocolConfigIdentityLedgerTest (#2429): surefire class time 0.15-0.94 s in 3 runs on cloudbb-3 at c14c1858f3; 1 each.
 AcceptorVerdictTripwireTest 36
 AwaitingKvSyncTest 1
 BatchTest 1
@@ -142,3 +143,8 @@ TopologyObserverVoterQuorumTest 2
 V1554AmnesiaProbeTest 2
 V1796ProbeTest 1
 BootTokensTest 1
+BootTokensLedgerTest 1
+DurableWriterAdapterTest 1
+IdentityFactsTest 1
+IdentityLedgerTest 1
+ProtocolConfigIdentityLedgerTest 1
