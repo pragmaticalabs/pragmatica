@@ -109,7 +109,7 @@ final class LocalContentStore implements ContentStoreV2 {
                     .fold(() -> Promise.success(entry),
                           name -> holderOf(name).map(holder -> holder.filter(id::equals).isPresent()
                                                                ? entry
-                                                               : entry.named(none()).withVersion(entry.catalogVersion())));
+                                                               : entry.named(none(), entry.alsoBound()).withVersion(entry.catalogVersion())));
     }
 
     /// The object a name points at, resolved through that name's own binding: during a rename both the old and the new
@@ -117,7 +117,7 @@ final class LocalContentStore implements ContentStoreV2 {
     @Override
     public Promise<Option<ObjectInfo>> lookup(ObjectName name, Option<Long> minVersion) {
         return holderOf(name).flatMap(holder -> holder.fold(() -> Promise.success(Option.<ObjectInfo>none()),
-                                                            id -> readEntry(id).map(entry -> entry.map(found -> found.named(some(name))
+                                                            id -> readEntry(id).map(entry -> entry.map(found -> found.named(some(name), found.alsoBound())
                                                                                                                  .withVersion(found.catalogVersion())
                                                                                                                  .info(namespace.value(), id)))));
     }
@@ -140,6 +140,15 @@ final class LocalContentStore implements ContentStoreV2 {
                             blockId -> readBlock(blockId).flatMap(this::objectIdOf).map(Option::some));
     }
 
+    /// The object a name points at, if that object still exists: a binding whose entry is gone (a delete raced the bind that
+    /// wrote it) holds no name. Cleaned up lazily: the next bind of the name swaps it away.
+    private Promise<Option<ObjectId>> liveHolderOf(ObjectName name) {
+        return holderOf(name).flatMap(holder -> holder.fold(() -> Promise.success(Option.<ObjectId>none()),
+                                                            id -> readEntry(id).map(entry -> entry.isPresent()
+                                                                                             ? holder
+                                                                                             : Option.<ObjectId>none())));
+    }
+
     private Promise<ObjectId> objectIdOf(byte[] block) {
         return ContentEnvelope.payloadOf(ContentEnvelope.NAME, block)
                               .filter(payload -> payload.length == ObjectId.LENGTH)
@@ -151,7 +160,7 @@ final class LocalContentStore implements ContentStoreV2 {
     @Override
     public Promise<ObjectInfo> bind(ObjectName name, ObjectId id, Precondition precondition) {
         return readEntry(id).flatMap(entry -> entry.async(ContentStoreError.ObjectNotFound.objectNotFound(id.asString())))
-                            .flatMap(entry -> holderOf(name).flatMap(holder -> checked(precondition, name, holder).async()
+                            .flatMap(entry -> liveHolderOf(name).flatMap(holder -> checked(precondition, name, holder).async()
                                                                                                                   .flatMap(_ -> rebind(name,
                                                                                                                                       id,
                                                                                                                                       entry,
@@ -171,22 +180,36 @@ final class LocalContentStore implements ContentStoreV2 {
     }
 
     /// Local-mode rename is never unnamed; it may briefly carry both names. In this order:
-    /// 1. `n/<namespace>/<name>` is swapped to point at the object -- from here the new name finds it, and the name's
-    ///    previous object (if another) no longer does;
-    /// 2. the entry records the new name (a hint: [#stat] reports it only while the binding points back);
-    /// 3. the binding of the name the object had before, if any, is retired.
-    /// The call returns after step 3. A concurrent reader finds the object under the old name until step 3 and under the
-    /// new one from step 1. A crash after step 1 or 2 leaves both names resolving to the one object (the entry reports the
-    /// name last recorded); both bindings hold their own credit, so nothing is reclaimed. A later cluster catalog makes the
-    /// rename one atomic step. A crash does not retire the leftover binding: nothing in local mode does, and deleting the
-    /// object retires only the name its entry records.
+    /// 0. a second name left by an interrupted earlier rename, if any, is retired;
+    /// 1. the entry records the new name as `alsoBound` (the intent), so a delete, or a rename, after a crash knows both names;
+    /// 2. `n/<namespace>/<name>` is swapped to point at the object -- from here the new name finds it, and the name's previous
+    ///    object (if another) no longer does;
+    /// 3. the entry records the new name as its name and the old one as `alsoBound`;
+    /// 4. the binding of the name the object had before, if any, is retired;
+    /// 5. the entry stops recording a second name.
+    /// The call returns after the last step. A concurrent reader finds the object under the old name until step 4 and under
+    /// the new one from step 2. A crash after step 2 leaves both names resolving to the one object (the entry reports the
+    /// name last recorded); both bindings hold their own credit, so nothing is reclaimed, and [#delete] retires both. A
+    /// later cluster catalog makes the rename one atomic step.
     private Promise<ObjectInfo> rebind(ObjectName name, ObjectId id, ObjectEntry entry, Option<ObjectId> holder) {
-        var named = entry.named(some(name));
+        var former = entry.name().filter(current -> !current.equals(name));
+        var intent = entry.named(entry.name(), some(name));
+        var renamed = intent.named(some(name), former);
+        var settled = renamed.named(some(name), none());
 
-        return storage.swapRef(nameRef(name), ContentEnvelope.wrap(ContentEnvelope.NAME, id.bytes()))
-                      .flatMap(_ -> writeEntry(id, named))
-                      .flatMap(_ -> dropFormerName(name, id, entry))
-                      .map(_ -> named.info(namespace.value(), id));
+        return retireLeftover(name, id, entry).flatMap(_ -> writeEntry(id, intent))
+                                              .flatMap(_ -> storage.swapRef(nameRef(name), ContentEnvelope.wrap(ContentEnvelope.NAME, id.bytes())))
+                                              .flatMap(_ -> writeEntry(id, renamed))
+                                              .flatMap(_ -> dropFormerName(name, id, entry))
+                                              .flatMap(_ -> former.isEmpty()
+                                                            ? Promise.success(renamed.info(namespace.value(), id))
+                                                            : writeEntry(id, settled));
+    }
+
+    private Promise<Unit> retireLeftover(ObjectName name, ObjectId id, ObjectEntry entry) {
+        return entry.alsoBound()
+                    .filter(leftover -> !leftover.equals(name))
+                    .fold(() -> Promise.success(unit()), leftover -> dropNameIfBoundTo(leftover, id));
     }
 
     private Promise<Unit> dropFormerName(ObjectName name, ObjectId id, ObjectEntry entry) {
@@ -239,7 +262,9 @@ final class LocalContentStore implements ContentStoreV2 {
     }
 
     private Promise<Unit> dropName(ObjectId id, ObjectEntry entry) {
-        return entry.name().fold(() -> Promise.success(unit()), name -> dropNameIfBoundTo(name, id));
+        return entry.name()
+                    .fold(() -> Promise.success(unit()), name -> dropNameIfBoundTo(name, id))
+                    .flatMap(_ -> entry.alsoBound().fold(() -> Promise.success(unit()), other -> dropNameIfBoundTo(other, id)));
     }
 
     private Promise<Unit> releaseObject(BlockId manifestId, ContentManifest manifest) {
