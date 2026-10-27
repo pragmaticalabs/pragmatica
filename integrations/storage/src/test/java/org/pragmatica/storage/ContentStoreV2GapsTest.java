@@ -37,6 +37,10 @@ class ContentStoreV2GapsTest {
         return ObjectName.objectName(value).unwrap();
     }
 
+    private static org.pragmatica.lang.Cause causeOf(Result<?> result) {
+        return result.fold(cause -> cause, _ -> null);
+    }
+
     private final V2Fixture fixture = V2Fixture.v2Fixture();
     private final ContentStoreV2 store = fixture.store("alpha");
 
@@ -63,9 +67,9 @@ class ContentStoreV2GapsTest {
         id.bytes()[1] = 9;
 
         assertThat(ObjectId.objectId(text).isSuccess()).isTrue();
-        assertThat(failureOf(ObjectId.objectId(text.substring(1)))).hasMessageContaining("26 characters");
-        assertThat(failureOf(ObjectId.objectId(text + "a"))).hasMessageContaining("26 characters");
-        assertThat(failureOf(ObjectId.objectId("1" + text.substring(1)))).hasMessageContaining("unknown character");
+        assertThat(causeOf(ObjectId.objectId(text.substring(1))).message()).contains("26 characters");
+        assertThat(causeOf(ObjectId.objectId(text + "a")).message()).contains("26 characters");
+        assertThat(causeOf(ObjectId.objectId("1" + text.substring(1))).message()).contains("unknown character");
         assertThat(ObjectId.objectId("A" + text.substring(1)).isFailure()).isTrue();
         assertThat(ObjectId.objectId(lastDiffers).isFailure()).as("a spelling with stray low bits is not canonical").isTrue();
         assertThat(id.bytes()[0]).isEqualTo((byte) 1);
