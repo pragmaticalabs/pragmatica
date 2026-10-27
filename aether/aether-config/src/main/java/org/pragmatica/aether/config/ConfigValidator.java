@@ -93,6 +93,8 @@ public final class ConfigValidator {
                               config.timeouts().swim().suspectTimeout(),
                               errors);
         archiveRetentionErrors(config.slice(), errors);
+        uploadErrors(config.appHttp().upload(),
+                     errors);
         if (config.tlsEnabled()) {
             config.tls().onPresent(tls -> tlsErrors(tls, fileExists, errors));
         }
@@ -178,6 +180,34 @@ public final class ConfigValidator {
     /// `[slice] artifact_archive_retention` is the minimum age before a version may be archived (#1778). Zero or
     /// negative would let a version be archived the moment it is stored, and an unparseable value is carried here
     /// as a negative sentinel, so both are reported rather than defaulted.
+    /// `[app-http.upload]`: a zero or negative bound would admit no upload at all (a cap) or none ever (a timeout), or never
+    /// refuse one (a ceiling), so each is refused here rather than floored.
+    private static void uploadErrors(UploadConfig upload, List<String> errors) {
+        if (upload.maxSizeCeiling() < 1) {
+            errors.add("[app-http.upload] max_size_ceiling must be a positive size such as \"256MB\". Got: " + upload.maxSizeCeiling());
+        }
+
+        if (upload.maxConcurrent() < 1) {
+            errors.add("[app-http.upload] max_concurrent must be at least 1. Got: " + upload.maxConcurrent());
+        }
+
+        if (upload.maxConcurrentPerPrincipal() < 1) {
+            errors.add("[app-http.upload] max_concurrent_per_principal must be at least 1. Got: " + upload.maxConcurrentPerPrincipal());
+        }
+
+        if (upload.idleTimeout().millis() <= 0) {
+            errors.add("[app-http.upload] idle_timeout must be a positive duration such as \"30s\"");
+        }
+
+        if (upload.minBodyRate() < 1) {
+            errors.add("[app-http.upload] min_body_rate must be a positive size such as \"1KB\". Got: " + upload.minBodyRate());
+        }
+
+        if (upload.maxInFlightBytes() < 1) {
+            errors.add("[app-http.upload] max_in_flight_size must be a positive size such as \"512MB\". Got: " + upload.maxInFlightBytes());
+        }
+    }
+
     private static void archiveRetentionErrors(SliceConfig slice, List<String> errors) {
         if (slice.artifactArchiveRetention().millis() <= 0) {
             errors.add("slice.artifact_archive_retention must be a positive duration such as \"7d\" or \"36h\"");

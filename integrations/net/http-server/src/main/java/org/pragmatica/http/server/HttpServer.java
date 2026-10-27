@@ -42,6 +42,29 @@ public interface HttpServer {
         return NettyHttpServer.create(config, handler);
     }
 
+    /// Create and start an HTTP server that classifies every request on its head, before any body byte is read (see
+    /// [RequestClassifier]).
+    ///
+    /// @param config     server configuration
+    /// @param classifier decides, from the request head alone, whether to read the body (and under which bounds) or to
+    ///                   answer at once
+    /// @param handler    request handler
+    /// @return promise of the running server
+    static Promise<HttpServer> httpServer(HttpServerConfig config,
+                                          RequestClassifier classifier,
+                                          BiConsumer<HttpRequest, ResponseWriter> handler) {
+        return httpServer(config.withClassifier(classifier), handler);
+    }
+
+    /// [#httpServer(HttpServerConfig, RequestClassifier, BiConsumer)] on externally managed event loop groups.
+    static Promise<HttpServer> httpServer(HttpServerConfig config,
+                                          RequestClassifier classifier,
+                                          BiConsumer<HttpRequest, ResponseWriter> handler,
+                                          EventLoopGroup bossGroup,
+                                          EventLoopGroup workerGroup) {
+        return httpServer(config.withClassifier(classifier), handler, bossGroup, workerGroup);
+    }
+
     /// Create and start an HTTP server using externally managed event loop groups.
     ///
     /// @param config      server configuration
@@ -69,6 +92,25 @@ public interface HttpServer {
                                            QuicSslContext quicSslContext,
                                            BiConsumer<HttpRequest, ResponseWriter> handler) {
         return Http3Server.create(config, quicSslContext, handler).map(Http3ServerAdapter::new);
+    }
+
+    /// [#http3Server(HttpServerConfig, QuicSslContext, BiConsumer)] that classifies every request on its HEADERS frame,
+    /// before any body frame is read (see [RequestClassifier]).
+    static Promise<HttpServer> http3Server(HttpServerConfig config,
+                                           QuicSslContext quicSslContext,
+                                           RequestClassifier classifier,
+                                           BiConsumer<HttpRequest, ResponseWriter> handler) {
+        return http3Server(config.withClassifier(classifier), quicSslContext, handler);
+    }
+
+    /// [#http3Server(HttpServerConfig, QuicSslContext, RequestClassifier, BiConsumer)] on an externally managed event
+    /// loop group.
+    static Promise<HttpServer> http3Server(HttpServerConfig config,
+                                           QuicSslContext quicSslContext,
+                                           RequestClassifier classifier,
+                                           BiConsumer<HttpRequest, ResponseWriter> handler,
+                                           EventLoopGroup workerGroup) {
+        return http3Server(config.withClassifier(classifier), quicSslContext, handler, workerGroup);
     }
 
     /// Create and start an HTTP/3 server using an externally managed event loop group.

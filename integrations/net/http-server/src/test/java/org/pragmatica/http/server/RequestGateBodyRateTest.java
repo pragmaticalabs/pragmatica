@@ -30,12 +30,13 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 
-/// F6 on HTTP/1.1, in virtual time: the minimum-rate guard between the codec and the aggregator closes the connection
+/// F6 on HTTP/1.1, in virtual time: the gate between the codec and the aggregator closes the connection
 /// of a body trickling at 1 B/s (which the idle timeout never catches), and lets a 5 MiB upload at 50 KiB/s through
 /// whole, under the default limits — the same semantics `Http3RequestHandlerTest` pins for HTTP/3.
-class BodyRateGuardHandlerTest {
+class RequestGateBodyRateTest {
     private static EmbeddedChannel channel() {
-        var channel = new EmbeddedChannel(new BodyRateGuardHandler(BodyRateLimit.DEFAULT));
+        var channel = new EmbeddedChannel(new RequestGate(HttpServerConfig.httpServerConfig("test", 0)
+                                                                 .withMaxContentLength(Integer.MAX_VALUE)));
 
         channel.freezeTime();
         channel.writeInbound(new DefaultHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.POST, "/up"));
@@ -58,6 +59,7 @@ class BodyRateGuardHandlerTest {
         }
 
         assertThat(channel.isActive()).as("a 1 B/s body is far below 1 KiB/s").isFalse();
+        assertThat(channel.<Object>readOutbound()).as("the listener's general bound closes silently, it does not answer 408").isNull();
         channel.finishAndReleaseAll();
     }
 
