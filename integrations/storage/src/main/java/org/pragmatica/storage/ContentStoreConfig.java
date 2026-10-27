@@ -9,7 +9,19 @@ import org.pragmatica.lang.Result;
 /// ([StorageInstance#maxBlockBytes]). A block is its chunk plus framing: direct content carries the store's envelope
 /// ([ContentEnvelope]); a compressed block adds the original-size header and whatever the codec adds to data it cannot
 /// shrink. [#validatedAgainst] refuses, when the store is provisioned, a chunk size whose blocks would not fit.
-public record ContentStoreConfig(int chunkSizeBytes, Compression compression) {
+///
+/// The streaming store ([ContentStoreV2]) adds three settings, each with a default so an existing `[storage]` section binds
+/// unchanged: `namespace` is the scope the store is bound to (validated by [#validatedAgainst]), `writeWindow` the number of
+/// blocks a writer may have in flight beyond the one it is filling, `readAhead` the number of blocks a read stream fetches
+/// ahead of the one it is serving.
+public record ContentStoreConfig(int chunkSizeBytes,
+                                 Compression compression,
+                                 String namespace,
+                                 int writeWindow,
+                                 int readAhead) {
+    public static final String DEFAULT_NAMESPACE = "default";
+    public static final int DEFAULT_WRITE_WINDOW = 4;
+    public static final int DEFAULT_READ_AHEAD = 2;
     private static final int DEFAULT_CHUNK_SIZE = 4 * 1024 * 1024;  // 4 MB
     /// The envelope's marker and kind byte, on direct content.
     private static final long ENVELOPE_BYTES = ContentEnvelope.marker().length + 1;
@@ -21,11 +33,23 @@ public record ContentStoreConfig(int chunkSizeBytes, Compression compression) {
     private static final long CODEC_EXPANSION_DIVISOR = 255;
 
     public static ContentStoreConfig contentStoreConfig() {
-        return new ContentStoreConfig(DEFAULT_CHUNK_SIZE, Compression.NONE);
+        return contentStoreConfig(DEFAULT_CHUNK_SIZE, Compression.NONE);
     }
 
     public static ContentStoreConfig contentStoreConfig(int chunkSizeBytes, Compression compression) {
-        return new ContentStoreConfig(chunkSizeBytes, compression);
+        return new ContentStoreConfig(chunkSizeBytes,
+                                      compression,
+                                      DEFAULT_NAMESPACE,
+                                      DEFAULT_WRITE_WINDOW,
+                                      DEFAULT_READ_AHEAD);
+    }
+
+    public static ContentStoreConfig contentStoreConfig(int chunkSizeBytes,
+                                                        Compression compression,
+                                                        String namespace,
+                                                        int writeWindow,
+                                                        int readAhead) {
+        return new ContentStoreConfig(chunkSizeBytes, compression, namespace, writeWindow, readAhead);
     }
 
     /// The largest block this configuration can hand to the instance: a full chunk, framed.
@@ -39,7 +63,17 @@ public record ContentStoreConfig(int chunkSizeBytes, Compression compression) {
     public Result<ContentStoreConfig> validatedAgainst(int maxBlockBytes) {
         return chunkSizeBytes < 1
                ? ContentStoreError.ChunkSizeNotPositive.chunkSizeNotPositive(chunkSizeBytes, maxBlockBytes).result()
-               : validatedAgainstBlockLimit(maxBlockBytes);
+               : validatedAgainstBlockLimit(maxBlockBytes).flatMap(ContentStoreConfig::validatedStreamingSettings);
+    }
+
+    /// The namespace must be a valid [Namespace]; the window must allow one block in flight and the read-ahead may be zero.
+    private Result<ContentStoreConfig> validatedStreamingSettings() {
+        return Namespace.namespace(namespace)
+                        .flatMap(_ -> writeWindow < 1
+                                      ? ContentStoreError.InvalidConfig.invalidConfig("writeWindow", "must be at least 1").result()
+                                      : readAhead < 0
+                                        ? ContentStoreError.InvalidConfig.invalidConfig("readAhead", "must not be negative").result()
+                                        : Result.success(this));
     }
 
     private Result<ContentStoreConfig> validatedAgainstBlockLimit(int maxBlockBytes) {
