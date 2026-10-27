@@ -142,10 +142,10 @@ class ContentStoreConfigBlockLimitTest {
     }
 
     @Test
-    void uncompressedChunkOfTheCapMinusTheEnvelope_storesDirectAndChunkedContent_withoutExceedingTheCap() {
+    void uncompressedChunkOfTheCapMinusTheEnvelope_storesSingleAndMultiChunkContent_withoutExceedingTheCap() {
         var instance = instanceWithCap(CAP);
         var chunk = CAP - ENVELOPE;
-        var store = ContentStore.contentStore(instance,
+        var store = NamedContent.namedContent(instance,
                                               ContentStoreConfig.contentStoreConfig(chunk, Compression.NONE)
                                                                 .validatedAgainst(CAP)
                                                                 .unwrap());
@@ -163,7 +163,7 @@ class ContentStoreConfigBlockLimitTest {
     void compressedChunkAtTheLargestFittingSize_storesIncompressibleContent_withoutExceedingTheCap() {
         for (var compression : List.of(Compression.LZ4, Compression.ZSTD)) {
             var chunk = largestFittingChunk(compression);
-            var store = ContentStore.contentStore(instanceWithCap(CAP),
+            var store = NamedContent.namedContent(instanceWithCap(CAP),
                                                   ContentStoreConfig.contentStoreConfig(chunk, compression)
                                                                     .validatedAgainst(CAP)
                                                                     .unwrap());

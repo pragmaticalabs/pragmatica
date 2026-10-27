@@ -26,7 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
 
-/// #981 -- [DefaultContentStore] deleted by block id, around the reference counts: overwriting a
+/// #981 -- the content store deleted by block id, around the reference counts: overwriting a
 /// chunked name released its manifest but never its chunks (each chunk holds only [StorageInstance#put]'s
 /// credit and no name, so nothing else ever decremented it -- leaked forever), and `delete` called
 /// [StorageInstance#delete], which removes the block from every tier unconditionally -- so deleting one
@@ -43,12 +43,19 @@ class ContentStoreDeleteRefcountTest {
     private static final String NAME = "doc.bin";
     private static final String OTHER_NAME = "copy-of-doc.bin";
     private static final byte[] SMALL = "content-store-refcount-small".getBytes(StandardCharsets.UTF_8);
+    /// The entry and the name binding of an object: the two blocks a delete or an overwrite of it leaves for the collector
+    /// besides its manifest and chunks.
+    private static final int BOOKKEEPING = 2;
+    /// Naming an object rewrites its entry twice (the name is recorded, then confirmed), so every bind leaves the two
+    /// superseded versions of the entry for the collector. They are not the property under test: a test that counts what
+    /// one step collects first collects what the earlier binds left.
+    private static final int BIND_RESIDUE = 2;
 
     private MemoryTier memoryTier;
     private DeleteObservingTier tier;
     private SeamMetadataStore metadataStore;
     private GatedStorage storage;
-    private ContentStore store;
+    private NamedContent store;
     private StorageGarbageCollector gc;
 
     @BeforeEach
@@ -65,7 +72,7 @@ class ContentStoreDeleteRefcountTest {
         var instance = StorageInstance.storageInstance("content-delete-refcount", List.of(tier), metadataStore);
 
         storage = new GatedStorage(instance);
-        store = ContentStore.contentStore(storage, ContentStoreConfig.contentStoreConfig(CHUNK_SIZE, Compression.NONE));
+        store = NamedContent.namedContent(storage, ContentStoreConfig.contentStoreConfig(CHUNK_SIZE, Compression.NONE));
         // Grace 0 is floored to 1ms by GarbageCollectorConfig; the sleep before each cycle is what lets
         // collection proceed (see ContentStoreReclamationTest). The collector runs on the real instance:
         // the gate is for the content store's calls only.
@@ -104,6 +111,11 @@ class ContentStoreDeleteRefcountTest {
     /// A missing lifecycle record reads as -1 rather than throwing: on the unfixed base, `delete`
     /// removes the record outright, and a locator read that throws would abort the test before the
     /// consequence (`get` through the surviving name) is ever asserted.
+    /// The manifest block of the object `name` is bound to.
+    private BlockId manifestOf(String name) {
+        return store.store().lookup(ObjectName.objectName(name).unwrap(), Option.none()).await().unwrap().unwrap().ref().manifest();
+    }
+
     private int refCountOf(BlockId id) {
         return metadataStore.getLifecycle(id)
                             .map(BlockLifecycle::refCount)
@@ -123,6 +135,12 @@ class ContentStoreDeleteRefcountTest {
                               .stream()
                               .map(hex -> BlockId.fromHex(hex).unwrap())
                               .toList();
+    }
+
+    /// Collects what the setup left behind (the superseded entry versions of its binds) so the step under test is counted
+    /// alone.
+    private void settle() {
+        assertThat(collectAfterGrace(gc)).as("locator: the setup left only superseded entry versions to collect").isGreaterThanOrEqualTo(0);
     }
 
     /// Lets the (1ms, floored) grace period elapse before the cycle. A deadline spin rather than
@@ -160,11 +178,12 @@ class ContentStoreDeleteRefcountTest {
             var firstManifest = putContent(NAME, first);
             var firstChunks = chunkIdsOf(firstManifest);
 
+            settle();
             putContent(NAME, second);
             var firstChunkRefCountsAfterOverwrite = refCountsOf(firstChunks);
 
-            assertThat(collectAfterGrace(gc)).as("the superseded manifest AND every one of its chunks must be collected")
-                      .isEqualTo(firstChunks.size() + 1);
+            assertThat(collectAfterGrace(gc)).as("the superseded object: every chunk, the manifest, the entry and the name binding, and the second bind's residue")
+                      .isEqualTo(firstChunks.size() + 1 + BOOKKEEPING + BIND_RESIDUE);
             firstChunks.forEach(ContentStoreDeleteRefcountTest.this::assertGone);
             assertGone(firstManifest);
             assertReadable(NAME, second);
@@ -181,9 +200,10 @@ class ContentStoreDeleteRefcountTest {
             var firstManifest = putContent(NAME, first);
             var firstChunks = chunkIdsOf(firstManifest);
 
+            settle();
             putContent(NAME, SMALL);
-            assertThat(collectAfterGrace(gc)).as("the superseded manifest AND every one of its chunks must be collected")
-                      .isEqualTo(firstChunks.size() + 1);
+            assertThat(collectAfterGrace(gc)).as("the superseded object: every chunk, the manifest, the entry and the name binding, and the second bind's residue")
+                      .isEqualTo(firstChunks.size() + 1 + BOOKKEEPING + BIND_RESIDUE);
             firstChunks.forEach(ContentStoreDeleteRefcountTest.this::assertGone);
             assertReadable(NAME, SMALL);
             assertThat(firstChunks).as("locator: the fixture must genuinely chunk, or this proves nothing").hasSize(4);
@@ -200,10 +220,12 @@ class ContentStoreDeleteRefcountTest {
             var manifest = putContent(NAME, content);
             var chunks = chunkIdsOf(manifest);
 
+            settle();
             putContent(NAME, content);
             var chunkRefCounts = refCountsOf(chunks);
 
-            assertThat(collectAfterGrace(gc)).as("nothing here is orphaned -- the document is still named").isZero();
+            assertThat(collectAfterGrace(gc)).as("only the first object's entry and name binding and the second bind's residue: every chunk and the manifest are still held")
+                      .isEqualTo(BOOKKEEPING + BIND_RESIDUE);
             assertReadable(NAME, content);
             assertThat(chunkRefCounts).as("locator: one name, one credit per chunk").containsOnly(1);
         }
@@ -229,7 +251,8 @@ class ContentStoreDeleteRefcountTest {
 
             assertThat(secondPut.isFailure()).as("the fixture must make the overwrite fail, or this proves nothing")
                       .isTrue();
-            assertThat(collectAfterGrace(gc)).as("a failed overwrite must orphan nothing").isZero();
+            assertThat(collectAfterGrace(gc)).as("a failed overwrite must orphan nothing beyond the superseded entry versions the first bind left")
+                      .isEqualTo(BIND_RESIDUE);
             assertReadable(NAME, first);
             assertThat(usedByFirst + CHUNK_SIZE).as("locator: the tier must refuse the second document's first chunk")
                       .isGreaterThan(capacity);
@@ -263,8 +286,8 @@ class ContentStoreDeleteRefcountTest {
             var failed = store.put(OTHER_NAME, second).await();
 
             assertThat(failed.isFailure()).as("the fixture must refuse a LATER chunk, or this proves nothing").isTrue();
-            assertThat(collectAfterGrace(gc)).as("the one chunk the failed put stored must be collectable, not leaked")
-                      .isEqualTo(1);
+            assertThat(collectAfterGrace(gc)).as("the one chunk the failed put stored must be collectable, not leaked, beside the superseded entry versions the first bind left")
+                      .isEqualTo(1 + BIND_RESIDUE);
             assertReadable(NAME, first);
             assertThat(refCountsOf(firstChunks)).as("locator: the first document's chunks are untouched").containsOnly(1);
         }
@@ -289,19 +312,19 @@ class ContentStoreDeleteRefcountTest {
 
             deleteContent(NAME);
 
-            assertThat(collectAfterGrace(gc)).as("deleting the only document must free all four of its chunks and the manifest, plus the fresh chunk the failed put stored")
-                      .isEqualTo(6);
+            assertThat(collectAfterGrace(gc)).as("deleting the only document must free all four of its chunks, the manifest, the entry and the name binding, plus the fresh chunk the failed put stored and the first bind's residue")
+                      .isEqualTo(firstChunks.size() + 1 + BOOKKEEPING + 1 + BIND_RESIDUE);
         }
 
         @Test
-        void put_whoseManifestSwapFails_releasesEveryChunkItStored() {
+        void put_whoseEntrySwapFails_releasesEveryBlockItStored() {
             var content = generateContent(CHUNK_SIZE * 3, 2);
 
             storage.failNextSwapRef();
             var failed = store.put(NAME, content).await();
 
             assertThat(failed.isFailure()).as("the fixture must fail the manifest swap").isTrue();
-            assertThat(collectAfterGrace(gc)).as("all three chunks of the failed put must be collectable").isEqualTo(3);
+            assertThat(collectAfterGrace(gc)).as("the three chunks and the manifest of the failed put must be collectable").isEqualTo(4);
         }
     }
 
@@ -316,13 +339,16 @@ class ContentStoreDeleteRefcountTest {
             var sameId = putContent(OTHER_NAME, SMALL);
             var refCountWhileShared = refCountOf(id);
 
+            settle();
             deleteContent(NAME);
             var refCountAfterFirstDelete = refCountOf(id);
 
             assertReadable(OTHER_NAME, SMALL);
-            assertThat(collectAfterGrace(gc)).as("a block another name holds must not be collected").isZero();
+            assertThat(collectAfterGrace(gc)).as("only the deleted object's entry and name binding: the chunk and manifest another name holds must not be collected")
+                      .isEqualTo(BOOKKEEPING);
             deleteContent(OTHER_NAME);
-            assertThat(collectAfterGrace(gc)).as("the last name's release must make the block collectible").isEqualTo(1);
+            assertThat(collectAfterGrace(gc)).as("the last name's release must make the chunk, the manifest, the entry and the name binding collectible")
+                      .isEqualTo(2 + BOOKKEEPING);
             assertGone(id);
             assertThat(sameId).as("locator: both names must deduplicate to one block, or this proves nothing")
                       .isEqualTo(id);
@@ -341,14 +367,16 @@ class ContentStoreDeleteRefcountTest {
             var chunks = chunkIdsOf(manifest);
             var chunkRefCountsWhileShared = refCountsOf(chunks);
 
+            settle();
             deleteContent(NAME);
             var chunkRefCountsAfterFirstDelete = refCountsOf(chunks);
 
             assertReadable(OTHER_NAME, content);
-            assertThat(collectAfterGrace(gc)).as("the manifest and chunks another name holds must not be collected").isZero();
+            assertThat(collectAfterGrace(gc)).as("only the deleted object's entry and name binding: the manifest and chunks another name holds must not be collected")
+                      .isEqualTo(BOOKKEEPING);
             deleteContent(OTHER_NAME);
-            assertThat(collectAfterGrace(gc)).as("the last name's release must make its manifest and every chunk collectible")
-                      .isEqualTo(chunks.size() + 1);
+            assertThat(collectAfterGrace(gc)).as("the last name's release must make its manifest, every chunk, the entry and the name binding collectible")
+                      .isEqualTo(chunks.size() + 1 + BOOKKEEPING);
             chunks.forEach(ContentStoreDeleteRefcountTest.this::assertGone);
             assertGone(otherManifest);
             assertThat(chunks).as("locator: the fixture must genuinely chunk, or this proves nothing").hasSize(4);
@@ -371,11 +399,12 @@ class ContentStoreDeleteRefcountTest {
             var manifest = putContent(NAME, content);
             var chunks = chunkIdsOf(manifest);
 
+            settle();
             deleteContent(NAME);
             var existsAfterDelete = store.exists(NAME).await().unwrap();
 
-            assertThat(collectAfterGrace(gc)).as("the manifest and every chunk must be collected by the collector, not by delete")
-                      .isEqualTo(chunks.size() + 1);
+            assertThat(collectAfterGrace(gc)).as("the manifest, every chunk, the entry and the name binding must be collected by the collector, not by delete")
+                      .isEqualTo(chunks.size() + 1 + BOOKKEEPING);
             chunks.forEach(ContentStoreDeleteRefcountTest.this::assertGone);
             assertGone(manifest);
             assertThat(chunks).as("locator: the fixture must genuinely chunk, or this proves nothing").hasSize(4);
@@ -433,6 +462,7 @@ class ContentStoreDeleteRefcountTest {
             var chunksX = chunkIdsOf(putContent(NAME, x));
             var sharedBefore = refCountsOf(chunksX);
 
+            settle();
             storage.holdNextPut();
             var put1 = store.put(NAME, y);
             var put1Parked = !put1.isResolved();
@@ -448,8 +478,8 @@ class ContentStoreDeleteRefcountTest {
 
             assertReadable(OTHER_NAME, x);
             assertReadable(NAME, y);
-            assertThat(collected).as("Z's manifest and chunks: the one displaced document nobody else holds; X's manifest stays with B")
-                      .isEqualTo(chunksZ.size() + 1);
+            assertThat(collected).as("Z's chunks and manifest, Z's entry and name binding, the entry and name binding of the X object under the name, and the residue of the two binds; X's chunks and manifest stay with B")
+                      .isEqualTo(chunksZ.size() + 1 + 2 * BOOKKEEPING + 2 * BIND_RESIDUE);
             assertThat(put1Parked).as("locator: put1 must be parked at its first chunk write").isTrue();
             assertThat(put2.isSuccess()).as("locator: put2 must complete while put1 is parked").isTrue();
             assertThat(put1Result.isSuccess()).as("locator: put1 must complete once released").isTrue();
@@ -472,6 +502,7 @@ class ContentStoreDeleteRefcountTest {
             putContent(OTHER_NAME, content);
             var chunks = chunkIdsOf(putContent(NAME, content));
 
+            settle();
             storage.holdNextDropRef();
             var delete1 = store.delete(NAME);
             var delete1Parked = !delete1.isResolved();
@@ -484,7 +515,8 @@ class ContentStoreDeleteRefcountTest {
             var collected = collectAfterGrace(gc);
 
             assertReadable(OTHER_NAME, content);
-            assertThat(collected).as("the manifest is shared with the third name, so nothing is collectible").isZero();
+            assertThat(collected).as("only the entry and name binding of the deleted object: the manifest and chunks are shared with the third name")
+                                 .isEqualTo(BOOKKEEPING);
             assertThat(delete1Parked).as("locator: delete1 must be parked at its ref drop").isTrue();
             assertThat(delete2.isSuccess()).as("locator: delete2 must complete while delete1 is parked").isTrue();
             assertThat(delete1Result.isSuccess()).as("locator: delete1 must complete once released").isTrue();
@@ -498,7 +530,7 @@ class ContentStoreDeleteRefcountTest {
         /// `replaceRef`), so an implementation that pre-reads reports the stale id, releases its chunks a
         /// second time, and the third name loses them. Red under exactly that mutation.
         @Test
-        void put_competingOverwriteInsideTheSwap_releasesWhatTheSwapDisplaced_notAPreRead() {
+        void put_competingOverwriteInsideTheNameSwap_releasesThePreviousObjectOnce_notTwice() {
             var x = generateContent(CHUNK_SIZE * 3 + 15, 1);
             var y = generateContent(CHUNK_SIZE * 3 + 15, 2);
             var z = generateContent(CHUNK_SIZE * 3 + 15, 3);
@@ -506,7 +538,8 @@ class ContentStoreDeleteRefcountTest {
             putContent(OTHER_NAME, x);
             var chunksX = chunkIdsOf(putContent(NAME, x));
 
-            metadataStore.beforeNextReplaceRef(() -> putContent(NAME, z));
+            settle();
+            metadataStore.beforeNextReplaceRef("n/", () -> putContent(NAME, z));
             var manifestY = putContent(NAME, y);
             var xAfterBoth = refCountsOf(chunksX);
             var collected = collectAfterGrace(gc);
@@ -517,9 +550,10 @@ class ContentStoreDeleteRefcountTest {
                       .isTrue();
             assertThat(xAfterBoth).as("locator: X's chunks were released once, by the overwrite that displaced X")
                       .containsOnly(1);
-            assertThat(collected).as("locator: Z's manifest with its chunks; X's manifest stays with the third name")
-                      .isEqualTo(chunksX.size() + 1);
-            assertThat(storage.resolveRef(ContentEnvelope.trustedRef(NAME))).as("locator: the name ends at Y").isEqualTo(some(manifestY));
+            assertThat(collected).as("the entry and name binding of the X object under the name, the name binding Y's bind displaced from Z, and the residue of the two binds; "
+                                     + "X's chunks stay with the third name and Z, unnamed but alive, keeps its own")
+                      .isEqualTo(BOOKKEEPING + 1 + 2 * BIND_RESIDUE);
+            assertThat(manifestY).as("locator: the name ends at Y").isEqualTo(manifestOf(NAME));
         }
 
         /// Same for `dropRef`: the id must come from `MetadataStore.removeRef` itself. The competing delete
@@ -532,6 +566,7 @@ class ContentStoreDeleteRefcountTest {
             putContent(OTHER_NAME, content);
             var chunks = chunkIdsOf(putContent(NAME, content));
 
+            settle();
             metadataStore.beforeNextRemoveRef(() -> deleteContent(NAME));
             deleteContent(NAME);
             var afterBoth = refCountsOf(chunks);
@@ -542,7 +577,8 @@ class ContentStoreDeleteRefcountTest {
                       .isTrue();
             assertThat(afterBoth).as("locator: released once, by the delete whose removal took the name")
                       .containsOnly(1);
-            assertThat(collected).as("locator: the manifest is shared with the third name, so nothing is collectible").isZero();
+            assertThat(collected).as("locator: only the entry and name binding of the deleted object; the manifest is shared with the third name")
+                                 .isEqualTo(BOOKKEEPING);
         }
     }
 
@@ -553,13 +589,15 @@ class ContentStoreDeleteRefcountTest {
         private final AtomicReference<Runnable> beforeReplaceRef = new AtomicReference<>();
         private final AtomicReference<Runnable> beforeRemoveRef = new AtomicReference<>();
         private final AtomicBoolean replaceRefHookFired = new AtomicBoolean();
+        private volatile String replaceRefPrefix = "";
         private final AtomicBoolean removeRefHookFired = new AtomicBoolean();
 
         SeamMetadataStore(MetadataStore delegate) {
             this.delegate = delegate;
         }
 
-        void beforeNextReplaceRef(Runnable hook) {
+        void beforeNextReplaceRef(String refPrefix, Runnable hook) {
+            replaceRefPrefix = refPrefix;
             beforeReplaceRef.set(hook);
         }
 
@@ -586,7 +624,9 @@ class ContentStoreDeleteRefcountTest {
 
         @Override
         public Option<BlockId> replaceRef(String refName, BlockId blockId) {
-            fireOnce(beforeReplaceRef, replaceRefHookFired);
+            if (refName.startsWith(replaceRefPrefix)) {
+                fireOnce(beforeReplaceRef, replaceRefHookFired);
+            }
 
             return delegate.replaceRef(refName, blockId);
         }
