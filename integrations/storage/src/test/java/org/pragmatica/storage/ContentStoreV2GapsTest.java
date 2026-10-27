@@ -19,6 +19,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.Option.none;
@@ -32,6 +33,7 @@ import static org.pragmatica.storage.V2Fixture.uploaded;
 /// Properties of the v2 store that the larger tests leave to chance: the bounds of the value types, the manifest checks, the
 /// ordering and paging rules of `list`, the version a read reports, what a crash in the middle of a bind leaves behind, the
 /// window and read-ahead bounds, and what a failed writer does on its own.
+@Timeout(value = 15, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
 class ContentStoreV2GapsTest {
     private static ObjectName name(String value) {
         return ObjectName.objectName(value).unwrap();

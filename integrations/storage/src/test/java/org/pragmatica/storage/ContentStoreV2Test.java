@@ -9,6 +9,7 @@ import org.pragmatica.lang.Option;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.Option.none;
@@ -24,6 +25,7 @@ import static org.pragmatica.storage.V2Fixture.upload;
 /// The v2 content store in local mode: what an object is, what a namespace confines, what a range returns. The credits a
 /// writer takes and gives back are pinned in [ContentStoreV2CreditsTest]; the above-heap stream in
 /// [ContentStoreV2LargeObjectTest].
+@Timeout(value = 15, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
 class ContentStoreV2Test {
     private V2Fixture fixture;
     private ContentStoreV2 store;

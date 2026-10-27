@@ -13,6 +13,7 @@ import org.pragmatica.lang.utils.Causes;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.Option.none;
@@ -31,6 +32,7 @@ import static org.pragmatica.storage.V2Fixture.uploaded;
 /// returns exactly the credits it took), #981 (delete and supersede release the blocks, once), #812 (one write-and-ref call
 /// per named block). Observed through the lifecycle records and through a real collector cycle, never through a counter
 /// kept by the code under test. Chunk ids are computed here from the payload (no compression: a block is its chunk).
+@Timeout(value = 15, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
 class ContentStoreV2CreditsTest {
     private static final byte[] DATA = payload(CHUNK * 6 + 5, 21);
 

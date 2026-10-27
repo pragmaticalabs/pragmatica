@@ -2,9 +2,11 @@ package org.pragmatica.storage;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -17,6 +19,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// It needs about 5 GiB of free disk; `-Dstorage.largeObject.dir=<dir>` places that data somewhere other than the JVM's
 /// temporary directory.
 @Tag("Slow")
+@Timeout(value = 30, unit = TimeUnit.MINUTES, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
 class ContentStoreV2FiveGiBTest {
     private static final long SIZE = 5L * 1024 * 1024 * 1024;
     private static final long BLOCK = 4L * 1024 * 1024;

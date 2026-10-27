@@ -1,8 +1,10 @@
 package org.pragmatica.storage;
 
 import java.nio.file.Path;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -19,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 ///
 /// Mutation: make `open` reassemble the object into one `byte[]`. The child dies with an `OutOfMemoryError` and this test
 /// fails on the exit code.
+@Timeout(value = 3, unit = TimeUnit.MINUTES, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
 class ContentStoreV2LargeObjectTest {
     private static final long SIZE = 384L * 1024 * 1024;
     private static final long BLOCK = 4L * 1024 * 1024;

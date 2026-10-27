@@ -12,6 +12,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.Option.none;
@@ -27,6 +28,7 @@ import static org.pragmatica.storage.V2Fixture.uploaded;
 /// Local-mode rename is never unnamed and may briefly carry both names: the new name is bound first, the old one retired
 /// after, and the call returns after both. The window between the steps is driven by a hook on the instance's `dropRef` of
 /// a name binding (the retire step), never by timing.
+@Timeout(value = 15, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
 class ContentStoreV2RenameTest {
     private static final ObjectName OLD = ObjectName.objectName("old").unwrap();
     private static final ObjectName NEW = ObjectName.objectName("new").unwrap();
