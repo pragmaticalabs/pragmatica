@@ -1,15 +1,20 @@
 package org.pragmatica.swim;
 
 import java.net.InetSocketAddress;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.BootTokens;
+import org.pragmatica.consensus.net.IdentityFacts;
+import org.pragmatica.consensus.net.IdentityLedger;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.swim.SwimAnnounceClusterGateTest.RecordingListener;
@@ -175,6 +180,31 @@ class SwimBootTokenTest {
         assertThat(protocol.bootTokenRefusals()).isZero();
     }
 
+    /// #2429: a registry that has not loaded its identity ledger answers UNAVAILABLE. That is neither admission nor refusal:
+    /// the evidence is dropped, nothing is retired or counted, and the next round is admitted once the ledger is loaded.
+    @Test
+    void unavailableRegistry_dropsTheEvidence_withoutARefusal_andAdmitsOnceTheLedgerIsLoaded(@TempDir Path directory) {
+        var tokens = BootTokens.bootTokens(0x5E1FL);
+
+        tokens.attachLedger(IdentityLedger.identityLedger(directory.resolve("ledger"), IdentityLedger.DurableWriter.fileOps()));
+        protocol.setBootTokens(tokens);
+
+        announce(5, TOKEN);
+
+        assertThat(protocol.members()).as("not admitted while the registry cannot answer").doesNotContainKey(NODE_A);
+        assertThat(protocol.bootTokenRefusals()).as("and not a refusal").isZero();
+        assertThat(tokens.isRetired(NODE_A)).isFalse();
+        assertThat(targetTransport.sentMessages.stream()
+                                               .filter(sent -> sent.message() instanceof SwimMessage.IdentityRefused))
+            .as("the announcer is not told its identity is retired: it is not")
+            .isEmpty();
+
+        tokens.preload(IdentityFacts.identityFacts(), false);
+        announce(6, TOKEN);
+
+        assertThat(protocol.members()).as("control: the same evidence is admitted once the registry can answer").containsKey(NODE_A);
+    }
+
     @Test
     void selfSuspicion_aboutAnotherProcess_isNotRefuted() {
         protocol.announceJoin(NodeInfo.nodeInfo(SELF_ID, new NodeAddress("127.0.0.1", 9000)), "", 1, TOKEN, List.of());
@@ -276,6 +306,75 @@ class SwimBootTokenTest {
     }
 
     /// A refused ANNOUNCE is answered with an explicit IdentityRefused to the announcer's address.
+    /// #2429 write-ahead: with the ledger's directory force stalled, the conflicting ANNOUNCE retires the NodeId in memory at
+    /// once, but the announcer is told only after the retirement is on disk.
+    @Test
+    void announceConflict_withAStalledLedgerWrite_answersIdentityRefusedOnlyAfterTheRetirementIsDurable(@TempDir Path directory) throws Exception {
+        var gate = new java.util.concurrent.atomic.AtomicReference<>(new java.util.concurrent.CountDownLatch(0));
+        var file = directory.resolve("l").resolve("ledger");
+        var tokens = BootTokens.bootTokens(0x5E1FL);
+        var ledger = IdentityLedger.identityLedger(file, stalledDirectoryForce(gate));
+
+        tokens.attachLedger(ledger);
+        tokens.preload(ledger.open(true).facts(), false);
+        gate.set(new java.util.concurrent.CountDownLatch(1));
+        protocol.setBootTokens(tokens);
+
+        announce(5, TOKEN);
+        announce(6, OTHER_TOKEN);
+
+        assertThat(tokens.isRetired(NODE_A)).as("control: the conflict retired the NodeId in memory").isTrue();
+        assertThat(identityRefusals()).as("no refusal while the write is stalled").isZero();
+        assertThat(Files.readString(file)).as("control: the file does not hold the retirement yet").doesNotContain("node-a");
+
+        gate.get().countDown();
+        awaitRefusals(1);
+
+        assertThat(Files.readString(file)).as("the refusal went out after the retirement was durable").contains("node-a");
+    }
+
+    private long identityRefusals() {
+        return targetTransport.sentMessages.stream().filter(sent -> sent.message() instanceof SwimMessage.IdentityRefused).count();
+    }
+
+    private void awaitRefusals(long expected) throws InterruptedException {
+        for (var attempt = 0; attempt < 100 && identityRefusals() < expected; attempt++) {
+            Thread.sleep(50);
+        }
+        assertThat(identityRefusals()).isEqualTo(expected);
+    }
+
+    private static IdentityLedger.DurableWriter stalledDirectoryForce(java.util.concurrent.atomic.AtomicReference<java.util.concurrent.CountDownLatch> gate) {
+        var real = IdentityLedger.DurableWriter.fileOps();
+
+        return new IdentityLedger.DurableWriter() {
+            @Override
+            public org.pragmatica.lang.Result<org.pragmatica.lang.Unit> writeForced(Path file, byte[] content) {
+                return real.writeForced(file, content);
+            }
+
+            @Override
+            public org.pragmatica.lang.Result<org.pragmatica.lang.Unit> moveAtomic(Path source, Path target) {
+                return real.moveAtomic(source, target);
+            }
+
+            @Override
+            public org.pragmatica.lang.Result<org.pragmatica.lang.Unit> forceDirectory(Path directory) {
+                await(gate.get());
+
+                return real.forceDirectory(directory);
+            }
+        };
+    }
+
+    private static void await(java.util.concurrent.CountDownLatch gate) {
+        try {
+            gate.await(30, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     @Test
     void refusedAnnounce_isAnsweredWithIdentityRefused() {
         announce(5, TOKEN);

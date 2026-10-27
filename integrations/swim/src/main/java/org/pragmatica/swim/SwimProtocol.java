@@ -2530,11 +2530,25 @@ public final class SwimProtocol implements SwimMessageHandler {
             case ADMITTED -> true;
             case CONFLICT -> refuseConflict(peer, token);
             case RETIRED -> refuseRetired(peer, token);
+            // The registry cannot answer yet (#2429: ledger not loaded, not writable, node wiped): neither accepted nor a
+            // refusal. The evidence is dropped and arrives again with the next probe or gossip round.
+            case UNAVAILABLE -> false;
         };
     }
 
     /// Tell the refused announcer explicitly, so it exits instead of announcing forever.
     private void refuseAnnounce(InetSocketAddress sender, NodeId refused) {
+        // A registry that cannot answer yet (#2429: ledger not loaded, node wiped) has not retired the NodeId: telling the
+        // announcer its identity is retired would make a healthy process exit. Only a retirement is a refusal.
+        if (!isRetired(refused)) {
+            return;
+        }
+        // Write-ahead (#2429): the refusal is answered only once the retirement is durable in this node's ledger.
+        bootTokens.retirementDurable(refused).onSuccess(_ -> sendIdentityRefused(sender, refused));
+    }
+
+    @Contract
+    private void sendIdentityRefused(InetSocketAddress sender, NodeId refused) {
         transport.send(sender,
                        IdentityRefused.identityRefused(selfId,
                                                        refused,

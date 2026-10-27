@@ -368,6 +368,14 @@ public enum OperatorWarningCode {
     /// within the first-mint ceiling (#1734). Owners may be moved once the set settles, which opens a transient not-held
     /// window per moved arc. Subject is the keyspace.
     ENTITY_OWNERSHIP_UNSETTLED_MINT("entity-ownership-unsettled-mint", "entity-ownership", WarningLevel.WARNING),
+    /// This node's identity ledger (#2429) does not protect it: the ledger file was lost on a node that is not new (the node admits no peer, so it is
+    /// isolated from the cluster until the merge of ledgers at join exists), the ledger directory cannot be written at boot (the node runs without the restart
+    /// protection), or a ledger write failed (retirements made from then on will not survive a restart until a write succeeds). Subject is the node. Raised on the transition
+    /// into the state, not on every refused peer. Closed by [#IDENTITY_LEDGER_DURABLE].
+    IDENTITY_LEDGER_NOT_DURABLE("identity-ledger-not-durable", "membership", WarningLevel.WARNING),
+    /// The recovery of [#IDENTITY_LEDGER_NOT_DURABLE], same subject: a ledger write succeeded, so the node's retirements survive a restart
+    /// again. INFO, published only after a published not-durable event for the node (#752 mechanism).
+    IDENTITY_LEDGER_DURABLE("identity-ledger-durable", "membership", WarningLevel.INFO, IDENTITY_LEDGER_NOT_DURABLE),
     /// A SWIM datagram claimed a member identity from a source address other than the one that identity is
     /// pinned to, and was refused. A restart is not this: a new process carries a new identity and gets its own pin.
     SWIM_MEMBER_ADDRESS_CONFLICT("swim-member-address-conflict", "membership", WarningLevel.WARNING),
