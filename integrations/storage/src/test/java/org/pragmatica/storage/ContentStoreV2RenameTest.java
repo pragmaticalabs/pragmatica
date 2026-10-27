@@ -79,7 +79,7 @@ class ContentStoreV2RenameTest {
     }
 
     /// A concurrent reader never sees not-found for an object under rename: the old name until it is retired, the new name
-    /// from the bind on. Observed at the point between the steps. Mutation `retirefirst` (retire before bind) -> red.
+    /// from the bind on. Observed at the point between the steps. Mutation that reddens it: retire the old name before binding the new one -> red.
     @Test
     void aReaderBetweenTheStepsFindsTheObjectUnderBothNames() {
         var seen = new ArrayList<String>();
@@ -98,7 +98,7 @@ class ContentStoreV2RenameTest {
     }
 
     /// A crash between the steps (stop after the bind) leaves both names resolving to the same object, and a release or
-    /// collector pass reclaims nothing. Mutation `retirefirst` (the crash stops after the retire) -> red.
+    /// collector pass reclaims nothing. Mutation that reddens it: retire the old name before binding the new one -> red.
     @Test
     void aCrashBetweenTheSteps_leavesBothNamesOnTheSameObject_andReclaimsNothing() {
         var crashed = storeWithRetireHook(_ -> Causes.cause("crash after the bind").promise());
@@ -129,7 +129,7 @@ class ContentStoreV2RenameTest {
     }
 
     /// Rename returns only after both steps: while the retire is pending the call is pending, and it resolves once the retire
-    /// has run. Mutation `resolveearly` (resolve after the bind, retire fire-and-forget) -> red.
+    /// has run. Mutation that reddens it: resolve after the bind and retire fire-and-forget -> red.
     @Test
     void renameReturnsOnlyAfterBothSteps() {
         Promise<Unit> retireGate = Promise.promise();
@@ -154,7 +154,7 @@ class ContentStoreV2RenameTest {
     }
 
     /// A crash between the steps, then a delete: no binding resolves to the deleted object and no credit is left holding it.
-    /// Mutation `deleteonlyname` (delete retires only the name the entry records) -> red.
+    /// Mutation that reddens it: delete retires only the name the entry records -> red.
     @Test
     void aCrashBetweenTheSteps_thenDelete_leavesNoBindingAndNoCredit() {
         var crashed = storeWithRetireHook(_ -> Causes.cause("crash after the bind").promise());
@@ -174,8 +174,7 @@ class ContentStoreV2RenameTest {
 
     /// A delete racing a bind, after the entry was read and before the name binding is written, leaves a binding whose entry
     /// is gone. It reads as not found (not an error, not a stale object), and a later bind of the name succeeds: the dangling
-    /// binding is cleaned up lazily, by that bind's swap. Mutations `lookuptrusts` (a binding without an entry is an error)
-    /// and `deadholder` (the precondition counts a binding without an entry) -> red.
+    /// binding is cleaned up lazily, by that bind's swap. Mutations that redden it: a binding without an entry is an error; the precondition counts a binding without an entry.
     @Test
     void aDeleteRacingABind_leavesABindingThatReadsAsNotFound_andALaterBindSucceeds() {
         var racing = storeWithHooks(_ -> Promise.success(unit()), _ -> plain.delete(idOf.get()).map(_ -> unit()));

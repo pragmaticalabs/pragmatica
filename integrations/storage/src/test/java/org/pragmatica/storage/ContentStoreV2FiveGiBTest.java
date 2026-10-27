@@ -10,7 +10,7 @@ import org.junit.jupiter.api.io.TempDir;
 import static org.assertj.core.api.Assertions.assertThat;
 
 
-/// The 5 GiB write and ranged read under `-Xmx256m` that the upload overhaul's A1 row names. The same child-JVM probe as
+/// The 5 GiB write and ranged read under `-Xmx256m` that the streaming store must sustain. The same child-JVM probe as
 /// [ContentStoreV2LargeObjectTest], 13 times the size: tagged `Slow`, so the default build excludes it (the root pom's
 /// `surefire.excludedGroups`), and run on a build host with
 /// `mvn test -pl integrations/storage -Dtest=ContentStoreV2FiveGiBTest -Dgroups=Slow -Dsurefire.excludedGroups=`.
