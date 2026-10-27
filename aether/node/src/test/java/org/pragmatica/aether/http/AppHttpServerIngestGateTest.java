@@ -117,6 +117,7 @@ class AppHttpServerIngestGateTest {
     private final AtomicInteger entered = new AtomicInteger();
     private volatile CountDownLatch gate = new CountDownLatch(0);
     private volatile boolean failDispatch;
+    private volatile String sliceRequestId = "";
     private final HttpRouteRegistry registry = HttpRouteRegistry.httpRouteRegistry();
     private AppHttpServer server;
     private int port;
@@ -552,7 +553,11 @@ class AppHttpServerIngestGateTest {
             served.incrementAndGet();
             servedBytes.set(request.body().length);
 
-            return Promise.success(HttpResponseData.httpResponseData(200, "served"));
+            return Promise.success(sliceRequestId.isEmpty()
+                                   ? HttpResponseData.httpResponseData(200, "served")
+                                   : HttpResponseData.httpResponseData(200,
+                                                                       java.util.Map.of("X-Request-Id", sliceRequestId),
+                                                                       "served".getBytes(StandardCharsets.UTF_8)));
         }
 
         @Override
@@ -1338,6 +1343,15 @@ class AppHttpServerIngestGateTest {
         var withFilename = new String(nested, StandardCharsets.ISO_8859_1)
             .replace("name=\"n\"", "name=\"n\"; filename=\"n.mix\"").getBytes(StandardCharsets.ISO_8859_1);
 
+        var cap = new Part[128];
+
+        for (int index = 0; index < cap.length; index++) {
+            cap[index] = Part.field("f" + index, "v");
+        }
+
+        var capThenNested = concat(multipart(cap), nested);
+
+        assertThat(statusOf(protocol, "/api/files/", capThenNested)).as("128 fields, then a nested part: the nested 400, not the cap's 413").isEqualTo(400);
         assertThat(statusOf(protocol, "/api/files/", withFilename)).as("the same nested part with a filename").isEqualTo(400);
         assertThat(statusOf(protocol, "/api/fields/", withFilename)).as("max_fields = 2 through a nested part").isEqualTo(400);
         assertThat(statusOf(protocol, "/api/files/", nested)).as("20 inner files, max_files = 2").isEqualTo(400);
@@ -1353,6 +1367,37 @@ class AppHttpServerIngestGateTest {
     @Test
     void aNestedMultipartPart_onAPartLimitedRoute_isRefused400_overHttp3() throws Exception {
         aNestedMultipartPart_onAPartLimitedRoute_isRefused400(Protocol.H3);
+    }
+
+    private static byte[] concat(byte[] fieldsBody, byte[] nestedBody) {
+        var close = ("--" + BOUNDARY + "--\r\n").length();
+        var out = new ByteArrayOutputStream();
+
+        out.writeBytes(java.util.Arrays.copyOfRange(fieldsBody, 0, fieldsBody.length - close));
+        out.writeBytes(nestedBody);
+
+        return out.toByteArray();
+    }
+
+    /// A slice's own `X-Request-Id` replaces the generated one on HTTP/1.1 (HTTP/3 already did); without one the generated id
+    /// is sent once.
+    @Test
+    void aSlicesOwnRequestId_replacesTheGeneratedOne_overHttp1() throws Exception {
+        start(Protocol.H1, defaults(), 10 * MIB);
+        sliceRequestId = "slice-chosen-id";
+
+        var own = client(Protocol.H1).post("/api/upload/", Option.some(KEY_A), 16, Mode.DECLARED);
+        var idLines = java.util.regex.Pattern.compile("(?im)^x-request-id:\\s*(.*)$").matcher(own.text()).results().map(r -> r.group(1).strip()).toList();
+
+        assertThat(own.status()).isEqualTo(200);
+        assertThat(idLines).as("exactly one X-Request-Id line, the slice's").containsExactly("slice-chosen-id");
+
+        sliceRequestId = "";
+        var generated = client(Protocol.H1).post("/api/upload/", Option.some(KEY_A), 16, Mode.DECLARED);
+        var generatedLines = java.util.regex.Pattern.compile("(?im)^x-request-id:\\s*(.*)$").matcher(generated.text()).results().map(r -> r.group(1).strip()).toList();
+
+        assertThat(generatedLines).as("a slice that sets none: the generated id, once").hasSize(1);
+        assertThat(generatedLines.getFirst()).isNotEmpty().isNotEqualTo("slice-chosen-id");
     }
 
     /// What a worker throws is answered, not lost with the worker: the client gets a 500 instead of waiting for nothing.

@@ -274,6 +274,11 @@ class UploadSpecTest {
         assertThat(parts(2, 0, 0, 0).partBreach(body(nestedWith(1), tiny), CONTENT_TYPE).unwrap())
             .as("the nested part comes within the first parts: its 400 answers, not the 413 for the cap")
             .isSameAs(MultipartError.General.NESTED_MULTIPART);
+        var cap = field("a", "1").repeat(128);
+
+        assertThat(parts(2, 0, 0, 0).partBreach(body(cap, nestedWith(1)), CONTENT_TYPE).unwrap())
+            .as("128 parts, then the nested one is the 129th the scan reads: reached with the cap not yet exceeded, so the nested 400 answers")
+            .isSameAs(MultipartError.General.NESTED_MULTIPART);
         assertThat(parts(2, 0, 0, 0).partBreach(body(tiny, nestedWith(1)), CONTENT_TYPE).unwrap().httpStatus())
             .as("nested only after the cap (marked guess: the scan stops at cap + 1 parts, so the cap's 413 answers)")
             .isEqualTo(org.pragmatica.http.HttpStatus.REQUEST_ENTITY_TOO_LARGE);
