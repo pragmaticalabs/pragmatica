@@ -557,6 +557,15 @@ framed; a larger `chunkSizeBytes` is refused when the store is provisioned. Each
 latency dominate on S3 (a 5 GiB object at 4 MiB is 1280 PUTs); S3-backed content stores may want larger
 blocks. No default changes here.
 
+**Streaming content store settings.** The streaming store (`ContentStoreV2`, local mode) reads three more keys from the
+same `ContentStoreConfig` section; each has a default, so an existing section binds unchanged.
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `namespace` | `default` | The scope the store is bound to when it is provisioned. Objects, names and listings are confined to it. 1 to 63 characters of `a-z`, `0-9`, `.`, `_`, `-`, starting with a letter or digit. An invalid value is refused when the store is provisioned |
+| `write_window` | 4 | Blocks a writer may have being stored while it fills the next one. At least 1. A writer holds at most `write_window + 1` chunks of the object on the heap |
+| `read_ahead` | 2 | Blocks a read stream fetches ahead of the one being served. 0 or more. A stream holds at most `read_ahead + 1` blocks on the heap |
+
 ## Environment Variables
 
 For container deployment, configuration via environment variables:
