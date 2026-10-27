@@ -6,8 +6,8 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 
-/// Streaming, ranged object storage bound to one [Namespace], local mode. Replaces the whole-`byte[]` [ContentStore]; it
-/// sits beside it until the old surface is deleted.
+/// Streaming, ranged object storage bound to one [Namespace], local mode. The only content store: the whole-`byte[]`
+/// API it replaced is gone.
 ///
 /// Per-operation guarantees in local mode (one node, one [StorageInstance]):
 /// - `create`/`commit`: the bytes are in the instance before the entry that names them, so a reader that finds the entry

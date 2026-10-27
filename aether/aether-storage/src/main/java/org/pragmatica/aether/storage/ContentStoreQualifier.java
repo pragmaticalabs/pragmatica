@@ -9,10 +9,10 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 import org.pragmatica.aether.slice.annotation.ResourceQualifier;
-import org.pragmatica.storage.ContentStore;
+import org.pragmatica.storage.ContentStoreV2;
 
 
-@ResourceQualifier(type = ContentStore.class, config = "storage")
+@ResourceQualifier(type = ContentStoreV2.class, config = "storage")
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.PARAMETER)
 public @interface ContentStoreQualifier {}

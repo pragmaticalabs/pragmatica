@@ -640,7 +640,7 @@ public sealed interface SliceRuntimeAssembly {
         spi.registerExtension(SliceInvoker.class, sliceInvoker);
         registerDhtExtensions(spi, replicatedDhtClient, cacheDhtClient);
         // #251 (#99 regression): ContentStoreFactory.provision() requires a StorageInstance extension.
-        // Register a tiered content store so slice-facing ContentStore resources can provision.
+        // Register a tiered content store so slice-facing ContentStoreV2 resources can provision.
         spi.registerExtension(StorageInstance.class, contentStorage);
         // #1040: the stream resource factories materialize a declared stream under its ENGINE KEY
         // rather than the bare `resources.toml` section name, which needs the deploy-time
