@@ -29,9 +29,9 @@ class ContentStoreConfigBindingTest {
 
         assertEquals(1048576, config.chunkSizeBytes());
         assertEquals(Compression.LZ4, config.compression());
-        assertEquals(ContentStoreConfig.DEFAULT_NAMESPACE, config.namespace());
-        assertEquals(ContentStoreConfig.DEFAULT_WRITE_WINDOW, config.writeWindow());
-        assertEquals(ContentStoreConfig.DEFAULT_READ_AHEAD, config.readAhead());
+        assertEquals("default", config.namespace());
+        assertEquals(4, config.writeWindow());
+        assertEquals(2, config.readAhead());
     }
 
     @Test
