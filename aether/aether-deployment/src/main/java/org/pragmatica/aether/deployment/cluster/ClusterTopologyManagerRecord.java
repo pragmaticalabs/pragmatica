@@ -2784,8 +2784,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         // Nothing new under the id: the answer is the confirmed no-op, reached WITHOUT [#reapOf]/[#reapRetired]. Going through them would re-read
         // [#confirmedReaps] later, and a concurrent chain that saw a new instance may have dropped the confirmation in between: this chain would then
         // list and terminate without ever having passed the gate. Here a terminate is unreachable, so the decision and the action cannot be split.
-        reapedAgain(nodeId).onSuccess(_ -> reapConfirmed(nodeId))
-                   .onFailure(cause -> reapUnconfirmed(nodeId, epoch, generation, retriesLeft, cause));
+        reapedAgain(nodeId).onFailure(cause -> reapUnconfirmed(nodeId, epoch, generation, retriesLeft, cause));
     }
 
     private boolean hasUnreapedInstance(NodeId nodeId, List<InstanceInfo> listed) {

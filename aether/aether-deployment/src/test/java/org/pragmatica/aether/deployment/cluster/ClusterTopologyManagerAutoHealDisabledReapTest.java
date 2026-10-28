@@ -732,6 +732,20 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
         assertThat(terminates.get()).as("a provider terminate with auto-heal disabled").isEqualTo(1);
     }
 
+    /// The confirmed no-op is still an attempt: a node that shows life after its reap was confirmed is not confirmed gone, and the attempt is retried
+    /// and bounded like any other, ending in the operator event, never dropped.
+    @Test
+    void confirmedReap_nodeShowsLifeAgain_autoHealDisabled_isRetriedAndEndsInTheUnconfirmedEvent() {
+        directedReapDoneThenAnotherInstanceUnderTheSameId();
+        listing.set(List.of());
+        counted.set(Set.of(LOST));
+
+        ctm.drainNode(LOST, DrainReason.JOIN_GRACE_REAP);
+
+        await().atMost(Duration.ofSeconds(10)).until(() -> eventSeen(OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED));
+        assertThat(terminates.get()).isEqualTo(1);
+    }
+
     /// An EXTERNAL node has no provider instance of ours: nothing under its id is read at the provider, so nothing is held for it.
     @Test
     void confirmedReap_ofAnExternalNode_thenALaterListing_autoHealDisabled_isNotHeld() {
