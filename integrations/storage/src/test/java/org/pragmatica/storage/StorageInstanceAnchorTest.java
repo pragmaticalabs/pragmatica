@@ -34,6 +34,8 @@ class StorageInstanceAnchorTest {
     Path tempDir;
 
     private final List<OperatorWarning> raised = new CopyOnWriteArrayList<>();
+    private DegradeReporter reporter;
+    private int flushes;
 
     @Test
     void aWriteResolvesOnlyOnceEveryDurableTierHas() {
@@ -220,7 +222,7 @@ class StorageInstanceAnchorTest {
                                                                                 _ -> {},
                                                                                 StorageInstance.DEFAULT_MAX_BLOCK_BYTES,
                                                                                 retention);
-        var reporter = DegradeReporter.degradeReporter("content");
+        reporter = DegradeReporter.degradeReporter("content");
 
         reporter.bind(OperatorWarningSink.handingOffTo(raised::add));
         instance.reportTo(reporter);
@@ -233,11 +235,28 @@ class StorageInstanceAnchorTest {
     }
 
     private List<OperatorWarning> anchorWarnings() {
+        flushWarnings();
+
         return raised.stream().filter(warning -> warning.code() == OperatorWarningCode.STORAGE_ANCHOR_CORRUPT).toList();
     }
 
     private List<OperatorWarning> recoveries() {
+        flushWarnings();
+
         return raised.stream().filter(warning -> warning.code() == OperatorWarningCode.STORAGE_ANCHOR_READABLE).toList();
+    }
+
+    /// The sink hands warnings off to one thread in order, so once a sentinel raised now has arrived, so has everything
+    /// raised before it: counts read after this are exact, not "at least".
+    private void flushWarnings() {
+        var sentinel = "flush-" + flushes++;
+        var deadline = System.nanoTime() + 5_000_000_000L;
+
+        reporter.degradedFor(OperatorWarningCode.STORAGE_TIER_FULL, sentinel, "{}", sentinel);
+        while (raised.stream().noneMatch(warning -> warning.message().equals(sentinel)) && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+        assertThat(raised).as("the sink delivered the flush sentinel within 5 s").anyMatch(warning -> warning.message().equals(sentinel));
     }
 
     private static void awaitPrune(DefaultStorageInstance instance) {
