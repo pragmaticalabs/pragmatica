@@ -183,6 +183,17 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.UPLOAD_BYTE_BUDGET_RESTORED.code()).isEqualTo("upload-byte-budget-restored");
     }
 
+    /// Know 3b01e624f1: the strings are what operators and alert rules match on, so they are pinned, with the level and the subsystem.
+    @Test
+    void backupStopFlushFailed_andOrphanedStreamWal_areWarnings_withPinnedWireStrings() {
+        assertThat(OperatorWarningCode.BACKUP_STOP_FLUSH_FAILED.code()).isEqualTo("backup-stop-flush-failed");
+        assertThat(OperatorWarningCode.BACKUP_STOP_FLUSH_FAILED.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.BACKUP_STOP_FLUSH_FAILED.subsystem()).isEqualTo("kv-backup");
+        assertThat(OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED.code()).isEqualTo("storage-stream-wal-orphaned");
+        assertThat(OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED.subsystem()).isEqualTo("storage");
+    }
+
     private static final Set<OperatorWarningCode> UNCLOSED_BEFORE_THE_RULE = Set.of(
         // A0b, added on purpose: facts about one boot with no runtime recovery. The disk tier and the memory budget are fixed when
         // the instance is built and a snapshot is restored once; the only end of each is a restart, which starts a new event log slice.
@@ -217,7 +228,11 @@ class OperatorWarningCodeTest {
         OperatorWarningCode.OFFLINE_FRAMES_EXPIRED,
         OperatorWarningCode.ENTITY_OWNERSHIP_UNSETTLED_MINT,
         OperatorWarningCode.SWIM_MEMBER_ADDRESS_CONFLICT,
-        OperatorWarningCode.SWIM_MEMBER_IDENTITY_CONFLICT);
+        OperatorWarningCode.SWIM_MEMBER_IDENTITY_CONFLICT,
+        // On purpose (know 3b01e624f1): a WAL directory orphaned at startup stays until an operator removes it, and a stop-time backup
+        // flush failure is raised while the node goes down, so neither has a runtime point at which a recovery could be published.
+        OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED,
+        OperatorWarningCode.BACKUP_STOP_FLUSH_FAILED);
 
     /// #752: a recovery code closes a condition of its own subsystem, and a condition is not itself a recovery, so a
     /// recovery is never itself waiting for one.

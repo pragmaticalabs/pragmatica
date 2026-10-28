@@ -13,7 +13,9 @@ fast-forward — never forced.
   after 500 ms of quiet and at most 5 s after the first change, and an incarnation change is flushed at
   once. Runtime state (placements, partition owners, leases, node registrations) is never backed up
   `[mechanism: sealed AetherKey = ClusterStateKey | RuntimeKey; BackupKeyClassificationTest]`.
-- **RPO:** changes made after the last successful push. With the remote unreachable, commits queue in the
+- **RPO:** changes made after the last successful push; the flush delay is up to about 5.5 s (see the
+  [backup RPO](../../reference/configuration.md#backup-configuration)). A graceful stop flushes before it completes; a crash
+  does not (#1569). With the remote unreachable, commits queue in the
   leader's local repository, so they also depend on that node's disk surviving; `BACKUP_PUSH_FAILING`
   fires after 60 s of lag.
 - **Consensus itself is in memory** on every node. There is no per-node consensus snapshot any more (the

@@ -583,6 +583,16 @@ public enum OperatorWarningCode {
                                  "storage",
                                  WarningLevel.INFO,
                                  STORAGE_WRITE_BEHIND_FLUSH_FAILED),
+    /// A stream's WAL directory `<stream>@<incarnation>` holds a life of the stream that the committed config does not name: the cluster
+    /// state restored at startup does not know that incarnation (typically a backup older than the stream's config), so the stream runs
+    /// under another incarnation and the directory's acknowledged records are never read. The subject is the directory; the message names
+    /// the stream, the orphaned incarnation and the adopted one. The directory is never deleted. Raised once per directory per process, so
+    /// there is no recovery code: the directory stays until an operator removes it (storage-identity adoption, #1569, is the fix).
+    STORAGE_STREAM_WAL_ORPHANED("storage-stream-wal-orphaned", "storage", WarningLevel.WARNING),
+    /// The final KV-backup flush of a graceful node stop failed or overran its deadline (the stop itself went ahead): cluster-state changes
+    /// inside the backup's debounce window are not in the backup, so a whole-cluster restart restores from before them. The subject is the
+    /// node's KV backup. Raised during shutdown, so there is no recovery code: the next start begins a new event log slice.
+    BACKUP_STOP_FLUSH_FAILED("backup-stop-flush-failed", "kv-backup", WarningLevel.WARNING),
     /// The recovery of [#JSON_CONFIG_REJECTED], same subject (#2378): a valid `[json]` configuration was adopted after a
     /// refusal. INFO, published only after a published rejection for the subject (#752 mechanism).
     JSON_CONFIG_APPLIED("json-config-applied", "json", WarningLevel.INFO, JSON_CONFIG_REJECTED);

@@ -758,6 +758,18 @@ WARN at startup naming the key and both sources (never the values). A Docker nod
 The leader writes the backup on change (#1532); a whole-cluster restart is a regular start of fresh cores
 followed by the restore (#1533). See the [backup-recovery runbook](../operators/runbooks/backup-recovery.md).
 
+**Backup RPO.** The flush timing is not configurable: there is no `[backup]` key for it. A change to a backed-up key is flushed after
+500 ms of quiet and at most 5 s after the first unflushed change (`KvBackupService.Timing.DEFAULT`, `quietMillis` and `maxDelayMillis`;
+an incarnation change is flushed at once), so the backup trails the cluster state by up to about 5.5 s (`maxDelay` + `quiet`),
+plus push time while the remote is reachable, or until it is again.
+- **Graceful stop:** the leader flushes the backup before its stop completes, bounded by 10 s (`AetherNode.BACKUP_STOP_FLUSH_BOUND`).
+  A flush that fails or overruns is logged and raised as the operator warning `backup-stop-flush-failed`; the stop proceeds, and the
+  backup then trails by the window above. A follower flushes nothing.
+- **Crash or kill:** nothing is flushed. Changes inside the window are lost to a whole-cluster restart, and a stream created inside it
+  is not in the restored state: the restart mints a new incarnation for it and the acknowledged records in the old
+  `<stream>@<incarnation>` WAL directory stay on disk unread. The node raises `storage-stream-wal-orphaned` for that directory and
+  never deletes it. Closing this case is storage-identity adoption, #1569.
+
 Default `path` by environment:
 - LOCAL: `./aether-backups`
 - DOCKER: `/data/backups`

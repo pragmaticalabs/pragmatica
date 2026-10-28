@@ -75,6 +75,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Lazy;
 import org.pragmatica.lang.NullReturn;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -316,6 +317,12 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final java.util.concurrent.CopyOnWriteArrayList<Runnable> deferredReports = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     private volatile boolean operatorWarningsBound = false;
+
+    /// Know 3b01e624f1: the WAL directories (`<stream>@<incarnation>`) under the log root as they were when the first stream life was adopted,
+    /// i.e. at startup, before this process created any. Read once: the directories of this process's own lives are not in it.
+    private final Lazy<List<String>> walDirectoriesAtStart = Lazy.lazy(this::scanWalDirectories);
+    /// The WAL directories already reported as orphaned by this process: one event per directory, however many streams adopt after it.
+    private final Set<String> orphanedWalReported = ConcurrentHashMap.newKeySet();
     /// #1638 F1: the catch-up installs recorded but not yet settled, per partition ([#installProvenance]). Each
     /// partition's list is also that partition's lock serialising recording an install against trimming one, so a trim
     /// never drops an entry a pending install has just recorded or skipped; partitions never wait on each other's
@@ -5028,7 +5035,79 @@ public final class StreamPartitionManager implements AutoCloseable {
     private Result<Unit> adoptIncarnation(StreamConfig config) {
         return streamFootprint.adopt(config.name(),
                                      config.incarnation())
-                              .await(FOOTPRINT_TIMEOUT);
+                              .await(FOOTPRINT_TIMEOUT)
+                              .onResultRun(() -> reportOrphanedWalDirectories(config));
+    }
+
+    /// Know 3b01e624f1: a WAL directory `<stream>@<incarnation>` whose incarnation is not the life `config` adopts holds acknowledged
+    /// records no one will read — the cluster state this node restored does not know that life (a backup older than the stream's config
+    /// mints a fresh one). The directory is never deleted, and never silent: it is raised once, naming the stream and both incarnations.
+    @Contract
+    private void reportOrphanedWalDirectories(StreamConfig config) {
+        walDirectoriesAtStart.get()
+                             .stream()
+                             .filter(directory -> isOrphanedLifeOf(config, directory))
+                             .filter(orphanedWalReported::add)
+                             .forEach(directory -> raiseOrphanedWal(config, directory));
+    }
+
+    private static boolean isOrphanedLifeOf(StreamConfig config, String directory) {
+        var life = SegmentIndex.DurableName.parse(directory);
+
+        return life.streamName()
+                   .equals(config.name()) && life.incarnation() != config.incarnation();
+    }
+
+    /// Raised now when the operator-warning sink is bound, else when it is (as [#reportInterruptedRepair] does): the first adoptions of a
+    /// boot run before the node wires the sink, and the orphan is found exactly then.
+    @Contract
+    private void raiseOrphanedWal(StreamConfig config, String directory) {
+        Runnable report = () -> OperatorWarnings.raise(log,
+                                                       operatorWarnings,
+                                                       OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED,
+                                                       directory,
+                                                       "Stream {} has WAL directory {} of incarnation {}, which the cluster state restored at startup does not know; "
+                                                      + "the stream runs as incarnation {}, so the records in that directory are not read. "
+                                                      + "The directory is kept untouched; recover its records before removing it (a KV backup older than the stream's "
+                                                      + "config is the usual cause, see the backup-recovery runbook).",
+                                                       config.name(),
+                                                       directory,
+                                                       SegmentIndex.DurableName.parse(directory).incarnation(),
+                                                       config.incarnation());
+
+        if (operatorWarningsBound) {
+            report.run();
+        } else {
+            deferredReports.add(report);
+        }
+    }
+
+    /// The directories holding stream WALs, from the opener's listing (`<dir>/<partition>`). A log root that cannot be listed is logged and
+    /// treated as unknown for this boot: no orphan can be named, and the log says so.
+    private List<String> scanWalDirectories() {
+        return logs.map(this::listWalDirectories)
+                   .or(List.of());
+    }
+
+    private List<String> listWalDirectories(AppendLog.Opener opener) {
+        return opener.listLogs()
+                     .onFailure(this::warnWalDirectoriesUnlistable)
+                     .map(StreamPartitionManager::walDirectories)
+                     .or(List.of());
+    }
+
+    @Contract
+    private void warnWalDirectoriesUnlistable(Cause cause) {
+        log.warn("Stream WAL directories cannot be listed, so orphaned lives are not checked: {}", cause.message());
+    }
+
+    private static List<String> walDirectories(List<String> logNames) {
+        return logNames.stream()
+                       .map(name -> name.substring(0,
+                                                   Math.max(name.indexOf('/'),
+                                                            0)))
+                       .filter(directory -> directory.indexOf('@') >= 0)
+                       .toList();
     }
 
     /// The incarnation a fresh proposal carries (#1278, ruling C): always a newly minted one when the config is

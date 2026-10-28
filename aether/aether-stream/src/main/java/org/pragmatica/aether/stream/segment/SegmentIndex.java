@@ -472,7 +472,7 @@ public final class SegmentIndex {
 
     /// A parsed [#durableName]. A name with no numeric `@<incarnation>` suffix is incarnation `0`.
     public record DurableName(String streamName, long incarnation) {
-        static DurableName parse(String durable) {
+        public static DurableName parse(String durable) {
             var at = durable.lastIndexOf(INCARNATION_SEPARATOR);
 
             return at < 0

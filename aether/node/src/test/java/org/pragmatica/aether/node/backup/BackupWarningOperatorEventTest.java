@@ -54,6 +54,12 @@ class BackupWarningOperatorEventTest {
         assertThat(OperatorWarningCode.BACKUP_CONFIG_RESTORED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.BACKUP_CONFIG_MISSING);
     }
 
+    /// Know 3b01e624f1: a graceful stop whose final flush failed is an operator event, not only a log line.
+    @Test
+    void aFailedStopFlush_isRaisedAsAnOperatorWarning() {
+        assertRaisedAlone(Code.BACKUP_STOP_FLUSH_FAILED, OperatorWarningCode.BACKUP_STOP_FLUSH_FAILED);
+    }
+
     @Test
     void theBlockedRestoreRecovery_isRaisedAsAnInfoOperatorWarning_pairedWithTheWarning() {
         assertRaisedAlone(Code.BACKUP_RESTORE_UNBLOCKED, OperatorWarningCode.BACKUP_RESTORE_UNBLOCKED);
