@@ -548,7 +548,7 @@ class ContentStoreGapsTest {
 
         held.fail(cause);
 
-        assertThat(write.await(timeSpan(3).seconds()).fold(failure -> failure, _ -> null)).isEqualTo(cause);
+        assertThat(causeOf(write.await(timeSpan(3).seconds()))).isEqualTo(cause);
     }
 
     /// An ingress that aborts on disconnect may still be awaiting a write the window holds back: the abort fails it.
