@@ -19,7 +19,8 @@ fast-forward — never forced.
   stream records:** a stream created inside it is missing from the restored state, so the restart gives it a new incarnation and the old
   life (WAL directory `<stream>@<incarnation>` and any sealed segments) is left unread. Nothing deletes it; the node raises
   `storage-stream-wal-orphaned` for each such life, naming the stream, both incarnations and the sealed-segment count. It is released only
-  by an operator or by storage-identity adoption (#1569). With the remote unreachable, commits queue in the
+  by storage-identity adoption (#1569) or by hand: there is **no CLI or API verb** that removes a kept life. Recover its records first, then
+  delete the WAL directory yourself while the node is stopped; its sealed segments have no supported removal and stay until #1569. With the remote unreachable, commits queue in the
   leader's local repository, so they also depend on that node's disk surviving; `BACKUP_PUSH_FAILING`
   fires after 60 s of lag.
 - **Consensus itself is in memory** on every node. There is no per-node consensus snapshot any more (the

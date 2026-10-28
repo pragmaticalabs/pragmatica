@@ -5095,8 +5095,9 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                        durable,
                                                        "Stream {} has an earlier life {} of incarnation {}, which the cluster state restored at startup does not know "
                                                       + "({} sealed segment(s); WAL directory present: {}); the stream runs as incarnation {}, so none of it is read. "
-                                                      + "It is kept untouched, nothing deletes it; recover its records before removing it (a KV backup older than the stream's "
-                                                      + "config is the usual cause, see the backup-recovery runbook).",
+                                                      + "It is kept untouched and nothing deletes it. There is no CLI or API verb to release it: recover its records first, then remove the WAL "
+                                                      + "directory by hand while the node is stopped; its sealed segments (storage refs) have no supported removal until storage-identity "
+                                                      + "adoption (#1569) lands, and are kept. A KV backup older than the stream's config is the usual cause, see the backup-recovery runbook.",
                                                        config.name(),
                                                        durable,
                                                        life,
