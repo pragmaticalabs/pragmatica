@@ -6,7 +6,6 @@ package org.pragmatica.aether.ember;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentSkipListSet;
 
 import org.apache.logging.log4j.Level;
@@ -118,16 +117,15 @@ class EmberConsumerPathTripwireTest {
     @Timeout(600)
     void consumerBehindTheRing_raisesAnOperatorWarning() {
         var runtime = bootAndFillStream();
-        var logs = new CopyOnWriteArrayList<String>();
-        var detach = StreamTripwireSupport.captureLogs(Level.WARN, logs);
+        var capture = StreamTripwireSupport.captureLogs();
 
         try {
             subscribe(runtime, "c16-warned", engineKey, new ConcurrentSkipListSet<>());
-            awaitUntil(() -> logs.stream().anyMatch(EmberConsumerPathTripwireTest::namesTheBehindGroup),
+            awaitUntil(() -> StreamTripwireSupport.logLines(capture, Level.WARN).stream().anyMatch(EmberConsumerPathTripwireTest::namesTheBehindGroup),
                        30_000L,
                        "a WARN-level event names the group whose cursor fell behind the ring");
         } finally {
-            detach.run();
+            capture.close();
         }
     }
 

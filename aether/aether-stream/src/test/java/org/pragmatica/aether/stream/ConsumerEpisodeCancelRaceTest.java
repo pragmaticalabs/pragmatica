@@ -21,17 +21,13 @@ import org.pragmatica.aether.stream.segment.SegmentError;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -317,41 +313,27 @@ class ConsumerEpisodeCancelRaceTest {
     }
 
     /// Parks the first thread that logs a line containing `token` (from `ConsumerRuntimeState`) until `release` is counted
-    /// down, with the logger's level lowered to INFO for the duration so the recovery lines reach the appender.
+    /// down, with that logger captured at INFO for the duration so the recovery lines reach the observer. The observer runs
+    /// on the logging thread, which is the thread that parks.
     private static final class ParkedLogLine implements AutoCloseable {
         final CountDownLatch entered = new CountDownLatch(1);
         final CountDownLatch release = new CountDownLatch(1);
-        private final org.apache.logging.log4j.core.config.LoggerConfig loggerConfig;
-        private final Level previousLevel;
-        private final AbstractAppender appender;
-        private final LoggerContext context = (LoggerContext) LogManager.getContext(false);
+        private final java.util.concurrent.atomic.AtomicBoolean parked = new java.util.concurrent.atomic.AtomicBoolean();
+        private final LogCapture capture;
 
         private ParkedLogLine(String token) {
-            loggerConfig = context.getConfiguration().getLoggerConfig(ConsumerRuntimeState.class.getName());
-            previousLevel = loggerConfig.getLevel();
-            appender = new AbstractAppender("parked-" + token, null, PatternLayout.createDefaultLayout(), true, Property.EMPTY_ARRAY) {
-                private final java.util.concurrent.atomic.AtomicBoolean parked = new java.util.concurrent.atomic.AtomicBoolean();
-
-                @SuppressWarnings("JBCT-RET-01")  // `Appender.append` is log4j's void override
-                @Override
-                public void append(LogEvent event) {
-                    if (event.getMessage().getFormattedMessage().contains(token) && parked.compareAndSet(false, true)) {
-                        entered.countDown();
-                        awaitRelease();
-                    }
-                }
-            };
+            capture = LogCapture.capture(ConsumerRuntimeState.class.getName(), Level.INFO, true, event -> parkOn(token, event));
         }
 
         static ParkedLogLine parkOnce(String token) {
-            var parked = new ParkedLogLine(token);
+            return new ParkedLogLine(token);
+        }
 
-            parked.appender.start();
-            parked.loggerConfig.addAppender(parked.appender, Level.INFO, null);
-            parked.loggerConfig.setLevel(Level.INFO);
-            parked.context.updateLoggers();
-
-            return parked;
+        private void parkOn(String token, LogEvent event) {
+            if (event.getMessage().getFormattedMessage().contains(token) && parked.compareAndSet(false, true)) {
+                entered.countDown();
+                awaitRelease();
+            }
         }
 
         private void awaitRelease() {
@@ -365,10 +347,7 @@ class ConsumerEpisodeCancelRaceTest {
         @Override
         public void close() {
             release.countDown();
-            loggerConfig.removeAppender(appender.getName());
-            loggerConfig.setLevel(previousLevel);
-            context.updateLoggers();
-            appender.stop();
+            capture.close();
         }
     }
 }

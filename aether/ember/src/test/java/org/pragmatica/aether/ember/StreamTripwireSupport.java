@@ -23,11 +23,7 @@ import java.util.concurrent.Future;
 
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.slice.RetentionPolicy;
@@ -40,6 +36,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -168,31 +165,18 @@ final class StreamTripwireSupport {
         }
     }
 
-    /// Captures every log event at `minimum` or above, from any logger, as `LEVEL logger: message`; the returned runnable
-    /// detaches the appender.
-    @SuppressWarnings("JBCT-RET-01")
-    static Runnable captureLogs(Level minimum, List<String> sink) {
-        var context = (LoggerContext) LogManager.getContext(false);
-        var rootConfig = context.getConfiguration().getRootLogger();
-        var name = "tripwire-capture-" + System.nanoTime();
-        var appender = new AbstractAppender(name, null, PatternLayout.createDefaultLayout(), true, Property.EMPTY_ARRAY) {
-            @Override
-            public void append(LogEvent event) {
-                if (event.getLevel().isMoreSpecificThan(minimum)) {
-                    sink.add(event.getLevel() + " " + event.getLoggerName() + ": " + event.getMessage().getFormattedMessage());
-                }
-            }
-        };
+    /// Captures every log event reaching the root logger, from any logger; close it to detach.
+    static LogCapture captureLogs() {
+        return LogCapture.captureRoot(((LoggerContext) LogManager.getContext(false)).getConfiguration());
+    }
 
-        appender.start();
-        rootConfig.addAppender(appender, minimum, null);
-        context.updateLoggers();
-
-        return () -> {
-            rootConfig.removeAppender(name);
-            context.updateLoggers();
-            appender.stop();
-        };
+    /// The captured events at `minimum` or above, as `LEVEL logger: message`.
+    static List<String> logLines(LogCapture capture, Level minimum) {
+        return capture.events()
+                      .stream()
+                      .filter(event -> event.getLevel().isMoreSpecificThan(minimum))
+                      .map(event -> event.getLevel() + " " + event.getLoggerName() + ": " + event.getMessage().getFormattedMessage())
+                      .toList();
     }
 
     /// A three-node cluster over a restart-stable data directory: the directory is what gives each node its WAL and its

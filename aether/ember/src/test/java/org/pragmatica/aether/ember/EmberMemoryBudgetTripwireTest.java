@@ -6,7 +6,6 @@ package org.pragmatica.aether.ember;
 
 import java.nio.file.Path;
 import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.IntStream;
 
 import org.apache.logging.log4j.Level;
@@ -72,15 +71,14 @@ class EmberMemoryBudgetTripwireTest {
     @Test
     @Timeout(900)
     void bigStreamAtDefaultRetention_tripwire_isMaterializedOnlyUpToTheBudget() {
-        var logs = new CopyOnWriteArrayList<String>();
-        var detach = StreamTripwireSupport.captureLogs(Level.WARN, logs);
+        var capture = StreamTripwireSupport.captureLogs();
 
         try {
             createStreams();
 
             var controlCopies = settledCopies(CONTROL, 4);
             var bigCopies = settledCopies(BIG, PARTITIONS);
-            var deferrals = logs.stream().filter(line -> line.contains("Off-heap budget exhausted materializing " + engineKey(BIG))).count();
+            var deferrals = StreamTripwireSupport.logLines(capture, Level.WARN).stream().filter(line -> line.contains("Off-heap budget exhausted materializing " + engineKey(BIG))).count();
 
             assertThat(controlCopies).as("control: the small control stream is fully materialized on every node (4 partitions x 3 nodes)")
                                      .containsExactly(4, 4, 4);
@@ -91,7 +89,7 @@ class EmberMemoryBudgetTripwireTest {
             assertThat(bigCopies.stream().mapToInt(Integer::intValue).sum()).as("fewer copies than the %d asked for", COPIES_ASKED_FOR).isLessThan(COPIES_ASKED_FOR);
             assertThat(deferrals).as("the refusal is a WARN 'Off-heap budget exhausted ... deferred metadata-only' naming the stream").isPositive();
         } finally {
-            detach.run();
+            capture.close();
         }
     }
 
