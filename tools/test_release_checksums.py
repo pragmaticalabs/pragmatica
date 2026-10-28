@@ -82,6 +82,21 @@ class ChecksumTests(unittest.TestCase):
         (self.dir / "SHA256SUMS").write_text("\n".join(pathed) + "\n")
         self.assertNotEqual(0, run("verify", str(self.dir)).returncode)
 
+    def test_verify_fails_on_a_malformed_line_even_though_sha256sum_would_accept_it(self):
+        # GNU `sha256sum -c` exits 0 over a file with one garbage line (a warning only); the guard in verify is what fails it.
+        run("generate", str(self.dir))
+        (self.dir / "SHA256SUMS").write_text("\n".join(self.sums() + ["this is not a checksum line"]) + "\n")
+        result = run("verify", str(self.dir))
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("not '<sha256>  <name>'", result.stderr)
+
+    def test_verify_fails_on_a_sums_entry_for_a_file_the_published_listing_does_not_name(self):
+        (self.dir / "stray.bin").write_text("stray")
+        run("generate", str(self.dir))
+        result = run("verify", str(self.dir), str(self.listing(ASSETS + ["SHA256SUMS"])))
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("stray.bin", result.stderr)
+
     def test_verify_fails_when_sums_is_missing_or_empty(self):
         self.assertNotEqual(0, run("verify", str(self.dir)).returncode)
         (self.dir / "SHA256SUMS").write_text("")
@@ -93,26 +108,95 @@ class ChecksumTests(unittest.TestCase):
         self.assertNotEqual(0, run("generate", str(empty)).returncode)
 
 
+def jobs(text):
+    """job name -> job text, for the top-level `jobs:` map of the workflow."""
+    body = text.split("\njobs:\n")[1]
+    parts = re.split(r"(?m)^  ([a-z0-9-]+):\n", body)
+    return {parts[i]: parts[i + 1] for i in range(1, len(parts), 2)}
+
+
+def steps(job_text):
+    """step name -> step text."""
+    parts = re.split(r"(?m)^      - name: (.*)\n", job_text)
+    return {parts[i]: parts[i + 1] for i in range(1, len(parts), 2)}
+
+
+PUBLISHING = ("softprops/action-gh-release", "gh release upload", "gh release create", "docker/build-push-action", "push: true")
+
+
 class WorkflowTests(unittest.TestCase):
     text = WORKFLOW.read_text()
+    all_jobs = jobs(text)
+    checksums = all_jobs["release-checksums"]
 
     def test_no_path_based_sha256sum_remains(self):
         self.assertNotIn("Generate JAR checksums", self.text)
-        self.assertNotIn("target/jbct.jar\n            aether/cli/target/aether.jar\n            aether/node/target/aether-node.jar\n"
-                         "            aether/forge/forge-core/target/aether-forge.jar\n            > SHA256SUMS", self.text)
+        self.assertNotIn("> SHA256SUMS", self.text)
 
-    def test_checksums_job_runs_after_every_asset_producing_job(self):
-        job = self.text.split("\n  release-checksums:")[1].split("\n  docker-publish:")[0]
-        needs = re.search(r"needs: \[([^\]]*)\]", job).group(1)
-        self.assertEqual({"build-and-release", "build-macos-dist", "build-linux-arm64-dist"},
-                         {n.strip() for n in needs.split(",")})
-        self.assertIn("release-checksums.sh generate", job)
-        self.assertIn("release-checksums.sh verify", job)
-        self.assertIn("gh release view", job)
+    def test_needs_covers_every_job_that_uploads_release_assets(self):
+        uploaders = {name for name, job in self.all_jobs.items()
+                     if name != "release-checksums" and ("softprops/action-gh-release" in job or "gh release upload" in job)}
+        needs = {n.strip() for n in re.search(r"needs: \[([^\]]*)\]", self.checksums).group(1).split(",")}
+        self.assertEqual({"build-and-release", "build-macos-dist", "build-linux-arm64-dist"}, uploaders)
+        self.assertEqual(uploaders, needs)
 
     def test_first_job_no_longer_uploads_sums(self):
-        first = self.text.split("\n  build-macos-dist:")[0]
-        self.assertNotIn("SHA256SUMS", first)
+        self.assertNotIn("SHA256SUMS", self.all_jobs["build-and-release"])
+
+    def test_expected_set_is_the_published_listing_and_every_asset_is_downloaded(self):
+        generate = steps(self.checksums)["Generate SHA256SUMS over every published asset"]
+        self.assertIn("gh release view \"$GITHUB_REF_NAME\" --json assets --jq '.assets[].name' > published.txt", generate)
+        self.assertIn("gh release download \"$GITHUB_REF_NAME\" --dir release-assets --pattern '*'", generate)
+        self.assertLess(generate.index("generate release-assets"), generate.index("verify release-assets published.txt"))
+
+    def test_upload_replaces_on_rerun_and_published_release_is_verified_after_it(self):
+        named = steps(self.checksums)
+        self.assertIn("gh release upload \"$GITHUB_REF_NAME\" release-assets/SHA256SUMS --clobber", named["Upload SHA256SUMS"])
+        after = named["Verify the published release"]
+        self.assertIn("grep -x -F SHA256SUMS published-after.txt", after)
+        self.assertIn("--pattern '*'", after)
+        self.assertIn("verify published-check published-after.txt", after)
+        order = list(named)
+        self.assertLess(order.index("Generate SHA256SUMS over every published asset"), order.index("Upload SHA256SUMS"))
+        self.assertLess(order.index("Upload SHA256SUMS"), order.index("Verify the published release"))
+
+    def test_checksums_job_has_the_token_and_the_write_permission_it_needs(self):
+        self.assertIn("GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}", self.checksums)
+        self.assertIn("GH_REPO: ${{ github.repository }}", self.checksums)
+        self.assertRegex(self.text, r"(?m)^permissions:\n  contents: write")
+        self.assertNotIn("permissions:", self.checksums)
+
+    def test_dispatch_is_a_dry_run_that_no_publishing_step_can_reach(self):
+        self.assertRegex(self.text, r"(?m)^  workflow_dispatch:")
+        push_only = "if: github.event_name == 'push'"
+        reachable = []
+
+        for name, job in self.all_jobs.items():
+            if job.lstrip().startswith("if: false"):
+                continue
+
+            job_guarded = push_only in job.split("steps:")[0]
+
+            for step_name, step in steps(job).items():
+                if any(marker in step for marker in PUBLISHING) and not job_guarded and push_only not in step.split("run:")[0].split("with:")[0]:
+                    reachable.append(f"{name}: {step_name}")
+
+        self.assertEqual([], reachable)
+
+    def test_dry_run_builds_assets_and_runs_generate_and_verify_without_a_release(self):
+        named = steps(self.checksums)
+        dry = named["Generate and verify SHA256SUMS (dry run)"]
+        self.assertIn("if: github.event_name != 'push'", dry)
+        self.assertIn("release-checksums.sh generate release-assets", dry)
+        self.assertIn("release-checksums.sh verify release-assets assembled.txt", dry)
+        self.assertNotIn("gh release", dry)
+        self.assertIn("pattern: dryrun-assets-*", named["Download dry-run assets"])
+
+        for job in ("build-and-release", "build-macos-dist", "build-linux-arm64-dist"):
+            self.assertIn("name: dryrun-assets-", self.all_jobs[job])
+
+    def test_dispatch_version_cannot_leak_into_a_tag_build(self):
+        self.assertEqual(4, self.text.count('[[ "$GITHUB_EVENT_NAME" == push ]] || VERSION="$DRY_RUN_VERSION"'))
 
 
 if __name__ == "__main__":

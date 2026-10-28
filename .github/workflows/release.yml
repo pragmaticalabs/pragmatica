@@ -4,6 +4,14 @@ on:
   push:
     tags:
       - 'v*'
+  # DRY RUN (#2235): builds every asset and runs the checksum job over them, publishes NOTHING. A dispatch can never publish: every
+  # publishing step (release, upload, image push) is guarded by `github.event_name == 'push'`, i.e. the tag trigger, not by an input
+  # a dispatcher could flip. Assets travel between jobs as workflow artifacts instead of release assets.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version string for the dry-run archive names (no tag exists)'
+        default: '0.0.0-dryrun'
 
 permissions:
   contents: write
@@ -31,8 +39,11 @@ jobs:
 
       - name: Extract version from tag
         id: version
+        env:
+          DRY_RUN_VERSION: ${{ inputs.version }}
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
+          [[ "$GITHUB_EVENT_NAME" == push ]] || VERSION="$DRY_RUN_VERSION"
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           # A `-candidate` tag marks the artifact UNDER TEST. Neither the `latest` image tag nor
           # the GitHub "Latest release" pointer may follow it: doing so aims every un-pinned
@@ -50,7 +61,24 @@ jobs:
           chmod +x aether/dist/build-dist.sh
           aether/dist/build-dist.sh --version ${{ steps.version.outputs.VERSION }}
 
+      - name: Stage dry-run assets
+        if: github.event_name != 'push'
+        run: |
+          mkdir dryrun-assets
+          cp jbct/jbct-cli/target/jbct.jar aether/cli/target/aether.jar aether/node/target/aether-node.jar aether/forge/forge-core/target/aether-forge.jar dryrun-assets/
+          cp aether/dist/output/*.tar.gz aether/dist/output/*.zip dryrun-assets/
+
+      - name: Keep dry-run assets as a workflow artifact
+        if: github.event_name != 'push'
+        uses: actions/upload-artifact@v6
+        with:
+          name: dryrun-assets-linux-amd64
+          if-no-files-found: error
+          path: dryrun-assets/*
+          retention-days: 3
+
       - name: Create Release
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v3
         with:
           name: Pragmatica ${{ steps.version.outputs.VERSION }}
@@ -91,8 +119,11 @@ jobs:
 
       - name: Extract version from tag
         id: version
+        env:
+          DRY_RUN_VERSION: ${{ inputs.version }}
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
+          [[ "$GITHUB_EVENT_NAME" == push ]] || VERSION="$DRY_RUN_VERSION"
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           # A `-candidate` tag marks the artifact UNDER TEST. Neither the `latest` image tag nor
           # the GitHub "Latest release" pointer may follow it: doing so aims every un-pinned
@@ -110,7 +141,23 @@ jobs:
           chmod +x aether/dist/build-dist.sh
           aether/dist/build-dist.sh --version ${{ steps.version.outputs.VERSION }}
 
+      - name: Stage dry-run assets
+        if: github.event_name != 'push'
+        run: |
+          mkdir dryrun-assets
+          cp aether/dist/output/*.tar.gz aether/dist/output/*.zip dryrun-assets/
+
+      - name: Keep dry-run assets as a workflow artifact
+        if: github.event_name != 'push'
+        uses: actions/upload-artifact@v6
+        with:
+          name: dryrun-assets-macos
+          if-no-files-found: error
+          path: dryrun-assets/*
+          retention-days: 3
+
       - name: Upload macOS archives to release
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v3
         with:
           files: |
@@ -137,8 +184,11 @@ jobs:
 
       - name: Extract version from tag
         id: version
+        env:
+          DRY_RUN_VERSION: ${{ inputs.version }}
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
+          [[ "$GITHUB_EVENT_NAME" == push ]] || VERSION="$DRY_RUN_VERSION"
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           # A `-candidate` tag marks the artifact UNDER TEST. Neither the `latest` image tag nor
           # the GitHub "Latest release" pointer may follow it: doing so aims every un-pinned
@@ -162,7 +212,23 @@ jobs:
           chmod +x aether/dist/build-dist.sh
           aether/dist/build-dist.sh --version ${{ steps.version.outputs.VERSION }}
 
+      - name: Stage dry-run assets
+        if: github.event_name != 'push'
+        run: |
+          mkdir dryrun-assets
+          cp aether/dist/output/*.tar.gz aether/dist/output/*.zip dryrun-assets/
+
+      - name: Keep dry-run assets as a workflow artifact
+        if: github.event_name != 'push'
+        uses: actions/upload-artifact@v6
+        with:
+          name: dryrun-assets-linux-arm64
+          if-no-files-found: error
+          path: dryrun-assets/*
+          retention-days: 3
+
       - name: Upload arm64 archives to release
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v3
         with:
           files: |
@@ -185,7 +251,24 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
+      # Dry run: the same generate and verify over the assets the three jobs kept as artifacts; nothing is read from or written to a release.
+      - name: Download dry-run assets
+        if: github.event_name != 'push'
+        uses: actions/download-artifact@v6
+        with:
+          pattern: dryrun-assets-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Generate and verify SHA256SUMS (dry run)
+        if: github.event_name != 'push'
+        run: |
+          ls release-assets > assembled.txt
+          scripts/release-checksums.sh generate release-assets
+          scripts/release-checksums.sh verify release-assets assembled.txt
+
       - name: Generate SHA256SUMS over every published asset
+        if: github.event_name == 'push'
         run: |
           gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' > published.txt
           mkdir release-assets
@@ -194,10 +277,12 @@ jobs:
           scripts/release-checksums.sh verify release-assets published.txt
 
       - name: Upload SHA256SUMS
+        if: github.event_name == 'push'
         run: gh release upload "$GITHUB_REF_NAME" release-assets/SHA256SUMS --clobber
 
       # Re-read the release as a user would: fresh download of every published asset, the sums file included.
       - name: Verify the published release
+        if: github.event_name == 'push'
         run: |
           gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' > published-after.txt
           grep -x -F SHA256SUMS published-after.txt
@@ -206,6 +291,7 @@ jobs:
           scripts/release-checksums.sh verify published-check published-after.txt
 
   docker-publish:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     needs: build-and-release
     permissions:
@@ -224,8 +310,11 @@ jobs:
 
       - name: Extract version from tag
         id: version
+        env:
+          DRY_RUN_VERSION: ${{ inputs.version }}
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
+          [[ "$GITHUB_EVENT_NAME" == push ]] || VERSION="$DRY_RUN_VERSION"
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           # A `-candidate` tag marks the artifact UNDER TEST. Neither the `latest` image tag nor
           # the GitHub "Latest release" pointer may follow it: doing so aims every un-pinned
