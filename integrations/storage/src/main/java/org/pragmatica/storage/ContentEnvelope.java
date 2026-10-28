@@ -21,6 +21,10 @@ sealed interface ContentEnvelope {
 
     byte DIRECT = 'D';
     byte MANIFEST = 'M';
+    /// An object entry of the v2 store: the object's metadata and the id of its manifest block.
+    byte ENTRY = 'E';
+    /// A name binding of the v2 store: the id of the object a name points at.
+    byte NAME = 'N';
     String TRUSTED_REF_PREFIX = "|";
 
     /// The ref under which the content store keeps `name`'s value: `|` + name.
