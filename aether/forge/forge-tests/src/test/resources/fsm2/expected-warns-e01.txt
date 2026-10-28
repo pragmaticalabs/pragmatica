@@ -1,0 +1,22 @@
+# Expected operator WARNs and sensor lines for E-01 on FSM2 (deploy 1 slice x 3 on 3 cores).
+# Checked in BEFORE the implementation (phase-3 design 9.5 O6, 12 item 6). An amendment is a visible diff with a reason.
+# Scope and format: as in expected-warns-t1117.txt. O6 also requires lost = 0, settled_unknown = 0 and result=closed = 0
+# outside stop; those are asserted as metrics by the test, not listed here.
+
+# --- no fault: the write probe must stay silent (NT-134 (d) control) ---
+line   write-probe-resubmit                  0..0   # every ACTIVE write confirms in under 2 s
+metric probe_resubmit                        0..0
+metric confirm_timeout                       0..0
+warn   write-confirm-timeout                 0..0
+
+warn   deployment-engine-mismatch            0..0
+warn   identity-process-mismatch             0..0
+warn   join-unmatched                        0..0
+warn   departure-inferred                    0..0
+warn   deployment-fsm-backlog                0..0
+warn   deployment-localop-overrun            0..0
+warn   deployment-fsm-stop-timeout           0..0
+warn   slice-start-awaiting-target           0..0
+warn   stray-instance                        0..0
+warn   blueprint-rejected                    0..0
+warn   boot-token-absent                     0..0
