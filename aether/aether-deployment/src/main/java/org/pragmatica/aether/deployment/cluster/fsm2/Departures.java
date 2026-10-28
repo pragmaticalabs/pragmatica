@@ -35,9 +35,5 @@ public sealed interface Departures {
         return record.state() == DepartureState.DEPARTED;
     }
 
-    static boolean isAdmitted(NodeDepartureValue record) {
-        return record.state() == DepartureState.ADMITTED;
-    }
-
     record unused() implements Departures {}
 }
