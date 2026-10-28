@@ -80,11 +80,7 @@ class ApplyStateLedgerRefusalTest {
     }
 
     private static String applyStateJson(String clusterName, String resourceEntry) {
-        return """
-            {"clusterName": "%s", "configHash": "h", "startedAt": "2026-10-18T00:00:00Z",
-             "currentWaveIndex": 0, "waves": ["PENDING", "PENDING", "PENDING"],
-             "createdResources": [%s], "destroyedNodeIds": []}
-            """.formatted(clusterName, resourceEntry);
+        return ApplyStateFixtures.json(clusterName, resourceEntry);
     }
 
     private ClusterBootstrapConfig config(int coreCount) {
@@ -280,7 +276,7 @@ class ApplyStateLedgerRefusalTest {
         @Test
         void applyState_roundTrip_preservesAllSevenResourceTypes() {
             var state = allSevenTypes().stream()
-                                       .reduce(ApplyState.initialState(clusterName, "h", "2026-10-18T00:00:00Z"),
+                                       .reduce(ApplyStateFixtures.state(clusterName),
                                                ApplyState::withResource,
                                                (a, b) -> b);
 
