@@ -69,6 +69,7 @@ final class LocalObjectWriter implements ObjectWriter {
     @Override
     public Promise<Unit> write(ByteBuffer bytes) {
         Promise<Unit> done;
+        Option<Release> release;
 
         synchronized (lock) {
             if (failure != null) {
@@ -82,23 +83,27 @@ final class LocalObjectWriter implements ObjectWriter {
             done = Promise.promise();
             pendingWrite = done;
             input = bytes;
-            pump();
+            release = pump();
         }
+
+        release.onPresent(Release::resolve);
 
         return done;
     }
 
     /// Moves input into the chunk buffer, dispatching each full chunk while the window has room; with the window full it
-    /// stops, and the completion of a stored block calls it again. Settles the pending write when the input is consumed or a
-    /// block failed. Called with the lock held.
-    private void pump() {
+    /// stops, and the completion of a stored block calls it again. Releases the pending write when the input is consumed or a
+    /// block failed; the caller resolves it after leaving the lock. Resolving runs the producer's continuation, which may call
+    /// `write` at once: inside the pump that `write` would find the pump busy, and once the block that settled it was the
+    /// last one being stored nothing would pump again. Called with the lock held.
+    private Option<Release> pump() {
         if (pumping) {
-            return;
+            return Option.none();
         }
 
         pumping = true;
         try {
-            settleWrite();
+            return settleWrite();
         } finally {
             pumping = false;
         }
@@ -106,22 +111,27 @@ final class LocalObjectWriter implements ObjectWriter {
 
     /// A block store that completes while `dispatch` is still on the stack calls [#pump] again from inside the loop; the
     /// outer loop is the one that continues, so the nested call returns at once.
-    private void settleWrite() {
+    private Option<Release> settleWrite() {
         var settle = failure == null
                      ? consume()
                      : false;
 
-        if (pendingWrite != null && (failure != null || settle)) {
-            var done = pendingWrite;
-            var cause = failure;
+        if (pendingWrite == null || (failure == null && !settle)) {
+            return Option.none();
+        }
 
-            pendingWrite = null;
-            input = null;
-            if (cause == null) {
-                done.succeed(unit());
-            } else {
-                done.fail(cause);
-            }
+        var release = new Release(pendingWrite, Option.option(failure));
+
+        pendingWrite = null;
+        input = null;
+
+        return Option.some(release);
+    }
+
+    /// A pending write the pump has finished with, resolved outside the lock.
+    private record Release(Promise<Unit> write, Option<Cause> failure) {
+        Promise<Unit> resolve() {
+            return failure.fold(() -> write.succeed(unit()), write::fail);
         }
     }
 
@@ -185,11 +195,15 @@ final class LocalObjectWriter implements ObjectWriter {
     }
 
     private void blockSettled(Result<BlockId> result) {
+        Option<Release> release;
+
         synchronized (lock) {
             inFlight--;
             result.fold(this::markFailed, _ -> unit());
-            pump();
+            release = pump();
         }
+
+        release.onPresent(Release::resolve);
     }
 
     @Override
@@ -315,6 +329,7 @@ final class LocalObjectWriter implements ObjectWriter {
     @Override
     public Promise<Unit> abort() {
         List<Promise<BlockId>> blocks;
+        Option<Promise<Unit>> held;
 
         synchronized (lock) {
             if (closed) {
@@ -325,9 +340,13 @@ final class LocalObjectWriter implements ObjectWriter {
 
             closed = true;
             blocks = List.copyOf(stored);
+            held = Option.option(pendingWrite);
             pendingWrite = null;
             input = null;
         }
+        // a write held back by the full window fails rather than waiting forever: an ingress that aborts on disconnect may
+        // still be awaiting it
+        held.onPresent(write -> write.fail(WRITER_CLOSED));
 
         return settled(blocks).flatMap(results -> rollBack(creditedBy(results)));
     }
