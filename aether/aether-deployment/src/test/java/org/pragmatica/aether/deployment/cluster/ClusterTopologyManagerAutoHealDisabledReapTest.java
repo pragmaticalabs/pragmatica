@@ -304,6 +304,11 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
 
     private final AtomicReference<Option<String>> refusal = new AtomicReference<>(Option.none());
 
+    private void reactivate() {
+        ctm.deactivate();
+        ctm.activate();
+    }
+
     /// A node lost later is a new incarnation: it joined first, which drops what was remembered of the confirmed reap of the previous one.
     private void joinsAgain() {
         ctm.onMembershipDecision(MembershipDecision.nodeJoined(LOST, List.of(SELF, LOST)));
@@ -730,6 +735,37 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
         settle();
 
         assertThat(terminates.get()).as("a provider terminate with auto-heal disabled").isEqualTo(1);
+    }
+
+    /// A chain whose manager was deactivated between its listing and its decision belongs to no leader: it holds nothing, announces nothing, deletes
+    /// nothing (the next activation's replay owns the instance).
+    @Test
+    void confirmedReap_managerDeactivatedWhileTheListingIsInFlight_raisesNoHeldEvent_andTerminatesNothing() {
+        directedReapDoneThenAnotherInstanceUnderTheSameId();
+        var before = listings.get();
+        onNextListing.set(ctm::deactivate);
+
+        lost();
+        await().atMost(Duration.ofSeconds(5)).until(() -> listings.get() > before);
+        settle();
+
+        assertThat(eventsOf(OperatorWarningCode.INSTANCE_REAP_HELD)).as("a stale chain announced a hold").isZero();
+        assertThat(terminates.get()).isEqualTo(1);
+    }
+
+    /// The same for a chain of an earlier activation: the manager is active again, but the chain's epoch is not the current one.
+    @Test
+    void confirmedReap_activationMovedWhileTheListingIsInFlight_raisesNoHeldEvent_andTerminatesNothing() {
+        directedReapDoneThenAnotherInstanceUnderTheSameId();
+        var before = listings.get();
+        onNextListing.set(this::reactivate);
+
+        lost();
+        await().atMost(Duration.ofSeconds(5)).until(() -> listings.get() > before);
+        settle();
+
+        assertThat(eventsOf(OperatorWarningCode.INSTANCE_REAP_HELD)).as("a chain of an earlier activation announced a hold").isZero();
+        assertThat(terminates.get()).isEqualTo(1);
     }
 
     /// The confirmed no-op is still an attempt: a node that shows life after its reap was confirmed is not confirmed gone, and the attempt is retried
