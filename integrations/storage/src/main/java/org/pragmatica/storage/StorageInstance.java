@@ -1,6 +1,8 @@
 package org.pragmatica.storage;
 
 import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
@@ -256,6 +258,33 @@ public interface StorageInstance {
         return StorageError.NoDurableTier.noDurableTier(name()).promise();
     }
 
+    /// Writes `value` as version `version` of anchor `name` on EVERY durable tier ([StorageTier#isDurable]) at once, and
+    /// resolves only when all of them have: the acknowledgement rule of a block write (#1567). Any tier's failure fails
+    /// the call; the tiers that did succeed keep the version, which a later write of the same version replaces with the
+    /// same value. An instance with no durable tier refuses with [AnchorError.NoDurableTier].
+    ///
+    /// Once the write has succeeded, versions more than the instance's [AnchorRetention] below `version` are pruned in
+    /// the background, at most one prune per anchor at a time. A prune failure is logged and counted, never returned.
+    default Promise<Unit> putAnchor(AnchorName name, long version, byte[] value) {
+        return AnchorError.NoDurableTier.noDurableTier(name()).promise();
+    }
+
+    /// The highest version of anchor `name` that ANY durable tier holds, or none when no tier holds one. That is not
+    /// "the highest acknowledged version": a version whose [#putAnchor] failed may be on some tiers and is then returned,
+    /// so a caller treats the version of a failed put as possibly visible. Every durable tier is asked and any failure
+    /// fails the call: a partial view could miss the newest version.
+    ///
+    /// Fails closed, never with an older version in its place: a corrupt newest version on any tier fails with
+    /// [AnchorError.AnchorCorrupt], an object under the anchor's versions that is no version key with
+    /// [AnchorError.AnchorKeyMalformed], and one version holding different values on two tiers with
+    /// [AnchorError.AnchorDiverged]. Each raises `storage-anchor-corrupt` once per tier and anchor; a tier that merely
+    /// cannot answer fails the call without it. A later read that finds that tier's newest version whole again (a newer
+    /// version was written, or an operator accepted one) raises `storage-anchor-readable`. An instance with no durable
+    /// tier refuses with [AnchorError.NoDurableTier].
+    default Promise<Option<Anchor>> latestAnchor(AnchorName name) {
+        return AnchorError.NoDurableTier.noDurableTier(name()).promise();
+    }
+
     /// Instance name.
     String name();
     /// Tier utilization info.
@@ -349,6 +378,27 @@ public interface StorageInstance {
                                            AppendLog.TornTailSink tornTailSink,
                                            Consumer<BlockId> accessListener,
                                            int maxBlockBytes) {
+        return storageInstance(name,
+                               tiers,
+                               metadataStore,
+                               writePolicy,
+                               logRoot,
+                               tornTailSink,
+                               accessListener,
+                               maxBlockBytes,
+                               AnchorRetention.DEFAULT);
+    }
+
+    /// As above, with how many anchor versions the instance keeps below the newest ([#putAnchor]).
+    static StorageInstance storageInstance(String name,
+                                           List<StorageTier> tiers,
+                                           MetadataStore metadataStore,
+                                           WritePolicy writePolicy,
+                                           Option<Path> logRoot,
+                                           AppendLog.TornTailSink tornTailSink,
+                                           Consumer<BlockId> accessListener,
+                                           int maxBlockBytes,
+                                           AnchorRetention anchorRetention) {
         return new DefaultStorageInstance(name,
                                           tiers,
                                           metadataStore,
@@ -358,7 +408,8 @@ public interface StorageInstance {
                                           accessListener,
                                           DefaultStorageInstance.CacheMarkerLimits.DEFAULT,
                                           System::currentTimeMillis,
-                                          maxBlockBytes);
+                                          maxBlockBytes,
+                                          anchorRetention);
     }
 }
 
@@ -404,6 +455,11 @@ final class DefaultStorageInstance implements StorageInstance {
     private final Map<BlockId, Promise<Unit>> writing = new ConcurrentHashMap<>();
     private final Consumer<BlockId> accessListener;
     private final int maxBlockBytes;
+    private final List<StorageTier> durableTiers;
+    private final AnchorRetention anchorRetention;
+    /// The prune running for each anchor, resolving when it has finished; a write that finds one running starts none.
+    private final Map<AnchorName, Promise<Unit>> anchorPrunes = new ConcurrentHashMap<>();
+    private final AtomicLong anchorPruneFailures = new AtomicLong();
     /// Levels of the tiers that are cluster-shared: a copy there is not this node's, so a record that places
     /// the block only on these tiers holds nothing of this node's to track.
     private final Set<TierLevel> sharedLevels;
@@ -506,13 +562,39 @@ final class DefaultStorageInstance implements StorageInstance {
                            CacheMarkerLimits markerLimits,
                            LongSupplier clockMillis,
                            int maxBlockBytes) {
+        this(name,
+             tiers,
+             metadataStore,
+             writePolicy,
+             logRoot,
+             tornTailSink,
+             accessListener,
+             markerLimits,
+             clockMillis,
+             maxBlockBytes,
+             AnchorRetention.DEFAULT);
+    }
+
+    DefaultStorageInstance(String name,
+                           List<StorageTier> tiers,
+                           MetadataStore metadataStore,
+                           WritePolicy writePolicy,
+                           Option<Path> logRoot,
+                           AppendLog.TornTailSink tornTailSink,
+                           Consumer<BlockId> accessListener,
+                           CacheMarkerLimits markerLimits,
+                           LongSupplier clockMillis,
+                           int maxBlockBytes,
+                           AnchorRetention anchorRetention) {
         this.maxBlockBytes = maxBlockBytes;
+        this.anchorRetention = anchorRetention;
         this.accessListener = accessListener;
         this.markerLimits = markerLimits;
         this.clockMillis = clockMillis;
         this.name = name;
         this.tiers = List.copyOf(tiers);
         this.requiredTiers = requiredTiersOf(this.tiers);
+        this.durableTiers = this.tiers.stream().filter(StorageTier::isDurable).toList();
         this.cacheTiers = this.tiers.stream().filter(tier -> !requiredTiers.contains(tier)).toList();
         this.sharedLevels = sharedLevelsOf(this.tiers);
         this.metadataStore = metadataStore;
@@ -872,6 +954,138 @@ final class DefaultStorageInstance implements StorageInstance {
                             .flatMap(_ -> storeDurably(block))
                             .map(id -> repointRef(refName, id).current())
                             .map(id -> markSealed(log, toOffset, id));
+    }
+
+    @Override
+    public Promise<Unit> putAnchor(AnchorName name, long version, byte[] value) {
+        if (version < 0) {
+            return AnchorError.NegativeVersion.negativeVersion(name, version).promise();
+        }
+
+        return durableTiers.isEmpty()
+               ? AnchorError.NoDurableTier.noDurableTier(this.name).promise()
+               : allSucceeded(durableTiers.stream().map(tier -> tier.putAnchor(name, version, value)).toList()).withSuccess(_ -> startAnchorPrune(name,
+                                                                                                                                                  version))
+                             .mapToUnit();
+    }
+
+    @Override
+    public Promise<Option<Anchor>> latestAnchor(AnchorName name) {
+        return durableTiers.isEmpty()
+               ? AnchorError.NoDurableTier.noDurableTier(this.name).promise()
+               : allSucceeded(durableTiers.stream()
+                                          .map(tier -> tier.latestAnchor(name)
+                                                           .withSuccess(_ -> reportAnchorReadable(anchorPart(tier, name)))
+                                                           .withFailure(cause -> reportAnchorCorrupt(anchorPart(tier,
+                                                                                                                name),
+                                                                                                     cause)))
+                                          .toList()).flatMap(found -> newestAnchor(name, found));
+    }
+
+    /// The prune running for `name`, if any. Test seam.
+    Option<Promise<Unit>> anchorPruneInFlight(AnchorName name) {
+        return option(anchorPrunes.get(name));
+    }
+
+    /// Tier prunes that failed since the instance was built. Test seam.
+    long anchorPruneFailures() {
+        return anchorPruneFailures.get();
+    }
+
+    /// Waits for every promise, so no write is still in flight when the call fails; then fails with the first failure's
+    /// own cause, so a caller can tell [AnchorError.AnchorCorrupt] from a tier that could not answer.
+    private static <T> Promise<List<T>> allSucceeded(List<Promise<T>> promises) {
+        return Promise.allOf(promises).flatMap(DefaultStorageInstance::firstFailureOrValues);
+    }
+
+    private static <T> Promise<List<T>> firstFailureOrValues(List<Result<T>> results) {
+        return Option.from(results.stream().filter(Result::isFailure).findFirst()).fold(() -> Result.allOf(results.stream()).async(),
+                                                                                        failed -> failed.<List<T>> flatMap(_ -> Result.allOf(results.stream()))
+                                                                                                        .async());
+    }
+
+    private Promise<Option<Anchor>> newestAnchor(AnchorName name, List<Option<Anchor>> found) {
+        var held = found.stream().flatMap(Option::stream).toList();
+        var newest = held.stream().max(Comparator.comparingLong(Anchor::version));
+
+        return Option.from(newest).fold(() -> Promise.success(Option.<Anchor> none()),
+                                        anchor -> held.stream()
+                                                      .allMatch(other -> other.version() != anchor.version() || Arrays.equals(other.value(),
+                                                                                                                              anchor.value()))
+                                                  ? agreed(name, anchor)
+                                                  : diverged(name, anchor.version()));
+    }
+
+    private Promise<Option<Anchor>> agreed(AnchorName name, Anchor anchor) {
+        reportAnchorReadable(name.value() + "@diverged");
+
+        return Promise.success(some(anchor));
+    }
+
+    private Unit reportAnchorReadable(String part) {
+        degrade.get()
+               .recoveredFor(OperatorWarningCode.STORAGE_ANCHOR_CORRUPT,
+                             part,
+                             "Anchor {} reads back as written again",
+                             part);
+
+        return unit();
+    }
+
+    private Promise<Option<Anchor>> diverged(AnchorName name, long version) {
+        var cause = AnchorError.AnchorDiverged.anchorDiverged(name, version);
+
+        reportAnchorCorrupt(name.value() + "@diverged", cause);
+
+        return cause.promise();
+    }
+
+    /// What one anchor condition is keyed by: the tier's place among the durable tiers (two tiers may share a level) and
+    /// the anchor's name.
+    private String anchorPart(StorageTier tier, AnchorName name) {
+        return name.value() + "@" + durableTiers.indexOf(tier) + ":" + tier.level();
+    }
+
+    private Unit reportAnchorCorrupt(String part, Cause cause) {
+        if (cause instanceof AnchorError.AnchorCorrupt || cause instanceof AnchorError.AnchorDiverged || cause instanceof AnchorError.AnchorKeyMalformed) {
+            degrade.get().degradedFor(OperatorWarningCode.STORAGE_ANCHOR_CORRUPT, part, "{}", cause.message());
+        }
+
+        return unit();
+    }
+
+    private Unit startAnchorPrune(AnchorName name, long version) {
+        var below = version - anchorRetention.versions();
+        var running = Promise.<Unit> promise();
+
+        if (below > 0 && anchorPrunes.putIfAbsent(name, running) == null) {
+            Promise.allOf(durableTiers.stream()
+                                      .map(tier -> tier.pruneAnchors(name,
+                                                                     below,
+                                                                     anchorRetention.scanLimit())
+                                                       .withFailure(cause -> countPruneFailure(tier, name, cause)))
+                                      .toList()).onResult(_ -> finishAnchorPrune(name, running));
+        }
+
+        return unit();
+    }
+
+    private Unit countPruneFailure(StorageTier tier, AnchorName name, Cause cause) {
+        anchorPruneFailures.incrementAndGet();
+        log.warn("Pruning anchor {} on the {} tier of '{}' failed; a later write prunes again: {}",
+                 name.value(),
+                 tier.level(),
+                 this.name,
+                 cause.message());
+
+        return unit();
+    }
+
+    private Unit finishAnchorPrune(AnchorName name, Promise<Unit> running) {
+        anchorPrunes.remove(name, running);
+        running.succeed(unit());
+
+        return unit();
     }
 
     @Override

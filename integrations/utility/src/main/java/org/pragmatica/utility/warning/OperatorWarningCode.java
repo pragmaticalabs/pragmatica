@@ -584,6 +584,16 @@ public enum OperatorWarningCode {
     /// instance; the message names the tier and the block. Raised once per instance (later corrupt reads are in the node log only), and
     /// nothing observable proves a repair, so there is no recovery code.
     STORAGE_INTEGRITY_FAILED("storage-integrity-failed", "storage", WarningLevel.CRITICAL),
+    /// The newest version of a durable anchor on one tier cannot be read back as written, or two durable tiers hold
+    /// different values for it. The anchor is not read, and no older version is read in its place, until an operator
+    /// accepts a version. The subject is `<instance>/<anchor>@<tier position>:<tier level>` (`@diverged` when two tiers
+    /// disagree), so each tier and anchor is throttled and closed on its own; raised once per subject. Closed by
+    /// [#STORAGE_ANCHOR_READABLE].
+    STORAGE_ANCHOR_CORRUPT("storage-anchor-corrupt", "storage", WarningLevel.CRITICAL),
+    /// The recovery of [#STORAGE_ANCHOR_CORRUPT], same subject: the newest version of that anchor on that tier reads back
+    /// as written again (a newer version was written, or an operator accepted one). INFO, published only after a published
+    /// [#STORAGE_ANCHOR_CORRUPT].
+    STORAGE_ANCHOR_READABLE("storage-anchor-readable", "storage", WarningLevel.INFO, STORAGE_ANCHOR_CORRUPT),
     /// A write-behind flush to a slower tier failed, so the block is acknowledged but not yet on that tier. The subject is the instance. Closed
     /// by [#STORAGE_WRITE_BEHIND_FLUSHED].
     STORAGE_WRITE_BEHIND_FLUSH_FAILED("storage-write-behind-flush-failed", "storage", WarningLevel.WARNING),

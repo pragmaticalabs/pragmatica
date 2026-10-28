@@ -13,6 +13,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.storage.AnchorName;
+import org.pragmatica.storage.AnchorRetention;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.BlockLifecycle;
 import org.pragmatica.storage.DemotionManager;
@@ -700,6 +702,57 @@ class StorageMaintenanceWiringTest {
     @Test
     void configDefaultMaxBlockBytes_isTheInstanceDefault() {
         assertThat(StorageConfig.DEFAULT_MAX_BLOCK_BYTES).isEqualTo(StorageInstance.DEFAULT_MAX_BLOCK_BYTES);
+    }
+
+    /// A3-0 (AF3): `[storage.<name>] anchor_retention` reaches that instance's anchor pruning: after writing versions
+    /// 1..6 with a retention of 2, the content instance's disk tier keeps versions 4..6.
+    @Test
+    void createAll_anchorRetentionFromConfig_boundsThatInstancesAnchors() throws Exception {
+        var defaults = StorageConfig.storageConfig();
+        var content = storageConfigAt(defaults, contentBlocksDir(), contentDir.resolve("snapshots"), defaults.memoryMaxBytes())
+            .withAnchorRetention(2);
+        var setups = StorageFactory.createAll(Map.of(ARTIFACTS,
+                                                     storageConfigAt(defaults, artifactsDir, artifactsDir.resolve("snapshots"),
+                                                                     defaults.memoryMaxBytes()),
+                                                     CONTENT,
+                                                     content),
+                                              "test-node",
+                                              Option.none(),
+                                              Option.none())
+                                   .onFailure(cause -> fail("createAll must succeed: " + cause.message()))
+                                   .unwrap();
+        var name = AnchorName.anchorName("ahse-dir/content").unwrap();
+        var instance = setups.get(CONTENT).instance();
+
+        for (long version = 1; version <= 6; version++) {
+            instance.putAnchor(name, version, new byte[]{(byte) version})
+                    .await()
+                    .onFailure(cause -> fail("anchor write: " + cause.message()));
+        }
+
+        var anchors = contentBlocksDir().resolve("anchors").resolve("ahse-dir~content");
+        var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+
+        while (anchorFiles(anchors) != 3 && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+
+        assertThat(anchorFiles(anchors)).as("versions 4..6 kept: a background prune bounded by anchor_retention = 2")
+                                        .isEqualTo(3);
+        assertThat(instance.latestAnchor(name).await().unwrap().unwrap().version()).isEqualTo(6);
+    }
+
+    private static long anchorFiles(Path directory) throws java.io.IOException {
+        try (var files = Files.list(directory)) {
+            return files.filter(file -> !file.getFileName().toString().endsWith(".partial")).count();
+        }
+    }
+
+    /// The config's anchor retention default and floor are the storage module's; two modules, so they are pinned here.
+    @Test
+    void configAnchorRetention_isTheInstanceDefaultAndFloor() {
+        assertThat(StorageConfig.DEFAULT_ANCHOR_RETENTION).isEqualTo(AnchorRetention.DEFAULT.versions());
+        assertThat(StorageConfig.MIN_ANCHOR_RETENTION).isEqualTo(AnchorRetention.MINIMUM);
     }
 
     /// The production maintenance path: the REAL composite managers over the FULL setups map (so the
