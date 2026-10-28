@@ -112,28 +112,23 @@ final class ConnectionFactoryJooqR2dbcOperations implements JooqR2dbcOperations 
 
     @Override
     public <R extends Record> Promise<R> fetchOne(ResultQuery<R> query) {
-        return withConnection(conn -> Promise.lift(e -> R2dbcError.fromException(e,
-                                                                                 query.getSQL()),
-                                                   () -> DSL.using(conn, dialect).fetch(query))
-                                             .flatMap(result -> extractSingleRecord(result).async()));
+        return withConnection(conn -> JooqR2dbcQueries.fetchAll(conn, dialect, query)
+                                                      .flatMap(records -> extractSingleRecord(records).async()));
     }
 
     @Override
     public <R extends Record> Promise<Option<R>> fetchOptional(ResultQuery<R> query) {
-        return withConnection(conn -> Promise.lift(e -> R2dbcError.fromException(e, query.getSQL()),
-                                                   () -> fetchOptionalRecord(conn, query)));
+        return withConnection(conn -> JooqR2dbcQueries.fetchAll(conn, dialect, query).map(ConnectionFactoryJooqR2dbcOperations::firstRecord));
     }
 
     @Override
     public <R extends Record> Promise<List<R>> fetch(ResultQuery<R> query) {
-        return withConnection(conn -> Promise.lift(e -> R2dbcError.fromException(e, query.getSQL()),
-                                                   () -> DSL.using(conn, dialect).fetch(query)));
+        return withConnection(conn -> JooqR2dbcQueries.fetchAll(conn, dialect, query));
     }
 
     @Override
     public Promise<Integer> execute(Query query) {
-        return withConnection(conn -> Promise.lift(e -> R2dbcError.fromException(e, query.getSQL()),
-                                                   () -> DSL.using(conn, dialect).execute(query)));
+        return withConnection(conn -> JooqR2dbcQueries.execute(conn, dialect, query));
     }
 
     @Override
@@ -141,7 +136,7 @@ final class ConnectionFactoryJooqR2dbcOperations implements JooqR2dbcOperations 
         return dsl;
     }
 
-    private static <R extends Record> Result<R> extractSingleRecord(org.jooq.Result<R> result) {
+    private static <R extends Record> Result<R> extractSingleRecord(List<R> result) {
         if (result.isEmpty()) {
             return R2dbcError.NoResult.INSTANCE.result();
         }
@@ -153,9 +148,7 @@ final class ConnectionFactoryJooqR2dbcOperations implements JooqR2dbcOperations 
         return success(result.getFirst());
     }
 
-    private <R extends Record> Option<R> fetchOptionalRecord(Connection conn, ResultQuery<R> query) {
-        var result = DSL.using(conn, dialect).fetch(query);
-
+    private static <R extends Record> Option<R> firstRecord(List<R> result) {
         return result.isEmpty()
                ? Option.none()
                : Option.some(result.getFirst());
