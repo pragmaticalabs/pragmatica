@@ -13,6 +13,7 @@ import java.util.stream.Collectors;
 
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.docker.DockerComputeProvider;
 import org.pragmatica.aether.environment.docker.DockerNetwork;
@@ -1111,7 +1112,51 @@ sealed interface BootstrapCleanup {
                                           CleanupResolvers resolvers) {
         System.out.printf("  Destroying VM %s (provider: %s)...%n", vm.resourceId(), vm.provider());
 
-        return resolveComputeForVm(state, vm, resolvers).flatMap(compute -> terminateInstance(compute, vm.resourceId()));
+        return resolveComputeForVm(state, vm, resolvers).flatMap(compute -> terminateVm(compute, vm));
+    }
+
+    private static Result<Unit> terminateVm(ComputeProvider compute, CreatedResource.ProvisionedVm vm) {
+        return DOCKER_PROVIDER.equalsIgnoreCase(vm.provider())
+               ? terminateContainer(compute, vm.resourceId())
+               : terminateInstance(compute, vm.resourceId());
+    }
+
+    /// #2124 — a docker bootstrap records each container's name BEFORE it creates the container, so a ledger can hold a name whose create
+    /// never ran or was rolled back. Docker reports terminating a container that is not there as a plain failure (not `InstanceNotFound`),
+    /// so a failed terminate is not read as "still there": the host is listed, and a container absent from the listing is already gone. A
+    /// listing that fails leaves the terminate's own failure standing.
+    private static Result<Unit> terminateContainer(ComputeProvider compute, String resourceId) {
+        return terminateInstance(compute, resourceId).fold(cause -> goneOrFailed(compute, resourceId, cause),
+                                                           Result::success);
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<Unit> goneOrFailed(ComputeProvider compute, String resourceId, Cause cause) {
+        return compute.listInstances()
+                      .await()
+                      .fold(_ -> cause.<Unit> result(),
+                            listed -> goneFromListing(listed, resourceId, cause));
+    }
+
+    private static Result<Unit> goneFromListing(List<InstanceInfo> listed, String resourceId, Cause cause) {
+        return listed.stream()
+                     .anyMatch(info -> namesContainer(info, resourceId))
+               ? cause.result()
+               : containerGone(resourceId);
+    }
+
+    private static boolean namesContainer(InstanceInfo info, String resourceId) {
+        var id = info.id().value();
+
+        return info.nodeId()
+                   .filter(resourceId::equals)
+                   .isPresent() || (!id.isEmpty() && (resourceId.startsWith(id) || id.startsWith(resourceId)));
+    }
+
+    private static Result<Unit> containerGone(String resourceId) {
+        System.out.printf("  Container %s is not on the docker host — treating as destroyed%n", resourceId);
+
+        return Result.unitResult();
     }
 
     /// RFC-0016 W4 — VM reaping resolves compute from the persisted handle; the raw-env resolver is a loud

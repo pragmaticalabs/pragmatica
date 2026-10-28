@@ -23,6 +23,8 @@ import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.CloudProviderSupport;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
+import org.pragmatica.aether.environment.InstanceInfo;
+import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionContext;
@@ -34,9 +36,11 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.aether.environment.docker.DockerComputeProvider;
 import org.pragmatica.aether.environment.docker.DockerNetwork;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import static org.pragmatica.aether.cli.cluster.BootstrapPhase.PROVISION;
 import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
@@ -55,12 +59,20 @@ sealed interface BootstrapPhaseProvision {
         var allNodes = new ArrayList<ProvisionedNode>();
         var clusterName = ctx.config().cluster().name();
         var mgmtPort = ctx.config().operations().ports().management();
+        var ledger = DockerNodeLedger.persisted(ctx.state());
         var dockerCores = DockerCores.mint(ctx.config().sources(),
-                                           clusterName);
+                                           clusterName,
+                                           ledger);
         var networks = ensureDockerNetwork(ctx);
 
         if (networks.isFailure()) {
             return networks.map(_ -> ctx);
+        }
+
+        var planned = recordDockerPlan(ctx, ledger, dockerCores);
+
+        if (planned.isFailure()) {
+            return planned.map(_ -> ctx);
         }
 
         var createdNetworks = networks.or(List.of());
@@ -70,7 +82,7 @@ sealed interface BootstrapPhaseProvision {
             var source = entry.getValue();
 
             persistCleanupHandle(ctx, sourceName, source);
-            var result = provisionSource(ctx, sourceName, source, mgmtPort, clusterName, dockerCores);
+            var result = provisionSource(ctx, sourceName, source, mgmtPort, clusterName, dockerCores, ledger);
 
             if (result.isFailure()) {
                 return result.map(_ -> ctx);
@@ -82,6 +94,41 @@ sealed interface BootstrapPhaseProvision {
         var updatedState = buildUpdatedState(ctx, allNodes, createdNetworks);
 
         return success(ctx.withNodes(List.copyOf(allNodes)).withState(updatedState));
+    }
+
+    /// #2124 — RECORD BEFORE CREATE: every container name of every docker source goes into the persisted ledger before the first
+    /// container of the bootstrap is created. A core is created with the names of ALL cores in its peers list, so the plan must be
+    /// durable as a whole, not name by name; and a name that is only in memory is gone when the process dies, which is how a re-run
+    /// minted a second set and left the first running. A name the ledger cannot hold is not created: the phase fails with nothing made.
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
+    private static Result<Unit> recordDockerPlan(BootstrapContext ctx,
+                                                 DockerNodeLedger ledger,
+                                                 DockerCores dockerCores) {
+        for (var entry : ctx.config().sources().entrySet()) {
+            var source = entry.getValue();
+
+            if (source.type() != SourceType.DOCKER) {
+                continue;
+            }
+
+            for (var role : DockerCores.ROLE_ORDER) {
+                for (var id : dockerCores.idsFor(entry.getKey(), role)) {
+                    var recorded = ledger.record(resolveProviderName(source), entry.getKey(), role, id);
+
+                    if (recorded.isFailure()) {
+                        return recorded.mapError(cause -> notRecorded(ctx, id, cause));
+                    }
+                }
+            }
+        }
+
+        return Result.unitResult();
+    }
+
+    private static Cause notRecorded(BootstrapContext ctx, String id, Cause cause) {
+        return new BootstrapError.ProvisionFailed(ctx.state().clusterName().value(),
+                                                  "docker node " + id
+                                                 + " was not created: it could not be recorded in the bootstrap ledger first — " + cause.message());
     }
 
     /// A docker source needs the network its containers join (#2131): `docker run --network <name>` fails with "network not found" when nothing created
@@ -154,12 +201,13 @@ sealed interface BootstrapPhaseProvision {
 
             for (var node : allNodes) {
                 if (belongsTo(node.nodeId(), sourceName)) {
-                    state = state.withResource(CreatedResource.ProvisionedVm.provisionedVm(providerName,
-                                                                                           node.serverId(),
-                                                                                           sourceName.value(),
-                                                                                           parseNodeId(node.nodeId()).map(parsed -> parsed.role()
-                                                                                                                                          .value())
-                                                                                                      .or("")));
+                    state = withResourceOnce(state,
+                                             CreatedResource.ProvisionedVm.provisionedVm(providerName,
+                                                                                         node.serverId(),
+                                                                                         sourceName.value(),
+                                                                                         parseNodeId(node.nodeId()).map(parsed -> parsed.role()
+                                                                                                                                        .value())
+                                                                                                    .or("")));
                 }
             }
 
@@ -167,6 +215,15 @@ sealed interface BootstrapPhaseProvision {
         }
 
         return state;
+    }
+
+    /// A docker node's row is written before its create (#2124), and the success path states it again: the same row is not a second
+    /// resource, and a duplicate would make destroy remove one container twice.
+    private static BootstrapState withResourceOnce(BootstrapState state, CreatedResource resource) {
+        return state.createdResources()
+                    .contains(resource)
+               ? state
+               : state.withResource(resource);
     }
 
     /// #994 — the cleanup ledger must be able to NAME a paid VM the moment that VM exists, and the
@@ -485,9 +542,26 @@ sealed interface BootstrapPhaseProvision {
                                                          int managementPort,
                                                          ClusterName clusterName,
                                                          DockerCores dockerCores) {
+        return provisionSource(ctx,
+                               sourceName,
+                               source,
+                               managementPort,
+                               clusterName,
+                               dockerCores,
+                               DockerNodeLedger.none());
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")
+    static Result<List<ProvisionedNode>> provisionSource(BootstrapContext ctx,
+                                                         SourceName sourceName,
+                                                         SourceProfile source,
+                                                         int managementPort,
+                                                         ClusterName clusterName,
+                                                         DockerCores dockerCores,
+                                                         DockerNodeLedger ledger) {
         return switch (source.type()) {
             case CLOUD -> provisionCloudSource(ctx, sourceName, source, clusterName);
-            case DOCKER -> provisionDockerSource(ctx, sourceName, source, clusterName, dockerCores);
+            case DOCKER -> provisionDockerSource(ctx, sourceName, source, clusterName, dockerCores, ledger);
             case SSH -> provisionSshSource(sourceName, source);
             case FORGE -> provisionForgeSource(sourceName, source, managementPort);
         };
@@ -518,16 +592,19 @@ sealed interface BootstrapPhaseProvision {
                                                                        SourceName sourceName,
                                                                        SourceProfile source,
                                                                        ClusterName clusterName,
-                                                                       DockerCores dockerCores) {
+                                                                       DockerCores dockerCores,
+                                                                       DockerNodeLedger ledger) {
         return provisionWithCompute(role -> ProviderResolver.resolveDockerCompute(source,
                                                                                   NodeUserDataRenderer.pinnedImageFor(ctx.config(),
                                                                                                                       source,
                                                                                                                       role),
                                                                                   ctx.clusterSecret()),
+                                    () -> ProviderResolver.resolveDockerComputeWithoutBackup(clusterName),
                                     sourceName,
                                     source,
                                     clusterName,
-                                    dockerCores);
+                                    dockerCores,
+                                    ledger);
     }
 
     /// Package-visible so a test can drive the real call site with a recording provider (#2089).
@@ -553,22 +630,46 @@ sealed interface BootstrapPhaseProvision {
                                                               SourceProfile source,
                                                               ClusterName clusterName,
                                                               DockerCores dockerCores) {
-        return provisionWithCompute(_ -> Result.success(compute), sourceName, source, clusterName, dockerCores);
+        return provisionWithCompute(compute, sourceName, source, clusterName, dockerCores, DockerNodeLedger.none());
     }
 
-    /// The compute is chosen per role (#1543 F2: each role's profile may pin its own image).
+    /// `compute` both creates the containers and answers the lookups of an earlier run's: a test hands one recording provider for both.
+    static Result<List<ProvisionedNode>> provisionWithCompute(ComputeProvider compute,
+                                                              SourceName sourceName,
+                                                              SourceProfile source,
+                                                              ClusterName clusterName,
+                                                              DockerCores dockerCores,
+                                                              DockerNodeLedger ledger) {
+        return provisionWithCompute(_ -> Result.success(compute),
+                                    () -> Result.success(compute),
+                                    sourceName,
+                                    source,
+                                    clusterName,
+                                    dockerCores,
+                                    ledger);
+    }
+
+    /// The compute is chosen per role (#1543 F2: each role's profile may pin its own image). `scoped` is the cluster-scoped provider
+    /// that lists and removes this cluster's containers: the creating one is not scoped, and an unscoped docker provider refuses to list.
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
     private static Result<List<ProvisionedNode>> provisionWithCompute(Fn1<Result<ComputeProvider>, NodeRole> computeFor,
+                                                                      Fn0<Result<ComputeProvider>> scoped,
                                                                       SourceName sourceName,
                                                                       SourceProfile source,
                                                                       ClusterName clusterName,
-                                                                      DockerCores dockerCores) {
+                                                                      DockerCores dockerCores,
+                                                                      DockerNodeLedger ledger) {
         var allNodes = new ArrayList<ProvisionedNode>();
-        var roleOrder = List.of(NodeRole.CORE, NodeRole.WORKER, NodeRole.SPOT);
-        var coreIds = dockerCores.idsFor(sourceName.value());
         var peers = dockerCores.peers();
+        var found = existingContainers(sourceName, dockerCores, ledger, scoped);
 
-        for (var role : roleOrder) {
+        if (found.isFailure()) {
+            return found.map(_ -> List.<ProvisionedNode> of());
+        }
+
+        var existing = found.or(Map.of());
+
+        for (var role : DockerCores.ROLE_ORDER) {
             var roleTable = option(source.roles().get(role));
             var result = roleTable.flatMap(rt -> rt.count())
                                   .map(count -> computeFor.apply(role)
@@ -578,8 +679,11 @@ sealed interface BootstrapPhaseProvision {
                                                                                                  count,
                                                                                                  source,
                                                                                                  clusterName,
-                                                                                                 coreIds,
-                                                                                                 peers)));
+                                                                                                 dockerCores.idsFor(sourceName.value(),
+                                                                                                                    role),
+                                                                                                 peers,
+                                                                                                 existing,
+                                                                                                 scoped)));
 
             if (result.isPresent()) {
                 var provisionResult = result.unwrap();
@@ -648,6 +752,44 @@ sealed interface BootstrapPhaseProvision {
 
     static final String DOCKER_HOST_ADDRESS = "127.0.0.1";
 
+    /// #2124 — what an earlier run of this bootstrap left on the docker host, by container name, for the names the ledger held when
+    /// the phase started. Only those names can name a container that already exists; a fresh name cannot, so a first run asks nothing.
+    /// A listing that fails is a failure of the phase, not an empty answer: "could not look" must not read as "nothing is there",
+    /// or the next step creates a second container beside the one it could not see.
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<Map<String, InstanceInfo>> existingContainers(SourceName sourceName,
+                                                                        DockerCores dockerCores,
+                                                                        DockerNodeLedger ledger,
+                                                                        Fn0<Result<ComputeProvider>> scoped) {
+        var recorded = DockerCores.ROLE_ORDER.stream()
+                                             .flatMap(role -> dockerCores.idsFor(sourceName.value(),
+                                                                                 role)
+                                                                         .stream())
+                                             .filter(ledger::wasRecorded)
+                                             .toList();
+
+        return recorded.isEmpty()
+               ? Result.success(Map.of())
+               : scoped.apply()
+                       .flatMap(compute -> compute.listInstances()
+                                                  .await())
+                       .map(listed -> namedAmong(listed, recorded));
+    }
+
+    private static Map<String, InstanceInfo> namedAmong(List<InstanceInfo> listed, List<String> names) {
+        var byName = new LinkedHashMap<String, InstanceInfo>();
+
+        for (var info : listed) {
+            var name = info.nodeId().or(info.id().value());
+
+            if (names.contains(name)) {
+                byName.put(name, info);
+            }
+        }
+
+        return Map.copyOf(byName);
+    }
+
     @SuppressWarnings("JBCT-EX-01")
     private static Result<List<ProvisionedNode>> provisionRoleGroup(ComputeProvider compute,
                                                                     SourceName sourceName,
@@ -655,8 +797,10 @@ sealed interface BootstrapPhaseProvision {
                                                                     int count,
                                                                     SourceProfile source,
                                                                     ClusterName clusterName,
-                                                                    List<String> coreIds,
-                                                                    String peers) {
+                                                                    List<String> ids,
+                                                                    String peers,
+                                                                    Map<String, InstanceInfo> existing,
+                                                                    Fn0<Result<ComputeProvider>> scoped) {
         logProvisionRole(sourceName, source.type(), role, Option.some(count));
         var instanceType = source.roles().containsKey(role)
                            ? source.roles().get(role).instanceType().or("default")
@@ -665,29 +809,25 @@ sealed interface BootstrapPhaseProvision {
         var nodes = new ArrayList<ProvisionedNode>();
 
         for (var i = 0; i < count; i++) {
-            var minted = Option.some(role == NodeRole.CORE
-                                     ? coreIds.get(i)
-                                     : ProvisionContext.mintNodeId(Option.some(clusterName)));
+            var id = ids.get(i);
+            var key = sourceName.value() + "-" + role.value() + "-" + nodes.size();
             var context = ProvisionContext.provisionContext(Option.some(clusterName),
                                                             role.value(),
                                                             sourceName,
-                                                            minted,
+                                                            Option.some(id),
                                                             Option.some(peers),
                                                             ProvisionContext.DEFAULT_CORE_MAX,
                                                             ProvisionContext.PROVISIONED_BY_BOOTSTRAP,
                                                             Map.of());
-            var provisioned = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
-                                                          instanceType,
-                                                          role.value(),
-                                                          context)
-                                           .map(spec -> applyZone(spec, zone))
-                                           .flatMap(spec -> CloudProviderSupport.provisionOne(compute,
-                                                                                              sourceName.value()
-                                                                                             + "-" + role.value()
-                                                                                             + "-" + nodes.size(),
-                                                                                              spec)
-                                                                                .await())
-                                           .flatMap(BootstrapPhaseProvision::withPublishedManagementPort);
+            var provisioned = placeNode(compute,
+                                        scoped,
+                                        option(existing.get(id)),
+                                        key,
+                                        id,
+                                        instanceType,
+                                        role,
+                                        zone,
+                                        context);
 
             if (provisioned.isFailure()) {
                 return provisioned.map(_ -> List.<ProvisionedNode> of());
@@ -697,6 +837,86 @@ sealed interface BootstrapPhaseProvision {
         }
 
         return success(List.copyOf(nodes));
+    }
+
+    /// #2124 — one slot of a docker role group, by what an earlier run left for its name. A RUNNING container is the node: adopted,
+    /// nothing created. One that exists but is not running has failed: it is removed and the SAME name created again, because the
+    /// name is in every core's peers list. A name with no container is created. Never a second container for one name.
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<ProvisionedNode> placeNode(ComputeProvider compute,
+                                                     Fn0<Result<ComputeProvider>> scoped,
+                                                     Option<InstanceInfo> existing,
+                                                     String key,
+                                                     String id,
+                                                     String instanceType,
+                                                     NodeRole role,
+                                                     String zone,
+                                                     ProvisionContext context) {
+        if (existing.filter(info -> info.status() == InstanceStatus.RUNNING).isPresent()) {
+            logAdopted(id);
+
+            return withPublishedManagementPort(ProvisionedNode.provisionedNode(key, id, DOCKER_HOST_ADDRESS));
+        }
+
+        return removeFailedContainer(scoped, existing, id).flatMap(_ -> createNode(compute,
+                                                                                   key,
+                                                                                   id,
+                                                                                   instanceType,
+                                                                                   role,
+                                                                                   zone,
+                                                                                   context));
+    }
+
+    private static Result<Unit> removeFailedContainer(Fn0<Result<ComputeProvider>> scoped,
+                                                      Option<InstanceInfo> failed,
+                                                      String id) {
+        return failed.map(info -> removeContainer(scoped, info, id))
+                     .or(Result.unitResult());
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<Unit> removeContainer(Fn0<Result<ComputeProvider>> scoped, InstanceInfo info, String id) {
+        logReplacing(id, info.status());
+
+        return scoped.apply()
+                     .flatMap(compute -> compute.terminate(info.id())
+                                                .await());
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<ProvisionedNode> createNode(ComputeProvider compute,
+                                                      String key,
+                                                      String id,
+                                                      String instanceType,
+                                                      NodeRole role,
+                                                      String zone,
+                                                      ProvisionContext context) {
+        return ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
+                                           instanceType,
+                                           role.value(),
+                                           context)
+                            .map(spec -> applyZone(spec, zone))
+                            .flatMap(spec -> CloudProviderSupport.provisionOne(compute, key, spec).await())
+                            .flatMap(BootstrapPhaseProvision::withPublishedManagementPort)
+                            .map(node -> namedByContainer(node, id));
+    }
+
+    /// The node's server handle is its container NAME: that is what the ledger row written before the create holds, so the row the
+    /// success path states is the same row. The name addresses the container to every docker command as the provider's id does.
+    private static ProvisionedNode namedByContainer(ProvisionedNode node, String name) {
+        return ProvisionedNode.provisionedNode(node.nodeId(), name, node.publicIp(), node.managementPort());
+    }
+
+    @Contract
+    private static void logAdopted(String id) {
+        System.out.printf("  Adopting container %s left by an earlier run (running)%n", id);
+    }
+
+    @Contract
+    private static void logReplacing(String id, InstanceStatus status) {
+        System.out.printf("  Container %s left by an earlier run is %s: removing it to create it again under the same name%n",
+                          id,
+                          status);
     }
 
     /// #994 verification finding SF-2 — package-visible so a test can drive **the real call site**, not
