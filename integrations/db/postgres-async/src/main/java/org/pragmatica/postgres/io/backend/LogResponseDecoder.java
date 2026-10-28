@@ -48,9 +48,12 @@ public abstract class LogResponseDecoder<M extends LogResponse> implements Decod
                 message = value;
             }
         }
-
         // `S` is localized by the server's lc_messages; `V` (9.6+) is not, so it wins and `S` is the fallback.
-        return asMessage(level != null ? level : localizedLevel, code, message);
+        return asMessage(level != null
+                         ? level
+                         : localizedLevel,
+                         code,
+                         message);
     }
 
     protected abstract M asMessage(String level, String code, String message);
