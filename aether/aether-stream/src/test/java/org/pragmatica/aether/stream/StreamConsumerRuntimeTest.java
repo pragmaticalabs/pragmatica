@@ -2672,20 +2672,32 @@ class StreamConsumerRuntimeTest {
     /// #1238 [unverified] item, traced: a ring released on role loss (`completeRelease` -> `ring.close()`,
     /// which clears the append listeners) leaves a consumer that stays assigned here with neither a
     /// listener nor a poller. The periodic attachment check must notice and fall back to polling.
+    ///
+    /// The delivery loop's pass that delivered offset 0 can still be running (or run once more, on a notification that
+    /// arrived during it) when the cursor shows 1, and its next read, with the ring already gone, is served by the owner's
+    /// log: offsets 1 and 2 reach the handler although no listener or poller exists, which the "nothing moves" control
+    /// reads as a defect. So the owner's log is closed (`ownerServing` false, reads return nothing) until the loop has been
+    /// silent for a window, and opened only then: from that point only a listener or a poller could deliver.
     @Nested
     class RingReleasedUnderConsumer {
         private static final long REMOTE_HEAD_EXCLUSIVE = 3L;
+        private static final long SILENT_WINDOW_MS = 300;
+        private static final long AWAIT_BOUND_MS = 30_000;
 
         @Test
         void revalidatePushAttachments_fallsBackToPolling_whenTheRingIsReleased() throws Exception {
             var releasing = streamPartitionManager(64 * 1024 * 1024L);
             var role = new AtomicReference<>(Role.OWNER);
             var delivered = new CopyOnWriteArrayList<Long>();
+            var ownerServing = new AtomicBoolean(false);
+            var reads = new AtomicInteger();
             var consumer = new ConsumerRuntimeState(releasing,
                                                     DeadLetterHandler.deadLetterHandler(),
                                                     none(),
                                                     none(),
                                                     (stream, partition, from, max) -> localOrRemote(releasing,
+                                                                                                    ownerServing,
+                                                                                                    reads,
                                                                                                     stream,
                                                                                                     partition,
                                                                                                     from,
@@ -2715,9 +2727,16 @@ class StreamConsumerRuntimeTest {
                 releasing.reconcileReshuffle();
                 assertThat(releasing.partitionBuffer("s", 0).isPresent()).describedAs("ring released on role loss")
                           .isFalse();
-                Thread.sleep(300);
+                awaitNoReadsFor(reads);
+                assertThat(delivered).describedAs("the loop is silent and the owner's log is closed").containsExactly(0L);
+
+                var readsBeforeOpening = reads.get();
+
+                ownerServing.set(true);
+                Thread.sleep(SILENT_WINDOW_MS);
                 assertThat(delivered).describedAs("the defect state: listener cleared by close, no poller — nothing moves")
                           .containsExactly(0L);
+                assertThat(reads.get()).describedAs("and nothing reads the owner's log either").isEqualTo(readsBeforeOpening);
 
                 consumer.revalidatePushAttachments();
                 awaitSize(delivered, 3);
@@ -2745,12 +2764,19 @@ class StreamConsumerRuntimeTest {
         /// Stands in for the node's routed reader: local while the ring is here, else the owner's log
         /// (offsets `from` .. [#REMOTE_HEAD_EXCLUSIVE]).
         private static Promise<List<OffHeapRingBuffer.RawEvent>> localOrRemote(StreamPartitionManager local,
+                                                                                AtomicBoolean ownerServing,
+                                                                                AtomicInteger reads,
                                                                                 String stream,
                                                                                 int partition,
                                                                                 long from,
                                                                                 int max) {
+            reads.incrementAndGet();
             if (local.partitionBuffer(stream, partition).isPresent()) {
                 return local.readLocal(stream, partition, from, max).async();
+            }
+
+            if (!ownerServing.get()) {
+                return Promise.success(List.of());
             }
 
             return Promise.success(LongStream.range(from, REMOTE_HEAD_EXCLUSIVE)
@@ -2767,11 +2793,25 @@ class StreamConsumerRuntimeTest {
         }
 
         private static void awaitSize(List<Long> delivered, int size) throws InterruptedException {
-            var deadline = System.currentTimeMillis() + 2_000;
+            var deadline = System.currentTimeMillis() + AWAIT_BOUND_MS;
 
             while (delivered.size() < size && System.currentTimeMillis() < deadline) {
                 Thread.sleep(10);
             }
+            assertThat(delivered).describedAs("deliveries within %d ms", AWAIT_BOUND_MS).hasSizeGreaterThanOrEqualTo(size);
+        }
+
+        /// Returns once the reader has not been called for [#SILENT_WINDOW_MS]: no pass is running or about to run.
+        private static void awaitNoReadsFor(AtomicInteger reads) throws InterruptedException {
+            var deadline = System.currentTimeMillis() + AWAIT_BOUND_MS;
+            var seen = reads.get();
+
+            Thread.sleep(SILENT_WINDOW_MS);
+            while (reads.get() != seen && System.currentTimeMillis() < deadline) {
+                seen = reads.get();
+                Thread.sleep(SILENT_WINDOW_MS);
+            }
+            assertThat(reads.get()).describedAs("the delivery loop went silent within %d ms", AWAIT_BOUND_MS).isEqualTo(seen);
         }
     }
 
