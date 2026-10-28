@@ -324,6 +324,17 @@ class BootTokensLedgerTest {
     }
 
     @Test
+    void mergeOffered_inATwoSeatCluster_noOfferEverEndsTheWipedState_becauseTheOnlyOtherSeatIsTheJoiner() {
+        var wiped = boot(DurableWriter.fileOps(), false);
+
+        wiped.seats(SELF_SEAT, Set.of(SEAT_A));
+        wiped.mergeOffered(SEAT_A, Option.some(RETIRES_GONE)).await(BOUND);
+        wiped.mergeOffered(SEAT_A, Option.some(RETIRES_GONE)).await(BOUND);
+
+        assertThat(admitPeer(wiped)).isEqualTo(Admission.UNAVAILABLE);
+    }
+
+    @Test
     void mergeOffered_fromANodeThatIsNoConfiguredSeat_isIgnored() {
         var wiped = wipedOfThreeSeats(DurableWriter.fileOps());
 

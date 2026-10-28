@@ -14,7 +14,13 @@ import java.util.function.BooleanSupplier;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.Mockito;
 import org.pragmatica.aether.config.StorageConfig;
+import org.pragmatica.consensus.net.IdentityFacts;
+import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.rabia.ProtocolConfig;
+import org.pragmatica.consensus.topology.TopologyConfig;
+import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.BootTokens.Admission;
@@ -310,6 +316,49 @@ class IdentityLedgerWiringTest {
         synchronized (events) {
             assertThat(events).as("both transitions are about this node").allSatisfy(event -> assertThat(event.subject()).isEqualTo(SELF.id()));
         }
+    }
+
+    /// The majority a wiped core waits for is counted over these seats: the core-role entries of the configured topology, this node
+    /// included, and no worker.
+    @Test
+    void configuredCoreSeats_areTheCoreRoleEntriesOfTheConfiguredTopology() {
+        var config = Mockito.mock(AetherNodeConfig.class);
+        var address = new NodeAddress("127.0.0.1", 9000);
+        var core = NodeInfo.nodeInfo(new NodeId("c1"), address);
+        var labelledCore = NodeInfo.nodeInfo(new NodeId("c2"), address, Map.of(NodeInfo.LABEL_ROLE, "core"));
+        var worker = NodeInfo.nodeInfo(new NodeId("w1"), address, Map.of(NodeInfo.LABEL_ROLE, "worker"));
+
+        Mockito.when(config.topology()).thenReturn(new TopologyConfig(new NodeId("c1"), 5, TimeSpan.timeSpan(1).seconds(), TimeSpan.timeSpan(10).seconds(), List.of(core, labelledCore, worker)));
+
+        assertThat(IdentityLedgerWiring.configuredCoreSeats(config)).containsExactlyInAnyOrder(new NodeId("c1"), new NodeId("c2"));
+    }
+
+    /// Booting from a configuration hands the registry the configured seats: a wiped node of three seats leaves that state on the
+    /// offers of two OTHER seats than the one joining, and not before.
+    @Test
+    void wire_fromAConfiguration_countsTheWipedMajorityOverTheConfiguredCoreSeats() throws Exception {
+        var ledger = directory.resolve("identity").resolve("c1").resolve("ledger");
+        var address = new NodeAddress("127.0.0.1", 9000);
+        var config = Mockito.mock(AetherNodeConfig.class);
+        var tokens = BootTokens.bootTokens(1L);
+
+        Files.createDirectories(ledger.getParent());
+        Mockito.when(config.self()).thenReturn(new NodeId("c1"));
+        Mockito.when(config.topology()).thenReturn(new TopologyConfig(new NodeId("c1"), 5, TimeSpan.timeSpan(1).seconds(), TimeSpan.timeSpan(10).seconds(),
+                                                                      List.of(NodeInfo.nodeInfo(new NodeId("c1"), address),
+                                                                              NodeInfo.nodeInfo(new NodeId("c2"), address),
+                                                                              NodeInfo.nodeInfo(new NodeId("c3"), address))));
+        Mockito.when(config.protocol()).thenReturn(ProtocolConfig.testConfig(Option.none(), Option.some(ledger)));
+        Mockito.when(config.storageConfig()).thenReturn(Map.of());
+        IdentityLedgerWiring.wire(config, tokens, sink);
+
+        assertThat(tokens.admit(PEER_A, 10L)).as("control: wiped").isEqualTo(Admission.UNAVAILABLE);
+
+        tokens.mergeOffered(new NodeId("c2"), Option.some(IdentityFacts.identityFacts())).await(BOUND);
+        assertThat(tokens.admit(PEER_A, 10L)).as("one seat heard: no majority without the joiner's own offer").isEqualTo(Admission.UNAVAILABLE);
+
+        tokens.mergeOffered(new NodeId("c3"), Option.some(IdentityFacts.identityFacts())).await(BOUND);
+        assertThat(tokens.admit(PEER_A, 10L)).as("two seats heard").isEqualTo(Admission.ADMITTED);
     }
 
     private static String readFile(Path file) {
