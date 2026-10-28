@@ -113,6 +113,17 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING.level()).isEqualTo(WarningLevel.WARNING);
     }
 
+    /// #2201 C-16, owner ruling 2026-10-28 on Q11: a cursor expiry is critical and closed by an INFO recovery of the same
+    /// subsystem when the cursor is re-established; both wire strings are pinned.
+    @Test
+    void cursorExpired_isCritical_andIsClosedByCursorResumed() {
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED.code()).isEqualTo("stream-consumer-cursor-expired");
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED.level()).isEqualTo(WarningLevel.CRITICAL);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_RESUMED.code()).isEqualTo("stream-consumer-cursor-resumed");
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_RESUMED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_RESUMED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED);
+    }
+
     /// #2450 A3-0: a corrupt durable anchor is critical and closed by an INFO recovery of the same subsystem.
     @Test
     void anchorCorrupt_isCritical_andIsClosedByAnInfoRecovery() {
@@ -255,9 +266,6 @@ class OperatorWarningCodeTest {
         OperatorWarningCode.STREAM_PROMOTION_PAST_UNREACHABLE_PEERS,
         OperatorWarningCode.STREAM_CONSUMER_DETACH_FOUND_NOTHING,
         OperatorWarningCode.STREAM_CONSUMER_REWOUND,
-        // #2201 C-16, added on purpose at the overhaul/streams merge: a CRITICAL point event by owner ruling Q11 (e4bcbd2c7b), raised
-        // once per expiry and never per poll; the records it skipped are gone, so no event can close it.
-        OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED,
         OperatorWarningCode.OFFLINE_FRAMES_EXPIRED,
         OperatorWarningCode.ENTITY_OWNERSHIP_UNSETTLED_MINT,
         OperatorWarningCode.SWIM_MEMBER_ADDRESS_CONFLICT,

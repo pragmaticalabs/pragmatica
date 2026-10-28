@@ -36,6 +36,7 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 import static org.pragmatica.utility.warning.OperatorWarningCode.STREAM_CONSUMER_BACK_IN_RING;
 import static org.pragmatica.utility.warning.OperatorWarningCode.STREAM_CONSUMER_BEHIND_RING;
 import static org.pragmatica.utility.warning.OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED;
+import static org.pragmatica.utility.warning.OperatorWarningCode.STREAM_CONSUMER_CURSOR_RESUMED;
 import static org.pragmatica.utility.warning.OperatorWarningCode.STREAM_CONSUMER_SEALED_RANGE_MISSING;
 import static org.pragmatica.utility.warning.OperatorWarningCode.STREAM_CONSUMER_SEALED_RANGE_RESTORED;
 
@@ -116,6 +117,69 @@ class ConsumerBehindTheRingTest {
             assertThat(warning.subject()).contains(GROUP).contains("@7");
             assertThat(warning.message()).contains(GROUP).contains("skipped 7 records at offsets [0, 7)").contains("from 0 to 7");
         });
+    }
+
+    /// Owner ruling 2026-10-28 on Q11: the expiry is closed by `stream-consumer-cursor-resumed` on its own subject once a
+    /// read from the offset the cursor moved to succeeds, and only after the expiry was raised.
+    @Test
+    void cursorExpired_isClosedByCursorResumed_whenAReadFromTheNewCursorSucceeds() throws InterruptedException {
+        start((from, _) -> switch (from.intValue()) {
+            case 0 -> new StreamError.CursorExpired(0L, 7L).<StreamPartitionManager.EpochRead> promise();
+            case 7 -> tier(events(7, 8), E1);
+            default -> ring(List.of(), E1);
+        });
+
+        keepWaking(() -> delivered.size() >= 2 && !warningsOf(STREAM_CONSUMER_CURSOR_RESUMED).isEmpty());
+
+        var expired = warningsOf(STREAM_CONSUMER_CURSOR_EXPIRED).getFirst();
+
+        assertThat(warningsOf(STREAM_CONSUMER_CURSOR_RESUMED)).singleElement().satisfies(warning -> {
+            assertThat(warning.code().level()).isEqualTo(WarningLevel.INFO);
+            assertThat(warning.subject()).isEqualTo(expired.subject());
+            assertThat(warning.message()).contains("a read from the offset it moved to succeeded");
+        });
+        assertThat(codes()).containsSubsequence(STREAM_CONSUMER_CURSOR_EXPIRED, STREAM_CONSUMER_CURSOR_RESUMED);
+    }
+
+    /// A second expiry before any read from the first one's offset ends the first episode as moved, on the first subject;
+    /// the second is closed by its own read.
+    @Test
+    void secondExpiryBeforeARead_endsTheFirstEpisodeAsMoved() throws InterruptedException {
+        start((from, _) -> switch (from.intValue()) {
+            case 0 -> new StreamError.CursorExpired(0L, 7L).<StreamPartitionManager.EpochRead> promise();
+            case 7 -> new StreamError.CursorExpired(7L, 12L).<StreamPartitionManager.EpochRead> promise();
+            case 12 -> tier(events(12, 12), E1);
+            default -> ring(List.of(), E1);
+        });
+
+        keepWaking(() -> delivered.contains(12L) && warningsOf(STREAM_CONSUMER_CURSOR_RESUMED).size() >= 2);
+
+        assertThat(warningsOf(STREAM_CONSUMER_CURSOR_EXPIRED)).extracting(OperatorWarning::subject)
+                                                              .containsExactly(subjectAt(7), subjectAt(12));
+        assertThat(warningsOf(STREAM_CONSUMER_CURSOR_RESUMED)).satisfiesExactly(
+            moved -> assertThat(moved.subject() + " " + moved.message()).startsWith(subjectAt(7)).contains("moved again"),
+            read -> assertThat(read.subject() + " " + read.message()).startsWith(subjectAt(12)).contains("a read from the offset it moved to succeeded"));
+    }
+
+    /// A consumer cancelled after an expiry and before any read from the new cursor succeeded would leave the CRITICAL open
+    /// for good: its recovery is raised with the reason.
+    @Test
+    void cancelBeforeAReadFromTheExpiredCursor_resolvesTheExpiry() throws InterruptedException {
+        start((from, _) -> from == 0L
+                           ? new StreamError.CursorExpired(0L, 7L).<StreamPartitionManager.EpochRead> promise()
+                           : new SegmentError.SealInFlight(STREAM, 0, from).promise());
+        keepWaking(() -> !warningsOf(STREAM_CONSUMER_CURSOR_EXPIRED).isEmpty() && readsAt.containsKey(7L));
+
+        runtime.close();
+        awaitWarnings(2);
+
+        assertThat(codes()).containsExactly(STREAM_CONSUMER_CURSOR_EXPIRED, STREAM_CONSUMER_CURSOR_RESUMED);
+        assertThat(warnings.getLast().subject()).isEqualTo(subjectAt(7));
+        assertThat(warnings.getLast().message()).contains("cancelled");
+    }
+
+    private String subjectAt(long offset) {
+        return warningsOf(STREAM_CONSUMER_CURSOR_EXPIRED).getFirst().subject().replaceAll("@\\d+$", "") + "@" + offset;
     }
 
     /// NT-07: a divergence rewinds and never resets; an expiry after the rewind resets from the REWOUND cursor and leaves the

@@ -240,7 +240,7 @@ grep -i "slice\|artifact" /var/log/aether/aether.log | tail -100
 
 **Actions:**
 
-1. Read the message: it names the group, the partition, the skipped range `[from, to)` and its count. Nothing reopens the range; the warning has no recovery event.
+1. Read the message: it names the group, the partition, the skipped range `[from, to)` and its count. Nothing reopens the range. The alert is closed by `stream-consumer-cursor-resumed` (INFO, same subject) once the cursor is re-established: a read from the new offset succeeded, the cursor moved again, or the consumer was cancelled. The recovery closes the alert, not the loss.
 2. If the records matter, replay that range from its source into the stream.
 3. Stop it recurring: raise the stream's retention, or give the group more capacity so it keeps up. A group that falls behind the ring first raises `stream-consumer-behind-ring`; acting on that is the early warning.
 

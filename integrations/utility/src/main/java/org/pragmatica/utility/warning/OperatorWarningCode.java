@@ -320,9 +320,18 @@ public enum OperatorWarningCode {
     /// A stream consumer's position is no longer held by its partition's owner (reclaimed by retention) and the group had not
     /// read it, so its cursor was moved forward to the earliest offset the owner holds and the range will never be delivered (#2201 C-16; the single exception to
     /// redelivery-never-skip, owner ruling Q9). CRITICAL (Q11): the group lost records it was configured to receive. Raised
-    /// once per expiry, never per poll; a point event with no recovery, like [#STREAM_CONSUMER_REWOUND]: the skip is done
-    /// and nothing later undoes it. The message names the group, the partition, the skipped range and its count.
+    /// once per expiry, never per poll, and closed by [#STREAM_CONSUMER_CURSOR_RESUMED] once the cursor is re-established;
+    /// that closes the alert, never the loss: the skip is done and nothing later undoes it. The message names the group, the
+    /// partition, the skipped range and its count.
     STREAM_CONSUMER_CURSOR_EXPIRED("stream-consumer-cursor-expired", "stream-consumer", WarningLevel.CRITICAL),
+    /// The recovery of a [#STREAM_CONSUMER_CURSOR_EXPIRED], same subject (owner ruling 2026-10-28 on Q11: no unclosed
+    /// expiry): the group's cursor is re-established, because a read from the offset it moved to succeeded, the cursor moved
+    /// again first (a later expiry or a rewind), or the consumer was cancelled (the message says which). The skipped range
+    /// stays undelivered.
+    STREAM_CONSUMER_CURSOR_RESUMED("stream-consumer-cursor-resumed",
+                                   "stream-consumer",
+                                   WarningLevel.INFO,
+                                   STREAM_CONSUMER_CURSOR_EXPIRED),
     /// A stream consumer waits at an offset that no sealed segment holds while a later offset is sealed: a hole in the
     /// sealed range, above what retention reclaimed (#2201 C-16). The cursor does not move; the group retries with the poll
     /// backoff until the range is repaired. Retention never reclaims at or above a hole (its bound stops at the contiguous

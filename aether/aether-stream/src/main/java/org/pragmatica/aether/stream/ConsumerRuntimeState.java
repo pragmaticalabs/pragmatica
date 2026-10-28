@@ -1431,6 +1431,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                            StreamPartitionManager.EpochRead read) {
         state.adoptOwnerEpoch(read.ownerEpoch());
         endHoleEpisode(key, state, HoleEnd.READ);
+        endExpiryEpisode(key, state, ExpiryEnd.READ);
         trackBehindRing(key, state, read.fromTier());
 
         return pollSucceeded(key, state, read.events(), moreBehindTheRing(read));
@@ -1510,7 +1511,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// exists elsewhere). This is the
     /// single carve-out of `865e181df5` (redelivery, never skip), recorded by the owner's ruling `e3aa3b9b94` (Q9 A): the
     /// reclaimed range is never delivered, and the skip is raised as `stream-consumer-cursor-expired` (CRITICAL, Q11 A) naming
-    /// the range. Not a rewind: no rewind epoch is minted and the owner epoch is unchanged. The move is made only from the
+    /// the range, and closed by `stream-consumer-cursor-resumed` once the cursor is re-established (owner ruling 2026-10-28 on
+    /// Q11). Not a rewind: no rewind epoch is minted and the owner epoch is unchanged. The move is made only from the
     /// offset the failed read was issued at, so a rewind or an epoch re-seek that moved the cursor meanwhile wins and the
     /// stale expiry is a failed pass. The new cursor is checkpointed at once (I-10), so a restart or a failover resumes at it
     /// instead of at the reclaimed offset, which would expire and be raised again.
@@ -1524,6 +1526,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
         endHoleEpisode(key, state, HoleEnd.RECLAIMED);
         warnCursorExpired(key, requested, earliest);
+        openExpiryEpisode(key, state, earliest);
         requestCheckpoint(key, state);
 
         return Promise.success(true);
@@ -1534,7 +1537,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         OperatorWarnings.raise(WARNINGS_LOG,
                                operatorWarnings,
                                OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED,
-                               consumerSubject(key) + "@" + earliest,
+                               expirySubject(key, earliest),
                                "Consumer group {} on {}[{}] skipped {} records at offsets [{}, {}): they are no longer held by this "
                               + "partition's owner (reclaimed by retention) and the group had not read them. Its cursor moved "
                               + "forward from {} to {}, the earliest offset the owner holds; those records will not be delivered",
@@ -1546,6 +1549,59 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                earliest,
                                requested,
                                earliest);
+    }
+
+    /// The expiry episode is recorded only AFTER its warning is raised, so no recovery can precede it (the reason
+    /// [#openHoleEpisode] gives). An earlier expiry that no read resumed from is ended as moved. A cancel hook that ran first
+    /// leaves the episode unrecorded, and this call raises its recovery itself, exactly once.
+    @Contract
+    private void openExpiryEpisode(ConsumerKey key, ConsumerState state, long earliest) {
+        var replaced = state.openExpiryEpisode(earliest);
+
+        if (replaced == ConsumerState.EXPIRY_CANCELLED) {
+            raiseCursorResumed(key, earliest, ExpiryEnd.CANCELLED);
+        } else {
+            raiseCursorResumed(key, replaced, ExpiryEnd.MOVED);
+        }
+    }
+
+    /// How a `stream-consumer-cursor-expired` episode ended; its recovery message says which.
+    enum ExpiryEnd {
+        READ("a read from the offset it moved to succeeded"),
+        MOVED("the cursor moved again before a read from it succeeded"),
+        CANCELLED("the consumer was cancelled before a read from it succeeded");
+        private final String text;
+        ExpiryEnd(String text) {
+            this.text = text;
+        }
+    }
+
+    @Contract
+    private void endExpiryEpisode(ConsumerKey key, ConsumerState state, ExpiryEnd end) {
+        raiseCursorResumed(key, state.endExpiryEpisode(), end);
+    }
+
+    @Contract
+    private void raiseCursorResumed(ConsumerKey key, long earliest, ExpiryEnd end) {
+        if (earliest < 0) {
+            return;
+        }
+
+        OperatorWarnings.raise(WARNINGS_LOG,
+                               operatorWarnings,
+                               OperatorWarningCode.STREAM_CONSUMER_CURSOR_RESUMED,
+                               expirySubject(key, earliest),
+                               "Consumer group {} on {}[{}] has its cursor re-established after it expired to offset {}: {}. "
+                              + "The skipped range stays undelivered",
+                               key.groupId(),
+                               key.streamName(),
+                               key.partition(),
+                               earliest,
+                               end.text);
+    }
+
+    private static String expirySubject(ConsumerKey key, long earliest) {
+        return consumerSubject(key) + "@" + earliest;
     }
 
     /// #2201 C-16: the cursor is inside a hole of the sealed range, above what retention reclaimed. The range may be about to
@@ -1684,8 +1740,9 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                reason);
     }
 
-    /// A consumer cancelled while behind the ring or waiting at a hole would leave that alert open for good, so its end is
-    /// reported too (owner rule: every operator-facing condition gets a recovery), as [#endEscapeRunOnCancel] does.
+    /// A consumer cancelled while behind the ring, waiting at a hole or before a read resumed it from an expiry would leave
+    /// that alert open for good, so its end is reported too (owner rule: every operator-facing condition gets a recovery), as
+    /// [#endEscapeRunOnCancel] does.
     @Contract
     private void endEpisodesOnCancel(ConsumerKey key, ConsumerState state) {
         if (state.cancelBehindRing()) {
@@ -1693,6 +1750,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         }
 
         raiseHoleEnd(key, state.cancelHoleEpisode(), HoleEnd.CANCELLED);
+        raiseCursorResumed(key, state.cancelExpiryEpisode(), ExpiryEnd.CANCELLED);
     }
 
     /// #1873 (KIP-320): the owner replaced the lineage this consumer's cursor belongs to (a restart without a WAL, a
@@ -1707,6 +1765,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         state.rewindTo(resume, diverged.ownerEpoch());
         if (resume < from) {
             endHoleEpisode(key, state, HoleEnd.MOVED);
+            endExpiryEpisode(key, state, ExpiryEnd.MOVED);
             announceRewind(key, from, resume, diverged);
         }
 
@@ -2119,6 +2178,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         static final long NO_HOLE = -1L;
         static final long HOLE_OPENING = -2L;
         static final long HOLE_CANCELLED = -3L;
+        static final long NO_EXPIRY = -1L;
+        static final long EXPIRY_CANCELLED = -3L;
         static final int RING_NONE = 0;
         static final int RING_OPENING = 1;
         static final int RING_OPEN = 2;
@@ -2177,6 +2238,10 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         /// #2201 C-16: the offset of the open `stream-consumer-sealed-range-missing` episode, or [#NO_HOLE], [#HOLE_OPENING]
         /// (claimed, its warning not yet raised) or [#HOLE_CANCELLED] (sticky: no episode opens again).
         private final AtomicLong holeEpisodeAt = new AtomicLong(NO_HOLE);
+        /// #2201 C-16, owner ruling 2026-10-28 on Q11: the offset the cursor moved to in the open
+        /// `stream-consumer-cursor-expired` episode (no read from it has succeeded yet), or [#NO_EXPIRY], or
+        /// [#EXPIRY_CANCELLED] (sticky: no episode opens again).
+        private final AtomicLong expiryEpisodeAt = new AtomicLong(NO_EXPIRY);
         private final AtomicLong lastCheckpointTime = new AtomicLong(System.currentTimeMillis());
         private final AtomicLong lastPollTime = new AtomicLong(System.currentTimeMillis());
         /// #654: detail of the most recent cursor commit failure for this consumer, cleared on the
@@ -2322,6 +2387,34 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             return previous >= 0
                    ? previous
                    : NO_HOLE;
+        }
+
+        /// Records the expiry episode at `earliest`, after its warning was raised. Returns what it replaced: an earlier
+        /// episode's offset (the caller ends it as moved), [#NO_EXPIRY], or [#EXPIRY_CANCELLED] when the cancel hook ran
+        /// first. In that last case nothing is recorded and the caller owes the recovery.
+        long openExpiryEpisode(long earliest) {
+            return expiryEpisodeAt.getAndUpdate(open -> open == EXPIRY_CANCELLED
+                                                        ? EXPIRY_CANCELLED
+                                                        : earliest);
+        }
+
+        /// Ends the open expiry episode; its offset, or [#NO_EXPIRY] when none was open. Called on every successful read,
+        /// so the common case (no episode) is a plain volatile read, not a write.
+        long endExpiryEpisode() {
+            var open = expiryEpisodeAt.get();
+
+            return open >= 0 && expiryEpisodeAt.compareAndSet(open, NO_EXPIRY)
+                   ? open
+                   : NO_EXPIRY;
+        }
+
+        /// The cancel hook's close: the offset of the open expiry episode, or [#NO_EXPIRY]; either way none opens again.
+        long cancelExpiryEpisode() {
+            var previous = expiryEpisodeAt.getAndSet(EXPIRY_CANCELLED);
+
+            return previous >= 0
+                   ? previous
+                   : NO_EXPIRY;
         }
 
         /// Whether this call claimed the right to open a behind-the-ring episode: false while another opener holds the claim,
