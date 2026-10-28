@@ -106,6 +106,8 @@ public interface IdentityLedger {
     }
 
     Path file();
+    /// The offers a WIPED node has been handed and not yet acted on, kept beside the ledger (#2429, ID-1c).
+    OfferJournal offers();
     /// Read the file and settle the state this node starts in. `createdNow` is the caller's statement that this node is
     /// being created now (its ledger directory did not exist), which turns a missing file into [Origin#CREATED]. A
     /// CREATED ledger is written empty at once, so a later restart finds a file and does not mistake itself for a
@@ -124,6 +126,8 @@ public interface IdentityLedger {
 
     static IdentityLedger identityLedger(Path file, DurableWriter writer) {
         return new FileLedger(file,
+                              OfferJournal.offerJournal(file.resolveSibling(file.getFileName() + ".offers"),
+                                                        writer),
                               writer,
                               new AtomicReference<>(IdentityFacts.identityFacts()),
                               new AtomicReference<>(IdentityFacts.identityFacts()),
@@ -135,6 +139,7 @@ public interface IdentityLedger {
     }
 
     record FileLedger(Path file,
+                      OfferJournal offers,
                       DurableWriter writer,
                       AtomicReference<IdentityFacts> state,
                       AtomicReference<IdentityFacts> written,

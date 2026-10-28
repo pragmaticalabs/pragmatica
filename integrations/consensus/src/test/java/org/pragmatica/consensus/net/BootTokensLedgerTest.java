@@ -310,6 +310,93 @@ class BootTokensLedgerTest {
     }
 
     /// The hazard of #2429: a retired stray process with an empty fresh ledger reaches the wiped core first, again and again.
+    private static final NodeId STRAY = new NodeId("stray-x");
+    private static final IdentityFacts NOTHING = IdentityFacts.identityFacts();
+
+    private Admission hello(BootTokens registry, NodeId from, long token, IdentityFacts offer) {
+        return registry.admitOffered(from, token, Option.some(offer)).await(BOUND).unwrap();
+    }
+
+    /// (a) The stray comes first, then the legitimate peer: the state ends on {stray, legit}; the legitimate peer's Hello is the one
+    /// that ended it, so it is not admitted then but on its redial; the stray, judged against the merged ledger, is refused.
+    @Test
+    void helloes_aStrayFirstThenALegitPeer_endTheWipedState_andTheStrayIsRefused() throws Exception {
+        var wiped = boot(DurableWriter.fileOps(), false);
+
+        wiped.seats(SELF_SEAT, Set.of(SEAT_A, STRAY));
+
+        assertThat(hello(wiped, STRAY, FIRST, NOTHING)).isEqualTo(Admission.UNAVAILABLE);
+        assertThat(Files.exists(file())).as("one voucher: still wiped").isFalse();
+        assertThat(hello(wiped, SEAT_A, OTHER, IdentityFacts.terminated(STRAY, BootTokens.TOKEN_CONFLICT)))
+            .as("this Hello ends the state, and the peer that sent it is judged on its redial").isEqualTo(Admission.UNAVAILABLE);
+        assertThat(Files.readString(file())).as("the union is on disk").contains("stray-x");
+        assertThat(hello(wiped, SEAT_A, OTHER, NOTHING)).isEqualTo(Admission.ADMITTED);
+        assertThat(hello(wiped, STRAY, FIRST, NOTHING)).as("the stray is refused on its redial").isEqualTo(Admission.RETIRED);
+    }
+
+    /// (b) The hazard of #2429: a lone retired stray with an empty fresh ledger, however often it comes.
+    @Test
+    void helloes_aLoneStray_neverEndTheWipedState() {
+        var wiped = wipedOfThreeSeats(DurableWriter.fileOps());
+
+        for (var attempt = 0; attempt < 4; attempt++) {
+            assertThat(hello(wiped, SEAT_A, FIRST, NOTHING)).isEqualTo(Admission.UNAVAILABLE);
+        }
+
+        assertThat(Files.exists(file())).isFalse();
+    }
+
+    /// (c) Three seats, both legitimate peers up.
+    @Test
+    void helloes_ofBothOtherSeats_endTheWipedState_thenBothAreAdmittedOnTheirRedial() {
+        var wiped = wipedOfThreeSeats(DurableWriter.fileOps());
+
+        assertThat(hello(wiped, SEAT_A, FIRST, NOTHING)).isEqualTo(Admission.UNAVAILABLE);
+        assertThat(hello(wiped, SEAT_C, OTHER, NOTHING)).as("an empty offer from a legitimate peer counts").isEqualTo(Admission.UNAVAILABLE);
+        assertThat(hello(wiped, SEAT_A, FIRST, NOTHING)).isEqualTo(Admission.ADMITTED);
+        assertThat(hello(wiped, SEAT_C, OTHER, NOTHING)).isEqualTo(Admission.ADMITTED);
+    }
+
+    /// (d) Only one legitimate peer is reachable: it is no majority of the two other seats; the node stays wiped (known limitation).
+    @Test
+    void helloes_ofOnlyOneLegitPeer_leaveTheNodeWiped() {
+        var wiped = wipedOfThreeSeats(DurableWriter.fileOps());
+
+        for (var attempt = 0; attempt < 3; attempt++) {
+            assertThat(hello(wiped, SEAT_A, FIRST, RETIRES_GONE)).isEqualTo(Admission.UNAVAILABLE);
+        }
+
+        assertThat(Files.exists(file())).isFalse();
+        assertThat(wiped.isRetired(GONE)).isFalse();
+    }
+
+    /// A Hello that carries no offer cannot complete the majority: only seats that offered are counted.
+    @Test
+    void aHelloWithoutAnOffer_doesNotCompleteTheMajority() {
+        var wiped = wipedOfThreeSeats(DurableWriter.fileOps());
+
+        assertThat(hello(wiped, SEAT_A, FIRST, NOTHING)).isEqualTo(Admission.UNAVAILABLE);
+        assertThat(wiped.admitOffered(SEAT_C, OTHER, Option.none()).await(BOUND).unwrap()).isEqualTo(Admission.UNAVAILABLE);
+        assertThat(Files.exists(file())).as("one voucher of two other seats: still wiped").isFalse();
+    }
+
+    /// (e) The offers are durable as they arrive: a restart in the middle of counting resumes the count.
+    @Test
+    void helloes_keptBeforeARestart_stillCount_afterIt() {
+        var before = wipedOfThreeSeats(DurableWriter.fileOps());
+
+        assertThat(hello(before, SEAT_A, FIRST, RETIRES_GONE)).isEqualTo(Admission.UNAVAILABLE);
+        assertThat(Files.exists(file().resolveSibling("ledger.offers"))).as("the offer is on disk, the ledger file is not").isTrue();
+        assertThat(Files.exists(file())).isFalse();
+
+        var after = wipedOfThreeSeats(DurableWriter.fileOps());
+
+        assertThat(hello(after, SEAT_C, OTHER, NOTHING)).as("the restarted node already holds A's offer: C's Hello completes the majority").isEqualTo(Admission.UNAVAILABLE);
+        assertThat(after.isRetired(GONE)).as("and A's offer is in the union").isTrue();
+        assertThat(Files.exists(file().resolveSibling("ledger.offers"))).as("the journal is gone once the ledger holds the union").isFalse();
+        assertThat(hello(after, SEAT_C, OTHER, NOTHING)).isEqualTo(Admission.ADMITTED);
+    }
+
     @Test
     void mergeOffered_aLoneSeatNeverEndsTheWipedState_whateverItOffersAndHowOftenItComes() {
         var wiped = wipedOfThreeSeats(DurableWriter.fileOps());

@@ -276,9 +276,13 @@ class QuicBootTokenAdmissionTest {
         wipedServer.mergeOffered(OTHER_SEAT, Option.some(IdentityFacts.identityFacts())).await(AWAIT_TIMEOUT);
         assertThat(wipedServer.admit(CLIENT_NODE, CLIENT_TOKEN)).as("control: one other seat is not a majority yet").isEqualTo(BootTokens.Admission.UNAVAILABLE);
 
-        assertThat(connects(loadedRegistryRetiring(CLIENT_TOKEN, directory.resolve("client")), port)).as("its Hello completes the majority: admitted").isTrue();
+        var voucher = loadedRegistryRetiring(CLIENT_TOKEN, directory.resolve("client"));
+
+        assertThat(connects(voucher, port)).as("its Hello completes the majority, but it arrived while wiped: judged on its redial").isFalse();
         assertThat(wipedServer.isRetired(RETIRED_NODE)).as("having merged what it vouched for").isTrue();
         assertThat(Files.readString(directory.resolve("server").resolve("ledger"))).as("durably, before the admission").contains(RETIRED_NODE.id());
+        assertThat(registered.get()).as("nothing was registered by the Hello that ended the state").isZero();
+        assertThat(connects(voucher, port)).as("the redial is judged against the merged ledger: admitted").isTrue();
         assertThat(registered.get()).isEqualTo(1);
     }
 
@@ -308,9 +312,10 @@ class QuicBootTokenAdmissionTest {
 
         wipedClient.mergeOffered(OTHER_SEAT, Option.some(IdentityFacts.identityFacts())).await(AWAIT_TIMEOUT);
 
-        assertThat(connects(wipedClient, port)).as("the acceptor's Hello completes the majority: attached").isTrue();
+        assertThat(connects(wipedClient, port)).as("the acceptor's Hello completes the majority, but arrived while wiped: judged on the redial").isFalse();
         assertThat(wipedClient.isRetired(RETIRED_NODE)).isTrue();
         assertThat(Files.readString(directory.resolve("client").resolve("ledger"))).as("durably").contains(RETIRED_NODE.id());
+        assertThat(connects(wipedClient, port)).as("the redial: attached").isTrue();
     }
 
     /// Two wiped nodes cannot end each other's wiped state: neither can vouch for anything.

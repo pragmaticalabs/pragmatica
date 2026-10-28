@@ -46,7 +46,7 @@ public sealed interface NetworkMessage extends Message.Wired {
     /// `retirements` is the merge at join of the identity ledgers (#2429, ID-1c): the NodeIds the sender has retired (node id
     /// text to cause), offered only by a sender that can vouch for them (ledger loaded and not wiped); empty from one that
     /// cannot. A receiver that is not wiped unions them into its own ledger, durably, BEFORE it admits the sender; a wiped receiver
-    /// only records them until a majority of the configured core seats has offered (see [BootTokens#mergeOffered]).
+    /// keeps them until a majority of the other configured core seats has offered (see [BootTokens#mergeOffered]).
     record Hello(NodeId sender,
                  NodeAddress address,
                  Map<String, String> labels,

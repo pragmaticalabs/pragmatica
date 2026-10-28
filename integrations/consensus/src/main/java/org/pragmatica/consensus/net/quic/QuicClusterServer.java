@@ -579,12 +579,11 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             // Write-ahead (#2429): a first binding is answered only once the identity ledger holds it. The answer
             // is asynchronous, so a stalled ledger writer parks this Hello and nothing else: the I/O loop keeps
             // serving peers that are already bound.
-            // The merge at join (ID-1c) comes first: what the dialer offers is durable here before it is admitted, so a WIPED
-            // acceptor regains its retirements on the handshake that would otherwise be dropped for want of them.
-            bootTokens.mergeOffered(hello.sender(),
+            // The merge at join (ID-1c) comes first: what the dialer offers is durable here before it is judged. A WIPED acceptor keeps
+            // the offer and answers this Hello UNAVAILABLE (the dialer redials); it admits only against the merged ledger.
+            bootTokens.admitOffered(hello.sender(),
+                                    hello.bootToken(),
                                     hello.offeredFacts())
-                      .flatMap(_ -> bootTokens.admitDurably(hello.sender(),
-                                                            hello.bootToken()))
                       .onSuccess(admission -> onEventLoop(ctx,
                                                           () -> completeHello(ctx, hello, admission)));
         }

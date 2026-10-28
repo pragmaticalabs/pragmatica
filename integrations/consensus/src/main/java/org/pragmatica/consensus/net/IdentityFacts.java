@@ -48,7 +48,7 @@ public record IdentityFacts(Map<NodeId, String> terminated) {
     private static final String HEADER = "aether-identity-ledger-v1";
     private static final String DIGEST_PREFIX = "D\t";
     private static final IdentityFacts EMPTY = new IdentityFacts(Map.of());
-    private static final Cause MALFORMED = Causes.cause("Identity ledger content is malformed");
+    static final Cause MALFORMED = Causes.cause("Identity ledger content is malformed");
 
     public IdentityFacts {
         terminated = Map.copyOf(terminated);
@@ -178,7 +178,7 @@ public record IdentityFacts(Map<NodeId, String> terminated) {
         return URLDecoder.decode(text, StandardCharsets.UTF_8);
     }
 
-    private static String digestOf(String body) {
+    static String digestOf(String body) {
         return Result.lift(Causes::fromThrowable,
                            () -> MessageDigest.getInstance("SHA-256").digest(body.getBytes(StandardCharsets.UTF_8)))
                      .map(IdentityFacts::hex)
