@@ -2488,8 +2488,6 @@ class ClusterEventAggregatorTest {
 
     /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the two behind-the-ring pairs of #2201
     /// C-16 (`stream-consumer-cursor-expired` is a point event and stays unpaired), the oversized-event refusal and the
-    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378); every other code keeps the plain 60 s throttle.
-    /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the oversized-event refusal and the
     /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450); every other code keeps the plain 60 s throttle.
     @Test
     void onOperatorWarning_onlyTheDeclaredPairsArePaired_otherCodesUnchanged() {
