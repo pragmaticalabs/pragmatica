@@ -6,7 +6,10 @@ package org.pragmatica.aether.stream.segment;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.storage.MetadataStore;
@@ -50,17 +53,28 @@ public final class StreamFootprint {
     }
 
     /// Serve `incarnation` of `streamName` from now on — before any of its partitions materializes, so recovery
-    /// anchors only at that life's sealed watermark and floor — and reclaim every other life's refs.
-    public Promise<Unit> adopt(String streamName, long incarnation) {
+    /// anchors only at that life's sealed watermark and floor — and report every other life of the name, KEPT.
+    ///
+    /// Know 6d0c58fd67: nothing here deletes another life. The cluster state records no retirement of a life (a destroy
+    /// removes the config and leaves no tombstone), so a life other than the committed one cannot be told apart from the life a STALE
+    /// restore (a backup older than the stream's config) left behind, which holds acknowledged sealed data. Its refs and blocks are kept
+    /// until an operator removes them or storage-identity adoption (#1569) takes them over. A destroy the node performs itself
+    /// ([#forget]) still reclaims the life it served.
+    public Promise<List<OtherLife>> adopt(String streamName, long incarnation) {
         if (index == null) {
-            return Promise.unitPromise();
+            return Promise.success(List.of());
         }
 
-        var garbage = new ArrayList<>(index.adopt(streamName, incarnation));
+        index.adopt(streamName, incarnation);
 
-        garbage.addAll(otherLives(streamName, incarnation));
+        return Promise.success(otherLives(streamName, incarnation));
+    }
 
-        return dropAll(streamName, garbage);
+    /// A life of a stream other than the one adopted, as found in the storage metadata: the sealed segments (`streams/` refs) it holds.
+    public record OtherLife(long incarnation, long sealedSegments) {
+        public static OtherLife otherLife(long incarnation, long sealedSegments) {
+            return new OtherLife(incarnation, sealedSegments);
+        }
     }
 
     /// `streamName` was destroyed: stop serving it and reclaim the refs of the life it was.
@@ -77,15 +91,32 @@ public final class StreamFootprint {
         return dropAll(streamName, garbage);
     }
 
-    private List<String> otherLives(String streamName, long incarnation) {
-        return metadata.listAllRefs()
-                       .keySet()
-                       .stream()
-                       .filter(ref -> SegmentIndex.lifeOf(ref)
-                                                  .filter(life -> life.streamName()
-                                                                      .equals(streamName) && life.incarnation() != incarnation)
-                                                  .isPresent())
-                       .toList();
+    private List<OtherLife> otherLives(String streamName, long incarnation) {
+        var sealedByLife = new TreeMap<Long, Long>();
+
+        metadata.listAllRefs().keySet().forEach(ref -> countLife(sealedByLife, ref, streamName, incarnation));
+
+        return sealedByLife.entrySet()
+                           .stream()
+                           .map(entry -> OtherLife.otherLife(entry.getKey(),
+                                                             entry.getValue()))
+                           .toList();
+    }
+
+    @Contract
+    private static void countLife(Map<Long, Long> sealedByLife, String ref, String streamName, long incarnation) {
+        SegmentIndex.lifeOf(ref)
+                    .filter(life -> life.streamName()
+                                        .equals(streamName) && life.incarnation() != incarnation)
+                    .onPresent(life -> sealedByLife.merge(life.incarnation(),
+                                                          sealedSegmentsIn(ref),
+                                                          Long::sum));
+    }
+
+    private static long sealedSegmentsIn(String ref) {
+        return SegmentIndex.isSealedSegmentRef(ref)
+               ? 1L
+               : 0L;
     }
 
     private List<String> refsOfLife(String streamName, long incarnation) {
