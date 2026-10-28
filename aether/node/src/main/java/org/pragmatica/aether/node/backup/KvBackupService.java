@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.backup;
 
+import java.nio.file.Path;
 import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -34,6 +35,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
@@ -74,6 +76,7 @@ import static org.pragmatica.lang.Result.success;
 public final class KvBackupService {
     private static final Logger LOG = LoggerFactory.getLogger(KvBackupService.class);
     private static final String SUBJECT_PREFIX = "kv backup";
+    private static final Cause NO_STOP_FLUSH_MARKER = Causes.cause("no stop-time flush failure is open");
 
     /// The subject every backup commit carries ([#commitMessage]): `kv backup lineage=… incarnation=… revision=…`.
     private static final Pattern SUBJECT = Pattern.compile("kv backup lineage=(\\S*) incarnation=(\\d+) revision=(\\d+)");
@@ -279,7 +282,14 @@ public final class KvBackupService {
     }
 
     /// FER (the stop goes ahead): the report is made INSIDE the recovery, so the stop cannot complete before the operator has been told.
+    /// The failure is also written to a marker beside the repository, which is how a LATER process knows the warning is open and closes it
+    /// ([#announceStopFlushRecovery]). A marker that cannot be written leaves the warning without its recovery event (logged); that is
+    /// the absorbed failure, and the guarantee earned is that the stop and the warning are never held up by it.
     private Unit absorbStopFlushFailure(Cause cause) {
+        FileOps.writeString(stopFlushMarker(),
+                            cause.message())
+               .onFailure(failure -> LOG.warn("Stop-time flush failure marker not written, its recovery event will not fire: {}",
+                                              failure.message()));
         warnings.emit(BackupWarning.backupWarning(Code.BACKUP_STOP_FLUSH_FAILED,
                                                   "the KV backup could not be flushed before this node stopped: " + cause.message()
                                                  + "; cluster-state changes from the last " + (timing.maxDelayMillis() + timing.quietMillis())
@@ -287,6 +297,21 @@ public final class KvBackupService {
                                                  + " before them. Check the backup repository and remote"));
 
         return Unit.unit();
+    }
+
+    /// Beside the repository directory, not inside it: the repository is git's, and a stray file there is a dirty tree.
+    private Path stopFlushMarker() {
+        return repository.dir()
+                         .resolveSibling(repository.dir().getFileName() + ".stop-flush-failed");
+    }
+
+    /// A flush landed. If the previous stop-time flush of this node had failed (its marker exists), that warning closes now.
+    @Contract
+    private void announceStopFlushRecovery() {
+        FileOps.deleteIfExists(stopFlushMarker())
+               .filter(NO_STOP_FLUSH_MARKER, Boolean::booleanValue)
+               .onSuccessRun(() -> warnings.emit(BackupWarning.backupWarning(Code.BACKUP_STOP_FLUSH_RECOVERED,
+                                                                             "the KV backup was flushed again after a failed stop-time flush")));
     }
 
     /// The flush ran but its state did not reach the backup (head ahead, gated, forked, unreadable, push failed).
@@ -862,6 +887,8 @@ public final class KvBackupService {
         } else if (previous != Status.CURRENT) {
             warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RECOVERED, "the KV backup is current again"));
         }
+
+        announceStopFlushRecovery();
     }
 
     /// A warned head-ahead episode ends only by this cluster's state overtaking the head and being written

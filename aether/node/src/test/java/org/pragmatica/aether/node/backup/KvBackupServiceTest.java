@@ -1013,6 +1013,31 @@ class KvBackupServiceTest {
             assertThat(service.isLeader()).isFalse();
         }
 
+        /// The failure raised while a node stopped is closed by the next successful flush of that node's backup, in a LATER process: the
+        /// marker the failure left beside the repository carries it across. Control: the refused push is the only difference from the quiet stops.
+        @Test
+        void aSuccessfulFlushAfterAFailedStopFlush_raisesTheRecovery_once() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var service = leaderService(Option.some(remote));
+
+            put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+            var hook = installRefusingHook(remote);
+            settle(service.stopFlushed(DEADLINE));
+
+            assertThat(warnings).extracting(BackupWarning::code).as("control: the failure is announced, not yet recovered")
+                                .containsExactly(Code.BACKUP_STOP_FLUSH_FAILED);
+
+            deleteFile(hook);
+            var restarted = leaderService(Option.some(remote));
+
+            put(restarted, ConfigKey.forKey("b"), ConfigValue.configValue("b", "1"));
+            scheduler.runUntilIdle();
+
+            assertThat(warnings).extracting(BackupWarning::code)
+                                .as("one recovery, by the first flush that lands; later flushes add none")
+                                .containsExactly(Code.BACKUP_STOP_FLUSH_FAILED, Code.BACKUP_STOP_FLUSH_RECOVERED);
+        }
+
         /// A leader whose cluster has no committed incarnation yet has no backup to write: the stop is quiet.
         @Test
         void stopFlushed_isQuiet_whenNoIncarnationIsCommittedYet() {

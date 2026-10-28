@@ -323,6 +323,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final Lazy<List<String>> walDirectoriesAtStart = Lazy.lazy(this::scanWalDirectories);
     /// The WAL directories already reported as orphaned by this process: one event per directory, however many streams adopt after it.
     private final Set<String> orphanedWalReported = ConcurrentHashMap.newKeySet();
+    /// The lives announced as released ([#raiseReleasedLives]): the startup snapshot still lists them, and must not announce them again.
+    private final Set<String> releasedOrphans = ConcurrentHashMap.newKeySet();
     /// #1638 F1: the catch-up installs recorded but not yet settled, per partition ([#installProvenance]). Each
     /// partition's list is also that partition's lock serialising recording an install against trimming one, so a trim
     /// never drops an entry a pending install has just recorded or skipped; partitions never wait on each other's
@@ -5039,8 +5041,10 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// Know 3b01e624f1, 6d0c58fd67: adoption deletes no other life of the name ([StreamFootprint#adopt]); each is announced instead.
     private Result<Unit> reportOtherLives(StreamConfig config, Result<List<StreamFootprint.OtherLife>> adopted) {
-        raiseOrphanedLives(config,
-                           adopted.or(List.of()));
+        var others = adopted.or(List.of());
+
+        raiseReleasedLives(config, others);
+        raiseOrphanedLives(config, others);
 
         return adopted.mapToUnit();
     }
@@ -5063,6 +5067,8 @@ public final class StreamPartitionManager implements AutoCloseable {
         java.util.stream.Stream.concat(sealed.keySet().stream(),
                                        walLives.stream())
                                .distinct()
+                               .filter(life -> !releasedOrphans.contains(SegmentIndex.durableName(config.name(),
+                                                                                                  life)))
                                .filter(life -> orphanedWalReported.add(SegmentIndex.durableName(config.name(),
                                                                                                 life)))
                                .forEach(life -> raiseOrphanedLife(config,
@@ -5098,6 +5104,11 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                        walDirectory,
                                                        config.incarnation());
 
+        raiseOrDefer(report);
+    }
+
+    @Contract
+    private void raiseOrDefer(Runnable report) {
         if (operatorWarningsBound) {
             report.run();
         } else {
@@ -5105,18 +5116,80 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
     }
 
+    /// Know 3b01e624f1: an orphaned life this process announced and that a later adoption of the same stream finds gone from this node (an
+    /// operator removed it) or adopted as the committed life (#1569) is announced as released, which closes the warning. The listing
+    /// is fresh, not the startup snapshot, and only taken while a life of the stream is open. A released life is not announced as orphaned again
+    /// from the startup snapshot.
+    @Contract
+    private void raiseReleasedLives(StreamConfig config, List<StreamFootprint.OtherLife> sealedLives) {
+        var sealed = sealedLives.stream().map(StreamFootprint.OtherLife::incarnation).toList();
+        var open = openOrphanedLives(config);
+
+        if (open.isEmpty()) {
+            return;
+        }
+
+        var walLives = freshWalLogNames().map(names -> walLivesOf(config, names));
+
+        open.stream()
+            .filter(life -> life == config.incarnation() || isReleased(life, sealed, walLives))
+            .filter(life -> orphanedWalReported.remove(SegmentIndex.durableName(config.name(),
+                                                                                life)))
+            .forEach(life -> raiseReleasedLife(config, life));
+    }
+
+    /// Gone means gone from the sealed refs AND from a listing that could be read: a log root that cannot be listed proves nothing.
+    private static boolean isReleased(long life, List<Long> sealed, Option<List<Long>> walLives) {
+        return ! sealed.contains(life) && walLives.map(lives -> !lives.contains(life))
+                                                  .or(false);
+    }
+
+    private static List<Long> walLivesOf(StreamConfig config, List<String> logNames) {
+        return walDirectories(logNames).stream()
+                             .map(SegmentIndex.DurableName::parse)
+                             .filter(life -> life.streamName()
+                                                 .equals(config.name()))
+                             .map(SegmentIndex.DurableName::incarnation)
+                             .toList();
+    }
+
+    private List<Long> openOrphanedLives(StreamConfig config) {
+        return orphanedWalReported.stream()
+                                  .map(SegmentIndex.DurableName::parse)
+                                  .filter(life -> life.streamName()
+                                                      .equals(config.name()))
+                                  .map(SegmentIndex.DurableName::incarnation)
+                                  .toList();
+    }
+
+    @Contract
+    private void raiseReleasedLife(StreamConfig config, long life) {
+        var durable = SegmentIndex.durableName(config.name(), life);
+
+        releasedOrphans.add(durable);
+        raiseOrDefer(() -> OperatorWarnings.raise(log,
+                                                  operatorWarnings,
+                                                  OperatorWarningCode.STORAGE_STREAM_WAL_RELEASED,
+                                                  durable,
+                                                  "Stream {} life {} (incarnation {}) is no longer an orphan: it is gone from this node or is now the committed life "
+                                                 + "(the stream runs as incarnation {}).",
+                                                  config.name(),
+                                                  durable,
+                                                  life,
+                                                  config.incarnation()));
+    }
+
     /// The directories holding stream WALs, from the opener's listing (`<dir>/<partition>`). A log root that cannot be listed is logged and
     /// treated as unknown for this boot: no orphan can be named, and the log says so.
     private List<String> scanWalDirectories() {
-        return logs.map(this::listWalDirectories)
-                   .or(List.of());
+        return walDirectories(freshWalLogNames().or(List.of()));
     }
 
-    private List<String> listWalDirectories(AppendLog.Opener opener) {
-        return opener.listLogs()
-                     .onFailure(this::warnWalDirectoriesUnlistable)
-                     .map(StreamPartitionManager::walDirectories)
-                     .or(List.of());
+    /// The log names now, or none when there is no WAL or it cannot be listed (logged): unknown, never "no logs".
+    private Option<List<String>> freshWalLogNames() {
+        return logs.flatMap(opener -> opener.listLogs()
+                                            .onFailure(this::warnWalDirectoriesUnlistable)
+                                            .option());
     }
 
     @Contract

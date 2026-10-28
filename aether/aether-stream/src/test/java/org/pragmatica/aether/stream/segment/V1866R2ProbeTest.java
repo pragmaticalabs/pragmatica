@@ -276,6 +276,48 @@ class V1866R2ProbeTest {
         });
     }
 
+    /// The orphan holds only SEALED segments here (its WAL directory is removed): a later adoption of the stream still finds them, so the life
+    /// is not released.
+    @Test
+    void anOrphanedLifeThatStillHoldsSealedSegments_isNotReleased_atALaterAdoption() {
+        var storage = storage();
+        var firstIndex = new SegmentIndex();
+        var first = manager(storage, firstIndex, footprint(storage, firstIndex));
+
+        createStream(first, OLD_LIFE);
+        publish(first, FIRST_LIFE, "old-");
+        awaitSealed(firstIndex);
+        first.close();
+        removeWalDirectory(SegmentIndex.durableName(STREAM, OLD_LIFE));
+
+        var raised = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
+        var restoredIndex = rebuilt();
+        var restored = manager(storage, restoredIndex, footprint(storage, restoredIndex));
+
+        restored.operatorWarnings(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(raised::add));
+        createStream(restored, NEW_LIFE);
+        awaitOne(raised);
+        restored.destroyStream(STREAM).onFailure(cause -> fail(cause.message()));
+        createStream(restored, NEW_LIFE + 1);
+        try {
+            Thread.sleep(500);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        restored.close();
+
+        assertThat(raised).extracting(org.pragmatica.utility.warning.OperatorWarning::code)
+                          .containsExactly(org.pragmatica.utility.warning.OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED);
+    }
+
+    private void removeWalDirectory(String durableName) {
+        try (var files = Files.walk(walDir.resolve(durableName))) {
+            files.sorted(java.util.Comparator.reverseOrder()).forEach(path -> path.toFile().delete());
+        } catch (java.io.IOException e) {
+            fail(e.getMessage());
+        }
+    }
+
     private void collectGarbage(StorageInstance storage, int cycles) {
         var collector = org.pragmatica.storage.StorageGarbageCollector.storageGarbageCollector(storage,
                                                                                                metadata,

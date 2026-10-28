@@ -145,6 +145,70 @@ class OrphanedWalDirectoryTest {
         assertThat(warnings).as("the second life adopted after the first raises nothing more for the same directory").hasSize(1);
     }
 
+    /// The orphan is closed when a later adoption of the stream finds the life gone (an operator removed it): one recovery, same subject,
+    /// and the startup snapshot, which still lists the directory, does not announce it again.
+    @Test
+    void aLifeRemovedByAnOperator_isReleased_atTheNextAdoption_andNotAnnouncedAgain() throws IOException {
+        var orphan = walDirectory(STREAM + "@" + ORPHANED_LIFE);
+        var node = manager();
+
+        node.onStreamConfigPut(committed(config().withIncarnation(ADOPTED_LIFE)));
+        awaitWarnings(1);
+        Files.delete(orphan.resolve("0.wal"));
+        Files.delete(orphan);
+        node.onStreamConfigRemove(new ValueRemove<>(new KVCommand.Remove<StreamConfigKey>(StreamConfigKey.streamConfigKey(STREAM)), Option.empty()));
+        node.onStreamConfigPut(committed(config().withIncarnation(ADOPTED_LIFE + 1)));
+        awaitWarnings(2);
+        node.onStreamConfigRemove(new ValueRemove<>(new KVCommand.Remove<StreamConfigKey>(StreamConfigKey.streamConfigKey(STREAM)), Option.empty()));
+        node.onStreamConfigPut(committed(config().withIncarnation(ADOPTED_LIFE + 2)));
+        quiesce();
+        node.close();
+
+        assertThat(warnings).extracting(OperatorWarning::code)
+                            .containsExactly(OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED, OperatorWarningCode.STORAGE_STREAM_WAL_RELEASED);
+        assertThat(warnings.get(1).subject()).isEqualTo(STREAM + "@" + ORPHANED_LIFE);
+    }
+
+    /// Storage-identity adoption (#1569) makes the orphaned life the committed one: that closes the warning too.
+    @Test
+    void aLifeThatBecomesTheCommittedLife_isReleased() throws IOException {
+        walDirectory(STREAM + "@" + ORPHANED_LIFE);
+        var node = manager();
+
+        node.onStreamConfigPut(committed(config().withIncarnation(ADOPTED_LIFE)));
+        awaitWarnings(1);
+        node.onStreamConfigRemove(new ValueRemove<>(new KVCommand.Remove<StreamConfigKey>(StreamConfigKey.streamConfigKey(STREAM)), Option.empty()));
+        node.onStreamConfigPut(committed(config().withIncarnation(ORPHANED_LIFE)));
+        awaitWarnings(2);
+        node.close();
+
+        assertThat(warnings).extracting(OperatorWarning::code)
+                            .containsExactly(OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED, OperatorWarningCode.STORAGE_STREAM_WAL_RELEASED);
+    }
+
+    /// A log root that cannot be listed proves nothing about the directory: no recovery by absence.
+    @Test
+    void anOrphan_isNotReleased_whenTheLogRootCannotBeListedAtTheNextAdoption() throws IOException {
+        walDirectory(STREAM + "@" + ORPHANED_LIFE);
+        var listable = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var directory = AppendLog.Opener.directory(walDir);
+        var opener = AppendLog.Opener.opener(directory::open,
+                                             directory::inspect,
+                                             () -> listable.get() ? directory.listLogs() : org.pragmatica.lang.Result.failure(() -> "cannot list"));
+        var node = streamPartitionManagerOverLogs(Long.MAX_VALUE, Option.some(opener), LastSealedOffsetSource.none());
+
+        node.operatorWarnings(sink());
+        node.onStreamConfigPut(committed(config().withIncarnation(ADOPTED_LIFE)));
+        awaitWarnings(1);
+        listable.set(false);
+        node.onStreamConfigRemove(new ValueRemove<>(new KVCommand.Remove<StreamConfigKey>(StreamConfigKey.streamConfigKey(STREAM)), Option.empty()));
+        node.onStreamConfigPut(committed(config().withIncarnation(ADOPTED_LIFE + 1)));
+        quiesce();
+        node.close();
+
+        assertThat(warnings).extracting(OperatorWarning::code).containsExactly(OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED);
+    }
+
     /// A boot adopts its first lives before the node wires the operator-warning sink; the orphan found then must still reach it.
     @Test
     void anOrphanFoundBeforeTheSinkIsBound_isRaisedWhenItIsBound() throws IOException {

@@ -183,15 +183,24 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.UPLOAD_BYTE_BUDGET_RESTORED.code()).isEqualTo("upload-byte-budget-restored");
     }
 
-    /// Know 3b01e624f1: the strings are what operators and alert rules match on, so they are pinned, with the level and the subsystem.
+    /// Know 3b01e624f1: the strings are what operators and alert rules match on, so they are pinned, with the level, the subsystem and the
+    /// recovery pairing. Neither warning is on the frozen unclosed list: each has an INFO recovery of its own subsystem.
     @Test
-    void backupStopFlushFailed_andOrphanedStreamWal_areWarnings_withPinnedWireStrings() {
+    void backupStopFlush_andOrphanedStreamLife_arePinnedWarnings_eachClosedByAnInfoRecovery() {
         assertThat(OperatorWarningCode.BACKUP_STOP_FLUSH_FAILED.code()).isEqualTo("backup-stop-flush-failed");
         assertThat(OperatorWarningCode.BACKUP_STOP_FLUSH_FAILED.level()).isEqualTo(WarningLevel.WARNING);
         assertThat(OperatorWarningCode.BACKUP_STOP_FLUSH_FAILED.subsystem()).isEqualTo("kv-backup");
+        assertThat(OperatorWarningCode.BACKUP_STOP_FLUSH_RECOVERED.code()).isEqualTo("backup-stop-flush-recovered");
+        assertThat(OperatorWarningCode.BACKUP_STOP_FLUSH_RECOVERED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.BACKUP_STOP_FLUSH_RECOVERED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.BACKUP_STOP_FLUSH_FAILED);
+        assertThat(OperatorWarningCode.BACKUP_STOP_FLUSH_RECOVERED.closesAcrossNodes()).as("raised by a later process than the failure").isTrue();
         assertThat(OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED.code()).isEqualTo("storage-stream-wal-orphaned");
         assertThat(OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED.level()).isEqualTo(WarningLevel.WARNING);
         assertThat(OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED.subsystem()).isEqualTo("storage");
+        assertThat(OperatorWarningCode.STORAGE_STREAM_WAL_RELEASED.code()).isEqualTo("storage-stream-wal-released");
+        assertThat(OperatorWarningCode.STORAGE_STREAM_WAL_RELEASED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STORAGE_STREAM_WAL_RELEASED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED);
+        assertThat(UNCLOSED_BEFORE_THE_RULE).doesNotContain(OperatorWarningCode.BACKUP_STOP_FLUSH_FAILED, OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED);
     }
 
     private static final Set<OperatorWarningCode> UNCLOSED_BEFORE_THE_RULE = Set.of(
@@ -228,11 +237,7 @@ class OperatorWarningCodeTest {
         OperatorWarningCode.OFFLINE_FRAMES_EXPIRED,
         OperatorWarningCode.ENTITY_OWNERSHIP_UNSETTLED_MINT,
         OperatorWarningCode.SWIM_MEMBER_ADDRESS_CONFLICT,
-        OperatorWarningCode.SWIM_MEMBER_IDENTITY_CONFLICT,
-        // On purpose (know 3b01e624f1): a WAL directory orphaned at startup stays until an operator removes it, and a stop-time backup
-        // flush failure is raised while the node goes down, so neither has a runtime point at which a recovery could be published.
-        OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED,
-        OperatorWarningCode.BACKUP_STOP_FLUSH_FAILED);
+        OperatorWarningCode.SWIM_MEMBER_IDENTITY_CONFLICT);
 
     /// #752: a recovery code closes a condition of its own subsystem, and a condition is not itself a recovery, so a
     /// recovery is never itself waiting for one.

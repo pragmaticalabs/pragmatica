@@ -61,6 +61,12 @@ class BackupWarningOperatorEventTest {
     }
 
     @Test
+    void theStopFlushRecovery_isRaisedAsAnInfoOperatorWarning_pairedWithTheWarning() {
+        assertRaisedAlone(Code.BACKUP_STOP_FLUSH_RECOVERED, OperatorWarningCode.BACKUP_STOP_FLUSH_RECOVERED);
+        assertThat(OperatorWarningCode.BACKUP_STOP_FLUSH_RECOVERED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.BACKUP_STOP_FLUSH_FAILED);
+    }
+
+    @Test
     void theBlockedRestoreRecovery_isRaisedAsAnInfoOperatorWarning_pairedWithTheWarning() {
         assertRaisedAlone(Code.BACKUP_RESTORE_UNBLOCKED, OperatorWarningCode.BACKUP_RESTORE_UNBLOCKED);
         assertThat(OperatorWarningCode.BACKUP_RESTORE_UNBLOCKED.level()).isEqualTo(org.pragmatica.utility.warning.WarningLevel.INFO);
