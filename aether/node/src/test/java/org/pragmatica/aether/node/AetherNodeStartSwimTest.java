@@ -243,6 +243,58 @@ class AetherNodeStartSwimTest {
         }
     }
 
+    /// #1200 — the seed side. A datagram under a key id the node does not hold becomes the operator event `gossip-key-unknown-from-peer`
+    /// naming the sender, through the sink the node bound to its detector; the wiring from the detector to the transport is what is pinned
+    /// here (the observer itself is covered where it lives). A datagram it CAN open then closes it with the recovery.
+    @Test
+    void startSwim_peerGossipsUnderAnUnheldKey_raisesTheOperatorEvent_andTheRecoveryWhenItDecrypts() throws Exception {
+        var swimPort = freeUdpPort();
+        var detector = detectorWithSwimPort(swimPort);
+        var published = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
+
+        detector.setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(published::add));
+
+        try (var sender = new DatagramSocket()) {
+            AetherNode.startSwim(detector,
+                                 network(),
+                                 RotatingGossipEncryptor.rotatingGossipEncryptor(aesGcm(NODE_KEY, NODE_KEY_ID)),
+                                 this::announce,
+                                 this::fail,
+                                 this::diverge,
+                                 Promise.promise());
+            assertThat(announced.await(WAIT_SECONDS, TimeUnit.SECONDS)).as("SWIM started").isTrue();
+
+            send(sender, swimPort, aesGcm(ROTATED_KEY, ROTATED_KEY_ID).encrypt("probe".getBytes(StandardCharsets.UTF_8)).unwrap());
+            awaitWarnings(published, 1);
+
+            assertThat(published).singleElement().satisfies(warning -> {
+                assertThat(warning.code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER);
+                assertThat(warning.subject()).isEqualTo("127.0.0.1");
+            });
+
+            send(sender, swimPort, aesGcm(NODE_KEY, NODE_KEY_ID).encrypt("probe".getBytes(StandardCharsets.UTF_8)).unwrap());
+            awaitWarnings(published, 2);
+
+            assertThat(published).extracting(org.pragmatica.utility.warning.OperatorWarning::code)
+                                 .containsExactly(org.pragmatica.utility.warning.OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER,
+                                                  org.pragmatica.utility.warning.OperatorWarningCode.GOSSIP_KEY_PEER_DECRYPTED);
+        } finally {
+            detector.stop();
+        }
+    }
+
+    private static void send(DatagramSocket sender, int port, byte[] datagram) throws Exception {
+        sender.send(new DatagramPacket(datagram, datagram.length, InetAddress.getLoopbackAddress(), port));
+    }
+
+    private static void awaitWarnings(java.util.List<?> published, int expected) throws InterruptedException {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+
+        while (published.size() < expected && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+    }
+
     /// #1308 (rev1343 BLOCKING-1) — the node's start outcome is `formationUnlessSwimFails(formation,
     /// outcome)`: formation settles it, and a SWIM failure `startSwim` has already put into it wins
     /// over a later formation success. In a single-JVM host `failNode` only stops this node, whose

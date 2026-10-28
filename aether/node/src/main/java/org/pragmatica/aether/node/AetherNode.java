@@ -2746,14 +2746,22 @@ public interface AetherNode extends ManageableNode {
         // EARLIER in boot than the replay, which is reached only via restore → activate → replay
         // inside the consensus engine.
         //
-        // The consequence is a cycle, not merely a window: a node booting into a cluster that has
-        // already rotated encrypts SWIM under its cluster_secret-derived key, which the rotated
-        // accept set no longer contains, so peers drop its datagrams and it drops theirs. SWIM
-        // discovers nothing; the QUIC dial set is self-only and SWIM is its sole writer besides
-        // self (TopologyObserverTest.SwimOnlyDialSet); without peers there is no quorum, and
-        // without quorum there is no sync/activate/replay — so the record that would install the
-        // cluster key never arrives. GossipKeyRotationBootDivergenceTest pins both directions of
-        // the key divergence this rests on.
+        // The consequence is a window, not a cycle (corrected under #1200; an earlier version of this
+        // comment called it a deadlock). A node booting into a cluster that has already rotated encrypts
+        // SWIM under its cluster_secret-derived key, which the rotated accept set no longer contains, so
+        // peers drop its datagrams and it drops theirs. But SWIM is not the only writer of the QUIC dial
+        // set: the node seeds its own SWIM protocol from its configured core peers
+        // (CoreSwimHealthDetector#seedMembers -> SwimProtocol#addSeedMember -> a MemberDiscovered
+        // observation -> DiscoveredNodes), and that needs no decrypt. So the joiner dials its seeds,
+        // forms quorum, syncs, and the replay of the rotation record installs the cluster key, after
+        // which SWIM works. Measured on an in-JVM cluster (EmberGossipKeyRotatedJoinTest): the
+        // replacement's gossip is rejected for about a second and it is SWIM-present within seconds.
+        // TopologyObserverTest.SwimOnlyDialSet pins only that the observer itself starts self-only.
+        // The seeds log the rejected datagrams and raise `gossip-key-unknown-from-peer` (and
+        // `gossip-key-peer-decrypted` when the sender recovers). GossipKeyRotationBootDivergenceTest
+        // pins the encryptor-level divergence only. Admission is a different matter: it is
+        // cluster_secret-derived mutual TLS, so a holder of cluster_secret receives the key by replay
+        // (#2474).
         var allEntries = new ArrayList<>(clusterNode.routeEntries());
 
         allEntries.addAll(epochSources.incarnation().routeEntries());

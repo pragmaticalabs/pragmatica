@@ -626,6 +626,14 @@ public enum OperatorWarningCode {
     /// only after the warning for the subject. Detected at the next adoption of the same stream in this process; a life released while the
     /// process was down is announced afresh, or not at all, by the next boot.
     STORAGE_STREAM_WAL_RELEASED("storage-stream-wal-released", "storage", WarningLevel.INFO, STORAGE_STREAM_WAL_ORPHANED),
+    /// A peer's SWIM datagram was encrypted under a gossip key id this node does not hold (#1200), and was dropped. The usual cause is a node that
+    /// booted with only its `cluster_secret`-derived key after the cluster rotated its gossip key: it can neither be understood nor understand
+    /// anyone, so it never joins and says nothing. Subject is the sender's address, never a key. The remedy is to give that node the cluster's
+    /// current gossip key (`AETHER_GOSSIP_KEY` / `AETHER_GOSSIP_KEY_FILE`) or let the leader provision it. Closed by [#GOSSIP_KEY_PEER_DECRYPTED].
+    GOSSIP_KEY_UNKNOWN_FROM_PEER("gossip-key-unknown-from-peer", "membership", WarningLevel.WARNING),
+    /// The recovery of [#GOSSIP_KEY_UNKNOWN_FROM_PEER], same subject (#1200): a datagram from that sender decrypted. INFO, published only after
+    /// a published unknown-key event for the sender (#752 mechanism).
+    GOSSIP_KEY_PEER_DECRYPTED("gossip-key-peer-decrypted", "membership", WarningLevel.INFO, GOSSIP_KEY_UNKNOWN_FROM_PEER),
     /// The recovery of [#JSON_CONFIG_REJECTED], same subject (#2378): a valid `[json]` configuration was adopted after a
     /// refusal. INFO, published only after a published rejection for the subject (#752 mechanism).
     JSON_CONFIG_APPLIED("json-config-applied", "json", WarningLevel.INFO, JSON_CONFIG_REJECTED);

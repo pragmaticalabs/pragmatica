@@ -2497,6 +2497,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.COMMUNITY_PLACEMENT_CLEARED,
                 OperatorWarningCode.COMMUNITY_ASSIGNMENT_PLACED,
                 OperatorWarningCode.STORAGE_PROMOTION_RESUMED,
+                OperatorWarningCode.GOSSIP_KEY_PEER_DECRYPTED,
                 OperatorWarningCode.STORAGE_DEMOTION_RESUMED,
                 OperatorWarningCode.STORAGE_SNAPSHOT_WRITE_RECOVERED,
                 OperatorWarningCode.STORAGE_TIER_WRITABLE,
@@ -2513,6 +2514,7 @@ class ClusterEventAggregatorTest {
             });
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactlyInAnyOrder(new OperatorWarningCode[]{
+                OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER,
                 OperatorWarningCode.BACKUP_STOP_FLUSH_FAILED,
                 OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED,
                 OperatorWarningCode.NODE_REPLACEMENT_STARTED,
