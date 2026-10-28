@@ -35,6 +35,21 @@ record RequestTarget(String path, QueryParams queryParams) {
                            () -> decode(uri));
     }
 
+    /// The target for classification before dispatch: an undecodable one keeps its undecoded path and no query, so the
+    /// gate never throws. The transport still answers it 400 at dispatch, so no handler sees this value.
+    static RequestTarget lenientTarget(String uri) {
+        return requestTarget(uri).or(() -> undecoded(uri));
+    }
+
+    private static RequestTarget undecoded(String uri) {
+        var queryStart = uri.indexOf('?');
+
+        return new RequestTarget(queryStart < 0
+                                 ? uri
+                                 : uri.substring(0, queryStart),
+                                 QueryParams.empty());
+    }
+
     private static RequestTarget decode(String uri) {
         var decoder = new QueryStringDecoder(uri);
 

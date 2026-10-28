@@ -117,7 +117,7 @@ class StorageInstanceLateTierTest {
     }
 
     private int accessCount(BlockId id) {
-        return metadata.getLifecycle(id).map(BlockLifecycle::accessCount).or(-1);
+        return metadata.getLifecycle(id).map(metadata.accessTracker()::accessCount).or(-1);
     }
 
     private BlockId putAndAwait(String content) {

@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.http.routing.RouteShape;
 import org.pragmatica.http.routing.RouteShapeSelector;
+import org.pragmatica.http.routing.UploadSpec;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue;
@@ -59,15 +60,28 @@ public interface HttpRouteRegistry {
 
     /// One node's policies for a route: `enforced` is what that node published as enforced, `declared` the
     /// slice-declared policy it was derived from (#1659).
-    record NodeRouteSecurity(String enforced, String declared) {
+    ///
+    /// `uploadSpec` is the route's declared ingest limits as that node published them, so an ingress that does not host the
+    /// route can bound a request body before reading it.
+    record NodeRouteSecurity(String enforced, String declared, UploadSpec uploadSpec) {
+        /// A node that publishes no ingest limits.
+        public NodeRouteSecurity(String enforced, String declared) {
+            this(enforced, declared, UploadSpec.NONE);
+        }
+
         public static NodeRouteSecurity nodeRouteSecurity(String enforced, String declared) {
             return new NodeRouteSecurity(enforced, declared);
+        }
+
+        public static NodeRouteSecurity nodeRouteSecurity(String enforced, String declared, UploadSpec uploadSpec) {
+            return new NodeRouteSecurity(enforced, declared, uploadSpec);
         }
 
         /// The stronger of two entries for one sibling, field by field, in the route's total order.
         static NodeRouteSecurity strongerOf(NodeRouteSecurity left, NodeRouteSecurity right) {
             return nodeRouteSecurity(RouteInfo.strongest(List.of(left.enforced(), right.enforced())),
-                                     RouteInfo.strongest(List.of(left.declared(), right.declared())));
+                                     RouteInfo.strongest(List.of(left.declared(), right.declared())),
+                                     left.uploadSpec().stricter(right.uploadSpec()));
         }
     }
 
@@ -137,6 +151,15 @@ public interface HttpRouteRegistry {
         /// The strongest slice-declared policy among the serving sources (they agree unless versions differ).
         public String declaredSecurity() {
             return strongest(securityBySource.values().stream().map(NodeRouteSecurity::declared).toList());
+        }
+
+        /// The strictest ingest limits any serving source declared: the smaller declared limit wins, so a request is
+        /// never admitted past what a serving node declared.
+        public UploadSpec uploadSpec() {
+            return securityBySource.values()
+                                   .stream()
+                                   .map(NodeRouteSecurity::uploadSpec)
+                                   .reduce(UploadSpec.NONE, UploadSpec::stricter);
         }
 
         RouteInfo withSource(RouteSource source, NodeRouteSecurity security) {
@@ -332,7 +355,15 @@ public interface HttpRouteRegistry {
                                                          route.spacers());
 
                     merged.merge(new PublishedEntry(route.httpMethod(), route.pathPrefix(), source),
-                                 NodeRouteSecurity.nodeRouteSecurity(route.security(), route.declaredSecurity()),
+                                 NodeRouteSecurity.nodeRouteSecurity(route.security(),
+                                                                     route.declaredSecurity(),
+                                                                     UploadSpec.uploadSpec(route.upload(),
+                                                                                           route.maxBodyBytes(),
+                                                                                           route.maxDurationMillis(),
+                                                                                           route.maxFiles(),
+                                                                                           route.maxFileBytes(),
+                                                                                           route.maxFields(),
+                                                                                           route.maxFieldBytes())),
                                  NodeRouteSecurity::strongerOf);
                 }
 

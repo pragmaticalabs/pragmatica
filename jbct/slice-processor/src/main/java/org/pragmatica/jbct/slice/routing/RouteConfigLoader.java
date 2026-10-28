@@ -11,6 +11,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -20,6 +21,8 @@ import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.parse.DataSize;
+import org.pragmatica.lang.parse.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.json.NamingStrategy;
 
@@ -377,21 +380,148 @@ public final class RouteConfigLoader {
     /// `route` is required; `consumes`/`produces` default to [MediaType#JSON]; `security` is an optional override;
     /// `method` is an optional slice-method override (D8) used only by versioned `[vN.routes]` bind keys.
     private static Result<ParsedRoute> parseInlineTableRoute(String key, Map<String, Object> table) {
-        return Option.option(table.get("route"))
-                     .map(Object::toString)
-                     .toResult(Causes.cause("Inline-table route must have a 'route' field: " + key))
-                     .flatMap(routeStr -> buildInlineRoute(key, table, routeStr));
+        return checkInlineKeys(key, table).flatMap(_ -> Option.option(table.get("route"))
+                                                              .map(Object::toString)
+                                                              .toResult(Causes.cause("Inline-table route must have a 'route' field: " + key))
+                                                              .flatMap(routeStr -> buildInlineRoute(key, table, routeStr)));
+    }
+
+    /// The keys an inline-table route accepts. `max_size` and `max_duration` are the per-route ingest limits;
+    /// `max_files`, `max_file_size`, `max_fields` and `max_field_size` are the multipart part limits.
+    private static final Set<String> INLINE_ROUTE_KEYS = Set.of("route",
+                                                                "consumes",
+                                                                "produces",
+                                                                "security",
+                                                                "method",
+                                                                "max_size",
+                                                                "max_duration",
+                                                                "max_files",
+                                                                "max_file_size",
+                                                                "max_fields",
+                                                                "max_field_size");
+
+    /// Upload keys that are specified but need the streaming ingest path (resumable uploads, unclaimed retention). They
+    /// are refused, not accepted and ignored: a limit that is declared but never enforced is worse than none.
+    private static final Set<String> NOT_YET_INLINE_ROUTE_KEYS = Set.of("resumable", "unclaimed_ttl");
+
+    /// An unknown key is a typo the loader would otherwise ignore: `max_sise = "5GB"` would leave the route at the
+    /// default limit with nothing to say so.
+    private static Result<Map<String, Object>> checkInlineKeys(String key, Map<String, Object> table) {
+        var notYet = table.keySet().stream().filter(NOT_YET_INLINE_ROUTE_KEYS::contains).sorted().toList();
+        var unknown = table.keySet()
+                           .stream()
+                           .filter(name -> !INLINE_ROUTE_KEYS.contains(name) && !NOT_YET_INLINE_ROUTE_KEYS.contains(name))
+                           .sorted()
+                           .toList();
+
+        if (!unknown.isEmpty()) {
+            return Causes.cause("Route '" + key
+                               + "' has unknown key(s) " + unknown
+                               + "; valid keys: " + new TreeSet<>(INLINE_ROUTE_KEYS)).result();
+        }
+
+        return notYet.isEmpty()
+               ? Result.success(table)
+               : Causes.cause("Route '" + key
+                             + "' declares " + notYet
+                             + ", which this build does not enforce yet (they need streaming ingest); remove " + (notYet.size() == 1
+                                                                                                                  ? "it"
+                                                                                                                  : "them")
+                             + " rather than have the limit silently ignored").result();
+    }
+
+    /// `max_size`: a size string (`"5GB"`) or an integer number of bytes, greater than zero.
+    private static Result<Long> parseMaxSize(String key, Map<String, Object> table) {
+        return Option.option(table.get("max_size"))
+                     .map(raw -> toBytes(key, raw))
+                     .or(Result.success(0L));
+    }
+
+    private static Result<Long> toBytes(String key, Object raw) {
+        var bytes = raw instanceof Number number
+                    ? Result.success(number.longValue())
+                    : DataSize.dataSize(raw.toString()).map(DataSize::bytes);
+
+        return bytes.mapError(cause -> Causes.cause("Route '" + key + "' max_size: " + cause.message()))
+                    .flatMap(value -> positive(key, "max_size", value));
+    }
+
+    /// `max_duration`: a duration string (`"6h"`, `"90s"`), greater than zero. A bare integer is refused: seconds and
+    /// milliseconds are both plausible readings.
+    private static Result<Long> parseMaxDuration(String key, Map<String, Object> table) {
+        return Option.option(table.get("max_duration"))
+                     .map(raw -> toMillis(key, raw))
+                     .or(Result.success(0L));
+    }
+
+    private static Result<Long> toMillis(String key, Object raw) {
+        if (raw instanceof Number) {
+            return Causes.cause("Route '" + key + "' max_duration must be a duration string such as \"6h\" or \"90s\"").result();
+        }
+
+        return TimeSpan.timeSpan(raw.toString())
+                       .map(span -> span.duration()
+                                        .toMillis())
+                       .mapError(cause -> Causes.cause("Route '" + key + "' max_duration: " + cause.message()))
+                       .flatMap(value -> positive(key, "max_duration", value));
+    }
+
+    /// `max_file_size` / `max_field_size`: a size string or an integer number of bytes, greater than zero.
+    private static Result<Long> parseSize(String key, Map<String, Object> table, String field) {
+        return Option.option(table.get(field))
+                     .map(raw -> sizeOf(key, field, raw))
+                     .or(Result.success(0L));
+    }
+
+    private static Result<Long> sizeOf(String key, String field, Object raw) {
+        var bytes = raw instanceof Number number
+                    ? Result.success(number.longValue())
+                    : DataSize.dataSize(raw.toString()).map(DataSize::bytes);
+
+        return bytes.mapError(cause -> Causes.cause("Route '" + key + "' " + field + ": " + cause.message()))
+                    .flatMap(value -> positive(key, field, value));
+    }
+
+    /// `max_files` / `max_fields`: an integer count, greater than zero.
+    private static Result<Long> parseCount(String key, Map<String, Object> table, String field) {
+        return Option.option(table.get(field))
+                     .map(raw -> countOf(key, field, raw))
+                     .or(Result.success(0L));
+    }
+
+    private static Result<Long> countOf(String key, String field, Object raw) {
+        return raw instanceof Number number && number.doubleValue() == number.longValue()
+               ? positive(key, field, number.longValue())
+               : Causes.cause("Route '" + key + "' " + field + " must be a whole number greater than zero").result();
+    }
+
+    private static Result<Long> positive(String key, String field, long value) {
+        return value > 0
+               ? Result.success(value)
+               : Causes.cause("Route '" + key + "' " + field + " must be greater than zero").result();
     }
 
     private static Result<ParsedRoute> buildInlineRoute(String key, Map<String, Object> table, String routeStr) {
         var methodOverride = Option.option(table.get("method")).map(Object::toString);
 
-        return Result.all(resolveMedia(table, "consumes"), resolveMedia(table, "produces"), resolveInlineSecurity(table)).flatMap((consumes, produces, security) -> RouteDsl.parse(routeStr,
-                                                                                                                                                                                   consumes,
-                                                                                                                                                                                   produces).map(dsl -> new ParsedRoute(key,
-                                                                                                                                                                                                                        dsl,
-                                                                                                                                                                                                                        security,
-                                                                                                                                                                                                                        methodOverride)));
+        return Result.all(resolveMedia(table, "consumes"),
+                          resolveMedia(table, "produces"),
+                          resolveInlineSecurity(table),
+                          parseLimits(key, table)).flatMap((consumes, produces, security, limits) -> RouteDsl.parse(routeStr,
+                                                                                                                    consumes,
+                                                                                                                    produces).map(dsl -> new ParsedRoute(key,
+                                                                                                                                                         dsl.withLimits(limits),
+                                                                                                                                                         security,
+                                                                                                                                                         methodOverride)));
+    }
+
+    private static Result<RouteLimits> parseLimits(String key, Map<String, Object> table) {
+        return Result.all(parseMaxSize(key, table),
+                          parseMaxDuration(key, table),
+                          parseCount(key, table, "max_files"),
+                          parseSize(key, table, "max_file_size"),
+                          parseCount(key, table, "max_fields"),
+                          parseSize(key, table, "max_field_size")).map(RouteLimits::routeLimits);
     }
 
     private static Result<MediaType> resolveMedia(Map<String, Object> table, String field) {

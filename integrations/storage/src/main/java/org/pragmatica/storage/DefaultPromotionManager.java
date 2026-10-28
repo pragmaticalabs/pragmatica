@@ -130,11 +130,12 @@ final class DefaultPromotionManager implements PromotionManager {
     private List<BlockLifecycle> selectCandidates(TierLevel sourceLevel, StorageTier adjacentTarget) {
         var now = System.currentTimeMillis();
         var windowStart = now - config.windowMs();
+        var access = metadataStore.accessTracker();
 
         return metadataStore.listBlocksByTier(sourceLevel)
                             .stream()
-                            .filter(lc -> isPromotionCandidate(lc, windowStart, adjacentTarget))
-                            .sorted(MOST_ACCESSED_FIRST)
+                            .filter(lc -> isPromotionCandidate(lc, access, windowStart, adjacentTarget))
+                            .sorted(Comparator.comparingInt(access::accessCount).reversed())
                             .limit(config.batchSize())
                             .toList();
     }
@@ -161,9 +162,12 @@ final class DefaultPromotionManager implements PromotionManager {
     /// ([#targetFor]), and whose tier is not at its watermark. Testing "present in any faster tier" instead re-copies a
     /// block already on the disk from the DHT on every cycle; testing the ADJACENT tier's fullness instead of the real
     /// target's would starve a redirected block while its own target has room (or read it for nothing when it has none).
-    private boolean isPromotionCandidate(BlockLifecycle lifecycle, long windowStart, StorageTier adjacentTarget) {
-        return lifecycle.accessCount() > config.accessThreshold()
-               && lifecycle.lastAccessedAt() >= windowStart
+    private boolean isPromotionCandidate(BlockLifecycle lifecycle,
+                                         AccessTracker access,
+                                         long windowStart,
+                                         StorageTier adjacentTarget) {
+        return access.accessCount(lifecycle) > config.accessThreshold()
+               && access.lastAccessedAt(lifecycle) >= windowStart
                && targetFor(lifecycle, adjacentTarget).filter(target -> !lifecycle.presentIn()
                                                                                   .contains(target.level()))
                            .filter(target -> !isAtTargetWatermark(target))
@@ -266,8 +270,6 @@ final class DefaultPromotionManager implements PromotionManager {
                ? 0.0
                : (double)(tier.usedBytes() + incomingBytes) / tier.maxBytes();
     }
-
-    private static final Comparator<BlockLifecycle> MOST_ACCESSED_FIRST = Comparator.comparingInt(BlockLifecycle::accessCount).reversed();
 
     private record PromotionResult(int count, long bytes, int failed) {
         static final PromotionResult NONE = new PromotionResult(0, 0, 0);

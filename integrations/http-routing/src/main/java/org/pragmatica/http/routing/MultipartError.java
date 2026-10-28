@@ -35,7 +35,8 @@ public sealed interface MultipartError extends HttpStatusAware {
         MISSING_CONTENT_TYPE("Missing Content-Type header", HttpStatus.UNSUPPORTED_MEDIA_TYPE),
         MISSING_BOUNDARY("Multipart Content-Type has no boundary parameter", HttpStatus.BAD_REQUEST),
         MISSING_CLOSE_DELIMITER("Multipart body is incomplete or malformed: no closing boundary delimiter",
-                                HttpStatus.BAD_REQUEST);
+                                HttpStatus.BAD_REQUEST),
+        NESTED_MULTIPART("A nested multipart part is not accepted on a route with part limits", HttpStatus.BAD_REQUEST);
         private final String message;
         private final HttpStatus status;
         General(String message, HttpStatus status) {
@@ -86,6 +87,30 @@ public sealed interface MultipartError extends HttpStatusAware {
         @Override
         public HttpStatus httpStatus() {
             return HttpStatus.BAD_REQUEST;
+        }
+    }
+
+    /// The decoded body exceeds a part limit the route declares (`max_files`, `max_file_size`, `max_fields`,
+    /// `max_field_size`): 413, the same status as a body over `max_size`.
+    record LimitExceeded(long limit, String message) implements MultipartError {
+        public static final Fn1<LimitExceeded, Long> FILES = Causes.forOneValue("Multipart body has more than %d files",
+                                                                                LimitExceeded::new);
+
+        public static final Fn1<LimitExceeded, Long> FILE_SIZE = Causes.forOneValue("A file in the multipart body is larger than %d bytes",
+                                                                                    LimitExceeded::new);
+
+        public static final Fn1<LimitExceeded, Long> FIELDS = Causes.forOneValue("Multipart body has more than %d fields",
+                                                                                 LimitExceeded::new);
+
+        public static final Fn1<LimitExceeded, Long> PARTS = Causes.forOneValue("Multipart body has more than %d parts",
+                                                                                LimitExceeded::new);
+
+        public static final Fn1<LimitExceeded, Long> FIELD_SIZE = Causes.forOneValue("A field in the multipart body is larger than %d bytes",
+                                                                                     LimitExceeded::new);
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.REQUEST_ENTITY_TOO_LARGE;
         }
     }
 }

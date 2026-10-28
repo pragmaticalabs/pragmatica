@@ -114,6 +114,12 @@ public interface Route<T> extends RouteSource, RouteShape {
         return RouteSecurityPolicy.permitAll();
     }
 
+    /// Returns the ingest limits this route declares in `routes.toml` (`max_size`, `max_duration`); [UploadSpec#NONE]
+    /// when it declares none.
+    default UploadSpec uploadSpec() {
+        return UploadSpec.NONE;
+    }
+
     @Override
     default Stream<Route<?>> routes() {
         return Stream.of(this);
@@ -186,6 +192,30 @@ public interface Route<T> extends RouteSource, RouteShape {
                               int version,
                               int pathArity,
                               List<Integer> spacerSlots) {
+        return route(method,
+                     path,
+                     handler,
+                     contentType,
+                     spacers,
+                     name,
+                     security,
+                     version,
+                     pathArity,
+                     spacerSlots,
+                     UploadSpec.NONE);
+    }
+
+    static <T> Route<T> route(HttpMethod method,
+                              String path,
+                              Handler<T> handler,
+                              ContentType contentType,
+                              List<String> spacers,
+                              String name,
+                              RouteSecurityPolicy security,
+                              int version,
+                              int pathArity,
+                              List<Integer> spacerSlots,
+                              UploadSpec uploadSpec) {
         record route <T>(HttpMethod method,
                          String path,
                          Handler<T> handler,
@@ -195,7 +225,8 @@ public interface Route<T> extends RouteSource, RouteShape {
                          RouteSecurityPolicy security,
                          int version,
                          int pathArity,
-                         List<Integer> spacerSlots) implements Route<T> {
+                         List<Integer> spacerSlots,
+                         UploadSpec uploadSpec) implements Route<T> {
             @Override
             public int pathParamCount() {
                 return pathArity;
@@ -212,7 +243,8 @@ public interface Route<T> extends RouteSource, RouteShape {
                              security,
                              version,
                              pathArity,
-                             spacerSlots);
+                             spacerSlots,
+                             uploadSpec);
             }
 
             @Override
@@ -240,7 +272,8 @@ public interface Route<T> extends RouteSource, RouteShape {
                             security,
                             version,
                             pathArity,
-                            spacerSlots);
+                            spacerSlots,
+                            uploadSpec);
     }
 
     /// Mount a route in path mode (#198 §6.4, the default detection mode). For a versioned route
@@ -264,7 +297,8 @@ public interface Route<T> extends RouteSource, RouteShape {
                        route.security(),
                        route.version(),
                        route.pathParamCount(),
-                       route.spacerSlots());
+                       route.spacerSlots(),
+                       route.uploadSpec());
     }
 
     /// Mount a route in header mode (#198 §7). For a versioned route (`version > 0`) the un-versioned
@@ -289,7 +323,8 @@ public interface Route<T> extends RouteSource, RouteShape {
                        route.security(),
                        route.version(),
                        route.pathParamCount(),
-                       route.spacerSlots());
+                       route.spacerSlots(),
+                       route.uploadSpec());
     }
 
     static Subroutes in(String path) {
@@ -1047,6 +1082,13 @@ public interface Route<T> extends RouteSource, RouteShape {
         /// @return a new builder with the version set
         ContentTypeBuilder<T> versioned(int version);
 
+        /// Declares the ingest limits of this route (`max_size`, `max_duration` in `routes.toml`), enforced by the
+        /// node that accepts the request before its body is read.
+        ///
+        /// @param uploadSpec the declared limits
+        /// @return a new builder with the limits set
+        ContentTypeBuilder<T> withUpload(UploadSpec uploadSpec);
+
         default Route<T> asText() {
             return as(CommonContentType.TEXT_PLAIN);
         }
@@ -1067,7 +1109,20 @@ public interface Route<T> extends RouteSource, RouteShape {
                                      RouteSecurityPolicy security,
                                      int version,
                                      int pathArity,
-                                     List<Integer> spacerSlots) implements ContentTypeBuilder<T> {
+                                     List<Integer> spacerSlots,
+                                     UploadSpec uploadSpec) implements ContentTypeBuilder<T> {
+        ContentTypeBuilderImpl(HttpMethod method,
+                               String path,
+                               Handler<T> handler,
+                               List<String> spacers,
+                               String name,
+                               RouteSecurityPolicy security,
+                               int version,
+                               int pathArity,
+                               List<Integer> spacerSlots) {
+            this(method, path, handler, spacers, name, security, version, pathArity, spacerSlots, UploadSpec.NONE);
+        }
+
         ContentTypeBuilderImpl(HttpMethod method,
                                String path,
                                Handler<T> handler,
@@ -1076,7 +1131,7 @@ public interface Route<T> extends RouteSource, RouteShape {
                                RouteSecurityPolicy security,
                                int version,
                                int pathArity) {
-            this(method, path, handler, spacers, name, security, version, pathArity, List.of());
+            this(method, path, handler, spacers, name, security, version, pathArity, List.of(), UploadSpec.NONE);
         }
 
         ContentTypeBuilderImpl(HttpMethod method,
@@ -1100,7 +1155,17 @@ public interface Route<T> extends RouteSource, RouteShape {
 
         @Override
         public Route<T> as(ContentType contentType) {
-            return route(method, path, handler, contentType, spacers, name, security, version, pathArity, spacerSlots);
+            return route(method,
+                         path,
+                         handler,
+                         contentType,
+                         spacers,
+                         name,
+                         security,
+                         version,
+                         pathArity,
+                         spacerSlots,
+                         uploadSpec);
         }
 
         @Override
@@ -1113,7 +1178,8 @@ public interface Route<T> extends RouteSource, RouteShape {
                                                 security,
                                                 version,
                                                 pathArity,
-                                                spacerSlots);
+                                                spacerSlots,
+                                                uploadSpec);
         }
 
         @Override
@@ -1126,7 +1192,8 @@ public interface Route<T> extends RouteSource, RouteShape {
                                                 security,
                                                 version,
                                                 pathArity,
-                                                spacerSlots);
+                                                spacerSlots,
+                                                uploadSpec);
         }
 
         @Override
@@ -1139,7 +1206,22 @@ public interface Route<T> extends RouteSource, RouteShape {
                                                 security,
                                                 version,
                                                 pathArity,
-                                                spacerSlots);
+                                                spacerSlots,
+                                                uploadSpec);
+        }
+
+        @Override
+        public ContentTypeBuilder<T> withUpload(UploadSpec uploadSpec) {
+            return new ContentTypeBuilderImpl<>(method,
+                                                path,
+                                                handler,
+                                                spacers,
+                                                name,
+                                                security,
+                                                version,
+                                                pathArity,
+                                                spacerSlots,
+                                                uploadSpec);
         }
     }
 

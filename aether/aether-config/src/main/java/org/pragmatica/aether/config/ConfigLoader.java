@@ -107,7 +107,8 @@ public final class ConfigLoader {
 
             mergeCliOverrides(overrides, builder);
 
-            return refuseRemovedTargetRf(doc).flatMap(_ -> refuseUnsupportedSecurityModes(doc))
+            return refuseRemovedTargetRf(doc).flatMap(_ -> refuseUnknownUploadKeys(doc))
+                                        .flatMap(_ -> refuseUnsupportedSecurityModes(doc))
                                         .flatMap(_ -> parseReadLinearization(doc))
                                         .map(mode -> applyReadLinearization(builder.build(),
                                                                             mode))
@@ -464,11 +465,48 @@ public final class ConfigLoader {
                                                   apiVersionHeaderName).unwrap();
         var readTimeout = parseTimeSpan(doc, "app-http", "read_timeout", AppHttpConfig.DEFAULT_READ_TIMEOUT);
         var minBodyRate = parseDataSize(doc, "app-http", "min_body_rate", AppHttpConfig.DEFAULT_MIN_BODY_RATE);
-        var withReadTimeout = appHttp.withReadTimeout(readTimeout).withMinBodyRate(minBodyRate);
+        var withReadTimeout = appHttp.withReadTimeout(readTimeout)
+                                     .withMinBodyRate(minBodyRate)
+                                     .withUpload(parseUploadConfig(doc));
 
         builder.appHttp(parseAppTls(doc).map(withReadTimeout::withTls)
                                    .or(withReadTimeout)
                                    .withManagementSecurityMode(parseManagementSecurityMode(doc)));
+    }
+
+    /// `[app-http.upload]`: the node-wide bounds on routes that receive an upload body. Values are checked by
+    /// [ConfigValidator]; an unknown key is refused by [#refuseUnknownUploadKeys].
+    private static UploadConfig parseUploadConfig(TomlDocument doc) {
+        var section = "app-http.upload";
+        var defaults = UploadConfig.DEFAULT;
+
+        return UploadConfig.uploadConfig(parseDataSize(doc, section, "max_size_ceiling", defaults.maxSizeCeiling()),
+                                         parseInt(doc, section, "max_concurrent", defaults.maxConcurrent()),
+                                         parseInt(doc,
+                                                  section,
+                                                  "max_concurrent_per_principal",
+                                                  defaults.maxConcurrentPerPrincipal()),
+                                         parseTimeSpan(doc, section, "idle_timeout", defaults.idleTimeout()),
+                                         parseDataSize(doc, section, "min_body_rate", defaults.minBodyRate()),
+                                         parseDataSize(doc, section, "max_in_flight_size", defaults.maxInFlightBytes()));
+    }
+
+    private static final Set<String> UPLOAD_KEYS = Set.of("max_size_ceiling",
+                                                          "max_concurrent",
+                                                          "max_concurrent_per_principal",
+                                                          "idle_timeout",
+                                                          "min_body_rate",
+                                                          "max_in_flight_size");
+
+    /// A mistyped `[app-http.upload]` key (`max_concurent = 8`) would leave the cap at its default with nothing to say
+    /// so, so it is refused, naming the keys that exist.
+    private static Result<Unit> refuseUnknownUploadKeys(TomlDocument doc) {
+        var unknown = doc.keys("app-http.upload").stream().filter(key -> !UPLOAD_KEYS.contains(key)).sorted().toList();
+
+        return unknown.isEmpty()
+               ? Result.unitResult()
+               : ConfigError.invalidConfig("[app-http.upload] unknown key(s) " + String.join(", ", unknown)
+                                          + "; valid keys: " + String.join(", ", new java.util.TreeSet<>(UPLOAD_KEYS))).result();
     }
 
     /// `[management] security_mode` (#962): optional, `none` or `api-key`. Absent, the Management API inherits

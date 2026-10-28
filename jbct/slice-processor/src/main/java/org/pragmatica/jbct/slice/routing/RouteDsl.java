@@ -10,6 +10,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
@@ -29,15 +30,32 @@ import org.pragmatica.lang.utils.Causes;
 /// @param queryParams  extracted query parameters
 /// @param consumes     request body media type ([MediaType#JSON] by default)
 /// @param produces     response body media type ([MediaType#JSON] by default)
+/// @param limits       the ingest limits the route declares (`max_size`, `max_duration`); [RouteLimits#NONE] by default
 public record RouteDsl(String method,
                        String pathTemplate,
                        List<PathParam> pathParams,
                        List<QueryParam> queryParams,
                        MediaType consumes,
-                       MediaType produces) {
+                       MediaType produces,
+                       RouteLimits limits) {
     public RouteDsl {
         pathParams = List.copyOf(pathParams);
         queryParams = List.copyOf(queryParams);
+    }
+
+    /// A route that declares no ingest limits.
+    public RouteDsl(String method,
+                    String pathTemplate,
+                    List<PathParam> pathParams,
+                    List<QueryParam> queryParams,
+                    MediaType consumes,
+                    MediaType produces) {
+        this(method, pathTemplate, pathParams, queryParams, consumes, produces, RouteLimits.NONE);
+    }
+
+    /// This route with the ingest limits it declares.
+    public RouteDsl withLimits(RouteLimits limits) {
+        return new RouteDsl(method, pathTemplate, pathParams, queryParams, consumes, produces, limits);
     }
 
     private static final Set<String> VALID_METHODS = Set.of("GET", "POST", "PUT", "DELETE", "PATCH");
@@ -56,11 +74,16 @@ public record RouteDsl(String method,
     /// The bare-string and array route forms call [#parse(String)], which defaults both to
     /// [MediaType#JSON] (JSON in, JSON out) — preserving backward compatibility.
     public static Result<RouteDsl> parse(String dsl, MediaType consumes, MediaType produces) {
-        if (dsl == null || dsl.isBlank()) {
-            return EMPTY_DSL.result();
-        }
+        return Option.option(dsl)
+                     .filter(text -> !text.isBlank())
+                     .toResult(EMPTY_DSL)
+                     .flatMap(text -> parseTrimmed(text.trim(),
+                                                   consumes,
+                                                   produces));
+    }
 
-        var matcher = DSL_PATTERN.matcher(dsl.trim());
+    private static Result<RouteDsl> parseTrimmed(String dsl, MediaType consumes, MediaType produces) {
+        var matcher = DSL_PATTERN.matcher(dsl);
 
         if (!matcher.matches()) {
             return INVALID_FORMAT.result();
@@ -105,10 +128,12 @@ public record RouteDsl(String method,
     }
 
     private static List<QueryParam> parseQueryParams(String queryPart) {
-        if (queryPart == null || queryPart.isBlank()) {
-            return List.of();
-        }
+        return Option.option(queryPart)
+                     .map(RouteDsl::queryParamsOf)
+                     .or(List.of());
+    }
 
+    private static List<QueryParam> queryParamsOf(String queryPart) {
         var params = new ArrayList<QueryParam>();
 
         for (var paramSpec : queryPart.split("&")) {
