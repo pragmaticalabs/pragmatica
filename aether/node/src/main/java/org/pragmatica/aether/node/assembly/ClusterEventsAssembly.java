@@ -22,6 +22,7 @@ import org.pragmatica.aether.deployment.cluster.ClusterReplication;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.membership.ntt.DrainProcedure;
+import org.pragmatica.aether.environment.GossipKeyMaterial;
 import org.pragmatica.aether.invoke.InvocationTraceStore;
 import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.aether.node.SystemStreamRegistrar;
@@ -170,6 +171,8 @@ public sealed interface ClusterEventsAssembly {
 
             return Map.copyOf(marks);
         });
+        // #1200: a node this leader mints after a gossip-key rotation receives the CURRENT key, read from the replicated rotation record.
+        clusterTopologyManager.setGossipKeyReader(() -> deliveredGossipKey(kvStore));
         defer.accept(() -> SharedScheduler.scheduleAtFixedRate(eventAggregator::evictIdleThrottleWindows,
                                                                OPERATOR_WARNING_EVICTION_INTERVAL,
                                                                OPERATOR_WARNING_EVICTION_INTERVAL));
@@ -480,6 +483,15 @@ public sealed interface ClusterEventsAssembly {
 
         return org.pragmatica.lang.parse.Number.parseLong(raw)
                                                .or(defaultValue);
+    }
+
+    /// The cluster's current gossip key in the form a provisioned node receives ([GossipKeyMaterial#render]); empty while no rotation has
+    /// been committed, i.e. while every node's `cluster_secret`-derived key is still the cluster's key.
+    static Option<String> deliveredGossipKey(KVStore<AetherKey, AetherValue> kvStore) {
+        return kvStore.getTyped(AetherKey.GossipKeyRotationKey.gossipKeyRotationKey(),
+                                AetherValue.GossipKeyRotationValue.class)
+                      .map(rotation -> GossipKeyMaterial.render(rotation.currentKeyId(),
+                                                                rotation.currentKey()));
     }
 
     record unused() implements ClusterEventsAssembly {}

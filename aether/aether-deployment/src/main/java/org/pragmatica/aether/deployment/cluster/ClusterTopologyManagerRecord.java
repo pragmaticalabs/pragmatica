@@ -146,7 +146,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     org.pragmatica.lang.concurrent.CancellableTask workerTopologyPolling,
                                     ConcurrentHashMap<NodeId, SourceName> replacementSources,
                                     AtomicLong replayRunning,
-                                    AtomicLong lastSweepMs) implements ClusterTopologyManager {
+                                    AtomicLong lastSweepMs,
+                                    AtomicReference<Supplier<Option<String>>> gossipKeyReader) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
     private static final int MINIMUM_CLUSTER_SIZE = 3;
     private static final int MAX_CONSECUTIVE_PROVISIONING_FAILURES = 3;
@@ -303,7 +304,21 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 org.pragmatica.lang.concurrent.CancellableTask.cancellableTask(),
                                                 new ConcurrentHashMap<>(),
                                                 new AtomicLong(NOT_RUN),
-                                                new AtomicLong(0L));
+                                                new AtomicLong(0L),
+                                                new AtomicReference<>(Option::none));
+    }
+
+    @Override
+    public Unit setGossipKeyReader(Supplier<Option<String>> reader) {
+        gossipKeyReader.set(reader);
+
+        return unit();
+    }
+
+    @Override
+    public Option<String> currentGossipKey() {
+        return gossipKeyReader.get()
+                              .get();
     }
 
     @Override
@@ -1800,7 +1815,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                                          config.cluster().name(),
                                                                                          composed,
                                                                                          authorizedKeysFrom(config),
-                                                                                         peersList(context)));
+                                                                                         peersList(context),
+                                                                                         true,
+                                                                                         System::getenv,
+                                                                                         context.gossipKey()));
     }
 
     private List<Long> sourceSshKeyIds(SourceName source) {
@@ -3917,7 +3935,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                sourceName,
                                                newNodeId.id(),
                                                peers,
-                                               snapshotDesiredCoreSize());
+                                               snapshotDesiredCoreSize())
+                               .withGossipKey(currentGossipKey());
     }
 
     /// Discovery, NOT liveness — and the name now says so (#558).

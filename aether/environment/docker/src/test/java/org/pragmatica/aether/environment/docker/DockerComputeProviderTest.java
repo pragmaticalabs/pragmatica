@@ -686,6 +686,14 @@ class DockerComputeProviderTest {
             return ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "docker", "core-pool", ctx).unwrap();
         }
 
+        private ProvisionSpec specCarryingGossipKey(String gossipKey) {
+            var ctx = ProvisionContext.provisionContext(maybeClusterName("test-cluster"), "core", sourceNameOrDefault("eu-west"),
+                                                         ProvisionContext.PROVISIONED_BY_BOOTSTRAP)
+                                      .withGossipKey(org.pragmatica.lang.Option.some(gossipKey));
+
+            return ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "docker", "core-pool", ctx).unwrap();
+        }
+
         private DockerComputeProvider providerWith(Map<String, String> env) {
             return DockerComputeProvider.dockerComputeProvider(testRunner, CONFIG, env::get).unwrap();
         }
@@ -797,6 +805,39 @@ class DockerComputeProviderTest {
 
             assertThat(archive).as("positive control: every sentinel reached the archive").contains(secret).contains(keys).contains(key);
             assertThat(tarListing(testRunner.stdins.getFirst())).contains("aether-cluster-secret", "aether-api-keys", "aether-api-key");
+        }
+
+        /// #1200: the leader puts the cluster's CURRENT gossip key in the request context; it travels as a file like the secret, and beats the
+        /// (superseded) key in the leader's own environment.
+        @Test
+        void gossipKeyFromTheContext_winsOverTheHostEnvironment_andTravelsAsAFile() {
+            var current = "5:Y3VycmVudC1nb3NzaXAta2V5LXNlbnRpbmVsLTAwMDAwMDA=";
+            var stale = "1:c3RhbGUtZ29zc2lwLWtleS1zZW50aW5lbC0wMDAwMDAwMDA=";
+            queueSuccessfulCreateCopyStart();
+
+            providerWith(Map.of("AETHER_CLUSTER_SECRET", "sentinel-secret-7f3a9c", "AETHER_GOSSIP_KEY", stale)).provision(specCarryingGossipKey(current)).await()
+                                                                                                          .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            var create = testRunner.allCommands.getFirst();
+            var archive = new String(testRunner.stdins.getFirst(), java.nio.charset.StandardCharsets.UTF_8);
+
+            assertThat(create).contains("AETHER_GOSSIP_KEY_FILE=/tmp/aether-gossip-key");
+            assertThat(testRunner.allCommands.stream().flatMap(List::stream)).as("no gossip key on any argv or env var")
+                                                                              .noneMatch(arg -> arg.contains(current) || arg.contains(stale) || arg.startsWith("AETHER_GOSSIP_KEY="));
+            assertThat(archive).as("the live key reached the archive").contains(current);
+            assertThat(archive).as("the superseded host key did not").doesNotContain(stale);
+            assertThat(tarListing(testRunner.stdins.getFirst())).contains("aether-gossip-key");
+        }
+
+        @Test
+        void noGossipKeyAnywhere_deliversNoGossipKeyFile() {
+            queueSuccessfulCreateCopyStart();
+
+            providerWith(Map.of("AETHER_CLUSTER_SECRET", "sentinel-secret-7f3a9c")).provision(spec()).await()
+                                                                                    .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            assertThat(testRunner.allCommands.getFirst()).noneMatch(arg -> arg.startsWith("AETHER_GOSSIP_KEY"));
+            assertThat(tarListing(testRunner.stdins.getFirst())).doesNotContain("gossip-key");
         }
 
         @Test

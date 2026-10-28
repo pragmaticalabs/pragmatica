@@ -35,11 +35,13 @@ import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.invoke.ObservabilityConfig;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
+import org.pragmatica.aether.node.ProvisionedGossipKeyProvider;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
+import org.pragmatica.aether.environment.GossipKeyMaterial;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
@@ -265,6 +267,11 @@ public final class EmberCluster {
     /// what a node was truly wired with.
     private final AtomicReference<Option<AetherNodeConfig>> lastNodeConfig = new AtomicReference<>(Option.empty());
 
+    /// #1200 — the gossip key the provisioning leader delivered with a node (`ProvisionContext.gossipKey`), by node id, taken at provision
+    /// time and consumed when the node is created: the in-JVM analogue of the credential file a cloud or Docker node is minted with. A node
+    /// created without one derives its gossip key from the cluster secret, exactly as before. Kept for the life of the cluster so a
+    /// same-id relaunch boots on the key it was given.
+    private final ConcurrentHashMap<String, GossipKeyMaterial> deliveredGossipKeys = new ConcurrentHashMap<>();
     /// #727 review B2 — the cluster state as it was when a start failed, retained past the teardown
     /// that empties [#nodes], [#nodeInfos] and [#slotsByNodeId].
     ///
@@ -299,12 +306,24 @@ public final class EmberCluster {
             return request.context()
                           .nodeId()
                           .map(id -> NodeId.nodeId(id)
+                                           .flatMap(node -> rememberDeliveredGossipKey(node,
+                                                                                       request.context()))
                                            .async()
                                            .flatMap(node -> addProvisionedNode(node,
                                                                                provisionLabels(request.context()))))
                           .or(() -> addNode(provisionLabels(request.context())))
                           .map(node -> stampAndDescribe(request.context(),
                                                         node.id()));
+        }
+
+        /// #1200: a malformed delivered key fails the provision, as it refuses the boot of a node that is handed one.
+        private Result<NodeId> rememberDeliveredGossipKey(NodeId node, ProvisionContext context) {
+            return context.gossipKey()
+                          .fold(() -> Result.success(node),
+                                raw -> GossipKeyMaterial.gossipKeyMaterial(raw)
+                                                        .onSuccess(key -> deliveredGossipKeys.put(node.id(),
+                                                                                                  key))
+                                                        .map(_ -> node));
         }
 
         /// #694: the tag map is built from the provisioning context AT PROVISION TIME and stored per
@@ -1567,7 +1586,8 @@ public final class EmberCluster {
                                           BackoffConfig.DEFAULT,
                                           coreMax,
                                           targetClusterSize);
-        var certificateProvider = SelfSignedCertificateProvider.selfSignedCertificateProvider(clusterSecret.get()).unwrap();
+        var certificateProvider = ProvisionedGossipKeyProvider.provisionedGossipKeyProvider(SelfSignedCertificateProvider.selfSignedCertificateProvider(clusterSecret.get()).unwrap(),
+                                                                                            Option.option(deliveredGossipKeys.get(nodeId.id())));
         var quicTls = buildForgeQuicTls(nodeId, certificateProvider);
         var config = new AetherNodeConfig(topology,
                                           ProtocolConfig.testConfig(participationMarker(nodeId),

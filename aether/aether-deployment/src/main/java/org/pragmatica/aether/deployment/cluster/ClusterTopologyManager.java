@@ -291,6 +291,18 @@ public interface ClusterTopologyManager extends TopologyManager {
         return org.pragmatica.lang.Unit.unit();
     }
 
+    /// #1200: where the cluster's CURRENT gossip key is read from (the replicated rotation record), in the delivered form
+    /// ([org.pragmatica.aether.environment.GossipKeyMaterial#render]). Every node this manager mints receives it through the channel that
+    /// carries the cluster secret, so a node provisioned after a rotation can still join. Default: none (the derived key is current).
+    default org.pragmatica.lang.Unit setGossipKeyReader(java.util.function.Supplier<org.pragmatica.lang.Option<String>> reader) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// The current gossip key a node minted now would receive; empty while the cluster still runs on the derived key.
+    default org.pragmatica.lang.Option<String> currentGossipKey() {
+        return org.pragmatica.lang.Option.none();
+    }
+
     /// The replicated marks this manager reads (readable so that the node's wiring can be pinned).
     default java.util.Map<NodeId, org.pragmatica.aether.slice.kvstore.AetherValue.UnconfirmedTerminationValue> unconfirmedMarks() {
         return java.util.Map.of();

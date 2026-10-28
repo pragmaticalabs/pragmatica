@@ -273,6 +273,60 @@ class ClusterTopologyManagerRenderUserDataTest {
         assertThat(userData).doesNotContain("genesis_voters");
     }
 
+    /// #1200: a replacement minted after a gossip-key rotation is DELIVERED the current key, through the same cloud-init user-data that
+    /// carries the cluster secret, and it is the key the leader reads from the replicated rotation record at provision time.
+    @Test
+    void provisionReplacement_afterRotation_deliversTheCurrentGossipKeyInUserDataAndContext() {
+        var current = "5:Y3VycmVudC1nb3NzaXAta2V5LXNlbnRpbmVsLTAwMDAwMDA=";
+        clusterStore.seedToml(CLOUD_TOML);
+        ctm.setGossipKeyReader(() -> Option.some(current));
+        ctm.activate();
+
+        var result = ctm.provisionReplacement(nodeId("node-rotated").unwrap(), Option.some(DEAD_PEER), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
+
+        assertThat(result.isSuccess()).isTrue();
+        var spec = lifecycleManager.lastSpec();
+        assertThat(spec.userData().or(""))
+                .as("the key rides the credential-file channel of the user-data, with the node pointed at the file")
+                .contains(current)
+                .contains("AETHER_GOSSIP_KEY_FILE");
+        assertThat(spec.context().gossipKey().or(""))
+                .as("and the same key rides the provision context, for providers that mint without user-data")
+                .isEqualTo(current);
+    }
+
+    @Test
+    void provisionReplacement_noRotation_deliversNoGossipKey() {
+        clusterStore.seedToml(CLOUD_TOML);
+        ctm.activate();
+
+        var result = ctm.provisionReplacement(nodeId("node-derived").unwrap(), Option.some(DEAD_PEER), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(lifecycleManager.lastSpec().userData().or("")).contains("AETHER_NODE_ID=\"node-derived\"").doesNotContain("gossip-key");
+        assertThat(lifecycleManager.lastSpec().context().gossipKey().isEmpty()).isTrue();
+    }
+
+    /// The reader is consulted per provision, not captured: a second rotation between two replacements reaches the second.
+    @Test
+    void provisionReplacement_rotationBetweenTwoProvisions_secondReceivesTheNewerKey() {
+        var first = "5:Zmlyc3QtZ29zc2lwLWtleS1zZW50aW5lbC0wMDAwMDAwMDA=";
+        var second = "6:c2Vjb25kLWdvc3NpcC1rZXktc2VudGluZWwtMDAwMDAwMDA=";
+        var live = new AtomicReference<Option<String>>(Option.some(first));
+        clusterStore.seedToml(CLOUD_TOML);
+        ctm.setGossipKeyReader(live::get);
+        ctm.activate();
+
+        ctm.provisionReplacement(nodeId("node-one").unwrap(), Option.some(DEAD_PEER), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
+        assertThat(lifecycleManager.lastSpec().context().gossipKey().or("")).isEqualTo(first);
+
+        live.set(Option.some(second));
+        ctm.provisionReplacement(nodeId("node-two").unwrap(), Option.some(DEAD_PEER), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
+
+        assertThat(lifecycleManager.lastSpec().context().gossipKey().or("")).isEqualTo(second);
+        assertThat(lifecycleManager.lastSpec().userData().or("")).contains(second).doesNotContain(first);
+    }
+
     private static AutoHealConfig renderTestAutoHeal() {
         return AutoHealConfig.autoHealConfig(timeSpan(1).millis(), AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT).unwrap();
     }

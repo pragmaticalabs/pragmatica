@@ -237,6 +237,72 @@ class NodeUserDataRendererTest {
         }
     }
 
+    /// #1200 — the provisioning leader delivers the cluster's CURRENT gossip key through the credential-file channel that carries the cluster
+    /// secret, and that key wins over whatever its own environment holds (the key its own node booted with, since superseded by a rotation).
+    @Nested
+    class GossipKeyDelivery {
+        private static final String CURRENT = "5:Y3VycmVudC1nb3NzaXAta2V5LXNlbnRpbmVsLTAwMDAwMDA=";
+        private static final String STALE = "1:c3RhbGUtZ29zc2lwLWtleS1zZW50aW5lbC0wMDAwMDAwMDA=";
+
+        @Test
+        void render_leaderDeliversTheCurrentKey_asACredentialFileTheNodeIsPointedAt() {
+            var script = renderWith(Map.of(), Option.some(CURRENT));
+
+            assertTrue(script.contains(CURRENT), () -> "the key must reach the script. Got:\n" + script);
+            assertTrue(script.contains("/etc/aether/gossip-key"), () -> "staged as a credential file. Got:\n" + script);
+            assertTrue(script.contains("AETHER_GOSSIP_KEY_FILE=/etc/aether/gossip-key"), () -> "the node is pointed at the file. Got:\n" + script);
+            assertFalse(script.contains("AETHER_GOSSIP_KEY=" + CURRENT), () -> "never as a plain env var. Got:\n" + script);
+        }
+
+        @Test
+        void render_leaderKeyWinsOverTheHostEnvironment() {
+            var script = renderWith(Map.of("AETHER_GOSSIP_KEY", STALE), Option.some(CURRENT));
+
+            assertTrue(script.contains(CURRENT), () -> "the live key is delivered. Got:\n" + script);
+            assertFalse(script.contains(STALE), () -> "the superseded key from the leader's env is not. Got:\n" + script);
+        }
+
+        @Test
+        void render_leaderKeyWinsOverAHostEnvironmentKeyFile() {
+            var script = renderWith(Map.of("AETHER_GOSSIP_KEY_FILE", "/nonexistent/stale-gossip-key"), Option.some(CURRENT));
+
+            assertTrue(script.contains(CURRENT), () -> "an unreadable host key file must not matter once the leader supplies the key. Got:\n" + script);
+        }
+
+        @Test
+        void render_noRotation_noHostKey_deliversNoGossipKey() {
+            var script = renderWith(Map.of(), Option.none());
+
+            assertFalse(script.contains("gossip-key"), () -> "the derived key is current: nothing to deliver. Got:\n" + script);
+            assertTrue(script.contains("/etc/aether/cluster-secret"), () -> "control: the cluster secret is delivered the same way. Got:\n" + script);
+        }
+
+        @Test
+        void render_operatorProvisionedHostKey_isDeliveredWhenTheLeaderSuppliesNone() {
+            var script = renderWith(Map.of("AETHER_GOSSIP_KEY", STALE), Option.none());
+
+            assertTrue(script.contains(STALE), () -> "an operator-provisioned key is forwarded like the other credentials. Got:\n" + script);
+        }
+
+        private String renderWith(Map<String, String> hostEnv, Option<String> gossipKey) {
+            var config = ClusterBootstrapConfigParser.parse(JVM_BASE.formatted("")).unwrap();
+
+            return NodeUserDataRenderer.render(config,
+                                               config.sources().get("eu-1"),
+                                               NodeRole.CORE,
+                                               "eu-1-core-0",
+                                               0,
+                                               "test-secret",
+                                               clusterName("prod-cluster").unwrap(),
+                                               TomlDocument.EMPTY,
+                                               List.of(),
+                                               List.of(),
+                                               true,
+                                               hostEnv::get,
+                                               gossipKey);
+        }
+    }
+
     private static String renderJvm(String runtimeExtra) {
         var config = ClusterBootstrapConfigParser.parse(JVM_BASE.formatted(runtimeExtra)).unwrap();
 

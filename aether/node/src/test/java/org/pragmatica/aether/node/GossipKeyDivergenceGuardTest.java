@@ -229,4 +229,61 @@ class GossipKeyDivergenceGuardTest {
 
         return key;
     }
+
+    // ---- #1200: the join deadline names a stranded node instead of letting it wait for ever ----
+
+    private static final org.pragmatica.lang.io.TimeSpan BOUND = org.pragmatica.lang.io.TimeSpan.timeSpan(10).minutes();
+
+    @Test
+    void joinDeadline_notJoined_neverDecrypted_refusesTheBootNamingTheDivergence() {
+        var guard = guard();
+
+        guard.checkJoinDeadline(() -> false, () -> false, BOUND);
+
+        assertThat(refusals.get()).as("#1200: a node that neither joined nor decrypted anything is failed, not left waiting").isEqualTo(1);
+        assertThat(new GossipKeyDivergenceGuard.JoinDeadlineExpired(10).message())
+            .as("the cause names the suspect, the bound and the remedy")
+            .contains("Gossip-key divergence suspected").contains("10 minute").contains("AETHER_GOSSIP_KEY");
+    }
+
+    @Test
+    void joinDeadline_alreadyJoined_leavesTheNodeAlone() {
+        guard().checkJoinDeadline(() -> true, () -> false, BOUND);
+
+        assertThat(refusals.get()).isZero();
+    }
+
+    /// One decrypted datagram proves key agreement: the node waits for peers that are reachable, and the bounded wait must not kill it.
+    @Test
+    void joinDeadline_decryptedAtLeastOnce_leavesTheNodeAlone() {
+        var guard = guard();
+
+        guard.decrypt(fromDerivedPeer());
+        guard.checkJoinDeadline(() -> false, () -> false, BOUND);
+
+        assertThat(refusals.get()).as("gossip flows, so the key is not the problem").isZero();
+    }
+
+    @Test
+    void joinDeadline_nodeAlreadyStopped_neitherExitsNorFires() {
+        guard().checkJoinDeadline(() -> false, () -> true, BOUND);
+
+        assertThat(refusals.get()).isZero();
+    }
+
+    @Test
+    void joinDeadline_firesOnce_evenAfterTheThresholdGateRefused() {
+        var guard = guard();
+
+        clock.set(ARMED);
+        feed(guard, fromRotatedCluster(), GossipKeyDivergenceGuard.UNKNOWN_KEY_THRESHOLD);
+        guard.checkJoinDeadline(() -> false, () -> false, BOUND);
+        guard.checkJoinDeadline(() -> false, () -> false, BOUND);
+
+        assertThat(refusals.get()).as("one refusal per node, whichever gate got there first").isEqualTo(1);
+    }
+
+    private byte[] fromDerivedPeer() {
+        return AesGcmGossipEncryptor.aesGcmGossipEncryptor(DERIVED_KEY, DERIVED_KEY_ID).unwrap().encrypt(PROBE).unwrap();
+    }
 }

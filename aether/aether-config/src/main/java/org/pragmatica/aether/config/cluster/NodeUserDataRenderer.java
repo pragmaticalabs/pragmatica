@@ -189,6 +189,39 @@ public sealed interface NodeUserDataRenderer {
                          List<String> peers,
                          boolean startNode,
                          Fn1<String, String> env) {
+        return render(config,
+                      source,
+                      role,
+                      nodeId,
+                      nodeIndex,
+                      clusterSecret,
+                      clusterName,
+                      composedConfig,
+                      sshAuthorizedKeys,
+                      peers,
+                      startNode,
+                      env,
+                      Option.none());
+    }
+
+    /// #1200 — the same render for a node minted by the provisioning LEADER, which also delivers the cluster's CURRENT gossip key
+    /// (`gossipKey`, the [org.pragmatica.aether.environment.GossipKeyMaterial] delivered form). It rides the credential-file channel that
+    /// carries the cluster secret, and wins over any `AETHER_GOSSIP_KEY` in `hostEnv`: the leader's environment holds the key its own node
+    /// booted with, which a later rotation has superseded. Empty leaves `hostEnv` to decide.
+    static String render(ClusterBootstrapConfig config,
+                         SourceProfile source,
+                         NodeRole role,
+                         String nodeId,
+                         int nodeIndex,
+                         String clusterSecret,
+                         ClusterName clusterName,
+                         TomlDocument composedConfig,
+                         List<String> sshAuthorizedKeys,
+                         List<String> peers,
+                         boolean startNode,
+                         Fn1<String, String> hostEnv,
+                         Option<String> gossipKey) {
+        var env = withGossipKey(hostEnv, gossipKey);
         var ports = config.operations().ports();
         var runtimeProfile = resolveRuntimeProfile(config, source, role);
         var isContainer = isContainerRuntime(runtimeProfile);
@@ -334,9 +367,24 @@ public sealed interface NodeUserDataRenderer {
         sb.append("AETHER_PEERS=\"").append(peers).append("\"\n\n");
     }
 
+    /// `hostEnv` with the delivered gossip key standing in for the host's own `AETHER_GOSSIP_KEY` / `_FILE`.
+    private static Fn1<String, String> withGossipKey(Fn1<String, String> hostEnv, Option<String> gossipKey) {
+        return gossipKey.fold(() -> hostEnv, key -> name -> gossipKeyOverride(hostEnv, key, name));
+    }
+
+    private static String gossipKeyOverride(Fn1<String, String> hostEnv, String key, String name) {
+        if (ClusterSecretSource.GOSSIP_KEY_ENV.equals(name)) {
+            return key;
+        }
+
+        return ClusterSecretSource.fileVar(ClusterSecretSource.GOSSIP_KEY_ENV).equals(name)
+               ? null
+               : hostEnv.apply(name);
+    }
+
     /// #828 — the user-data is one script, so each credential is written to its file by shell builtins (`printf` is not an exec,
     /// so the value is on no process argv) under `umask 077`, then given to the node's user: uid 1000 for the container, root for
-    /// the JVM unit. The cluster secret always; `AETHER_API_KEY(S)` when the rendering host's environment holds them. STATED
+    /// the JVM unit. The cluster secret always; `AETHER_API_KEY(S)` and the gossip key when the rendering host's environment holds them. STATED
     /// LIMIT: this user-data itself still contains the values in clear text. It is readable through the cloud provider's
     /// metadata/API by the account holder, and from `/var/lib/cloud` and the metadata service by processes on the VM. No file mode
     /// on the node can change that; the only fix is a secret store the VM fetches from.
@@ -601,11 +649,11 @@ public sealed interface NodeUserDataRenderer {
             // finalized secret explicitly to avoid a duplicate -e AETHER_CLUSTER_SECRET.
             case "AETHER_CLUSTER_SECRET" -> clusterSecretRef.map(_ -> ClusterSecretSource.containerMount(name));
             // The credentials ride files too (#828): the reference names the FILE, and only when the host holds the credential.
-            case "AETHER_API_KEY", "AETHER_API_KEYS" -> clusterSecretRef.filter(_ -> ClusterSecretSource.resolve(envLookup,
-                                                                                                                 name)
-                                                                                                        .fold(_ -> Option.<String> none(),
-                                                                                                              found -> found)
-                                                                                                        .isPresent()).map(_ -> ClusterSecretSource.containerMount(name));
+            case "AETHER_API_KEY", "AETHER_API_KEYS", ClusterSecretSource.GOSSIP_KEY_ENV -> clusterSecretRef.filter(_ -> ClusterSecretSource.resolve(envLookup,
+                                                                                                                                                     name)
+                                                                                                                                            .fold(_ -> Option.<String> none(),
+                                                                                                                                                  found -> found)
+                                                                                                                                            .isPresent()).map(_ -> ClusterSecretSource.containerMount(name));
             default -> lookupNonEmpty(name, envLookup);
         };
     }

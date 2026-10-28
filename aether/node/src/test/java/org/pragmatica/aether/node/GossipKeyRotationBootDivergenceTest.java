@@ -7,7 +7,9 @@ package org.pragmatica.aether.node;
 import java.time.Instant;
 import java.util.Base64;
 
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.environment.GossipKeyMaterial;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GossipKeyRotationKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GossipKeyRotationValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -31,9 +33,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// replacement's accept set is exactly the KV record's `{currentKeyId, previousKeyId}`, so the
 /// derived keyId leaves it.
 ///
-/// These tests assert the CURRENT (defective) behaviour, deliberately: they are a tripwire, not a
-/// specification. They RED the moment a joiner-key-delivery mechanism lands, and the failure
-/// message says what to do. A `@Disabled` test would sit forgotten instead.
+/// The first three tests pin the state of a node that holds ONLY its `cluster_secret`-derived key after a rotation: the cluster and that
+/// node cannot understand each other, in either direction. #1200 does not change that state, it avoids it: a node the cluster's leader
+/// mints is DELIVERED the current key and boots on it (the `DeliveredKey` arms below), and a node that was given no key is failed loudly by
+/// [GossipKeyDivergenceGuard#checkJoinDeadline]. These arms are therefore the premise the delivery rests on, kept as a positive control for the
+/// delivered-key arms: if the stranded state stopped being stranded, the delivery would be unnecessary and these would say so.
 ///
 /// Both sides are built independently through the real production factories — never hand-fed an
 /// expected outcome — so the assertions can falsify the premise rather than restate it.
@@ -56,9 +60,9 @@ class GossipKeyRotationBootDivergenceTest {
 
         assertThat(cluster.decrypt(datagram).isSuccess())
                 .as("""
-                    #683 TRIPWIRE: a rotated cluster cannot decrypt a later-booting node's gossip, so \
-                    SWIM never discovers it. If this is now TRUE the joiner-key-delivery mechanism has \
-                    landed — delete this test and pin the new behaviour instead.""")
+                    #683/#1200: a rotated cluster cannot decrypt the gossip of a node that holds only the \
+                    derived key, so SWIM never discovers it. If this is now TRUE the derived key is \
+                    accepted again after a rotation, which #683 exists to prevent.""")
                 .isFalse();
     }
 
@@ -75,9 +79,9 @@ class GossipKeyRotationBootDivergenceTest {
 
         assertThat(joiner.decrypt(reply).isSuccess())
                 .as("""
-                    #683 TRIPWIRE: a later-booting node cannot decrypt the rotated cluster's replies, \
-                    so it receives no SWIM discovery and never reaches the consensus sync that would \
-                    deliver the KV record. If this is now TRUE the delivery mechanism has landed.""")
+                    #683/#1200: a node that holds only the derived key cannot decrypt the rotated cluster's \
+                    replies, so it receives no SWIM discovery and never reaches the consensus sync that \
+                    would deliver the KV record. If this is now TRUE the derived key is accepted again.""")
                 .isFalse();
     }
 
@@ -95,6 +99,90 @@ class GossipKeyRotationBootDivergenceTest {
         assertThat(joiner.decrypt(cluster.encrypt(PROBE).unwrap()).unwrap())
                 .as("control: and in both directions")
                 .isEqualTo(PROBE);
+    }
+
+    /// #1200: a node that is DELIVERED the cluster's current key boots on it (`AETHER_GOSSIP_KEY`), so SWIM works in both directions and
+    /// the consensus replay that carries the rotation record can run. Built through the real production recipe: the delivered key wraps the
+    /// node's certificate provider, and [SwimGossipEncryptors] builds the boot encryptor from that provider, exactly as `Main` and
+    /// `SwimAssembly` do.
+    @Nested
+    class DeliveredKey {
+        @Test
+        void afterRotation_aNodeDeliveredTheCurrentKey_isUnderstoodByTheClusterAndUnderstandsIt() {
+            var cluster = rotatedClusterEncryptor();
+            var joiner = deliveredJoiner(ROTATED_KEY_ID, ROTATED_KEY);
+
+            assertThat(cluster.decrypt(joiner.encrypt(PROBE).unwrap()).unwrap())
+                    .as("joiner -> cluster: the cluster opens the delivered node's datagram")
+                    .isEqualTo(PROBE);
+            assertThat(joiner.decrypt(cluster.encrypt(PROBE).unwrap()).unwrap())
+                    .as("cluster -> joiner: the delivered node opens the cluster's reply, so it receives SWIM discovery")
+                    .isEqualTo(PROBE);
+        }
+
+        /// One ruling constraint: the derived key is never accepted on a delivered node's behalf, so a leaked `cluster_secret` still opens
+        /// nothing here.
+        @Test
+        void afterRotation_aNodeDeliveredTheCurrentKey_doesNotAcceptTheDerivedKey() {
+            var joiner = deliveredJoiner(ROTATED_KEY_ID, ROTATED_KEY);
+            var derivedPeer = bootEncryptor();
+
+            assertThat(joiner.decrypt(derivedPeer.encrypt(PROBE).unwrap()).isSuccess())
+                    .as("a datagram under the cluster_secret-derived key is refused by the delivered node")
+                    .isFalse();
+        }
+
+        /// Residual, pinned so it is not mistaken for coverage: a second rotation landing while the node boots leaves it holding the key that
+        /// is now the cluster's PREVIOUS one. The cluster still accepts it (it is in the accept set), so the node is heard and consensus can
+        /// form over QUIC, but it cannot read the cluster until the replay delivers the newer record.
+        @Test
+        void afterTwoRotations_aNodeDeliveredTheFirstKey_isHeardButCannotYetReadTheCluster() {
+            var cluster = twiceRotatedClusterEncryptor();
+            var joiner = deliveredJoiner(ROTATED_KEY_ID, ROTATED_KEY);
+
+            assertThat(cluster.decrypt(joiner.encrypt(PROBE).unwrap()).unwrap())
+                    .as("joiner -> cluster: the previous key is still in the cluster's accept set")
+                    .isEqualTo(PROBE);
+            assertThat(joiner.decrypt(cluster.encrypt(PROBE).unwrap()).isSuccess())
+                    .as("cluster -> joiner: the cluster now encrypts under the newer key, which the node does not hold yet")
+                    .isFalse();
+        }
+
+        /// Control for the arms above: a delivered key that is NOT the cluster's current one gains nothing.
+        @Test
+        void afterRotation_aNodeDeliveredAWrongKey_isNotUnderstood() {
+            var cluster = rotatedClusterEncryptor();
+            var joiner = deliveredJoiner(ROTATED_KEY_ID, filled((byte) 0x44));
+
+            assertThat(cluster.decrypt(joiner.encrypt(PROBE).unwrap()).isSuccess()).isFalse();
+        }
+    }
+
+    private static org.pragmatica.swim.GossipEncryptor deliveredJoiner(int keyId, byte[] key) {
+        var material = GossipKeyMaterial.gossipKeyMaterial(GossipKeyMaterial.render(keyId, Base64.getEncoder().encodeToString(key)))
+                                        .unwrap();
+
+        return SwimGossipEncryptors.fromCertificateProvider(Option.some(ProvisionedGossipKeyProvider.provisionedGossipKeyProvider(derivedKeyProvider(),
+                                                                                                                                  material)));
+    }
+
+    private static org.pragmatica.swim.GossipEncryptor twiceRotatedClusterEncryptor() {
+        var encryptor = bootEncryptor();
+        var handler = GossipKeyRotationHandler.gossipKeyRotationHandler(encryptor);
+
+        handler.onGossipKeyRotationPut(rotationPut());
+        handler.onGossipKeyRotationPut(secondRotationPut());
+
+        return encryptor;
+    }
+
+    private static ValuePut<GossipKeyRotationKey, GossipKeyRotationValue> secondRotationPut() {
+        var value = GossipKeyRotationValue.gossipKeyRotationValue(ROTATED_KEY_ID + 1,
+                                                                  Base64.getEncoder().encodeToString(filled((byte) 0x66)),
+                                                                  ROTATED_KEY_ID,
+                                                                  Base64.getEncoder().encodeToString(ROTATED_KEY));
+
+        return new ValuePut<>(new KVCommand.Put<>(GossipKeyRotationKey.gossipKeyRotationKey(), value), Option.none());
     }
 
     /// The node's live encryptor after one `POST /cluster/gossip-key/rotate` has been applied by

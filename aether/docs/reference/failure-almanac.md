@@ -270,6 +270,14 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 - **Operator action:** usually self-heals; if `connectedPeerCount` stays low past ~60 s, restart the isolated node.
 - **Proof anchor:** 12-network `connectedPeerCount` contracts; incident ledger #131.
 
+### Node cannot join after a gossip-key rotation
+
+- **Symptom:** a node booted after `aether cluster rotate-gossip-key` never joins: no quorum, no SWIM peers. A node the leader minted (auto-heal, scale-up) is delivered the current key and joins; one provisioned without it does not.
+- **Detection surface:** on the SEED nodes the `OPERATOR_WARNING` event with `details.code` = `gossip-key-unknown-from-peer` (subject: the sender's address) and the node-log WARN `Failed to decrypt gossip from <address>`; on the stranded node itself, 10 minutes after SWIM started, a `FATAL` log line `Gossip-key divergence suspected` and process exit 1. The recovery event is `gossip-key-peer-decrypted`.
+- **Automatic response:** a leader-minted node receives the current gossip key with its cluster secret (`AETHER_GOSSIP_KEY_FILE`). A node without it exits at the bound. Nothing else changes: a restart does not help until the node holds the key.
+- **Budget:** the event is throttled to one per sender per 60 s; the exit bound is 10 minutes and one decrypted datagram cancels it.
+- **Degraded / at risk:** the stranded node is not a member. Existing members are unaffected. A second rotation while a node boots leaves it on the previous key: heard by the cluster, unable to read it until the rotation record replays.
+
 ### SWIM member address change refused
 
 - **Symptom:** a live member's SWIM address differs from the one its identity is pinned to on a peer, for example after its IP changed (a container reconnected to a network with a new address). The peer refuses its ANNOUNCE and keeps probing the pinned address, so the member goes SUSPECT and is declared dead on that peer.

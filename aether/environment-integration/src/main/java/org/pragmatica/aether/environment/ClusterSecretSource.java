@@ -27,11 +27,15 @@ public interface ClusterSecretSource {
     String SECRET_FILE_ENV = "AETHER_CLUSTER_SECRET_FILE";
     String FILE_SUFFIX = "_FILE";
     String AETHER_API_KEY_ENV = "AETHER_API_KEY";
+    /// The cluster's CURRENT gossip key, `<keyId>:<base64>` ([GossipKeyMaterial]) (#1200). Delivered like the other credentials; a node that
+    /// holds it uses it instead of the `cluster_secret`-derived gossip key, which is how a node booting after a key rotation can still join.
+    String GOSSIP_KEY_ENV = "AETHER_GOSSIP_KEY";
     /// The credential-class identity variables besides the cluster secret: the node's accepted keys (plural, read by the config
-    /// loader) and the client credential it sends (singular, referenced as `${env:AETHER_API_KEY}` in the node config).
-    List<String> CREDENTIAL_ENVS = List.of("AETHER_API_KEY", "AETHER_API_KEYS");
+    /// loader) and the client credential it sends (singular, referenced as `${env:AETHER_API_KEY}` in the node config), and the gossip key.
+    List<String> CREDENTIAL_ENVS = List.of("AETHER_API_KEY", "AETHER_API_KEYS", GOSSIP_KEY_ENV);
+
     /// Every variable a launcher delivers by file.
-    List<String> FILE_DELIVERED_ENVS = List.of(SECRET_ENV, "AETHER_API_KEY", "AETHER_API_KEYS");
+    List<String> FILE_DELIVERED_ENVS = List.of(SECRET_ENV, "AETHER_API_KEY", "AETHER_API_KEYS", GOSSIP_KEY_ENV);
 
     static String fileVar(String plainVar) {
         return plainVar + FILE_SUFFIX;

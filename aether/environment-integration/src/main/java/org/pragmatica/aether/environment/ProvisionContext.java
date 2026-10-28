@@ -41,6 +41,9 @@ import org.pragmatica.utility.IdGenerator;
 ///    leaves the default; CTM overrides with the live snapshot.
 ///  - [#provisionedBy] — `bootstrap` or `ctm`. Threaded into the runtime as
 ///    `AETHER_PROVISIONED_BY` so the node can self-attribute its origin.
+///  - [#gossipKey] — the cluster's CURRENT gossip key (`<keyId>:<base64>`, [GossipKeyMaterial]) when a rotation has made it differ from the
+///    `cluster_secret`-derived one (#1200). Set by the provisioning leader so the node it mints can join a rotated cluster; delivered as a
+///    credential FILE, never as a label or tag. Empty when the cluster still runs on the derived key. Redacted from [#toString].
 ///  - [#extraTags] — escape hatch for caller-supplied native-format tags that
 ///    the typed fields don't yet cover. Defensively copied. Providers MAY
 ///    filter values that don't match their key/value regex.
@@ -51,7 +54,8 @@ public record ProvisionContext(Option<ClusterName> clusterName,
                                Option<String> peers,
                                int coreMax,
                                String provisionedBy,
-                               Map<String, String> extraTags) {
+                               Map<String, String> extraTags,
+                               Option<String> gossipKey) {
     public static final int DEFAULT_CORE_MAX = 3;
     /// Delegates to [SourceName#DEFAULT] — the one definition of the fallback source name. Retained as
     /// a [ProvisionContext] constant because the provisioning-side callers and error messages that name
@@ -62,6 +66,18 @@ public record ProvisionContext(Option<ClusterName> clusterName,
 
     public ProvisionContext {
         extraTags = Map.copyOf(extraTags);
+    }
+
+    /// A context that carries no gossip key: the node derives its gossip key from the cluster secret.
+    public ProvisionContext(Option<ClusterName> clusterName,
+                            String role,
+                            SourceName sourceName,
+                            Option<String> nodeId,
+                            Option<String> peers,
+                            int coreMax,
+                            String provisionedBy,
+                            Map<String, String> extraTags) {
+        this(clusterName, role, sourceName, nodeId, peers, coreMax, provisionedBy, extraTags, Option.none());
     }
 
     /// Canonical node-id resolution: honor a caller-supplied [#nodeId] when present
@@ -183,7 +199,8 @@ public record ProvisionContext(Option<ClusterName> clusterName,
                                     peers,
                                     coreMax,
                                     provisionedBy,
-                                    extraTags);
+                                    extraTags,
+                                    gossipKey);
     }
 
     public ProvisionContext withPeers(String value) {
@@ -194,14 +211,60 @@ public record ProvisionContext(Option<ClusterName> clusterName,
                                     Option.some(value),
                                     coreMax,
                                     provisionedBy,
-                                    extraTags);
+                                    extraTags,
+                                    gossipKey);
     }
 
     public ProvisionContext withCoreMax(int value) {
-        return new ProvisionContext(clusterName, role, sourceName, nodeId, peers, value, provisionedBy, extraTags);
+        return new ProvisionContext(clusterName,
+                                    role,
+                                    sourceName,
+                                    nodeId,
+                                    peers,
+                                    value,
+                                    provisionedBy,
+                                    extraTags,
+                                    gossipKey);
     }
 
     public ProvisionContext withExtraTags(Map<String, String> value) {
-        return new ProvisionContext(clusterName, role, sourceName, nodeId, peers, coreMax, provisionedBy, value);
+        return new ProvisionContext(clusterName,
+                                    role,
+                                    sourceName,
+                                    nodeId,
+                                    peers,
+                                    coreMax,
+                                    provisionedBy,
+                                    value,
+                                    gossipKey);
+    }
+
+    /// The same context carrying the cluster's current gossip key in its delivered form ([GossipKeyMaterial#render]).
+    public ProvisionContext withGossipKey(Option<String> value) {
+        return new ProvisionContext(clusterName,
+                                    role,
+                                    sourceName,
+                                    nodeId,
+                                    peers,
+                                    coreMax,
+                                    provisionedBy,
+                                    extraTags,
+                                    value);
+    }
+
+    @Override
+    public String toString() {
+        return "ProvisionContext[clusterName=" + clusterName
+             + ", role=" + role
+             + ", sourceName=" + sourceName
+             + ", nodeId=" + nodeId
+             + ", peers=" + peers
+             + ", coreMax=" + coreMax
+             + ", provisionedBy=" + provisionedBy
+             + ", extraTags=" + extraTags
+             + ", gossipKey=" + (gossipKey.isPresent()
+                                 ? "<redacted>"
+                                 : "none")
+             + "]";
     }
 }

@@ -179,4 +179,22 @@ class ProvisionContextTest {
         assertThat(withoutId.resolveNodeId()).startsWith("aether-dock-node-");
         assertThat(withoutId.resolveNodeId()).as("a minted id is fresh each time").isNotEqualTo(withoutId.resolveNodeId());
     }
+    /// #1200: the current gossip key travels in the context to the provider that mints the node, survives every `with*` copy, and is never printed.
+    @Test
+    void gossipKey_isCarriedThroughEveryCopy_andRedactedFromToString() {
+        var key = "7:c2VjcmV0LWtleS1tYXRlcmlhbC1zZW50aW5lbC0xMjM0NTY3OA==";
+        var base = ProvisionContext.forReplacement(maybeClusterName("dock"), "core", sourceNameOrDefault("s"), "n1", "p:h:1", 3);
+
+        assertThat(base.gossipKey().isEmpty()).as("a context built without a key carries none").isTrue();
+
+        var keyed = base.withGossipKey(Option.some(key));
+
+        assertThat(keyed.gossipKey().or("")).isEqualTo(key);
+        assertThat(keyed.withNodeId("n2").gossipKey().or("")).isEqualTo(key);
+        assertThat(keyed.withPeers("q:h:2").gossipKey().or("")).isEqualTo(key);
+        assertThat(keyed.withCoreMax(5).gossipKey().or("")).isEqualTo(key);
+        assertThat(keyed.withExtraTags(Map.of("a", "b")).gossipKey().or("")).isEqualTo(key);
+        assertThat(keyed.toString()).doesNotContain(key).contains("gossipKey=<redacted>");
+        assertThat(base.toString()).contains("gossipKey=none");
+    }
 }

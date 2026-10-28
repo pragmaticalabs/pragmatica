@@ -19,6 +19,7 @@ import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.node.AetherNode.QuicTransportCause;
 import org.pragmatica.aether.node.AetherNodeConfig;
+import org.pragmatica.aether.node.GossipKeyDivergenceGuard;
 import org.pragmatica.aether.node.GossipKeyRotationHandler;
 import org.pragmatica.aether.node.SwimGossipEncryptors;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
@@ -36,6 +37,7 @@ import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
@@ -50,6 +52,7 @@ import org.pragmatica.utility.warning.OperatorWarningSink;
 import static org.pragmatica.aether.node.AetherNode.COLD_BOOT_CONVERGENCE_WINDOW_MS;
 import static org.pragmatica.aether.node.AetherNode.LOG;
 import static org.pragmatica.aether.node.AetherNode.configuredWorker;
+import static org.pragmatica.aether.node.AetherNode.runtimeReady;
 import static org.pragmatica.aether.node.AetherNode.startSwim;
 import static org.pragmatica.aether.node.AetherNode.unreachableHint;
 
@@ -266,6 +269,9 @@ public sealed interface SwimAssembly {
                                                                              announceJoinTrigger,
                                                                              jvmExit,
                                                                              gossipKeyDivergedExit,
+                                                                             System::nanoTime,
+                                                                             Option.some(() -> runtimeReady(clusterNode)),
+                                                                             GossipKeyDivergenceGuard.JOIN_DEADLINE,
                                                                              startOutcome);
 
         return new SwimDetectorOutputs(swimBootAtMs, swimIsBootingSupplier, swimHealthDetector, startSwimTrigger);

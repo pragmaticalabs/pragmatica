@@ -31,4 +31,11 @@ class ClusterIdentityEnvTest {
         assertThat(ClusterIdentityEnv.IDENTITY_VARS).contains("AETHER_PROVISIONED_BY");
         assertThat(ClusterIdentityEnv.IDENTITY_VARS).contains("AETHER_API_KEY");
     }
+
+    /// #1200: the gossip key is file-delivered like the cluster secret, so it must be on the allow-list that points a node at its file.
+    @Test
+    void identityVars_includeTheGossipKey_whichIsFileDelivered() {
+        assertThat(ClusterIdentityEnv.IDENTITY_VARS).contains("AETHER_GOSSIP_KEY");
+        assertThat(ClusterSecretSource.FILE_DELIVERED_ENVS).contains("AETHER_GOSSIP_KEY");
+    }
 }

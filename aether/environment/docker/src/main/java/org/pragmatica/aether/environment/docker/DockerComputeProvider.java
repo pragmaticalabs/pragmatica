@@ -133,7 +133,7 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
     }
 
     private Promise<InstanceInfo> provisionWithIdentity(ProvisionRequest request, String containerName) {
-        return resolveCredentials().async()
+        return resolveCredentials(request).async()
                                  .flatMap(credentials -> launch(request, containerName, credentials))
                                  .map(containerId -> toProvisionedInfo(containerId, containerName, request))
                                  .flatMap(info -> confirmRunning(info,
@@ -143,7 +143,10 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
 
     /// The credentials this node is minted with, by variable name, from the leader's environment (value or `_FILE`). The
     /// configured `apiKey` is authoritative for `AETHER_API_KEY`. A conflicting, unreadable or empty `_FILE` fails the provision.
-    private Result<Map<String, String>> resolveCredentials() {
+    ///
+    /// #1200: the gossip key the provisioning leader put in the request context (the cluster's CURRENT key) wins over any `AETHER_GOSSIP_KEY` in
+    /// the leader's own environment, which holds the key its node booted with and which a rotation has since superseded.
+    private Result<Map<String, String>> resolveCredentials(ProvisionRequest request) {
         var found = new java.util.LinkedHashMap<String, String>();
 
         for (var name : ClusterSecretSource.FILE_DELIVERED_ENVS) {
@@ -157,6 +160,8 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
 
             resolved.unwrap().onPresent(value -> found.put(name, value));
         }
+
+        request.context().gossipKey().onPresent(key -> found.put(ClusterSecretSource.GOSSIP_KEY_ENV, key));
 
         return Result.success(found);
     }

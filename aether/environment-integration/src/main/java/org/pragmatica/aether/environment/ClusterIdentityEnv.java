@@ -41,11 +41,16 @@ public sealed interface ClusterIdentityEnv {
     /// With that baked credential removed the omission becomes load-bearing — a CTM-minted or
     /// auto-healed node would accept NOTHING its compose-fixed siblings accept, which is this
     /// allow-list's stated "replacements miss what seeds get" class arriving one variable over.
+    ///
+    /// `AETHER_GOSSIP_KEY` (#1200) is the cluster's CURRENT gossip key, delivered like the cluster secret (a credential FILE named by
+    /// `AETHER_GOSSIP_KEY_FILE`), so a node minted after a gossip-key rotation can join. It is listed here for the same reason the API keys
+    /// are: without the entry the container launch never pointed the node at the delivered file.
     List<String> IDENTITY_VARS = List.of("AETHER_CLUSTER_NAME",
                                          "AETHER_CLUSTER_SECRET",
                                          "AETHER_PROVISIONED_BY",
                                          "AETHER_API_KEY",
                                          "AETHER_API_KEYS",
+                                         ClusterSecretSource.GOSSIP_KEY_ENV,
                                          "AETHER_SOURCE",
                                          "AETHER_ROLE",
                                          "AETHER_ZONE");

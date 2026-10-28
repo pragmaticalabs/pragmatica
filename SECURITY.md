@@ -48,38 +48,60 @@ Two consequences follow directly:
     that cluster.** The delivered key is what every node encrypts under from then on. The first
     rotation carries NO decrypt overlap (there is no prior record to carry), so boot-key ciphertext
     is rejected from the moment it lands; subsequent rotations carry the previous key.
-  - **A ROTATED CLUSTER CANNOT GROW UNTIL AN OPERATOR ACTS — INCLUDING AUTO-HEAL.**
-
-    **If a node will not join after a rotation, CHECK THE SEED NODES' LOGS, NOT THE NEW NODE'S.**
-    Look for `Failed to decrypt gossip from <id>` on the seeds. This is the first thing to know
-    because it inverts where you will instinctively look: a node the cluster has never heard of
-    logs **nothing** about the cause — worse, it logs `Aether node <id> started, cluster forming...`
-    and then stays quiet, because an unreachable quorum is retried and never exits. The only
-    evidence is on the healthy machines you have no reason to suspect.
+  - **A node that boots after a rotation must be given the cluster's CURRENT gossip key (#1200).**
 
     The mechanism: a node booting after a rotation derives its gossip key from `cluster_secret`,
     which the rotated cluster no longer accepts; its SWIM datagrams are dropped and it cannot decrypt
     the cluster's either. SWIM therefore discovers no peers, the QUIC dial set stays self-only, no
     quorum forms, and the consensus replay that carries the rotation record — the only way to obtain
-    the cluster key — never runs. The node cannot join, and the cycle cannot resolve itself.
-    **So an emergency rotation, performed precisely because something was compromised, leaves the
-    cluster unable to self-heal: auto-heal replacements, scale-up and re-provisioned nodes all fail
-    to join until they are given the rotated key material out of band.** Existing running nodes are
-    unaffected.
+    the cluster key — never runs. Without a delivered key the cycle cannot resolve itself.
 
-    Which nodes say so for themselves:
-    - A **restarted existing member** refuses to boot with a `FATAL` line naming gossip-key
-      divergence (#683) — its peers still hold it in their configured seed set, so they probe it and
-      it can see gossip arriving under a key id it does not hold.
-    - A **node the cluster has never heard of** — an auto-heal replacement or scale-up node — cannot
-      detect it at all. Nobody probes an address they do not know, so it receives nothing, and its
-      silence is indistinguishable from a partition, down seeds, or a wrong advertise address. Hence
-      the instruction above.
+    **How the key reaches a node.** One trust root is kept: the key travels by the same provisioning
+    channel as `cluster_secret`, and no key is ever served over the QUIC/TLS channel.
+    - **A node the cluster's leader mints** (auto-heal replacement, scale-up; cloud and Docker): the
+      leader reads the current key from the replicated rotation record and delivers it as a second
+      credential FILE next to the cluster secret (`AETHER_GOSSIP_KEY_FILE`; cloud-init user-data writes
+      `/etc/aether/gossip-key` or `/opt/aether/config/gossip-key`, a Docker node gets
+      `/tmp/aether-gossip-key`). It is never an environment variable or a command-line argument. The
+      limit stated for `cluster_secret` applies unchanged: cloud-init user-data itself holds the value
+      in clear text and is readable through the provider's API by the account holder. The key is read
+      when the node is minted, so a rotation after that moment is not in that node (see the residual
+      below).
+    - **A node an operator provisions by hand**: set `AETHER_GOSSIP_KEY` or `AETHER_GOSSIP_KEY_FILE`
+      (the file wins; same rules as `AETHER_CLUSTER_SECRET`) to `<keyId>:<base64 of 32 bytes>`. A
+      malformed or unreadable value REFUSES the boot rather than falling back to the derived key.
+      **Limit, stated: nothing returns the current key to an operator.** The rotate response
+      carries ids only, and there is no read endpoint; today the operator-provisioned path is usable
+      only by someone who can read the rotation record from a cluster node.
+    - A node holding a delivered key uses it as its ONLY gossip key. The `cluster_secret`-derived key
+      is never accepted on its behalf, so a leaked `cluster_secret` still opens nothing it holds.
+    - **Residual:** a second rotation that lands while a node is booting leaves it holding the
+      cluster's previous key. The cluster still accepts that key, so the node is heard and quorum can
+      form over QUIC, but it cannot read the cluster's gossip until the rotation record replays to it.
+      A third rotation in the same window would exclude it again.
+    - **A delivered key is a BOOT key, not a standing credential.** It is what the node starts on; a
+      rotation afterwards reaches it through consensus like any other node. A node that is restarted
+      after the cluster has rotated twice or more since it was given its key holds a key the cluster
+      no longer accepts: give it the current key, or the #683 refusal / the join deadline names it.
 
-    A general key-delivery path for joining nodes is not in rc4. It is an architecture change — it
-    needs either a second trust root or a deliberately weakened revocation — and the choice is an open
-    **owner decision tracked as #1200**. Until that lands, the out-of-band re-provisioning described
-    above is the supported answer.
+    **A node that did not get the key is no longer silent.**
+    - A node that has neither joined nor decrypted a single gossip datagram 10 minutes after SWIM
+      started exits with a `FATAL` line, "Gossip-key divergence suspected", that names the cause and
+      the remedy, through the same exit as the #683 refusal (exit code 1; a single-JVM host stops
+      the node). The 10 minutes is CHOSEN, not measured. One decrypted datagram disarms it for the
+      life of the process, so a cluster that is merely slow to form with peers reachable is not
+      failed by it. **Stated cost:** a node whose peers are all unreachable for 10 minutes now exits
+      instead of waiting (it cannot tell "no peer" from "peers that cannot be understood"); a
+      supervisor restarts it.
+    - The healthy SEED nodes raise the operator event `gossip-key-unknown-from-peer` (WARNING,
+      subject the sender's address, never a key) when a datagram arrives under a key id they do not
+      hold, once per sender, with the recovery `gossip-key-peer-decrypted` when that sender's gossip
+      next decrypts. The `Failed to decrypt gossip from <id>` WARN per datagram remains on the seeds.
+      Source addresses are spoofable, so a sender address in the event is a lead, not proof.
+    - A **restarted existing member** still refuses to boot with the #683 `FATAL` line, as before.
+
+    Per-node keys (membership-join enrollment) are the planned replacement for this delivery and are
+    deferred with them.
 
     **Exposure introduced by the boot refusal, stated as capability.** The refusal counts
     same-key-id-consecutive undecryptable datagrams, and an unencrypted datagram is **not**

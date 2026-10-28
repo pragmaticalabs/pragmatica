@@ -7,10 +7,13 @@ package org.pragmatica.aether.node;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.swim.GossipEncryptor;
 import org.pragmatica.swim.GossipEncryptionError;
 
@@ -54,6 +57,11 @@ import org.slf4j.LoggerFactory;
 /// are dropped undecrypted by the seeds, which therefore never reply, so it receives NOTHING and this
 /// guard cannot fire. In that case the only signal is the `Failed to decrypt gossip from ...` WARN on
 /// the healthy seeds, not on the stranded node. SECURITY.md states this.
+///
+/// **#1200 closes that blind spot two ways.** A node minted by the cluster's leader is DELIVERED the current gossip key
+/// ([ProvisionedGossipKeyProvider]), so it can join; and a node that still cannot (an operator-provisioned one that was not given the
+/// key) is no longer silent: [#checkJoinDeadline] makes it exit with a named cause when, a bounded time after SWIM started, it has
+/// neither joined nor decrypted anything, and the seeds raise the `gossip-key-unknown-from-peer` operator event.
 /// **The exit path is MEASURED, not assumed** (#683 round 2). `refuse` runs on a Netty event-loop
 /// thread, and #838 proved by probe that `System.exit` from inside a shutdown HOOK parks the JVM
 /// forever — so the same call from an IO thread could not be taken on trust. Probed with a real
@@ -109,6 +117,11 @@ public final class GossipKeyDivergenceGuard implements GossipEncryptor {
     /// to skip the measurement.
     static final long ARMING_DELAY_NANOS = TimeUnit.SECONDS.toNanos(60);
     static final long ARMING_WINDOW_END_NANOS = TimeUnit.MINUTES.toNanos(10);
+    /// #1200 — how long after SWIM starts a node may stay unjoined AND deaf before it is treated as stranded by a divergent gossip key.
+    /// CHOSEN, not measured: it is the arming window's end, so a restarted member (probed continuously) has already been decided by the
+    /// threshold gate long before; what remains at this point is a node nobody probes. Any decrypted datagram disarms it for the life of
+    /// the process, so a cluster that is merely slow to form (peers reachable, gossip flowing) is never failed by it.
+    public static final TimeSpan JOIN_DEADLINE = TimeSpan.timeSpan(10).minutes();
 
     private final GossipEncryptor delegate;
     private final Runnable onDivergence;
@@ -186,6 +199,24 @@ public final class GossipKeyDivergenceGuard implements GossipEncryptor {
         }
     }
 
+    /// #1200 loud failure. Called once `bound` after SWIM started. Refuses the boot, naming the suspected cause, when this node has not
+    /// joined, has never decrypted a gossip datagram, and is not already stopped. Fires at most once, and never after [#decrypt] has
+    /// succeeded: one decrypted datagram proves key agreement, so a node that merely waits for peers is left waiting.
+    ///
+    /// `joined` is the node's own readiness (consensus active, or observing/passive-ready), `stopped` is true once the detector no longer runs SWIM, so a
+    /// node stopped before the deadline neither exits nor logs.
+    Unit checkJoinDeadline(BooleanSupplier joined, BooleanSupplier stopped, TimeSpan bound) {
+        if (stopped.getAsBoolean() || joined.getAsBoolean() || everDecrypted.get() || !fired.compareAndSet(false, true)) {
+            return Unit.unit();
+        }
+
+        log.error("FATAL: {}",
+                  new JoinDeadlineExpired(bound.duration().toMinutes()).message());
+        onDivergence.run();
+
+        return Unit.unit();
+    }
+
     private boolean armed() {
         var elapsed = nanoClock.getAsLong() - startedAt;
 
@@ -198,6 +229,20 @@ public final class GossipKeyDivergenceGuard implements GossipEncryptor {
         log.error("FATAL: {}",
                   new GossipKeyDivergence(observedKeyId, consecutive.get()).message());
         onDivergence.run();
+    }
+
+    /// #1200. The named cause of the join-deadline exit; carries the bound only.
+    public record JoinDeadlineExpired(long minutes) implements Cause {
+        @Override
+        public String message() {
+            return "Gossip-key divergence suspected: this node did not join the cluster (no consensus quorum) within " + minutes
+                 + " minute(s) of starting SWIM and has not decrypted a single gossip datagram from any peer. Either no peer is"
+                 + " reachable, or the cluster's gossip key was rotated (POST /api/v1/cluster/gossip-key/rotate) and this node holds"
+                 + " only its cluster_secret-derived key: the seeds then log 'Failed to decrypt gossip from <this node>' and raise the"
+                 + " gossip-key-unknown-from-peer operator event, and nothing replies. Remedy: give this node the cluster's current"
+                 + " gossip key (AETHER_GOSSIP_KEY or AETHER_GOSSIP_KEY_FILE, '<keyId>:<base64>'), or let the cluster leader provision it."
+                 + " See #1200.";
+        }
     }
 
     /// #683. Carries the peers' observed key id — never key material.

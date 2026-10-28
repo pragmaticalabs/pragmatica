@@ -28,6 +28,7 @@ import java.util.concurrent.TimeUnit;
 import org.pragmatica.aether.config.AlertConfig;
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.environment.ClusterSecretSource;
+import org.pragmatica.aether.environment.GossipKeyMaterial;
 import org.pragmatica.aether.config.ClusterConfig;
 import org.pragmatica.aether.config.ClusterSizeGate;
 import org.pragmatica.aether.environment.CloudConfig;
@@ -58,6 +59,7 @@ import org.pragmatica.aether.node.IdentityLedgerWiring;
 import org.pragmatica.aether.node.NodeCodecs;
 import org.pragmatica.aether.node.OwnRestoreWatchdog;
 import org.pragmatica.aether.node.StorageFactory;
+import org.pragmatica.aether.node.ProvisionedGossipKeyProvider;
 import org.pragmatica.aether.node.SwimGossipEncryptors;
 import org.pragmatica.aether.node.labels.ContainerLabelInspector;
 import org.pragmatica.consensus.NodeId;
@@ -397,7 +399,19 @@ public record Main(String[] args) {
     /// what makes `BootstrapAdminKeyLeg`'s random-key fallback unreachable in production. Pinned by
     /// `MainClusterSecretStampTest#resolveTls_noClusterSecretAnywhere_failsSoTheNodeCannotBoot`.
     Result<TlsBundle> resolveTls(NodeId nodeId, List<NodeInfo> peers, Option<AetherConfig> aetherConfig) {
-        return resolveTls(nodeId, peers, aetherConfig, environmentClusterSecret());
+        return provisionedGossipKey(System::getenv).flatMap(gossipKey -> resolveTls(nodeId,
+                                                                                    peers,
+                                                                                    aetherConfig,
+                                                                                    environmentClusterSecret(),
+                                                                                    gossipKey));
+    }
+
+    /// #1200 — the gossip key the cluster delivered to this node (`AETHER_GOSSIP_KEY` or the file `AETHER_GOSSIP_KEY_FILE` names), if any.
+    /// A malformed or unreadable value REFUSES the boot: falling back to the derived key would put a node on a key a rotated cluster
+    /// rejects, which is the silent stranding this delivery exists to remove.
+    static Result<Option<GossipKeyMaterial>> provisionedGossipKey(Fn1<String, String> env) {
+        return ClusterSecretSource.resolve(env, ClusterSecretSource.GOSSIP_KEY_ENV).flatMap(raw -> raw.fold(() -> Result.success(Option.<GossipKeyMaterial> none()),
+                                                                                                            text -> GossipKeyMaterial.gossipKeyMaterial(text).map(Option::some)));
     }
 
     /// Same, with the `AETHER_CLUSTER_SECRET` source injected instead of read from the ambient
@@ -410,6 +424,16 @@ public record Main(String[] args) {
                                  List<NodeInfo> peers,
                                  Option<AetherConfig> aetherConfig,
                                  Option<String> environmentSecret) {
+        return resolveTls(nodeId, peers, aetherConfig, environmentSecret, Option.none());
+    }
+
+    /// Same, with the delivered gossip key ([#provisionedGossipKey]) injected: the bundle's provider then offers it as the node's only
+    /// gossip key, while the node's certificates still come from the `cluster_secret`-derived CA.
+    Result<TlsBundle> resolveTls(NodeId nodeId,
+                                 List<NodeInfo> peers,
+                                 Option<AetherConfig> aetherConfig,
+                                 Option<String> environmentSecret,
+                                 Option<GossipKeyMaterial> gossipKey) {
         var tlsCfg = resolveTlsConfig(aetherConfig);
 
         return resolveClusterSecret(tlsCfg, environmentSecret).flatMap(SelfSignedCertificateProvider::selfSignedCertificateProvider)
@@ -420,7 +444,8 @@ public record Main(String[] args) {
                                                                                                      nodeId.id(),
                                                                                                      hostname)
                                                                                        .map(tc -> new TlsBundle(tc,
-                                                                                                                provider));
+                                                                                                                ProvisionedGossipKeyProvider.provisionedGossipKeyProvider(provider,
+                                                                                                                                                                          gossipKey)));
                                             })
                                    .onFailure(cause -> log.error("Failed to setup TLS: {}",
                                                                  cause.message()));
@@ -1302,7 +1327,15 @@ public record Main(String[] args) {
     /// a dev-mode seed.
     private Option<CertificateProvider> resolveCertificateProvider(Option<AetherConfig> aetherConfig) {
         return resolveClusterSecret(resolveTlsConfig(aetherConfig)).flatMap(SelfSignedCertificateProvider::selfSignedCertificateProvider)
-                                   .option();
+                                   .option()
+                                   .map(provider -> ProvisionedGossipKeyProvider.provisionedGossipKeyProvider(provider,
+                                                                                                              ambientGossipKey()));
+    }
+
+    /// The delivered gossip key for the reflection encryptor, which must hold the SAME key as the running transport ([#resolveTls]).
+    /// A malformed value has already refused the boot there, so it reads as absent here.
+    private static Option<GossipKeyMaterial> ambientGossipKey() {
+        return provisionedGossipKey(System::getenv).fold(_ -> Option.<GossipKeyMaterial> none(), key -> key);
     }
 
     private List<NodeInfo> generatePeersFromConfig(AetherConfig aetherConfig, NodeId self) {

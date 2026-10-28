@@ -59,6 +59,8 @@ class AetherNodeStartSwimTest {
     private static final byte[] ROTATED_KEY = filled((byte) 0x22);
     private static final int ROTATED_KEY_ID = 1;
 
+    private static final int DEADLINE_SECONDS = 1;
+
     private final AtomicInteger divergences = new AtomicInteger();
     private final CountDownLatch diverged = new CountDownLatch(1);
     private final AtomicInteger announcements = new AtomicInteger();
@@ -241,6 +243,119 @@ class AetherNodeStartSwimTest {
         } finally {
             detector.stop();
         }
+    }
+
+    /// #1200 — a node that, a bounded time after SWIM started, has neither joined nor decrypted a single datagram exits through the divergence
+    /// hook with a named cause, instead of waiting for a quorum a divergent gossip key makes unreachable. Drives the production [AetherNode#startSwim]
+    /// with a REAL detector on a REAL UDP port and a 1-second deadline; nothing sends it a datagram.
+    @Test
+    void startSwim_neverJoinedAndDeaf_exitsThroughTheDivergenceHookAtTheDeadline() throws Exception {
+        var detector = detectorWithSwimPort(freeUdpPort());
+
+        try {
+            startSwimWithDeadline(detector, () -> false);
+
+            assertThat(diverged.await(WAIT_SECONDS, TimeUnit.SECONDS))
+                .as("#1200: a stranded node must fail loudly within the bound")
+                .isTrue();
+            assertThat(divergences.get()).isEqualTo(1);
+            assertThat(failures.get()).as("a stranded node is not a SWIM start failure").isZero();
+        } finally {
+            detector.stop();
+        }
+    }
+
+    /// Control: the same node, joined, is left alone. Without this the arm above would pass against a deadline that fires unconditionally.
+    @Test
+    void startSwim_joinedByTheDeadline_isLeftAlone() throws Exception {
+        var detector = detectorWithSwimPort(freeUdpPort());
+
+        try {
+            startSwimWithDeadline(detector, () -> true);
+
+            assertThat(diverged.await(DEADLINE_SECONDS * 3, TimeUnit.SECONDS))
+                .as("a node that joined must not be failed by the deadline")
+                .isFalse();
+        } finally {
+            detector.stop();
+        }
+    }
+
+    /// A node stopped before its deadline neither exits nor logs: the one-shot reads the detector's closed flag when it runs.
+    @Test
+    void startSwim_stoppedBeforeTheDeadline_isLeftAlone() throws Exception {
+        var detector = detectorWithSwimPort(freeUdpPort());
+
+        startSwimWithDeadline(detector, () -> false);
+        assertThat(announced.await(WAIT_SECONDS, TimeUnit.SECONDS)).as("SWIM started").isTrue();
+        detector.stop();
+
+        assertThat(diverged.await(DEADLINE_SECONDS * 3, TimeUnit.SECONDS)).as("a stopped node must not be failed by a stale deadline").isFalse();
+    }
+
+    /// #1200 — the seed side. A datagram under a key id the node does not hold becomes the operator event `gossip-key-unknown-from-peer`
+    /// naming the sender, through the sink the node bound to its detector; the wiring from the detector to the transport is what is pinned
+    /// here (the observer itself is covered where it lives). A datagram it CAN open then closes it with the recovery.
+    @Test
+    void startSwim_peerGossipsUnderAnUnheldKey_raisesTheOperatorEvent_andTheRecoveryWhenItDecrypts() throws Exception {
+        var swimPort = freeUdpPort();
+        var detector = detectorWithSwimPort(swimPort);
+        var published = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
+
+        detector.setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(published::add));
+
+        try (var sender = new DatagramSocket()) {
+            AetherNode.startSwim(detector,
+                                 network(),
+                                 RotatingGossipEncryptor.rotatingGossipEncryptor(aesGcm(NODE_KEY, NODE_KEY_ID)),
+                                 this::announce,
+                                 this::fail,
+                                 this::diverge,
+                                 Promise.promise());
+            assertThat(announced.await(WAIT_SECONDS, TimeUnit.SECONDS)).as("SWIM started").isTrue();
+
+            send(sender, swimPort, aesGcm(ROTATED_KEY, ROTATED_KEY_ID).encrypt("probe".getBytes(StandardCharsets.UTF_8)).unwrap());
+            awaitWarnings(published, 1);
+
+            assertThat(published).singleElement().satisfies(warning -> {
+                assertThat(warning.code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER);
+                assertThat(warning.subject()).isEqualTo("127.0.0.1");
+            });
+
+            send(sender, swimPort, aesGcm(NODE_KEY, NODE_KEY_ID).encrypt("probe".getBytes(StandardCharsets.UTF_8)).unwrap());
+            awaitWarnings(published, 2);
+
+            assertThat(published).extracting(org.pragmatica.utility.warning.OperatorWarning::code)
+                                 .containsExactly(org.pragmatica.utility.warning.OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER,
+                                                  org.pragmatica.utility.warning.OperatorWarningCode.GOSSIP_KEY_PEER_DECRYPTED);
+        } finally {
+            detector.stop();
+        }
+    }
+
+    private static void send(DatagramSocket sender, int port, byte[] datagram) throws Exception {
+        sender.send(new DatagramPacket(datagram, datagram.length, InetAddress.getLoopbackAddress(), port));
+    }
+
+    private static void awaitWarnings(java.util.List<?> published, int expected) throws InterruptedException {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+
+        while (published.size() < expected && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+    }
+
+    private void startSwimWithDeadline(CoreSwimHealthDetector detector, java.util.function.BooleanSupplier joined) {
+        AetherNode.startSwim(detector,
+                             network(),
+                             encryptor(),
+                             this::announce,
+                             this::fail,
+                             this::diverge,
+                             System::nanoTime,
+                             Option.some(joined),
+                             timeSpan(DEADLINE_SECONDS).seconds(),
+                             Promise.promise());
     }
 
     /// #1308 (rev1343 BLOCKING-1) — the node's start outcome is `formationUnlessSwimFails(formation,

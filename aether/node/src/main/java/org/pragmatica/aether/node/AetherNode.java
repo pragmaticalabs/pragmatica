@@ -4206,8 +4206,40 @@ public interface AetherNode extends ManageableNode {
                                    Runnable gossipKeyDivergedExit,
                                    LongSupplier gateClock,
                                    Promise<Unit> startOutcome) {
+        return startSwim(swimHealthDetector,
+                         network,
+                         encryptor,
+                         announceJoinTrigger,
+                         failNode,
+                         gossipKeyDivergedExit,
+                         gateClock,
+                         Option.none(),
+                         GossipKeyDivergenceGuard.JOIN_DEADLINE,
+                         startOutcome);
+    }
+
+    /// #1200: the same, with the node's join signal (`joined`, production: [#runtimeReady]) so that a node which, `joinDeadline` after
+    /// SWIM started, has neither joined nor decrypted any gossip fails through `gossipKeyDivergedExit` with a named cause instead of
+    /// waiting for a quorum that a divergent gossip key makes unreachable ([GossipKeyDivergenceGuard#checkJoinDeadline]). An empty
+    /// `joined` arms nothing. The deadline task is a one-shot on the JVM-global scheduler that reads whether SWIM is still running when it
+    /// runs, so a node stopped in the meantime is left alone and nothing needs cancelling.
+    static Promise<Unit> startSwim(CoreSwimHealthDetector swimHealthDetector,
+                                   ClusterNetwork network,
+                                   RotatingGossipEncryptor encryptor,
+                                   Runnable announceJoinTrigger,
+                                   Runnable failNode,
+                                   Runnable gossipKeyDivergedExit,
+                                   LongSupplier gateClock,
+                                   Option<BooleanSupplier> joined,
+                                   TimeSpan joinDeadline,
+                                   Promise<Unit> startOutcome) {
         var workerGroup = network.server().map(Server::workerGroup);
         var guarded = GossipKeyDivergenceGuard.gossipKeyDivergenceGuard(encryptor, gossipKeyDivergedExit, gateClock);
+
+        joined.onPresent(signal -> SharedScheduler.schedule(() -> guarded.checkJoinDeadline(signal,
+                                                                                            () -> !swimHealthDetector.isRunning(),
+                                                                                            joinDeadline),
+                                                            joinDeadline));
         // `startOutcome::fail` and the announcement are dependent steps (`withFailure`/`withSuccess`), so they have run
         // when `start` resolves for whoever awaits it. `failNode` may block (Ember awaits the node's own stop), so it stays
         // a detached handler, registered on the DERIVED promise: it can run only after `startOutcome` was failed.
