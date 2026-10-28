@@ -40,6 +40,12 @@ import static org.pragmatica.lang.Result.success;
 /// **Bounded and timed.** The production tier runs at most `maxInflight` requests at once (others wait,
 /// without a thread, for a permit) and bounds each request by `requestTimeout`.
 ///
+/// **Anchors** ([#putAnchor]) are objects under `{prefix}anchors/`, laid out and framed by [AnchorFrame]. The newest
+/// version is the first key of a one-key LIST, so it is found in one request however many versions exist. That needs two
+/// things of the endpoint: a LIST that sees a key once its PUT was answered (AWS S3 since 2020-12, MinIO), and keys
+/// listed in ascending order (AWS general-purpose buckets and MinIO; NOT AWS directory buckets). `anchors/` is not a
+/// two-hex-character shard, so a scan of block shards never reads it.
+///
 /// **Failures are classified** ([RemoteTierError]): an unreachable or failing provider is
 /// [RemoteTierError.Unavailable] (retriable), never an absent block; a refusal is [RemoteTierError.Rejected].
 public final class RemoteTier implements StorageTier {
@@ -144,6 +150,101 @@ public final class RemoteTier implements StorageTier {
     @Override
     public long maxBytes() {
         return maxBytes;
+    }
+
+    /// Resolves on the provider's answer to the PUT, as [#put]. Capacity is not reserved: anchors are not blocks.
+    @Override
+    public Promise<Unit> putAnchor(AnchorName name, long version, byte[] value) {
+        if (version < 0) {
+            return AnchorError.NegativeVersion.negativeVersion(name, version).promise();
+        }
+
+        var key = anchorPrefix(name) + AnchorFrame.key(version);
+
+        return request("PUT",
+                       key,
+                       () -> s3Client.putObject(key, AnchorFrame.encode(version, value), CONTENT_TYPE));
+    }
+
+    /// One LIST of at most one key under the anchor's version prefix, then one GET. None ONLY when the LIST returns no
+    /// key: a listed key that is no version key fails closed ([AnchorError.AnchorKeyMalformed]), and so does a listed
+    /// version whose GET finds nothing ([AnchorError.AnchorCorrupt]).
+    @Override
+    public Promise<Option<Anchor>> latestAnchor(AnchorName name) {
+        var prefix = anchorPrefix(name);
+        var versions = prefix + AnchorFrame.KEY_MARKER;
+
+        return request("LIST", versions, () -> s3Client.listObjects(versions, 1)).flatMap(keys -> readNewest(name,
+                                                                                                             prefix,
+                                                                                                             keys));
+    }
+
+    /// One LIST of at most `scanLimit` keys from the newest end, then one DELETE per version below `below` in it.
+    /// Versions kept sort first, so what the page holds past them is the oldest garbage; a backlog is worked off a
+    /// page at a time by later calls.
+    @Override
+    public Promise<Unit> pruneAnchors(AnchorName name, long below, int scanLimit) {
+        var prefix = anchorPrefix(name);
+        var versions = prefix + AnchorFrame.KEY_MARKER;
+
+        return request("LIST", versions, () -> s3Client.listObjects(versions, scanLimit)).flatMap(keys -> deleteBelow(prefix,
+                                                                                                                      keys,
+                                                                                                                      below));
+    }
+
+    private Promise<Option<Anchor>> readNewest(AnchorName name, String prefix, List<String> keys) {
+        return Option.from(keys.stream().findFirst()).fold(() -> Promise.success(none()),
+                                                           key -> versionUnder(prefix, key).fold(() -> malformedKey(name,
+                                                                                                                    key),
+                                                                                                 version -> readAnchor(name,
+                                                                                                                       prefix + AnchorFrame.key(version),
+                                                                                                                       version)));
+    }
+
+    private static Promise<Option<Anchor>> malformedKey(AnchorName name, String key) {
+        return AnchorError.AnchorKeyMalformed.anchorKeyMalformed(TierLevel.REMOTE, name, key).promise();
+    }
+
+    private Promise<Option<Anchor>> readAnchor(AnchorName name, String key, long version) {
+        return request("GET", key, () -> s3Client.getObject(key)).flatMap(frame -> frame.fold(() -> missingNewest(name,
+                                                                                                                  version),
+                                                                                              bytes -> AnchorFrame.decode(TierLevel.REMOTE,
+                                                                                                                          name,
+                                                                                                                          version,
+                                                                                                                          bytes)
+                                                                                                                  .map(Option::some)
+                                                                                                                  .async()));
+    }
+
+    /// Listed and then gone: only a prune removes versions, and it never removes the newest, so the endpoint's LIST
+    /// and GET disagree. Fails closed like a damaged frame.
+    private static Promise<Option<Anchor>> missingNewest(AnchorName name, long version) {
+        return AnchorError.AnchorCorrupt.anchorCorrupt(TierLevel.REMOTE, name, version, "listed but not found").promise();
+    }
+
+    private Promise<Unit> deleteBelow(String prefix, List<String> keys, long below) {
+        var deletes = keys.stream()
+                          .flatMap(key -> versionUnder(prefix, key).stream())
+                          .filter(version -> version < below)
+                          .map(version -> prefix + AnchorFrame.key(version))
+                          .map(key -> request("DELETE",
+                                              key,
+                                              () -> s3Client.deleteObject(key)))
+                          .toList();
+
+        return Promise.allOf(deletes)
+                      .flatMap(results -> Result.allOf(results.stream()).async())
+                      .mapToUnit();
+    }
+
+    private static Option<Long> versionUnder(String prefix, String key) {
+        return key.startsWith(prefix)
+               ? AnchorFrame.versionOf(key.substring(prefix.length()))
+               : none();
+    }
+
+    private String anchorPrefix(AnchorName name) {
+        return keyPrefix + AnchorFrame.DIRECTORY + "/" + name.storageSegment() + "/";
     }
 
     /// A bucket is cluster-wide: node-local GC must never delete here on this node's refcount alone.
