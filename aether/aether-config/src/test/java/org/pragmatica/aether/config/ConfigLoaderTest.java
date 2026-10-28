@@ -1125,6 +1125,46 @@ class ConfigLoaderTest {
         }
     }
 
+    @Test
+    void loadFromString_anchorRetention_isPerInstance_andDefaultsTo8() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 5
+
+            [storage.artifacts]
+            anchor_retention = 3
+
+            [storage.content]
+            disk_path = "/data/aether/content"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.storage().get("artifacts").anchorRetention()).isEqualTo(3);
+                assertThat(config.storage().get("content").anchorRetention()).isEqualTo(8);
+            });
+    }
+
+    @Test
+    void loadFromString_anchorRetentionBelowTwoOrNotAnInteger_isRefused() {
+        for (var bad : new String[]{"1", "0", "-2", "\"many\"", "2.5", "true"}) {
+            var toml = """
+                [cluster]
+                environment = "docker"
+                nodes = 5
+
+                [storage.artifacts]
+                anchor_retention = %s
+                """.formatted(bad);
+
+            assertThat(ConfigLoader.loadFromString(toml).isFailure())
+                .as("anchor_retention = %s is refused, never defaulted (#1455)", bad)
+                .isTrue();
+        }
+    }
+
     private static void assertWalPath(AetherConfig config, String expected, boolean explicit) {
         var storage = config.storage().get("streams");
 

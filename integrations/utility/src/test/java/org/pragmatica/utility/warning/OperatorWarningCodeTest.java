@@ -102,6 +102,16 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING.level()).isEqualTo(WarningLevel.WARNING);
     }
 
+    /// #2450 A3-0: a corrupt durable anchor is critical and closed by an INFO recovery of the same subsystem.
+    @Test
+    void anchorCorrupt_isCritical_andIsClosedByAnInfoRecovery() {
+        assertThat(OperatorWarningCode.STORAGE_ANCHOR_CORRUPT.code()).isEqualTo("storage-anchor-corrupt");
+        assertThat(OperatorWarningCode.STORAGE_ANCHOR_CORRUPT.level()).isEqualTo(WarningLevel.CRITICAL);
+        assertThat(OperatorWarningCode.STORAGE_ANCHOR_READABLE.code()).isEqualTo("storage-anchor-readable");
+        assertThat(OperatorWarningCode.STORAGE_ANCHOR_READABLE.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STORAGE_ANCHOR_READABLE.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.STORAGE_ANCHOR_CORRUPT);
+    }
+
     /// #2429: the identity ledger's two codes are what the operator and the events API see: the strings, the level and the
     /// recovery relation are a contract.
     @Test
