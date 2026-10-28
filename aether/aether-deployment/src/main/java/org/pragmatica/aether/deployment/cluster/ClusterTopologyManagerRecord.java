@@ -2667,6 +2667,20 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
     }
 
+    /// A held reap whose instance is gone anyway (a directed reap deleted it after the node's own removal was held) has nothing left to hold: the
+    /// held warning is closed with the release resolution. Idempotent with [#reapMayProceed], which removes the mark first when auto-heal is back.
+    @Contract
+    private void closeHeldAsDeleted(NodeId nodeId) {
+        if (heldReaps.remove(nodeId)) {
+            OperatorWarnings.raise(log,
+                                   warningSink.get(),
+                                   OperatorWarningCode.INSTANCE_REAP_RELEASED,
+                                   nodeId.id(),
+                                   "The instance of node {} is gone: it was deleted by a directed retirement, so the held reap no longer applies",
+                                   nodeId.id());
+        }
+    }
+
     /// Every retirement reap is a CONFIRMED reap ([#confirmedReap]): a failed or refused attempt is retried, bounded, and the bound being spent ends in
     /// the operator event ([#markUnconfirmed]) rather than a log line. The activation replay stays the backstop for a leader that dies mid-chain.
     /// Guarantee earned: the failure is visible and the VM is terminated only once a listing shows it gone, not that every reap succeeds.
@@ -2700,8 +2714,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
         // #1038: the one place the gate is enforced. Every chain that deletes an instance passes here, first attempt and every retry, so a
-        // disable that lands between two attempts holds the next one. Only a directed reap ([#markDirected]) is exempt.
-        if (!directedReaps.contains(nodeId) && !reapMayProceed(nodeId, reapPath(nodeId))) {
+        // disable that lands between two attempts holds the next one. Only a directed reap ([#markDirected]) is exempt, and a node whose
+        // reap is already confirmed: it has no instance left to delete, so the hold would announce a deletion that already happened (the
+        // node's own NodeRemoved follows a directed reap).
+        if (!directedReaps.contains(nodeId) && !confirmedReaps.contains(nodeId) && !reapMayProceed(nodeId,
+                                                                                                   reapPath(nodeId))) {
             return;
         }
 
@@ -3254,6 +3271,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     private void reapConfirmed(NodeId nodeId) {
+        closeHeldAsDeleted(nodeId);
         replacementSources.remove(nodeId);
         failedReaps.remove(nodeId);
         var marked = unconfirmedReaps.remove(nodeId);

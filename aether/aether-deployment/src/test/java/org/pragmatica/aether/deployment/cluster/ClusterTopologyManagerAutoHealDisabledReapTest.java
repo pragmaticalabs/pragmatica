@@ -272,7 +272,8 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
         assertThat(eventSeen(OperatorWarningCode.INSTANCE_REAP_HELD)).isFalse();
     }
 
-    /// A drain an operator asked for is not the heal acting: its grace reap and the retries of it go ahead with auto-heal disabled.
+    /// A drain an operator asked for is not the heal acting: its grace reap and the retries of it go ahead with auto-heal disabled. (OPERATOR_COMMAND has
+    /// no production producer yet: this row covers the reason, the production directed paths are REPLACED and community-placement retirement.)
     @Test
     void retryOfAnOperatorDrainsReap_autoHealDisabled_isNotHeld() {
         firstListingFails.set(true);
@@ -285,6 +286,11 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
     }
 
     private final AtomicReference<Option<String>> refusal = new AtomicReference<>(Option.none());
+
+    /// A node lost later is a new incarnation: it joined first, which drops what was remembered of the confirmed reap of the previous one.
+    private void joinsAgain() {
+        ctm.onMembershipDecision(MembershipDecision.nodeJoined(LOST, List.of(SELF, LOST)));
+    }
 
     private void relist() {
         listing.set(List.of(instance("i-lost-again")));
@@ -328,7 +334,7 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
     }
 
     /// The exemption follows the reap's origin, not the entry it comes in through: an operator's drain is refused at its grace reap,
-    /// auto-heal is disabled meanwhile, and the retry reaps it all the same.
+    /// auto-heal is disabled meanwhile, and the retry reaps it all the same. (OPERATOR_COMMAND has no production producer yet; see the retry row above.)
     @Test
     void operatorDrainedVoter_refusedThenRetried_isReapedWithAutoHealDisabled() {
         voterAfterTheDrainWasAccepted();
@@ -444,6 +450,7 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
         ctm.drainNode(LOST, DrainReason.OPERATOR_COMMAND);
         await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
         relist();
+        joinsAgain();
 
         lost();
 
@@ -459,6 +466,7 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
         ctm.drainNode(LOST, DrainReason.OPERATOR_COMMAND);
         await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
         relist();
+        joinsAgain();
 
         ctm.drainNode(LOST, DrainReason.JOIN_GRACE_REAP);
 
@@ -491,6 +499,91 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
 
         await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
         assertThat(eventSeen(OperatorWarningCode.INSTANCE_REAP_HELD)).isFalse();
+    }
+
+    /// Directed retirements are the operator's act, not the cluster's: once the directed reap has deleted the instance, the node's own NodeRemoved
+    /// has nothing left to hold, so it raises no held event and parks nothing. (OPERATOR_COMMAND has no production producer yet; the row covers
+    /// the reason, REPLACED and community-placement retirement are the production directed paths.)
+    @Test
+    void operatorCommandReapDone_thenNodeRemoved_raisesNoHeldEvent() {
+        disableAutoHeal();
+        ctm.drainNode(LOST, DrainReason.OPERATOR_COMMAND);
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+        settle();
+
+        lost();
+        settle();
+
+        assertThat(eventsOf(OperatorWarningCode.INSTANCE_REAP_HELD)).as("held for a deleted instance: " + eventMessages(OperatorWarningCode.INSTANCE_REAP_HELD)).isZero();
+        assertThat(((ClusterTopologyManagerRecord) ctm).abandonedReaps()).doesNotContain(LOST);
+    }
+
+    @Test
+    void replacedReapDone_thenNodeRemoved_raisesNoHeldEvent() {
+        disableAutoHeal();
+        ctm.drainNode(LOST, DrainReason.REPLACED);
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+        settle();
+
+        lost();
+        settle();
+
+        assertThat(eventsOf(OperatorWarningCode.INSTANCE_REAP_HELD)).as("held for a replaced, deleted instance: " + eventMessages(OperatorWarningCode.INSTANCE_REAP_HELD)).isZero();
+        assertThat(((ClusterTopologyManagerRecord) ctm).abandonedReaps()).doesNotContain(LOST);
+    }
+
+    /// The reverse order: the node's removal was held first, then the directed reap deletes the instance, so the held event is closed with the release.
+    @Test
+    void nodeRemovedHeld_thenOperatorCommandReapDeletes_heldEventIsReleased() {
+        disableAutoHeal();
+        lost();
+        await().atMost(Duration.ofSeconds(5)).until(() -> eventSeen(OperatorWarningCode.INSTANCE_REAP_HELD));
+        ctm.drainNode(LOST, DrainReason.OPERATOR_COMMAND);
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+        settle();
+
+        assertThat(eventsOf(OperatorWarningCode.INSTANCE_REAP_RELEASED)).as("held event left open after the instance was deleted").isEqualTo(1);
+    }
+
+    @Test
+    void nodeRemovedHeld_thenReplacedReapDeletes_heldEventIsReleased() {
+        disableAutoHeal();
+        lost();
+        await().atMost(Duration.ofSeconds(5)).until(() -> eventSeen(OperatorWarningCode.INSTANCE_REAP_HELD));
+        ctm.drainNode(LOST, DrainReason.REPLACED);
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+        settle();
+
+        assertThat(eventsOf(OperatorWarningCode.INSTANCE_REAP_RELEASED)).as("held event left open after the instance was deleted").isEqualTo(1);
+    }
+
+    /// The directed reap closed the held mark: the rejoin that follows has nothing left to release, so the recovery is published once.
+    @Test
+    void nodeRemovedHeld_thenReplacedReapDeletes_rejoinReleasesNothingMore() {
+        disableAutoHeal();
+        lost();
+        await().atMost(Duration.ofSeconds(5)).until(() -> eventSeen(OperatorWarningCode.INSTANCE_REAP_HELD));
+        ctm.drainNode(LOST, DrainReason.REPLACED);
+        await().atMost(Duration.ofSeconds(5)).until(() -> eventsOf(OperatorWarningCode.INSTANCE_REAP_RELEASED) == 1);
+
+        joinsAgain();
+        settle();
+
+        assertThat(eventsOf(OperatorWarningCode.INSTANCE_REAP_RELEASED)).as("the held mark outlived the directed reap").isEqualTo(1);
+    }
+
+    /// The rejoin closes the held mark, not only the event: a later loss of the same node is held and announced again.
+    @Test
+    void heldThenRejoinThenLostAgain_isAnnouncedAgain() {
+        disableAutoHeal();
+        lost();
+        await().atMost(Duration.ofSeconds(5)).until(() -> eventsOf(OperatorWarningCode.INSTANCE_REAP_HELD) == 1);
+        ctm.onMembershipDecision(MembershipDecision.nodeJoined(LOST, List.of(SELF, LOST)));
+        await().atMost(Duration.ofSeconds(5)).until(() -> eventSeen(OperatorWarningCode.INSTANCE_REAP_RELEASED));
+
+        lost();
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> eventsOf(OperatorWarningCode.INSTANCE_REAP_HELD) == 2);
     }
 
     /// The production lifecycle's `sourceOf` is total (a source is always named); the single-provider record names none, so this names the default.
