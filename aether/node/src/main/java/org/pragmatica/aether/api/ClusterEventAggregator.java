@@ -1267,7 +1267,8 @@ public final class ClusterEventAggregator {
     /// explains the state, so it is withheld. Scoped to the observer branch: a voter's PASSIVE is never decided here.
     private void onObserverPassive() {
         if (selfCoreAbsenceDrain.get().getAsBoolean()) {
-            LOG.info("Observer {} went passive because it is dissolving on core absence — fenced, not lagging", selfNode.id());
+            LOG.info("Observer {} went passive because it is dissolving on core absence — fenced, not lagging",
+                     selfNode.id());
 
             return;
         }
