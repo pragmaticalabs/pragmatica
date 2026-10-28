@@ -8,7 +8,9 @@ public sealed interface ContentStoreError extends Cause {
     enum General implements ContentStoreError {
         CONTENT_NOT_FOUND("Content not found"),
         MANIFEST_PARSE_FAILED("Failed to parse content manifest"),
-        CHUNK_MISSING("One or more content chunks are missing");
+        CHUNK_MISSING("One or more content chunks are missing"),
+        ENTRY_PARSE_FAILED("Failed to parse object entry"),
+        WRITER_CLOSED("The object writer is committed or aborted");
         private final String message;
         General(String message) {
             this.message = message;
@@ -68,6 +70,96 @@ public sealed interface ContentStoreError extends Cause {
         @Override
         public String message() {
             return "Content reassembly failed: " + detail;
+        }
+    }
+
+    /// The operation is not available in local mode.
+    record NotSupported(String operation) implements ContentStoreError {
+        public static NotSupported notSupported(String operation) {
+            return new NotSupported(operation);
+        }
+
+        @Override
+        public String message() {
+            return operation + " is not supported in local mode";
+        }
+    }
+
+    record ObjectNotFound(String id) implements ContentStoreError {
+        static ObjectNotFound objectNotFound(String id) {
+            return new ObjectNotFound(id);
+        }
+
+        @Override
+        public String message() {
+            return "Object not found: " + id;
+        }
+    }
+
+    record InvalidRange(String detail) implements ContentStoreError {
+        static InvalidRange invalidRange(String detail) {
+            return new InvalidRange(detail);
+        }
+
+        @Override
+        public String message() {
+            return "Invalid byte range: " + detail;
+        }
+    }
+
+    record PreconditionFailed(String detail) implements ContentStoreError {
+        static PreconditionFailed preconditionFailed(String detail) {
+            return new PreconditionFailed(detail);
+        }
+
+        @Override
+        public String message() {
+            return "Precondition failed: " + detail;
+        }
+    }
+
+    record LengthMismatch(long declared, long actual) implements ContentStoreError {
+        static LengthMismatch lengthMismatch(long declared, long actual) {
+            return new LengthMismatch(declared, actual);
+        }
+
+        @Override
+        public String message() {
+            return "Declared length " + declared + " but " + actual + " bytes were written";
+        }
+    }
+
+    record DigestMismatch(String expected, String actual) implements ContentStoreError {
+        static DigestMismatch digestMismatch(String expected, String actual) {
+            return new DigestMismatch(expected, actual);
+        }
+
+        @Override
+        public String message() {
+            return "Expected SHA-256 " + expected + " but the bytes written hash to " + actual;
+        }
+    }
+
+    /// A setting of the content store is not usable; `field` names it.
+    record InvalidConfig(String field, String detail) implements ContentStoreError {
+        static InvalidConfig invalidConfig(String field, String detail) {
+            return new InvalidConfig(field, detail);
+        }
+
+        @Override
+        public String message() {
+            return "Invalid content store setting '" + field + "': " + detail;
+        }
+    }
+
+    record InvalidIdentifier(String kind, String detail) implements ContentStoreError {
+        static InvalidIdentifier invalidIdentifier(String kind, String detail) {
+            return new InvalidIdentifier(kind, detail);
+        }
+
+        @Override
+        public String message() {
+            return "Invalid " + kind + ": " + detail;
         }
     }
 }

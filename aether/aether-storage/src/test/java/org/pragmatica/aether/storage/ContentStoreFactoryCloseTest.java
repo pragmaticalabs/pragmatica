@@ -16,7 +16,6 @@ import java.util.logging.Logger;
 
 import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.aether.slice.ProvisioningContext;
-import org.pragmatica.storage.ContentStore;
 import org.pragmatica.storage.ContentStoreConfig;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
@@ -100,7 +99,7 @@ class ContentStoreFactoryCloseTest {
                                .filter(record -> record.getMessage()
                                                        .contains("No close convention"))
                                .filter(record -> record.getMessage()
-                                                       .contains("DefaultContentStore"))
+                                                       .contains("LocalContentStore"))
                                .toList();
 
         assertThat(matching).as("the default dispatch names the outcome once; the old no-op override named nothing")
