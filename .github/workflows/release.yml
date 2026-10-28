@@ -50,16 +50,6 @@ jobs:
           chmod +x aether/dist/build-dist.sh
           aether/dist/build-dist.sh --version ${{ steps.version.outputs.VERSION }}
 
-      - name: Generate JAR checksums
-        run: |
-          cd ${{ github.workspace }}
-          sha256sum \
-            jbct/jbct-cli/target/jbct.jar \
-            aether/cli/target/aether.jar \
-            aether/node/target/aether-node.jar \
-            aether/forge/forge-core/target/aether-forge.jar \
-            > SHA256SUMS
-
       - name: Create Release
         uses: softprops/action-gh-release@v3
         with:
@@ -74,7 +64,6 @@ jobs:
             aether/forge/forge-core/target/aether-forge.jar
             aether/dist/output/*.tar.gz
             aether/dist/output/*.zip
-            SHA256SUMS
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -181,6 +170,40 @@ jobs:
             aether/dist/output/*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # #2235: SHA256SUMS is produced HERE, after the last asset exists. The archives come from three jobs (linux-amd64, macOS, linux-arm64),
+  # so a sums file generated beside the first job could only ever cover that job's files (rc4: 4 of 23 assets, under build paths).
+  # The expected set is what the release publishes (`gh release view`), not what this job believes it built.
+  release-checksums:
+    runs-on: ubuntu-latest
+    needs: [build-and-release, build-macos-dist, build-linux-arm64-dist]
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Generate SHA256SUMS over every published asset
+        run: |
+          gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' > published.txt
+          mkdir release-assets
+          gh release download "$GITHUB_REF_NAME" --dir release-assets --pattern '*' --clobber
+          scripts/release-checksums.sh generate release-assets
+          scripts/release-checksums.sh verify release-assets published.txt
+
+      - name: Upload SHA256SUMS
+        run: gh release upload "$GITHUB_REF_NAME" release-assets/SHA256SUMS --clobber
+
+      # Re-read the release as a user would: fresh download of every published asset, the sums file included.
+      - name: Verify the published release
+        run: |
+          gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' > published-after.txt
+          grep -x -F SHA256SUMS published-after.txt
+          mkdir published-check
+          gh release download "$GITHUB_REF_NAME" --dir published-check --pattern '*' --clobber
+          scripts/release-checksums.sh verify published-check published-after.txt
 
   docker-publish:
     runs-on: ubuntu-latest
