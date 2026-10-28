@@ -38,6 +38,7 @@ import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.Retry;
 import org.pragmatica.lang.utils.Retry.BackoffStrategy;
+import org.pragmatica.storage.AnchorRetention;
 import org.pragmatica.storage.AppendLog;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.DemotionConfig;
@@ -2117,6 +2118,22 @@ public final class StorageFactory {
                                                       String nodeId,
                                                       Option<DhtMarkerCheck> dhtMarkerCheck,
                                                       DegradeReporter degrade) {
+        return AnchorRetention.anchorRetention(config.anchorRetention()).flatMap(anchorRetention -> assembleSetup(name,
+                                                                                                                  tiers,
+                                                                                                                  config,
+                                                                                                                  nodeId,
+                                                                                                                  dhtMarkerCheck,
+                                                                                                                  degrade,
+                                                                                                                  anchorRetention));
+    }
+
+    private static Result<StorageSetup> assembleSetup(String name,
+                                                      List<StorageTier> tiers,
+                                                      StorageConfig config,
+                                                      String nodeId,
+                                                      Option<DhtMarkerCheck> dhtMarkerCheck,
+                                                      DegradeReporter degrade,
+                                                      AnchorRetention anchorRetention) {
         var metadataStore = MetadataStore.inMemoryMetadataStore(name);
         // The prefetch manager needs the instance, and the instance must tell the manager of every read hit: the
         // listener reaches the manager through a holder bound once both exist.
@@ -2131,7 +2148,8 @@ public final class StorageFactory {
                                                        AppendLog.TornTailSink.logOnly(),
                                                        id -> prefetchHolder.get()
                                                                            .recordAccess(id),
-                                                       config.maxBlockBytes());
+                                                       config.maxBlockBytes(),
+                                                       anchorRetention);
 
         instance.reportTo(degrade);
         var prefetchManager = prefetchManagerFor(config, instance);

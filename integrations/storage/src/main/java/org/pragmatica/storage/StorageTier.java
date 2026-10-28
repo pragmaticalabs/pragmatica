@@ -36,6 +36,35 @@ public interface StorageTier {
         return false;
     }
 
+    /// Writes `value` as version `version` (at least 0) of anchor `name`, and resolves once that version would survive
+    /// what [#put] survives on this tier: on a durable tier, the device (file and directory forced) or the provider's
+    /// acknowledgement. Writing a version again replaces it; every write of one version carries the same value.
+    ///
+    /// The default stores nothing on a non-durable tier, which was never a cold-boot source, and REFUSES on a durable one
+    /// with [AnchorError.AnchorsUnsupported]: a durable tier that answered "nothing stored" would lose every name
+    /// anchored on it at the next cold boot.
+    default Promise<Unit> putAnchor(AnchorName name, long version, byte[] value) {
+        return isDurable()
+               ? AnchorError.AnchorsUnsupported.anchorsUnsupported(level()).promise()
+               : Promise.unitPromise();
+    }
+
+    /// The highest version of anchor `name` this tier holds, or none. A newest version that cannot be read back as
+    /// written fails with [AnchorError.AnchorCorrupt]; an older version is never returned in its place. The default is
+    /// none on a non-durable tier and [AnchorError.AnchorsUnsupported] on a durable one, as for [#putAnchor].
+    default Promise<Option<Anchor>> latestAnchor(AnchorName name) {
+        return isDurable()
+               ? AnchorError.AnchorsUnsupported.anchorsUnsupported(level()).promise()
+               : Promise.success(Option.none());
+    }
+
+    /// Removes versions of anchor `name` below `below`, examining at most `scanLimit` versions from the newest end (a
+    /// tier that lists cheaply may examine all of them). Never removes a version at or above `below`. Best effort: a
+    /// version missed now is removed by a later call. The default removes nothing.
+    default Promise<Unit> pruneAnchors(AnchorName name, long below, int scanLimit) {
+        return Promise.unitPromise();
+    }
+
     /// Gives up whatever the tier holds exclusively: the mount claim of a [LocalDiskTier]. Called once, when the
     /// storage instance shuts down. Defaults to nothing.
     default Unit release() {

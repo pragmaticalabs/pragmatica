@@ -24,7 +24,8 @@ import static org.pragmatica.lang.Unit.unit;
 ///
 /// A condition is OPEN from the moment it is raised until it is recovered; raising an open condition again does nothing,
 /// which is what makes the warning transition-only. A condition whose code has no recovery stays open for the life of the
-/// instance (a disk tier that failed to open is fixed by a restart).
+/// instance (a disk tier that failed to open is fixed by a restart). A condition is one code for the whole instance, or,
+/// through [#degradedFor], one code per named part of it (a corrupt anchor, per tier and anchor name), each raised once.
 ///
 /// **The sink arrives late.** Storage is built before the node's event aggregator exists, so the instance starts with the
 /// log-only sink and the node binds the real one with [#bind]. A condition raised before then was logged when it was raised;
@@ -40,7 +41,12 @@ public final class DegradeReporter {
 
     private final AtomicReference<OperatorWarningSink> sink = new AtomicReference<>(OperatorWarningSink.logOnly());
 
-    private final Map<OperatorWarningCode, OperatorWarning> open = new ConcurrentHashMap<>();
+    private final Map<Condition, OperatorWarning> open = new ConcurrentHashMap<>();
+
+    /// `part` is empty for a condition of the whole instance.
+    private record Condition(OperatorWarningCode code, String part) {}
+
+    private static final String WHOLE_INSTANCE = "";
 
     private DegradeReporter(String instance) {
         this.instance = instance;
@@ -61,11 +67,17 @@ public final class DegradeReporter {
 
     /// Opens `code` for this instance and raises it, once. Returns true when this call was the transition.
     public synchronized boolean degraded(OperatorWarningCode code, String template, Object... args) {
+        return degradedFor(code, WHOLE_INSTANCE, template, args);
+    }
+
+    /// Opens `code` for `part` of this instance and raises it, once per part. Returns true when this call was the
+    /// transition. [#recoveredFor] closes it.
+    public synchronized boolean degradedFor(OperatorWarningCode code, String part, String template, Object... args) {
         var warning = OperatorWarning.operatorWarning(code,
                                                       instance,
                                                       MessageFormatter.arrayFormat(template, args).getMessage());
 
-        if (open.putIfAbsent(code, warning) != null) {
+        if (open.putIfAbsent(new Condition(code, part), warning) != null) {
             return false;
         }
 
@@ -77,14 +89,26 @@ public final class DegradeReporter {
     /// Closes `code` for this instance and raises its recovery, once. Returns true when this call was the transition: a
     /// condition that was not open, or whose code has no recovery, raises nothing.
     public synchronized boolean recovered(OperatorWarningCode code, String template, Object... args) {
-        return recoveryOf(code).filter(_ -> open.remove(code) != null)
+        return recoveryOf(code).filter(_ -> open.remove(new Condition(code, WHOLE_INSTANCE)) != null)
+                         .map(recovery -> raiseRecovery(recovery, template, args))
+                         .or(false);
+    }
+
+    /// Closes `code` for `part` of this instance and raises its recovery, once, as [#recovered] does for the whole instance.
+    public synchronized boolean recoveredFor(OperatorWarningCode code, String part, String template, Object... args) {
+        return recoveryOf(code).filter(_ -> open.remove(new Condition(code, part)) != null)
                          .map(recovery -> raiseRecovery(recovery, template, args))
                          .or(false);
     }
 
     /// True while `code` is open for this instance.
     public boolean isDegraded(OperatorWarningCode code) {
-        return open.containsKey(code);
+        return open.containsKey(new Condition(code, WHOLE_INSTANCE));
+    }
+
+    /// True while `code` is open for `part` of this instance.
+    public boolean isDegradedFor(OperatorWarningCode code, String part) {
+        return open.containsKey(new Condition(code, part));
     }
 
     private boolean raiseRecovery(OperatorWarningCode recovery, String template, Object... args) {
