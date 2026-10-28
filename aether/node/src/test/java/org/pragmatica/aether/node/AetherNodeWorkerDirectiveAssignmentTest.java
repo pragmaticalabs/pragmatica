@@ -98,6 +98,7 @@ class AetherNodeWorkerDirectiveAssignmentTest {
                                              announcer,
                                              Mockito.mock(GovernorAuthorityClient.class),
                                              () -> false,
-                                             LoggerFactory.getLogger(AetherNodeWorkerDirectiveAssignmentTest.class));
+                                             LoggerFactory.getLogger(AetherNodeWorkerDirectiveAssignmentTest.class),
+                                             () -> {});
     }
 }
