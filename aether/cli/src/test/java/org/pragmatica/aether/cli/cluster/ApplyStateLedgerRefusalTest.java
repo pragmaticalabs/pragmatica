@@ -137,6 +137,17 @@ class ApplyStateLedgerRefusalTest {
         }
 
         @Test
+        void read_ioFailure_isReportedAsUnreadable_notAsARefusal() throws Exception {
+            Files.createDirectories(applyStatePath());
+
+            ApplyState.read(clusterName)
+                      .onSuccess(state -> fail("a directory is not a ledger: " + state))
+                      .onFailure(cause -> assertThat(cause.message()).contains(applyStatePath().toString())
+                                                                     .contains("could not be read")
+                                                                     .doesNotContain("refused"));
+        }
+
+        @Test
         void read_resourceWithoutType_fails() throws Exception {
             writeApplyState(applyStateJson(clusterName.value(), "{\"resourceId\": \"x-9\"}"));
 
@@ -183,6 +194,24 @@ class ApplyStateLedgerRefusalTest {
                              .onFailure(cause -> assertThat(cause.message()).contains("unreadable")
                                                                              .contains("FutureThing")
                                                                              .doesNotContain("Nothing to resume"));
+        }
+
+        @Test
+        void resume_refusedLedger_saysItWasLeftUntouchedExactlyOnce_andNamesTheFile() throws Exception {
+            writeApplyState(applyStateJson(clusterName.value(), "").replace("\"schemaVersion\": 2", "\"schemaVersion\": 3"));
+
+            for (var outcome : List.of(ApplyOrchestrator.resume(config(3), config(3)),
+                                       ApplyOrchestrator.executeAndPersist(ClusterBootstrapConfigDiff.diff(config(3), config(5)),
+                                                                           config(3),
+                                                                           config(5),
+                                                                           (plan, stored, desired) -> fail("must not execute")))) {
+                outcome.onSuccess(result -> fail("a refused ledger must stop the apply"))
+                       .onFailure(cause -> {
+                           assertThat(cause.message()).contains(applyStatePath().toString()).contains("schema 3");
+                           assertThat(cause.message().split("untouched", -1).length - 1).as("occurrences of 'untouched' in: " + cause.message())
+                                                                                     .isEqualTo(1);
+                       });
+            }
         }
 
         @Test

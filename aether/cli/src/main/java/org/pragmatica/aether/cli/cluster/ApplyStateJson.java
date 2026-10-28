@@ -97,8 +97,7 @@ final class ApplyStateJson {
             throw new IllegalArgumentException("apply state schema " + (found.isMissingNode()
                                                                         ? "(none, a pre-2 file)"
                                                                         : found.toString())
-                                              + " is not supported, this CLI reads and writes schema " + ApplyState.SCHEMA_VERSION
-                                              + "; the file was left untouched");
+                                              + " is not supported, this CLI reads and writes schema " + ApplyState.SCHEMA_VERSION);
         }
     }
 

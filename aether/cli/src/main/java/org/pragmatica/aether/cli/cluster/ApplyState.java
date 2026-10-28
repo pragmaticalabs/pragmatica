@@ -198,10 +198,9 @@ public record ApplyState(String applyId,
             return success(none());
         }
 
-        return Result.lift(PersistenceError::new,
+        return Result.lift(cause -> new UnreadableFile(path, cause),
                            () -> Files.readString(path))
-                     .flatMap(ApplyState::fromJson)
-                     .mapError(cause -> new RefusedFile(path, cause))
+                     .flatMap(json -> fromJson(json).mapError(cause -> new RefusedFile(path, cause)))
                      .map(Option::some);
     }
 
@@ -238,11 +237,20 @@ public record ApplyState(String applyId,
         }
     }
 
-    /// A ledger file that was found and refused. Names the file so the operator knows what was left untouched.
+    /// A ledger file that was read but whose content is refused (other schema, torn, unknown entry). Names the file.
     record RefusedFile(Path file, Cause origin) implements Cause.Wrapped {
         @Override
         public String message() {
-            return "Apply state file " + file + " was refused and left untouched: " + origin.message();
+            return "Apply state file " + file + " was refused: " + origin.message();
+        }
+    }
+
+    /// A ledger file that could not be read at all (permissions, a directory in its place, an I/O error): nothing is
+    /// known about its content, so it is not called refused.
+    record UnreadableFile(Path file, Throwable cause) implements Cause {
+        @Override
+        public String message() {
+            return "Apply state file " + file + " could not be read: " + cause.getMessage();
         }
     }
 
