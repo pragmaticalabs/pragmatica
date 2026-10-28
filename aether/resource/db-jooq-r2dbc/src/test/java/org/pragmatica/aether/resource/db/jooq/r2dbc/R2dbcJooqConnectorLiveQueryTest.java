@@ -167,6 +167,14 @@ class R2dbcJooqConnectorLiveQueryTest {
         assertThat(success(connector.fetch(connector.dsl().resultQuery("SELECT name FROM live_items"))).size()).isEqualTo(2);
     }
 
+    @Test
+    void transactional_fetchOneOnAMissingTable_keepsItsSqlState() {
+        var cause = failure(connector.<Integer> transactional(tx -> tx.fetchOne(tx.dsl().resultQuery("SELECT * FROM no_such_table")).map(_ -> 1)));
+
+        assertThat(cause).isInstanceOf(DatabaseConnectorError.QueryFailed.class);
+        assertThat(((DatabaseConnectorError) cause).sqlState()).isEqualTo(some("42P01"));
+    }
+
     private static RetryMethodInterceptor retrying() {
         return RetryConfig.retryConfig(3, timeSpan(1).millis())
                           .flatMap(config -> new RetryInterceptorFactory().provision(config).await())
