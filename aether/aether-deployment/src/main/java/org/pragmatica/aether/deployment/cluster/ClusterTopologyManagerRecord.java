@@ -137,7 +137,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     Set<NodeId> seenInstances,
                                     Set<NodeId> confirmedReaps,
                                     Set<NodeId> listedAbsent,
-                                    ConcurrentHashMap<NodeId, String> knownInstanceIds,
+                                    ConcurrentHashMap<NodeId, Set<String>> knownInstanceIds,
                                     Set<NodeId> drainGraceChains,
                                     ConcurrentHashMap<NodeId, Long> incarnations,
                                     ConcurrentHashMap<NodeId, Long> failedReaps,
@@ -2713,15 +2713,31 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
             return;
         }
-        // #1038: the one place the gate is enforced. Every chain that deletes an instance passes here, first attempt and every retry, so a
-        // disable that lands between two attempts holds the next one. Only a directed reap ([#markDirected]) is exempt, and a node whose
-        // reap is already confirmed: it has no instance left to delete, so the hold would announce a deletion that already happened (the
-        // node's own NodeRemoved follows a directed reap).
-        if (!directedReaps.contains(nodeId) && !confirmedReaps.contains(nodeId) && !reapMayProceed(nodeId,
-                                                                                                   reapPath(nodeId))) {
+        // A confirmed node has no instance of its own left to delete (its directed reap, or its own earlier reap, deleted it), so its hold would
+        // announce a deletion that already happened. But the memory is per NODE id and the instance that reuses the id may be another one,
+        // which never joined: it is looked at first ([#recheckConfirmedReap]) and, being new, takes the gate like any other.
+        if (!directedReaps.contains(nodeId) && confirmedReaps.contains(nodeId)) {
+            recheckConfirmedReap(nodeId, epoch, generation, retriesLeft);
+
             return;
         }
 
+        gatedReap(nodeId, epoch, generation, retriesLeft);
+    }
+
+    /// #1038: the one place the gate is enforced. Every chain that deletes an instance passes here, first attempt and every retry, so a
+    /// disable that lands between two attempts holds the next one. Only a directed reap ([#markDirected]) is exempt.
+    @Contract
+    private void gatedReap(NodeId nodeId, long epoch, long generation, int retriesLeft) {
+        if (!directedReaps.contains(nodeId) && !reapMayProceed(nodeId, reapPath(nodeId))) {
+            return;
+        }
+
+        reapOf(nodeId, epoch, generation, retriesLeft);
+    }
+
+    @Contract
+    private void reapOf(NodeId nodeId, long epoch, long generation, int retriesLeft) {
         lifecycleManager.sourceOf(nodeId)
                         .fold(() -> lifecycleManager.terminateNode(nodeId),
                               source -> reapRetired(nodeId, source, false))
@@ -2730,6 +2746,46 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                         // the activation replay read the state they leave.
                         .onSuccess(_ -> reapConfirmed(nodeId))
                         .onFailure(cause -> reapUnconfirmed(nodeId, epoch, generation, retriesLeft, cause));
+    }
+
+    /// The node's reap is confirmed, but a later instance may carry its id without ever having joined (a replacement that booted under it,
+    /// an orphan): confirmed-gone is a fact about the instances listed when it was confirmed ([#knownInstanceIds]), not about the id. A listing
+    /// that shows an instance outside that set drops the confirmation, so the reap goes through the gate as a first reap (held with the event
+    /// while auto-heal is disabled, deleting when enabled); otherwise nothing is left to delete and the confirmed branch of [#reapRetired] answers
+    /// without a hold. A listing that fails is a failed attempt, retried and bounded like any other.
+    @Contract
+    private void recheckConfirmedReap(NodeId nodeId, long epoch, long generation, int retriesLeft) {
+        lifecycleManager.sourceOf(nodeId)
+                        .fold(() -> Promise.success(false),
+                              source -> lifecycleManager.instancesForNode(nodeId, source)
+                                                        .map(listed -> hasUnreapedInstance(nodeId, listed)))
+                        // Detached on purpose, as in [#reapOf]: the chain is discarded and the two handlers are its terminal effects.
+                        .onSuccess(unreaped -> afterConfirmedListing(nodeId, epoch, generation, retriesLeft, unreaped))
+                        .onFailure(cause -> reapUnconfirmed(nodeId, epoch, generation, retriesLeft, cause));
+    }
+
+    @Contract
+    private void afterConfirmedListing(NodeId nodeId, long epoch, long generation, int retriesLeft, boolean unreaped) {
+        if (!active.get() || activationEpoch.get() != epoch || !sameIncarnation(nodeId, generation)) {
+            return;
+        }
+
+        if (unreaped) {
+            confirmedReaps.remove(nodeId);
+            gatedReap(nodeId, epoch, generation, retriesLeft);
+
+            return;
+        }
+
+        reapOf(nodeId, epoch, generation, retriesLeft);
+    }
+
+    private boolean hasUnreapedInstance(NodeId nodeId, List<InstanceInfo> listed) {
+        var reaped = Option.option(knownInstanceIds.get(nodeId)).or(Set.of());
+
+        return listed.stream()
+                     .filter(instance -> !(instance.status() instanceof InstanceStatus.Terminated))
+                     .anyMatch(instance -> !reaped.contains(instance.id().value()));
     }
 
     private String reapPath(NodeId nodeId) {
@@ -2793,7 +2849,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
         var generation = incarnation(nodeId);
         var cause = persisted.map(AetherValue.UnconfirmedTerminationValue::cause).or("mark not persisted");
-        var known = Option.option(knownInstanceIds.get(nodeId)).or("never listed");
+        var known = Option.option(knownInstanceIds.get(nodeId))
+                          .map(ids -> String.join(",",
+                                                  ids.stream().sorted().toList()))
+                          .or("never listed");
 
         return providerState(nodeId, attestedInstance, force).flatMap(seen -> stillClearable(nodeId, generation).flatMap(_ -> deleteExactMark(nodeId,
                                                                                                                                               persisted))
@@ -3012,11 +3071,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                              cause.message()));
     }
 
-    private static String instanceIds(List<org.pragmatica.aether.environment.InstanceInfo> listed) {
+    private static Set<String> instanceIds(List<org.pragmatica.aether.environment.InstanceInfo> listed) {
         return listed.stream()
                      .map(info -> info.id()
                                       .value())
-                     .collect(java.util.stream.Collectors.joining(","));
+                     .collect(Collectors.toUnmodifiableSet());
     }
 
     /// Writes (or, with an empty value, removes) the replicated mark for `nodeId`. A failed write is logged: the in-memory mark and the event stand,

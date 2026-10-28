@@ -450,7 +450,6 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
         ctm.drainNode(LOST, DrainReason.OPERATOR_COMMAND);
         await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
         relist();
-        joinsAgain();
 
         lost();
 
@@ -466,7 +465,6 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
         ctm.drainNode(LOST, DrainReason.OPERATOR_COMMAND);
         await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
         relist();
-        joinsAgain();
 
         ctm.drainNode(LOST, DrainReason.JOIN_GRACE_REAP);
 
@@ -555,6 +553,75 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
         settle();
 
         assertThat(eventsOf(OperatorWarningCode.INSTANCE_REAP_RELEASED)).as("held event left open after the instance was deleted").isEqualTo(1);
+    }
+
+    /// A confirmed reap is a fact about the instances listed when it was confirmed, not about the node id: a LATER instance under the same id that never
+    /// joined (a zombie of a replacement, an orphan) is a new instance, so with auto-heal disabled it is held and announced, never silently left to bill.
+    private void directedReapDoneThenAnotherInstanceUnderTheSameId() {
+        disableAutoHeal();
+        ctm.drainNode(LOST, DrainReason.REPLACED);
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+        settle();
+        relist();
+    }
+
+    private void orphanSweepFinds(NodeId node) throws ReflectiveOperationException {
+        var method = ClusterTopologyManagerRecord.class.getDeclaredMethod("terminateOrphan", NodeId.class);
+
+        method.setAccessible(true);
+        method.invoke(ctm, node);
+    }
+
+    @Test
+    void confirmedReap_thenNeverJoinedZombieUnderTheSameId_autoHealDisabled_isHeldAndAnnounced() {
+        directedReapDoneThenAnotherInstanceUnderTheSameId();
+
+        ctm.drainNode(LOST, DrainReason.JOIN_GRACE_REAP);
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> eventSeen(OperatorWarningCode.INSTANCE_REAP_HELD));
+        settle();
+        assertThat(terminates.get()).isEqualTo(1);
+        assertThat(eventsOf(OperatorWarningCode.INSTANCE_REAP_HELD)).isEqualTo(1);
+    }
+
+    @Test
+    void confirmedReap_thenOrphanUnderTheSameId_autoHealDisabled_isHeldAndAnnounced() throws ReflectiveOperationException {
+        directedReapDoneThenAnotherInstanceUnderTheSameId();
+
+        orphanSweepFinds(LOST);
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> eventSeen(OperatorWarningCode.INSTANCE_REAP_HELD));
+        settle();
+        assertThat(terminates.get()).isEqualTo(1);
+    }
+
+    @Test
+    void confirmedReap_thenOrphanUnderTheSameId_afterAnAutomaticReap_autoHealDisabled_isHeldAndAnnounced() throws ReflectiveOperationException {
+        lost();
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+        settle();
+        disableAutoHeal();
+        relist();
+
+        orphanSweepFinds(LOST);
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> eventSeen(OperatorWarningCode.INSTANCE_REAP_HELD));
+        settle();
+        assertThat(terminates.get()).isEqualTo(1);
+    }
+
+    /// The held zombie is not forgotten: once auto-heal is back the next re-arm deletes it (the confirmation did not cover it) and closes the event.
+    @Test
+    void confirmedReap_thenHeldZombieUnderTheSameId_whenAutoHealIsEnabledAgain_isDeleted() {
+        directedReapDoneThenAnotherInstanceUnderTheSameId();
+        ctm.drainNode(LOST, DrainReason.JOIN_GRACE_REAP);
+        await().atMost(Duration.ofSeconds(5)).until(() -> eventSeen(OperatorWarningCode.INSTANCE_REAP_HELD));
+
+        autoHealEnabled.set(true);
+        ctm.onSwimFaulty(LOST);
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 2);
+        await().atMost(Duration.ofSeconds(5)).until(() -> eventSeen(OperatorWarningCode.INSTANCE_REAP_RELEASED));
     }
 
     /// The directed reap closed the held mark: the rejoin that follows has nothing left to release, so the recovery is published once.
