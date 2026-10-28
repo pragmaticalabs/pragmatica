@@ -13,6 +13,7 @@ import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.zip.CRC32;
 
@@ -31,6 +32,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Promise.promise;
+import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Result.unitResult;
 import static org.pragmatica.lang.Unit.unit;
 
@@ -1036,6 +1038,32 @@ public final class AppendLog implements AutoCloseable {
         return unit();
     }
 
+    private static final String LOG_SUFFIX = ".wal";
+
+    /// The names of the logs under `root`, as an [Opener] takes them (`<dir>/<name>`, no suffix), sorted; empty when `root` does not
+    /// exist. READ-ONLY: files are listed and none is opened.
+    static Result<List<String>> logNamesUnder(Path root) {
+        return FileOps.exists(root)
+               ? FileOps.walk(root, AppendLog::isLogFile).map(files -> logNames(root, files))
+               : success(List.of());
+    }
+
+    private static boolean isLogFile(Path path) {
+        return FileOps.isRegularFile(path) && path.getFileName()
+                                                  .toString()
+                                                  .endsWith(LOG_SUFFIX);
+    }
+
+    private static List<String> logNames(Path root, List<Path> files) {
+        return files.stream()
+                    .map(file -> root.relativize(file)
+                                     .toString())
+                    .map(relative -> relative.substring(0,
+                                                        relative.length() - LOG_SUFFIX.length()))
+                    .sorted()
+                    .toList();
+    }
+
     /// Opens a log by name: [StorageInstance#openLog] is the production opener, so a caller holding one
     /// never learns where the storage instance keeps its logs.
     @FunctionalInterface
@@ -1047,6 +1075,12 @@ public final class AppendLog implements AutoCloseable {
         /// and the caller must treat that as "unknown", never as an empty log.
         default Result<LogExtent> inspect(String name) {
             return StorageError.InspectUnsupported.inspectUnsupported(name).result();
+        }
+
+        /// The names of the logs this opener can open, READ-ONLY: files are listed and none is opened or recovered. An opener with no way
+        /// to list refuses, and the caller must treat that as "unknown", never as "none".
+        default Result<List<String>> listLogs() {
+            return StorageError.LogsUnsupported.logsUnsupported("opener").result();
         }
 
         /// An opener that can also inspect, over the same log names.
@@ -1064,11 +1098,34 @@ public final class AppendLog implements AutoCloseable {
             };
         }
 
+        /// An opener that can also inspect and list, over the same log names.
+        static Opener opener(Fn1<Result<AppendLog>, String> open,
+                             Fn1<Result<LogExtent>, String> inspect,
+                             Supplier<Result<List<String>>> list) {
+            return new Opener() {
+                @Override
+                public Result<AppendLog> open(String name) {
+                    return open.apply(name);
+                }
+
+                @Override
+                public Result<LogExtent> inspect(String name) {
+                    return inspect.apply(name);
+                }
+
+                @Override
+                public Result<List<String>> listLogs() {
+                    return list.get();
+                }
+            };
+        }
+
         /// A standalone opener laying logs out as `<root>/<name>.wal` -- the layout of
         /// [StorageInstance#openLog] -- for wiring that has no storage instance (tests, tools).
         static Opener directory(Path root) {
-            return opener(name -> AppendLog.open(root.resolve(name + ".wal")),
-                          name -> AppendLog.inspect(root.resolve(name + ".wal")));
+            return opener(name -> AppendLog.open(root.resolve(name + LOG_SUFFIX)),
+                          name -> AppendLog.inspect(root.resolve(name + LOG_SUFFIX)),
+                          () -> logNamesUnder(root));
         }
     }
 

@@ -51,7 +51,11 @@ public record BackupWarning(Code code, String detail) {
         /// #1968: this node leads without a `[backup]` while the committed state says the backup is in use.
         BACKUP_CONFIG_MISSING,
         /// #1968: this node, which led without a `[backup]`, no longer leads.
-        BACKUP_CONFIG_RESTORED
+        BACKUP_CONFIG_RESTORED,
+        /// The final flush of a graceful stop failed or overran its deadline: changes inside the debounce window are not in the backup.
+        BACKUP_STOP_FLUSH_FAILED,
+        /// A flush succeeded on a node whose last stop-time flush had failed: the backup is current again.
+        BACKUP_STOP_FLUSH_RECOVERED
     }
 
     public static BackupWarning backupWarning(Code code, String detail) {
@@ -95,6 +99,8 @@ public record BackupWarning(Code code, String detail) {
             case BACKUP_FORKED -> Option.some(OperatorWarningCode.BACKUP_FORKED);
             case BACKUP_CONFIG_MISSING -> Option.some(OperatorWarningCode.BACKUP_CONFIG_MISSING);
             case BACKUP_CONFIG_RESTORED -> Option.some(OperatorWarningCode.BACKUP_CONFIG_RESTORED);
+            case BACKUP_STOP_FLUSH_FAILED -> Option.some(OperatorWarningCode.BACKUP_STOP_FLUSH_FAILED);
+            case BACKUP_STOP_FLUSH_RECOVERED -> Option.some(OperatorWarningCode.BACKUP_STOP_FLUSH_RECOVERED);
             default -> Option.none();
         };
     }

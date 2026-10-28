@@ -938,6 +938,161 @@ class KvBackupServiceTest {
         }
     }
 
+    /// Know 3b01e624f1: a GRACEFUL stop flushes the debounce window before it completes.
+    @Nested
+    class GracefulStop {
+        private static final TimeSpan DEADLINE = TimeSpan.timeSpan(5).seconds();
+
+        /// The change is inside the quiet window (no tick has run), exactly the state in which `stop()` alone lost it.
+        @Test
+        void stopFlushed_leavesTheBackupAtTheLatestRevision_whenStoppedInsideTheQuietWindow() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var service = leaderService(Option.some(remote));
+            var key = ConfigKey.forKey("inside-the-window");
+
+            put(service, key, ConfigValue.configValue("inside-the-window", "v"));
+
+            assertThat(remoteDocument(remote).entries()).as("control: the debounce has not flushed it").doesNotContainKey(key);
+
+            var stopped = settle(service.stopFlushed(DEADLINE));
+
+            assertThat(stopped.isSuccess()).isTrue();
+            assertThat(remoteDocument(remote).entries()).containsKey(key);
+            assertThat(remoteDocument(remote).header().revision()).as("the backup is at the store's committed revision")
+                                                                  .isEqualTo(kvStore.committedRevision());
+            assertThat(service.isLeader()).as("and the service is stopped").isFalse();
+            assertThat(warnings).isEmpty();
+        }
+
+        @Test
+        void stopFlushed_pushesCommitsQueuedLocally_whenTheRemoteWasUnreachable() {
+            var remotePath = temp.resolve("late.git");
+            var service = leaderService(Option.some(remotePath.toString()));
+
+            put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+            scheduler.runUntilIdle(10);
+            bareRemote(remotePath);
+
+            var stopped = settle(service.stopFlushed(DEADLINE));
+
+            assertThat(stopped.isSuccess()).isTrue();
+            assertThat(remoteDocument(remotePath.toString()).entries()).containsKey(ConfigKey.forKey("a"));
+        }
+
+        @Test
+        void stopFlushed_reportsAndStillStops_whenThePushIsRefused() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var service = leaderService(Option.some(remote));
+
+            put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+            installRefusingHook(remote);
+
+            var stopped = settle(service.stopFlushed(DEADLINE));
+
+            assertThat(stopped.isSuccess()).as("a failed flush never holds the stop").isTrue();
+            assertThat(warnings).extracting(BackupWarning::code).contains(Code.BACKUP_STOP_FLUSH_FAILED);
+            assertThat(warnings).filteredOn(warning -> warning.code() == Code.BACKUP_STOP_FLUSH_FAILED)
+                                .singleElement()
+                                .satisfies(warning -> assertThat(warning.detail()).as("names the cause and the window the backup may be missing")
+                                                                                                    .contains("the final flush ended as", "5500 ms"));
+            assertThat(service.isLeader()).isFalse();
+        }
+
+        /// The worker never runs the flush (a hung git): the deadline ends the wait, the failure is reported, the stop goes ahead.
+        @Test
+        void stopFlushed_reportsAndStillStops_whenTheFlushOverrunsItsDeadline() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var service = leaderService(Option.some(remote));
+
+            put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+
+            var stopped = service.stopFlushed(TimeSpan.timeSpan(100).millis()).await(TimeSpan.timeSpan(10).seconds());
+
+            assertThat(stopped.isSuccess()).isTrue();
+            assertThat(warnings).extracting(BackupWarning::code).containsExactly(Code.BACKUP_STOP_FLUSH_FAILED);
+            assertThat(service.isLeader()).isFalse();
+        }
+
+        /// The failure raised while a node stopped is closed by the next successful flush of that node's backup, in a LATER process: the
+        /// marker the failure left beside the repository carries it across. Control: the refused push is the only difference from the quiet stops.
+        @Test
+        void aSuccessfulFlushAfterAFailedStopFlush_raisesTheRecovery_once() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var service = leaderService(Option.some(remote));
+
+            put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+            var hook = installRefusingHook(remote);
+            settle(service.stopFlushed(DEADLINE));
+
+            assertThat(warnings).extracting(BackupWarning::code).as("control: the failure is announced, not yet recovered")
+                                .containsExactly(Code.BACKUP_STOP_FLUSH_FAILED);
+
+            deleteFile(hook);
+            var restarted = leaderService(Option.some(remote));
+
+            put(restarted, ConfigKey.forKey("b"), ConfigValue.configValue("b", "1"));
+            scheduler.runUntilIdle();
+
+            assertThat(warnings).extracting(BackupWarning::code)
+                                .as("one recovery, by the first flush that lands; later flushes add none")
+                                .containsExactly(Code.BACKUP_STOP_FLUSH_FAILED, Code.BACKUP_STOP_FLUSH_RECOVERED);
+        }
+
+        /// A leader whose cluster has no committed incarnation yet has no backup to write: the stop is quiet.
+        @Test
+        void stopFlushed_isQuiet_whenNoIncarnationIsCommittedYet() {
+            var service = service(Option.some(bareRemote(temp.resolve("remote.git"))));
+
+            service.onLeaderChange(leaderChange(true));
+
+            var stopped = settle(service.stopFlushed(DEADLINE));
+
+            assertThat(stopped.isSuccess()).isTrue();
+            assertThat(warnings).isEmpty();
+        }
+
+        /// Nothing changed since the last write: the final flush finds the backup current and says nothing.
+        @Test
+        void stopFlushed_isQuiet_whenTheBackupIsAlreadyCurrent() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var service = leaderService(Option.some(remote));
+
+            put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+            scheduler.runUntilIdle();
+
+            var stopped = settle(service.stopFlushed(DEADLINE));
+
+            assertThat(stopped.isSuccess()).isTrue();
+            assertThat(warnings).isEmpty();
+            assertThat(commitCount(remote)).as("and writes no further commit").isEqualTo(2);
+        }
+
+        @Test
+        void stopFlushed_flushesNothing_forAFollower() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var service = service(Option.some(remote));
+
+            incarnation(1);
+            put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+
+            var stopped = settle(service.stopFlushed(DEADLINE));
+
+            assertThat(stopped.isSuccess()).isTrue();
+            assertThat(remoteHasBranch(remote)).as("a follower writes no backup, on stop or otherwise").isFalse();
+            assertThat(warnings).isEmpty();
+        }
+
+        @Test
+        void stopFlushed_isANoOp_whenAlreadyStopped() {
+            var service = leaderService(Option.some(bareRemote(temp.resolve("remote.git"))));
+
+            service.stop();
+
+            assertThat(service.stopFlushed(DEADLINE).await().isSuccess()).isTrue();
+            assertThat(warnings).isEmpty();
+        }
+    }
+
     // --- helpers ---
 
     private KvBackupService leaderService(Option<String> remote) {

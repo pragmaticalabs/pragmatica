@@ -1398,10 +1398,11 @@ public sealed interface StreamAssembly {
     /// The stream partition logs open through the `streams` storage instance (#1567), under its log root —
     /// the WAL dir [#resolveStreamWalDir] resolved when the instance was built; none when that dir was
     /// unusable and streams degraded to no WAL.
-    private static Option<AppendLog.Opener> streamLogs(StorageInstance streamStorage) {
+    static Option<AppendLog.Opener> streamLogs(StorageInstance streamStorage) {
         return streamStorage.logRoot()
                             .<AppendLog.Opener> map(_ -> AppendLog.Opener.opener(streamStorage::openLog,
-                                                                                 streamStorage::inspectLog));
+                                                                                 streamStorage::inspectLog,
+                                                                                 streamStorage::listLogs));
     }
 
     /// Build a named daemon thread for a single-thread executor's `ThreadFactory`. Extracted so the

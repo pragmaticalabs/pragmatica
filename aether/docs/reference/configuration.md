@@ -244,6 +244,7 @@ Per-instance opt-in (any `[storage.<name>]` section, e.g. `[storage.artifacts]`)
 | `encrypted` | false | Wraps this instance's disk/DHT tiers in `EncryptingStorageTier`. Requires `[storage.encryption]` to be present with at least one key |
 | `prefetch` | true | Cross-node block prefetching for this instance: the node gossips hints about the blocks it reads often (one instance, one random peer, once per SWIM probe round) and copies hinted blocks into its own memory tier. `false` switches it off for the instance. Not read for `streams`, which prefetches its own segments |
 | `max_block_bytes` | 16777216 (16 MiB) | The largest block this instance accepts. A `put`, `putRef` or `swapRef` of more bytes is refused with `BlockTooLarge` before anything is claimed or written; a `ContentStore` whose `chunkSizeBytes` would make larger blocks (the chunk plus 7 bytes of envelope, plus the size header and codec expansion when compressed) is refused when it is provisioned, naming both values. Must be a positive integer; a value that is not is refused at load. Not read for `streams`, whose sealed segments are not capped |
+| `anchor_retention` | 8 | How many versions of each durable anchor (the records a cold boot uses to find a namespace's catalog root) the instance keeps below the newest one it wrote; older versions are pruned in the background after each write. Must be an integer of at least 2; a value that is not is refused at load. The default is provisional, pending the catalog commit benchmark |
 | `prefetch_max_in_flight` | 4 | The most prefetches running at once on this instance. A hint that finds every slot taken is dropped and counted (`droppedInFlight` under `prefetch` in `GET /api/v1/storage/{name}`), never queued. Must be a positive integer; a value that is not is refused at load. Not read for `streams` |
 
 Per-instance kill switch for background tier promotion (any `[storage.<name>]` section except `streams`, which never promotes):
@@ -771,6 +772,18 @@ WARN at startup naming the key and both sources (never the values). A Docker nod
 
 The leader writes the backup on change (#1532); a whole-cluster restart is a regular start of fresh cores
 followed by the restore (#1533). See the [backup-recovery runbook](../operators/runbooks/backup-recovery.md).
+
+**Backup RPO.** The flush timing is not configurable: there is no `[backup]` key for it. A change to a backed-up key is flushed after
+500 ms of quiet and at most 5 s after the first unflushed change (`KvBackupService.Timing.DEFAULT`, `quietMillis` and `maxDelayMillis`;
+an incarnation change is flushed at once), so the backup trails the cluster state by up to about 5.5 s (`maxDelay` + `quiet`),
+plus push time while the remote is reachable, or until it is again.
+- **Graceful stop:** the leader flushes the backup before its stop completes, bounded by 10 s (`AetherNode.BACKUP_STOP_FLUSH_BOUND`).
+  A flush that fails or overruns is logged and raised as the operator warning `backup-stop-flush-failed`; the stop proceeds, and the
+  backup then trails by the window above. The 10 s bound equals Docker's default stop grace period and Ember's per-node stop timeout, so a hanging remote can use the whole grace: with Docker or Kubernetes, set the stop grace period above about 15 s (the `Main` shutdown hook allows 30 s). A follower flushes nothing.
+- **Crash or kill:** nothing is flushed. Changes inside the window are lost to a whole-cluster restart, and a stream created inside it
+  is not in the restored state: the restart mints a new incarnation for it and the acknowledged records in the old
+  `<stream>@<incarnation>` WAL directory stay on disk unread. The node raises `storage-stream-wal-orphaned` for that directory and
+  never deletes it, sealed segments included. Closing this case is storage-identity adoption, #1569.
 
 Default `path` by environment:
 - LOCAL: `./aether-backups`

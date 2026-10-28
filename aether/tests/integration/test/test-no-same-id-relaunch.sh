@@ -50,6 +50,7 @@ ALLOW=(
   'aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamCrashDurabilityTest.java|stop[(][)] then .*start[(][)] in restartCluster|owner question: data durability across a whole-cluster restart onto fresh nodes (#1968)'
   'aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/MultiPartitionCrashDurabilityTest.java|stop[(][)] then .*start[(][)] in restartCluster|owner question: data durability across a whole-cluster restart onto fresh nodes (#1968)'
   'aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/DurableEntityTimerDurabilityTest.java|stop[(][)] then .*start[(][)] in restartCluster|owner question: data durability across a whole-cluster restart onto fresh nodes (#1968)'
+  'aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/KvBackupGracefulStopTest.java|stop[(][)] then .*start[(][)] in gracefulStopInsideTheQuietWindow_streamConfigSurvivesTheRestore|owner question: data durability across a whole-cluster restart onto fresh nodes (#1968)'
 )
 # An entry is `path|regex|reason`; a regex may itself contain `|`, so the reason is the LAST field and the path
 # the FIRST: everything between is the regex.

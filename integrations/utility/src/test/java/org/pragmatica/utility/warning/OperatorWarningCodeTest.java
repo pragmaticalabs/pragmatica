@@ -93,6 +93,17 @@ class OperatorWarningCodeTest {
         assertThat(UNCLOSED_BEFORE_THE_RULE).noneMatch(code -> code.level() == WarningLevel.INFO);
     }
 
+    /// #1038: a reap held by disabled auto-heal is a WARNING with an INFO recovery for the same subject.
+    @Test
+    void instanceReapHeld_isClosedByAnInfoRecovery() {
+        assertThat(OperatorWarningCode.INSTANCE_REAP_RELEASED.recoveryOf()
+                                                            .unwrap()).isEqualTo(OperatorWarningCode.INSTANCE_REAP_HELD);
+        assertThat(OperatorWarningCode.INSTANCE_REAP_RELEASED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.INSTANCE_REAP_HELD.code()).isEqualTo("instance-reap-held");
+        assertThat(OperatorWarningCode.INSTANCE_REAP_RELEASED.code()).isEqualTo("instance-reap-released");
+        assertThat(OperatorWarningCode.INSTANCE_REAP_HELD.level()).isEqualTo(WarningLevel.WARNING);
+    }
+
     /// #2306: the observer lag warning is closed by an INFO recovery of its own subsystem.
     @Test
     void observerConsensusLagging_isClosedByAnInfoRecovery() {
@@ -100,6 +111,16 @@ class OperatorWarningCodeTest {
                                                                  .unwrap()).isEqualTo(OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING);
         assertThat(OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED.level()).isEqualTo(WarningLevel.INFO);
         assertThat(OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING.level()).isEqualTo(WarningLevel.WARNING);
+    }
+
+    /// #2450 A3-0: a corrupt durable anchor is critical and closed by an INFO recovery of the same subsystem.
+    @Test
+    void anchorCorrupt_isCritical_andIsClosedByAnInfoRecovery() {
+        assertThat(OperatorWarningCode.STORAGE_ANCHOR_CORRUPT.code()).isEqualTo("storage-anchor-corrupt");
+        assertThat(OperatorWarningCode.STORAGE_ANCHOR_CORRUPT.level()).isEqualTo(WarningLevel.CRITICAL);
+        assertThat(OperatorWarningCode.STORAGE_ANCHOR_READABLE.code()).isEqualTo("storage-anchor-readable");
+        assertThat(OperatorWarningCode.STORAGE_ANCHOR_READABLE.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STORAGE_ANCHOR_READABLE.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.STORAGE_ANCHOR_CORRUPT);
     }
 
     /// #2429: the identity ledger's two codes are what the operator and the events API see: the strings, the level and the
@@ -181,6 +202,26 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.UPLOAD_BYTE_BUDGET_RESTORED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.UPLOAD_BYTE_BUDGET_EXHAUSTED);
         assertThat(OperatorWarningCode.UPLOAD_BYTE_BUDGET_RESTORED.level()).isEqualTo(WarningLevel.INFO);
         assertThat(OperatorWarningCode.UPLOAD_BYTE_BUDGET_RESTORED.code()).isEqualTo("upload-byte-budget-restored");
+    }
+
+    /// Know 3b01e624f1: the strings are what operators and alert rules match on, so they are pinned, with the level, the subsystem and the
+    /// recovery pairing. Neither warning is on the frozen unclosed list: each has an INFO recovery of its own subsystem.
+    @Test
+    void backupStopFlush_andOrphanedStreamLife_arePinnedWarnings_eachClosedByAnInfoRecovery() {
+        assertThat(OperatorWarningCode.BACKUP_STOP_FLUSH_FAILED.code()).isEqualTo("backup-stop-flush-failed");
+        assertThat(OperatorWarningCode.BACKUP_STOP_FLUSH_FAILED.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.BACKUP_STOP_FLUSH_FAILED.subsystem()).isEqualTo("kv-backup");
+        assertThat(OperatorWarningCode.BACKUP_STOP_FLUSH_RECOVERED.code()).isEqualTo("backup-stop-flush-recovered");
+        assertThat(OperatorWarningCode.BACKUP_STOP_FLUSH_RECOVERED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.BACKUP_STOP_FLUSH_RECOVERED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.BACKUP_STOP_FLUSH_FAILED);
+        assertThat(OperatorWarningCode.BACKUP_STOP_FLUSH_RECOVERED.closesAcrossNodes()).as("raised by a later process than the failure").isTrue();
+        assertThat(OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED.code()).isEqualTo("storage-stream-wal-orphaned");
+        assertThat(OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED.subsystem()).isEqualTo("storage");
+        assertThat(OperatorWarningCode.STORAGE_STREAM_WAL_RELEASED.code()).isEqualTo("storage-stream-wal-released");
+        assertThat(OperatorWarningCode.STORAGE_STREAM_WAL_RELEASED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STORAGE_STREAM_WAL_RELEASED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED);
+        assertThat(UNCLOSED_BEFORE_THE_RULE).doesNotContain(OperatorWarningCode.BACKUP_STOP_FLUSH_FAILED, OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED);
     }
 
     private static final Set<OperatorWarningCode> UNCLOSED_BEFORE_THE_RULE = Set.of(

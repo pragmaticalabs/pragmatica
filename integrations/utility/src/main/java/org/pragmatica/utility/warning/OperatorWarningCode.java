@@ -460,6 +460,16 @@ public enum OperatorWarningCode {
                                 "community-assignment",
                                 WarningLevel.INFO,
                                 COMMUNITY_ASSIGNMENT_UNPLACED),
+    /// Auto-heal is disabled, so the cluster did NOT delete the instance of a node it would otherwise have reaped (#1038): a departed node,
+    /// an orphan the sweep found, a surplus trim, the reap of a never-joined (join-grace) zombie, or the retry or re-check of any of them.
+    /// A retirement directed from outside (the node-replacement protocol, a community-placement retirement) and a worker scale-down (config-directed)
+    /// are operator intent and are not held. The instance is kept for diagnosis and keeps billing. Subject is the node. Raised
+    /// once per node by the leader that held the reap. Closed by [#INSTANCE_REAP_RELEASED].
+    INSTANCE_REAP_HELD("instance-reap-held", "deployment", WarningLevel.WARNING),
+    /// The recovery of [#INSTANCE_REAP_HELD], same subject (#1038): auto-heal is enabled again and the reap of the node is no longer held (it still passes the usual liveness and refusal checks), or the instance
+    /// was deleted by a directed retirement after the reap was held, or the node joined the cluster again and has nothing to reap. INFO, published only after a published held event for the node (#752 mechanism). It
+    /// is raised by the leader that held the reap: a leader change in between leaves the held event open.
+    INSTANCE_REAP_RELEASED("instance-reap-released", "deployment", WarningLevel.INFO, INSTANCE_REAP_HELD),
     /// An upload was refused 429 because this node's `[app-http.upload] max_concurrent` was reached (#2410): the node is holding
     /// as many upload bodies as it allows. Subject is the node. Raised once, on the transition into saturation, per node, not
     /// per refused request; a refusal for one principal's own cap is a client error and raises nothing. Closed by
@@ -574,6 +584,16 @@ public enum OperatorWarningCode {
     /// instance; the message names the tier and the block. Raised once per instance (later corrupt reads are in the node log only), and
     /// nothing observable proves a repair, so there is no recovery code.
     STORAGE_INTEGRITY_FAILED("storage-integrity-failed", "storage", WarningLevel.CRITICAL),
+    /// The newest version of a durable anchor on one tier cannot be read back as written, or two durable tiers hold
+    /// different values for it. The anchor is not read, and no older version is read in its place, until an operator
+    /// accepts a version. The subject is `<instance>/<anchor>@<tier position>:<tier level>` (`@diverged` when two tiers
+    /// disagree), so each tier and anchor is throttled and closed on its own; raised once per subject. Closed by
+    /// [#STORAGE_ANCHOR_READABLE].
+    STORAGE_ANCHOR_CORRUPT("storage-anchor-corrupt", "storage", WarningLevel.CRITICAL),
+    /// The recovery of [#STORAGE_ANCHOR_CORRUPT], same subject: the newest version of that anchor on that tier reads back
+    /// as written again (a newer version was written, or an operator accepted one). INFO, published only after a published
+    /// [#STORAGE_ANCHOR_CORRUPT].
+    STORAGE_ANCHOR_READABLE("storage-anchor-readable", "storage", WarningLevel.INFO, STORAGE_ANCHOR_CORRUPT),
     /// A write-behind flush to a slower tier failed, so the block is acknowledged but not yet on that tier. The subject is the instance. Closed
     /// by [#STORAGE_WRITE_BEHIND_FLUSHED].
     STORAGE_WRITE_BEHIND_FLUSH_FAILED("storage-write-behind-flush-failed", "storage", WarningLevel.WARNING),
@@ -583,6 +603,29 @@ public enum OperatorWarningCode {
                                  "storage",
                                  WarningLevel.INFO,
                                  STORAGE_WRITE_BEHIND_FLUSH_FAILED),
+    /// A stream has a life that the committed config does not name: a WAL directory `<stream>@<incarnation>` and/or sealed segments of an
+    /// incarnation the cluster state restored at startup does not know (typically a backup older than the stream's config), so the stream runs
+    /// under another incarnation and the life's acknowledged records are never read. The subject is the life (`<stream>@<incarnation>`); the
+    /// message names the stream, the orphaned incarnation, the adopted one and the sealed-segment count. Nothing deletes the life. Raised once
+    /// per life per process; closed by [#STORAGE_STREAM_WAL_RELEASED].
+    STORAGE_STREAM_WAL_ORPHANED("storage-stream-wal-orphaned", "storage", WarningLevel.WARNING),
+    /// The final KV-backup flush of a graceful node stop failed or overran its deadline (the stop itself went ahead): cluster-state changes
+    /// inside the backup's debounce window are not in the backup, so a whole-cluster restart restores from before them. The subject is the
+    /// node's KV backup. Raised during shutdown; closed by [#BACKUP_STOP_FLUSH_RECOVERED] when a later flush of this node's backup succeeds.
+    BACKUP_STOP_FLUSH_FAILED("backup-stop-flush-failed", "kv-backup", WarningLevel.WARNING),
+    /// The recovery of [#BACKUP_STOP_FLUSH_FAILED]: the KV backup was written and pushed again, by a later flush of this node's backup
+    /// (its marker, kept beside the backup repository, says a stop-time flush had failed). INFO. It closes across nodes because the
+    /// failure was raised while a previous process stopped; the raiser holds the open state in that marker.
+    BACKUP_STOP_FLUSH_RECOVERED("backup-stop-flush-recovered",
+                                "kv-backup",
+                                WarningLevel.INFO,
+                                BACKUP_STOP_FLUSH_FAILED,
+                                true),
+    /// The recovery of [#STORAGE_STREAM_WAL_ORPHANED], same subject (the life `<stream>@<incarnation>`): a later adoption of the stream found
+    /// that life gone (an operator removed it) or adopted it as the committed life (storage-identity adoption, #1569). INFO, published
+    /// only after the warning for the subject. Detected at the next adoption of the same stream in this process; a life released while the
+    /// process was down is announced afresh, or not at all, by the next boot.
+    STORAGE_STREAM_WAL_RELEASED("storage-stream-wal-released", "storage", WarningLevel.INFO, STORAGE_STREAM_WAL_ORPHANED),
     /// The recovery of [#JSON_CONFIG_REJECTED], same subject (#2378): a valid `[json]` configuration was adopted after a
     /// refusal. INFO, published only after a published rejection for the subject (#752 mechanism).
     JSON_CONFIG_APPLIED("json-config-applied", "json", WarningLevel.INFO, JSON_CONFIG_REJECTED);
