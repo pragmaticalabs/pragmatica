@@ -16,6 +16,7 @@ import org.pragmatica.aether.config.cluster.DiffPlan;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Option;
+import org.pragmatica.storage.AnchorRetention;
 import org.pragmatica.storage.AppendLog;
 import org.pragmatica.storage.MetadataStore;
 import org.pragmatica.storage.StorageInstance;
@@ -84,7 +85,8 @@ class KnownUnwiredSurfacesTest {
     }
 
     /// Reachability control for the read-hit listener overload of `StorageInstance.storageInstance` (the one that also
-    /// takes the instance's maximum block size, which `StorageFactory` passes from `max_block_bytes`): `StorageFactory`
+    /// takes the instance's maximum block size and anchor retention, which `StorageFactory` passes from `max_block_bytes`
+    /// and `anchor_retention`): `StorageFactory`
     /// builds every production instance through it, so the scanner must reach it. It was registered here as unwired until
     /// the prefetch wiring landed; if this flips, the scanner or the wiring changed.
     ///
@@ -105,7 +107,8 @@ class KnownUnwiredSurfacesTest {
                                                                                     Option.class,
                                                                                     AppendLog.TornTailSink.class,
                                                                                     Consumer.class,
-                                                                                    int.class));
+                                                                                    int.class,
+                                                                                    AnchorRetention.class));
 
         assertTrue(reachability.isReachable(listenerOverload),
                    "The read-hit listener overload is no longer reached from production: StorageFactory stopped using it.");
