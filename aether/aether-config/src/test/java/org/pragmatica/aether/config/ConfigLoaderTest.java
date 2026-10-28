@@ -1135,6 +1135,9 @@ class ConfigLoaderTest {
             [storage.artifacts]
             anchor_retention = 3
 
+            [storage.archive]
+            anchor_retention = 2
+
             [storage.content]
             disk_path = "/data/aether/content"
             """;
@@ -1143,6 +1146,7 @@ class ConfigLoaderTest {
             .onFailure(cause -> Assertions.fail(cause.message()))
             .onSuccess(config -> {
                 assertThat(config.storage().get("artifacts").anchorRetention()).isEqualTo(3);
+                assertThat(config.storage().get("archive").anchorRetention()).as("the ruled minimum is accepted").isEqualTo(2);
                 assertThat(config.storage().get("content").anchorRetention()).isEqualTo(8);
             });
     }

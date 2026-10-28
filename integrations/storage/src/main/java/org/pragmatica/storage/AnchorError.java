@@ -83,6 +83,23 @@ public sealed interface AnchorError extends Cause {
         }
     }
 
+    /// An S3 tier lists an object under an anchor's version prefix that is no version key, so it cannot tell which
+    /// version is the newest. Fails closed like [AnchorCorrupt]: answering "no anchor" would lose every name a cold boot
+    /// reads through it. Remove the object to recover.
+    record AnchorKeyMalformed(TierLevel tier, AnchorName name, String key) implements AnchorError {
+        static AnchorKeyMalformed anchorKeyMalformed(TierLevel tier, AnchorName name, String key) {
+            return new AnchorKeyMalformed(tier, name, key);
+        }
+
+        @Override
+        public String message() {
+            return "Anchor " + name.value()
+                 + " on the " + tier
+                 + " tier lists '" + key
+                 + "', which is not an anchor version key; the anchor is not read until it is removed";
+        }
+    }
+
     /// Two durable tiers hold the same version of an anchor with different values. Every write of one version carries
     /// the same value, so this is never a race; it fails closed like [AnchorCorrupt].
     record AnchorDiverged(AnchorName name, long version) implements AnchorError {

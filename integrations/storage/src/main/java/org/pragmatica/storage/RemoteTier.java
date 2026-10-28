@@ -166,14 +166,17 @@ public final class RemoteTier implements StorageTier {
                        () -> s3Client.putObject(key, AnchorFrame.encode(version, value), CONTENT_TYPE));
     }
 
-    /// One LIST of at most one key, then one GET.
+    /// One LIST of at most one key under the anchor's version prefix, then one GET. None ONLY when the LIST returns no
+    /// key: a listed key that is no version key fails closed ([AnchorError.AnchorKeyMalformed]), and so does a listed
+    /// version whose GET finds nothing ([AnchorError.AnchorCorrupt]).
     @Override
     public Promise<Option<Anchor>> latestAnchor(AnchorName name) {
         var prefix = anchorPrefix(name);
+        var versions = prefix + AnchorFrame.KEY_MARKER;
 
-        return request("LIST", prefix, () -> s3Client.listObjects(prefix, 1)).flatMap(keys -> readNewest(name,
-                                                                                                         prefix,
-                                                                                                         keys));
+        return request("LIST", versions, () -> s3Client.listObjects(versions, 1)).flatMap(keys -> readNewest(name,
+                                                                                                             prefix,
+                                                                                                             keys));
     }
 
     /// One LIST of at most `scanLimit` keys from the newest end, then one DELETE per version below `below` in it.
@@ -182,17 +185,24 @@ public final class RemoteTier implements StorageTier {
     @Override
     public Promise<Unit> pruneAnchors(AnchorName name, long below, int scanLimit) {
         var prefix = anchorPrefix(name);
+        var versions = prefix + AnchorFrame.KEY_MARKER;
 
-        return request("LIST", prefix, () -> s3Client.listObjects(prefix, scanLimit)).flatMap(keys -> deleteBelow(prefix,
-                                                                                                                  keys,
-                                                                                                                  below));
+        return request("LIST", versions, () -> s3Client.listObjects(versions, scanLimit)).flatMap(keys -> deleteBelow(prefix,
+                                                                                                                      keys,
+                                                                                                                      below));
     }
 
     private Promise<Option<Anchor>> readNewest(AnchorName name, String prefix, List<String> keys) {
-        return Option.from(keys.stream().flatMap(key -> versionUnder(prefix, key).stream()).findFirst()).fold(() -> Promise.success(none()),
-                                                                                                              version -> readAnchor(name,
-                                                                                                                                    prefix + AnchorFrame.key(version),
-                                                                                                                                    version));
+        return Option.from(keys.stream().findFirst()).fold(() -> Promise.success(none()),
+                                                           key -> versionUnder(prefix, key).fold(() -> malformedKey(name,
+                                                                                                                    key),
+                                                                                                 version -> readAnchor(name,
+                                                                                                                       prefix + AnchorFrame.key(version),
+                                                                                                                       version)));
+    }
+
+    private static Promise<Option<Anchor>> malformedKey(AnchorName name, String key) {
+        return AnchorError.AnchorKeyMalformed.anchorKeyMalformed(TierLevel.REMOTE, name, key).promise();
     }
 
     private Promise<Option<Anchor>> readAnchor(AnchorName name, String key, long version) {

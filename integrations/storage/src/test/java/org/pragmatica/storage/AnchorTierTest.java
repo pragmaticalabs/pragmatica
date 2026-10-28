@@ -53,13 +53,30 @@ class AnchorTierTest {
 
             assertThat(keys.stream().map(key -> AnchorFrame.versionOf(key).unwrap()).toList())
                 .containsExactly(Long.MAX_VALUE - 1, 100L, 99L, 10L, 9L, 0L);
-            assertThat(keys).allMatch(key -> key.length() == 19);
+            assertThat(keys).allMatch(key -> key.length() == 20 && key.startsWith("v"));
         }
 
         @Test
         void aNameThatIsNotAKey_hasNoVersion() {
             assertThat(AnchorFrame.versionOf(AnchorFrame.key(5) + ".1.partial").isEmpty()).isTrue();
             assertThat(AnchorFrame.versionOf("123").isEmpty()).isTrue();
+            assertThat(AnchorFrame.versionOf(AnchorFrame.key(5).substring(1)).isEmpty()).as("no marker, no key").isTrue();
+        }
+
+        /// 19 digits above `Long.MAX_VALUE` name no version: not a key, rather than a parse failure that reads as I/O.
+        @Test
+        void digitsAboveTheLargestVersion_areNoKey() {
+            assertThat(AnchorFrame.versionOf("v9999999999999999999").isEmpty()).isTrue();
+            assertThat(AnchorFrame.versionOf("v9223372036854775807").unwrap()).isEqualTo(0L);
+        }
+
+        /// `/` is stored as `~`, which no segment may hold, so `a/b` and `a_b` (both legal) never share a storage
+        /// segment and never interleave their versions.
+        @Test
+        void aNestedNameAndItsFlattenedLookalike_neverShareAStorageSegment() {
+            assertThat(nameOf("a/b").storageSegment()).isNotEqualTo(nameOf("a_b").storageSegment());
+            assertThat(nameOf("a/b").storageSegment()).isNotEqualTo(nameOf("a-b").storageSegment());
+            assertThat(nameOf("a/b").storageSegment()).isNotEqualTo(nameOf("a.b").storageSegment());
         }
 
         @Test
@@ -206,7 +223,7 @@ class AnchorTierTest {
             s3.requests.clear();
 
             assertLatest(tier, NAME, 49);
-            assertThat(s3.requests).containsExactly("LIST " + anchorPrefix(NAME) + " 1", "GET " + anchorPrefix(NAME) + AnchorFrame.key(49));
+            assertThat(s3.requests).containsExactly("LIST " + anchorPrefix(NAME) + "v 1", "GET " + anchorPrefix(NAME) + AnchorFrame.key(49));
         }
 
         @Test
@@ -280,6 +297,112 @@ class AnchorTierTest {
                                                                                                    range(25, 30)));
             await(tier.pruneAnchors(NAME, 25, 30));
             assertThat(s3.versions(anchorPrefix(NAME))).containsExactlyInAnyOrderElementsOf(range(25, 30));
+        }
+    }
+
+    /// B-1 (v-2453): the one key a one-key LIST returns must be a version key, or the read fails closed. None means the
+    /// LIST returned no key at all.
+    @Nested
+    class S3StrayKeys {
+        /// The empty "folder" object an S3 console creates at the anchor's prefix is not under the version prefix, so the
+        /// newest version is still found. At `fbc86d5a2d` it was the first key listed and the answer was none.
+        @Test
+        void aFolderPlaceholderAtTheAnchorsPrefix_doesNotHideTheNewestVersion() {
+            var s3 = new SortedS3();
+            var tier = remote(s3);
+
+            await(tier.putAnchor(NAME, 7, valueOf(7)));
+            s3.objects.put(anchorPrefix(NAME), new byte[0]);
+
+            assertLatest(tier, NAME, 7);
+        }
+
+        /// An object under the version prefix that is no version key sorts before every version (`.` < `0`): the read
+        /// fails closed, naming it, instead of answering none.
+        @Test
+        void aStrayObjectUnderTheVersionPrefix_failsClosed_neverNone() {
+            var s3 = new SortedS3();
+            var tier = remote(s3);
+
+            await(tier.putAnchor(NAME, 7, valueOf(7)));
+            s3.objects.put(anchorPrefix(NAME) + "v.keep", new byte[0]);
+
+            assertThat(causeOf(tier.latestAnchor(NAME))).isInstanceOfSatisfying(AnchorError.AnchorKeyMalformed.class,
+                                                                                 malformed -> assertThat(malformed.key()).endsWith("v.keep"));
+        }
+
+        @Test
+        void aStrayObjectAlone_failsClosed_neverNone() {
+            var s3 = new SortedS3();
+
+            s3.objects.put(anchorPrefix(NAME) + "v.keep", new byte[0]);
+
+            assertThat(causeOf(remote(s3).latestAnchor(NAME))).isInstanceOf(AnchorError.AnchorKeyMalformed.class);
+        }
+
+        /// T-3: a version the LIST names and the GET does not find fails closed, never none.
+        @Test
+        void aListedVersionThatTheGetDoesNotFind_failsClosed_neverNone() {
+            var s3 = new SortedS3();
+            var tier = remote(s3);
+
+            await(tier.putAnchor(NAME, 7, valueOf(7)));
+            s3.missingGets.add(anchorPrefix(NAME) + AnchorFrame.key(7));
+
+            assertCorrupt(tier.latestAnchor(NAME), TierLevel.REMOTE, 7);
+        }
+
+        /// T-1 on the tier: `a/b` and `a_b` write and read independently.
+        @Test
+        void aNestedNameAndItsFlattenedLookalike_writeIndependently() {
+            var s3 = new SortedS3();
+            var tier = remote(s3);
+
+            await(tier.putAnchor(nameOf("a/b"), 5, valueOf(5)));
+            await(tier.putAnchor(nameOf("a_b"), 9, valueOf(9)));
+
+            assertLatest(tier, nameOf("a/b"), 5);
+            assertLatest(tier, nameOf("a_b"), 9);
+        }
+
+        @Test
+        void aNegativeVersion_isRefused() {
+            assertThat(causeOf(remote(new SortedS3()).putAnchor(NAME, -1, valueOf(1)))).isInstanceOf(AnchorError.NegativeVersion.class);
+        }
+    }
+
+    /// The frame's length and format checks, each under a VALID checksum, so the check itself is what refuses.
+    @Nested
+    class FrameChecks {
+        @Test
+        void aLengthThatDoesNotMatchTheFrame_isCorrupt_evenUnderAValidChecksum() throws Exception {
+            var tier = fastDisk();
+
+            await(tier.putAnchor(NAME, 3, valueOf(3)));
+            rewriteWithValidCrc(anchorDir(NAME).resolve(AnchorFrame.key(3)), frame -> frame.putInt(9, 1));
+
+            assertCorrupt(tier.latestAnchor(NAME), TierLevel.LOCAL_DISK, 3);
+        }
+
+        @Test
+        void anUnknownFormat_isCorrupt_evenUnderAValidChecksum() throws Exception {
+            var tier = fastDisk();
+
+            await(tier.putAnchor(NAME, 3, valueOf(3)));
+            rewriteWithValidCrc(anchorDir(NAME).resolve(AnchorFrame.key(3)), frame -> frame.put(0, (byte) 2));
+
+            assertCorrupt(tier.latestAnchor(NAME), TierLevel.LOCAL_DISK, 3);
+        }
+
+        private static void rewriteWithValidCrc(Path file, java.util.function.Consumer<java.nio.ByteBuffer> edit) throws Exception {
+            var bytes = Files.readAllBytes(file);
+            var buffer = java.nio.ByteBuffer.wrap(bytes);
+            var crc = new java.util.zip.CRC32C();
+
+            edit.accept(buffer);
+            crc.update(bytes, 0, bytes.length - 4);
+            buffer.putInt(bytes.length - 4, (int) crc.getValue());
+            Files.write(file, bytes);
         }
     }
 
@@ -412,6 +535,7 @@ class AnchorTierTest {
         final List<String> requests = new CopyOnWriteArrayList<>();
         final AtomicBoolean failPuts = new AtomicBoolean();
         final AtomicInteger deletes = new AtomicInteger();
+        final java.util.Set<String> missingGets = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
         @Override
         public Promise<Unit> putObject(String key, byte[] content, String contentType) {
@@ -430,7 +554,9 @@ class AnchorTierTest {
         public Promise<Option<byte[]>> getObject(String key) {
             requests.add("GET " + key);
 
-            return Promise.success(Option.option(objects.get(key)).map(byte[]::clone));
+            return missingGets.contains(key)
+                   ? Promise.success(Option.none())
+                   : Promise.success(Option.option(objects.get(key)).map(byte[]::clone));
         }
 
         @Override

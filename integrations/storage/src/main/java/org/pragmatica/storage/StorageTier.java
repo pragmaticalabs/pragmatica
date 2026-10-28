@@ -38,7 +38,9 @@ public interface StorageTier {
 
     /// Writes `value` as version `version` (at least 0) of anchor `name`, and resolves once that version would survive
     /// what [#put] survives on this tier: on a durable tier, the device (file and directory forced) or the provider's
-    /// acknowledgement. Writing a version again replaces it; every write of one version carries the same value.
+    /// acknowledgement. Writing a version again replaces it. Every write of one version must carry the same value: that is
+    /// the caller's duty, not checked here, so a different value replaces the old one silently; only a read across
+    /// tiers notices ([AnchorError.AnchorDiverged]).
     ///
     /// The default stores nothing on a non-durable tier, which was never a cold-boot source, and REFUSES on a durable one
     /// with [AnchorError.AnchorsUnsupported]: a durable tier that answered "nothing stored" would lose every name

@@ -269,12 +269,18 @@ public interface StorageInstance {
         return AnchorError.NoDurableTier.noDurableTier(name()).promise();
     }
 
-    /// The highest version of anchor `name` over every durable tier, or none when no tier holds one. Every durable tier
-    /// is asked and any failure fails the call: a partial view could miss the newest version. A corrupt newest version
-    /// on any tier fails with [AnchorError.AnchorCorrupt], and one version holding different values on two tiers with
-    /// [AnchorError.AnchorDiverged]; either raises `storage-anchor-corrupt` once per tier and anchor, and no older
-    /// version is returned in its place. A later read that finds that tier's newest version whole again (a newer version
-    /// was written, or an operator accepted one) raises `storage-anchor-readable`. An instance with no durable tier refuses with [AnchorError.NoDurableTier].
+    /// The highest version of anchor `name` that ANY durable tier holds, or none when no tier holds one. That is not
+    /// "the highest acknowledged version": a version whose [#putAnchor] failed may be on some tiers and is then returned,
+    /// so a caller treats the version of a failed put as possibly visible. Every durable tier is asked and any failure
+    /// fails the call: a partial view could miss the newest version.
+    ///
+    /// Fails closed, never with an older version in its place: a corrupt newest version on any tier fails with
+    /// [AnchorError.AnchorCorrupt], an object under the anchor's versions that is no version key with
+    /// [AnchorError.AnchorKeyMalformed], and one version holding different values on two tiers with
+    /// [AnchorError.AnchorDiverged]. Each raises `storage-anchor-corrupt` once per tier and anchor; a tier that merely
+    /// cannot answer fails the call without it. A later read that finds that tier's newest version whole again (a newer
+    /// version was written, or an operator accepted one) raises `storage-anchor-readable`. An instance with no durable
+    /// tier refuses with [AnchorError.NoDurableTier].
     default Promise<Option<Anchor>> latestAnchor(AnchorName name) {
         return AnchorError.NoDurableTier.noDurableTier(name()).promise();
     }
@@ -1041,7 +1047,7 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     private Unit reportAnchorCorrupt(String part, Cause cause) {
-        if (cause instanceof AnchorError.AnchorCorrupt || cause instanceof AnchorError.AnchorDiverged) {
+        if (cause instanceof AnchorError.AnchorCorrupt || cause instanceof AnchorError.AnchorDiverged || cause instanceof AnchorError.AnchorKeyMalformed) {
             degrade.get().degradedFor(OperatorWarningCode.STORAGE_ANCHOR_CORRUPT, part, "{}", cause.message());
         }
 

@@ -90,6 +90,46 @@ class StorageInstanceAnchorTest {
         failing.fail();
 
         assertThat(causeOf(instance.latestAnchor(NAME))).isInstanceOf(StorageError.ReadError.class);
+        assertThat(anchorWarnings()).as("a tier that cannot answer is not a corrupt anchor").isEmpty();
+    }
+
+    /// B-1 through the instance: a stray object under an S3 tier's versions fails the read and raises the corrupt
+    /// warning once, like a damaged frame.
+    @Test
+    void aStrayObjectUnderAnS3TiersVersions_failsTheRead_andRaisesOneWarning() {
+        var s3 = new AnchorTierTest.SortedS3();
+        var remote = RemoteTier.durableRemoteTier(s3, "pfx", 8, timeSpan(10).seconds()).unwrap();
+        var instance = instanceOver(List.of(disk("disk"), remote), AnchorRetention.DEFAULT);
+
+        await(instance.putAnchor(NAME, 4, valueOf(4)));
+        s3.objects.put("pfx/anchors/" + NAME.storageSegment() + "/v.keep", new byte[0]);
+
+        for (int read = 0; read < 3; read++) {
+            assertThat(causeOf(instance.latestAnchor(NAME))).isInstanceOf(AnchorError.AnchorKeyMalformed.class);
+        }
+        assertThat(anchorWarnings()).hasSize(1);
+        assertThat(anchorWarnings().getFirst().subject()).isEqualTo("content/" + NAME.value() + "@1:REMOTE");
+    }
+
+    /// T-2: a put that one durable tier refused prunes nothing, on any tier: the tier that missed the version must not
+    /// lose the older versions it still has to a prune bounded by a version it never got.
+    @Test
+    void aFailedPut_prunesNothing() {
+        var refusing = new HeldTier(disk("refusing"));
+        var instance = instanceOver(List.of(disk("accepting"), refusing), AnchorRetention.anchorRetention(2).unwrap());
+
+        refusing.openGate();
+        for (long version = 1; version <= 5; version++) {
+            await(instance.putAnchor(NAME, version, valueOf(version)));
+            awaitPrune(instance);
+        }
+        refusing.fail();
+
+        assertThat(causeOf(instance.putAnchor(NAME, 10, valueOf(10)))).isInstanceOf(StorageError.WriteError.class);
+        awaitPrune(instance);
+
+        assertThat(versionsOn(tempDir.resolve("accepting"))).containsExactlyInAnyOrder(3L, 4L, 5L, 10L);
+        assertThat(versionsOn(tempDir.resolve("refusing"))).containsExactlyInAnyOrder(3L, 4L, 5L);
     }
 
     /// AF1: fail closed, one warning per (tier, anchor) on transition, nothing older read in its place.
