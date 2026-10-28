@@ -265,21 +265,18 @@ class QuicBootTokenAdmissionTest {
     }
 
     /// ID-1c, the acceptor's side of the merge at join: a WIPED acceptor of three configured seats leaves that state only when the
-    /// recorded offers of a majority of the seats are in WITHOUT the dialer's own. Control (same server, port and codecs): the
-    /// dialer alone, however much it vouches for, is dropped and the node stays wiped; once ANOTHER seat's offer is recorded the same
-    /// dialer is admitted, and what it vouched for is on disk before that.
+    /// recorded offers of a majority of the seats are in WITHOUT the dialer's own. One other seat has offered already (and that alone
+    /// released nothing: the lone-stray test below is the control); the dialer's Hello is the one that completes the majority, so the
+    /// merge must happen BEFORE the dialer is admitted, and what it vouched for is on disk by then.
     @Test
     void acceptor_wipedNode_mergesAMajorityWithoutTheDialersOwnOfferBeforeAdmittingIt(@TempDir Path directory) throws Exception {
         var wipedServer = wipedRegistry(SERVER_TOKEN, directory.resolve("server"), SERVER_NODE);
         var port = startServer(wipedServer);
 
-        assertThat(connects(loadedRegistryRetiring(CLIENT_TOKEN, directory.resolve("client")), port)).as("control: the dialer alone is dropped").isFalse();
-        assertThat(wipedServer.isRetired(RETIRED_NODE)).isFalse();
-        assertThat(Files.exists(directory.resolve("server").resolve("ledger"))).as("and the node is still wiped").isFalse();
-
         wipedServer.mergeOffered(OTHER_SEAT, Option.some(IdentityFacts.identityFacts())).await(AWAIT_TIMEOUT);
+        assertThat(wipedServer.admit(CLIENT_NODE, CLIENT_TOKEN)).as("control: one other seat is not a majority yet").isEqualTo(BootTokens.Admission.UNAVAILABLE);
 
-        assertThat(connects(loadedRegistryRetiring(CLIENT_TOKEN, directory.resolve("client")), port)).as("another seat has vouched: admitted").isTrue();
+        assertThat(connects(loadedRegistryRetiring(CLIENT_TOKEN, directory.resolve("client")), port)).as("its Hello completes the majority: admitted").isTrue();
         assertThat(wipedServer.isRetired(RETIRED_NODE)).as("having merged what it vouched for").isTrue();
         assertThat(Files.readString(directory.resolve("server").resolve("ledger"))).as("durably, before the admission").contains(RETIRED_NODE.id());
         assertThat(registered.get()).isEqualTo(1);
@@ -302,18 +299,16 @@ class QuicBootTokenAdmissionTest {
     }
 
     /// ID-1c, the dialer's side: a WIPED dialer fails every dial for want of knowing the acceptor until a majority of the seats
-    /// has vouched without the acceptor's own offer; the acceptor's Hello answer then carries its retirements.
+    /// has vouched without the acceptor's own offer. One other seat has offered; the acceptor's Hello answer completes the majority
+    /// and carries its retirements, which are merged before the acceptor is attached.
     @Test
     void dialer_wipedNode_mergesAMajorityWithoutTheAcceptorsOwnOfferBeforeAttaching(@TempDir Path directory) throws Exception {
         var port = startServer(loadedRegistryRetiring(SERVER_TOKEN, directory.resolve("server")));
         var wipedClient = wipedRegistry(CLIENT_TOKEN, directory.resolve("client"), CLIENT_NODE);
 
-        assertThat(connects(wipedClient, port)).as("control: the acceptor alone does not release the wiped dialer").isFalse();
-        assertThat(wipedClient.isRetired(RETIRED_NODE)).isFalse();
-
         wipedClient.mergeOffered(OTHER_SEAT, Option.some(IdentityFacts.identityFacts())).await(AWAIT_TIMEOUT);
 
-        assertThat(connects(wipedClient, port)).as("another seat has vouched: attached").isTrue();
+        assertThat(connects(wipedClient, port)).as("the acceptor's Hello completes the majority: attached").isTrue();
         assertThat(wipedClient.isRetired(RETIRED_NODE)).isTrue();
         assertThat(Files.readString(directory.resolve("client").resolve("ledger"))).as("durably").contains(RETIRED_NODE.id());
     }
