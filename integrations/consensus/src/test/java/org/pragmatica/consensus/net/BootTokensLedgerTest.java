@@ -15,9 +15,11 @@
  */
 package org.pragmatica.consensus.net;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -27,6 +29,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.BootTokens.Admission;
 import org.pragmatica.consensus.net.IdentityLedger.DurableWriter;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
@@ -249,6 +252,80 @@ class BootTokensLedgerTest {
         assertThat(wiped.isRetired(new NodeId("gone"))).as("the merge is applied").isTrue();
         assertThat(wiped.admitDurably(PEER, FIRST).await(BOUND).unwrap()).isEqualTo(Admission.ADMITTED);
         assertThat(boot(DurableWriter.fileOps(), false).isRetired(new NodeId("gone"))).as("and written, so a restart is not wiped again").isTrue();
+    }
+
+    @Test
+    void offer_isPresentOnlyForARegistryThatCanVouchForItsRetirements() {
+        var unloaded = BootTokens.bootTokens(SELF);
+
+        unloaded.attachLedger(IdentityLedger.identityLedger(file(), DurableWriter.fileOps()));
+
+        assertThat(BootTokens.bootTokens(SELF).offer().isPresent()).as("no ledger: nothing to vouch for").isFalse();
+        assertThat(unloaded.offer().isPresent()).as("ledger not loaded yet").isFalse();
+        assertThat(boot(DurableWriter.fileOps(), false).offer().isPresent()).as("wiped: its empty set must never end a peer's wiped state").isFalse();
+
+        var loaded = boot();
+
+        loaded.admit(PEER, FIRST);
+        loaded.admitDurably(PEER, OTHER).await(BOUND);
+
+        assertThat(loaded.offer().map(IdentityFacts::retired).or(Set.of())).as("a loaded node offers what it retired").containsExactly(PEER);
+    }
+
+    @Test
+    void mergeOffered_onAWipedNode_isDurableWhenItCompletes_andOpensAdmission() throws Exception {
+        var wiped = boot(DurableWriter.fileOps(), false);
+        var offered = IdentityFacts.terminated(new NodeId("gone"), BootTokens.TOKEN_CONFLICT);
+
+        assertThat(wiped.admitDurably(PEER, FIRST).await(BOUND).unwrap()).as("control: wiped before the merge").isEqualTo(Admission.UNAVAILABLE);
+        assertThat(wiped.mergeOffered(Option.some(offered)).await(BOUND).isSuccess()).isTrue();
+
+        assertThat(Files.readString(file())).as("on disk before the node admits anyone").contains("T\tgone\t");
+        assertThat(wiped.isRetired(new NodeId("gone"))).isTrue();
+        assertThat(wiped.admitDurably(PEER, FIRST).await(BOUND).unwrap()).isEqualTo(Admission.ADMITTED);
+        assertThat(wiped.offer().isPresent()).as("and it can now vouch for what it holds").isTrue();
+    }
+
+    @Test
+    void mergeOffered_withNothingOffered_leavesAWipedNodeWiped() {
+        var wiped = boot(DurableWriter.fileOps(), false);
+
+        assertThat(wiped.mergeOffered(Option.none()).await(BOUND).isSuccess()).isTrue();
+        assertThat(wiped.admitDurably(PEER, FIRST).await(BOUND).unwrap()).isEqualTo(Admission.UNAVAILABLE);
+    }
+
+    @Test
+    void mergeOffered_anEmptyOffer_doesNotEndTheWipedState_andIsNotWritten() {
+        var wiped = boot(DurableWriter.fileOps(), false);
+
+        assertThat(wiped.mergeOffered(Option.some(IdentityFacts.identityFacts())).await(BOUND).isSuccess()).isTrue();
+        assertThat(wiped.admitDurably(PEER, FIRST).await(BOUND).unwrap()).as("no evidence, still closed").isEqualTo(Admission.UNAVAILABLE);
+        assertThat(Files.exists(file())).as("and the missing file, which is what wiped means, stays missing").isFalse();
+    }
+
+    @Test
+    void mergeOffered_whenTheWriteFails_neverFails_andLeavesAWipedNodeWiped() {
+        var writer = new GatedWriter();
+        var wiped = boot(writer, false);
+
+        writer.failing.set(true);
+
+        assertThat(wiped.mergeOffered(Option.some(IdentityFacts.terminated(new NodeId("gone"), BootTokens.TOKEN_CONFLICT)))
+                        .await(BOUND)
+                        .isSuccess()).as("the caller goes on to a verdict").isTrue();
+        assertThat(wiped.admitDurably(PEER, FIRST).await(BOUND).unwrap()).as("not durable, so still closed").isEqualTo(Admission.UNAVAILABLE);
+        assertThat(wiped.isRetired(new NodeId("gone"))).isFalse();
+    }
+
+    @Test
+    void mergeOffered_onALoadedNode_learnsTheRetirementsItMissed_andRefusesThem() {
+        var loaded = boot();
+        var missed = new NodeId("missed");
+
+        assertThat(loaded.mergeOffered(Option.some(IdentityFacts.terminated(missed, BootTokens.TOKEN_CONFLICT))).await(BOUND).isSuccess()).isTrue();
+
+        assertThat(loaded.admit(missed, FIRST)).isEqualTo(Admission.RETIRED);
+        assertThat(boot(DurableWriter.fileOps(), false).isRetired(missed)).as("and it survives a restart").isTrue();
     }
 
     /// SWIM answers a refused announcer only after this completes (write-ahead): it must stay open for as long as the write is.

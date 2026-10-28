@@ -43,11 +43,21 @@ public sealed interface NetworkMessage extends Message.Wired {
     /// where the dialer named nobody): an acceptor that is not that identity refuses the Hello before
     /// attaching, so a dial aimed at a peer whose address was recycled to another node never attaches
     /// to, or supersedes a healthy link of, whichever node now answers there.
+    /// `retirements` is the merge at join of the identity ledgers (#2429, ID-1c): the NodeIds the sender has retired (node id
+    /// text to cause), offered only by a sender that can vouch for them (ledger loaded and not wiped); empty from one that
+    /// cannot. The receiver unions them into its own ledger, durably, BEFORE it admits the sender, so a wiped core regains
+    /// what it lost on the very handshake that would otherwise be refused for want of it.
     record Hello(NodeId sender,
                  NodeAddress address,
                  Map<String, String> labels,
                  long bootToken,
-                 Option<NodeId> intendedPeer) implements NetworkMessage {}
+                 Option<NodeId> intendedPeer,
+                 Option<Map<String, String>> retirements) implements NetworkMessage {
+        /// The retirements the sender offered, as ledger facts; none when it vouched for nothing.
+        public Option<IdentityFacts> offeredFacts() {
+            return retirements.map(IdentityFacts::fromWire);
+        }
+    }
 
     /// Explicit refusal of a Hello by the boot-token gate (terminal removal): the acceptor tells the
     /// dialing process that its NodeId belongs to a retired or different process, so the refused

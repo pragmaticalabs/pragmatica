@@ -131,9 +131,9 @@ public sealed interface IdentityLedgerWiring {
                                           OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE,
                                           subject,
                                           "The identity ledger {} is missing on a node that is not new, so this node cannot tell which"
-                                         + " NodeIds it retired before. Until the merge of ledgers at join exists (a follow-up of #2429) it admits no peer at all,"
-                                         + " so it is ISOLATED from the cluster and restart protection is off on it."
-                                         + " The safe remedy is to stop it and rejoin it under a NEW node id."
+                                         + " NodeIds it retired before. It admits no new peer until it has merged the retirements of a peer that holds some"
+                                         + " (the first handshake with one does it), so it stays ISOLATED from the cluster while none is reachable and restart protection is off on it until then."
+                                         + " The safe remedy, when none is reachable, is to stop it and rejoin it under a NEW node id."
                                          + " Deleting the directory {} starts it as a new node and joins the cluster, but turns the protection off for this node.",
                                           location.file(),
                                           location.file().getParent());

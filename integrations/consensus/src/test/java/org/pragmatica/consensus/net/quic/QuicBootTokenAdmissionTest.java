@@ -17,6 +17,7 @@ package org.pragmatica.consensus.net.quic;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -61,6 +62,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 class QuicBootTokenAdmissionTest {
     private static final NodeId SERVER_NODE = NodeId.randomNodeId();
     private static final NodeId CLIENT_NODE = NodeId.randomNodeId();
+    private static final NodeId RETIRED_NODE = new NodeId("retired-elsewhere");
     private static final NodeAddress SERVER_ADDRESS = new NodeAddress("127.0.0.1", 9200);
     private static final NodeAddress CLIENT_ADDRESS = new NodeAddress("127.0.0.1", 9201);
     private static final TimeSpan AWAIT_TIMEOUT = TimeSpan.timeSpan(8).seconds();
@@ -258,6 +260,86 @@ class QuicBootTokenAdmissionTest {
 
         assertThat(dial.get(15, TimeUnit.SECONDS)).isFalse();
         assertThat(clientTokens.isRetired(SERVER_NODE)).isTrue();
+    }
+
+    /// ID-1c, the acceptor's side of the merge at join: a WIPED acceptor would drop every Hello for want of knowing the dialer, but
+    /// the dialer's Hello carries the retirements it vouches for. They are durable in the acceptor's ledger before it admits.
+    /// Control (same server, port and codecs): a dialer that vouches for nothing is not admitted, and the node stays wiped.
+    @Test
+    void acceptor_wipedNode_mergesTheDialersRetirementsBeforeAdmittingIt(@TempDir Path directory) throws Exception {
+        var wipedServer = wipedRegistry(SERVER_TOKEN, directory.resolve("server"));
+        var port = startServer(wipedServer);
+
+        assertThat(connects(BootTokens.bootTokens(CLIENT_TOKEN), port)).as("control: a dialer that vouches for nothing is dropped").isFalse();
+        assertThat(wipedServer.isRetired(RETIRED_NODE)).isFalse();
+
+        assertThat(connects(loadedRegistryRetiring(CLIENT_TOKEN, directory.resolve("client")), port)).as("the voucher is admitted").isTrue();
+        assertThat(wipedServer.isRetired(RETIRED_NODE)).as("having merged what it vouched for").isTrue();
+        assertThat(Files.readString(directory.resolve("server").resolve("ledger"))).as("durably, before the admission").contains(RETIRED_NODE.id());
+        assertThat(registered.get()).isEqualTo(1);
+    }
+
+    /// ID-1c, the dialer's side: a WIPED dialer fails every dial for want of knowing the acceptor, but the acceptor's Hello
+    /// answer carries its retirements.
+    @Test
+    void dialer_wipedNode_mergesTheAcceptorsRetirementsBeforeAttaching(@TempDir Path directory) throws Exception {
+        var port = startServer(loadedRegistryRetiring(SERVER_TOKEN, directory.resolve("server")));
+        var wipedClient = wipedRegistry(CLIENT_TOKEN, directory.resolve("client"));
+
+        assertThat(connects(wipedClient, port)).as("the wiped dialer attaches once it has merged").isTrue();
+        assertThat(wipedClient.isRetired(RETIRED_NODE)).isTrue();
+        assertThat(Files.readString(directory.resolve("client").resolve("ledger"))).as("durably").contains(RETIRED_NODE.id());
+    }
+
+    /// A dialer whose ledger is loaded but holds no retirement vouches for nothing: a process for a retired NodeId looks exactly
+    /// like that, so its empty offer must not end the acceptor's wiped state, and the acceptor stays wiped.
+    @Test
+    void acceptor_wipedNode_isNotReleasedByADialerThatOffersNoRetirement(@TempDir Path directory) {
+        var wipedServer = wipedRegistry(SERVER_TOKEN, directory.resolve("server"));
+        var port = startServer(wipedServer);
+
+        assertThat(connects(loadedRegistryRetiring(CLIENT_TOKEN, directory.resolve("client"), IdentityFacts.identityFacts()), port))
+            .as("an empty offer is no evidence").isFalse();
+        assertThat(wipedServer.admit(CLIENT_NODE, CLIENT_TOKEN)).isEqualTo(BootTokens.Admission.UNAVAILABLE);
+        assertThat(Files.exists(directory.resolve("server").resolve("ledger"))).as("and nothing was written").isFalse();
+    }
+
+    /// Two wiped nodes cannot end each other's wiped state: neither can vouch for anything.
+    @Test
+    void wipedNodes_cannotEndEachOthersWipedState(@TempDir Path directory) {
+        var wipedServer = wipedRegistry(SERVER_TOKEN, directory.resolve("server"));
+        var port = startServer(wipedServer);
+        var wipedClient = wipedRegistry(CLIENT_TOKEN, directory.resolve("client"));
+
+        assertThat(connects(wipedClient, port)).isFalse();
+        assertThat(wipedServer.admit(CLIENT_NODE, CLIENT_TOKEN)).isEqualTo(BootTokens.Admission.UNAVAILABLE);
+        assertThat(wipedClient.admit(SERVER_NODE, SERVER_TOKEN)).isEqualTo(BootTokens.Admission.UNAVAILABLE);
+    }
+
+    private static BootTokens wipedRegistry(long token, Path ledgerDirectory) {
+        var tokens = BootTokens.bootTokens(token);
+        var ledger = IdentityLedger.identityLedger(ledgerDirectory.resolve("ledger"), IdentityLedger.DurableWriter.fileOps());
+
+        tokens.attachLedger(ledger);
+        tokens.preload(ledger.open(false).facts(), true);
+
+        return tokens;
+    }
+
+    private static BootTokens loadedRegistryRetiring(long token, Path ledgerDirectory) {
+        return loadedRegistryRetiring(token, ledgerDirectory, IdentityFacts.terminated(RETIRED_NODE, BootTokens.TOKEN_CONFLICT));
+    }
+
+    private static BootTokens loadedRegistryRetiring(long token, Path ledgerDirectory, IdentityFacts retirements) {
+        var tokens = BootTokens.bootTokens(token);
+        var ledger = IdentityLedger.identityLedger(ledgerDirectory.resolve("ledger"), IdentityLedger.DurableWriter.fileOps());
+
+        tokens.attachLedger(ledger);
+        ledger.open(true);
+        tokens.preload(IdentityFacts.identityFacts(), false);
+        tokens.merged(retirements).await(AWAIT_TIMEOUT);
+
+        return tokens;
     }
 
     /// Forces and renames as usual, but holds the directory force while the gate is closed.

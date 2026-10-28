@@ -23,6 +23,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.pragmatica.consensus.NodeId;
@@ -59,6 +60,23 @@ public record IdentityFacts(Map<NodeId, String> terminated) {
 
     public static IdentityFacts terminated(NodeId node, String cause) {
         return new IdentityFacts(Map.of(node, cause));
+    }
+
+    /// The set as it travels in a Hello: node id text to cause.
+    public Map<String, String> toWire() {
+        return terminated.entrySet()
+                         .stream()
+                         .collect(Collectors.toUnmodifiableMap(entry -> entry.getKey()
+                                                                             .id(),
+                                                               Map.Entry::getValue));
+    }
+
+    /// The set a Hello carried; the inverse of [#toWire].
+    public static IdentityFacts fromWire(Map<String, String> wire) {
+        return new IdentityFacts(wire.entrySet()
+                                     .stream()
+                                     .collect(Collectors.toUnmodifiableMap(entry -> new NodeId(entry.getKey()),
+                                                                           Map.Entry::getValue)));
     }
 
     public boolean isEmpty() {

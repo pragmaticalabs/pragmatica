@@ -280,7 +280,7 @@ class IdentityLedgerWiringTest {
         assertThat(events).singleElement().satisfies(event -> {
             assertThat(event.code()).isEqualTo(OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE);
             assertThat(event.subject()).as("the node's own id").isEqualTo(SELF.id());
-            assertThat(event.message()).as("isolation, and the remedy that is safe").contains("ISOLATED").contains("NEW node id");
+            assertThat(event.message()).as("isolation until a merge, and the remedy that is safe").contains("ISOLATED").contains("merged the retirements").contains("NEW node id");
         });
     }
 

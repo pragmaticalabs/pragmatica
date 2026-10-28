@@ -5,21 +5,22 @@
 package org.pragmatica.aether.ember;
 
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// #2429 — the limits of the identity ledger, asserted as the behaviour they are today (enabled tripwires).
+/// #2429 — the limits of the identity ledger, asserted as the behaviour they are (enabled tripwires), and the merge at join
+/// (ID-1c) that ends the isolation of a wiped holder.
 ///
 /// - **Every holder's ledger directory is lost** with its memory: nothing is left to remember the retirement, so the
 ///   restarted cores admit a process for the retired NodeId. The cluster that forms is new; there are no identities left to
 ///   protect, which is also how a cluster behaved before the ledger existed.
 /// - **One holder's ledger FILE is lost while its directory stays**: the node is not new and its facts are gone, so it is
-///   WIPED. It admits no peer (after a restart every peer is new to it, so it is isolated until the merge at join exists), and it does so quietly: the process that arrives
-///   is not told its identity is retired (that would make it exit), its connection is closed and it keeps redialing.
-///   Recovering the fact from a peer is the merge at join, which is not part of this change: that arm is disabled below.
+///   WIPED. After a restart every peer is new to it, so it admits no peer until a merge with a peer's ledger completes, and it
+///   does so quietly: the process that arrives is not told its identity is retired (that would make it exit), its connection is
+///   closed and it keeps redialing. With no peer to merge with it stays that way (the "Alone" arm); with a peer up, the Hello
+///   exchange carries the peer's retirements, the wiped holder unions them into its ledger and only then admits (the regain arm).
 @PortBudget
 class EmberLedgerLostTest {
     private final IdentityRestartHarness harness = new IdentityRestartHarness("ell");
@@ -69,7 +70,6 @@ class EmberLedgerLostTest {
         assertThat(verdict.refusalsAdded()).as("an unavailable registry is not a refusal").isZero();
     }
 
-    @Disabled("enable with the merge of ledgers at join (follow-up of #2429): a wiped holder regains the retirement from a peer's ledger, then refuses the retired NodeId")
     @Test
     @Timeout(1200)
     void oneHoldersLedgerFileLost_regainsTheRetirementFromAPeer_thenRefuses() {
@@ -79,9 +79,21 @@ class EmberLedgerLostTest {
         harness.deleteLedgerFile(harness.observer);
 
         var restartedB = harness.relaunch(harness.observer);
-        var verdict = harness.launchRetiredNodeId(restartedB);
 
-        assertThat(verdict.processExited()).as("after the merge the wiped holder refuses the retired NodeId").isTrue();
+        IdentityRestartHarness.awaitCondition("the wiped holder links to the surviving core: it is not isolated",
+                                              () -> restartedB.connectedNodeCount() >= 1,
+                                              120_000L);
+        IdentityRestartHarness.awaitCondition("the wiped holder's ledger holds the retirement again, durably",
+                                              () -> harness.ledgerRetires(harness.observer, harness.retired),
+                                              60_000L);
+
+        // The surviving holder goes away, so the only memory of the retirement left in the cluster is the one B regained.
+        harness.killCoreA();
+
+        var verdict = harness.launchRetiredNodeIdAlone(restartedB);
+
+        assertThat(verdict.processExited()).as("after the merge the wiped holder refuses the retired NodeId on its own").isTrue();
+        assertThat(verdict.refusalsAdded()).as("and it is B that refused it").isPositive();
         assertThat(verdict.linked()).isFalse();
     }
 }
