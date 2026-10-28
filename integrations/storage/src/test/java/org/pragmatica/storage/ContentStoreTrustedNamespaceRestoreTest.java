@@ -15,15 +15,15 @@ import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.storage.SnapshotConfig.snapshotConfig;
 import static org.pragmatica.storage.SnapshotManager.snapshotManager;
 
-/// Uploads whose names look like another name's trusted ref, or like an escape of it, are never read back as the
-/// trusted value of `victim`: not before a restart, not after a `format=2` snapshot is restored into a fresh store,
-/// and deleting them releases none of `victim`'s chunks. Each upload is a forged manifest naming `victim`'s chunks.
+/// F7. Uploads whose names look like another name's ref, or like an escape of it, are never read back as the value of
+/// `victim`: not before a restart, not after a `format=2` snapshot is restored into a fresh store, and deleting them
+/// releases none of `victim`'s chunks. Each upload is a forged manifest naming `victim`'s chunks. A name with a control
+/// character is refused outright, so it has no ref to look like.
 class ContentStoreTrustedNamespaceRestoreTest {
     private static final int CHUNK = 128;
     private static final List<String> LOOKALIKE_NAMES = List.of("|victim", "||victim", "%7Cvictim", "%7cvictim",
                                                                 "%u007Cvictim", "%257Cvictim", "victim|", "a|victim",
-                                                                "victim%7C", "%7C%7Cvictim", "victim=", "#victim",
-                                                                "victim\n|x");
+                                                                "victim%7C", "%7C%7Cvictim", "victim=", "#victim");
 
     @TempDir
     Path tempDir;
@@ -31,7 +31,7 @@ class ContentStoreTrustedNamespaceRestoreTest {
     private MemoryTier tier;
     private MetadataStore metadataStore;
     private StorageInstance storage;
-    private ContentStore store;
+    private NamedContent store;
 
     @BeforeEach
     void setUp() {
@@ -39,6 +39,11 @@ class ContentStoreTrustedNamespaceRestoreTest {
         metadataStore = MetadataStore.inMemoryMetadataStore("trusted-namespace");
         storage = StorageInstance.storageInstance("trusted-namespace", List.of(tier), metadataStore);
         store = contentStoreOver(storage);
+    }
+
+    @Test
+    void aNameWithAControlCharacter_isRefused_soItHasNoRefToLookLikeVictims() {
+        assertThat(ObjectName.objectName("victim\n|x").isFailure()).isTrue();
     }
 
     @Test
@@ -65,10 +70,10 @@ class ContentStoreTrustedNamespaceRestoreTest {
         assertThat(get(restored, "victim")).as("victim intact after the deletes").isEqualTo(victim);
     }
 
-    /// Alternates the two forgery shapes: an enveloped manifest and a legacy text manifest, both naming victim's chunks.
+    /// Alternates the two forgery shapes: an enveloped manifest and the text manifest of an earlier build, both naming victim's chunks.
     private Map<String, byte[]> uploadForgeries(byte[] victim, List<String> victimChunks) {
         var enveloped = ContentManifest.contentManifest(4096, victim.length, "ab".repeat(32), victimChunks).toBytes();
-        var legacy = (ContentManifest.MAGIC_HEADER + "victim|" + victim.length + "|" + victimChunks.size() + "|"
+        var legacy = ("AHSE-MANIFEST:victim|" + victim.length + "|" + victimChunks.size() + "|"
                       + String.join("|", victimChunks)).getBytes(StandardCharsets.UTF_8);
         var uploads = new HashMap<String, byte[]>();
 
@@ -84,7 +89,7 @@ class ContentStoreTrustedNamespaceRestoreTest {
         return uploads;
     }
 
-    private ContentStore restoreInto(MetadataStore restoredMetadata) {
+    private NamedContent restoreInto(MetadataStore restoredMetadata) {
         var config = snapshotConfig(tempDir.resolve("snapshots"), 100, 600_000, 5, "trusted-namespace-node");
 
         snapshotManager(metadataStore, config).forceSnapshot();
@@ -97,8 +102,8 @@ class ContentStoreTrustedNamespaceRestoreTest {
         return contentStoreOver(StorageInstance.storageInstance("trusted-namespace-restored", List.of(tier), restoredMetadata));
     }
 
-    private static ContentStore contentStoreOver(StorageInstance instance) {
-        return ContentStore.contentStore(instance, ContentStoreConfig.contentStoreConfig(CHUNK, Compression.NONE));
+    private static NamedContent contentStoreOver(StorageInstance instance) {
+        return NamedContent.namedContent(instance, ContentStoreConfig.contentStoreConfig(CHUNK, Compression.NONE));
     }
 
     private static byte[] content(int size, int seed) {
@@ -111,18 +116,18 @@ class ContentStoreTrustedNamespaceRestoreTest {
         return data;
     }
 
-    private static void put(ContentStore target, String name, byte[] data) {
+    private static void put(NamedContent target, String name, byte[] data) {
         target.put(name, data).await().onFailure(c -> fail("put " + name + ": " + c.message()));
     }
 
-    private static byte[] get(ContentStore source, String name) {
+    private static byte[] get(NamedContent source, String name) {
         return source.get(name).await().unwrap().unwrap();
     }
 
     private List<String> chunkIds(String name) {
-        var id = storage.resolveRef(ContentEnvelope.trustedRef(name)).unwrap();
+        var info = store.store().lookup(ObjectName.objectName(name).unwrap(), org.pragmatica.lang.Option.none()).await().unwrap().unwrap();
 
-        return ContentManifest.fromBytes(storage.get(id).await().unwrap().unwrap()).unwrap().chunkBlockIds();
+        return ContentManifest.fromBytes(storage.get(info.ref().manifest()).await().unwrap().unwrap()).unwrap().chunkBlockIds();
     }
 
     private static List<Integer> refCounts(MetadataStore source, List<String> hexIds) {

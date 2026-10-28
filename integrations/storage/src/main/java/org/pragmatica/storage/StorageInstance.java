@@ -95,11 +95,19 @@ public interface StorageInstance {
     Promise<Unit> createRef(String name, BlockId id);
     /// Resolve a named reference to its block ID.
     Option<BlockId> resolveRef(String name);
+
+    /// The names of the references this instance holds that start with `prefix`, in no particular order. The v2 content store
+    /// lists its objects from this; the default lists nothing, so a double that delegates to a real instance must delegate
+    /// this too.
+    default List<String> listRefs(String prefix) {
+        return List.of();
+    }
+
     /// Delete a named reference.
     Promise<Unit> deleteRef(String name);
 
     /// Releases one reference credited by [#put] -- the debit for a block that carries no name of its
-    /// own. [DefaultContentStore] stores chunk blocks with plain `put` and names only the manifest, so
+    /// own. [ContentStore] stores chunk blocks with plain `put` and names only the manifest, so
     /// `put`'s credit is the only thing holding a chunk; this is how that credit is given back when the
     /// manifest is superseded or deleted (#981). Decrements only: at zero the block reports
     /// [BlockLifecycle#isOrphaned] and [StorageGarbageCollector] collects it through the same lifecycle
@@ -114,7 +122,7 @@ public interface StorageInstance {
 
     /// [#putRef] that also reports which block the swap DISPLACED -- the id `name` pointed at until this
     /// call, taken from the same atomic pointer swap that installs the new one, so each displaced id is
-    /// handed out exactly once however many writers race on `name`. [DefaultContentStore] releases the
+    /// handed out exactly once however many writers race on `name`. [ContentStore] releases the
     /// displaced manifest's chunks from this, never from a pre-read of the name: two overwrites of one
     /// name that both pre-read the same manifest would both release its chunks, and a third name
     /// deduplicating to them would lose them (#981 round 2). Counting is [#putRef]'s: the displaced
@@ -711,6 +719,15 @@ final class DefaultStorageInstance implements StorageInstance {
     @Override
     public Option<BlockId> resolveRef(String refName) {
         return metadataStore.resolveRef(refName);
+    }
+
+    @Override
+    public List<String> listRefs(String prefix) {
+        return metadataStore.listAllRefs()
+                            .keySet()
+                            .stream()
+                            .filter(name -> name.startsWith(prefix))
+                            .toList();
     }
 
     @Override

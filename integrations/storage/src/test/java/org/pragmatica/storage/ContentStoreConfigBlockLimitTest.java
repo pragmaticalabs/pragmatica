@@ -65,6 +65,13 @@ class ContentStoreConfigBlockLimitTest {
                                                                          .contains("at most 999993"));
     }
 
+    /// A zero chunk would make the writer spin on a buffer it can never fill.
+    @Test
+    void aChunkSizeOfZero_isRefused_andOneIsAccepted() {
+        assertThat(ContentStoreConfig.contentStoreConfig(0, Compression.NONE).validatedAgainst(CAP).isFailure()).isTrue();
+        assertThat(ContentStoreConfig.contentStoreConfig(1, Compression.NONE).validatedAgainst(CAP).isSuccess()).isTrue();
+    }
+
     @Test
     void largestBlock_isTheFramedChunk() {
         assertThat(ContentStoreConfig.contentStoreConfig(100_000, Compression.NONE).largestBlockBytes()).as("envelope").isEqualTo(100_007L);
@@ -135,10 +142,10 @@ class ContentStoreConfigBlockLimitTest {
     }
 
     @Test
-    void uncompressedChunkOfTheCapMinusTheEnvelope_storesDirectAndChunkedContent_withoutExceedingTheCap() {
+    void uncompressedChunkOfTheCapMinusTheEnvelope_storesSingleAndMultiChunkContent_withoutExceedingTheCap() {
         var instance = instanceWithCap(CAP);
         var chunk = CAP - ENVELOPE;
-        var store = ContentStore.contentStore(instance,
+        var store = NamedContent.namedContent(instance,
                                               ContentStoreConfig.contentStoreConfig(chunk, Compression.NONE)
                                                                 .validatedAgainst(CAP)
                                                                 .unwrap());
@@ -156,7 +163,7 @@ class ContentStoreConfigBlockLimitTest {
     void compressedChunkAtTheLargestFittingSize_storesIncompressibleContent_withoutExceedingTheCap() {
         for (var compression : List.of(Compression.LZ4, Compression.ZSTD)) {
             var chunk = largestFittingChunk(compression);
-            var store = ContentStore.contentStore(instanceWithCap(CAP),
+            var store = NamedContent.namedContent(instanceWithCap(CAP),
                                                   ContentStoreConfig.contentStoreConfig(chunk, compression)
                                                                     .validatedAgainst(CAP)
                                                                     .unwrap());

@@ -47,11 +47,11 @@ class ContentStoreIntegrationTest {
     @Nested
     class SmallContentTests {
 
-        private ContentStore store;
+        private NamedContent store;
 
         @BeforeEach
         void setUp() {
-            store = ContentStore.contentStore(storage, ContentStoreConfig.contentStoreConfig(CHUNK_SIZE, Compression.NONE));
+            store = NamedContent.namedContent(storage, ContentStoreConfig.contentStoreConfig(CHUNK_SIZE, Compression.NONE));
         }
 
         @Test
@@ -71,11 +71,11 @@ class ContentStoreIntegrationTest {
     @Nested
     class ChunkedContentTests {
 
-        private ContentStore store;
+        private NamedContent store;
 
         @BeforeEach
         void setUp() {
-            store = ContentStore.contentStore(storage, ContentStoreConfig.contentStoreConfig(CHUNK_SIZE, Compression.NONE));
+            store = NamedContent.namedContent(storage, ContentStoreConfig.contentStoreConfig(CHUNK_SIZE, Compression.NONE));
         }
 
         @Test
@@ -99,7 +99,7 @@ class ContentStoreIntegrationTest {
 
         @Test
         void putGet_withCompression_roundTrips() {
-            var store = ContentStore.contentStore(storage, ContentStoreConfig.contentStoreConfig(CHUNK_SIZE, Compression.LZ4));
+            var store = NamedContent.namedContent(storage, ContentStoreConfig.contentStoreConfig(CHUNK_SIZE, Compression.LZ4));
             var content = "compressible content repeated repeated repeated repeated repeated".getBytes(StandardCharsets.UTF_8);
 
             store.put("compressed.txt", content).await()
@@ -115,7 +115,7 @@ class ContentStoreIntegrationTest {
 
         @Test
         void putGet_largeCompressed_chunkedRoundTrips() {
-            var store = ContentStore.contentStore(storage, ContentStoreConfig.contentStoreConfig(CHUNK_SIZE, Compression.LZ4));
+            var store = NamedContent.namedContent(storage, ContentStoreConfig.contentStoreConfig(CHUNK_SIZE, Compression.LZ4));
             var large = generateContent(CHUNK_SIZE * 3 + 11);
 
             store.put("large-compressed.bin", large).await()
@@ -133,11 +133,11 @@ class ContentStoreIntegrationTest {
     @Nested
     class DeleteTests {
 
-        private ContentStore store;
+        private NamedContent store;
 
         @BeforeEach
         void setUp() {
-            store = ContentStore.contentStore(storage, ContentStoreConfig.contentStoreConfig(CHUNK_SIZE, Compression.NONE));
+            store = NamedContent.namedContent(storage, ContentStoreConfig.contentStoreConfig(CHUNK_SIZE, Compression.NONE));
         }
 
         @Test
