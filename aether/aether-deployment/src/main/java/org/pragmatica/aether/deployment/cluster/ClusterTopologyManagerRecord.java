@@ -2715,8 +2715,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
         // A confirmed node has no instance of its own left to delete (its directed reap, or its own earlier reap, deleted it), so its hold would
         // announce a deletion that already happened. But the memory is per NODE id and the instance that reuses the id may be another one,
-        // which never joined: it is looked at first ([#recheckConfirmedReap]) and, being new, takes the gate like any other.
-        if (!directedReaps.contains(nodeId) && confirmedReaps.contains(nodeId)) {
+        // which never joined: it is looked at first ([#recheckConfirmedReap]) and, being new, takes the gate like any other (a directed reap is
+        // exempt there, so a second directed retirement of the node deletes the new instance).
+        if (confirmedReaps.contains(nodeId)) {
             recheckConfirmedReap(nodeId, epoch, generation, retriesLeft);
 
             return;

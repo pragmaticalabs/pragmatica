@@ -74,6 +74,9 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
     /// Run on the first listing, which then fails: the operator's `disable` lands between the first attempt and its retry.
     private final AtomicReference<Runnable> duringFirstListing = new AtomicReference<>(() -> {});
     private final AtomicBoolean firstListingFails = new AtomicBoolean(false);
+    /// One-shot: the next listing fails, and the next listing runs the hook first (a join or a disable landing while the listing is in flight).
+    private final AtomicBoolean failNextListing = new AtomicBoolean(false);
+    private final AtomicReference<Runnable> onNextListing = new AtomicReference<>(() -> {});
     private final List<OperatorWarning> events = new CopyOnWriteArrayList<>();
     private LogCapture appender;
     private ClusterTopologyManager ctm;
@@ -125,6 +128,16 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
 
     private Option<AutoHealStateValue> autoHealState() {
         return Option.some(new AutoHealStateValue(autoHealEnabled.get(), "test", 0L));
+    }
+
+    private static InstanceInfo terminatedInstance(String instanceId) {
+        return new InstanceInfo(InstanceId.instanceId(instanceId).unwrap(),
+                                new InstanceStatus.Terminated(),
+                                List.of(),
+                                InstanceType.ON_DEMAND,
+                                Map.of(NODE_ID_TAG, LOST.id()),
+                                Option.some(LOST.id()),
+                                Option.none());
     }
 
     private static InstanceInfo instance(String instanceId) {
@@ -610,6 +623,73 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
         assertThat(terminates.get()).isEqualTo(1);
     }
 
+    /// The memory is of the instances that were deleted: the same instance still listed (a provider whose listing lags), or a listed instance that is
+    /// already TERMINATED, is not another instance under the id.
+    @Test
+    void confirmedReap_thenTheSameInstanceStillListed_autoHealDisabled_isNotHeld() {
+        disableAutoHeal();
+        ctm.drainNode(LOST, DrainReason.REPLACED);
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+        settle();
+        listing.set(List.of(instance("i-lost-1")));
+
+        lost();
+        settle();
+
+        assertThat(eventsOf(OperatorWarningCode.INSTANCE_REAP_HELD)).isZero();
+    }
+
+    @Test
+    void confirmedReap_thenOnlyATerminatedInstanceListed_autoHealDisabled_isNotHeld() {
+        disableAutoHeal();
+        ctm.drainNode(LOST, DrainReason.REPLACED);
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+        settle();
+        listing.set(List.of(terminatedInstance("i-other-gone")));
+
+        lost();
+        settle();
+
+        assertThat(eventsOf(OperatorWarningCode.INSTANCE_REAP_HELD)).isZero();
+    }
+
+    /// A directed reap exempts the instance it was issued for, whichever it is: a second directed retirement of the node deletes the new instance.
+    @Test
+    void directedReap_thenAnotherInstanceUnderTheSameIdDirectedAgain_isDeleted() {
+        directedReapDoneThenAnotherInstanceUnderTheSameId();
+
+        ctm.drainNode(LOST, DrainReason.REPLACED);
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 2);
+        assertThat(eventsOf(OperatorWarningCode.INSTANCE_REAP_HELD)).isZero();
+    }
+
+    /// The listing that tells a new instance from a confirmed one can fail: that is a failed attempt, retried, not a dropped reap.
+    @Test
+    void confirmedReap_listingFailsOnce_thenZombieUnderTheSameId_autoHealDisabled_isStillHeld() {
+        directedReapDoneThenAnotherInstanceUnderTheSameId();
+        failNextListing.set(true);
+
+        lost();
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> eventSeen(OperatorWarningCode.INSTANCE_REAP_HELD));
+        assertThat(terminates.get()).isEqualTo(1);
+    }
+
+    /// A node that joined while the listing was in flight is a new incarnation: the reap of the old one does nothing to it, held or otherwise.
+    @Test
+    void confirmedReap_nodeJoinsWhileTheListingIsInFlight_autoHealDisabled_raisesNoHeldEvent() {
+        directedReapDoneThenAnotherInstanceUnderTheSameId();
+        var before = listings.get();
+        onNextListing.set(this::joinsAgain);
+
+        lost();
+        await().atMost(Duration.ofSeconds(5)).until(() -> listings.get() > before);
+        settle();
+
+        assertThat(eventsOf(OperatorWarningCode.INSTANCE_REAP_HELD)).isZero();
+    }
+
     /// The held zombie is not forgotten: once auto-heal is back the next re-arm deletes it (the confirmation did not cover it) and closes the event.
     @Test
     void confirmedReap_thenHeldZombieUnderTheSameId_whenAutoHealIsEnabledAgain_isDeleted() {
@@ -703,6 +783,11 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
         @Override
         public Promise<List<InstanceInfo>> listInstances() {
             var call = listings.incrementAndGet();
+
+            onNextListing.getAndSet(() -> {}).run();
+            if (failNextListing.getAndSet(false)) {
+                return EnvironmentError.operationNotSupported("transient listing failure").promise();
+            }
 
             if (call == 1 && firstListingFails.get()) {
                 duringFirstListing.get().run();
