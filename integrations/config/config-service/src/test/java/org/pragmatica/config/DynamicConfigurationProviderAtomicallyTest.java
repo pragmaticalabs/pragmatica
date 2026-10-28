@@ -70,6 +70,48 @@ class DynamicConfigurationProviderAtomicallyTest {
     }
 
     @Test
+    void atomically_givesASlowRead_everyAttempt_whatEverTheWaitBound() {
+        var calls = new AtomicInteger();
+
+        var result = provider.atomically(() -> slowReadWhileWriting(calls));
+
+        assertThat(result.isFailure()).isTrue();
+        assertThat(calls).as("a read slower than the wait bound still gets all attempts").hasValue(ATTEMPTS);
+    }
+
+    private String slowReadWhileWriting(AtomicInteger calls) {
+        calls.incrementAndGet();
+        sleep(10);
+        provider.put("a", Integer.toString(calls.get()));
+        return provider.getString("a").or("");
+    }
+
+    private static void sleep(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    @Test
+    void snapshots_afterTheWaitBound_fallBackToTheCopy_notToAnEmptyMap() throws Exception {
+        provider.put("a", "1");
+        var inside = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var writer = Thread.ofPlatform().daemon().start(() -> provider.inWriteWindow(() -> holdOpen(inside, release)));
+
+        assertThat(inside.await(5, TimeUnit.SECONDS)).isTrue();
+        var overlay = provider.overlayMap();
+        var merged = provider.asMap();
+        release.countDown();
+        writer.join(5_000);
+
+        assertThat(overlay).as("best-effort copy after the bound; this signature has no failure channel").containsEntry("a", "1");
+        assertThat(merged).containsEntry("a", "1");
+    }
+
+    @Test
     void atomically_doesNotRunTheRead_whileAWriteWindowIsOpen() throws Exception {
         var inside = new CountDownLatch(1);
         var release = new CountDownLatch(1);

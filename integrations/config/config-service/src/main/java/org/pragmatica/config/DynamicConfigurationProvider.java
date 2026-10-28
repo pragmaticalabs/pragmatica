@@ -65,7 +65,9 @@ public final class DynamicConfigurationProvider implements ConfigurationProvider
             return entries;
         }
 
-        /// Writers are serialised here (the applier thread, plus tests); readers never take this monitor.
+        /// Writers are serialised here; readers never take this monitor. Every production writer already runs under
+        /// `KVStore.mutationLock`, so the monitor is a guard for the public `put`/`remove` against any other caller: with
+        /// two concurrent writers the odd/even bracketing would break (0 -> 1 -> 2 reads as quiet mid-write).
         <R> R write(Fn0<R> mutation) {
             synchronized (this) {
                 version.incrementAndGet();
@@ -81,16 +83,18 @@ public final class DynamicConfigurationProvider implements ConfigurationProvider
             return option(entries.get(key));
         }
 
-        /// Up to `attempts` COMPLETED reads, within `waitNanos` overall. An attempt that finds a write in flight (odd
-        /// version) spins without reading and without spending an attempt: a writer's window is a few map operations,
-        /// so counting such spins as attempts would burn the budget in nanoseconds while a single write runs.
+        /// At most `attempts` COMPLETED reads: the attempt count is the only bound on reads, however long each takes
+        /// (a cold first bind may take tens of milliseconds and must still get every attempt). `waitNanos` bounds only
+        /// the wait for a write in flight (odd version), which spins without reading and without spending an attempt -
+        /// a writer's window is a few map operations, so counting such spins would burn the budget in nanoseconds - and
+        /// the wait restarts after every completed read.
         // PAT-01: a seqlock retry loop is the primitive itself; its exits are the accepted read and the two bounds.
         @SuppressWarnings("JBCT-PAT-01")
         <R> Option<R> consistent(Fn0<R> read, int attempts, long waitNanos) {
-            var deadline = System.nanoTime() + waitNanos;
+            var waitDeadline = System.nanoTime() + waitNanos;
             var failed = 0;
 
-            while (failed < attempts && System.nanoTime() < deadline) {
+            while (failed < attempts) {
                 var before = version.get();
 
                 if ((before & 1L) == 0L) {
@@ -101,6 +105,9 @@ public final class DynamicConfigurationProvider implements ConfigurationProvider
                     }
 
                     failed++;
+                    waitDeadline = System.nanoTime() + waitNanos;
+                } else if (System.nanoTime() >= waitDeadline) {
+                    return none();
                 } else {
                     Thread.onSpinWait();
                 }
