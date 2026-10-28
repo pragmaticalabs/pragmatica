@@ -99,6 +99,8 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.INSTANCE_REAP_RELEASED.recoveryOf()
                                                             .unwrap()).isEqualTo(OperatorWarningCode.INSTANCE_REAP_HELD);
         assertThat(OperatorWarningCode.INSTANCE_REAP_RELEASED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.INSTANCE_REAP_HELD.code()).isEqualTo("instance-reap-held");
+        assertThat(OperatorWarningCode.INSTANCE_REAP_RELEASED.code()).isEqualTo("instance-reap-released");
         assertThat(OperatorWarningCode.INSTANCE_REAP_HELD.level()).isEqualTo(WarningLevel.WARNING);
     }
 
