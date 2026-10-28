@@ -711,6 +711,27 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
         assertThat(terminates.get()).isEqualTo(1);
     }
 
+    /// Forced interleaving: chain A lists a confirmed node and sees nothing new, and before A acts a concurrent chain B (which saw a new instance)
+    /// drops the confirmation. A was cleared by a decision that no longer holds, so it must not terminate: with auto-heal disabled, no provider
+    /// terminate may follow. The hook runs INSIDE A's listing, the window between A's decision and its action.
+    @Test
+    void confirmedReap_confirmationDroppedByAnotherChainWhileTheListingIsInFlight_autoHealDisabled_terminatesNothing() {
+        disableAutoHeal();
+        ctm.drainNode(LOST, DrainReason.REPLACED);
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+        settle();
+        listing.set(List.of(instance("i-lost-1")));
+        var record = (ClusterTopologyManagerRecord) ctm;
+        var before = listings.get();
+        onNextListing.set(() -> record.confirmedReaps().remove(LOST));
+
+        lost();
+        await().atMost(Duration.ofSeconds(5)).until(() -> listings.get() > before);
+        settle();
+
+        assertThat(terminates.get()).as("a provider terminate with auto-heal disabled").isEqualTo(1);
+    }
+
     /// An EXTERNAL node has no provider instance of ours: nothing under its id is read at the provider, so nothing is held for it.
     @Test
     void confirmedReap_ofAnExternalNode_thenALaterListing_autoHealDisabled_isNotHeld() {
