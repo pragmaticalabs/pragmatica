@@ -675,7 +675,23 @@ public interface SystemTags {
         // A6 fix round: the gated verified read. 2166..2170 and 2174..2175 are pinned on rc5 and 2171..2173 on an open PR, so this
         // takes 2176 (scanned against the rc5 tip and every open PR head on 2026-10-20).
         pin(table, 2176, "org.pragmatica.dht.DHTMessage.VerifiedReadRequest");
-        // ---- 2177..16383 RESERVED ----
+        // W-OBS W2: the replica feed messages and the directory carried on the ClusterSync ping and pong. 2177..2190 were free on every
+        // origin branch (203 refs) and every open PR head (3), scanned 2026-10-25; the next free slot is 2191.
+        pin(table, 2177, "org.pragmatica.cluster.metrics.DirectoryVersion");
+        pin(table, 2178, "org.pragmatica.cluster.metrics.ClusterDirectory");
+        pin(table, 2179, "org.pragmatica.cluster.metrics.ClusterDirectory.DhtReplication");
+        pin(table, 2180, "org.pragmatica.cluster.state.kvstore.IncarnationTag");
+        pin(table, 2181, "org.pragmatica.cluster.state.kvstore.AnchorPair");
+        pin(table, 2182, "org.pragmatica.cluster.state.kvstore.ReplicaEntry");
+        pin(table, 2183, "org.pragmatica.cluster.state.kvstore.CommitRing.RefusalReason");
+        pin(table, 2184, "org.pragmatica.cluster.replica.ReplicaFeedMessage.SubscribeMode");
+        pin(table, 2185, "org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaSubscribe");
+        pin(table, 2186, "org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaEntries");
+        pin(table, 2187, "org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaRefused");
+        pin(table, 2188, "org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaSnapshotRequest");
+        pin(table, 2189, "org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaSnapshotChunk");
+        pin(table, 2190, "org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaHeartbeat");
+        // ---- 2191..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);

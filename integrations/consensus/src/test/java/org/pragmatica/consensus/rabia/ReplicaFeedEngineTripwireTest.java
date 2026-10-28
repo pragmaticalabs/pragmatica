@@ -228,6 +228,7 @@ class ReplicaFeedEngineTripwireTest {
         await(() -> active.currentPhaseForTesting().equals(Phase.phase(2)));
         active.processDecision(empty(2));
         await(() -> active.currentPhaseForTesting().equals(Phase.phase(3)));
+        await(() -> machine.phaseFrontiers.contains(3L));
 
         assertThat(machine.committedBatches.get()).as("TW-O8: processCommitted is still told of the one batch only").isEqualTo(1);
         assertThat(machine.phaseFrontiers).as("TW-O8 / NT-O48: the state machine is told 1, 2, 3, the two V0 slots included (mutation: drop the call in advancePhase)")
@@ -246,6 +247,7 @@ class ReplicaFeedEngineTripwireTest {
         await(() -> network.getMessages().stream().anyMatch(message -> message instanceof RabiaProtocolMessage.Synchronous.Propose<?> propose && propose.phase().equals(Phase.ZERO)));
         active.processDecision(committing(machine, 0, "someone else's"));
         await(() -> active.currentPhaseForTesting().equals(Phase.phase(1)));
+        await(() -> machine.phaseFrontiers.contains(1L));
 
         assertThat(machine.phaseFrontiers).as("the hook ran and threw").contains(1L);
         await(() -> network.getMessages().stream().anyMatch(message -> message instanceof RabiaProtocolMessage.Synchronous.Propose<?> propose && propose.phase().equals(Phase.phase(1))));
@@ -268,6 +270,7 @@ class ReplicaFeedEngineTripwireTest {
         await(active::isActive);
         active.processDecision(empty(2));
         await(() -> active.currentPhaseForTesting().equals(Phase.phase(3)));
+        await(() -> machine.phaseFrontiers.contains(3L));
 
         assertThat(machine.phaseFrontiers).as("the restore, then slots 0, 1 (applied while Paused) and 2, each once").containsExactly(0L, 1L, 2L, 3L);
 
@@ -295,6 +298,7 @@ class ReplicaFeedEngineTripwireTest {
         active.processSyncResponse(new SyncResponse<>(CORE_2, SavedState.savedState(new byte[0], Phase.phase(5), List.of()), ResponderState.COLD));
         active.processSyncResponse(new SyncResponse<>(CORE_3, SavedState.savedState(new byte[0], Phase.phase(5), List.of()), ResponderState.COLD));
         await(active::isActive);
+        await(() -> machine.phaseFrontiers.contains(5L));
 
         assertThat(machine.phaseFrontiers).as("NT-O48 (mutation: drop the applyRestoredState call): the restored phase is reported before any decision").contains(5L);
     }
@@ -312,6 +316,7 @@ class ReplicaFeedEngineTripwireTest {
         active.processSyncResponse(new SyncResponse<>(CORE_2, SavedState.savedState(new byte[0], Phase.phase(5), List.of()), ResponderState.COLD));
         active.processSyncResponse(new SyncResponse<>(CORE_3, SavedState.savedState(new byte[0], Phase.phase(5), List.of()), ResponderState.COLD));
         await(active::isActive);
+        await(() -> machine.phaseFrontiers.contains(5L));
 
         assertThat(machine.phaseFrontiers).as("the hook ran at the restore and threw").contains(5L);
     }
@@ -342,6 +347,7 @@ class ReplicaFeedEngineTripwireTest {
         await(observer::isObserving);
         observer.processDecision(new Decision<>(nodeB, Phase.ZERO, StateValue.V1, Batch.create(machine.serializer(), List.of(new TestCommand("observed")))));
         await(() -> observer.currentPhaseForTesting().equals(Phase.phase(1)));
+        await(() -> machine.phaseFrontiers.contains(1L));
 
         assertThat(machine.getProcessedCommands()).as("control: the observer applied the decision").extracting(TestCommand::value).containsExactly("observed");
         assertThat(observer.isObserving()).as("control: it took the observer branch").isTrue();

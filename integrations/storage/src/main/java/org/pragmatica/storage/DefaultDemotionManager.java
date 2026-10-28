@@ -2,14 +2,17 @@ package org.pragmatica.storage;
 
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,11 +36,20 @@ final class DefaultDemotionManager implements DemotionManager {
     private final AtomicReference<DemotionStats> stats = new AtomicReference<>(DemotionStats.empty());
     private volatile boolean active = false;
     private final AtomicBoolean refusing = new AtomicBoolean(false);
+    private final DegradeReporter degrade;
 
     DefaultDemotionManager(List<StorageTier> tiers, MetadataStore metadataStore, DemotionConfig config) {
+        this(tiers, metadataStore, config, DegradeReporter.degradeReporter("demotion"));
+    }
+
+    DefaultDemotionManager(List<StorageTier> tiers,
+                           MetadataStore metadataStore,
+                           DemotionConfig config,
+                           DegradeReporter degrade) {
         this.tiers = List.copyOf(tiers);
         this.metadataStore = metadataStore;
         this.config = config;
+        this.degrade = degrade;
     }
 
     @Override
@@ -126,21 +138,24 @@ final class DefaultDemotionManager implements DemotionManager {
     }
 
     /// Once per pressure episode (reset when the tier drops back under its high watermark), so a tick every
-    /// few minutes does not flood the log. TODO(#1574): also emit as an OperatorWarning cluster event.
+    /// few minutes does not flood the log. The episode is also raised as an operator warning through [DegradeReporter].
     private DemotionResult refuseDurableDemotion(StorageTier sourceTier) {
         if (!isAboveHighWatermark(sourceTier)) {
             refusing.set(false);
+            degrade.recovered(OperatorWarningCode.STORAGE_DEMOTION_REFUSED,
+                              "Tier {} is back under its high watermark; demotion is no longer refused",
+                              sourceTier.level());
 
             return DemotionResult.NONE;
         }
 
         if (refusing.compareAndSet(false, true)) {
-            log.warn("Tier {} is above its high watermark ({} of {} bytes) but holds the only durable copy of its "
-                    + "blocks: nothing is demoted to a non-durable tier. Writes that need it fail with TierFull once "
-                    + "it is full; add capacity or a durable tier below it",
-                     sourceTier.level(),
-                     sourceTier.usedBytes(),
-                     sourceTier.maxBytes());
+            degrade.degraded(OperatorWarningCode.STORAGE_DEMOTION_REFUSED,
+                             "Tier {} is above its high watermark ({} of {} bytes) and holds the only durable copy of its blocks: "
+                            + "nothing is demoted. Writes that need it fail with TierFull once it is full; add capacity or a durable tier below it",
+                             sourceTier.level(),
+                             sourceTier.usedBytes(),
+                             sourceTier.maxBytes());
         }
 
         return DemotionResult.NONE;
@@ -186,19 +201,49 @@ final class DefaultDemotionManager implements DemotionManager {
 
     private List<BlockLifecycle> selectCandidates(TierLevel tierLevel) {
         var candidates = metadataStore.listBlocksByTier(tierLevel);
+        var access = metadataStore.accessTracker();
+        var heldBack = readsDecide()
+                       ? candidates.stream()
+                                   .filter(access::isHeldBack)
+                                   .map(BlockLifecycle::blockId)
+                                   .collect(Collectors.toSet())
+                       : Set.<BlockId> of();
 
         return candidates.stream()
-                         .sorted(comparatorForStrategy())
+                         .sorted(rankingFor(heldBack,
+                                            comparatorForStrategy(access)))
                          .limit(config.batchSize())
                          .toList();
     }
 
-    private Comparator<BlockLifecycle> comparatorForStrategy() {
+    /// Candidates are only selected for a tier above its high watermark (see [#demoteTier]), so a block whose
+    /// access is unknown is still eligible: pressure overrides the hold-back. The hold-back only orders them --
+    /// before every block whose reads are known, oldest-created first among themselves. A block read since boot
+    /// is proven active inside the window, an unknown one is colder evidence, so the unknown ones go first and the
+    /// blocks read since boot keep the order the strategy gives them.
+    private static Comparator<BlockLifecycle> rankingFor(Set<BlockId> heldBack, Comparator<BlockLifecycle> byStrategy) {
+        Comparator<BlockLifecycle> byCreation = Comparator.comparingLong(BlockLifecycle::createdAt);
+        Comparator<BlockLifecycle> heldBackFirst = Comparator.comparingInt(lc -> heldBack.contains(lc.blockId())
+                                                                                 ? 0
+                                                                                 : 1);
+
+        return heldBackFirst.thenComparing((a, b) -> heldBack.contains(a.blockId())
+                                                     ? byCreation.compare(a, b)
+                                                     : byStrategy.compare(a, b));
+    }
+
+    /// Whether the strategy ranks by reads. AGE ranks by creation alone, so it has no use for access and an
+    /// unknown access (a block untouched since boot) changes nothing for it.
+    private boolean readsDecide() {
+        return config.strategy() != DemotionStrategy.AGE;
+    }
+
+    private Comparator<BlockLifecycle> comparatorForStrategy(AccessTracker access) {
         return switch (config.strategy()) {
             case AGE -> Comparator.comparingLong(BlockLifecycle::createdAt);
-            case LFU -> Comparator.comparingInt(BlockLifecycle::accessCount);
-            case LRU -> Comparator.comparingLong(BlockLifecycle::lastAccessedAt);
-            case SIZE_PRESSURE -> Comparator.<BlockLifecycle> comparingLong(BlockLifecycle::lastAccessedAt).reversed();
+            case LFU -> Comparator.comparingInt(access::accessCount);
+            case LRU -> Comparator.comparingLong(access::lastAccessedAt);
+            case SIZE_PRESSURE -> Comparator.comparingLong(access::lastAccessedAt);
         };
     }
 

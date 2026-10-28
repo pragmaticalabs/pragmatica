@@ -15,6 +15,12 @@
     <name>Pragmatica Lite Consensus</name>
     <description>Rabia CFT consensus algorithm for replicated state machines</description>
 
+    <properties>
+        <!-- CI's build-and-test job skips Consensus's tests (-Dconsensus.skipTests=true); the consensus-shard-N jobs run them (#2414).
+             Defaults to the global -DskipTests, which an explicit <skipTests> in the plugin config would otherwise override. -->
+        <consensus.skipTests>${skipTests}</consensus.skipTests>
+    </properties>
+
     <dependencies>
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
@@ -101,4 +107,16 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <skipTests>${consensus.skipTests}</skipTests>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>

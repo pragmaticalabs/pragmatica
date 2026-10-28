@@ -89,6 +89,19 @@ class SystemCodecPinningTest {
                                                                                  "org.pragmatica.dht.DHTMessage.MigrationPageResponse",
                                                                                  "org.pragmatica.dht.DHTMessage.VerifiedReadRequest");
 
+    /// The replica feed value types and the cluster directory (W-OBS W2) are exempt because no one-byte slot is free to give them
+    /// (every slot 0..127 is pinned). Their cost, stated: the directory rides the `ClusterSync` ping and pong only when strictly newer than
+    /// the receiver's acknowledged generation (a membership or epoch change, not steady state), and costs one extra byte per type
+    /// occurrence there; a `ReplicaEntry` and its tag and anchor pairs ride the feed, which has no consumer on a worker until the next
+    /// wave, and costs one extra byte per entry (plus one per anchor pair on a subscribe) next to effects of tens to thousands of bytes.
+    private static final Set<String> W_OBS_REPLICA_FEED = Set.of("org.pragmatica.cluster.metrics.DirectoryVersion",
+                                                                 "org.pragmatica.cluster.metrics.ClusterDirectory",
+                                                                 "org.pragmatica.cluster.metrics.ClusterDirectory.DhtReplication",
+                                                                 "org.pragmatica.cluster.state.kvstore.IncarnationTag",
+                                                                 "org.pragmatica.cluster.state.kvstore.AnchorPair",
+                                                                 "org.pragmatica.cluster.state.kvstore.ReplicaEntry",
+                                                                 "org.pragmatica.cluster.state.kvstore.CommitRing.RefusalReason");
+
     @Test
     void hotProtocolTypes_fitInTheOneByteWindow() {
         var hot = SystemTags.TAGS.entrySet()
@@ -100,6 +113,7 @@ class SystemCodecPinningTest {
                                                   && !entry.getKey().endsWith(".LeaderPreVoteResponse")
                                                   && !entry.getKey().endsWith(".CommitAdvance")
                                                   && !A6_REPAIR_PLANE.contains(entry.getKey())
+                                                  && !W_OBS_REPLICA_FEED.contains(entry.getKey())
                                                   && !entry.getKey().startsWith("org.pragmatica.aether.stream.provenance.")
                                                   && !entry.getKey().startsWith("org.pragmatica.aether.stream.forward.ReadRefusal"))
                                  .filter(entry -> !RETIRED_IN_HOT_PACKAGES.contains(entry.getKey()))

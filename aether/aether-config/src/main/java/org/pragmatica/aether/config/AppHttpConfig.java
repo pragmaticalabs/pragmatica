@@ -27,7 +27,8 @@ public record AppHttpConfig(boolean enabled,
                             Option<AppTls> tls,
                             TimeSpan readTimeout,
                             int minBodyRate,
-                            Option<SecurityMode> managementSecurityMode) {
+                            Option<SecurityMode> managementSecurityMode,
+                            UploadConfig upload) {
     /// Operator-supplied TLS identity for the USER-facing app-HTTP listener.
     ///
     /// The app port must not reuse the cluster identity. That certificate is issued by the
@@ -66,6 +67,36 @@ public record AppHttpConfig(boolean enabled,
              DEFAULT_READ_TIMEOUT,
              DEFAULT_MIN_BODY_RATE,
              Option.empty());
+    }
+
+    /// The shape before `[app-http.upload]` existed: upload routes take the default bounds.
+    public AppHttpConfig(boolean enabled,
+                         int port,
+                         Map<String, ApiKeyEntry> apiKeys,
+                         int maxRequestSize,
+                         SecurityMode securityMode,
+                         Option<JwtConfig> jwtConfig,
+                         HttpProtocol httpProtocol,
+                         ApiVersioningDetection apiVersioningDetection,
+                         String apiVersionHeaderName,
+                         Option<AppTls> tls,
+                         TimeSpan readTimeout,
+                         int minBodyRate,
+                         Option<SecurityMode> managementSecurityMode) {
+        this(enabled,
+             port,
+             apiKeys,
+             maxRequestSize,
+             securityMode,
+             jwtConfig,
+             httpProtocol,
+             apiVersioningDetection,
+             apiVersionHeaderName,
+             tls,
+             readTimeout,
+             minBodyRate,
+             managementSecurityMode,
+             UploadConfig.DEFAULT);
     }
 
     public static final int DEFAULT_APP_HTTP_PORT = 8070;
@@ -125,7 +156,8 @@ public record AppHttpConfig(boolean enabled,
                                  Option.some(appTls),
                                  readTimeout,
                                  minBodyRate,
-                                 managementSecurityMode);
+                                 managementSecurityMode,
+                                 upload);
     }
 
     /// Replace the read timeout. See [#DEFAULT_READ_TIMEOUT].
@@ -142,7 +174,8 @@ public record AppHttpConfig(boolean enabled,
                                  tls,
                                  readTimeout,
                                  minBodyRate,
-                                 managementSecurityMode);
+                                 managementSecurityMode,
+                                 upload);
     }
 
     /// Replace the minimum body rate. See [#DEFAULT_MIN_BODY_RATE].
@@ -159,7 +192,26 @@ public record AppHttpConfig(boolean enabled,
                                  tls,
                                  readTimeout,
                                  minBodyRate,
-                                 managementSecurityMode);
+                                 managementSecurityMode,
+                                 upload);
+    }
+
+    /// Replace the upload-route bounds (`[app-http.upload]`). See [UploadConfig].
+    public AppHttpConfig withUpload(UploadConfig upload) {
+        return new AppHttpConfig(enabled,
+                                 port,
+                                 apiKeys,
+                                 maxRequestSize,
+                                 securityMode,
+                                 jwtConfig,
+                                 httpProtocol,
+                                 apiVersioningDetection,
+                                 apiVersionHeaderName,
+                                 tls,
+                                 readTimeout,
+                                 minBodyRate,
+                                 managementSecurityMode,
+                                 upload);
     }
 
     /// Give the Management API its own security mode (#962). `Option.none()` restores inheritance of [#securityMode].
@@ -176,7 +228,8 @@ public record AppHttpConfig(boolean enabled,
                                  tls,
                                  readTimeout,
                                  minBodyRate,
-                                 mode);
+                                 mode,
+                                 upload);
     }
 
     /// Whether the Management API authenticates (#962): its own `[management] security_mode` when set, else

@@ -185,6 +185,21 @@ HTTP_429 = ["*RateLimit*", "*TooMany*"]
 OrderNotFoundButValid = 200
 ```
 
+### Inline route keys
+
+An inline-table route takes these keys: `route` (required), `consumes`, `produces`, `security`, `method` (versioned bind keys only), the per-route ingest limits `max_size` and `max_duration`, and the multipart part limits `max_files`, `max_file_size`, `max_fields` and `max_field_size`:
+
+```toml
+[routes]
+uploadAvatar = { route = "POST /avatar", consumes = "multipart/form-data", max_size = "5MB", max_duration = "2m" }
+uploadGallery = { route = "POST /gallery", consumes = "multipart/form-data", max_size = "100MB", max_files = 20, max_file_size = "10MB", max_fields = 5, max_field_size = "1KB" }
+```
+
+- `max_size` is a size string (`"256MB"`, `"512KB"`) or an integer number of bytes; `max_duration` is a duration string (`"6h"`, `"90s"`). Both must be greater than zero. The node caps `max_size` at its `[app-http.upload] max_size_ceiling` (default 256 MiB until streaming storage exists), so a larger declaration is accepted here and limited there.
+- `max_files` and `max_fields` are whole numbers of parts (greater than zero); `max_file_size` and `max_field_size` are sizes like `max_size`. A file is a part with a filename, or a part without one that declares a Content-Type other than `text/plain`; every other part is a field. A part whose Content-Type is `multipart/*` is nested whatever its disposition (a `filename` included) or subtype, and is refused `400` on a route that declares part limits. A size is the number of bytes between the part's header block and the next delimiter. The node counts and measures them from the multipart framing of the aggregated body, off the event loop and without decoding it, and answers `413` when one is exceeded; a body that is not `multipart/form-data`, or is not a closed multipart body, is left to the handler.
+- The generated route carries the limits as `.withUpload(UploadSpec.uploadSpec(upload, maxSizeBytes, maxDurationMillis))`, where `upload` is true for a binary or multipart `consumes`; a route that declares a part limit carries the seven-argument form, `.withUpload(UploadSpec.uploadSpec(upload, maxSizeBytes, maxDurationMillis, maxFiles, maxFileBytes, maxFields, maxFieldBytes))`, with `0L` for each part limit it does not declare. The node that accepts the request enforces them before it reads the body (the size and time limits) or before it dispatches it (the part limits); a route that declares none of them and consumes JSON, text or XML generates no `withUpload` call.
+- Any other key is a compile error naming it and the valid keys. Only `resumable` and `unclaimed_ttl` are refused as not enforced yet, not ignored.
+
 ## Generated Code
 
 ### Input

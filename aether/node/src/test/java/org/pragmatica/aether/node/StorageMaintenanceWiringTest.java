@@ -18,7 +18,9 @@ import org.pragmatica.storage.BlockLifecycle;
 import org.pragmatica.storage.DemotionManager;
 import org.pragmatica.storage.GarbageCollectorConfig;
 import org.pragmatica.storage.PromotionManager;
+import org.pragmatica.storage.StorageError;
 import org.pragmatica.storage.StorageGarbageCollector;
+import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.storage.TierLevel;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 
@@ -106,6 +108,22 @@ class StorageMaintenanceWiringTest {
 
         setup.garbageCollector().activate();
         assertThat(setup.garbageCollector().isActive()).isTrue();
+    }
+
+    /// A0: `streams` keeps no block cap of its own (sealed segments are cut by the sealer), so a block over the
+    /// default maximum is still accepted there, while the same block is refused by `content`.
+    @Test
+    void streamsInstance_hasNoBlockCap_whileContentRefusesTheSameBlock() {
+        var over = new byte[StorageInstance.DEFAULT_MAX_BLOCK_BYTES + 1];
+        var streams = StorageFactory.defaultStreamStorage(Option.none(), streamDataDir, "test-node").unwrap();
+        var content = createAllWithExplicitContent(Option.none()).get(CONTENT);
+
+        streams.instance().put(over).await().onFailure(cause -> fail("streams must accept it: " + cause.message()));
+        content.instance()
+               .put(over)
+               .await()
+               .onSuccess(_ -> fail("content must refuse a block over the default maximum"))
+               .onFailure(cause -> assertThat(cause).isInstanceOf(StorageError.BlockTooLarge.class));
     }
 
     /// The composite (what `AetherNode` actually hands to `DelegatedStorageAdapter` and
@@ -528,6 +546,160 @@ class StorageMaintenanceWiringTest {
         }
 
         return block;
+    }
+
+    /// A0: GC is not leader-pinned. This node never became leader (nothing here calls the composite's `activate`); it
+    /// reports ready, which is what `AetherNode` does through `activateNodeMaintenance`, and its own collector must
+    /// reclaim its own orphaned block from its own disk.
+    @Test
+    void nonLeaderNode_reportingReady_reclaimsItsOrphanedPrivateBlocksAfterGrace() {
+        var setups = createAllWithExplicitContent(Option.none());
+        var contentSetup = setups.get(CONTENT);
+        var blockId = contentSetup.instance()
+                                  .put("non-leader-gc-probe".getBytes(StandardCharsets.UTF_8))
+                                  .await()
+                                  .onFailure(cause -> fail("writing the probe block failed: " + cause.message()))
+                                  .unwrap();
+        var diskBlockPath = rawBlockPath(contentBlocksDir(), blockId);
+
+        assertThat(Files.exists(diskBlockPath)).as("baseline: the block is on disk").isTrue();
+
+        forceOrphanedPastGracePeriod(contentSetup, blockId);
+        StorageFactory.activateNodeMaintenance(setups);
+
+        var composite = StorageFactory.compositeGarbageCollector(setups);
+
+        driverOf(StorageFactory.compositeDemotionManager(setups), composite).tick();
+
+        assertThat(contentSetup.garbageCollector().stats().blocksCollected())
+            .as("content's own collector reclaimed it without any leader activation")
+            .isGreaterThan(0);
+        assertThat(Files.exists(diskBlockPath)).as("the orphaned block's file is gone").isFalse();
+    }
+
+    /// A0: losing leadership does not stop a node's content and artifacts GC, because it never depended on it.
+    @Test
+    void leaderDeactivation_doesNotStopContentOrArtifactsGarbageCollection() {
+        var setups = createAllWithExplicitContent(Option.none());
+        var composite = StorageFactory.compositeGarbageCollector(setups);
+
+        assertThat(composite.isActive()).as("nothing collects before the node reports ready").isFalse();
+
+        StorageFactory.activateNodeMaintenance(setups);
+        composite.deactivate();
+
+        assertThat(setups.get(CONTENT).garbageCollector().isActive()).isTrue();
+        assertThat(setups.get(ARTIFACTS).garbageCollector().isActive()).isTrue();
+        assertThat(composite.isActive()).as("the composite reports the collectors that run").isTrue();
+    }
+
+    /// A0: the node-level stop is what ends content and artifacts GC (shutdown), not leader demotion.
+    @Test
+    void deactivateNodeMaintenance_stopsContentAndArtifactsGarbageCollection() {
+        var setups = createAllWithExplicitContent(Option.none());
+
+        StorageFactory.activateNodeMaintenance(setups);
+        StorageFactory.deactivateNodeMaintenance(setups);
+
+        assertThat(setups.get(CONTENT).garbageCollector().isActive()).isFalse();
+        assertThat(setups.get(ARTIFACTS).garbageCollector().isActive()).isFalse();
+    }
+
+    /// A0: leader activation through the composite is a no-op for the per-node instances. Their collectors start only
+    /// when the node reports ready ([StorageFactory#activateNodeMaintenance]), so leader election must not start
+    /// content and artifacts GC before the node is ready.
+    @Test
+    void compositeGarbageCollector_activate_leavesContentAndArtifactsInactive() {
+        var setups = createAllWithExplicitContent(Option.none());
+
+        StorageFactory.compositeGarbageCollector(setups).activate();
+
+        assertThat(setups.get(CONTENT).garbageCollector().isActive()).as("content waits for node readiness").isFalse();
+        assertThat(setups.get(ARTIFACTS).garbageCollector().isActive()).as("artifacts waits for node readiness").isFalse();
+    }
+
+    /// A0: the composite reports active when any collector runs (streams runs from build, before the node is ready).
+    @Test
+    void compositeGarbageCollector_isActive_whenOnlyOneCollectorRuns() {
+        var setups = createAllWithExplicitContent(Option.none());
+        var composite = StorageFactory.compositeGarbageCollector(setups);
+
+        assertThat(composite.isActive()).as("no collector runs yet").isFalse();
+
+        setups.get(CONTENT).garbageCollector().activate();
+
+        assertThat(setups.get(ARTIFACTS).garbageCollector().isActive()).as("control: artifacts still idle").isFalse();
+        assertThat(composite.isActive()).as("one running collector is enough").isTrue();
+    }
+
+    /// A0 (spec A2.1): the maximum block size is the instance's own `[storage.<name>] max_block_bytes`.
+    @Test
+    void createAll_maxBlockBytesFromConfig_capsThatInstanceOnly() {
+        var defaults = StorageConfig.storageConfig();
+        var capped = StorageConfig.storageConfig(defaults.memoryMaxBytes(),
+                                                 defaults.diskMaxBytes(),
+                                                 contentBlocksDir().toString(),
+                                                 contentDir.resolve("snapshots").toString(),
+                                                 defaults.snapshotMutationThreshold(),
+                                                 defaults.snapshotMaxInterval(),
+                                                 defaults.snapshotRetentionCount(),
+                                                 defaults.walPath(),
+                                                 false,
+                                                 defaults.promotion(),
+                                                 defaults.prefetch(),
+                                                 defaults.prefetchMaxInFlight(),
+                                                 4096);
+        var setups = StorageFactory.createAll(Map.of(ARTIFACTS,
+                                                     storageConfigAt(defaults, artifactsDir, artifactsDir.resolve("snapshots"),
+                                                                     defaults.memoryMaxBytes()),
+                                                     CONTENT,
+                                                     capped),
+                                              "test-node",
+                                              Option.none(),
+                                              Option.none())
+                                   .onFailure(cause -> fail("createAll must succeed: " + cause.message()))
+                                   .unwrap();
+
+        assertThat(setups.get(CONTENT).instance().maxBlockBytes()).isEqualTo(4096);
+        assertThat(setups.get(ARTIFACTS).instance().maxBlockBytes()).as("an instance without the key keeps the default")
+                                                                    .isEqualTo(16 * 1024 * 1024);
+        setups.get(CONTENT).instance().put(new byte[4096]).await().onFailure(cause -> fail("at the cap: " + cause.message()));
+        setups.get(CONTENT)
+              .instance()
+              .put(new byte[4097])
+              .await()
+              .onSuccess(_ -> fail("content must refuse a block over its configured cap"))
+              .onFailure(cause -> assertThat(cause).isInstanceOf(StorageError.BlockTooLarge.class));
+    }
+
+    /// The synthesized `artifacts` and `content` instances derive from the supplied defaults, the limit included.
+    @Test
+    void createAll_synthesizedInstances_takeTheDefaultsMaxBlockBytes() {
+        var defaults = StorageConfig.storageConfig(8L << 20,
+                                                   64L << 20,
+                                                   artifactsDir.resolve("artifacts").resolve("blocks").toString(),
+                                                   artifactsDir.resolve("artifacts").resolve("snapshots").toString(),
+                                                   1000,
+                                                   "60s",
+                                                   5,
+                                                   "",
+                                                   false,
+                                                   true,
+                                                   true,
+                                                   4,
+                                                   2048);
+        var setups = StorageFactory.createAll(Map.of(), "test-node", Option.none(), Option.none(), defaults)
+                                   .onFailure(cause -> fail("createAll must succeed: " + cause.message()))
+                                   .unwrap();
+
+        assertThat(setups.get(ARTIFACTS).instance().maxBlockBytes()).as("synthesized artifacts").isEqualTo(2048);
+        assertThat(setups.get(CONTENT).instance().maxBlockBytes()).as("synthesized content").isEqualTo(2048);
+    }
+
+    /// The config's default and the storage instance's default are two constants in two modules; they must agree.
+    @Test
+    void configDefaultMaxBlockBytes_isTheInstanceDefault() {
+        assertThat(StorageConfig.DEFAULT_MAX_BLOCK_BYTES).isEqualTo(StorageInstance.DEFAULT_MAX_BLOCK_BYTES);
     }
 
     /// The production maintenance path: the REAL composite managers over the FULL setups map (so the

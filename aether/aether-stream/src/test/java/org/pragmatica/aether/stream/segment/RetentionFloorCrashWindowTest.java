@@ -15,6 +15,7 @@ import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.storage.AccessTracker;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.BlockLifecycle;
 import org.pragmatica.storage.GarbageCollectorConfig;
@@ -345,6 +346,31 @@ class RetentionFloorCrashWindowTest {
         @Override
         public boolean claimBlock(BlockId blockId, BlockLifecycle sentinel) {
             return delegate.claimBlock(blockId, sentinel);
+        }
+
+        @Override
+        public boolean claimUnacknowledged(BlockId blockId, BlockLifecycle sentinel) {
+            return delegate.claimUnacknowledged(blockId, sentinel);
+        }
+
+        @Override
+        public void acknowledgeClaim(BlockId blockId) {
+            delegate.acknowledgeClaim(blockId);
+        }
+
+        @Override
+        public boolean isUnacknowledged(BlockId blockId) {
+            return delegate.isUnacknowledged(blockId);
+        }
+
+        @Override
+        public AccessTracker accessTracker() {
+            return delegate.accessTracker();
+        }
+
+        @Override
+        public Option<BlockLifecycle> observeLifecycle(BlockId blockId, UnaryOperator<BlockLifecycle> updater) {
+            return delegate.observeLifecycle(blockId, updater);
         }
 
         @Override

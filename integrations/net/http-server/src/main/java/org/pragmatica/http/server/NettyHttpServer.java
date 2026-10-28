@@ -280,6 +280,7 @@ final class NettyHttpServer implements HttpServer {
             }
         }
 
+        @Contract
         @Override
         protected void initChannel(SocketChannel ch) {
             var pipeline = ch.pipeline();
@@ -291,9 +292,11 @@ final class NettyHttpServer implements HttpServer {
                                                   0,
                                                   TimeUnit.MILLISECONDS));
             pipeline.addLast(new HttpServerCodec());
-            // F6: the minimum body rate, checked on the chunks before the aggregator assembles them
-            pipeline.addLast(new BodyRateGuardHandler(config.bodyRateLimit()));
-            pipeline.addLast(new HttpObjectAggregator(config.maxContentLength()));
+            // The ingest gate: classifies each request on its head, before any body byte is read, and bounds the body (its
+            // size, the idle bound, F6's minimum rate, the duration) on the chunks before the aggregator assembles them.
+            // The aggregator's own limit is therefore only the largest int: the gate has already enforced the request's.
+            pipeline.addLast(new RequestGate(config));
+            pipeline.addLast(new HttpObjectAggregator(Integer.MAX_VALUE));
             if (config.chunkedWriteEnabled()) {
                 pipeline.addLast(new ChunkedWriteHandler());
             }
@@ -411,6 +414,9 @@ final class NettyHttpServer implements HttpServer {
         /// response, read on the event loop, hence atomic. While it is non-zero the client is waiting on us, so a
         /// silent connection is not idle.
         private final AtomicInteger pendingResponses = new AtomicInteger();
+        /// Set on the event loop when a request is refused with its connection closing (#2419): a request pipelined behind
+        /// it on the same connection is dropped, not dispatched.
+        private boolean refusing;
 
         HttpRequestHandler(BiConsumer<HttpRequest, ResponseWriter> handler,
                            Map<String, WebSocketEndpoint> wsEndpoints) {
@@ -418,6 +424,7 @@ final class NettyHttpServer implements HttpServer {
             this.wsEndpoints = wsEndpoints;
         }
 
+        @Contract
         @Override
         protected void channelRead0(ChannelHandlerContext ctx, Object msg) {
             if (msg instanceof FullHttpRequest request) {
@@ -431,6 +438,10 @@ final class NettyHttpServer implements HttpServer {
             // WebSocket upgrades never reach here: WebSocketUpgradeRouter consumes them
             var requestId = IdGenerator.generate("req");
 
+            if (refusing) {
+                return;
+            }
+
             if (request.decoderResult().isFailure()) {
                 rejectUndecodable(ctx, requestId, request);
 
@@ -443,7 +454,20 @@ final class NettyHttpServer implements HttpServer {
                 return;
             }
 
-            var requestContext = createRequestContext(requestId, request);
+            var target = RequestTarget.requestTarget(request.uri());
+
+            if (target.isFailure()) {
+                rejectMalformedTarget(ctx, requestId, target);
+            } else {
+                dispatchRequest(ctx, request, requestId, target.unwrap());
+            }
+        }
+
+        private void dispatchRequest(ChannelHandlerContext ctx,
+                                     FullHttpRequest request,
+                                     String requestId,
+                                     RequestTarget target) {
+            var requestContext = createRequestContext(requestId, request, target);
             var responseWriter = new NettyResponseWriter(ctx,
                                                          requestId,
                                                          HttpUtil.isKeepAlive(request),
@@ -472,6 +496,20 @@ final class NettyHttpServer implements HttpServer {
                                                                                                     status.message());
         }
 
+        /// #2419: a request target whose percent-escapes cannot be decoded is answered 400 on this transport as on HTTP/3,
+        /// instead of the decoder's exception escaping the handler and closing the connection with no response.
+        private void rejectMalformedTarget(ChannelHandlerContext ctx, String requestId, Result<RequestTarget> target) {
+            target.onFailure(cause -> log.debug("Rejecting request {} with 400: {}", requestId, cause.message()));
+            refusing = true;
+            // Not counted in pendingResponses, unlike the two rejects above: that count only keeps the read-idle close away
+            // from a connection awaiting a response, and this one closes with the response (keepAlive false) and is no
+            // longer read from (refusing), so there is no later idle check the count could change.
+            new NettyResponseWriter(ctx,
+                                    requestId,
+                                    false,
+                                    () -> {}).error(HttpStatus.BAD_REQUEST, "Malformed request target");
+        }
+
         /// #2386: RFC 9112 §3.2 — a request with more than one `Host` line is answered 400, and the connection is
         /// closed, since which host the client meant is ambiguous. Netty's decoder keeps every line.
         private void rejectMultipleHosts(ChannelHandlerContext ctx, String requestId) {
@@ -496,20 +534,21 @@ final class NettyHttpServer implements HttpServer {
                   .flatMap(opt -> opt)
                   .onPresent(state -> {
                                  if (frame instanceof TextWebSocketFrame textFrame) {
-                                 state.handler.handle(state.session,
-                                                      new WebSocketMessage.Text(textFrame.text()));
-                             } else if (frame instanceof BinaryWebSocketFrame binaryFrame) {
-                                 var bytes = new byte[binaryFrame.content()
-                                                                 .readableBytes()];
+                                     state.handler.handle(state.session,
+                                                          new WebSocketMessage.Text(textFrame.text()));
+                                 } else if (frame instanceof BinaryWebSocketFrame binaryFrame) {
+                                     var bytes = new byte[binaryFrame.content()
+                                                                     .readableBytes()];
 
-                                 binaryFrame.content()
-                                            .readBytes(bytes);
-                                 state.handler.handle(state.session,
-                                                      new WebSocketMessage.Binary(bytes));
-                             }
+                                     binaryFrame.content()
+                                                .readBytes(bytes);
+                                     state.handler.handle(state.session,
+                                                          new WebSocketMessage.Binary(bytes));
+                                 }
                              });
         }
 
+        @Contract
         @Override
         public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
             if (evt instanceof WebSocketServerProtocolHandler.HandshakeComplete handshake) {
@@ -562,29 +601,32 @@ final class NettyHttpServer implements HttpServer {
             ctx.fireChannelInactive();
         }
 
+        @Contract
         @Override
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
             log.error("Error in HTTP handler", cause);
             ctx.close();
         }
 
-        private HttpRequest createRequestContext(String requestId, FullHttpRequest request) {
-            var decoder = new QueryStringDecoder(request.uri());
-            var path = decoder.path();
+        private HttpRequest createRequestContext(String requestId, FullHttpRequest request, RequestTarget target) {
             // Netty validates the HTTP method before we receive it, so this will always succeed
             var method = HttpMethod.httpMethod(request.method().name()).fold(_ -> HttpMethod.GET, v -> v);
             var headers = Headers.headers(fieldMap(request.headers()));
             // #2310: the chunked trailer section; the aggregator leaves it empty for a request that sent none
             var trailers = Headers.trailers(fieldMap(request.trailingHeaders()));
-            // Parse query params
-            var queryParams = QueryParams.queryParams(decoder.parameters());
             // Read body
             var content = request.content();
             var body = new byte[content.readableBytes()];
 
             content.readBytes(body);
 
-            return new NettyRequestContext(requestId, method, path, headers, queryParams, body, trailers);
+            return new NettyRequestContext(requestId,
+                                           method,
+                                           target.path(),
+                                           headers,
+                                           target.queryParams(),
+                                           body,
+                                           trailers);
         }
 
         private static Map<String, List<String>> fieldMap(HttpHeaders fields) {
@@ -629,11 +671,14 @@ final class NettyHttpServer implements HttpServer {
                                        byte[] body,
                                        Headers trailers) implements HttpRequest {}
 
-    private static class NettyResponseWriter implements ResponseWriter {
+    static class NettyResponseWriter implements ResponseWriter {
         private final ChannelHandlerContext ctx;
         private final String requestId;
         private final boolean keepAlive;
         private final Runnable onWritten;
+        /// The response ends the connection after a short linger (see [RequestGate#lingerClose]): a refusal sent while the
+        /// client may still be sending its body. Such a response says `Connection: close`.
+        private final boolean lingerClose;
         private final io.netty.handler.codec.http.HttpHeaders responseHeaders;
         private final Promise<Unit> flushed = Promise.promise();
 
@@ -641,10 +686,19 @@ final class NettyHttpServer implements HttpServer {
 
         /// `onWritten` runs once, when the response write completes (succeeded or failed).
         NettyResponseWriter(ChannelHandlerContext ctx, String requestId, boolean keepAlive, Runnable onWritten) {
+            this(ctx, requestId, keepAlive, onWritten, false);
+        }
+
+        NettyResponseWriter(ChannelHandlerContext ctx,
+                            String requestId,
+                            boolean keepAlive,
+                            Runnable onWritten,
+                            boolean lingerClose) {
             this.ctx = ctx;
             this.requestId = requestId;
             this.keepAlive = keepAlive;
             this.onWritten = onWritten;
+            this.lingerClose = lingerClose;
             this.responseHeaders = new DefaultHttpHeaders();
         }
 
@@ -655,6 +709,7 @@ final class NettyHttpServer implements HttpServer {
             return this;
         }
 
+        @Contract
         @Override
         public void write(HttpStatus status, byte[] body, ContentType contentType) {
             writeAsync(status, body, contentType);
@@ -688,6 +743,12 @@ final class NettyHttpServer implements HttpServer {
             response.headers().set(X_REQUEST_ID, requestId);
             if (keepAlive) {
                 response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
+            } else if (lingerClose) {
+                response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
+            }
+
+            if (extraHeaders.contains(X_REQUEST_ID)) {
+                response.headers().remove(X_REQUEST_ID);
             }
 
             response.headers().add(extraHeaders);
@@ -711,7 +772,9 @@ final class NettyHttpServer implements HttpServer {
             var future = ctx.writeAndFlush(response);
 
             future.addListener(_ -> onWritten.run());
-            if (!keepAlive) {
+            if (lingerClose) {
+                future.addListener(_ -> RequestGate.lingerClose(ctx.channel()));
+            } else if (!keepAlive) {
                 future.addListener(ChannelFutureListener.CLOSE);
             }
 
@@ -741,6 +804,7 @@ final class NettyHttpServer implements HttpServer {
             return id;
         }
 
+        @Contract
         @Override
         public void send(String text) {
             if (channel.isActive()) {
@@ -748,6 +812,7 @@ final class NettyHttpServer implements HttpServer {
             }
         }
 
+        @Contract
         @Override
         public void send(byte[] binary) {
             if (channel.isActive()) {
@@ -755,6 +820,7 @@ final class NettyHttpServer implements HttpServer {
             }
         }
 
+        @Contract
         @Override
         public void close() {
             if (channel.isActive()) {

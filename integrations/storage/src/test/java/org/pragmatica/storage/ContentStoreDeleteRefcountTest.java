@@ -217,7 +217,11 @@ class ContentStoreDeleteRefcountTest {
             var first = generateContent(CHUNK_SIZE * 3 + 15, 1);
             var second = generateContent(CHUNK_SIZE * 2 + 7, 2);
 
-            wire(750);
+            wire(ONE_MB);
+            putContent(NAME, first);
+            var capacity = memoryTier.usedBytes();
+
+            wire(capacity);
             var firstManifest = putContent(NAME, first);
             var firstChunks = chunkIdsOf(firstManifest);
             var usedByFirst = memoryTier.usedBytes();
@@ -228,7 +232,7 @@ class ContentStoreDeleteRefcountTest {
             assertThat(collectAfterGrace(gc)).as("a failed overwrite must orphan nothing").isZero();
             assertReadable(NAME, first);
             assertThat(usedByFirst + CHUNK_SIZE).as("locator: the tier must refuse the second document's first chunk")
-                      .isGreaterThan(750);
+                      .isGreaterThan(capacity);
             assertThat(refCountsOf(firstChunks)).as("locator: the previous chunks keep their credit").containsOnly(1);
         }
     }
@@ -326,8 +330,8 @@ class ContentStoreDeleteRefcountTest {
             assertThat(refCountAfterFirstDelete).as("locator: deleting one name releases one credit").isEqualTo(1);
         }
 
-        /// Symptom 2, chunked content. The manifests differ (a manifest carries its name) but the
-        /// chunks deduplicate. Red before the fix: `get` of the surviving name fails with
+        /// Symptom 2, chunked content. The manifest names nothing, so both names share one manifest
+        /// block as well as its chunks. Red before the fix: `get` of the surviving name fails with
         /// `One or more content chunks are missing`.
         @Test
         void delete_oneOfTwoNamesSharingChunks_keepsTheOtherReadable_andCollectsChunksOnlyAtTheLastRelease() {
@@ -341,16 +345,15 @@ class ContentStoreDeleteRefcountTest {
             var chunkRefCountsAfterFirstDelete = refCountsOf(chunks);
 
             assertReadable(OTHER_NAME, content);
-            assertThat(collectAfterGrace(gc)).as("only the deleted name's manifest is collectible").isEqualTo(1);
-            assertGone(manifest);
+            assertThat(collectAfterGrace(gc)).as("the manifest and chunks another name holds must not be collected").isZero();
             deleteContent(OTHER_NAME);
             assertThat(collectAfterGrace(gc)).as("the last name's release must make its manifest and every chunk collectible")
                       .isEqualTo(chunks.size() + 1);
             chunks.forEach(ContentStoreDeleteRefcountTest.this::assertGone);
             assertGone(otherManifest);
             assertThat(chunks).as("locator: the fixture must genuinely chunk, or this proves nothing").hasSize(4);
-            assertThat(otherManifest).as("locator: a manifest carries its name, so the two differ")
-                      .isNotEqualTo(manifest);
+            assertThat(otherManifest).as("locator: a manifest names nothing, so equal content under two names shares one manifest block")
+                      .isEqualTo(manifest);
             assertThat(chunkRefCountsWhileShared).as("locator: two documents, two credits per chunk").containsOnly(2);
             assertThat(chunkRefCountsAfterFirstDelete).as("locator: one document left, one credit per chunk")
                       .containsOnly(1);
@@ -445,8 +448,8 @@ class ContentStoreDeleteRefcountTest {
 
             assertReadable(OTHER_NAME, x);
             assertReadable(NAME, y);
-            assertThat(collected).as("Z's manifest and chunks, X's manifest: the two displaced documents, once each")
-                      .isEqualTo(chunksZ.size() + 2);
+            assertThat(collected).as("Z's manifest and chunks: the one displaced document nobody else holds; X's manifest stays with B")
+                      .isEqualTo(chunksZ.size() + 1);
             assertThat(put1Parked).as("locator: put1 must be parked at its first chunk write").isTrue();
             assertThat(put2.isSuccess()).as("locator: put2 must complete while put1 is parked").isTrue();
             assertThat(put1Result.isSuccess()).as("locator: put1 must complete once released").isTrue();
@@ -481,7 +484,7 @@ class ContentStoreDeleteRefcountTest {
             var collected = collectAfterGrace(gc);
 
             assertReadable(OTHER_NAME, content);
-            assertThat(collected).as("only the deleted name's manifest is collectible").isEqualTo(1);
+            assertThat(collected).as("the manifest is shared with the third name, so nothing is collectible").isZero();
             assertThat(delete1Parked).as("locator: delete1 must be parked at its ref drop").isTrue();
             assertThat(delete2.isSuccess()).as("locator: delete2 must complete while delete1 is parked").isTrue();
             assertThat(delete1Result.isSuccess()).as("locator: delete1 must complete once released").isTrue();
@@ -514,8 +517,8 @@ class ContentStoreDeleteRefcountTest {
                       .isTrue();
             assertThat(xAfterBoth).as("locator: X's chunks were released once, by the overwrite that displaced X")
                       .containsOnly(1);
-            assertThat(collected).as("locator: X's manifest, and Z's manifest with its chunks")
-                      .isEqualTo(chunksX.size() + 2);
+            assertThat(collected).as("locator: Z's manifest with its chunks; X's manifest stays with the third name")
+                      .isEqualTo(chunksX.size() + 1);
             assertThat(storage.resolveRef(ContentEnvelope.trustedRef(NAME))).as("locator: the name ends at Y").isEqualTo(some(manifestY));
         }
 
@@ -539,7 +542,7 @@ class ContentStoreDeleteRefcountTest {
                       .isTrue();
             assertThat(afterBoth).as("locator: released once, by the delete whose removal took the name")
                       .containsOnly(1);
-            assertThat(collected).as("locator: the deleted name's manifest only").isEqualTo(1);
+            assertThat(collected).as("locator: the manifest is shared with the third name, so nothing is collectible").isZero();
         }
     }
 
@@ -608,6 +611,31 @@ class ContentStoreDeleteRefcountTest {
         @Override
         public boolean claimBlock(BlockId blockId, BlockLifecycle sentinel) {
             return delegate.claimBlock(blockId, sentinel);
+        }
+
+        @Override
+        public boolean claimUnacknowledged(BlockId blockId, BlockLifecycle sentinel) {
+            return delegate.claimUnacknowledged(blockId, sentinel);
+        }
+
+        @Override
+        public void acknowledgeClaim(BlockId blockId) {
+            delegate.acknowledgeClaim(blockId);
+        }
+
+        @Override
+        public boolean isUnacknowledged(BlockId blockId) {
+            return delegate.isUnacknowledged(blockId);
+        }
+
+        @Override
+        public AccessTracker accessTracker() {
+            return delegate.accessTracker();
+        }
+
+        @Override
+        public Option<BlockLifecycle> observeLifecycle(BlockId blockId, UnaryOperator<BlockLifecycle> updater) {
+            return delegate.observeLifecycle(blockId, updater);
         }
 
         @Override
@@ -720,11 +748,6 @@ class ContentStoreDeleteRefcountTest {
             return holdPut.compareAndSet(true, false)
                    ? putGate.flatMap(_ -> delegate.put(content))
                    : delegate.put(content);
-        }
-
-        @Override
-        public Promise<BlockId> put(byte[] content, BlockMetadata metadata) {
-            return delegate.put(content, metadata);
         }
 
         @Override

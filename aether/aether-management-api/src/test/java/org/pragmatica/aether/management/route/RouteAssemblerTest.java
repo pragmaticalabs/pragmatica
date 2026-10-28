@@ -6,6 +6,8 @@ package org.pragmatica.aether.management.route;
 
 import org.junit.jupiter.api.Test;
 
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -76,12 +78,31 @@ class RouteAssemblerTest {
 
         ManagementRoute.BLUEPRINT_STATUS
                 .assemble(blueprintId)
-                .flatMap(path -> RouteMatcher.shared().match(ManagementRoute.BLUEPRINT_STATUS.method(), path))
+                .flatMap(path -> RouteMatcher.shared().match(ManagementRoute.BLUEPRINT_STATUS.method(), serverDecoded(path)))
                 .onSuccess(matched -> {
                     assertThat(matched.route()).isEqualTo(ManagementRoute.BLUEPRINT_STATUS);
                     assertThat(matched.param("id").or((String) null)).isEqualTo(blueprintId);
                 })
                 .onFailure(cause -> assertThat(cause).as("round trip must succeed").isNull());
+    }
+
+    /// The path as the HTTP server hands it to the matcher: percent-decoded once (`HttpRequest.path()`). The assembler
+    /// never emits a raw `+` (a space is `%20`, a plus is `%2B`), so `URLDecoder` agrees with the server here.
+    private static String serverDecoded(String assembled) {
+        return URLDecoder.decode(assembled, StandardCharsets.UTF_8);
+    }
+
+    /// #2420: an id carrying `%` or `+` survives assemble -> the server's single decode -> match, which is the CLI-to-server
+    /// round trip. A second decode in the matcher turned `100%` into an error and `a+b` into `a b`.
+    @Test
+    void match_assembledPathWithPercentAndPlus_recoversTheOriginalId_afterOneServerDecode() {
+        for (var id : List.of("100%", "a+b", "%41", "a b")) {
+            ManagementRoute.DEPLOY_STATUS
+                    .assemble(id)
+                    .flatMap(path -> RouteMatcher.shared().match(ManagementRoute.DEPLOY_STATUS.method(), serverDecoded(path)))
+                    .onSuccess(matched -> assertThat(matched.param("id").or((String) null)).isEqualTo(id))
+                    .onFailure(cause -> assertThat(cause).as("round trip of %s must succeed", id).isNull());
+        }
     }
 
     @Test

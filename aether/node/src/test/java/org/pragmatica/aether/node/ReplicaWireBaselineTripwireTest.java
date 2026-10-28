@@ -52,10 +52,13 @@ class ReplicaWireBaselineTripwireTest {
         assertThat(live).as("TW-O10: the six projection message types are live TAG lines of the baseline today").hasSize(6);
         assertThat(RETIRED_TAGS).as("and they carry exactly the tags the design retires")
                                 .allSatisfy(tag -> assertThat(live).anyMatch(line -> line.endsWith(" " + tag)));
-        assertThat(baselineLines()).as("no replica-feed tag exists yet").noneMatch(line -> line.startsWith("TAG ") && REPLICA_TYPE.matcher(line).find());
+        assertThat(baselineLines()).as("TW-O10 flipped in W2: the six replica-feed message types are recorded, tags 2185..2190")
+                                   .filteredOn(line -> line.startsWith("TAG ") && line.contains("ReplicaFeedMessage$Replica"))
+                                   .extracting(line -> line.substring(line.lastIndexOf(' ') + 1))
+                                   .containsExactlyInAnyOrder("2185", "2186", "2187", "2188", "2189", "2190");
     }
 
-    @Disabled("W2/W5: enable when the projection tags are RETIRED pins and the replica feed's tags are recorded; the exact retired-section layout is decided by the PR that introduces it")
+    @Disabled("W5: enable when the projection tags are RETIRED pins (the replica feed's tags are recorded since W2); the exact retired-section layout is decided by the PR that introduces it")
     @Test
     void baseline_keepsTheProjectionTagsRetired_andRecordsTheReplicaTags() {
         var lines = baselineLines();

@@ -9,6 +9,7 @@ import java.util.Objects;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.http.routing.RouteShape;
 import org.pragmatica.http.routing.RouteShapeSelector;
+import org.pragmatica.http.routing.UploadSpec;
 import org.pragmatica.lang.Result;
 
 import static org.pragmatica.lang.Result.success;
@@ -20,7 +21,7 @@ import static org.pragmatica.lang.Result.success;
 /// shape (arity 0, no spacers) is a prefix route, which is what every definition was before.
 ///
 /// `spacerSlots` (#755) are the positions of the spacers among the trailing segments, parallel to `spacers`; empty means
-/// not carried. A definition is LOCAL to the node that serves the route (the replicated `AetherValue.HttpRoute` does not
+/// not carried. `uploadSpec` is the route's declared ingest limits (`max_size`, `max_duration`). A definition is LOCAL to the node that serves the route (the replicated `AetherValue.HttpRoute` does not
 /// carry them), so a node resolving a request to one of its own slices can match spacers by position.
 public record HttpRouteDefinition(String httpMethod,
                                   String pathPrefix,
@@ -29,7 +30,8 @@ public record HttpRouteDefinition(String httpMethod,
                                   SecurityPolicy security,
                                   int pathArity,
                                   List<String> spacers,
-                                  List<Integer> spacerSlots) implements RouteShape {
+                                  List<Integer> spacerSlots,
+                                  UploadSpec uploadSpec) implements RouteShape {
     /// #884: the prefix is normalized HERE, not in one of the factories, because every local route
     /// lookup compares a normalized request path against this field with `startsWith`. That is a
     /// segment-boundary comparison only while the stored prefix ends in a slash -- without it
@@ -49,6 +51,27 @@ public record HttpRouteDefinition(String httpMethod,
         pathPrefix = normalizePrefix(pathPrefix);
         spacers = List.copyOf(Objects.requireNonNull(spacers, "spacers"));
         spacerSlots = List.copyOf(Objects.requireNonNull(spacerSlots, "spacerSlots"));
+        Objects.requireNonNull(uploadSpec, "uploadSpec");
+    }
+
+    /// A definition that declares no ingest limits.
+    public HttpRouteDefinition(String httpMethod,
+                               String pathPrefix,
+                               String artifactCoord,
+                               String sliceMethod,
+                               SecurityPolicy security,
+                               int pathArity,
+                               List<String> spacers,
+                               List<Integer> spacerSlots) {
+        this(httpMethod,
+             pathPrefix,
+             artifactCoord,
+             sliceMethod,
+             security,
+             pathArity,
+             spacers,
+             spacerSlots,
+             UploadSpec.NONE);
     }
 
     public HttpRouteDefinition(String httpMethod,
@@ -97,6 +120,26 @@ public record HttpRouteDefinition(String httpMethod,
                                        spacerSlots);
     }
 
+    public static HttpRouteDefinition httpRouteDefinition(String httpMethod,
+                                                          String pathPrefix,
+                                                          String artifactCoord,
+                                                          String sliceMethod,
+                                                          SecurityPolicy security,
+                                                          int pathArity,
+                                                          List<String> spacers,
+                                                          List<Integer> spacerSlots,
+                                                          UploadSpec uploadSpec) {
+        return new HttpRouteDefinition(httpMethod,
+                                       pathPrefix,
+                                       artifactCoord,
+                                       sliceMethod,
+                                       security,
+                                       pathArity,
+                                       spacers,
+                                       spacerSlots,
+                                       uploadSpec);
+    }
+
     /// The same route with another policy -- an override applied, or the policy of the sibling actually served.
     public HttpRouteDefinition withSecurity(SecurityPolicy newSecurity) {
         return new HttpRouteDefinition(httpMethod,
@@ -106,7 +149,8 @@ public record HttpRouteDefinition(String httpMethod,
                                        newSecurity,
                                        pathArity,
                                        spacers,
-                                       spacerSlots);
+                                       spacerSlots,
+                                       uploadSpec);
     }
 
     /// [RouteShape]: the base path is the prefix.

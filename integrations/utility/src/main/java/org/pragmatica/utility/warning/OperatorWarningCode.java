@@ -368,6 +368,14 @@ public enum OperatorWarningCode {
     /// within the first-mint ceiling (#1734). Owners may be moved once the set settles, which opens a transient not-held
     /// window per moved arc. Subject is the keyspace.
     ENTITY_OWNERSHIP_UNSETTLED_MINT("entity-ownership-unsettled-mint", "entity-ownership", WarningLevel.WARNING),
+    /// This node's identity ledger (#2429) does not protect it: the ledger file was lost on a node that is not new (the node admits no peer, so it is
+    /// isolated from the cluster until the merge of ledgers at join exists), the ledger directory cannot be written at boot (the node runs without the restart
+    /// protection), or a ledger write failed (retirements made from then on will not survive a restart until a write succeeds). Subject is the node. Raised on the transition
+    /// into the state, not on every refused peer. Closed by [#IDENTITY_LEDGER_DURABLE].
+    IDENTITY_LEDGER_NOT_DURABLE("identity-ledger-not-durable", "membership", WarningLevel.WARNING),
+    /// The recovery of [#IDENTITY_LEDGER_NOT_DURABLE], same subject: a ledger write succeeded, so the node's retirements survive a restart
+    /// again. INFO, published only after a published not-durable event for the node (#752 mechanism).
+    IDENTITY_LEDGER_DURABLE("identity-ledger-durable", "membership", WarningLevel.INFO, IDENTITY_LEDGER_NOT_DURABLE),
     /// A SWIM datagram claimed a member identity from a source address other than the one that identity is
     /// pinned to, and was refused. A restart is not this: a new process carries a new identity and gets its own pin.
     SWIM_MEMBER_ADDRESS_CONFLICT("swim-member-address-conflict", "membership", WarningLevel.WARNING),
@@ -460,12 +468,129 @@ public enum OperatorWarningCode {
     /// joined the cluster again and has nothing to reap. INFO, published only after a published held event for the node (#752 mechanism). It
     /// is raised by the leader that held the reap: a leader change in between leaves the held event open.
     INSTANCE_REAP_RELEASED("instance-reap-released", "deployment", WarningLevel.INFO, INSTANCE_REAP_HELD),
+    /// An upload was refused 429 because this node's `[app-http.upload] max_concurrent` was reached (#2410): the node is holding
+    /// as many upload bodies as it allows. Subject is the node. Raised once, on the transition into saturation, per node, not
+    /// per refused request; a refusal for one principal's own cap is a client error and raises nothing. Closed by
+    /// [#UPLOAD_NODE_CAP_RESTORED].
+    UPLOAD_NODE_CAP_SATURATED("upload-node-cap-saturated", "http-ingest", WarningLevel.WARNING),
+    /// The recovery of [#UPLOAD_NODE_CAP_SATURATED], same subject (#2410): an upload finished and a slot is free again. INFO,
+    /// published only after a published saturation event for the node (#752 mechanism).
+    UPLOAD_NODE_CAP_RESTORED("upload-node-cap-restored", "http-ingest", WarningLevel.INFO, UPLOAD_NODE_CAP_SATURATED),
+    /// An upload was refused 503 because the declared bytes of the uploads in flight on this node reached `[app-http.upload]
+    /// max_in_flight_size` (#2410): an upload body is aggregated in memory, so the node holds as much as it allows. Subject is
+    /// the node. Raised once, on the transition into exhaustion, per node, not per refused request. Closed by
+    /// [#UPLOAD_BYTE_BUDGET_RESTORED].
+    UPLOAD_BYTE_BUDGET_EXHAUSTED("upload-byte-budget-exhausted", "http-ingest", WarningLevel.WARNING),
+    /// The recovery of [#UPLOAD_BYTE_BUDGET_EXHAUSTED], same subject (#2410): uploads finished and at most half of the budget is
+    /// reserved again. INFO, published only after a published exhaustion event for the node (#752 mechanism).
+    UPLOAD_BYTE_BUDGET_RESTORED("upload-byte-budget-restored",
+                                "http-ingest",
+                                WarningLevel.INFO,
+                                UPLOAD_BYTE_BUDGET_EXHAUSTED),
     /// A committed `[json]` configuration change was refused for a slice (#2378): the slice's HTTP routes keep the
     /// JSON codec selection they had. Subject is `<slice artifact>/json`; the message names every refused key, its
     /// value and why, and the selection kept. Raised once, on the transition into refusal, per node. The same
     /// configuration fails the slice's next provisioning (restart or redeploy), so fix or remove the keys. Closed by
     /// [#JSON_CONFIG_APPLIED].
     JSON_CONFIG_REJECTED("json-config-rejected", "json", WarningLevel.CRITICAL),
+    /// A storage instance's disk tier could not be opened and the instance runs without it (A0b): its writes are
+    /// acknowledged on memory and the shared tier alone, which a node loss or a whole-cluster restart does not survive.
+    /// Raised for the instances the node placed itself (the synthesized `artifacts` and `content`, a derived path) and for
+    /// `streams` on a directly built node; an operator-written `disk_path` that does not exist or cannot open refuses the boot instead. The
+    /// subject is the instance. The tier is fixed at boot, so there is no recovery code: fix the path and restart.
+    STORAGE_DISK_TIER_UNAVAILABLE("storage-disk-tier-unavailable", "storage", WarningLevel.CRITICAL),
+    /// A configured memory tier was larger than the share of the heap storage may take, and was cut down to it (A0b). The
+    /// subject is the instance; the message names the configured and the effective bytes and the heap.
+    STORAGE_MEMORY_TIER_CLAMPED("storage-memory-tier-clamped", "storage", WarningLevel.WARNING),
+    /// A durable tier is above its high watermark and holds the only durable copy of its blocks, so demotion is refused rather than
+    /// paid for with durability; writes that need the tier fail with `TierFull` once it is full. The subject is the instance.
+    /// Closed by [#STORAGE_DEMOTION_RESUMED].
+    STORAGE_DEMOTION_REFUSED("storage-demotion-refused", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STORAGE_DEMOTION_REFUSED], same subject: the tier dropped back under its high watermark. INFO, published only
+    /// after a published refusal for the instance (#752 mechanism).
+    STORAGE_DEMOTION_RESUMED("storage-demotion-resumed", "storage", WarningLevel.INFO, STORAGE_DEMOTION_REFUSED),
+    /// The metadata snapshot of a storage instance cannot be written, so the references it holds are unprotected across a restart. The
+    /// subject is the instance. Closed by [#STORAGE_SNAPSHOT_WRITE_RECOVERED].
+    STORAGE_SNAPSHOT_WRITE_FAILED("storage-snapshot-write-failed", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STORAGE_SNAPSHOT_WRITE_FAILED], same subject: a snapshot was written. INFO, published only after a published
+    /// failure for the instance (#752 mechanism).
+    STORAGE_SNAPSHOT_WRITE_RECOVERED("storage-snapshot-write-recovered",
+                                     "storage",
+                                     WarningLevel.INFO,
+                                     STORAGE_SNAPSHOT_WRITE_FAILED),
+    /// A storage instance restored an older retained snapshot because the newest was unreadable: metadata recorded only in the
+    /// unreadable file is lost unless a WAL replays it. The subject is the instance. A restore happens once, at boot, so no recovery.
+    STORAGE_SNAPSHOT_FELL_BACK("storage-snapshot-fell-back", "storage", WarningLevel.WARNING),
+    /// A write was refused because a durable local-disk tier is full: the tier is a required tier of its instance, so the put
+    /// fails with `TierFull` instead of landing on memory alone. Raised once per episode, on the first refused write; the episode ends when
+    /// a write at least as large as the smallest one refused in it fits ([#STORAGE_TIER_WRITABLE]), so a full tier that alternates large and
+    /// small writes raises once. The
+    /// subject is the instance. Closed by [#STORAGE_TIER_WRITABLE].
+    STORAGE_TIER_FULL("storage-tier-full", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STORAGE_TIER_FULL], same subject: a write at least as large as the smallest one refused fit on the tier. INFO, published only after a published
+    /// refusal for the instance (#752 mechanism).
+    STORAGE_TIER_WRITABLE("storage-tier-writable", "storage", WarningLevel.INFO, STORAGE_TIER_FULL),
+    /// The post-formation check of an instance's DHT encryption marker could not complete, so its DHT tier stays gated and the node
+    /// stays not-ready until it does. Raised once, on the first failed attempt; the check keeps retrying. The subject is the
+    /// instance. Closed by [#STORAGE_DHT_MARKER_VERIFIED]. A refusal (the marker disagrees with the configuration) aborts the boot
+    /// and is not reported here.
+    STORAGE_DHT_MARKER_UNVERIFIED("storage-dht-marker-unverified", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STORAGE_DHT_MARKER_UNVERIFIED], same subject: a later attempt completed and the DHT tier was admitted. INFO,
+    /// published only after a published failure for the instance (#752 mechanism).
+    STORAGE_DHT_MARKER_VERIFIED("storage-dht-marker-verified",
+                                "storage",
+                                WarningLevel.INFO,
+                                STORAGE_DHT_MARKER_UNVERIFIED),
+    /// Demotion, promotion or garbage collection could not be started when the node reported ready, so the instance's tiers are not
+    /// kept within their watermarks and its garbage is not reclaimed. The subject is the instance (`leader-maintenance` for the
+    /// leader-pinned group). Closed by [#STORAGE_MAINTENANCE_STARTED].
+    STORAGE_MAINTENANCE_NOT_STARTED("storage-maintenance-not-started", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STORAGE_MAINTENANCE_NOT_STARTED], same subject: the managers were activated. INFO, published only after a
+    /// published failure for the subject (#752 mechanism).
+    STORAGE_MAINTENANCE_STARTED("storage-maintenance-started",
+                                "storage",
+                                WarningLevel.INFO,
+                                STORAGE_MAINTENANCE_NOT_STARTED),
+    /// A stream append log cut a torn tail while opening: bytes past the last valid record were discarded (they were never
+    /// acknowledged). The subject is the storage instance; the message names the log, the byte range and the last valid offset. The
+    /// cut happens once, at open, so there is no recovery code. Raised once per instance: a second log cut in the same boot is in
+    /// the node log only.
+    STORAGE_WAL_TAIL_CUT("storage-wal-tail-cut", "storage", WarningLevel.WARNING),
+    /// The unmounted-volume guard of a storage instance is inactive: its sentinel lives on the same filesystem as the guarded volume, so
+    /// it is lost with the volume and the node would boot empty on an unmounted one without refusing. The subject is the instance; the
+    /// message names both paths. Decided once, at boot, so there is no recovery code: move the state directory
+    /// (`-Daether.state.dir` / `AETHER_STATE_DIR`) off the volume and restart.
+    STORAGE_VOLUME_GUARD_INACTIVE("storage-volume-guard-inactive", "storage", WarningLevel.WARNING),
+    /// An append log fail-stopped after a failed fsync, frame write or reopen: every later append is refused until the node restarts and
+    /// recovers the valid prefix. The subject is the storage instance; the message names the log and the cause. Raised once per
+    /// instance (a second log failing in the same boot is in the node log only). No recovery code: a restart is the recovery.
+    STORAGE_WAL_FAIL_STOPPED("storage-wal-fail-stopped", "storage", WarningLevel.CRITICAL),
+    /// Block prefetching could not be started when the node reported ready, so the instance serves reads without the hints it would
+    /// have acted on. The subject is the instance. Closed by [#STORAGE_PREFETCH_STARTED].
+    STORAGE_PREFETCH_NOT_STARTED("storage-prefetch-not-started", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STORAGE_PREFETCH_NOT_STARTED], same subject: the prefetch manager was activated. INFO, published only after a
+    /// published failure for the instance (#752 mechanism).
+    STORAGE_PREFETCH_STARTED("storage-prefetch-started", "storage", WarningLevel.INFO, STORAGE_PREFETCH_NOT_STARTED),
+    /// The configured `[streaming] segment_disk_max_bytes` is larger than the space usable where stream segments are kept, so stream
+    /// seals fail with `TierFull` before the cap is reached. The subject is `streams`. Decided once, at boot, so there is no recovery code:
+    /// lower the cap or grow the volume and restart.
+    STORAGE_STREAM_DISK_CAP_OVER_SPACE("storage-stream-disk-cap-over-space", "storage", WarningLevel.WARNING),
+    /// The space usable where stream segments are kept could not be read, so the streams disk tier cap fell back to its floor. The subject
+    /// is `streams`. Decided once, at boot, so there is no recovery code: set `[streaming] segment_disk_max_bytes` or fix the volume and restart.
+    STORAGE_STREAM_DISK_SPACE_UNREADABLE("storage-stream-disk-space-unreadable", "storage", WarningLevel.WARNING),
+    /// A block read from a tier did not hash to its id: the copy is corrupt and the read failed with an integrity error. The subject is the
+    /// instance; the message names the tier and the block. Raised once per instance (later corrupt reads are in the node log only), and
+    /// nothing observable proves a repair, so there is no recovery code.
+    STORAGE_INTEGRITY_FAILED("storage-integrity-failed", "storage", WarningLevel.CRITICAL),
+    /// A write-behind flush to a slower tier failed, so the block is acknowledged but not yet on that tier. The subject is the instance. Closed
+    /// by [#STORAGE_WRITE_BEHIND_FLUSHED].
+    STORAGE_WRITE_BEHIND_FLUSH_FAILED("storage-write-behind-flush-failed", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STORAGE_WRITE_BEHIND_FLUSH_FAILED], same subject: a later flush succeeded. INFO, published only after a published
+    /// failure for the instance (#752 mechanism).
+    STORAGE_WRITE_BEHIND_FLUSHED("storage-write-behind-flushed",
+                                 "storage",
+                                 WarningLevel.INFO,
+                                 STORAGE_WRITE_BEHIND_FLUSH_FAILED),
     /// The recovery of [#JSON_CONFIG_REJECTED], same subject (#2378): a valid `[json]` configuration was adopted after a
     /// refusal. INFO, published only after a published rejection for the subject (#752 mechanism).
     JSON_CONFIG_APPLIED("json-config-applied", "json", WarningLevel.INFO, JSON_CONFIG_REJECTED);

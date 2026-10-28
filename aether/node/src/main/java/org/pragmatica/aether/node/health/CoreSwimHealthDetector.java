@@ -96,6 +96,11 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         return Unit.unit();
     }
 
+    /// The registry [#setBootTokens] shared with SWIM and the QUIC transport, absent before the swim assembly set it.
+    public Option<BootTokens> bootTokens() {
+        return bootTokens;
+    }
+
     /// Route SWIM's operator warnings to this node's cluster event log (#1574). Applied to a protocol
     /// that is already running, and to any protocol started later.
     public Unit setOperatorWarningSink(OperatorWarningSink sink) {

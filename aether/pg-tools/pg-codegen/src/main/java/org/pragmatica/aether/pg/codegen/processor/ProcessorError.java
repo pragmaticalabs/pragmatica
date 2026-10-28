@@ -118,6 +118,66 @@ public final class ProcessorError {
              + ", JsonText> valueMapping()' for it and drop @Jsonb.";
     }
 
+    public static String jsonColumnUnsupportedType(String target, String type, String reason) {
+        return PREFIX
+             + "'" + target
+             + "' maps to a json/jsonb column, so its type '" + type
+             + "' is read and written as a JSON document, which the JSON codec generator cannot handle: " + reason
+             + ". Write a 'static ValueMapping<" + type
+             + ", JsonText> valueMapping()' for it, or bind JsonText.";
+    }
+
+    public static String stringOnJsonColumn(String target, String column, String table, String pgType) {
+        return PREFIX
+             + "'" + target
+             + "' is a String bound to column '" + table
+             + "." + column
+             + "' of type " + pgType
+             + ". A String parameter is sent as varchar, which json/jsonb refuse: bind a record (a JSON document), "
+             + "JsonText, or cast the parameter in the SQL (CAST(:" + target
+             + " AS " + pgType
+             + "))";
+    }
+
+    public static String jsonAndOtherColumn(String target, String jsonColumn, String otherColumn) {
+        return PREFIX
+             + "'" + target
+             + "' is bound to json/jsonb column '" + jsonColumn
+             + "', so it is sent as a JSON document, and also to column '" + otherColumn
+             + "', which cannot take that document. Bind the other column to a parameter of its own type";
+    }
+
+    public static String stringNotPlaced(String target, String table) {
+        return PREFIX
+             + "'" + target
+             + "' is a String used where its column cannot be determined from the SQL, in a statement on table '" + table
+             + "', which has json/jsonb columns. A String parameter is sent as varchar, which json/jsonb refuse: cast it "
+             + "in the SQL to the type it is meant to be (:" + target
+             + "::text, CAST(:" + target
+             + " AS jsonb)), or write it directly against its column";
+    }
+
+    public static String nonJsonCastOnJsonColumn(String target, String column, String table, String pgType) {
+        return PREFIX
+             + "'" + target
+             + "' is cast to a type other than json/jsonb and bound to column '" + table
+             + "." + column
+             + "' of type " + pgType
+             + ", which takes no other type. Cast it to " + pgType
+             + " (:" + target
+             + "::" + pgType
+             + ") or drop the cast";
+    }
+
+    public static String inferredDocumentColumnMismatch(String target, String column, String table, String pgType) {
+        return PREFIX
+             + "'" + target
+             + "' is sent as a JSON document (inferred from its json/jsonb column) and also maps to column '" + table
+             + "." + column
+             + "' of type " + pgType
+             + "; a JSON document needs a json or jsonb column";
+    }
+
     public static String jsonbColumnMismatch(String target, String column, String table, String pgType) {
         return PREFIX
              + "@Jsonb target '" + target

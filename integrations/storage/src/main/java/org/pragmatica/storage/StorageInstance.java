@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.Map;
 import java.util.function.Consumer;
@@ -22,6 +23,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.FileOps;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,10 +38,27 @@ import static org.pragmatica.lang.Unit.unit;
 /// Hierarchical storage instance with write-through and tier-waterfall reads.
 /// Each instance has its own name, tier configuration, and metadata tracking.
 public interface StorageInstance {
-    /// Store content -- computes SHA-256, deduplicates, writes through tiers.
+    /// The largest block an instance accepts unless built with another limit (`max_block_bytes` in the instance's
+    /// `[storage.<name>]` section). A put, putRef or swapRef of more bytes fails with [StorageError.BlockTooLarge]
+    /// before anything is claimed or written. Callers that split larger content (the content store, the artifact
+    /// store) cut it into blocks that fit: the content store refuses, when it is provisioned, a chunk size whose
+    /// blocks would not ([ContentStoreConfig#validatedAgainst]).
+    int DEFAULT_MAX_BLOCK_BYTES = 16 * 1024 * 1024;
+    /// Store content -- computes SHA-256, deduplicates, writes through tiers. Content over the instance's maximum
+    /// block size fails with [StorageError.BlockTooLarge].
     Promise<BlockId> put(byte[] content);
-    /// Store content with explicit metadata.
-    Promise<BlockId> put(byte[] content, BlockMetadata metadata);
+
+    /// Hands the instance the degrade reporter it reports through (A0b): a block that fails its integrity check on read and a
+    /// write-behind flush that fails reach the operator. Called once, when the instance is assembled. Defaults to nothing.
+    default Unit reportTo(DegradeReporter reporter) {
+        return unit();
+    }
+
+    /// The largest block this instance accepts, in bytes ([#DEFAULT_MAX_BLOCK_BYTES] unless it was built with another).
+    default int maxBlockBytes() {
+        return DEFAULT_MAX_BLOCK_BYTES;
+    }
+
     /// Read content by block ID -- waterfall through tiers by latency.
     Promise<Option<byte[]>> get(BlockId id);
     /// Check if a block exists in any tier.
@@ -218,6 +237,8 @@ public interface StorageInstance {
     ///      existing record may belong to a write still in flight;
     ///   2. `refName` is pointed at the block, with [#putRef]'s counting;
     ///   3. [AppendLog#sealedThrough] advances to `toOffset`, which is what lets [AppendLog#truncate] pass it.
+    /// The maximum block size does not apply to a seal: the sealer chooses the range, and `streams`, the only
+    /// instance that seals, has no cap.
     /// A failure at any step leaves the log's seal bound where it was, so its records stay. "Durable" here
     /// means a tier reporting [StorageTier#isDurable] -- the local disk, or an S3 tier built from config (#249): an
     /// in-memory DHT tier never counts (#1544), and an instance with no
@@ -301,6 +322,25 @@ public interface StorageInstance {
                                            Option<Path> logRoot,
                                            AppendLog.TornTailSink tornTailSink,
                                            Consumer<BlockId> accessListener) {
+        return storageInstance(name,
+                               tiers,
+                               metadataStore,
+                               writePolicy,
+                               logRoot,
+                               tornTailSink,
+                               accessListener,
+                               DEFAULT_MAX_BLOCK_BYTES);
+    }
+
+    /// As above, with the largest block the instance accepts (`maxBlockBytes`, at least 1).
+    static StorageInstance storageInstance(String name,
+                                           List<StorageTier> tiers,
+                                           MetadataStore metadataStore,
+                                           WritePolicy writePolicy,
+                                           Option<Path> logRoot,
+                                           AppendLog.TornTailSink tornTailSink,
+                                           Consumer<BlockId> accessListener,
+                                           int maxBlockBytes) {
         return new DefaultStorageInstance(name,
                                           tiers,
                                           metadataStore,
@@ -308,7 +348,9 @@ public interface StorageInstance {
                                           logRoot,
                                           tornTailSink,
                                           accessListener,
-                                          DefaultStorageInstance.CacheMarkerLimits.DEFAULT);
+                                          DefaultStorageInstance.CacheMarkerLimits.DEFAULT,
+                                          System::currentTimeMillis,
+                                          maxBlockBytes);
     }
 }
 
@@ -333,6 +375,9 @@ final class DefaultStorageInstance implements StorageInstance {
     private final Option<Path> logRoot;
     private final AppendLog.TornTailSink tornTailSink;
     private final Option<WriteBehindQueue> writeBehindQueue;
+
+    private final AtomicReference<DegradeReporter> degrade = new AtomicReference<>(DegradeReporter.degradeReporter("storage"));
+
     /// Non-capacity promotion failures per cache tier, for the WARN-once-then-every-N policy (#910).
     private final Map<TierLevel, AtomicLong> promotionFailures = new ConcurrentHashMap<>();
     private final SingleFlightCache readCache = SingleFlightCache.singleFlightCache();
@@ -350,6 +395,7 @@ final class DefaultStorageInstance implements StorageInstance {
     /// never land -- a ref, cursor or checkpoint naming it would then name nothing.
     private final Map<BlockId, Promise<Unit>> writing = new ConcurrentHashMap<>();
     private final Consumer<BlockId> accessListener;
+    private final int maxBlockBytes;
     /// Levels of the tiers that are cluster-shared: a copy there is not this node's, so a record that places
     /// the block only on these tiers holds nothing of this node's to track.
     private final Set<TierLevel> sharedLevels;
@@ -430,6 +476,29 @@ final class DefaultStorageInstance implements StorageInstance {
                            Consumer<BlockId> accessListener,
                            CacheMarkerLimits markerLimits,
                            LongSupplier clockMillis) {
+        this(name,
+             tiers,
+             metadataStore,
+             writePolicy,
+             logRoot,
+             tornTailSink,
+             accessListener,
+             markerLimits,
+             clockMillis,
+             DEFAULT_MAX_BLOCK_BYTES);
+    }
+
+    DefaultStorageInstance(String name,
+                           List<StorageTier> tiers,
+                           MetadataStore metadataStore,
+                           WritePolicy writePolicy,
+                           Option<Path> logRoot,
+                           AppendLog.TornTailSink tornTailSink,
+                           Consumer<BlockId> accessListener,
+                           CacheMarkerLimits markerLimits,
+                           LongSupplier clockMillis,
+                           int maxBlockBytes) {
+        this.maxBlockBytes = maxBlockBytes;
         this.accessListener = accessListener;
         this.markerLimits = markerLimits;
         this.clockMillis = clockMillis;
@@ -450,12 +519,12 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     @Override
-    public Promise<BlockId> put(byte[] content) {
-        return put(content, BlockMetadata.blockMetadata(content.length));
+    public int maxBlockBytes() {
+        return maxBlockBytes;
     }
 
     @Override
-    public Promise<BlockId> put(byte[] content, BlockMetadata metadata) {
+    public Promise<BlockId> put(byte[] content) {
         return BlockId.blockId(content)
                       .async()
                       .flatMap(id -> handlePut(id, content));
@@ -477,10 +546,13 @@ final class DefaultStorageInstance implements StorageInstance {
 
     /// "Exists" means readable. A cache-only marker records that the block was read here once; the shared copy it
     /// pointed at may be gone, so a marker does not make the block exist -- the tiers are asked.
+    ///
+    /// A claim whose write has not reached its ack point is no record of a block either (SB-02): the tiers are
+    /// asked, so `exists` answers what `get` would find.
     private boolean holdsOwnedRecord(BlockId id) {
-        return metadataStore.getLifecycle(id)
-                            .map(lc -> !lc.cacheOnly())
-                            .or(false);
+        return ! metadataStore.isUnacknowledged(id) && metadataStore.getLifecycle(id)
+                                                                    .map(lc -> !lc.cacheOnly())
+                                                                    .or(false);
     }
 
     /// Fetches the block through the read waterfall only when no node-private tier holds it, and copies it
@@ -735,9 +807,18 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     @Override
+    public Unit reportTo(DegradeReporter reporter) {
+        degrade.set(reporter);
+        writeBehindQueue.onPresent(queue -> queue.reportTo(reporter));
+
+        return unit();
+    }
+
+    @Override
     @Contract
     public void shutdown() {
         writeBehindQueue.onPresent(WriteBehindQueue::deactivate);
+        tiers.forEach(StorageTier::release);
         log.info("Storage instance '{}' shut down", name);
     }
 
@@ -790,12 +871,14 @@ final class DefaultStorageInstance implements StorageInstance {
 
     // --- Write flow ---
     private Promise<BlockId> handlePut(BlockId id, byte[] content) {
-        return claimOrAwait(id,
-                            content,
-                            sentinelFor(id),
-                            this::writeThroughTiers,
-                            this::deduplicateBlock,
-                            this::handlePut);
+        return content.length > maxBlockBytes
+               ? StorageError.BlockTooLarge.blockTooLarge(content.length, maxBlockBytes).promise()
+               : claimOrAwait(id,
+                              content,
+                              sentinelFor(id),
+                              this::writeThroughTiers,
+                              this::deduplicateBlock,
+                              this::handlePut);
     }
 
     /// #1567: one writer per id at a time. The caller registers its own promise in [#writing] before it
@@ -829,7 +912,7 @@ final class DefaultStorageInstance implements StorageInstance {
                                            Promise<Unit> mine,
                                            Fn2<Promise<BlockId>, BlockId, byte[]> write,
                                            Fn2<Promise<BlockId>, BlockId, byte[]> deduplicate) {
-        if (!metadataStore.claimBlock(id, sentinel)) {
+        if (!metadataStore.claimUnacknowledged(id, sentinel)) {
             finishWriting(id, mine, Result.unitResult());
 
             return deduplicate.apply(id, content);
@@ -923,7 +1006,10 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     /// The claim IS the block's lifecycle record -- there is no second one. It names the tier the
-    /// active policy writes first, and [#trackNewBlock] finalizes it in place once the write lands.
+    /// active policy writes first, and [#trackNewBlock] finalizes it in place once the write lands. Until then
+    /// it is an unacknowledged claim ([MetadataStore#claimUnacknowledged]): the record asserts "durably held
+    /// per the ack point" and the write has not reached it, so no snapshot captures the claim and nothing
+    /// reads it as the block (SB-02).
     private BlockLifecycle sentinelFor(BlockId id) {
         return BlockLifecycle.blockLifecycle(id, initialTier());
     }
@@ -1223,10 +1309,14 @@ final class DefaultStorageInstance implements StorageInstance {
     /// The add is idempotent by construction (the claim names the same tier); the fallback keeps
     /// the pre-existing post-condition that a successful put always leaves a record, for the one
     /// case where the claim can vanish mid-write (a metadata restore that clears the map).
+    ///
+    /// This is the ack point: the claim is acknowledged last, once the record holds everything the write
+    /// established, which is what makes it visible to snapshots and to presence checks (SB-02).
     private BlockId trackNewBlock(BlockId id, TierLevel initialTier) {
         metadataStore.computeLifecycle(id,
                                        lc -> lc.withTierAdded(initialTier))
                      .onEmpty(() -> metadataStore.createLifecycle(BlockLifecycle.blockLifecycle(id, initialTier)));
+        metadataStore.acknowledgeClaim(id);
         log.debug("Block {} stored in tier {}", id, initialTier);
 
         return id;
@@ -1374,6 +1464,11 @@ final class DefaultStorageInstance implements StorageInstance {
                                                          StorageTier tier) {
         if (!computedId.equals(expectedId)) {
             log.warn("Integrity check failed in tier {} for block {}", tier.level(), expectedId);
+            degrade.get()
+                   .degraded(OperatorWarningCode.STORAGE_INTEGRITY_FAILED,
+                             "Integrity check failed in tier {} for block {}: the stored copy does not hash to its id and the read failed; later failures of this instance are in the node log only",
+                             tier.level(),
+                             expectedId);
 
             return StorageError.IntegrityError.integrityError(expectedId, computedId).promise();
         }
@@ -1408,8 +1503,10 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     // --- Lifecycle helpers ---
+    /// A read is an observation, not a metadata mutation (C-08): it lands in the metadata store's in-memory
+    /// [AccessTracker], never in the block record, so it cannot move the snapshot trigger or the snapshot's bytes.
     private void recordAccess(BlockId id) {
-        metadataStore.computeLifecycle(id, BlockLifecycle::withAccessTimestamp);
+        metadataStore.accessTracker().record(id);
         accessListener.accept(id);
     }
 
@@ -1431,7 +1528,7 @@ final class DefaultStorageInstance implements StorageInstance {
     /// cache would let demotion evict the only durable copy), or the instance has no shared tier (nothing else
     /// holds the block, so this node's copy is the block).
     private void recordReadPresence(BlockId id, StorageTier tier) {
-        metadataStore.computeLifecycle(id,
+        metadataStore.observeLifecycle(id,
                                        lc -> lc.withTierAdded(tier.level()))
                      .onEmpty(() -> trackReadOnlyBlock(id, tier));
     }
@@ -1450,7 +1547,7 @@ final class DefaultStorageInstance implements StorageInstance {
             confirmMarkerSlot();
         } else {
             giveBackMarkerSlot();
-            recordTierPresence(id, level);
+            metadataStore.observeLifecycle(id, lc -> lc.withTierAdded(level));
         }
     }
 
@@ -1549,7 +1646,8 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     private boolean isIdleSharedOnly(BlockLifecycle marker, long now) {
-        return now - marker.lastAccessedAt() >= markerLimits.idleMs() && sharedLevels.containsAll(marker.presentIn());
+        return now - metadataStore.accessTracker()
+                                  .lastAccessedAt(marker) >= markerLimits.idleMs() && sharedLevels.containsAll(marker.presentIn());
     }
 
     private void recordTierPresence(BlockId id, TierLevel tier) {

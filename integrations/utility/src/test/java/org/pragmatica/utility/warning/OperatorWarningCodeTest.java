@@ -111,6 +111,18 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING.level()).isEqualTo(WarningLevel.WARNING);
     }
 
+    /// #2429: the identity ledger's two codes are what the operator and the events API see: the strings, the level and the
+    /// recovery relation are a contract.
+    @Test
+    void identityLedger_notDurableIsAWarning_andIsClosedByAnInfoRecoveryOfTheSameSubsystem() {
+        assertThat(OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE.code()).isEqualTo("identity-ledger-not-durable");
+        assertThat(OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.IDENTITY_LEDGER_DURABLE.code()).isEqualTo("identity-ledger-durable");
+        assertThat(OperatorWarningCode.IDENTITY_LEDGER_DURABLE.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.IDENTITY_LEDGER_DURABLE.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE);
+        assertThat(OperatorWarningCode.IDENTITY_LEDGER_DURABLE.subsystem()).isEqualTo(OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE.subsystem());
+    }
+
     /// #241: a refused join into a full source is a WARNING with an INFO recovery for the same subject.
     @Test
     void communityGrowthBlocked_isClosedByAnInfoRecovery() {
@@ -165,7 +177,33 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.JSON_CONFIG_APPLIED.code()).isEqualTo("json-config-applied");
     }
 
+    /// #2410: the upload node cap and the upload byte budget each warn once per episode and are closed by an INFO recovery
+    /// of their own subject.
+    @Test
+    void uploadCapAndByteBudget_areWarnings_closedByInfoRecoveriesOfTheirOwn() {
+        assertThat(OperatorWarningCode.UPLOAD_NODE_CAP_SATURATED.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.UPLOAD_NODE_CAP_SATURATED.code()).isEqualTo("upload-node-cap-saturated");
+        assertThat(OperatorWarningCode.UPLOAD_NODE_CAP_RESTORED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.UPLOAD_NODE_CAP_SATURATED);
+        assertThat(OperatorWarningCode.UPLOAD_NODE_CAP_RESTORED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.UPLOAD_BYTE_BUDGET_EXHAUSTED.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.UPLOAD_BYTE_BUDGET_EXHAUSTED.code()).isEqualTo("upload-byte-budget-exhausted");
+        assertThat(OperatorWarningCode.UPLOAD_BYTE_BUDGET_RESTORED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.UPLOAD_BYTE_BUDGET_EXHAUSTED);
+        assertThat(OperatorWarningCode.UPLOAD_BYTE_BUDGET_RESTORED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.UPLOAD_BYTE_BUDGET_RESTORED.code()).isEqualTo("upload-byte-budget-restored");
+    }
+
     private static final Set<OperatorWarningCode> UNCLOSED_BEFORE_THE_RULE = Set.of(
+        // A0b, added on purpose: facts about one boot with no runtime recovery. The disk tier and the memory budget are fixed when
+        // the instance is built and a snapshot is restored once; the only end of each is a restart, which starts a new event log slice.
+        OperatorWarningCode.STORAGE_DISK_TIER_UNAVAILABLE,
+        OperatorWarningCode.STORAGE_MEMORY_TIER_CLAMPED,
+        OperatorWarningCode.STORAGE_SNAPSHOT_FELL_BACK,
+        OperatorWarningCode.STORAGE_WAL_TAIL_CUT,
+        OperatorWarningCode.STORAGE_VOLUME_GUARD_INACTIVE,
+        OperatorWarningCode.STORAGE_WAL_FAIL_STOPPED,
+        OperatorWarningCode.STORAGE_STREAM_DISK_CAP_OVER_SPACE,
+        OperatorWarningCode.STORAGE_STREAM_DISK_SPACE_UNREADABLE,
+        OperatorWarningCode.STORAGE_INTEGRITY_FAILED,
         OperatorWarningCode.SWIM_KILL_GATE_HELD,
         OperatorWarningCode.CORE_ABSENCE_FENCE,
         OperatorWarningCode.REPLICA_FSYNC_FAILED,

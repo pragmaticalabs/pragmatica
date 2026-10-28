@@ -5,10 +5,13 @@ package org.pragmatica.cluster.state.kvstore;
 
 import java.util.List;
 
+import org.pragmatica.serialization.Codec;
+
 
 /// One entry of the commit ring: the plain `Put`/`Remove` commands a batch actually applied (post-merge, refused commands skipped),
 /// applied at `slot`. `from` is the previous entry's `slot + 1`, so the entries form a contiguous chain. An EFFECT entry has a real batch id; a
 /// RANGE MARKER has no effects, `batchId = NONE` and `slot = to - 1`, and means "batches in [from, to) applied, none with a recorded effect".
+@Codec
 public record ReplicaEntry(IncarnationTag tag, long from, long slot, String batchId, List<KVCommand<?>> effects) {
     public static final String NONE = "";
 

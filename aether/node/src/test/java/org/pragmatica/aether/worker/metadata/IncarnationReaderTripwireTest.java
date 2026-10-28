@@ -12,12 +12,14 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 import io.netty.buffer.ByteBuf;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue;
+import org.pragmatica.aether.slice.kvstore.ReplicaFilter;
+import org.pragmatica.aether.node.ReplicaIncarnationSource;
+import org.pragmatica.cluster.state.kvstore.CommitRing;
 import org.pragmatica.cluster.state.kvstore.IncarnationTag;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -27,14 +29,12 @@ import org.pragmatica.serialization.Serializer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// Worker-replica tripwire for the production incarnation reader (W-OBS, section 2.1 R-02). The commit ring records and serves only under a
-/// committed incarnation tag, read from `ClusterIncarnationKey` by an `IncarnationSource`. W1 lands the ring with no production reader of
-/// that key: `AetherNode` builds its store with the three-argument constructor, which wires `IncarnationSource.none()`, so the production ring
-/// records nothing. W2 adds the real reader. This ENABLED tripwire pins today's wiring so the gap cannot be forgotten; the real assertion is
-/// `@Disabled` beside it.
+/// Worker-replica wiring pin for the production incarnation reader (W-OBS, section 2.1 R-02). The commit ring records and serves only under a
+/// committed incarnation tag, read from `ClusterIncarnationKey` by an `IncarnationSource`. W1 landed the ring with no production reader (the
+/// store was built with `IncarnationSource.none()`, so the production ring recorded nothing, pinned by this class's ENABLED tripwire). W2 adds
+/// `ReplicaIncarnationSource` and wires it into the store `AetherNode` builds; this class now pins THAT wiring and the ring's behavior under it.
 class IncarnationReaderTripwireTest {
-    private static final String ENABLE_AT_W2 = "enable at W2: real incarnation reader";
-    private static final String PRODUCTION_CONSTRUCTION = "newKVStore<AetherKey,AetherValue>(delegateRouter,serializer,deserializer)";
+    private static final String PRODUCTION_CONSTRUCTION = "newKVStore<AetherKey,AetherValue>(delegateRouter,serializer,deserializer,ReplicaFilter.replicaFilter(),ReplicaIncarnationSource.replicaIncarnationSource(),CommitRing.DEFAULT_BUDGET_BYTES)";
 
     private static final Serializer NO_BYTES = new Serializer() {
         @Override
@@ -48,9 +48,15 @@ class IncarnationReaderTripwireTest {
         }
     };
 
-    /// The store as `AetherNode` builds it (the three-argument constructor): a cluster incarnation committed at slot 0, then an ordinary write.
+    /// The store as `AetherNode` builds it (the six-argument constructor with the production filter, reader and budget): a cluster incarnation
+    /// committed at slot 0, then an ordinary write.
     private static KVStore<AetherKey, AetherValue> productionStoreAfterGenesis() {
-        var store = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), NO_BYTES, NOTHING);
+        var store = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(),
+                                                        NO_BYTES,
+                                                        NOTHING,
+                                                        ReplicaFilter.replicaFilter(),
+                                                        ReplicaIncarnationSource.replicaIncarnationSource(),
+                                                        CommitRing.DEFAULT_BUDGET_BYTES);
 
         commit(store, 0, AetherKey.ClusterIncarnationKey.SINGLETON, ClusterIncarnationValue.genesis("lineage-1", "incarnation-id-1"));
         commit(store, 1, new AetherKey.LogLevelKey("org.example"), AetherValue.LogLevelValue.logLevelValue("org.example", "DEBUG"));
@@ -104,24 +110,20 @@ class IncarnationReaderTripwireTest {
         }
     }
 
+    /// Mutation: build the store in `AetherNode` with the three-argument constructor (`IncarnationSource.none()`) again.
     @Test
-    void productionWiresNoIncarnationReader_soTheRingRecordsNothing_today() {
-        var store = productionStoreAfterGenesis();
-
-        assertThat(aetherNodeCode()).as("%s: AetherNode builds its store with the three-argument constructor (IncarnationSource.none())", ENABLE_AT_W2)
+    void productionWiresTheIncarnationReader_soTheRingRecordsUnderTheCommittedTag() {
+        assertThat(aetherNodeCode()).as("AetherNode builds its store with the production filter, the incarnation reader and the default budget")
                                     .contains(PRODUCTION_CONSTRUCTION);
-        assertThat(aetherMainSourcesNamingAnIncarnationSource()).as("%s: no aether main source supplies an IncarnationSource", ENABLE_AT_W2).isEmpty();
-        assertThat(store.replicaRing().tag().isNone()).as("%s: with a committed incarnation the production ring's tag is still NONE", ENABLE_AT_W2).isTrue();
-        assertThat(store.replicaRing().entries()).as("%s: and the production ring records nothing", ENABLE_AT_W2).isEmpty();
-    }
+        assertThat(aetherMainSourcesNamingAnIncarnationSource()).as("the reader is an aether main source")
+                                                                .anyMatch(path -> path.getFileName().toString().equals("ReplicaIncarnationSource.java"));
 
-    @Disabled("enable at W2: real incarnation reader (re-point productionStoreAfterGenesis at the store AetherNode wires with it)")
-    @Test
-    void productionRing_carriesTheCommittedIncarnation() {
         var store = productionStoreAfterGenesis();
 
         assertThat(store.replicaRing().tag()).as("the ring's tag is the committed (incarnation, incarnationId)")
                                              .isEqualTo(IncarnationTag.incarnationTag(ClusterIncarnationValue.GENESIS, "incarnation-id-1"));
-        assertThat(store.replicaRing().entries()).extracting(entry -> entry.slot()).as("the genesis batch is a bump (not delivered); the write after it is").containsExactly(1L);
+        assertThat(store.replicaRing().entries()).extracting(entry -> entry.slot())
+                                                 .as("the genesis batch is a bump (not delivered); the write after it is")
+                                                 .containsExactly(1L);
     }
 }

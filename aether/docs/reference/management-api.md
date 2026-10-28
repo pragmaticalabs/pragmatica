@@ -526,8 +526,37 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `json-config-applied` (INFO — the recovery: a valid `[json]` configuration was adopted after a refusal; published only after a published `json-config-rejected` for the same `subject`)
 - `instance-reap-held` (WARNING — auto-heal is disabled, so the cluster did not delete the instance of a node it would otherwise have reaped: a departed node, an orphan the sweep found, a surplus trim, the reap of a never-joined zombie, or the retry or re-check of any of them; `subject` is the node, the message names which. The instance is kept for diagnosis and keeps billing. Raised once per node by the leader that held the reap; enable auto-heal to have it reaped, or terminate it at the provider yourself)
 - `instance-reap-released` (INFO — the recovery: auto-heal is enabled again and the reap is no longer held (it is then subject to the usual liveness and refusal checks), or the node joined the cluster again; published only after a published `instance-reap-held` for the same `subject`. Raised by the leader that held the reap, so a leader change in between leaves the held event open)
+- `upload-node-cap-saturated` (WARNING — an upload was refused `429` because the node holds `[app-http.upload] max_concurrent` uploads; `subject` is the node; raised once per episode on the first refusal, not once per refused request; a per-principal refusal raises nothing; issue #2410)
+- `upload-node-cap-restored` (INFO — the recovery: an upload finished and the node accepts uploads again; published only after a published `upload-node-cap-saturated` for the same `subject`)
+- `upload-byte-budget-exhausted` (WARNING — an upload was refused `503` because the declared bytes of the uploads in flight reached `[app-http.upload] max_in_flight_size`; `subject` is the node; raised once per episode on the first refusal, not once per refused request; issue #2410)
+- `upload-byte-budget-restored` (INFO — the recovery: releases left at most half of the budget reserved; published only after a published `upload-byte-budget-exhausted` for the same `subject`)
+- `storage-disk-tier-unavailable` (CRITICAL — a storage instance's disk tier could not be opened and the instance runs on memory plus the shared tier, so its writes are acknowledged without a durable local copy; raised for the instances the node placed itself (the synthesized `artifacts` and `content`, a derived path) and for `streams` on a directly built node, while an operator-written `disk_path` that does not exist or cannot open refuses the boot; `subject` is the instance, gauge `aether.storage.disk.degraded{instance}` is 1; fixed by repairing the path and restarting, so it has no recovery event)
+- `storage-memory-tier-clamped` (WARNING — an instance's configured `memory_max_bytes` was cut because the memory tiers of all instances exceeded 25% of the maximum heap; `subject` is the instance, the message names the configured and effective bytes and the heap; boot-time, so it has no recovery event)
+- `storage-demotion-refused` (WARNING — a durable tier is above its high watermark and holds the only durable copy of its blocks, so nothing is demoted; writes that need it fail with `TierFull` once it is full; `subject` is the instance; raised once per episode)
+- `storage-demotion-resumed` (INFO — the recovery: the tier is back under its high watermark; raised only after `storage-demotion-refused` was offered to the event feed for the same `subject`)
+- `storage-snapshot-write-failed` (WARNING — the instance's metadata snapshot cannot be written, so the references it holds are unprotected across a restart; `subject` is the instance; raised once, not on every 10 s tick)
+- `storage-snapshot-write-recovered` (INFO — the recovery: a snapshot was written; raised only after `storage-snapshot-write-failed` was offered to the event feed for the same `subject`)
+- `storage-snapshot-fell-back` (WARNING — the newest snapshot was unreadable and an older retained one was restored, so metadata recorded only in the unreadable file is lost unless a WAL replays it; `subject` is the instance; a restore happens once at boot, so there is no recovery event)
+- `storage-tier-full` (WARNING — a write was refused because a durable local-disk tier is full; `subject` is the instance; raised once per episode, on the first refused write; the episode ends when a write at least as large as the smallest one refused in it fits, so a full tier alternating large and small writes raises once)
+- `storage-tier-writable` (INFO — the recovery: a write at least as large as the smallest refused one fit on the tier; raised only after `storage-tier-full` was offered to the event feed for the same `subject`)
+- `storage-dht-marker-unverified` (WARNING — the post-formation check of the instance's DHT encryption marker cannot complete, so its DHT tier stays gated and the node stays not-ready; `subject` is the instance; raised once, the check keeps retrying; a refusal aborts the boot instead)
+- `storage-dht-marker-verified` (INFO — the recovery: the check completed and the DHT tier was admitted; raised only after `storage-dht-marker-unverified` was offered to the event feed for the same `subject`)
+- `storage-maintenance-not-started` (WARNING — demotion, promotion or garbage collection could not be started when the node reported ready; `subject` is the instance, or `leader-maintenance` for the leader-pinned group)
+- `storage-maintenance-started` (INFO — the recovery: the managers were activated; raised only after `storage-maintenance-not-started` was offered to the event feed for the same `subject`)
+- `storage-wal-tail-cut` (WARNING — a stream append log cut a torn tail while opening, bytes that were never acknowledged; `subject` is the instance; a cut happens once at open, so there is no recovery event)
+- `storage-volume-guard-inactive` (WARNING — the unmounted-volume guard of the instance is off: its sentinel is on the same filesystem as the guarded volume and is lost with it, so the node would boot empty on an unmounted volume instead of refusing; `subject` is the instance; decided once at boot, no recovery event)
+- `storage-wal-fail-stopped` (CRITICAL — a stream append log fail-stopped after a failed fsync, frame write or reopen and refuses every append until the node restarts; `subject` is the instance, the message names the log; raised once per instance, no recovery event)
+- `storage-prefetch-not-started` (WARNING — the instance's prefetch manager could not be activated when the node reported ready; `subject` is the instance)
+- `storage-prefetch-started` (INFO — the recovery: the prefetch manager was activated; raised only after `storage-prefetch-not-started` was offered to the event feed for the same `subject`)
+- `storage-stream-disk-cap-over-space` (WARNING — `[streaming] segment_disk_max_bytes` is larger than the space usable where stream segments are kept, so stream seals fail with `TierFull` before the cap is reached; `subject` is `streams`; decided at boot, no recovery event)
+- `storage-stream-disk-space-unreadable` (WARNING — the space usable where stream segments are kept could not be read, so the streams disk cap fell back to its floor; `subject` is `streams`; decided at boot, no recovery event)
+- `storage-integrity-failed` (CRITICAL — a block read from a tier did not hash to its id and the read failed; `subject` is the instance, the message names the tier and the block; raised once per instance, later failures are in the node log only; no recovery event, because nothing observable proves a repair)
+- `storage-write-behind-flush-failed` (WARNING — a write-behind flush to a slower tier failed, so an acknowledged block is not yet on that tier; `subject` is the instance; raised once per episode)
+- `storage-write-behind-flushed` (INFO — the recovery: a later flush succeeded; raised only after `storage-write-behind-flush-failed` was offered to the event feed for the same `subject`)
 
 Best-effort like every per-node event: during a partition or bootstrap the publish can be dropped, and the log line is then the only record.
+
+Storage recoveries follow their warnings in order: a storage condition is offered to the event feed exactly once (when raised, or when the feed binds if it was raised before), and its recovery only after that. A condition raised and recovered before the feed binds is logged both times and published neither. Warning codes with no recovery (`storage-disk-tier-unavailable`, `storage-memory-tier-clamped`, `storage-snapshot-fell-back`, `storage-wal-tail-cut`, `storage-volume-guard-inactive`, `storage-wal-fail-stopped`, `storage-stream-disk-cap-over-space`, `storage-stream-disk-space-unreadable`, `storage-integrity-failed`) stay open for the life of the node and are never raised twice.
 
 `DEPLOYMENT_FAILED` is emitted **once per (artifact, node) pair** whose deployment attempt failed — `ClusterEventAggregator.handleDeploymentFailed` fires on each node-artifact KV transition to `FAILED`, so a blueprint spread across N nodes that fails deterministically on all of them produces N separate events, each with its own `nodeId` in `details.nodeId` and the failure text in `details.reason`. Because `cluster-events` is a single replicated stream, all N events are visible from `GET /api/v1/events` on **any** node, not only the one that failed.
 
@@ -2273,7 +2302,7 @@ readiness.
 ```
 
 - `utilizationPct`: `usedBytes / maxBytes` as a percentage rounded to one decimal (`0.0` when `maxBytes` is 0).
-- `readiness.isReadReady` / `isWriteReady`: whether the instance's `StorageReadinessGate` currently admits reads / writes.
+- `readiness.isReadReady` / `isWriteReady`: whether the instance's `StorageReadinessGate` currently admits reads / writes. `isReadReady` turns true once the local snapshot is loaded; `isWriteReady` turns true when the node reports ready (its DHT-backed instances admitted), and stays false before that. Nothing in the storage engine consults the gate yet: it is an observability signal.
 - `wal` (#634-3): live stream-WAL usage — non-`null` **only on the `streams` instance**. The WAL is a
   sibling directory of the segment store, not a storage tier, so without this field the `streams`
   instance under-reports its real disk footprint by the entire WAL. Every other instance reports
@@ -2314,7 +2343,7 @@ exists on the node.
 ```
 
 - `snapshot.lastEpoch` / `lastTimestampMs`: epoch and epoch-millis of the most recent metadata snapshot taken by the instance's `SnapshotManager` (`0` when none has been taken yet).
-- `maintenance`: what the instance's background maintenance has done **on this node** since boot (counters are not persisted and not cluster totals). `active` is whether the manager is running now. Demotion and promotion run on every node once it reports ready and stop when the node starts draining or stops; GC follows the leader; `streams` demotion follows the leader. `promotion.enabled` is `false` for `streams` and for an instance with `[storage.<name>] promotion = false`. `promotion.failed` counts copies that failed on the source read or the target write; it rising while `blocksPromoted` stands still raises the `storage-promotion-stalled` cluster event (below). `lastRunMs` is `0` until a pass has run.
+- `maintenance`: what the instance's background maintenance has done **on this node** since boot (counters are not persisted and not cluster totals). `active` is whether the manager is running now. Demotion, promotion and GC of `artifacts` and `content` run on every node once it reports ready and stop when the node starts draining or stops; `streams` GC runs on every node from build; `streams` demotion follows the leader. `promotion.enabled` is `false` for `streams` and for an instance with `[storage.<name>] promotion = false`. `promotion.failed` counts copies that failed on the source read or the target write; it rising while `blocksPromoted` stands still raises the `storage-promotion-stalled` cluster event (below). `lastRunMs` is `0` until a pass has run.
 - The same counters are on the Prometheus endpoint as `aether_storage_promotion_blocks`, `_bytes`, `_failed` and `_cycles`, tagged `instance` (instances that promote only).
 - **Operator event `storage-promotion-stalled`** (`OPERATOR_WARNING`, subject = the instance): three consecutive promotion cycles copied nothing while copy attempts failed, that is, the faster tier rejects the write or the source tier cannot be read. It detects failing copies only: a tier sitting above its promotion watermark is skipped without an attempt and raises nothing. Recovery: check both tiers' health and free space (`memory_max_bytes` / `disk_max_bytes` in `[storage.<name>]`), or set `[storage.<name>] promotion = false`. `storage-promotion-resumed` (INFO) closes it, and only a cycle that copied a block successfully does: a cycle with nothing to copy leaves it raised.
 - `wal`: same semantics as on `GET /api/v1/storage` — non-`null` only when `{name}` is `streams`.
@@ -6569,7 +6598,7 @@ The `max_request_size` field accepts human-readable data size values:
 | `MB` | `"5MB"` | 5,242,880 |
 | `GB` | `"1GB"` | 1,073,741,824 |
 
-Default: `10MB` (10,485,760 bytes). Requests exceeding this limit receive `413 Request Entity Too Large`, over HTTP/1.1 and HTTP/3 alike. A plain integer is read as a byte count. A request forwarded to the node serving its route must also fit one cluster frame (32 MiB less a 64 KiB reserve); a larger one receives `413` with a detail saying it is too large to forward, and is not sent.
+Default: `10MB` (10,485,760 bytes). This is the default body limit of every route that does not declare its own `max_size` (see [Per-route limits and upload routes](#per-route-limits-and-upload-routes)). Requests exceeding the limit receive `413 Request Entity Too Large`, over HTTP/1.1 and HTTP/3 alike. A plain integer is read as a byte count. A request forwarded to the node serving its route must also fit one cluster frame (32 MiB less a 64 KiB reserve); a larger one receives `413` with a detail saying it is too large to forward, and is not sent.
 
 #### Read timeout and minimum body rate
 
@@ -6588,11 +6617,67 @@ Both bounds apply the same way over HTTP/1.1 and HTTP/3.
 
 Request trailers (an HTTP/1.1 chunked trailer section, or an HTTP/3 HEADERS frame after the body) are accepted but not delivered to the handler, over HTTP/1.1 and HTTP/3 alike: a request exposes only its headers and body. A request-trailers API is tracked as #2310.
 
+#### Per-route limits and upload routes
+
+The app listener decides what to do with a request from its HEADERS alone, before it reads any body byte, over HTTP/1.1 and HTTP/3 alike. It resolves the route, applies the route's security policy (authentication and the role check) and then the route's limits. A request that fails authentication, or is over a limit, is answered at once and its body is never read:
+
+- **Auth before body.** An unauthenticated request to a protected route is answered `401` (`403` for a missing role) on its headers. A client that sent `Expect: 100-continue` is never told to continue. The connection is closed without reading the body.
+- **Per-route body limit.** A route declares `max_size` in `routes.toml` (see below). A declared `Content-Length` over the limit is answered `413` on the headers. A body without one (chunked on HTTP/1.1, an HTTP/3 stream with no `content-length`) is answered `413` at the byte that crosses the limit. Either way the connection is closed within about a second, and the rest of the body is never read into memory. A route that declares no `max_size` takes `[app-http] max_request_size`.
+- **The ceiling.** `[app-http.upload] max_size_ceiling` caps what any route may declare: the limit in force is the smaller of the route's `max_size` and the ceiling, and never more than one in-memory array can hold (2 GiB less 8 bytes). The ceiling defaults to 256 MiB until streaming storage exists, because every upload body is held in memory (see the known limits below). A `Content-Length` above the limit in force, including one above 2 GiB, is answered `413` on the headers, whatever the route declares.
+- **Ingress that does not host the route.** The limits travel with the replicated route entry, so a node that forwards a request enforces them before it reads the body, with the strictest limits any serving node declared.
+
+An **upload route** is one whose `consumes` is binary or multipart. It additionally takes concurrency caps and its own timing bounds:
+
+```toml
+[app-http.upload]
+max_size_ceiling = "256MB"           # Default: 256MB until streaming storage. The largest max_size any route may declare.
+max_concurrent = 64                  # Default: 64. Uploads in flight on this node.
+max_concurrent_per_principal = 8     # Default: 8. Uploads in flight for one principal (API key name or JWT subject).
+idle_timeout = "30s"                 # Default: 30s. A body that delivers no byte for this long is refused.
+min_body_rate = "1KB"                # Default: 1KB per second, after a first 30 s, averaged over each following 30 s.
+max_in_flight_size = "512MB"         # Default: a quarter of the JVM's maximum heap. Declared body bytes in flight on this node.
+```
+
+| Condition | Answer |
+|---|---|
+| more than `max_concurrent`, or `max_concurrent_per_principal`, uploads in flight | `429 Too Many Requests` with `Retry-After: 5`, on the headers |
+| the declared bytes of the uploads in flight would pass `max_in_flight_size` | `503 Service Unavailable` with `Retry-After: 5`, on the headers |
+| the body is idle for `idle_timeout`, below `min_body_rate`, or past the route's `max_duration` (default 6 hours) | `408 Request Timeout`, then the connection is closed (over HTTP/3, the stream's input is reset) |
+
+A slot is held from the request headers until the body has been received (or the request ends without it), so the caps bound the bodies being buffered at once. The byte budget is taken the same way: an upload reserves its `Content-Length` (the route's limit in force when it declares none; never more than the budget itself, so one upload larger than the budget runs alone) and returns it with its slot. All six keys must be positive; an unknown key in `[app-http.upload]` refuses the configuration. Routes that are not upload routes keep the general `read_timeout` and `min_body_rate` above.
+
+Per-route keys, on an inline-table route in `routes.toml`:
+
+```toml
+[routes]
+importCsv = { route = "POST /import", consumes = "multipart/form-data", max_size = "200MB", max_duration = "30m" }
+```
+
+| Key | Meaning |
+|---|---|
+| `max_size` | The request body limit: a size string (`"256MB"`, `"512KB"`) or an integer number of bytes, greater than zero; capped by `[app-http.upload] max_size_ceiling` |
+| `max_duration` | The longest the whole body may take: a duration string (`"6h"`, `"90s"`), greater than zero. Upload routes only take effect; default 6 hours |
+| `max_files` | The most file parts a multipart body may carry: a whole number greater than zero |
+| `max_file_size` | The most bytes in one file part: a size string or an integer number of bytes, greater than zero |
+| `max_fields` | The most text fields a multipart body may carry (every value of a repeated name counts): a whole number greater than zero |
+| `max_field_size` | The most bytes in one text field value, as sent: a size string or an integer number of bytes, greater than zero |
+
+The four part keys are checked on the aggregated body, which `max_size` has already bounded: a multipart request that breaks one is answered `413 Request Entity Too Large` before it reaches the slice, whether the slice runs on the accepting node or another. A part whose Content-Type is `multipart/*` is **nested**, whatever its Content-Disposition (a `filename` included) and whatever the subtype (`multipart/mixed`, which RFC 7578 deprecates, `alternative`, ...); any other part with a filename, or without one but with a Content-Type other than `text/plain`, is a file; every other part is a field. A nested part is refused with `400` on a route that declares part limits, because the decoder would return its inner parts as files and fields the scan does not count (when a body is both nested and over the part cap, the nested `400` answers if the nested part is among the first parts the scan reads, else the cap's `413`); a route with no part limits is unaffected. A part's size is the number of bytes between its header block and the next delimiter, the size on the wire (RFC 7578 allows no `Content-Transfer-Encoding`). The check reads the multipart framing only: the body is not decoded and no part content is copied, so it is decoded once, by whoever reads it. It runs on a bounded blocking executor, never on the event loop; when every worker is busy and its queue is full the request is answered `503` with `Retry-After`. A body with more parts than the decoder's cap (128, or `max_files + max_fields` when larger) on a route that declares part limits is answered `413` as well; the scan stops at the first part past the cap, so its memory and time are proportional to the cap, not to the number of parts the body claims. A request that is not `multipart/form-data`, or is not a closed multipart body, is left to the handler as before.
+
+An unknown key on an inline-table route is a compile error, because the loader used to ignore it and a mistyped `max_size` left the route at the default limit. `resumable` and `unclaimed_ttl` are refused too: they need the streaming upload path, which is not in this release, and a limit that is declared but not enforced is worse than none.
+
+When the node's own upload cap (`max_concurrent`) is reached, the first refused upload raises one operator event, `upload-node-cap-saturated` (WARNING, subject: the node), instead of one per refused request; the first upload to finish after it raises its recovery, `upload-node-cap-restored`. When the byte budget (`max_in_flight_size`) is reached, the first refused upload raises `upload-byte-budget-exhausted` (WARNING, subject: the node), once for the episode; its recovery, `upload-byte-budget-restored`, is raised by the first release that leaves at most half of the budget reserved. A refusal for one principal's cap (`max_concurrent_per_principal`), an over-size `413` and a `408` are client errors and raise no event. The header-read timeout is not an upload key: it stays under `[app-http] read_timeout`.
+
+**Known limits until streaming storage (U2).** Upload routes still read the whole body into memory before the slice runs: the limits above bound that memory per request and per node, they do not stream it. Two costs follow, both measured on one host with 64 other connections sampled every 20 ms:
+
+- Aggregating the body into one array holds the event loop that carries the upload's connection. Another connection on that loop saw a worst stall of 41-53 ms, 172-190 ms and 318-434 ms for bodies of 100, 300 and 500 MiB (three uploads each, on a quiet 16-core host). This is the remaining stall; the multipart part-limit check adds none of its own, because it runs off the loop.
+- A multipart body of 500 MiB needed about 1.6 GiB of heap and 1 GiB of direct memory in the same measurement. Size `max_size`, `max_concurrent`, `max_in_flight_size` and the node's heap together; the 256 MiB ceiling and the byte budget keep the defaults inside a node's heap, they do not make a smaller heap safe.
+
 ### Multipart File Upload
 
-The app HTTP server supports multipart file uploads via Netty's `HttpPostRequestDecoder`. Multipart requests are subject to the same `max_request_size` limit. Slice-generated routes with file upload parameters automatically handle multipart decoding.
+The app HTTP server supports multipart file uploads via Netty's `HttpPostRequestDecoder`. Multipart requests are subject to the route's `max_size` (default `max_request_size`) and the upload bounds above. Slice-generated routes with file upload parameters automatically handle multipart decoding.
 
-A multipart route answers `415 Unsupported Media Type` when the request's Content-Type is not `multipart/form-data` (matched case-insensitively), and `400 Bad Request` when the body is malformed: no `boundary` parameter, no closing boundary delimiter (a truncated body), more than 128 parts, or a part the decoder cannot read. The ProblemDetail `detail` is a fixed description, never decoder internals. A filename-less part with a Content-Type other than `text/plain` is delivered as a file with an empty filename. A repeated field name keeps every value: `MultipartRequest.fieldValues(name)` returns them in body order, and `field(name)` returns the first.
+A multipart route answers `415 Unsupported Media Type` when the request's Content-Type is not `multipart/form-data` (matched case-insensitively), and `400 Bad Request` when the body is malformed: no `boundary` parameter, no closing boundary delimiter (a truncated body), more than 128 parts (on a route that declares no part limits), or a part the decoder cannot read. The ProblemDetail `detail` is a fixed description, never decoder internals. A filename-less part with a Content-Type other than `text/plain` is delivered as a file with an empty filename. A repeated field name keeps every value: `MultipartRequest.fieldValues(name)` returns them in body order, and `field(name)` returns the first.
 
 ### Voter reconfiguration diagnostics
 

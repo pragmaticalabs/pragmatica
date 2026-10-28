@@ -9,8 +9,10 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.storage.DegradeReporter;
 import org.pragmatica.storage.DemotionManager;
 import org.pragmatica.storage.StorageGarbageCollector;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -20,23 +22,42 @@ import static org.pragmatica.lang.Unit.unit;
 
 public final class DelegatedStorageAdapter {
     private static final Logger log = LoggerFactory.getLogger(DelegatedStorageAdapter.class);
+    /// The operator-warning subject of the leader-pinned group, which belongs to no single storage instance (#800, #1736).
+    public static final String REPORT_SUBJECT = "leader-maintenance";
 
     private final DemotionManager demotionManager;
     private final StorageGarbageCollector garbageCollector;
     private final AtomicBoolean active = new AtomicBoolean(false);
+    private final DegradeReporter degrade;
 
-    private DelegatedStorageAdapter(DemotionManager demotionManager, StorageGarbageCollector garbageCollector) {
+    private DelegatedStorageAdapter(DemotionManager demotionManager,
+                                    StorageGarbageCollector garbageCollector,
+                                    DegradeReporter degrade) {
         this.demotionManager = demotionManager;
         this.garbageCollector = garbageCollector;
+        this.degrade = degrade;
     }
 
+    /// The group reports nowhere: its activation failure is the log line alone.
     public static DelegatedStorageAdapter delegatedStorageAdapter(DemotionManager demotionManager,
                                                                   StorageGarbageCollector garbageCollector) {
-        return new DelegatedStorageAdapter(demotionManager, garbageCollector);
+        return new DelegatedStorageAdapter(demotionManager,
+                                           garbageCollector,
+                                           DegradeReporter.degradeReporter(REPORT_SUBJECT));
+    }
+
+    /// A0b: as above, with a failed activation of the leader-pinned group raised through `degrade` as an operator warning
+    /// (and closed when a later activation succeeds). The group spans instances, so its subject is [#REPORT_SUBJECT].
+    public static DelegatedStorageAdapter delegatedStorageAdapter(DemotionManager demotionManager,
+                                                                  StorageGarbageCollector garbageCollector,
+                                                                  DegradeReporter degrade) {
+        return new DelegatedStorageAdapter(demotionManager, garbageCollector, degrade);
     }
 
     public static DelegatedStorageAdapter noOp() {
-        return new DelegatedStorageAdapter(noOpDemotionManager(), noOpGarbageCollector());
+        return new DelegatedStorageAdapter(noOpDemotionManager(),
+                                           noOpGarbageCollector(),
+                                           DegradeReporter.degradeReporter(REPORT_SUBJECT));
     }
 
     private static DemotionManager noOpDemotionManager() {
@@ -118,9 +139,23 @@ public final class DelegatedStorageAdapter {
               .map((_, _) -> unit())
               .onSuccessRun(() -> active.set(true))
               .onSuccessRun(() -> log.info("STORAGE delegation group activated"))
+              .onSuccessRun(this::reportActivated)
+              .onFailure(this::reportNotActivated)
               .onFailureRun(() -> stopPartiallyActivated(demotion, collector));
 
         return Promise.success(unit());
+    }
+
+    private void reportActivated() {
+        degrade.recovered(OperatorWarningCode.STORAGE_MAINTENANCE_NOT_STARTED,
+                          "Leader-pinned storage maintenance started");
+    }
+
+    private void reportNotActivated(Cause cause) {
+        degrade.degraded(OperatorWarningCode.STORAGE_MAINTENANCE_NOT_STARTED,
+                         "Leader-pinned storage maintenance (demotion, garbage collection) could not be started: {}; "
+                        + "it is retried on the next leader election",
+                         cause.message());
     }
 
     private void stopPartiallyActivated(Result<Unit> demotion, Result<Unit> collector) {

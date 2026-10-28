@@ -54,7 +54,7 @@ public final class PgAsyncConnection implements io.r2dbc.spi.Connection {
     public Publisher<Void> beginTransaction() {
         return Mono.create(sink -> connection.begin()
                                              .onSuccess(tx -> storeTransactionAndComplete(tx, sink))
-                                             .onFailure(cause -> sink.error(new R2dbcAdapterException(cause.message()))));
+                                             .onFailure(cause -> sink.error(R2dbcAdapterException.from(cause))));
     }
 
     @Override
@@ -65,7 +65,7 @@ public final class PgAsyncConnection implements io.r2dbc.spi.Connection {
 
         return Mono.create(sink -> currentTransaction.commit()
                                                      .onSuccess(_ -> clearTransactionAndComplete(sink))
-                                                     .onFailure(cause -> sink.error(new R2dbcAdapterException(cause.message()))));
+                                                     .onFailure(cause -> sink.error(R2dbcAdapterException.from(cause))));
     }
 
     @Override
@@ -76,14 +76,14 @@ public final class PgAsyncConnection implements io.r2dbc.spi.Connection {
 
         return Mono.create(sink -> currentTransaction.rollback()
                                                      .onSuccess(_ -> clearTransactionAndComplete(sink))
-                                                     .onFailure(cause -> sink.error(new R2dbcAdapterException(cause.message()))));
+                                                     .onFailure(cause -> sink.error(R2dbcAdapterException.from(cause))));
     }
 
     @Override
     public Publisher<Void> close() {
         return Mono.create(sink -> connection.close()
                                              .onSuccess(_ -> sink.success())
-                                             .onFailure(cause -> sink.error(new R2dbcAdapterException(cause.message()))));
+                                             .onFailure(cause -> sink.error(R2dbcAdapterException.from(cause))));
     }
 
     private void storeTransactionAndComplete(Transaction tx, MonoSink<Void> sink) {

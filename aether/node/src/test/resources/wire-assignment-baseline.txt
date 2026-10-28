@@ -48,6 +48,8 @@ ENUM org.pragmatica.aether.stream.forward.ReadRefusal$Kind STREAM_NOT_FOUND=0,PA
 ENUM org.pragmatica.aether.stream.provenance.ProvenanceEntry$ProvenanceKind OWNED=0,UNATTRIBUTED=1,BASE=2,UNKNOWN=3
 ENUM org.pragmatica.cluster.metrics.ConnectivityState CONNECTED=0,DISCONNECTED=1,STALE=2,UNKNOWN=3
 ENUM org.pragmatica.cluster.metrics.HealthHintWire HEALTHY=0,SUSPECTED=1,FAULTY=2,UNKNOWN=3
+ENUM org.pragmatica.cluster.replica.ReplicaFeedMessage$SubscribeMode LIVE_ONLY=0,FROM_ANCHOR=1,UNKNOWN=2
+ENUM org.pragmatica.cluster.state.kvstore.CommitRing$RefusalReason EVICTED=0,INCARNATION_MISMATCH=1,AHEAD=2,BUSY=3,NOT_SERVING=4,UNKNOWN=5
 ENUM org.pragmatica.consensus.rabia.ResponderState LIVE=0,COLD=1,UNKNOWN=2
 ENUM org.pragmatica.consensus.rabia.StateValue V0=0,V1=1,VQUESTION=2,UNKNOWN=3
 ENUM org.pragmatica.dht.DHTMessage$Readiness SERVING=0,CATCHING_UP=1,UNKNOWN=2
@@ -262,7 +264,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodeArtifactValue (state:o
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodePlacementValue (sourceName:java.lang.String,observedZone:org.pragmatica.lang.Option<java.lang.String>,providerInstanceId:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodeReplacementValue (replacement:org.pragmatica.consensus.NodeId,role:java.lang.String,phase:org.pragmatica.aether.slice.kvstore.AetherValue$NodeReplacementPhase,phaseDeadlineMs:long,source:java.lang.String,targetVersion:java.lang.String,mode:java.lang.String,attempt:int,reason:java.lang.String,epoch:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodeRoutesValue (routes:java.util.List<org.pragmatica.aether.slice.kvstore.AetherValue$NodeRoutesValue$RouteEntry>,observedCoreEpoch:org.pragmatica.aether.slice.generation.Epoch)
-SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodeRoutesValue$RouteEntry (httpMethod:java.lang.String,pathPrefix:java.lang.String,sliceMethod:java.lang.String,state:java.lang.String,weight:int,registeredAt:long,security:java.lang.String,declaredSecurity:java.lang.String,pathArity:int,spacers:java.util.List<java.lang.String>,spacerSlots:java.util.List<java.lang.Integer>)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodeRoutesValue$RouteEntry (httpMethod:java.lang.String,pathPrefix:java.lang.String,sliceMethod:java.lang.String,state:java.lang.String,weight:int,registeredAt:long,security:java.lang.String,declaredSecurity:java.lang.String,pathArity:int,spacers:java.util.List<java.lang.String>,spacerSlots:java.util.List<java.lang.Integer>,upload:boolean,maxBodyBytes:long,maxDurationMillis:long,maxFiles:long,maxFileBytes:long,maxFields:long,maxFieldBytes:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ObservabilityConfigValue (artifactBase:java.lang.String,methodName:java.lang.String,logging:boolean,metrics:boolean,spans:boolean,tracing:boolean,depth:int,updatedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$PartitionRecoveryReason (kind:org.pragmatica.aether.slice.kvstore.AetherValue$PartitionRecoveryReasonKind,storageId:org.pragmatica.lang.Option<java.lang.String>,evidence:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$PreviousVersionValue (artifactBase:org.pragmatica.aether.artifact.ArtifactBase,previousVersion:org.pragmatica.aether.artifact.Version,currentVersion:org.pragmatica.aether.artifact.Version,updatedAt:long,rollbackCount:int,lastRollbackAt:long,failedVersions:java.util.List<org.pragmatica.aether.artifact.Version>)
@@ -328,17 +330,28 @@ SHAPE org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot (communityId
 SHAPE org.pragmatica.aether.worker.metrics.PerMethodMetrics (method:java.lang.String,activeInvocations:long,p95LatencyMs:double,errorRate:double,totalCalls:long)
 SHAPE org.pragmatica.aether.worker.metrics.PerSliceMetrics (artifact:org.pragmatica.aether.artifact.Artifact,activeInvocations:long,p95LatencyMs:double,errorRate:double,totalCalls:long,methods:java.util.List<org.pragmatica.aether.worker.metrics.PerMethodMetrics>)
 SHAPE org.pragmatica.aether.worker.metrics.SourceMetricsBatch (sender:org.pragmatica.consensus.NodeId,snapshots:java.util.List<org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot>)
-SHAPE org.pragmatica.cluster.metrics.ClusterSyncMessage$ClusterSyncPing (sender:org.pragmatica.consensus.NodeId,observations:java.util.Map<org.pragmatica.consensus.NodeId, org.pragmatica.cluster.metrics.MetricObservation>,rabiaTerm:long,epochIncarnation:long,epochTerm:long,epochCounter:long,evictionHints:java.util.Set<org.pragmatica.consensus.NodeId>,drainNodes:java.util.Set<org.pragmatica.consensus.NodeId>,readinessView:java.util.Map<org.pragmatica.consensus.NodeId, java.lang.String>,dispatchedNodes:java.util.Set<org.pragmatica.consensus.NodeId>,completeMetricsRoster:boolean,carriesAuthority:boolean)
-SHAPE org.pragmatica.cluster.metrics.ClusterSyncMessage$ClusterSyncPong (sender:org.pragmatica.consensus.NodeId,observation:org.pragmatica.cluster.metrics.MetricObservation,incarnation:long,observedRabiaTerm:long,observedEpochIncarnation:long,observedEpochTerm:long,observedEpochCounter:long,lifecycleState:java.lang.String,communityReports:java.util.List<org.pragmatica.cluster.metrics.CommunityReport>,peerHealth:java.util.List<org.pragmatica.cluster.metrics.PeerHealthObservation>,peerConnectivity:java.util.List<org.pragmatica.cluster.metrics.PeerConnectivityObservation>,readyCandidate:org.pragmatica.lang.Option<org.pragmatica.consensus.NodeId>)
+SHAPE org.pragmatica.cluster.metrics.ClusterDirectory (generation:long,epochIncarnation:long,epochTerm:long,epochCounter:long,nodes:java.util.List<org.pragmatica.consensus.net.NodeInfo>,dhtReplication:org.pragmatica.cluster.metrics.ClusterDirectory$DhtReplication)
+SHAPE org.pragmatica.cluster.metrics.ClusterDirectory$DhtReplication (replicationFactor:int,confirmationFactor:int,cacheReplicationFactor:int,cacheConfirmationFactor:int,configVersion:long,changeVersion:long,floorWriteQuorum:int,floorReadQuorum:int,changeSettled:boolean)
+SHAPE org.pragmatica.cluster.metrics.ClusterSyncMessage$ClusterSyncPing (sender:org.pragmatica.consensus.NodeId,observations:java.util.Map<org.pragmatica.consensus.NodeId, org.pragmatica.cluster.metrics.MetricObservation>,rabiaTerm:long,epochIncarnation:long,epochTerm:long,epochCounter:long,evictionHints:java.util.Set<org.pragmatica.consensus.NodeId>,drainNodes:java.util.Set<org.pragmatica.consensus.NodeId>,readinessView:java.util.Map<org.pragmatica.consensus.NodeId, java.lang.String>,dispatchedNodes:java.util.Set<org.pragmatica.consensus.NodeId>,completeMetricsRoster:boolean,carriesAuthority:boolean,observedDirectoryGeneration:org.pragmatica.cluster.metrics.DirectoryVersion,directory:org.pragmatica.lang.Option<org.pragmatica.cluster.metrics.ClusterDirectory>)
+SHAPE org.pragmatica.cluster.metrics.ClusterSyncMessage$ClusterSyncPong (sender:org.pragmatica.consensus.NodeId,observation:org.pragmatica.cluster.metrics.MetricObservation,incarnation:long,observedRabiaTerm:long,observedEpochIncarnation:long,observedEpochTerm:long,observedEpochCounter:long,lifecycleState:java.lang.String,communityReports:java.util.List<org.pragmatica.cluster.metrics.CommunityReport>,peerHealth:java.util.List<org.pragmatica.cluster.metrics.PeerHealthObservation>,peerConnectivity:java.util.List<org.pragmatica.cluster.metrics.PeerConnectivityObservation>,readyCandidate:org.pragmatica.lang.Option<org.pragmatica.consensus.NodeId>,observedDirectoryGeneration:org.pragmatica.cluster.metrics.DirectoryVersion,directory:org.pragmatica.lang.Option<org.pragmatica.cluster.metrics.ClusterDirectory>)
 SHAPE org.pragmatica.cluster.metrics.CommunityReport (communityId:java.lang.String,communityTerm:long,communityEpochIncarnation:long,communityEpochTerm:long,communityEpochCounter:long,governorNodeId:org.pragmatica.consensus.NodeId,memberCount:int,healthyMembers:int,suspectedMembers:int,faultyMembers:int,partitionsHeld:java.util.Set<java.lang.String>,lastPongFromGovernorAtMs:long)
 SHAPE org.pragmatica.cluster.metrics.DeploymentMetricsMessage$DeploymentMetricsEntry (artifact:java.lang.String,nodeId:java.lang.String,startTime:long,loadTime:long,loadedTime:long,activateTime:long,activeTime:long,status:java.lang.String)
 SHAPE org.pragmatica.cluster.metrics.DeploymentMetricsMessage$DeploymentMetricsPing (sender:org.pragmatica.consensus.NodeId,metrics:java.util.Map<java.lang.String, java.util.List<org.pragmatica.cluster.metrics.DeploymentMetricsMessage$DeploymentMetricsEntry>>)
 SHAPE org.pragmatica.cluster.metrics.DeploymentMetricsMessage$DeploymentMetricsPong (sender:org.pragmatica.consensus.NodeId,metrics:java.util.Map<java.lang.String, java.util.List<org.pragmatica.cluster.metrics.DeploymentMetricsMessage$DeploymentMetricsEntry>>)
+SHAPE org.pragmatica.cluster.metrics.DirectoryVersion (epochIncarnation:long,epochTerm:long,epochCounter:long,generation:long)
 SHAPE org.pragmatica.cluster.metrics.MetricObservation (incarnation:long,sequence:long,observedAtMs:long,values:java.util.Map<java.lang.String, java.lang.Double>)
 SHAPE org.pragmatica.cluster.metrics.PeerConnectivityObservation (peerId:org.pragmatica.consensus.NodeId,state:org.pragmatica.cluster.metrics.ConnectivityState,observedEpochIncarnation:long,observedEpochTerm:long,observedEpochCounter:long,producedAtMs:long)
 SHAPE org.pragmatica.cluster.metrics.PeerHealthObservation (peerId:org.pragmatica.consensus.NodeId,hint:org.pragmatica.cluster.metrics.HealthHintWire,observedEpochIncarnation:long,observedEpochTerm:long,observedEpochCounter:long,producedAtMs:long)
 SHAPE org.pragmatica.cluster.node.forward.ForwardApplyRequest (sender:org.pragmatica.consensus.NodeId,correlationId:long,commands:java.util.List<C>)
 SHAPE org.pragmatica.cluster.node.forward.ForwardApplyResponse (sender:org.pragmatica.consensus.NodeId,correlationId:long,results:java.util.List<R>,error:org.pragmatica.lang.Option<java.lang.String>)
+SHAPE org.pragmatica.cluster.replica.ReplicaFeedMessage$ReplicaEntries (sender:org.pragmatica.consensus.NodeId,requestId:long,subSeq:long,entries:java.util.List<org.pragmatica.cluster.state.kvstore.ReplicaEntry>,latest:long)
+SHAPE org.pragmatica.cluster.replica.ReplicaFeedMessage$ReplicaHeartbeat (sender:org.pragmatica.consensus.NodeId,requestId:long,subSeq:long,tag:org.pragmatica.cluster.state.kvstore.IncarnationTag,nextSlot:long,serving:boolean,appliedRevision:long)
+SHAPE org.pragmatica.cluster.replica.ReplicaFeedMessage$ReplicaRefused (sender:org.pragmatica.consensus.NodeId,requestId:long,reason:org.pragmatica.cluster.state.kvstore.CommitRing$RefusalReason,floor:long,tag:org.pragmatica.cluster.state.kvstore.IncarnationTag)
+SHAPE org.pragmatica.cluster.replica.ReplicaFeedMessage$ReplicaSnapshotChunk (sender:org.pragmatica.consensus.NodeId,requestId:long,tag:org.pragmatica.cluster.state.kvstore.IncarnationTag,revision:long,anchor:java.util.List<org.pragmatica.cluster.state.kvstore.AnchorPair>,hash:java.lang.String,total:long,offset:long,bytes:byte[])
+SHAPE org.pragmatica.cluster.replica.ReplicaFeedMessage$ReplicaSnapshotRequest (sender:org.pragmatica.consensus.NodeId,requestId:long,tag:org.pragmatica.cluster.state.kvstore.IncarnationTag,revision:long,hash:java.lang.String,offset:long)
+SHAPE org.pragmatica.cluster.replica.ReplicaFeedMessage$ReplicaSubscribe (sender:org.pragmatica.consensus.NodeId,requestId:long,tag:org.pragmatica.cluster.state.kvstore.IncarnationTag,applied:long,anchor:java.util.List<org.pragmatica.cluster.state.kvstore.AnchorPair>,mode:org.pragmatica.cluster.replica.ReplicaFeedMessage$SubscribeMode)
+SHAPE org.pragmatica.cluster.state.kvstore.AnchorPair (slot:long,batchId:java.lang.String)
+SHAPE org.pragmatica.cluster.state.kvstore.IncarnationTag (incarnation:long,incarnationId:java.lang.String)
 SHAPE org.pragmatica.cluster.state.kvstore.KVCommand$Get (key:K)
 SHAPE org.pragmatica.cluster.state.kvstore.KVCommand$LeaderTransaction (key:K,transactionId:java.lang.String,leader:org.pragmatica.cluster.state.kvstore.LeaderValue,guards:java.util.List<org.pragmatica.cluster.state.kvstore.KVCommand$ReadWitness<K>>,mutations:java.util.List<org.pragmatica.cluster.state.kvstore.KVCommand$Mutation<K, V>>)
 SHAPE org.pragmatica.cluster.state.kvstore.KVCommand$Mutation (key:K,expected:org.pragmatica.lang.Option<V>,replacement:org.pragmatica.lang.Option<V>)
@@ -349,6 +362,7 @@ SHAPE org.pragmatica.cluster.state.kvstore.KVCommand$Remove (key:K,witness:org.p
 SHAPE org.pragmatica.cluster.state.kvstore.KVCommand$TransactionResult (transactionId:java.lang.String,accepted:boolean)
 SHAPE org.pragmatica.cluster.state.kvstore.LeaderKey ()
 SHAPE org.pragmatica.cluster.state.kvstore.LeaderValue (leader:org.pragmatica.consensus.NodeId,viewSequence:long)
+SHAPE org.pragmatica.cluster.state.kvstore.ReplicaEntry (tag:org.pragmatica.cluster.state.kvstore.IncarnationTag,from:long,slot:long,batchId:java.lang.String,effects:java.util.List<org.pragmatica.cluster.state.kvstore.KVCommand<?>>)
 SHAPE org.pragmatica.consensus.NodeId (id:java.lang.String)
 SHAPE org.pragmatica.consensus.StateMachine$Batch (id:org.pragmatica.consensus.StateMachine$Batch$Id,correlationIds:java.util.List<org.pragmatica.consensus.rabia.CorrelationId>,timestamp:long,commands:java.util.List<C>)
 SHAPE org.pragmatica.consensus.StateMachine$Batch$Id (id:java.lang.String)
@@ -743,6 +757,8 @@ TAG  org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot 86
 TAG  org.pragmatica.aether.worker.metrics.PerMethodMetrics 87
 TAG  org.pragmatica.aether.worker.metrics.PerSliceMetrics 88
 TAG  org.pragmatica.aether.worker.metrics.SourceMetricsBatch 117
+TAG  org.pragmatica.cluster.metrics.ClusterDirectory 2178
+TAG  org.pragmatica.cluster.metrics.ClusterDirectory$DhtReplication 2179
 TAG  org.pragmatica.cluster.metrics.ClusterSyncMessage$ClusterSyncPing 75
 TAG  org.pragmatica.cluster.metrics.ClusterSyncMessage$ClusterSyncPong 76
 TAG  org.pragmatica.cluster.metrics.CommunityReport 77
@@ -750,12 +766,23 @@ TAG  org.pragmatica.cluster.metrics.ConnectivityState 78
 TAG  org.pragmatica.cluster.metrics.DeploymentMetricsMessage$DeploymentMetricsEntry 79
 TAG  org.pragmatica.cluster.metrics.DeploymentMetricsMessage$DeploymentMetricsPing 80
 TAG  org.pragmatica.cluster.metrics.DeploymentMetricsMessage$DeploymentMetricsPong 81
+TAG  org.pragmatica.cluster.metrics.DirectoryVersion 2177
 TAG  org.pragmatica.cluster.metrics.HealthHintWire 82
 TAG  org.pragmatica.cluster.metrics.MetricObservation 116
 TAG  org.pragmatica.cluster.metrics.PeerConnectivityObservation 83
 TAG  org.pragmatica.cluster.metrics.PeerHealthObservation 84
 TAG  org.pragmatica.cluster.node.forward.ForwardApplyRequest 1664
 TAG  org.pragmatica.cluster.node.forward.ForwardApplyResponse 1665
+TAG  org.pragmatica.cluster.replica.ReplicaFeedMessage$ReplicaEntries 2186
+TAG  org.pragmatica.cluster.replica.ReplicaFeedMessage$ReplicaHeartbeat 2190
+TAG  org.pragmatica.cluster.replica.ReplicaFeedMessage$ReplicaRefused 2187
+TAG  org.pragmatica.cluster.replica.ReplicaFeedMessage$ReplicaSnapshotChunk 2189
+TAG  org.pragmatica.cluster.replica.ReplicaFeedMessage$ReplicaSnapshotRequest 2188
+TAG  org.pragmatica.cluster.replica.ReplicaFeedMessage$ReplicaSubscribe 2185
+TAG  org.pragmatica.cluster.replica.ReplicaFeedMessage$SubscribeMode 2184
+TAG  org.pragmatica.cluster.state.kvstore.AnchorPair 2181
+TAG  org.pragmatica.cluster.state.kvstore.CommitRing$RefusalReason 2183
+TAG  org.pragmatica.cluster.state.kvstore.IncarnationTag 2180
 TAG  org.pragmatica.cluster.state.kvstore.KVCommand$Get 69
 TAG  org.pragmatica.cluster.state.kvstore.KVCommand$LeaderTransaction 125
 TAG  org.pragmatica.cluster.state.kvstore.KVCommand$Mutation 126
@@ -766,6 +793,7 @@ TAG  org.pragmatica.cluster.state.kvstore.KVCommand$Remove 72
 TAG  org.pragmatica.cluster.state.kvstore.KVCommand$TransactionResult 127
 TAG  org.pragmatica.cluster.state.kvstore.LeaderKey 73
 TAG  org.pragmatica.cluster.state.kvstore.LeaderValue 74
+TAG  org.pragmatica.cluster.state.kvstore.ReplicaEntry 2182
 TAG  org.pragmatica.consensus.NodeId 21
 TAG  org.pragmatica.consensus.StateMachine$Batch 22
 TAG  org.pragmatica.consensus.StateMachine$Batch$Id 23
