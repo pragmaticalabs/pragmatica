@@ -20,6 +20,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -63,6 +64,7 @@ class QuicBootTokenAdmissionTest {
     private static final NodeId SERVER_NODE = NodeId.randomNodeId();
     private static final NodeId CLIENT_NODE = NodeId.randomNodeId();
     private static final NodeId RETIRED_NODE = new NodeId("retired-elsewhere");
+    private static final NodeId OTHER_SEAT = new NodeId("third-seat");
     private static final NodeAddress SERVER_ADDRESS = new NodeAddress("127.0.0.1", 9200);
     private static final NodeAddress CLIENT_ADDRESS = new NodeAddress("127.0.0.1", 9201);
     private static final TimeSpan AWAIT_TIMEOUT = TimeSpan.timeSpan(8).seconds();
@@ -262,62 +264,81 @@ class QuicBootTokenAdmissionTest {
         assertThat(clientTokens.isRetired(SERVER_NODE)).isTrue();
     }
 
-    /// ID-1c, the acceptor's side of the merge at join: a WIPED acceptor would drop every Hello for want of knowing the dialer, but
-    /// the dialer's Hello carries the retirements it vouches for. They are durable in the acceptor's ledger before it admits.
-    /// Control (same server, port and codecs): a dialer that vouches for nothing is not admitted, and the node stays wiped.
+    /// ID-1c, the acceptor's side of the merge at join: a WIPED acceptor of three configured seats leaves that state only when the
+    /// recorded offers of a majority of the seats are in WITHOUT the dialer's own. Control (same server, port and codecs): the
+    /// dialer alone, however much it vouches for, is dropped and the node stays wiped; once ANOTHER seat's offer is recorded the same
+    /// dialer is admitted, and what it vouched for is on disk before that.
     @Test
-    void acceptor_wipedNode_mergesTheDialersRetirementsBeforeAdmittingIt(@TempDir Path directory) throws Exception {
-        var wipedServer = wipedRegistry(SERVER_TOKEN, directory.resolve("server"));
+    void acceptor_wipedNode_mergesAMajorityWithoutTheDialersOwnOfferBeforeAdmittingIt(@TempDir Path directory) throws Exception {
+        var wipedServer = wipedRegistry(SERVER_TOKEN, directory.resolve("server"), SERVER_NODE);
         var port = startServer(wipedServer);
 
-        assertThat(connects(BootTokens.bootTokens(CLIENT_TOKEN), port)).as("control: a dialer that vouches for nothing is dropped").isFalse();
+        assertThat(connects(loadedRegistryRetiring(CLIENT_TOKEN, directory.resolve("client")), port)).as("control: the dialer alone is dropped").isFalse();
         assertThat(wipedServer.isRetired(RETIRED_NODE)).isFalse();
+        assertThat(Files.exists(directory.resolve("server").resolve("ledger"))).as("and the node is still wiped").isFalse();
 
-        assertThat(connects(loadedRegistryRetiring(CLIENT_TOKEN, directory.resolve("client")), port)).as("the voucher is admitted").isTrue();
+        wipedServer.mergeOffered(OTHER_SEAT, Option.some(IdentityFacts.identityFacts())).await(AWAIT_TIMEOUT);
+
+        assertThat(connects(loadedRegistryRetiring(CLIENT_TOKEN, directory.resolve("client")), port)).as("another seat has vouched: admitted").isTrue();
         assertThat(wipedServer.isRetired(RETIRED_NODE)).as("having merged what it vouched for").isTrue();
         assertThat(Files.readString(directory.resolve("server").resolve("ledger"))).as("durably, before the admission").contains(RETIRED_NODE.id());
         assertThat(registered.get()).isEqualTo(1);
     }
 
-    /// ID-1c, the dialer's side: a WIPED dialer fails every dial for want of knowing the acceptor, but the acceptor's Hello
-    /// answer carries its retirements.
+    /// The hazard of #2429: a retired stray process, with an empty fresh ledger, reaches a wiped core first and keeps coming.
+    /// RED under "one peer merge", green under the majority rule.
     @Test
-    void dialer_wipedNode_mergesTheAcceptorsRetirementsBeforeAttaching(@TempDir Path directory) throws Exception {
-        var port = startServer(loadedRegistryRetiring(SERVER_TOKEN, directory.resolve("server")));
-        var wipedClient = wipedRegistry(CLIENT_TOKEN, directory.resolve("client"));
-
-        assertThat(connects(wipedClient, port)).as("the wiped dialer attaches once it has merged").isTrue();
-        assertThat(wipedClient.isRetired(RETIRED_NODE)).isTrue();
-        assertThat(Files.readString(directory.resolve("client").resolve("ledger"))).as("durably").contains(RETIRED_NODE.id());
-    }
-
-    /// A dialer whose ledger is loaded but holds no retirement vouches for nothing: a process for a retired NodeId looks exactly
-    /// like that, so its empty offer must not end the acceptor's wiped state, and the acceptor stays wiped.
-    @Test
-    void acceptor_wipedNode_isNotReleasedByADialerThatOffersNoRetirement(@TempDir Path directory) {
-        var wipedServer = wipedRegistry(SERVER_TOKEN, directory.resolve("server"));
+    void acceptor_wipedNode_isNotReleasedByALoneStrayWithAnEmptyLedger_howeverOftenItComes(@TempDir Path directory) {
+        var wipedServer = wipedRegistry(SERVER_TOKEN, directory.resolve("server"), SERVER_NODE);
         var port = startServer(wipedServer);
 
-        assertThat(connects(loadedRegistryRetiring(CLIENT_TOKEN, directory.resolve("client"), IdentityFacts.identityFacts()), port))
-            .as("an empty offer is no evidence").isFalse();
+        for (var attempt = 0; attempt < 3; attempt++) {
+            assertThat(connects(loadedRegistryRetiring(CLIENT_TOKEN, directory.resolve("client"), IdentityFacts.identityFacts()), port))
+                .as("a lone stray is never admitted by a wiped core").isFalse();
+        }
+
         assertThat(wipedServer.admit(CLIENT_NODE, CLIENT_TOKEN)).isEqualTo(BootTokens.Admission.UNAVAILABLE);
         assertThat(Files.exists(directory.resolve("server").resolve("ledger"))).as("and nothing was written").isFalse();
+    }
+
+    /// ID-1c, the dialer's side: a WIPED dialer fails every dial for want of knowing the acceptor until a majority of the seats
+    /// has vouched without the acceptor's own offer; the acceptor's Hello answer then carries its retirements.
+    @Test
+    void dialer_wipedNode_mergesAMajorityWithoutTheAcceptorsOwnOfferBeforeAttaching(@TempDir Path directory) throws Exception {
+        var port = startServer(loadedRegistryRetiring(SERVER_TOKEN, directory.resolve("server")));
+        var wipedClient = wipedRegistry(CLIENT_TOKEN, directory.resolve("client"), CLIENT_NODE);
+
+        assertThat(connects(wipedClient, port)).as("control: the acceptor alone does not release the wiped dialer").isFalse();
+        assertThat(wipedClient.isRetired(RETIRED_NODE)).isFalse();
+
+        wipedClient.mergeOffered(OTHER_SEAT, Option.some(IdentityFacts.identityFacts())).await(AWAIT_TIMEOUT);
+
+        assertThat(connects(wipedClient, port)).as("another seat has vouched: attached").isTrue();
+        assertThat(wipedClient.isRetired(RETIRED_NODE)).isTrue();
+        assertThat(Files.readString(directory.resolve("client").resolve("ledger"))).as("durably").contains(RETIRED_NODE.id());
     }
 
     /// Two wiped nodes cannot end each other's wiped state: neither can vouch for anything.
     @Test
     void wipedNodes_cannotEndEachOthersWipedState(@TempDir Path directory) {
-        var wipedServer = wipedRegistry(SERVER_TOKEN, directory.resolve("server"));
+        var wipedServer = wipedRegistry(SERVER_TOKEN, directory.resolve("server"), SERVER_NODE);
         var port = startServer(wipedServer);
-        var wipedClient = wipedRegistry(CLIENT_TOKEN, directory.resolve("client"));
+        var wipedClient = wipedRegistry(CLIENT_TOKEN, directory.resolve("client"), CLIENT_NODE);
 
         assertThat(connects(wipedClient, port)).isFalse();
         assertThat(wipedServer.admit(CLIENT_NODE, CLIENT_TOKEN)).isEqualTo(BootTokens.Admission.UNAVAILABLE);
         assertThat(wipedClient.admit(SERVER_NODE, SERVER_TOKEN)).isEqualTo(BootTokens.Admission.UNAVAILABLE);
     }
 
-    private static BootTokens wipedRegistry(long token, Path ledgerDirectory) {
+    /// The configured seats of the three-core cluster these tests stand for: the server, the client and one more.
+    private static void configureSeats(BootTokens tokens, NodeId self) {
+        tokens.seats(self, Set.of(SERVER_NODE, CLIENT_NODE, OTHER_SEAT));
+    }
+
+    private static BootTokens wipedRegistry(long token, Path ledgerDirectory, NodeId self) {
         var tokens = BootTokens.bootTokens(token);
+
+        configureSeats(tokens, self);
         var ledger = IdentityLedger.identityLedger(ledgerDirectory.resolve("ledger"), IdentityLedger.DurableWriter.fileOps());
 
         tokens.attachLedger(ledger);

@@ -877,7 +877,8 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             // arrives off this thread, so a stalled ledger writer parks this dial and nothing else.
             // The merge at join (ID-1c) comes first: the acceptor's retirements are durable here before it is admitted, so a WIPED
             // dialer regains them on the handshake that would otherwise be refused for want of them.
-            bootTokens.mergeOffered(hello.offeredFacts())
+            bootTokens.mergeOffered(peerId,
+                                    hello.offeredFacts())
                       .flatMap(_ -> bootTokens.admitDurably(peerId,
                                                             hello.bootToken()))
                       .onSuccess(admission -> onEventLoop(ctx,

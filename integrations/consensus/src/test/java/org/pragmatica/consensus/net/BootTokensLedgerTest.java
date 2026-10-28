@@ -272,49 +272,104 @@ class BootTokensLedgerTest {
         assertThat(loaded.offer().map(IdentityFacts::retired).or(Set.of())).as("a loaded node offers what it retired").containsExactly(PEER);
     }
 
+    private static final NodeId SELF_SEAT = new NodeId("seat-self");
+    private static final NodeId SEAT_A = new NodeId("seat-a");
+    private static final NodeId SEAT_C = new NodeId("seat-c");
+    private static final NodeId GONE = new NodeId("gone");
+    private static final IdentityFacts RETIRES_GONE = IdentityFacts.terminated(GONE, BootTokens.TOKEN_CONFLICT);
+
+    /// A WIPED node in a cluster of three configured core seats: itself, [#SEAT_A] and [#SEAT_C].
+    private BootTokens wipedOfThreeSeats(DurableWriter writer) {
+        var wiped = boot(writer, false);
+
+        wiped.seats(SELF_SEAT, Set.of(SEAT_A, SEAT_C));
+
+        return wiped;
+    }
+
+    private Admission admitPeer(BootTokens registry) {
+        return registry.admitDurably(PEER, FIRST).await(BOUND).unwrap();
+    }
+
     @Test
-    void mergeOffered_onAWipedNode_isDurableWhenItCompletes_andOpensAdmission() throws Exception {
-        var wiped = boot(DurableWriter.fileOps(), false);
-        var offered = IdentityFacts.terminated(new NodeId("gone"), BootTokens.TOKEN_CONFLICT);
+    void mergeOffered_aWipedNode_staysWipedUntilAMajorityWithoutTheJoinerIsIn_thenIsDurableAndOpensAdmission() throws Exception {
+        var wiped = wipedOfThreeSeats(DurableWriter.fileOps());
 
-        assertThat(wiped.admitDurably(PEER, FIRST).await(BOUND).unwrap()).as("control: wiped before the merge").isEqualTo(Admission.UNAVAILABLE);
-        assertThat(wiped.mergeOffered(Option.some(offered)).await(BOUND).isSuccess()).isTrue();
+        assertThat(wiped.mergeOffered(SEAT_A, Option.some(RETIRES_GONE)).await(BOUND).isSuccess()).isTrue();
 
-        assertThat(Files.readString(file())).as("on disk before the node admits anyone").contains("T\tgone\t");
-        assertThat(wiped.isRetired(new NodeId("gone"))).isTrue();
-        assertThat(wiped.admitDurably(PEER, FIRST).await(BOUND).unwrap()).isEqualTo(Admission.ADMITTED);
+        assertThat(admitPeer(wiped)).as("one seat's offer is not a majority without its own: still closed").isEqualTo(Admission.UNAVAILABLE);
+        assertThat(wiped.isRetired(GONE)).as("and nothing is applied yet").isFalse();
+        assertThat(Files.exists(file())).as("the missing file, which is what wiped means, stays missing").isFalse();
+
+        assertThat(wiped.mergeOffered(SEAT_C, Option.some(IdentityFacts.identityFacts())).await(BOUND).isSuccess()).isTrue();
+
+        assertThat(Files.readString(file())).as("the union of everything recorded is on disk before the node admits anyone").contains("T\tgone\t");
+        assertThat(wiped.isRetired(GONE)).isTrue();
+        assertThat(admitPeer(wiped)).isEqualTo(Admission.ADMITTED);
         assertThat(wiped.offer().isPresent()).as("and it can now vouch for what it holds").isTrue();
+    }
+
+    /// The hazard of #2429: a retired stray process with an empty fresh ledger reaches the wiped core first, again and again.
+    @Test
+    void mergeOffered_aLoneSeatNeverEndsTheWipedState_whateverItOffersAndHowOftenItComes() {
+        var wiped = wipedOfThreeSeats(DurableWriter.fileOps());
+
+        for (var attempt = 0; attempt < 3; attempt++) {
+            wiped.mergeOffered(SEAT_A, Option.some(IdentityFacts.identityFacts())).await(BOUND);
+            wiped.mergeOffered(SEAT_A, Option.some(RETIRES_GONE)).await(BOUND);
+        }
+
+        assertThat(admitPeer(wiped)).isEqualTo(Admission.UNAVAILABLE);
+        assertThat(Files.exists(file())).isFalse();
+    }
+
+    @Test
+    void mergeOffered_fromANodeThatIsNoConfiguredSeat_isIgnored() {
+        var wiped = wipedOfThreeSeats(DurableWriter.fileOps());
+
+        wiped.mergeOffered(new NodeId("stranger-1"), Option.some(RETIRES_GONE)).await(BOUND);
+        wiped.mergeOffered(new NodeId("stranger-2"), Option.some(RETIRES_GONE)).await(BOUND);
+
+        assertThat(admitPeer(wiped)).isEqualTo(Admission.UNAVAILABLE);
+    }
+
+    @Test
+    void mergeOffered_aMajorityOfFiveSeats_needsTwoOtherSeatsBesidesTheJoiner() {
+        var wiped = boot(DurableWriter.fileOps(), false);
+        var seatD = new NodeId("seat-d");
+
+        wiped.seats(SELF_SEAT, Set.of(SEAT_A, SEAT_C, seatD, new NodeId("seat-e")));
+        wiped.mergeOffered(SEAT_A, Option.some(RETIRES_GONE)).await(BOUND);
+        wiped.mergeOffered(SEAT_C, Option.some(RETIRES_GONE)).await(BOUND);
+
+        assertThat(admitPeer(wiped)).as("self + one other seat besides the joiner is 2 of 5: no majority").isEqualTo(Admission.UNAVAILABLE);
+
+        wiped.mergeOffered(seatD, Option.some(RETIRES_GONE)).await(BOUND);
+
+        assertThat(admitPeer(wiped)).as("self + two other seats besides the joiner is 3 of 5").isEqualTo(Admission.ADMITTED);
     }
 
     @Test
     void mergeOffered_withNothingOffered_leavesAWipedNodeWiped() {
-        var wiped = boot(DurableWriter.fileOps(), false);
+        var wiped = wipedOfThreeSeats(DurableWriter.fileOps());
 
-        assertThat(wiped.mergeOffered(Option.none()).await(BOUND).isSuccess()).isTrue();
-        assertThat(wiped.admitDurably(PEER, FIRST).await(BOUND).unwrap()).isEqualTo(Admission.UNAVAILABLE);
-    }
+        wiped.mergeOffered(SEAT_A, Option.none()).await(BOUND);
+        wiped.mergeOffered(SEAT_C, Option.none()).await(BOUND);
 
-    @Test
-    void mergeOffered_anEmptyOffer_doesNotEndTheWipedState_andIsNotWritten() {
-        var wiped = boot(DurableWriter.fileOps(), false);
-
-        assertThat(wiped.mergeOffered(Option.some(IdentityFacts.identityFacts())).await(BOUND).isSuccess()).isTrue();
-        assertThat(wiped.admitDurably(PEER, FIRST).await(BOUND).unwrap()).as("no evidence, still closed").isEqualTo(Admission.UNAVAILABLE);
-        assertThat(Files.exists(file())).as("and the missing file, which is what wiped means, stays missing").isFalse();
+        assertThat(admitPeer(wiped)).isEqualTo(Admission.UNAVAILABLE);
     }
 
     @Test
     void mergeOffered_whenTheWriteFails_neverFails_andLeavesAWipedNodeWiped() {
         var writer = new GatedWriter();
-        var wiped = boot(writer, false);
+        var wiped = wipedOfThreeSeats(writer);
 
         writer.failing.set(true);
+        wiped.mergeOffered(SEAT_A, Option.some(RETIRES_GONE)).await(BOUND);
 
-        assertThat(wiped.mergeOffered(Option.some(IdentityFacts.terminated(new NodeId("gone"), BootTokens.TOKEN_CONFLICT)))
-                        .await(BOUND)
-                        .isSuccess()).as("the caller goes on to a verdict").isTrue();
-        assertThat(wiped.admitDurably(PEER, FIRST).await(BOUND).unwrap()).as("not durable, so still closed").isEqualTo(Admission.UNAVAILABLE);
-        assertThat(wiped.isRetired(new NodeId("gone"))).isFalse();
+        assertThat(wiped.mergeOffered(SEAT_C, Option.some(RETIRES_GONE)).await(BOUND).isSuccess()).as("the caller goes on to a verdict").isTrue();
+        assertThat(admitPeer(wiped)).as("not durable, so still closed").isEqualTo(Admission.UNAVAILABLE);
+        assertThat(wiped.isRetired(GONE)).isFalse();
     }
 
     @Test
@@ -322,7 +377,9 @@ class BootTokensLedgerTest {
         var loaded = boot();
         var missed = new NodeId("missed");
 
-        assertThat(loaded.mergeOffered(Option.some(IdentityFacts.terminated(missed, BootTokens.TOKEN_CONFLICT))).await(BOUND).isSuccess()).isTrue();
+        loaded.seats(SELF_SEAT, Set.of(SEAT_A, SEAT_C));
+
+        assertThat(loaded.mergeOffered(SEAT_A, Option.some(IdentityFacts.terminated(missed, BootTokens.TOKEN_CONFLICT))).await(BOUND).isSuccess()).isTrue();
 
         assertThat(loaded.admit(missed, FIRST)).isEqualTo(Admission.RETIRED);
         assertThat(boot(DurableWriter.fileOps(), false).isRetired(missed)).as("and it survives a restart").isTrue();

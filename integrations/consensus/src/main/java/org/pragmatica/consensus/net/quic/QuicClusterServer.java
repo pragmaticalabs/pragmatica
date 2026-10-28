@@ -581,7 +581,8 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             // serving peers that are already bound.
             // The merge at join (ID-1c) comes first: what the dialer offers is durable here before it is admitted, so a WIPED
             // acceptor regains its retirements on the handshake that would otherwise be dropped for want of them.
-            bootTokens.mergeOffered(hello.offeredFacts())
+            bootTokens.mergeOffered(hello.sender(),
+                                    hello.offeredFacts())
                       .flatMap(_ -> bootTokens.admitDurably(hello.sender(),
                                                             hello.bootToken()))
                       .onSuccess(admission -> onEventLoop(ctx,

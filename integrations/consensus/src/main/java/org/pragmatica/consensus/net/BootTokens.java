@@ -15,6 +15,7 @@
  */
 package org.pragmatica.consensus.net;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -90,26 +91,23 @@ public interface BootTokens {
     /// Load the facts the ledger held at boot and open admission. `wiped` means the ledger was lost (not created
     /// now): the registry then admits no new peer until [#merged] reports a completed merge with a peer's facts.
     Unit preload(IdentityFacts facts, boolean wiped);
-    /// A peer's facts were merged into this node's: apply them, make them durable, and end a WIPED state. Only evidence ends it:
-    /// an EMPTY set merged into a WIPED node changes nothing, because nothing in it shows that a peer remembers anything.
+    /// A peer's facts were merged into this node's: apply them, make them durable, and end a WIPED state. This is the unconditional
+    /// step; the decision that a WIPED node may take it is [#mergeOffered]'s.
     Promise<Unit> merged(IdentityFacts peerFacts);
     /// The retirements this node can vouch for, offered to a peer in the Hello (the merge at join, #2429): present only when the
     /// ledger is attached, loaded and the node is not WIPED. A node that cannot vouch (no ledger, not yet loaded, wiped) offers
-    /// nothing, so its empty set can never end another node's WIPED state.
+    /// nothing.
     Option<IdentityFacts> offer();
-
-    /// Merge what a peer offered in its Hello, before the peer is admitted: the union is durable (F1-F3) before this completes,
-    /// and a WIPED node leaves that state only then, and only when the offer holds at least one retirement. Never fails.
-    default Promise<Unit> mergeOffered(Option<IdentityFacts> offered) {
-        // Design-out for a WIPED node, FER for any other: the admission verdict that follows never depends on this outcome. A
-        // merge that could not be made durable leaves the registry exactly as it was (a WIPED node stays WIPED, which fails closed
-        // in [#admit]; any other node degrades to what it already knew and keeps serving from memory), the ledger reports the
-        // lost durability to the operator, and the peer offers its facts again on its next Hello.
-        return offered.map(this::merged)
-                      .or(() -> Promise.success(Unit.unit()))
-                      .recover(_ -> Unit.unit());
-    }
-
+    /// The configured core seats (`topology.coreNodes`, the same roster `cluster.genesis_voters` names): the only senders whose offers
+    /// are taken, and the population the WIPED majority is counted over. `self` is always one of them.
+    Unit seats(NodeId self, Set<NodeId> seats);
+    /// Take the offer `sender` made in its Hello, BEFORE `sender` is admitted: the offered retirements are merged into this node's
+    /// ledger, durably (F1-F3), before this completes. A node that is not WIPED merges at once. A WIPED node only RECORDS the offer
+    /// in memory and leaves that state, writing the union of everything recorded, when the recorded offers of at least a majority of
+    /// the configured seats (this node's own seat included) are in and that majority holds without `sender`'s own offer: an offer
+    /// never helps admit the process that made it, so a retired stray that reaches a wiped core first, however empty its ledger,
+    /// can neither end the state nor be admitted by it. Never fails.
+    Promise<Unit> mergeOffered(NodeId sender, Option<IdentityFacts> offered);
     /// Whether the identity ledger is attached and its last write left it current. False without a ledger.
     boolean ledgerDurable();
     /// Count of refused admissions — observability for the terminal-removal rule.
@@ -135,7 +133,9 @@ public interface BootTokens {
                         AtomicReference<Option<IdentityLedger>> ledger,
                         AtomicBoolean ready,
                         AtomicBoolean wiped,
-                        Map<NodeId, Promise<Unit>> writes) implements BootTokens {
+                        Map<NodeId, Promise<Unit>> writes,
+                        AtomicReference<Set<NodeId>> configuredSeats,
+                        Map<NodeId, IdentityFacts> recordedOffers) implements BootTokens {
             @Override
             public Admission admit(NodeId peer, long token) {
                 var screened = screen(peer, token);
@@ -260,27 +260,69 @@ public interface BootTokens {
 
             @Override
             public Promise<Unit> merged(IdentityFacts peerFacts) {
-                return isNoEvidence(peerFacts)
-                       ? Promise.success(Unit.unit())
-                       : mergeEvidence(peerFacts);
-            }
-
-            /// An empty offer made to a WIPED node says nothing: a process for a retired NodeId has an empty (or unrelated) ledger of
-            /// its own, and would otherwise end the wiped state by merely connecting first. It is not written either, so the wiped
-            /// state, which lives in the missing file, survives a restart.
-            private boolean isNoEvidence(IdentityFacts peerFacts) {
-                return peerFacts.isEmpty() && wiped.get();
-            }
-
-            private Promise<Unit> mergeEvidence(IdentityFacts peerFacts) {
                 return ledger.get()
                              .fold(() -> Promise.success(Unit.unit()),
                                    attached -> attached.record(peerFacts))
                              .map(_ -> adoptMerge(peerFacts));
             }
 
+            @Override
+            public Unit seats(NodeId self, Set<NodeId> seats) {
+                var all = new HashSet<>(seats);
+
+                all.add(self);
+                configuredSeats.set(Set.copyOf(all));
+
+                return Unit.unit();
+            }
+
+            @Override
+            public Promise<Unit> mergeOffered(NodeId sender, Option<IdentityFacts> offered) {
+                // Design-out for a WIPED node, FER for any other: the admission verdict that follows never depends on this outcome.
+                // A merge that could not be made durable leaves the registry exactly as it was (a WIPED node stays WIPED, which
+                // fails closed in [#admit]; any other node degrades to what it already knew and keeps serving from memory), the
+                // ledger reports the lost durability to the operator, and the peer offers its facts again on its next Hello.
+                return offered.filter(_ -> configuredSeats.get()
+                                                          .contains(sender))
+                              .map(facts -> takeOffer(sender, facts))
+                              .or(() -> Promise.success(Unit.unit()))
+                              .recover(_ -> Unit.unit());
+            }
+
+            private Promise<Unit> takeOffer(NodeId sender, IdentityFacts facts) {
+                return wiped.get()
+                       ? recordOffer(sender, facts)
+                       : merged(facts);
+            }
+
+            /// The in-memory record keeps a WIPED node wiped across a restart: the ledger file stays missing until the majority is in.
+            private Promise<Unit> recordOffer(NodeId sender, IdentityFacts facts) {
+                recordedOffers.put(sender, facts);
+
+                return majorityWithout(sender)
+                       ? merged(recordedUnion())
+                       : Promise.success(Unit.unit());
+            }
+
+            /// The configured seats are `n`, this node's own seat is one of the `n / 2 + 1` a majority needs, so the rest must be
+            /// recorded offers of OTHER seats than `sender` (the process being admitted never counts toward its own admission).
+            private boolean majorityWithout(NodeId sender) {
+                var seatCount = configuredSeats.get().size();
+                var others = recordedOffers.keySet().stream().filter(seat -> !seat.equals(sender)).count();
+
+                return seatCount > 0 && others >= seatCount / 2;
+            }
+
+            private IdentityFacts recordedUnion() {
+                return recordedOffers.values()
+                                     .stream()
+                                     .reduce(IdentityFacts.identityFacts(),
+                                             IdentityFacts::merge);
+            }
+
             private Unit adoptMerge(IdentityFacts peerFacts) {
                 wiped.set(false);
+                recordedOffers.clear();
 
                 return apply(peerFacts);
             }
@@ -349,6 +391,8 @@ public interface BootTokens {
                             new AtomicReference<>(Option.none()),
                             new AtomicBoolean(true),
                             new AtomicBoolean(),
+                            new ConcurrentHashMap<>(),
+                            new AtomicReference<>(Set.of()),
                             new ConcurrentHashMap<>());
     }
 }

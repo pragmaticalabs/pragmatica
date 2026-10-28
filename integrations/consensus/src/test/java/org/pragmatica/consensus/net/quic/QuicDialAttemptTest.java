@@ -395,6 +395,8 @@ class QuicDialAttemptTest {
         @Override public Unit attachLedger(IdentityLedger ledger) {return delegate.attachLedger(ledger);}
         @Override public Unit preload(IdentityFacts facts, boolean wiped) {return delegate.preload(facts, wiped);}
         @Override public Option<IdentityFacts> offer() {return delegate.offer();}
+        @Override public Unit seats(NodeId self, java.util.Set<NodeId> seats) {return delegate.seats(self, seats);}
+        @Override public Promise<Unit> mergeOffered(NodeId sender, Option<IdentityFacts> offered) {return delegate.mergeOffered(sender, offered);}
         @Override public Promise<Unit> merged(IdentityFacts peerFacts) {return delegate.merged(peerFacts);}
         @Override public Promise<Unit> retirementDurable(NodeId peer) {return delegate.retirementDurable(peer);}
         @Override public boolean ledgerDurable() {return delegate.ledgerDurable();}
