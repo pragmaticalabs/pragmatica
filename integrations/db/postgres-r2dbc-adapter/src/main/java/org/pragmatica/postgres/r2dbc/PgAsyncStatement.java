@@ -29,12 +29,9 @@ import reactor.core.publisher.Mono;
 
 /// R2DBC [Statement] backed by a postgres-async extended query protocol.
 ///
-/// Supports positional parameter binding using either `$N` (R2DBC style)
-/// or `?` (postgres-async style) placeholders. The `$N` placeholders
-/// are automatically converted to `?` before execution.
+/// Supports positional parameter binding with `$N` placeholders, which is what the PostgreSQL server
+/// accepts; the SQL is sent unchanged.
 public final class PgAsyncStatement implements Statement {
-    private static final String PLACEHOLDER_PATTERN = "\\$\\d+";
-
     private final PgAsyncConnection connection;
     private final String sql;
     private final List<Object[]> bindings = new ArrayList<>();
@@ -42,7 +39,7 @@ public final class PgAsyncStatement implements Statement {
 
     PgAsyncStatement(PgAsyncConnection connection, String sql) {
         this.connection = connection;
-        this.sql = convertPlaceholders(sql);
+        this.sql = sql;
     }
 
     @Override
@@ -137,15 +134,5 @@ public final class PgAsyncStatement implements Statement {
         while (currentBinding.size() <= index) {
             currentBinding.add(null);
         }
-    }
-
-    /// Converts R2DBC `$1`, `$2` placeholders to `?` placeholders used by postgres-async.
-    /// If the SQL already uses `?` placeholders, it is returned unchanged.
-    private static String convertPlaceholders(String sql) {
-        if (!sql.contains("$")) {
-            return sql;
-        }
-
-        return sql.replaceAll(PLACEHOLDER_PATTERN, "?");
     }
 }
