@@ -153,6 +153,51 @@ class RemoteTierS3IntegrationTest {
         return prefix + id.shardPrefix() + "/" + id.hexString();
     }
 
+    /// A3-0: the anchor layout depends on two endpoint properties the simulator only imitates -- keys listed in ascending
+    /// order and a LIST that sees a key once its PUT returned. Checked here against the real endpoint, past one LIST page.
+    @Nested
+    class Anchors {
+        private final AnchorName name = AnchorName.anchorName("ahse-dir/content").fold(cause -> fail(cause.message()), n -> n);
+
+        @Test
+        void latestIsTheHighestOfMoreVersionsThanOneListPage_writtenOutOfOrder_andPruneKeepsTheBound() {
+            var versions = new java.util.ArrayList<>(IntStream.range(0, 1100).boxed().toList());
+
+            java.util.Collections.shuffle(versions, new Random(7));
+            versions.forEach(version -> tier.putAnchor(name, version, valueOf(version))
+                                            .await()
+                                            .onFailure(cause -> fail(cause.message())));
+
+            assertLatest(1099);
+
+            tier.pruneAnchors(name, 1090, 2000).await().onFailure(cause -> fail(cause.message()));
+            assertThat(anchorKeys()).as("one page is the newest 1000 keys: versions 100..1089 deleted, 0..99 not yet listed")
+                                    .hasSize(110);
+
+            tier.pruneAnchors(name, 1090, 2000).await().onFailure(cause -> fail(cause.message()));
+            assertThat(anchorKeys()).as("the next prune works off the rest of the backlog").hasSize(10);
+            assertLatest(1099);
+        }
+
+        private List<String> anchorKeys() {
+            return s3Client.listObjects(prefix + "anchors/", 1000).await().fold(cause -> fail(cause.message()), keys -> keys);
+        }
+
+        private void assertLatest(int version) {
+            tier.latestAnchor(name)
+                .await()
+                .onFailure(cause -> fail(cause.message()))
+                .onSuccess(latest -> {
+                               assertThat(latest.unwrap().version()).isEqualTo(version);
+                               assertThat(latest.unwrap().value()).isEqualTo(valueOf(version));
+                           });
+        }
+
+        private static byte[] valueOf(long version) {
+            return ("root-" + version).getBytes(StandardCharsets.UTF_8);
+        }
+    }
+
     @Nested
     class TierOperations {
 
