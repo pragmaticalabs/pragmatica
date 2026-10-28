@@ -504,6 +504,53 @@ class ContentStoreGapsTest {
         assertThat(ContentFixture.read(target, writer.commit(none()).await().unwrap().ref(), ByteRange.whole())).isEqualTo(original);
     }
 
+    /// The writer's monitor, read reflectively: nothing else exposes whether a continuation runs while it is held.
+    private static Object lockOf(ObjectWriter writer) throws ReflectiveOperationException {
+        var field = LocalObjectWriter.class.getDeclaredField("lock");
+
+        field.setAccessible(true);
+
+        return field.get(writer);
+    }
+
+    /// The producer's continuation runs after the writer has let go of its lock: under it, the producer's own code would hold
+    /// back every block completion of the writer, and a producer that waited on another thread touching the writer would
+    /// deadlock.
+    @Test
+    void theProducersContinuation_runsWithoutTheWritersLock() throws ReflectiveOperationException {
+        var held = Promise.<Unit>promise();
+        var writer = storeWithFirstBlockHeld(held).create(ObjectSpec.objectSpec("t")).await().unwrap();
+        var lock = lockOf(writer);
+        var data = payload(48, 11);
+
+        writer.write(ByteBuffer.wrap(data, 0, 32)).await().unwrap();
+
+        var lockHeldInContinuation = writer.write(ByteBuffer.wrap(data, 32, 16)).map(_ -> Thread.holdsLock(lock));
+
+        assertThat(lockHeldInContinuation.isResolved()).as("the second write waits for the window").isFalse();
+
+        held.succeed(unit());
+
+        assertThat(lockHeldInContinuation.await(timeSpan(3).seconds()).unwrap()).as("the continuation ran under the writer's lock")
+                                                                               .isFalse();
+    }
+
+    /// A write the window holds back is released by the block that fails, and it fails with that block's cause: a producer
+    /// that took the release for success would go on writing into a writer that has already unwound.
+    @Test
+    void aWriteReleasedByAFailedBlock_failsWithItsCause() {
+        var held = Promise.<Unit>promise();
+        var writer = storeWithFirstBlockHeld(held).create(ObjectSpec.objectSpec("t")).await().unwrap();
+        var cause = Causes.cause("disk gone");
+        var write = writer.write(ByteBuffer.wrap(payload(64, 12)));
+
+        assertThat(write.isResolved()).as("held by the full window").isFalse();
+
+        held.fail(cause);
+
+        assertThat(write.await(timeSpan(3).seconds()).fold(failure -> failure, _ -> null)).isEqualTo(cause);
+    }
+
     /// An ingress that aborts on disconnect may still be awaiting a write the window holds back: the abort fails it.
     @Test
     void abortingAWriterWhoseWriteIsHeldBack_failsThatWrite() {
