@@ -20,12 +20,12 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.storage.GarbageCollectorConfig.garbageCollectorConfig;
 import static org.pragmatica.storage.StorageGarbageCollector.storageGarbageCollector;
-import static org.pragmatica.storage.V2Fixture.CHUNK;
-import static org.pragmatica.storage.V2Fixture.failureOf;
-import static org.pragmatica.storage.V2Fixture.feed;
-import static org.pragmatica.storage.V2Fixture.payload;
-import static org.pragmatica.storage.V2Fixture.read;
-import static org.pragmatica.storage.V2Fixture.uploaded;
+import static org.pragmatica.storage.ContentFixture.CHUNK;
+import static org.pragmatica.storage.ContentFixture.failureOf;
+import static org.pragmatica.storage.ContentFixture.feed;
+import static org.pragmatica.storage.ContentFixture.payload;
+import static org.pragmatica.storage.ContentFixture.read;
+import static org.pragmatica.storage.ContentFixture.uploaded;
 
 
 /// The credits a v2 writer takes and gives back, ported from the byte[] store's pins: #1437 (a write that fails part-way
@@ -33,7 +33,7 @@ import static org.pragmatica.storage.V2Fixture.uploaded;
 /// per named block). Observed through the lifecycle records and through a real collector cycle, never through a counter
 /// kept by the code under test. Chunk ids are computed here from the payload (no compression: a block is its chunk).
 @Timeout(value = 15, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
-class ContentStoreV2CreditsTest {
+class ContentStoreCreditsTest {
     private static final byte[] DATA = payload(CHUNK * 6 + 5, 21);
 
     private static List<BlockId> chunkIdsOf(byte[] data) {
@@ -46,7 +46,7 @@ class ContentStoreV2CreditsTest {
         return ids;
     }
 
-    private static void assertCredits(V2Fixture fixture, List<BlockId> ids, int expected, String what) {
+    private static void assertCredits(ContentFixture fixture, List<BlockId> ids, int expected, String what) {
         assertThat(ids.stream().map(fixture::refCountOf).toList()).as(what).containsOnly(expected);
     }
 
@@ -55,7 +55,7 @@ class ContentStoreV2CreditsTest {
     class WriterGivesCreditsBack {
         @Test
         void abort_afterPartialWrite_releasesEveryBlockItStored() {
-            var fixture = V2Fixture.v2Fixture();
+            var fixture = ContentFixture.contentFixture();
             var writer = fixture.store("alpha").create(ObjectSpec.objectSpec("a/b")).await().unwrap();
 
             feed(writer, DATA, 0, 10).await().unwrap();
@@ -71,7 +71,7 @@ class ContentStoreV2CreditsTest {
         @Test
         void aBlockThatFailsToStore_failsTheWrite_andReturnsTheCreditsOfTheOthers() {
             var failing = chunkIdsOf(DATA).get(3);
-            var fixture = new V2Fixture(new FaultyTier(MemoryTier.memoryTier(1 << 20), content -> blockIdOf(content).equals(failing)));
+            var fixture = new ContentFixture(new FaultyTier(MemoryTier.memoryTier(1 << 20), content -> blockIdOf(content).equals(failing)));
             var writer = fixture.store("alpha").create(ObjectSpec.objectSpec("a/b")).await().unwrap();
             var outcome = feed(writer, DATA, 0, 10).flatMap(_ -> writer.commit(none()));
 
@@ -87,7 +87,7 @@ class ContentStoreV2CreditsTest {
 
         @Test
         void aDigestThatIsNotTheExpectedOne_failsTheCommit_andReleasesTheBlocks() {
-            var fixture = V2Fixture.v2Fixture();
+            var fixture = ContentFixture.contentFixture();
             var writer = fixture.store("alpha").create(ObjectSpec.objectSpec("a/b")).await().unwrap();
 
             feed(writer, DATA, 0, 13).await().unwrap();
@@ -101,7 +101,7 @@ class ContentStoreV2CreditsTest {
 
         @Test
         void aLengthOtherThanDeclared_failsTheCommit_andReleasesTheBlocks() {
-            var fixture = V2Fixture.v2Fixture();
+            var fixture = ContentFixture.contentFixture();
             var spec = ObjectSpec.objectSpec(none(), "a/b", some(10L), none(), java.util.Map.of());
             var writer = fixture.store("alpha").create(spec).await().unwrap();
 
@@ -114,7 +114,7 @@ class ContentStoreV2CreditsTest {
         @Test
         void anEntryThatCannotBeWritten_releasesTheManifestAndTheChunks() {
             var refused = new AtomicBoolean(true);
-            var fixture = new V2Fixture(new FaultyTier(MemoryTier.memoryTier(1 << 20),
+            var fixture = new ContentFixture(new FaultyTier(MemoryTier.memoryTier(1 << 20),
                                                        content -> refused.get() && ContentEnvelope.kindOf(content).filter(kind -> kind == ContentEnvelope.ENTRY).isPresent()));
             var writer = fixture.store("alpha").create(ObjectSpec.objectSpec("a/b")).await().unwrap();
 
@@ -128,7 +128,7 @@ class ContentStoreV2CreditsTest {
 
         @Test
         void aWriterThatIsCommittedOrAborted_refusesFurtherUse() {
-            var fixture = V2Fixture.v2Fixture();
+            var fixture = ContentFixture.contentFixture();
             var writer = fixture.store("alpha").create(ObjectSpec.objectSpec("a/b")).await().unwrap();
 
             feed(writer, DATA, 0, 13).await().unwrap();
@@ -154,7 +154,7 @@ class ContentStoreV2CreditsTest {
         @Test
         void abortedBlocks_areCollectedByARealCollectorCycle() {
             var memory = MemoryTier.memoryTier(1 << 20);
-            var fixture = new V2Fixture(memory);
+            var fixture = new ContentFixture(memory);
             var gc = storageGarbageCollector(fixture.storage, fixture.metadata, garbageCollectorConfig(0, 500));
             var writer = fixture.store("alpha").create(ObjectSpec.objectSpec("a/b")).await().unwrap();
 
@@ -172,7 +172,7 @@ class ContentStoreV2CreditsTest {
     class DeleteReleasesOnce {
         @Test
         void delete_returnsChunksManifestAndEntryCredits() {
-            var fixture = V2Fixture.v2Fixture();
+            var fixture = ContentFixture.contentFixture();
             var store = fixture.store("alpha");
             var info = uploaded(store, DATA);
             var entryBlock = fixture.storage.resolveRef("o/alpha/" + info.ref().id().asString()).unwrap();
@@ -190,7 +190,7 @@ class ContentStoreV2CreditsTest {
 
         @Test
         void twoObjectsWithTheSameContent_shareBlocks_andEachDeleteFreesOnlyItsOwnCredit() {
-            var fixture = V2Fixture.v2Fixture();
+            var fixture = ContentFixture.contentFixture();
             var store = fixture.store("alpha");
             var first = uploaded(store, DATA);
             var second = uploaded(fixture.store("beta"), DATA);
@@ -209,7 +209,7 @@ class ContentStoreV2CreditsTest {
 
         @Test
         void twoDeletesOfOneObject_releaseItsBlocksOnce() {
-            var fixture = V2Fixture.v2Fixture();
+            var fixture = ContentFixture.contentFixture();
             var store = fixture.store("alpha");
             var info = uploaded(store, DATA);
             var keeper = uploaded(fixture.store("beta"), DATA);
@@ -223,7 +223,7 @@ class ContentStoreV2CreditsTest {
 
         @Test
         void updateAndBind_supersedeTheEntry_withoutLeakingItsCredit() {
-            var fixture = V2Fixture.v2Fixture();
+            var fixture = ContentFixture.contentFixture();
             var store = fixture.store("alpha");
             var info = uploaded(store, DATA);
             var entryRef = "o/alpha/" + info.ref().id().asString();

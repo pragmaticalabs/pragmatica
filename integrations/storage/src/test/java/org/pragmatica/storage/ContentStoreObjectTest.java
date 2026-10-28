@@ -14,25 +14,25 @@ import org.junit.jupiter.api.Timeout;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
-import static org.pragmatica.storage.V2Fixture.CHUNK;
-import static org.pragmatica.storage.V2Fixture.failureOf;
-import static org.pragmatica.storage.V2Fixture.payload;
-import static org.pragmatica.storage.V2Fixture.read;
-import static org.pragmatica.storage.V2Fixture.uploaded;
-import static org.pragmatica.storage.V2Fixture.upload;
+import static org.pragmatica.storage.ContentFixture.CHUNK;
+import static org.pragmatica.storage.ContentFixture.failureOf;
+import static org.pragmatica.storage.ContentFixture.payload;
+import static org.pragmatica.storage.ContentFixture.read;
+import static org.pragmatica.storage.ContentFixture.uploaded;
+import static org.pragmatica.storage.ContentFixture.upload;
 
 
 /// The v2 content store in local mode: what an object is, what a namespace confines, what a range returns. The credits a
-/// writer takes and gives back are pinned in [ContentStoreV2CreditsTest]; the above-heap stream in
-/// [ContentStoreV2LargeObjectTest].
+/// writer takes and gives back are pinned in [ContentStoreCreditsTest]; the above-heap stream in
+/// [ContentStoreLargeObjectTest].
 @Timeout(value = 15, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
-class ContentStoreV2Test {
-    private V2Fixture fixture;
-    private ContentStoreV2 store;
+class ContentStoreObjectTest {
+    private ContentFixture fixture;
+    private ContentStore store;
 
     @BeforeEach
     void setUp() {
-        fixture = V2Fixture.v2Fixture();
+        fixture = ContentFixture.contentFixture();
         store = fixture.store("alpha");
     }
 
@@ -148,7 +148,7 @@ class ContentStoreV2Test {
                 var config = ContentStoreConfig.contentStoreConfig(CHUNK, Compression.NONE, bad, 2, 2);
 
                 assertThat(config.validatedAgainst(StorageInstance.DEFAULT_MAX_BLOCK_BYTES).isFailure()).as("'%s'", bad).isTrue();
-                assertThat(ContentStoreV2.contentStoreV2(fixture.storage, config).isFailure()).as("'%s'", bad).isTrue();
+                assertThat(ContentStore.contentStore(fixture.storage, config).isFailure()).as("'%s'", bad).isTrue();
             }
 
             assertThat(ContentStoreConfig.contentStoreConfig().validatedAgainst(StorageInstance.DEFAULT_MAX_BLOCK_BYTES).isSuccess())
@@ -244,11 +244,11 @@ class ContentStoreV2Test {
         @Test
         void aBlockThatRotted_failsTheNextThatReachesIt_andTheBlocksBeforeItWereDelivered() {
             var data = payload(CHUNK * 4, 16);
-            var clean = V2Fixture.v2Fixture();
+            var clean = ContentFixture.contentFixture();
             var info = uploaded(clean.store("alpha"), data);
             var rotten = clean.chunksOf(info).get(2);
-            var tier = new V2Fixture.TamperingTier(MemoryTier.memoryTier(1 << 20), rotten);
-            var fixture = new V2Fixture(tier);
+            var tier = new ContentFixture.TamperingTier(MemoryTier.memoryTier(1 << 20), rotten);
+            var fixture = new ContentFixture(tier);
             var uploadedAgain = uploaded(fixture.store("alpha"), data);
             var stream = fixture.store("alpha").open(uploadedAgain.ref(), ByteRange.whole()).await().unwrap();
             var delivered = new java.util.ArrayList<byte[]>();
@@ -414,7 +414,7 @@ class ContentStoreV2Test {
         @Test
         void aBindThatStopsBeforeTheBindingIsWritten_leavesTheOldStateVisible() {
             var refuseNames = new java.util.concurrent.atomic.AtomicBoolean();
-            var flaky = new V2Fixture(new V2Fixture.RefusingTier(MemoryTier.memoryTier(1 << 20),
+            var flaky = new ContentFixture(new ContentFixture.RefusingTier(MemoryTier.memoryTier(1 << 20),
                                                                  content -> refuseNames.get() && ContentEnvelope.kindOf(content)
                                                                                                                 .filter(kind -> kind == ContentEnvelope.NAME)
                                                                                                                 .isPresent()));

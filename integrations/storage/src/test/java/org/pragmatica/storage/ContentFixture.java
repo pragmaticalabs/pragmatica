@@ -14,29 +14,29 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// A [ContentStoreV2] over a memory-tier instance whose lifecycle records the test can read, plus the streaming helpers the
+/// A [ContentStore] over a memory-tier instance whose lifecycle records the test can read, plus the streaming helpers the
 /// v2 tests share: upload in pieces, read a range back, observe credits.
-final class V2Fixture {
+final class ContentFixture {
     static final int CHUNK = 16;
 
     /// The metadata store the instance runs on, kept so the test reads lifecycle records through it.
     final MetadataStore metadata = MetadataStore.inMemoryMetadataStore("v2-test");
     final StorageInstance storage;
 
-    V2Fixture(StorageTier tier) {
+    ContentFixture(StorageTier tier) {
         storage = StorageInstance.storageInstance("v2-test", List.of(tier), metadata);
     }
 
-    static V2Fixture v2Fixture() {
-        return new V2Fixture(MemoryTier.memoryTier(16L * 1024 * 1024));
+    static ContentFixture contentFixture() {
+        return new ContentFixture(MemoryTier.memoryTier(16L * 1024 * 1024));
     }
 
-    ContentStoreV2 store(String namespace) {
+    ContentStore store(String namespace) {
         return store(ContentStoreConfig.contentStoreConfig(CHUNK, Compression.NONE, namespace, 2, 2));
     }
 
-    ContentStoreV2 store(ContentStoreConfig config) {
-        return ContentStoreV2.contentStoreV2(storage, config).unwrap();
+    ContentStore store(ContentStoreConfig config) {
+        return ContentStore.contentStore(storage, config).unwrap();
     }
 
     int refCountOf(BlockId id) {
@@ -52,7 +52,7 @@ final class V2Fixture {
         return bytes;
     }
 
-    static Promise<ObjectInfo> upload(ContentStoreV2 store, ObjectSpec spec, byte[] data, int piece) {
+    static Promise<ObjectInfo> upload(ContentStore store, ObjectSpec spec, byte[] data, int piece) {
         return store.create(spec).flatMap(writer -> feed(writer, data, 0, piece).flatMap(_ -> writer.commit(none())));
     }
 
@@ -66,11 +66,11 @@ final class V2Fixture {
         return writer.write(ByteBuffer.wrap(data, offset, count)).flatMap(_ -> feed(writer, data, offset + count, piece));
     }
 
-    static ObjectInfo uploaded(ContentStoreV2 store, byte[] data) {
+    static ObjectInfo uploaded(ContentStore store, byte[] data) {
         return upload(store, ObjectSpec.objectSpec("application/octet-stream"), data, 7).await().unwrap();
     }
 
-    static byte[] read(ContentStoreV2 store, ObjectRef ref, ByteRange range) {
+    static byte[] read(ContentStore store, ObjectRef ref, ByteRange range) {
         var out = new ByteArrayOutputStream();
         var stream = store.open(ref, range).await().unwrap();
 

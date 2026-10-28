@@ -19,37 +19,37 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.storage.GarbageCollectorConfig.garbageCollectorConfig;
 import static org.pragmatica.storage.StorageGarbageCollector.storageGarbageCollector;
-import static org.pragmatica.storage.V2Fixture.failureOf;
-import static org.pragmatica.storage.V2Fixture.payload;
-import static org.pragmatica.storage.V2Fixture.read;
-import static org.pragmatica.storage.V2Fixture.uploaded;
+import static org.pragmatica.storage.ContentFixture.failureOf;
+import static org.pragmatica.storage.ContentFixture.payload;
+import static org.pragmatica.storage.ContentFixture.read;
+import static org.pragmatica.storage.ContentFixture.uploaded;
 
 
 /// Local-mode rename is never unnamed and may briefly carry both names: the new name is bound first, the old one retired
 /// after, and the call returns after both. The window between the steps is driven by a hook on the instance's `dropRef` of
 /// a name binding (the retire step), never by timing.
 @Timeout(value = 15, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
-class ContentStoreV2RenameTest {
+class ContentStoreRenameTest {
     private static final ObjectName OLD = ObjectName.objectName("old").unwrap();
     private static final ObjectName NEW = ObjectName.objectName("new").unwrap();
 
-    private final V2Fixture fixture = V2Fixture.v2Fixture();
-    private final ContentStoreV2 plain = fixture.store("alpha");
+    private final ContentFixture fixture = ContentFixture.contentFixture();
+    private final ContentStore plain = fixture.store("alpha");
     private final java.util.concurrent.atomic.AtomicReference<ObjectId> idOf = new java.util.concurrent.atomic.AtomicReference<>();
 
     /// A store over the fixture's instance whose retire of a name binding first waits for `beforeRetire`; a failed hook
     /// stands for a crash at that point: the retire never happens.
-    private ContentStoreV2 storeWithRetireHook(Function<String, Promise<Unit>> beforeRetire) {
+    private ContentStore storeWithRetireHook(Function<String, Promise<Unit>> beforeRetire) {
         return storeWithHooks(beforeRetire, _ -> Promise.success(unit()));
     }
 
     /// As [#storeWithRetireHook], and a swap of a name binding (the bind step) first waits for `beforeBind`.
-    private ContentStoreV2 storeWithHooks(Function<String, Promise<Unit>> beforeRetire, Function<String, Promise<Unit>> beforeBind) {
+    private ContentStore storeWithHooks(Function<String, Promise<Unit>> beforeRetire, Function<String, Promise<Unit>> beforeBind) {
         var hooked = (StorageInstance) Proxy.newProxyInstance(StorageInstance.class.getClassLoader(),
                                                               new Class<?>[]{StorageInstance.class},
                                                               (_, method, args) -> invoke(beforeRetire, beforeBind, method, args));
 
-        return ContentStoreV2.contentStoreV2(hooked, ContentStoreConfig.contentStoreConfig(V2Fixture.CHUNK, Compression.NONE, "alpha", 2, 2)).unwrap();
+        return ContentStore.contentStore(hooked, ContentStoreConfig.contentStoreConfig(ContentFixture.CHUNK, Compression.NONE, "alpha", 2, 2)).unwrap();
     }
 
     private Object invoke(Function<String, Promise<Unit>> beforeRetire, Function<String, Promise<Unit>> beforeBind, java.lang.reflect.Method method, Object[] args) throws Throwable {
@@ -68,7 +68,7 @@ class ContentStoreV2RenameTest {
         }
     }
 
-    private ObjectInfo namedAs(ContentStoreV2 store, ObjectName name, byte[] data) {
+    private ObjectInfo namedAs(ContentStore store, ObjectName name, byte[] data) {
         var info = uploaded(store, data);
 
         store.bind(name, info.ref().id(), Precondition.nameFree()).await().unwrap();
@@ -76,7 +76,7 @@ class ContentStoreV2RenameTest {
         return info;
     }
 
-    private Option<ObjectId> found(ContentStoreV2 store, ObjectName name) {
+    private Option<ObjectId> found(ContentStore store, ObjectName name) {
         return store.lookup(name, none()).await().unwrap().map(info -> info.ref().id());
     }
 

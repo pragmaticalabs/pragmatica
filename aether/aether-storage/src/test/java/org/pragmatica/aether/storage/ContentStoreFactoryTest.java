@@ -8,13 +8,18 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.storage.ByteRange;
 import org.pragmatica.storage.ContentStore;
+import org.pragmatica.storage.ObjectName;
+import org.pragmatica.storage.ObjectSpec;
+import org.pragmatica.storage.Precondition;
 import org.pragmatica.storage.Compression;
 import org.pragmatica.storage.ContentStoreConfig;
 import org.pragmatica.storage.ContentStoreError;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
 
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
@@ -49,8 +54,7 @@ class ContentStoreFactoryTest {
     @Test
     void provision_blobRoundTrips_throughProvisionedStore() {
         provisionContentStore()
-            .flatMap(store -> store.put(CONTENT_NAME, SAMPLE_CONTENT).map(_ -> store))
-            .flatMap(store -> store.get(CONTENT_NAME))
+            .flatMap(store -> storeAndReadBack(store, SAMPLE_CONTENT))
             .await()
             .onFailure(cause -> fail("blob round-trip should succeed: " + cause.message()))
             .onSuccess(ContentStoreFactoryTest::assertContentMatches);
@@ -73,8 +77,7 @@ class ContentStoreFactoryTest {
         var content = new byte[chunk];
 
         provisionOnDefaultInstance(ContentStoreConfig.contentStoreConfig(chunk, Compression.NONE))
-            .flatMap(store -> store.put(CONTENT_NAME, content).map(_ -> store))
-            .flatMap(store -> store.get(CONTENT_NAME))
+            .flatMap(store -> storeAndReadBack(store, content))
             .await()
             .onFailure(cause -> fail("a chunk of cap minus the envelope must store: " + cause.message()))
             .onSuccess(stored -> assertThat(stored.isPresent()).isTrue());
@@ -125,6 +128,26 @@ class ContentStoreFactoryTest {
         var context = ProvisioningContext.provisioningContext().withExtension(StorageInstance.class, storage);
 
         return factory.provision(config, context);
+    }
+
+    /// Writes `content` as one object bound to `CONTENT_NAME`, looks it up by that name and reads its first piece.
+    private static Promise<Option<byte[]>> storeAndReadBack(ContentStore store, byte[] content) {
+        var name = ObjectName.objectName(CONTENT_NAME).unwrap();
+
+        return store.create(ObjectSpec.objectSpec("text/plain"))
+                    .flatMap(writer -> writer.write(ByteBuffer.wrap(content)).flatMap(_ -> writer.commit(Option.none())))
+                    .flatMap(info -> store.bind(name, info.ref().id(), Precondition.nameFree()))
+                    .flatMap(_ -> store.lookup(name, Option.none()))
+                    .flatMap(found -> found.async(ContentStoreError.General.CONTENT_NOT_FOUND))
+                    .flatMap(info -> store.open(info.ref(), ByteRange.whole()))
+                    .flatMap(stream -> stream.next())
+                    .map(next -> next.map(buffer -> {
+                                              var bytes = new byte[buffer.remaining()];
+
+                                              buffer.get(bytes);
+
+                                              return bytes;
+                                          }));
     }
 
     private static void assertContentMatches(Option<byte[]> content) {

@@ -268,25 +268,25 @@ class RemoteTierS3IntegrationTest {
             new Random(42).nextBytes(payload);
             var config = ContentStoreConfig.contentStoreConfig(CHUNK, Compression.NONE);
 
-            ContentStore.contentStore(writer, config).put("video.bin", payload).await().onFailure(cause -> fail(cause.message()));
+            NamedContent.namedContent(writer, config).put("video.bin", payload).await().onFailure(cause -> fail(cause.message()));
 
             var s3Only = StorageInstance.storageInstance("content", List.of(durableTier(s3Client, prefix)), metadata);
-            var reader = ContentStore.contentStore(s3Only, config);
+            var reader = NamedContent.namedContent(s3Only, config);
             reader.get("video.bin").await()
                   .onFailure(cause -> fail(cause.message()))
                   .onSuccess(opt -> assertThat(Arrays.equals(opt.or(new byte[0]), payload)).as("read back from S3 alone").isTrue());
 
             var chunkKeys = s3Client.listObjects(prefix, 1000).await().fold(cause -> fail(cause.message()), keys -> keys);
-            assertThat(chunkKeys).as("6 chunks plus a manifest").hasSize(7);
+            assertThat(chunkKeys).as("6 chunks, a manifest, a name binding and the 3 versions of the object entry that naming it wrote (none collected yet)").hasSize(11);
             var firstChunk = Arrays.copyOfRange(payload, 0, CHUNK);
             s3Client.putObject(keyOf(blockIdOf(firstChunk)), "tampered".getBytes(StandardCharsets.UTF_8), "application/octet-stream")
                     .await()
                     .onFailure(cause -> fail(cause.message()));
 
-            var freshReader = ContentStore.contentStore(StorageInstance.storageInstance("content",
-                                                                                        List.of(durableTier(s3Client, prefix)),
-                                                                                        metadata),
-                                                        config);
+            var freshReader = NamedContent.namedContent(StorageInstance.storageInstance("content",
+                                                                                           List.of(durableTier(s3Client, prefix)),
+                                                                                           metadata),
+                                                         config);
             freshReader.get("video.bin").await()
                        .onSuccess(opt -> fail("a tampered chunk must not read back"))
                        .onFailure(cause -> assertThat(cause).isInstanceOf(StorageError.IntegrityError.class));

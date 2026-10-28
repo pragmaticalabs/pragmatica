@@ -20,7 +20,7 @@ class ContentStoreTest {
     private static final byte[] SMALL_CONTENT = "hello content store".getBytes(StandardCharsets.UTF_8);
 
     private StorageInstance storage;
-    private ContentStore store;
+    private NamedContent store;
 
     @BeforeEach
     void setUp() {
@@ -42,7 +42,7 @@ class ContentStoreTest {
 
         @BeforeEach
         void setUp() {
-            store = ContentStore.contentStore(storage, ContentStoreConfig.contentStoreConfig(SMALL_CHUNK_SIZE, Compression.NONE));
+            store = NamedContent.namedContent(storage, ContentStoreConfig.contentStoreConfig(SMALL_CHUNK_SIZE, Compression.NONE));
         }
 
         @Test
@@ -115,7 +115,7 @@ class ContentStoreTest {
 
         @BeforeEach
         void setUp() {
-            store = ContentStore.contentStore(storage, ContentStoreConfig.contentStoreConfig(SMALL_CHUNK_SIZE, Compression.NONE));
+            store = NamedContent.namedContent(storage, ContentStoreConfig.contentStoreConfig(SMALL_CHUNK_SIZE, Compression.NONE));
         }
 
         @Test
@@ -138,22 +138,16 @@ class ContentStoreTest {
             var size = SMALL_CHUNK_SIZE * 5; // Exactly 5 chunks
             var large = largeContent(size);
 
-            store.put("five-chunks", large).await()
-                 .onFailure(c -> fail("put failed: " + c.message()));
+            // Verify by reading the manifest block the put reports
+            var manifestId = BlockId.fromHex(store.put("five-chunks", large).await().unwrap()).unwrap();
 
-            // Verify by resolving the ref and reading the manifest
-            var refOpt = storage.resolveRef(ContentEnvelope.trustedRef("five-chunks"));
-            assertThat(refOpt.isPresent()).isTrue();
-
-            refOpt.onPresent(blockId ->
-                storage.get(blockId).await()
-                       .onFailure(c -> fail("get manifest failed: " + c.message()))
-                       .onSuccess(opt -> opt.onPresent(data -> {
-                           var manifest = ContentManifest.fromBytes(data);
-                           assertThat(manifest.isPresent()).isTrue();
-                           manifest.onPresent(m -> assertThat(m.chunkCount()).isEqualTo(5));
-                       }))
-            );
+            storage.get(manifestId).await()
+                   .onFailure(c -> fail("get manifest failed: " + c.message()))
+                   .onSuccess(opt -> opt.onPresent(data -> {
+                       var manifest = ContentManifest.fromBytes(data);
+                       assertThat(manifest.isPresent()).isTrue();
+                       manifest.onPresent(m -> assertThat(m.chunkCount()).isEqualTo(5));
+                   }));
         }
 
         @Test
@@ -192,8 +186,8 @@ class ContentStoreTest {
         }
 
         @Test
-        void put_get_exactlyOneChunk_treatedAsDirect() {
-            // Content exactly at chunk size boundary — stored as single block
+        void put_get_exactlyOneChunk_roundTrips() {
+            // Content exactly at chunk size boundary — one chunk
             var content = largeContent(SMALL_CHUNK_SIZE);
 
             store.put("exact-chunk", content).await()
@@ -213,7 +207,7 @@ class ContentStoreTest {
 
         @Test
         void put_get_withCompression_roundTrips() {
-            store = ContentStore.contentStore(storage, ContentStoreConfig.contentStoreConfig(SMALL_CHUNK_SIZE, Compression.LZ4));
+            store = NamedContent.namedContent(storage, ContentStoreConfig.contentStoreConfig(SMALL_CHUNK_SIZE, Compression.LZ4));
             var content = "compressible content repeated repeated repeated".getBytes(StandardCharsets.UTF_8);
 
             store.put("compressed.txt", content).await()
@@ -229,7 +223,7 @@ class ContentStoreTest {
 
         @Test
         void put_get_chunkedWithCompression_roundTrips() {
-            store = ContentStore.contentStore(storage, ContentStoreConfig.contentStoreConfig(SMALL_CHUNK_SIZE, Compression.LZ4));
+            store = NamedContent.namedContent(storage, ContentStoreConfig.contentStoreConfig(SMALL_CHUNK_SIZE, Compression.LZ4));
             var large = largeContent(SMALL_CHUNK_SIZE * 3 + 7);
 
             store.put("compressed-chunked.bin", large).await()
@@ -274,20 +268,6 @@ class ContentStoreTest {
                 assertThat(m.totalSize()).isEqualTo(1024);
                 assertThat(m.chunkCount()).isEqualTo(3);
                 assertThat(m.chunkBlockIds()).containsExactly("aabb", "ccdd", "eeff");
-            });
-        }
-
-        @Test
-        void legacyTextManifest_readsWithNoChunkSizeAndNoDigest() {
-            var legacy = (ContentManifest.MAGIC_HEADER + "old|150|2|aabb|ccdd").getBytes(StandardCharsets.UTF_8);
-            var parsed = ContentManifest.fromLegacyBytes(legacy);
-
-            assertThat(parsed.isPresent()).isTrue();
-            parsed.onPresent(m -> {
-                assertThat(m.chunkSize()).as("the text format recorded none").isZero();
-                assertThat(m.sha256()).isEmpty();
-                assertThat(m.totalSize()).isEqualTo(150);
-                assertThat(m.chunkBlockIds()).containsExactly("aabb", "ccdd");
             });
         }
 
