@@ -58,7 +58,10 @@ class OrphanedWalDirectoryTest {
         assertThat(warnings.getFirst().code()).isEqualTo(OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED);
         assertThat(warnings.getFirst().subject()).isEqualTo(STREAM + "@" + ORPHANED_LIFE);
         assertThat(warnings.getFirst().message()).contains("Stream " + STREAM, "of incarnation " + ORPHANED_LIFE, "runs as incarnation " + ADOPTED_LIFE,
-                                                                "0 sealed segment(s)", "WAL directory present: true", "There is no CLI or API verb to release it");
+                                                                "0 sealed segment(s)", "WAL directory present: true", "Keeping it is the safe default", "There is no CLI or API verb to release it",
+                                                                "<walPath of the streams storage instance>/" + STREAM + "@" + ORPHANED_LIFE,
+                                                                "NEVER touch the directory of the committed incarnation " + ADOPTED_LIFE,
+                                                                "repeats on every boot while the life has sealed segments");
         assertThat(orphan).as("the orphaned directory is never deleted").exists();
         assertThat(orphan.resolve("0.wal")).exists();
     }

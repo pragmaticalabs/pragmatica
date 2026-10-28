@@ -778,7 +778,7 @@ an incarnation change is flushed at once), so the backup trails the cluster stat
 plus push time while the remote is reachable, or until it is again.
 - **Graceful stop:** the leader flushes the backup before its stop completes, bounded by 10 s (`AetherNode.BACKUP_STOP_FLUSH_BOUND`).
   A flush that fails or overruns is logged and raised as the operator warning `backup-stop-flush-failed`; the stop proceeds, and the
-  backup then trails by the window above. A follower flushes nothing.
+  backup then trails by the window above. The 10 s bound equals Docker's default stop grace period and Ember's per-node stop timeout, so a hanging remote can use the whole grace: with Docker or Kubernetes, set the stop grace period above about 15 s (the `Main` shutdown hook allows 30 s). A follower flushes nothing.
 - **Crash or kill:** nothing is flushed. Changes inside the window are lost to a whole-cluster restart, and a stream created inside it
   is not in the restored state: the restart mints a new incarnation for it and the acknowledged records in the old
   `<stream>@<incarnation>` WAL directory stay on disk unread. The node raises `storage-stream-wal-orphaned` for that directory and

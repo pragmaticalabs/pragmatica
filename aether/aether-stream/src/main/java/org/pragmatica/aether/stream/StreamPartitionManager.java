@@ -5095,14 +5095,17 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                        durable,
                                                        "Stream {} has an earlier life {} of incarnation {}, which the cluster state restored at startup does not know "
                                                       + "({} sealed segment(s); WAL directory present: {}); the stream runs as incarnation {}, so none of it is read. "
-                                                      + "It is kept untouched and nothing deletes it. There is no CLI or API verb to release it: recover its records first, then remove the WAL "
-                                                      + "directory by hand while the node is stopped; its sealed segments (storage refs) have no supported removal until storage-identity "
-                                                      + "adoption (#1569) lands, and are kept. A KV backup older than the stream's config is the usual cause, see the backup-recovery runbook.",
+                                                      + "Keeping it is the safe default and nothing deletes it. There is no CLI or API verb to release it, and no recovery procedure for its records exists yet (#1569). "
+                                                      + "Removing the directory <walPath of the streams storage instance>/{} permanently destroys that life's unsealed acknowledged records: remove it only if they are knowingly "
+                                                      + "abandoned, and NEVER touch the directory of the committed incarnation {}. Its sealed segments (storage refs) have no supported removal and stay; "
+                                                      + "this warning repeats on every boot while the life has sealed segments, until #1569. A KV backup older than the stream's config is the usual cause, see the backup-recovery runbook.",
                                                        config.name(),
                                                        durable,
                                                        life,
                                                        sealedSegments,
                                                        walDirectory,
+                                                       config.incarnation(),
+                                                       durable,
                                                        config.incarnation());
 
         raiseOrDefer(report);
