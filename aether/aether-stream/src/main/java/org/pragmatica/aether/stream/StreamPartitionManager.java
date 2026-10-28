@@ -5033,22 +5033,42 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Before a stream materializes: serve the life `config` names (#1278 review), so recovery anchors only at that
     /// life's sealed watermark and floor, and reclaim any other life of the name.
     private Result<Unit> adoptIncarnation(StreamConfig config) {
-        return streamFootprint.adopt(config.name(),
-                                     config.incarnation())
-                              .await(FOOTPRINT_TIMEOUT)
-                              .onResultRun(() -> reportOrphanedWalDirectories(config));
+        return reportOtherLives(config,
+                                streamFootprint.adopt(config.name(), config.incarnation()).await(FOOTPRINT_TIMEOUT));
     }
 
-    /// Know 3b01e624f1: a WAL directory `<stream>@<incarnation>` whose incarnation is not the life `config` adopts holds acknowledged
-    /// records no one will read — the cluster state this node restored does not know that life (a backup older than the stream's config
-    /// mints a fresh one). The directory is never deleted, and never silent: it is raised once, naming the stream and both incarnations.
+    /// Know 3b01e624f1, 6d0c58fd67: adoption deletes no other life of the name ([StreamFootprint#adopt]); each is announced instead.
+    private Result<Unit> reportOtherLives(StreamConfig config, Result<List<StreamFootprint.OtherLife>> adopted) {
+        raiseOrphanedLives(config,
+                           adopted.or(List.of()));
+
+        return adopted.mapToUnit();
+    }
+
+    /// A life of the name other than the one `config` adopts — a WAL directory `<stream>@<incarnation>` or sealed segments, or both — holds
+    /// acknowledged records no one will read: the cluster state this node restored does not know that life (a backup older than the stream's
+    /// config mints a fresh one). It is never deleted, and never silent: raised once per life, naming the stream, both incarnations and the
+    /// sealed-segment count.
     @Contract
-    private void reportOrphanedWalDirectories(StreamConfig config) {
-        walDirectoriesAtStart.get()
-                             .stream()
-                             .filter(directory -> isOrphanedLifeOf(config, directory))
-                             .filter(orphanedWalReported::add)
-                             .forEach(directory -> raiseOrphanedWal(config, directory));
+    private void raiseOrphanedLives(StreamConfig config, List<StreamFootprint.OtherLife> sealedLives) {
+        var sealed = sealedLives.stream()
+                                .collect(Collectors.toMap(StreamFootprint.OtherLife::incarnation,
+                                                          StreamFootprint.OtherLife::sealedSegments));
+        var walLives = walDirectoriesAtStart.get()
+                                            .stream()
+                                            .filter(directory -> isOrphanedLifeOf(config, directory))
+                                            .map(directory -> SegmentIndex.DurableName.parse(directory).incarnation())
+                                            .toList();
+
+        java.util.stream.Stream.concat(sealed.keySet().stream(),
+                                       walLives.stream())
+                               .distinct()
+                               .filter(life -> orphanedWalReported.add(SegmentIndex.durableName(config.name(),
+                                                                                                life)))
+                               .forEach(life -> raiseOrphanedLife(config,
+                                                                  life,
+                                                                  sealed.getOrDefault(life, 0L),
+                                                                  walLives.contains(life)));
     }
 
     private static boolean isOrphanedLifeOf(StreamConfig config, String directory) {
@@ -5061,18 +5081,21 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Raised now when the operator-warning sink is bound, else when it is (as [#reportInterruptedRepair] does): the first adoptions of a
     /// boot run before the node wires the sink, and the orphan is found exactly then.
     @Contract
-    private void raiseOrphanedWal(StreamConfig config, String directory) {
+    private void raiseOrphanedLife(StreamConfig config, long life, long sealedSegments, boolean walDirectory) {
+        var durable = SegmentIndex.durableName(config.name(), life);
         Runnable report = () -> OperatorWarnings.raise(log,
                                                        operatorWarnings,
                                                        OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED,
-                                                       directory,
-                                                       "Stream {} has WAL directory {} of incarnation {}, which the cluster state restored at startup does not know; "
-                                                      + "the stream runs as incarnation {}, so the records in that directory are not read. "
-                                                      + "The directory is kept untouched; recover its records before removing it (a KV backup older than the stream's "
+                                                       durable,
+                                                       "Stream {} has an earlier life {} of incarnation {}, which the cluster state restored at startup does not know "
+                                                      + "({} sealed segment(s); WAL directory present: {}); the stream runs as incarnation {}, so none of it is read. "
+                                                      + "It is kept untouched, nothing deletes it; recover its records before removing it (a KV backup older than the stream's "
                                                       + "config is the usual cause, see the backup-recovery runbook).",
                                                        config.name(),
-                                                       directory,
-                                                       SegmentIndex.DurableName.parse(directory).incarnation(),
+                                                       durable,
+                                                       life,
+                                                       sealedSegments,
+                                                       walDirectory,
                                                        config.incarnation());
 
         if (operatorWarningsBound) {

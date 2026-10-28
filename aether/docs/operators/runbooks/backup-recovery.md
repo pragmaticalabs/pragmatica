@@ -14,8 +14,12 @@ fast-forward — never forced.
   once. Runtime state (placements, partition owners, leases, node registrations) is never backed up
   `[mechanism: sealed AetherKey = ClusterStateKey | RuntimeKey; BackupKeyClassificationTest]`.
 - **RPO:** changes made after the last successful push; the flush delay is up to about 5.5 s (see the
-  [backup RPO](../../reference/configuration.md#backup-configuration)). A graceful stop flushes before it completes; a crash
-  does not (#1569). With the remote unreachable, commits queue in the
+  [backup RPO](../../reference/configuration.md#backup-configuration)). A graceful stop flushes before it completes (bounded by 10 s; a failed
+  or overrunning flush raises `backup-stop-flush-failed` and the stop proceeds); a crash does not (#1569). **The window can orphan acked
+  stream records:** a stream created inside it is missing from the restored state, so the restart gives it a new incarnation and the old
+  life (WAL directory `<stream>@<incarnation>` and any sealed segments) is left unread. Nothing deletes it; the node raises
+  `storage-stream-wal-orphaned` for each such life, naming the stream, both incarnations and the sealed-segment count. It is released only
+  by an operator or by storage-identity adoption (#1569). With the remote unreachable, commits queue in the
   leader's local repository, so they also depend on that node's disk surviving; `BACKUP_PUSH_FAILING`
   fires after 60 s of lag.
 - **Consensus itself is in memory** on every node. There is no per-node consensus snapshot any more (the

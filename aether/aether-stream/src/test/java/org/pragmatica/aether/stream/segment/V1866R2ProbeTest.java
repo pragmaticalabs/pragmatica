@@ -204,9 +204,10 @@ class V1866R2ProbeTest {
 
     /// Replaces the tombstone kill-point probe: whatever an old life leaves in storage — segment refs and floors, of any
     /// partition, half-dropped or untouched — the new life rebuilds to nothing, another stream is untouched, and
-    /// adopting the new life reclaims the old life's refs.
+    /// adopting the new life KEEPS the old life's refs and reports it (know 6d0c58fd67: the cluster state records no retirement,
+    /// so a life other than the committed one may be the one a stale restore orphaned, holding acknowledged data).
     @Test
-    void oldLifeRefs_neverAnchorTheNewLife_andAreReclaimedOnAdoption() {
+    void oldLifeRefs_neverAnchorTheNewLife_andAreKeptAndReportedOnAdoption() {
         var block = BlockId.blockId(new byte[]{1}).unwrap();
         var storage = storage();
         var old = SegmentIndex.durableName(STREAM, OLD_LIFE);
@@ -228,9 +229,70 @@ class V1866R2ProbeTest {
         var fresh = new SegmentIndex();
 
         fresh.rebuildFromRefs(metadata);
-        footprint(storage, fresh).adopt(STREAM, NEW_LIFE).await().onFailure(cause -> fail(cause.message()));
-        assertThat(metadata.listAllRefs().keySet()).as("adopting the new life reclaimed the old one")
-                                                   .containsExactly("streams/other/0/0-9");
+        var others = footprint(storage, fresh).adopt(STREAM, NEW_LIFE).await().onFailure(cause -> fail(cause.message())).unwrap();
+
+        assertThat(metadata.listAllRefs().keySet()).as("adopting the new life kept the old one")
+                                                   .hasSize(6);
+        assertThat(others).as("and reported it, with the sealed segments it holds (floors are not segments)")
+                          .containsExactly(StreamFootprint.OtherLife.otherLife(OLD_LIFE, 3L));
+    }
+
+    /// Know 6d0c58fd67 (rc5-blocking): a STALE restore re-mints the stream's life while the node's storage still holds the old life's
+    /// SEALED, acknowledged segments. Adopting the new life must not delete their refs, and a GC cycle must not reclaim their blocks;
+    /// the operator is told, with the sealed-segment count.
+    @Test
+    void staleRestore_keepsTheOldLifesSealedRefsAndBlocks_throughAdoptionAndAGcCycle() {
+        var storage = storage();
+        var firstIndex = new SegmentIndex();
+        var first = manager(storage, firstIndex, footprint(storage, firstIndex));
+
+        createStream(first, OLD_LIFE);
+        publish(first, FIRST_LIFE, "old-");
+        awaitSealed(firstIndex);
+        first.close();
+
+        var sealedRefs = Map.copyOf(refsOf(STREAM));
+
+        assertThat(sealedRefs).as("fixture: the old life holds sealed segments").isNotEmpty();
+        assertThat(sealedRefs.keySet()).allMatch(ref -> ref.contains("@" + OLD_LIFE));
+
+        var raised = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
+        var restoredIndex = rebuilt();
+        var restored = manager(storage, restoredIndex, footprint(storage, restoredIndex));
+
+        restored.operatorWarnings(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(raised::add));
+        createStream(restored, NEW_LIFE);
+        collectGarbage(storage, 3);
+        awaitOne(raised);
+        restored.close();
+
+        assertThat(refsOf(STREAM)).as("adopt and a GC cycle left every sealed ref of the old life").containsAllEntriesOf(sealedRefs);
+        assertThat(sealedRefs.values()).as("and every block they name is still stored")
+                                       .allSatisfy(block -> assertThat(storage.exists(block).await().unwrap()).isTrue());
+        assertThat(raised).singleElement().satisfies(warning -> {
+            assertThat(warning.code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED);
+            assertThat(warning.subject()).isEqualTo(SegmentIndex.durableName(STREAM, OLD_LIFE));
+            assertThat(warning.message()).contains(sealedRefs.size() + " sealed segment(s)");
+        });
+    }
+
+    private void collectGarbage(StorageInstance storage, int cycles) {
+        var collector = org.pragmatica.storage.StorageGarbageCollector.storageGarbageCollector(storage,
+                                                                                               metadata,
+                                                                                               org.pragmatica.storage.GarbageCollectorConfig.garbageCollectorConfig(0, 100));
+
+        collector.activate();
+        for (var i = 0; i < cycles; i++) {
+            collector.collectGarbage();
+        }
+    }
+
+    private static void awaitOne(List<?> raised) {
+        var deadline = System.nanoTime() + 10_000_000_000L;
+
+        while (raised.isEmpty() && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
     }
 
     private StorageInstance storage() {

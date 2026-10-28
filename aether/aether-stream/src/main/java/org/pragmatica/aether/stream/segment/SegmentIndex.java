@@ -470,6 +470,11 @@ public final class SegmentIndex {
                : Option.none();
     }
 
+    /// Whether `refName` is a sealed-segment ref (`streams/...`), as opposed to a reclaimed-through floor.
+    public static boolean isSealedSegmentRef(String refName) {
+        return refName.startsWith(STREAMS_PREFIX);
+    }
+
     /// A parsed [#durableName]. A name with no numeric `@<incarnation>` suffix is incarnation `0`.
     public record DurableName(String streamName, long incarnation) {
         public static DurableName parse(String durable) {

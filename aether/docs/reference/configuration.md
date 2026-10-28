@@ -768,7 +768,7 @@ plus push time while the remote is reachable, or until it is again.
 - **Crash or kill:** nothing is flushed. Changes inside the window are lost to a whole-cluster restart, and a stream created inside it
   is not in the restored state: the restart mints a new incarnation for it and the acknowledged records in the old
   `<stream>@<incarnation>` WAL directory stay on disk unread. The node raises `storage-stream-wal-orphaned` for that directory and
-  never deletes it. Closing this case is storage-identity adoption, #1569.
+  never deletes it, sealed segments included. Closing this case is storage-identity adoption, #1569.
 
 Default `path` by environment:
 - LOCAL: `./aether-backups`

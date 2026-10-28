@@ -57,7 +57,8 @@ class OrphanedWalDirectoryTest {
         assertThat(warnings).as("one event for the directory, however many partitions it holds").hasSize(1);
         assertThat(warnings.getFirst().code()).isEqualTo(OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED);
         assertThat(warnings.getFirst().subject()).isEqualTo(STREAM + "@" + ORPHANED_LIFE);
-        assertThat(warnings.getFirst().message()).contains("Stream " + STREAM, "of incarnation " + ORPHANED_LIFE, "runs as incarnation " + ADOPTED_LIFE);
+        assertThat(warnings.getFirst().message()).contains("Stream " + STREAM, "of incarnation " + ORPHANED_LIFE, "runs as incarnation " + ADOPTED_LIFE,
+                                                                "0 sealed segment(s)", "WAL directory present: true");
         assertThat(orphan).as("the orphaned directory is never deleted").exists();
         assertThat(orphan.resolve("0.wal")).exists();
     }
