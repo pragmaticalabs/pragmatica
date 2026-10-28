@@ -70,24 +70,28 @@ class EmberLedgerLostTest {
         assertThat(verdict.refusalsAdded()).as("an unavailable registry is not a refusal").isZero();
     }
 
+    /// Both holders restart, as in [#everyHoldersLedgerDirectoryLost_admitsTheRetiredNodeId_aNewClusterWithNothingToProtect]; only
+    /// B lost its ledger FILE. Both restart because a core that stays up holds the other's boot token and retires its restarted
+    /// process on contact (terminal removal), which is not what is under test.
     @Test
     @Timeout(1200)
     void oneHoldersLedgerFileLost_regainsTheRetirementFromAPeer_thenRefuses() {
         harness.start();
         harness.retireXAtBothHolders();
-        harness.killObserver();
+        harness.killBothHolders();
         harness.deleteLedgerFile(harness.observer);
 
+        harness.relaunch(harness.coreA);
         var restartedB = harness.relaunch(harness.observer);
 
-        IdentityRestartHarness.awaitCondition("the wiped holder links to the surviving core: it is not isolated",
+        IdentityRestartHarness.awaitCondition("the wiped holder links to the other holder: it is not isolated",
                                               () -> restartedB.connectedNodeCount() >= 1,
                                               120_000L);
         IdentityRestartHarness.awaitCondition("the wiped holder's ledger holds the retirement again, durably",
                                               () -> harness.ledgerRetires(harness.observer, harness.retired),
                                               60_000L);
 
-        // The surviving holder goes away, so the only memory of the retirement left in the cluster is the one B regained.
+        // The other holder goes away, so the only memory of the retirement left in the cluster is the one B regained.
         harness.killCoreA();
 
         var verdict = harness.launchRetiredNodeIdAlone(restartedB);
