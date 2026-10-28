@@ -4,9 +4,14 @@ on:
   push:
     tags:
       - 'v*'
-  # DRY RUN (#2235): builds every asset and runs the checksum job over them, publishes NOTHING. A dispatch can never publish: every
+  # DRY RUN (#2235): on workflow_dispatch and on pull_request, builds every asset and runs the checksum job over them, publishes NOTHING. A dispatch can never publish: every
   # publishing step (release, upload, image push) is guarded by `github.event_name == 'push'`, i.e. the tag trigger, not by an input
   # a dispatcher could flip. Assets travel between jobs as workflow artifacts instead of release assets.
+  # The same dry run on a pull request that touches the checksum script or this workflow, so the real job runs in that PR's own CI.
+  pull_request:
+    paths:
+      - 'scripts/release-checksums.sh'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
     inputs:
       version:
@@ -40,7 +45,7 @@ jobs:
       - name: Extract version from tag
         id: version
         env:
-          DRY_RUN_VERSION: ${{ inputs.version }}
+          DRY_RUN_VERSION: ${{ inputs.version || '0.0.0-dryrun' }}
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
           [[ "$GITHUB_EVENT_NAME" == push ]] || VERSION="$DRY_RUN_VERSION"
@@ -120,7 +125,7 @@ jobs:
       - name: Extract version from tag
         id: version
         env:
-          DRY_RUN_VERSION: ${{ inputs.version }}
+          DRY_RUN_VERSION: ${{ inputs.version || '0.0.0-dryrun' }}
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
           [[ "$GITHUB_EVENT_NAME" == push ]] || VERSION="$DRY_RUN_VERSION"
@@ -185,7 +190,7 @@ jobs:
       - name: Extract version from tag
         id: version
         env:
-          DRY_RUN_VERSION: ${{ inputs.version }}
+          DRY_RUN_VERSION: ${{ inputs.version || '0.0.0-dryrun' }}
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
           [[ "$GITHUB_EVENT_NAME" == push ]] || VERSION="$DRY_RUN_VERSION"
@@ -311,7 +316,7 @@ jobs:
       - name: Extract version from tag
         id: version
         env:
-          DRY_RUN_VERSION: ${{ inputs.version }}
+          DRY_RUN_VERSION: ${{ inputs.version || '0.0.0-dryrun' }}
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
           [[ "$GITHUB_EVENT_NAME" == push ]] || VERSION="$DRY_RUN_VERSION"

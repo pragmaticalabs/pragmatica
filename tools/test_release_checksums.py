@@ -168,6 +168,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_dispatch_is_a_dry_run_that_no_publishing_step_can_reach(self):
         self.assertRegex(self.text, r"(?m)^  workflow_dispatch:")
+        self.assertRegex(self.text, r"(?m)^  pull_request:\n    paths:\n      - 'scripts/release-checksums.sh'\n      - '.github/workflows/release.yml'")
         push_only = "if: github.event_name == 'push'"
         reachable = []
 
@@ -196,6 +197,7 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn("name: dryrun-assets-", self.all_jobs[job])
 
     def test_dispatch_version_cannot_leak_into_a_tag_build(self):
+        self.assertEqual(4, self.text.count("DRY_RUN_VERSION: ${{ inputs.version || '0.0.0-dryrun' }}"))
         self.assertEqual(4, self.text.count('[[ "$GITHUB_EVENT_NAME" == push ]] || VERSION="$DRY_RUN_VERSION"'))
 
 
