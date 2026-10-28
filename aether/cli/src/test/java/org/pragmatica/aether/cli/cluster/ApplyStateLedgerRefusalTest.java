@@ -124,6 +124,19 @@ class ApplyStateLedgerRefusalTest {
         }
 
         @Test
+        void read_otherSchema_isRefusedNamingTheFileAndTheExpectedVersion() throws Exception {
+            for (var schema : List.of("3", "1")) {
+                writeApplyState(applyStateJson(clusterName.value(), "").replace("\"schemaVersion\": 2", "\"schemaVersion\": " + schema));
+
+                ApplyState.read(clusterName)
+                          .onSuccess(state -> fail("a schema-" + schema + " ledger must not load: " + state))
+                          .onFailure(cause -> assertThat(cause.message()).contains(applyStatePath().toString())
+                                                                         .contains("schema " + schema)
+                                                                         .contains("reads and writes schema 2"));
+            }
+        }
+
+        @Test
         void read_resourceWithoutType_fails() throws Exception {
             writeApplyState(applyStateJson(clusterName.value(), "{\"resourceId\": \"x-9\"}"));
 

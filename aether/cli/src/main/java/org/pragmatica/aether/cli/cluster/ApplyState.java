@@ -201,6 +201,7 @@ public record ApplyState(String applyId,
         return Result.lift(PersistenceError::new,
                            () -> Files.readString(path))
                      .flatMap(ApplyState::fromJson)
+                     .mapError(cause -> new RefusedFile(path, cause))
                      .map(Option::some);
     }
 
@@ -234,6 +235,14 @@ public record ApplyState(String applyId,
         @Override
         public String message() {
             return "Apply state persistence error: " + cause.getMessage();
+        }
+    }
+
+    /// A ledger file that was found and refused. Names the file so the operator knows what was left untouched.
+    record RefusedFile(Path file, Cause origin) implements Cause.Wrapped {
+        @Override
+        public String message() {
+            return "Apply state file " + file + " was refused and left untouched: " + origin.message();
         }
     }
 
