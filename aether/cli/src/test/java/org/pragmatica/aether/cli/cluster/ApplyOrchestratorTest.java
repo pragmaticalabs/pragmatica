@@ -193,6 +193,7 @@ class ApplyOrchestratorTest {
 
         private Function<ClusterName, Path> originalResolver;
         private final AtomicInteger executed = new AtomicInteger();
+        private final ApplyChaosHarness harness = new ApplyChaosHarness();
 
         @BeforeEach
         void redirect() {
@@ -222,6 +223,28 @@ class ApplyOrchestratorTest {
             return Result.success(ApplyResult.applyResult(plan, 2, 0, 0));
         }
 
+        /// Creates a VM labelled with the running ledger's apply id and records its row, as P2 will.
+        private ApplyState createAndRecord(String nodeId) {
+            var ledger = ApplyState.read(CLUSTER).unwrap().unwrap();
+            var info = harness.provider.create(nodeId, Map.of(ApplyChaosHarness.APPLY_LABEL, ledger.applyId()));
+            var recorded = ledger.withNode(ApplyResource.applyResource("k",
+                                                                       nodeId,
+                                                                       "fake",
+                                                                       org.pragmatica.lang.Option.some(info.id().value()),
+                                                                       ApplyResource.State.CREATED));
+
+            ApplyState.save(recorded).onFailure(cause -> fail(cause.message()));
+
+            return recorded;
+        }
+
+        private Result<ApplyResult> createsOneThenFails(DiffPlan plan, ClusterBootstrapConfig stored, ClusterBootstrapConfig desired) {
+            executed.incrementAndGet();
+            createAndRecord("n-1");
+
+            return org.pragmatica.lang.utils.Causes.cause("provider refused the second create (test cause)").result();
+        }
+
         private Result<ApplyResult> failingExecutor(DiffPlan plan, ClusterBootstrapConfig stored, ClusterBootstrapConfig desired) {
             executed.incrementAndGet();
 
@@ -239,6 +262,8 @@ class ApplyOrchestratorTest {
                                                                      () -> "the refusal must name the ledger write, was: " + cause.message()));
 
             assertEquals(0, executed.get(), "no create may be issued without a ledger behind it");
+            assertEquals(0, harness.provider.totalCreates());
+            harness.assertNoApplyLabelledVm();
         }
 
         @Test
@@ -247,9 +272,12 @@ class ApplyOrchestratorTest {
 
             run((plan, stored, desired) -> {
                 seen.set(ApplyState.read(CLUSTER).unwrap().unwrap());
+                var recorded = createAndRecord("n-1");
+                harness.assertNoLeak(recorded.applyId(), ApplyState.read(CLUSTER).unwrap().unwrap());
                 return countingSuccess(plan, stored, desired);
             }).onFailure(cause -> fail(cause.message()));
 
+            harness.assertAtMostOneCreatePerNodeId();
             assertEquals(ApplyPhase.RUNNING, seen.get().phase());
             assertEquals(ClusterBootstrapOrchestrator.computeConfigHash(forgeConfig(5)), seen.get().configHash());
             assertEquals(List.of("ScaleUp|forge|core|3->5"), seen.get().actions().stream().map(ApplyAction::key).toList());
@@ -259,16 +287,29 @@ class ApplyOrchestratorTest {
 
         @Test
         void executeAndPersist_executorFails_ledgerIsKeptForResumeAndRollback() {
-            run(this::failingExecutor).onSuccess(_ -> fail("the executor failed"));
+            run(this::createsOneThenFails).onSuccess(_ -> fail("the executor failed"));
 
             assertTrue(Files.exists(ledgerFile()), "a failed apply keeps its ledger");
-            assertEquals(ApplyPhase.RUNNING, ApplyState.read(CLUSTER).unwrap().unwrap().phase());
+
+            var kept = ApplyState.read(CLUSTER).unwrap().unwrap();
+
+            assertEquals(ApplyPhase.RUNNING, kept.phase());
+            harness.assertNoLeak(kept.applyId(), kept);
+            harness.assertAtMostOneCreatePerNodeId();
         }
 
         @Test
         void executeAndPersist_success_removesTheLedger() {
-            run(this::countingSuccess).onFailure(cause -> fail(cause.message()));
+            run((plan, stored, desired) -> {
+                createAndRecord("n-1");
+                createAndRecord("n-2");
+                return countingSuccess(plan, stored, desired);
+            }).onFailure(cause -> fail(cause.message()))
+              .onSuccess(result -> assertEquals(harness.provider.totalCreates(), result.nodesAdded(), "created == planned"));
 
+            // On success the ledger is removed on purpose (the VMs now belong to the desired configuration), so the
+            // leak invariant has no ledger to compare with here; the money check is created == planned, above.
+            harness.assertAtMostOneCreatePerNodeId();
             assertTrue(Files.notExists(ledgerFile()));
         }
 

@@ -76,6 +76,71 @@ class ApplyStateTest {
         }
     }
 
+    /// B2: a ledger that `save` accepted must be readable. Every control code point is written escaped.
+    @Test
+    void roundTrip_survivesEveryControlCodePoint_quotesBackslashesAndSurrogatePairs() {
+        var specials = new java.util.ArrayList<String>();
+
+        for (int c = 0; c < 0x20; c++) {
+            specials.add("a" + (char) c + "b");
+        }
+
+        specials.add("q\"b\\s\n\r\t");
+        specials.add("emoji \uD83D\uDE00 and \u2028");
+
+        for (var text : specials) {
+            var row = ApplyResource.applyResource(text, "n-1", text, Option.some(text), ApplyResource.State.CREATED);
+            var state = ApplyStateFixtures.state(CLUSTER).withNode(row);
+
+            ApplyState.fromJson(ApplyState.toJson(state))
+                      .onFailure(cause -> fail("unreadable for " + java.util.HexFormat.of().formatHex(text.getBytes(java.nio.charset.StandardCharsets.UTF_16BE)) + ": " + cause.message()))
+                      .onSuccess(restored -> assertThat(restored).isEqualTo(state));
+        }
+    }
+
+    /// T3: only the integer 2 is schema 2; 2.0, 2.9 and 2e0 are other documents.
+    @Test
+    void schemaVersion_fractionalOrExponentOrOutOfRangeForms_areRefused_namingTheSchema() {
+        var good = ApplyState.toJson(fullState());
+
+        for (var form : java.util.List.of("2.0", "2.9", "2.0000001", "2e0", "20e-1", "4294967298", "0", "1", "-2")) {
+            ApplyState.fromJson(good.replace("\"schemaVersion\": 2", "\"schemaVersion\": " + form))
+                      .onSuccess(state -> fail("schema " + form + " must be refused"))
+                      .onFailure(cause -> assertThat(cause.message()).as(form).contains("schema").contains("not supported").contains("reads and writes schema 2"));
+        }
+    }
+
+    @Test
+    void toJson_writesTheStatesOwnApplyId_notAConstant() {
+        var id = ApplyState.newApplyId();
+        var state = ApplyState.applyState(id, CLUSTER, "h", 0L, "2026-10-28T10:00:00Z", ApplyPhase.RUNNING, List.of(), List.of(), List.of(), List.of(), List.of());
+
+        assertThat(ApplyState.toJson(state)).contains("\"applyId\": \"" + id + "\"");
+        assertThat(ApplyState.fromJson(ApplyState.toJson(state)).unwrap().applyId()).isEqualTo(id);
+    }
+
+    @Test
+    void constructor_copiesEveryList_soLaterMutationOfTheCallersListsCannotChangeTheState() {
+        var actions = new java.util.ArrayList<ApplyAction>();
+        var resources = new java.util.ArrayList<ApplyResource>();
+        var reservations = new java.util.ArrayList<ApplyReservation>();
+        var created = new java.util.ArrayList<CreatedResource>();
+        var destroyed = new java.util.ArrayList<String>();
+        var state = ApplyState.applyState(ApplyStateFixtures.APPLY_ID, CLUSTER, "h", 0L, "t", ApplyPhase.RUNNING, actions, resources, reservations, created, destroyed);
+
+        actions.add(ApplyAction.applyAction("k", 0, ApplyAction.Status.PENDING));
+        resources.add(ApplyResource.applyResource("k", "n", "p", Option.none(), ApplyResource.State.INTENDED));
+        reservations.add(ApplyReservation.applyReservation("s", "r", 1L, 2L));
+        created.add(CreatedResource.DockerNetwork.dockerNetwork("net"));
+        destroyed.add("x");
+
+        assertThat(state.actions()).isEmpty();
+        assertThat(state.resources()).isEmpty();
+        assertThat(state.reservations()).isEmpty();
+        assertThat(state.createdResources()).isEmpty();
+        assertThat(state.destroyedNodeIds()).isEmpty();
+    }
+
     @Nested
     class Refusals {
         private String mutated(String from, String to) {
@@ -115,6 +180,23 @@ class ApplyStateTest {
         @Test
         void unknownActionStatus_isRefused_notDefaulted() {
             assertRefused(mutated("\"IN_PROGRESS\"", "\"HALF_DONE\""), "HALF_DONE");
+        }
+
+        @Test
+        void applyId_wrongLengthOrCaseOrAlphabet_isRefused_byTheGrammarAndByTheParser() {
+            var id = ApplyStateFixtures.APPLY_ID;
+
+            for (var bad : List.of(id.substring(1), id + "q", id.toUpperCase(java.util.Locale.ROOT), id.substring(1) + "-", "")) {
+                assertThat(ApplyState.isApplyId(bad)).as(bad).isFalse();
+                assertRefused(mutated(id, bad), "applyId");
+            }
+
+            assertThat(ApplyState.isApplyId(id)).isTrue();
+        }
+
+        @Test
+        void configHashThatIsANumber_isRefused_notReadAsText() {
+            assertRefused(mutated("\"hash-1\"", "123"), "configHash");
         }
 
         @Test

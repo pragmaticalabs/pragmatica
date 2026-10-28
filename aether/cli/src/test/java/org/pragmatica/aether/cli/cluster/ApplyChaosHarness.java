@@ -120,6 +120,12 @@ final class ApplyChaosHarness {
                                                .isEmpty();
     }
 
+    /// For scenarios with no ledger on disk (a refused apply): no VM may carry the apply label at all.
+    void assertNoApplyLabelledVm() {
+        assertThat(provider.inventoryWithLabel(APPLY_LABEL)).as("no VM may carry an apply label when no ledger exists")
+                                                            .isEmpty();
+    }
+
     void assertAtMostOneCreatePerNodeId() {
         assertThat(provider.createCalls()
                            .entrySet()).as("an id is used for at most one create call, ever")
@@ -174,6 +180,22 @@ final class ApplyChaosHarness {
 
             all.forEach((server, info) -> {
                 if (value.equals(info.tags().get(label))) {
+                    matching.add(server);
+                }
+            });
+
+            return matching;
+        }
+
+        Set<String> inventoryWithLabel(String label) {
+            var all = new LinkedHashMap<>(visible);
+
+            all.putAll(hidden);
+
+            var matching = new LinkedHashSet<String>();
+
+            all.forEach((server, info) -> {
+                if (info.tags().containsKey(label)) {
                     matching.add(server);
                 }
             });

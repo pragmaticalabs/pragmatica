@@ -89,13 +89,14 @@ final class ApplyStateJson {
                                      parseArray(root, "destroyedNodeIds", JsonNode::asText));
     }
 
+    /// Only the integer 2 is schema 2: `2.0`, `2.9`, `2e0` and `4294967298` are other documents, refused by name.
     private static void requireSchema(JsonNode root) {
         var found = root.path("schemaVersion");
 
-        if (!found.isNumber() || found.asInt() != ApplyState.SCHEMA_VERSION) {
+        if (!found.isInt() || found.intValue() != ApplyState.SCHEMA_VERSION) {
             throw new IllegalArgumentException("apply state schema " + (found.isMissingNode()
                                                                         ? "(none, a pre-2 file)"
-                                                                        : found.asText())
+                                                                        : found.toString())
                                               + " is not supported, this CLI reads and writes schema " + ApplyState.SCHEMA_VERSION
                                               + "; the file was left untouched");
         }
@@ -244,12 +245,27 @@ final class ApplyStateJson {
                : "  \"" + key + "\": [\n" + String.join(",\n", elements) + "\n  ]";
     }
 
+    /// Every code unit below 0x20 is escaped (`\\u%04x` unless it has a short form), so whatever `save` accepts the
+    /// parser reads back; surrogate halves pass through unchanged and reassemble.
     private static String quoted(String value) {
-        return "\"" + value.replace("\\", "\\\\")
-                           .replace("\"", "\\\"")
-                           .replace("\n", "\\n")
-                           .replace("\r", "\\r")
-                           .replace("\t", "\\t")
-             + "\"";
+        var sb = new StringBuilder(value.length() + 2).append('"');
+
+        value.chars().forEach(unit -> sb.append(escaped(unit)));
+
+        return sb.append('"')
+                 .toString();
+    }
+
+    private static String escaped(int unit) {
+        return switch (unit) {
+            case '\\' -> "\\\\";
+            case '"' -> "\\\"";
+            case '\n' -> "\\n";
+            case '\r' -> "\\r";
+            case '\t' -> "\\t";
+            default -> unit < 0x20
+                       ? String.format("\\u%04x", unit)
+                       : String.valueOf((char) unit);
+        };
     }
 }
