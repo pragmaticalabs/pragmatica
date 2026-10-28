@@ -13,6 +13,7 @@
 # EmberObserverRestartReadmitsRetiredTest 26, EmberAllHoldersRestartKeepRetirementTest 24, EmberLedgerLostTest 111 (#2429): surefire class time on bigboy at 53bddafc38, 3 runs each (24.3/25.5/24.6 s, 23.7/23.8/23.8 s, 110.0/110.0/110.7 s; host load average 1-6 from other tickets); maximum rounded up. LedgerLost is long because its wiped-holder arm watches 60 s for a link that must not form.
 AssemblyTraceTest 13
 EmberAllHoldersRestartKeepRetirementTest 24
+# The ten *TripwireTest classes below (#2201): surefire class time at 27b5fa9a4b on three hosts (3 runs, spread under 3 s per class: 132.7-134.5 s ColdRestart, 14.1 ConsumerPath, 54.5 CursorCheckpoint, 12.1 ForwardedPublishLoop, 32.7-32.8 ForwardLane, 69.3-69.9 MemoryBudget, 58.8-61.2 OwnerRestart, 13.6-14.2 ReplicationBatching, 16.4-18.3 SealedTier, 69.9 WalFailStop); maximum rounded up. Their @Disabled tests are skipped, so re-measure when one is enabled.
 EmberAmnesiacRestartTest 162
 EmberBlackholedReplicaRecoveryTest 94
 EmberBootstrapAdminKeyAuthTest 10
@@ -64,3 +65,13 @@ MinimumLiveIsrTest 0
 EmberVoterHealTest 116
 TransportWiringTripwireEmberTest 10
 EmberStoragePrefetchOverSwimTest 18
+EmberColdRestartAckedLossTripwireTest 134
+EmberConsumerPathTripwireTest 15
+EmberCursorCheckpointLoadTripwireTest 55
+EmberForwardLaneTripwireTest 33
+EmberForwardedPublishLoopTripwireTest 12
+EmberMemoryBudgetTripwireTest 70
+EmberOwnerRestartAckedTailTripwireTest 62
+EmberReplicationBatchingTripwireTest 15
+EmberSealedTierRetentionTripwireTest 17
+EmberWalFailStopNodeTripwireTest 70

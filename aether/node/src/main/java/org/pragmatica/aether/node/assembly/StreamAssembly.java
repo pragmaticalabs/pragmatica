@@ -171,6 +171,7 @@ import static org.pragmatica.aether.node.AetherNode.DEFAULT_STREAM_RETENTION_MS;
 import static org.pragmatica.aether.node.AetherNode.ISR_MONITOR_INTERVAL;
 import static org.pragmatica.aether.node.AetherNode.LOG;
 import static org.pragmatica.aether.node.AetherNode.RETENTION_INVARIANT_CHECK_INTERVAL;
+import static org.pragmatica.aether.node.AetherNode.RING_AGE_TICK_INTERVAL;
 import static org.pragmatica.aether.node.AetherNode.STREAM_BACKFILL_REDRIVE_INTERVAL;
 import static org.pragmatica.aether.node.AetherNode.STREAM_CATCHUP_BATCH_SIZE;
 import static org.pragmatica.aether.node.AetherNode.STREAM_CONSUMER_RECONCILE_INTERVAL;
@@ -811,6 +812,10 @@ public sealed interface StreamAssembly {
         streamPartitionManager.ownershipRecords((stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
                                                                                                                                                 partition),
                                                                                         StreamPartitionOwnershipValue.class));
+        // #2201 C-16: a consumer read below the ring tail is served from the sealed tier (StreamPartitionManager.readServingTiered,
+        // the validated read of StreamReadRouter and of the owner's forward handler). Unbound, every consumer behind the ring
+        // would be moved to the ring tail; EmberConsumerPathTripwireTest#tierFallbackSeam_isBoundOnEveryBootedNode pins it.
+        streamPartitionManager.tieredReader(streamTieredReader);
         ownerActivation.promotionEscapeAfter(streamingConfig.promotionEscapeAfter());
         // #1937: the promoted owner's backfill refuses for a peer's oversized event too, and reports it the way the gate does.
         // #2080: its cold-start contest proceeds past unreachable co-replicas only for a node the COMMITTED in-sync set names, and
@@ -936,6 +941,10 @@ public sealed interface StreamAssembly {
         // tick is a cheap sweep of materialized partitions over empty queues.
         defer.accept(() -> SharedScheduler.scheduleAtFixedRate(streamPartitionManager::reconcileReshuffle,
                                                                STREAM_RESHUFFLE_RECONCILE_INTERVAL));
+        // PR-0c ring age tick: events older than the stream's declared max age leave the ring for the sealer
+        // (entity rings and streams with no declared age are skipped inside the tick).
+        defer.accept(() -> SharedScheduler.scheduleAtFixedRate(streamPartitionManager::evictRingsByAge,
+                                                               RING_AGE_TICK_INTERVAL));
 
         return Unit.unit();
     }

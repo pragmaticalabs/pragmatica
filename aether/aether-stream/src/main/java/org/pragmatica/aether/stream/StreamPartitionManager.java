@@ -36,6 +36,7 @@ import java.util.stream.LongStream;
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.aether.slice.ReplicationFactorsError;
+import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.fence.OwnershipDomain;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
@@ -47,6 +48,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryReasonKi
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.StreamFootprint;
+import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement.StreamClass;
 import org.pragmatica.aether.stream.replication.ReplicaSetController;
@@ -181,6 +183,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// depend on); agreement is pinned end-to-end through the real entity substrate by
     /// `StreamEntityLogSubstrateTest.append_failsWithEventDropped_whenFrozenRingCannotFitRecord_evenAtReplicationFactorOneWithoutWal`.
     private static final String ENTITY_STREAM_PREFIX = "entity:";
+    /// The most one ring age tick hands over from one ring (D5): the hand-over copies the evictees while the ring holds its
+    /// append lock, so the lock hold grows with what is handed over at once. Whatever else has aged out waits for the next
+    /// tick. Space eviction hands over a few events per append; these caps keep a tick to a comparable bound.
+    static final long RING_AGE_BATCH_EVENTS = 10_000L;
+    static final long RING_AGE_BATCH_BYTES = 8L * 1024 * 1024;
 
     /// Default exhaustion sink — no-op. Wave 3 (`AetherNode`) replaces it with a binding to the
     /// cluster-event aggregator. See spec §4.5c.
@@ -265,6 +272,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// #1730 phase 2 / #1873: the committed ownership records a validated consumer read is checked against, late-bound
     /// ([#ownershipRecords(OwnerActivation.OwnershipRecordSource)]); none until wired.
     private volatile OwnerActivation.OwnershipRecordSource ownershipRecords = (_, _) -> Option.none();
+    /// #2201 C-16: the sealed tier a validated consumer read falls back to below the ring tail, late-bound
+    /// ([#tieredReader(TieredStreamReader)]); none until wired, and then such a read answers `CursorExpired` at the ring tail.
+    private volatile Option<TieredStreamReader> tieredReader = Option.none();
     /// #1596: the reasons this process has already raised, `stream#partition#kind#evidence`, so a condition met on
     /// every append raises one transaction, not one per append. A raise that fails is forgotten and retried at the
     /// next occurrence.
@@ -1004,7 +1014,17 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// What a validated consumer read returns: the events and the owner epoch they were served under (#1730 phase 2 /
     /// #1873), which the consumer adopts.
-    public record EpochRead(List<OffHeapRingBuffer.RawEvent> events, Epoch ownerEpoch) {}
+    /// `fromTier` (#2201 C-16) says the read began below the ring tail and was served from the sealed tier: the signal a
+    /// consumer's `stream-consumer-behind-ring` episode opens and closes on.
+    public record EpochRead(List<OffHeapRingBuffer.RawEvent> events, Epoch ownerEpoch, boolean fromTier) {
+        public EpochRead(List<OffHeapRingBuffer.RawEvent> events, Epoch ownerEpoch) {
+            this(events, ownerEpoch, false);
+        }
+
+        public static EpochRead epochRead(List<OffHeapRingBuffer.RawEvent> events, Epoch ownerEpoch, boolean fromTier) {
+            return new EpochRead(events, ownerEpoch, fromTier);
+        }
+    }
 
     /// [#readServing(String, int, long, int)] for a CONSUMER that last read under `consumerEpoch` (#1730 phase 2 / #1873,
     /// KIP-320): after the owner gate, the cursor is checked against the committed epoch starts, and a cursor that belongs
@@ -1028,6 +1048,66 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                                                          fromOffset,
                                                                                                                                          events))
                                                        .map(events -> new EpochRead(events, epoch)));
+    }
+
+    /// [#readServing(String, int, long, int, Epoch)] that falls back to the sealed tier below the ring tail (#2201 C-16, I-09):
+    /// the owner gate and the epoch admission run first, exactly as there, so a cursor of a replaced lineage is refused with
+    /// [StreamError.EpochDiverged] before the tier is asked; a ring answer of `CursorExpired` is then served by
+    /// [SealedTierFallback] under the epoch already admitted, and the answer says it came from the tier. The tier's events
+    /// are held back from an unverified copy the way the ring's are ([#servedIfVerified]). The consumer read of
+    /// `StreamReadRouter.readValidated` and the owner's forwarded consumer read both come here.
+    public Promise<EpochRead> readServingTiered(String streamName,
+                                                int partition,
+                                                long fromOffset,
+                                                int maxEvents,
+                                                Epoch consumerEpoch) {
+        return ownerRoleGate(streamName, partition).flatMap(_ -> admitted(streamName,
+                                                                          partition,
+                                                                          fromOffset,
+                                                                          consumerEpoch))
+                            .async()
+                            .flatMap(epoch -> readAdmitted(streamName, partition, fromOffset, maxEvents, epoch));
+    }
+
+    private Promise<EpochRead> readAdmitted(String streamName,
+                                            int partition,
+                                            long fromOffset,
+                                            int maxEvents,
+                                            Epoch epoch) {
+        return readLocal(streamName, partition, fromOffset, maxEvents).flatMap(events -> servedIfVerified(streamName,
+                                                                                                          partition,
+                                                                                                          fromOffset,
+                                                                                                          events))
+                        .map(events -> new EpochRead(events, epoch))
+                        .fold(cause -> belowTheRing(cause, streamName, partition, fromOffset, maxEvents, epoch),
+                              Promise::success);
+    }
+
+    private Promise<EpochRead> belowTheRing(Cause cause,
+                                            String streamName,
+                                            int partition,
+                                            long fromOffset,
+                                            int maxEvents,
+                                            Epoch epoch) {
+        return cause instanceof StreamError.CursorExpired
+               ? SealedTierFallback.sealedTierFallback(this, tieredReader)
+                                   .read(streamName, partition, fromOffset, maxEvents)
+                                   .flatMap(events -> servedIfVerified(streamName, partition, fromOffset, events).async())
+                                   .map(events -> EpochRead.epochRead(events, epoch, true))
+               : cause.promise();
+    }
+
+    /// Late-bind the sealed tier a validated consumer read falls back to (#2201 C-16): `AetherNode` wires the node's tiered
+    /// reader. Until then such a read below the ring tail answers `CursorExpired` at the ring tail. Set once at wiring.
+    @Contract
+    public void tieredReader(TieredStreamReader reader) {
+        this.tieredReader = Option.some(reader);
+    }
+
+    /// Whether [#tieredReader(TieredStreamReader)] was bound: a node-level wiring check (#2201 C-16, NT-04), since an unbound
+    /// seam leaves every consumer behind the ring to be moved to the ring tail.
+    public boolean tieredReaderBound() {
+        return tieredReader.isPresent();
     }
 
     private Result<Epoch> admitted(String streamName, int partition, long fromOffset, Epoch consumerEpoch) {
@@ -4724,6 +4804,56 @@ public final class StreamPartitionManager implements AutoCloseable {
                                              .toList();
             }
         };
+    }
+
+    /// Ring age tick (PR-0c, owner ruling Q8 A): evicts, from every materialized ring of a stream that declares a
+    /// finite max age, the events older than that age, handing them to the eviction listener exactly as space
+    /// eviction does (every evictee is still sealed). `AetherNode` schedules it every `RING_AGE_TICK_INTERVAL`.
+    /// Takes at most [#RING_AGE_BATCH_EVENTS] events and [#RING_AGE_BATCH_BYTES] bytes from a ring per tick; the rest
+    /// of what has aged out waits for the next tick. Calls [OffHeapRingBuffer#evictByAge] and nothing else: `applyRetention` and the tier-aware path stay unwired.
+    /// Excluded: an `entity:` ring (it keeps space eviction, its sealed segments are protected by the checkpoint
+    /// floor), a stream whose max age is `Long.MAX_VALUE` (a count-typed stream declares no age) and a stream whose
+    /// retention mode is `UNKNOWN` (a rule this node cannot read is not authority to evict, #964). Returns the
+    /// number of rings swept.
+    public int evictRingsByAge() {
+        return streams.values()
+                      .stream()
+                      .filter(StreamPartitionManager::hasRingAgeBound)
+                      .mapToInt(StreamPartitionManager::evictEntryByAge)
+                      .sum();
+    }
+
+    private static boolean hasRingAgeBound(StreamEntry entry) {
+        return ! isEntityStream(entry)
+               && declaresMaxAge(entry)
+               && readsRetentionRule(entry);
+    }
+
+    private static boolean readsRetentionRule(StreamEntry entry) {
+        return entry.config()
+                    .retention()
+                    .mode() != RetentionMode.UNKNOWN;
+    }
+
+    private static boolean isEntityStream(StreamEntry entry) {
+        return entry.config()
+                    .name()
+                    .startsWith(ENTITY_STREAM_PREFIX);
+    }
+
+    private static boolean declaresMaxAge(StreamEntry entry) {
+        return entry.config()
+                    .retention()
+                    .maxAgeMs() != Long.MAX_VALUE;
+    }
+
+    private static int evictEntryByAge(StreamEntry entry) {
+        var maxAgeMs = entry.config().retention().maxAgeMs();
+        var rings = entry.materializedRings();
+
+        rings.forEach(ring -> ring.evictByAge(maxAgeMs, RING_AGE_BATCH_EVENTS, RING_AGE_BATCH_BYTES));
+
+        return rings.size();
     }
 
     public int reapIdleStreams() {
