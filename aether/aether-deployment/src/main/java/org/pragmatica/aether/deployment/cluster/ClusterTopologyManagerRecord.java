@@ -2715,9 +2715,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
         // A confirmed node has no instance of its own left to delete (its directed reap, or its own earlier reap, deleted it), so its hold would
         // announce a deletion that already happened. But the memory is per NODE id and the instance that reuses the id may be another one,
-        // which never joined: it is looked at first ([#recheckConfirmedReap]) and, being new, takes the gate like any other (a directed reap is
-        // exempt there, so a second directed retirement of the node deletes the new instance).
-        if (confirmedReaps.contains(nodeId)) {
+        // which never joined: while auto-heal is disabled it is looked at first ([#recheckConfirmedReap]) and, being new, takes the gate like any
+        // other (a directed reap is exempt there, so a second directed retirement of the node deletes the new instance). While auto-heal is
+        // enabled nothing is held, and a second reap of a confirmed node stays a no-op that asks the provider nothing ([#reapedAgain]).
+        if (confirmedReaps.contains(nodeId) && !isAutoHealEnabled()) {
             recheckConfirmedReap(nodeId, epoch, generation, retriesLeft);
 
             return;
@@ -2750,15 +2751,18 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     /// The node's reap is confirmed, but a later instance may carry its id without ever having joined (a replacement that booted under it,
-    /// an orphan): confirmed-gone is a fact about the instances listed when it was confirmed ([#knownInstanceIds]), not about the id. A listing
+    /// an orphan): confirmed-gone is a fact about the instances listed when it was confirmed ([#knownInstanceIds]), not about the id. The read is
+    /// pure ([NodeLifecycleManager#readInstancesForNode]: it commits and releases nothing) and never made for an EXTERNAL node, which has no provider
+    /// instance of ours. A listing
     /// that shows an instance outside that set drops the confirmation, so the reap goes through the gate as a first reap (held with the event
     /// while auto-heal is disabled, deleting when enabled); otherwise nothing is left to delete and the confirmed branch of [#reapRetired] answers
     /// without a hold. A listing that fails is a failed attempt, retried and bounded like any other.
     @Contract
     private void recheckConfirmedReap(NodeId nodeId, long epoch, long generation, int retriesLeft) {
         lifecycleManager.sourceOf(nodeId)
+                        .filter(_ -> !lifecycleManager.externalNode(nodeId))
                         .fold(() -> Promise.success(false),
-                              source -> lifecycleManager.instancesForNode(nodeId, source)
+                              source -> lifecycleManager.readInstancesForNode(nodeId, source)
                                                         .map(listed -> hasUnreapedInstance(nodeId, listed)))
                         // Detached on purpose, as in [#reapOf]: the chain is discarded and the two handlers are its terminal effects.
                         .onSuccess(unreaped -> afterConfirmedListing(nodeId, epoch, generation, retriesLeft, unreaped))

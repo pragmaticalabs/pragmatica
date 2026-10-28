@@ -8,10 +8,12 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Predicate;
 
 import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.AfterEach;
@@ -75,6 +77,8 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
     private final AtomicReference<Runnable> duringFirstListing = new AtomicReference<>(() -> {});
     private final AtomicBoolean firstListingFails = new AtomicBoolean(false);
     /// One-shot: the next listing fails, and the next listing runs the hook first (a join or a disable landing while the listing is in flight).
+    private final AtomicInteger effectfulListings = new AtomicInteger();
+    private final Set<NodeId> externalNodes = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean failNextListing = new AtomicBoolean(false);
     private final AtomicReference<Runnable> onNextListing = new AtomicReference<>(() -> {});
     private final List<OperatorWarning> events = new CopyOnWriteArrayList<>();
@@ -84,7 +88,7 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
     @BeforeEach
     void setUp() {
         appender = LogCapture.capture(LOGGER_NAME, Level.WARN, false);
-        ctm = ctmOver(new SourcedLifecycle(NodeLifecycleManager.nodeLifecycleManager(Option.some(new FakeProvider()))));
+        ctm = ctmOver(new SourcedLifecycle(NodeLifecycleManager.nodeLifecycleManager(Option.some(new FakeProvider())), externalNodes::contains, effectfulListings));
         ctm.setRetirementRefusal(_ -> Option.none());
         ctm.setOperatorWarningSink(OperatorWarningSink.handingOffTo(events::add));
         ctm.activate();
@@ -588,11 +592,13 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
     @Test
     void confirmedReap_thenNeverJoinedZombieUnderTheSameId_autoHealDisabled_isHeldAndAnnounced() {
         directedReapDoneThenAnotherInstanceUnderTheSameId();
+        var effectful = effectfulListings.get();
 
         ctm.drainNode(LOST, DrainReason.JOIN_GRACE_REAP);
 
         await().atMost(Duration.ofSeconds(5)).until(() -> eventSeen(OperatorWarningCode.INSTANCE_REAP_HELD));
         settle();
+        assertThat(effectfulListings.get()).as("the check of a confirmed node is a pure read").isEqualTo(effectful);
         assertThat(terminates.get()).isEqualTo(1);
         assertThat(eventsOf(OperatorWarningCode.INSTANCE_REAP_HELD)).isEqualTo(1);
     }
@@ -690,6 +696,36 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
         assertThat(eventsOf(OperatorWarningCode.INSTANCE_REAP_HELD)).isZero();
     }
 
+    /// Auto-heal enabled: nothing is held, so a second reap of a confirmed node stays a no-op that asks the provider nothing.
+    @Test
+    void confirmedReap_secondReapOfTheSameNode_autoHealEnabled_asksTheProviderNothing() {
+        lost();
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+        settle();
+        var asked = listings.get();
+
+        lost();
+        settle();
+
+        assertThat(listings.get()).as("no provider call for a second reap").isEqualTo(asked);
+        assertThat(terminates.get()).isEqualTo(1);
+    }
+
+    /// An EXTERNAL node has no provider instance of ours: nothing under its id is read at the provider, so nothing is held for it.
+    @Test
+    void confirmedReap_ofAnExternalNode_thenALaterListing_autoHealDisabled_isNotHeld() {
+        externalNodes.add(LOST);
+        disableAutoHeal();
+        ctm.drainNode(LOST, DrainReason.REPLACED);
+        settle();
+        relist();
+
+        lost();
+        settle();
+
+        assertThat(eventsOf(OperatorWarningCode.INSTANCE_REAP_HELD)).isZero();
+    }
+
     /// The held zombie is not forgotten: once auto-heal is back the next re-arm deletes it (the confirmation did not cover it) and closes the event.
     @Test
     void confirmedReap_thenHeldZombieUnderTheSameId_whenAutoHealIsEnabledAgain_isDeleted() {
@@ -734,7 +770,27 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
     }
 
     /// The production lifecycle's `sourceOf` is total (a source is always named); the single-provider record names none, so this names the default.
-    private record SourcedLifecycle(NodeLifecycleManager delegate) implements NodeLifecycleManager {
+    private record SourcedLifecycle(NodeLifecycleManager delegate,
+                                     Predicate<NodeId> external,
+                                     AtomicInteger effectfulListings) implements NodeLifecycleManager {
+        /// The listing a reap chain makes: in production it commits and releases reservations, so it is counted apart from the pure read.
+        @Override
+        public Promise<List<InstanceInfo>> instancesForNode(NodeId nodeId, SourceName source) {
+            effectfulListings.incrementAndGet();
+
+            return delegate.instancesForNode(nodeId);
+        }
+
+        @Override
+        public Promise<List<InstanceInfo>> readInstancesForNode(NodeId nodeId, SourceName source) {
+            return delegate.instancesForNode(nodeId);
+        }
+
+        @Override
+        public boolean externalNode(NodeId nodeId) {
+            return external.test(nodeId);
+        }
+
         @Override
         public Promise<ActionResult> executeAction(NodeAction action) {
             return delegate.executeAction(action);
