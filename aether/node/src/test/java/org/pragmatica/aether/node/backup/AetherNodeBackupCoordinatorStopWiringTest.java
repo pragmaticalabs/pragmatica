@@ -5,7 +5,9 @@
 package org.pragmatica.aether.node.backup;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AssemblySource;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -20,14 +22,28 @@ class AetherNodeBackupCoordinatorStopWiringTest {
         var source = AssemblySource.spaced();
 
         assertThat(source).containsOnlyOnce("backupCoordinatorStop.run();")
-                          .containsOnlyOnce("kvBackupService.onPresent(KvBackupService::stop);");
+                          .containsOnlyOnce("service.stopFlushed(BACKUP_STOP_FLUSH_BOUND)");
 
         // Offsets are comparable because `stop()` is one method in one file; the joined text puts `AetherNode.java` first.
         var stopsCoordinator = source.indexOf("backupCoordinatorStop.run();");
-        var stopsService = source.indexOf("kvBackupService.onPresent(KvBackupService::stop);");
+        var stopsService = source.indexOf("service.stopFlushed(BACKUP_STOP_FLUSH_BOUND)");
 
         assertThat(stopsCoordinator).as("stop() runs the coordinator's stop").isPositive();
         assertThat(stopsCoordinator).as("and does so before the backup service stops").isLessThan(stopsService);
+    }
+
+    /// Know 3b01e624f1: the flush is started before the teardown and the stop sequence runs only after it resolves, so a graceful stop
+    /// completes after the backup flush (bounded by the deadline), not beside it.
+    @Test
+    void stop_runsTheStopSequence_onlyAfterTheBackupFlush() {
+        var source = AssemblySource.spaced();
+
+        assertThat(source).containsOnlyOnce("backupFlushed.flatMap(() -> NodeStopSequence.run(");
+    }
+
+    @Test
+    void theBackupFlushBound_isTenSeconds_asTheConfigurationReferenceStates() {
+        assertThat(AetherNode.BACKUP_STOP_FLUSH_BOUND).isEqualTo(TimeSpan.timeSpan(10).seconds());
     }
 
     @Test

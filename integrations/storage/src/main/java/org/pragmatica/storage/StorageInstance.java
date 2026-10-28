@@ -1341,25 +1341,7 @@ final class DefaultStorageInstance implements StorageInstance {
 
     // --- Log / seal flow ---
     private static Result<List<String>> logNamesUnder(Path root) {
-        return FileOps.exists(root)
-               ? FileOps.walk(root, DefaultStorageInstance::isLogFile).map(files -> logNames(root, files))
-               : Result.success(List.of());
-    }
-
-    private static boolean isLogFile(Path path) {
-        return FileOps.isRegularFile(path) && path.getFileName()
-                                                  .toString()
-                                                  .endsWith(LOG_SUFFIX);
-    }
-
-    private static List<String> logNames(Path root, List<Path> files) {
-        return files.stream()
-                    .map(file -> root.relativize(file)
-                                     .toString())
-                    .map(relative -> relative.substring(0,
-                                                        relative.length() - LOG_SUFFIX.length()))
-                    .sorted()
-                    .toList();
+        return AppendLog.logNamesUnder(root);
     }
 
     /// `name` resolves strictly under `root`: relative, and never climbing out of it with `..`.

@@ -75,6 +75,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Lazy;
 import org.pragmatica.lang.NullReturn;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -316,6 +317,14 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final java.util.concurrent.CopyOnWriteArrayList<Runnable> deferredReports = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     private volatile boolean operatorWarningsBound = false;
+
+    /// Know 3b01e624f1: the WAL directories (`<stream>@<incarnation>`) under the log root as they were when the first stream life was adopted,
+    /// i.e. at startup, before this process created any. Read once: the directories of this process's own lives are not in it.
+    private final Lazy<List<String>> walDirectoriesAtStart = Lazy.lazy(this::scanWalDirectories);
+    /// The WAL directories already reported as orphaned by this process: one event per directory, however many streams adopt after it.
+    private final Set<String> orphanedWalReported = ConcurrentHashMap.newKeySet();
+    /// The lives announced as released ([#raiseReleasedLives]): the startup snapshot still lists them, and must not announce them again.
+    private final Set<String> releasedOrphans = ConcurrentHashMap.newKeySet();
     /// #1638 F1: the catch-up installs recorded but not yet settled, per partition ([#installProvenance]). Each
     /// partition's list is also that partition's lock serialising recording an install against trimming one, so a trim
     /// never drops an entry a pending install has just recorded or skipped; partitions never wait on each other's
@@ -5026,9 +5035,179 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Before a stream materializes: serve the life `config` names (#1278 review), so recovery anchors only at that
     /// life's sealed watermark and floor, and reclaim any other life of the name.
     private Result<Unit> adoptIncarnation(StreamConfig config) {
-        return streamFootprint.adopt(config.name(),
-                                     config.incarnation())
-                              .await(FOOTPRINT_TIMEOUT);
+        return reportOtherLives(config,
+                                streamFootprint.adopt(config.name(), config.incarnation()).await(FOOTPRINT_TIMEOUT));
+    }
+
+    /// Know 3b01e624f1, 6d0c58fd67: adoption deletes no other life of the name ([StreamFootprint#adopt]); each is announced instead.
+    private Result<Unit> reportOtherLives(StreamConfig config, Result<List<StreamFootprint.OtherLife>> adopted) {
+        var others = adopted.or(List.of());
+
+        raiseReleasedLives(config, others);
+        raiseOrphanedLives(config, others);
+
+        return adopted.mapToUnit();
+    }
+
+    /// A life of the name other than the one `config` adopts — a WAL directory `<stream>@<incarnation>` or sealed segments, or both — holds
+    /// acknowledged records no one will read: the cluster state this node restored does not know that life (a backup older than the stream's
+    /// config mints a fresh one). It is never deleted, and never silent: raised once per life, naming the stream, both incarnations and the
+    /// sealed-segment count.
+    @Contract
+    private void raiseOrphanedLives(StreamConfig config, List<StreamFootprint.OtherLife> sealedLives) {
+        var sealed = sealedLives.stream()
+                                .collect(Collectors.toMap(StreamFootprint.OtherLife::incarnation,
+                                                          StreamFootprint.OtherLife::sealedSegments));
+        var walLives = walDirectoriesAtStart.get()
+                                            .stream()
+                                            .filter(directory -> isOrphanedLifeOf(config, directory))
+                                            .map(directory -> SegmentIndex.DurableName.parse(directory).incarnation())
+                                            .toList();
+
+        java.util.stream.Stream.concat(sealed.keySet().stream(),
+                                       walLives.stream())
+                               .distinct()
+                               .filter(life -> !releasedOrphans.contains(SegmentIndex.durableName(config.name(),
+                                                                                                  life)))
+                               .filter(life -> orphanedWalReported.add(SegmentIndex.durableName(config.name(),
+                                                                                                life)))
+                               .forEach(life -> raiseOrphanedLife(config,
+                                                                  life,
+                                                                  sealed.getOrDefault(life, 0L),
+                                                                  walLives.contains(life)));
+    }
+
+    private static boolean isOrphanedLifeOf(StreamConfig config, String directory) {
+        var life = SegmentIndex.DurableName.parse(directory);
+
+        return life.streamName()
+                   .equals(config.name()) && life.incarnation() != config.incarnation();
+    }
+
+    /// Raised now when the operator-warning sink is bound, else when it is (as [#reportInterruptedRepair] does): the first adoptions of a
+    /// boot run before the node wires the sink, and the orphan is found exactly then.
+    @Contract
+    private void raiseOrphanedLife(StreamConfig config, long life, long sealedSegments, boolean walDirectory) {
+        var durable = SegmentIndex.durableName(config.name(), life);
+        Runnable report = () -> OperatorWarnings.raise(log,
+                                                       operatorWarnings,
+                                                       OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED,
+                                                       durable,
+                                                       "Stream {} has an earlier life {} of incarnation {}, which the cluster state restored at startup does not know "
+                                                      + "({} sealed segment(s); WAL directory present: {}); the stream runs as incarnation {}, so none of it is read. "
+                                                      + "Keeping it is the safe default and nothing deletes it. There is no CLI or API verb to release it, and no recovery procedure for its records exists yet (#1569). "
+                                                      + "Removing the directory <walPath of the streams storage instance>/{} permanently destroys that life's unsealed acknowledged records: remove it only if they are knowingly "
+                                                      + "abandoned, and NEVER touch the directory of the committed incarnation {}. Its sealed segments (storage refs) have no supported removal and stay; "
+                                                      + "this warning repeats on every boot while the life has sealed segments, until #1569. A KV backup older than the stream's config is the usual cause, see the backup-recovery runbook.",
+                                                       config.name(),
+                                                       durable,
+                                                       life,
+                                                       sealedSegments,
+                                                       walDirectory,
+                                                       config.incarnation(),
+                                                       durable,
+                                                       config.incarnation());
+
+        raiseOrDefer(report);
+    }
+
+    @Contract
+    private void raiseOrDefer(Runnable report) {
+        if (operatorWarningsBound) {
+            report.run();
+        } else {
+            deferredReports.add(report);
+        }
+    }
+
+    /// Know 3b01e624f1: an orphaned life this process announced and that a later adoption of the same stream finds gone from this node (an
+    /// operator removed it) or adopted as the committed life (#1569) is announced as released, which closes the warning. The listing
+    /// is fresh, not the startup snapshot, and only taken while a life of the stream is open. A released life is not announced as orphaned again
+    /// from the startup snapshot.
+    @Contract
+    private void raiseReleasedLives(StreamConfig config, List<StreamFootprint.OtherLife> sealedLives) {
+        var sealed = sealedLives.stream().map(StreamFootprint.OtherLife::incarnation).toList();
+        var open = openOrphanedLives(config);
+
+        if (open.isEmpty()) {
+            return;
+        }
+
+        var walLives = freshWalLogNames().map(names -> walLivesOf(config, names));
+
+        open.stream()
+            .filter(life -> life == config.incarnation() || isReleased(life, sealed, walLives))
+            .filter(life -> orphanedWalReported.remove(SegmentIndex.durableName(config.name(),
+                                                                                life)))
+            .forEach(life -> raiseReleasedLife(config, life));
+    }
+
+    /// Gone means gone from the sealed refs AND from a listing that could be read: a log root that cannot be listed proves nothing.
+    private static boolean isReleased(long life, List<Long> sealed, Option<List<Long>> walLives) {
+        return ! sealed.contains(life) && walLives.map(lives -> !lives.contains(life))
+                                                  .or(false);
+    }
+
+    private static List<Long> walLivesOf(StreamConfig config, List<String> logNames) {
+        return walDirectories(logNames).stream()
+                             .map(SegmentIndex.DurableName::parse)
+                             .filter(life -> life.streamName()
+                                                 .equals(config.name()))
+                             .map(SegmentIndex.DurableName::incarnation)
+                             .toList();
+    }
+
+    private List<Long> openOrphanedLives(StreamConfig config) {
+        return orphanedWalReported.stream()
+                                  .map(SegmentIndex.DurableName::parse)
+                                  .filter(life -> life.streamName()
+                                                      .equals(config.name()))
+                                  .map(SegmentIndex.DurableName::incarnation)
+                                  .toList();
+    }
+
+    @Contract
+    private void raiseReleasedLife(StreamConfig config, long life) {
+        var durable = SegmentIndex.durableName(config.name(), life);
+
+        releasedOrphans.add(durable);
+        raiseOrDefer(() -> OperatorWarnings.raise(log,
+                                                  operatorWarnings,
+                                                  OperatorWarningCode.STORAGE_STREAM_WAL_RELEASED,
+                                                  durable,
+                                                  "Stream {} life {} (incarnation {}) is no longer an orphan: it is gone from this node or is now the committed life "
+                                                 + "(the stream runs as incarnation {}).",
+                                                  config.name(),
+                                                  durable,
+                                                  life,
+                                                  config.incarnation()));
+    }
+
+    /// The directories holding stream WALs, from the opener's listing (`<dir>/<partition>`). A log root that cannot be listed is logged and
+    /// treated as unknown for this boot: no orphan can be named, and the log says so.
+    private List<String> scanWalDirectories() {
+        return walDirectories(freshWalLogNames().or(List.of()));
+    }
+
+    /// The log names now, or none when there is no WAL or it cannot be listed (logged): unknown, never "no logs".
+    private Option<List<String>> freshWalLogNames() {
+        return logs.flatMap(opener -> opener.listLogs()
+                                            .onFailure(this::warnWalDirectoriesUnlistable)
+                                            .option());
+    }
+
+    @Contract
+    private void warnWalDirectoriesUnlistable(Cause cause) {
+        log.warn("Stream WAL directories cannot be listed, so orphaned lives are not checked: {}", cause.message());
+    }
+
+    private static List<String> walDirectories(List<String> logNames) {
+        return logNames.stream()
+                       .map(name -> name.substring(0,
+                                                   Math.max(name.indexOf('/'),
+                                                            0)))
+                       .filter(directory -> directory.indexOf('@') >= 0)
+                       .toList();
     }
 
     /// The incarnation a fresh proposal carries (#1278, ruling C): always a newly minted one when the config is

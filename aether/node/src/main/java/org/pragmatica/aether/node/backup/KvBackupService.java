@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.backup;
 
+import java.nio.file.Path;
 import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -29,10 +30,14 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.FileOps;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -62,10 +67,16 @@ import static org.pragmatica.lang.Result.success;
 /// wins, and it only grows when the backed-up state actually changes. Pushes retry on backoff, and one
 /// successful push carries every pending commit.
 ///
+/// **Graceful stop.** [#stopFlushed] runs one final flush on the worker before the worker is released, so
+/// changes still inside the debounce window reach the backup before the stop completes. The flush is bounded
+/// by a deadline; one that fails or times out is reported ([Code#BACKUP_STOP_FLUSH_FAILED]) and the stop
+/// proceeds. A crash gets no such flush: the backup then trails by up to `maxDelay + quiet` (#1569).
+///
 /// **Warnings** are transition-only ([BackupWarning]).
 public final class KvBackupService {
     private static final Logger LOG = LoggerFactory.getLogger(KvBackupService.class);
     private static final String SUBJECT_PREFIX = "kv backup";
+    private static final Cause NO_STOP_FLUSH_MARKER = Causes.cause("no stop-time flush failure is open");
 
     /// The subject every backup commit carries ([#commitMessage]): `kv backup lineage=… incarnation=… revision=…`.
     private static final Pattern SUBJECT = Pattern.compile("kv backup lineage=(\\S*) incarnation=(\\d+) revision=(\\d+)");
@@ -84,6 +95,7 @@ public final class KvBackupService {
     private final AtomicBoolean leader = new AtomicBoolean(false);
     private final AtomicBoolean dirty = new AtomicBoolean(false);
     private final AtomicBoolean tickScheduled = new AtomicBoolean(false);
+    private final AtomicBoolean stopped = new AtomicBoolean(false);
     private final AtomicLong firstDirtyAt = new AtomicLong();
     private final AtomicLong lastDirtyAt = new AtomicLong();
     private final AtomicReference<Status> status = new AtomicReference<>(Status.CURRENT);
@@ -228,8 +240,84 @@ public final class KvBackupService {
     /// Stop flushing and release the worker. A node that stopped must not keep writing backups.
     @Contract
     public void stop() {
+        stopped.set(true);
         leader.set(false);
         onStop.run();
+    }
+
+    /// A graceful stop: flush what the debounce is still holding, then [#stop]. The leader commits the current
+    /// state and pushes it, bounded by `deadline`; a non-leader has nothing to flush. A flush that fails or
+    /// overruns is reported as [Code#BACKUP_STOP_FLUSH_FAILED] and logged, and the stop proceeds all the same:
+    /// a backup that cannot be reached must not hold a node's shutdown.
+    ///
+    /// FER: the stop is not undone by a lost flush — the node is going down either way. Guarantee earned: stop
+    /// always completes within `deadline` plus the stop itself; the backup then trails by the unflushed window,
+    /// which the warning says. Mechanism: a single attempt on the worker, no retry (the node is stopping).
+    public Promise<Unit> stopFlushed(TimeSpan deadline) {
+        return stopped.get()
+               ? Promise.unitPromise()
+               : flushBounded(deadline).onResultRun(this::stop);
+    }
+
+    private Promise<Unit> flushBounded(TimeSpan deadline) {
+        return onWorker(this::flushForStop).timeout(deadline)
+                       .recover(this::absorbStopFlushFailure);
+    }
+
+    /// One pass as the leader, whether or not the debounce had fired; a clean backup (nothing changed since
+    /// the last write, nothing queued for push) ends in `UNCHANGED`. Worker thread only.
+    private Result<Unit> flushForStop() {
+        return leader.get()
+               ? attemptFlush(2).onSuccess(this::settle)
+                             .onFailure(this::onCommitFailure)
+                             .flatMap(KvBackupService::landed)
+               : Result.unitResult();
+    }
+
+    private static Result<Unit> landed(Outcome outcome) {
+        return switch (outcome.kind()) {
+            case WRITTEN, UNCHANGED, AWAITING_GENESIS -> Result.unitResult();
+            default -> StopFlushIncomplete.FACTORY.apply(outcome.kind()).result();
+        };
+    }
+
+    /// FER (the stop goes ahead): the report is made INSIDE the recovery, so the stop cannot complete before the operator has been told.
+    /// The failure is also written to a marker beside the repository, which is how a LATER process knows the warning is open and closes it
+    /// ([#announceStopFlushRecovery]). A marker that cannot be written leaves the warning without its recovery event (logged); that is
+    /// the absorbed failure, and the guarantee earned is that the stop and the warning are never held up by it.
+    private Unit absorbStopFlushFailure(Cause cause) {
+        FileOps.writeString(stopFlushMarker(),
+                            cause.message())
+               .onFailure(failure -> LOG.warn("Stop-time flush failure marker not written, its recovery event will not fire: {}",
+                                              failure.message()));
+        warnings.emit(BackupWarning.backupWarning(Code.BACKUP_STOP_FLUSH_FAILED,
+                                                  "the KV backup could not be flushed before this node stopped: " + cause.message()
+                                                 + "; cluster-state changes from the last " + (timing.maxDelayMillis() + timing.quietMillis())
+                                                 + " ms may be missing from the backup, so a whole-cluster restart restores from"
+                                                 + " before them. Check the backup repository and remote"));
+
+        return Unit.unit();
+    }
+
+    /// Beside the repository directory, not inside it: the repository is git's, and a stray file there is a dirty tree.
+    private Path stopFlushMarker() {
+        return repository.dir()
+                         .resolveSibling(repository.dir().getFileName() + ".stop-flush-failed");
+    }
+
+    /// A flush landed. If the previous stop-time flush of this node had failed (its marker exists), that warning closes now.
+    @Contract
+    private void announceStopFlushRecovery() {
+        FileOps.deleteIfExists(stopFlushMarker())
+               .filter(NO_STOP_FLUSH_MARKER, Boolean::booleanValue)
+               .onSuccessRun(() -> warnings.emit(BackupWarning.backupWarning(Code.BACKUP_STOP_FLUSH_RECOVERED,
+                                                                             "the KV backup was flushed again after a failed stop-time flush")));
+    }
+
+    /// The flush ran but its state did not reach the backup (head ahead, gated, forked, unreadable, push failed).
+    record StopFlushIncomplete(OutcomeKind outcome, String message) implements Cause {
+        static final Fn1<StopFlushIncomplete, OutcomeKind> FACTORY = Causes.forOneValue("the final flush ended as %s",
+                                                                                        StopFlushIncomplete::new);
     }
 
     public Status status() {
@@ -799,6 +887,8 @@ public final class KvBackupService {
         } else if (previous != Status.CURRENT) {
             warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RECOVERED, "the KV backup is current again"));
         }
+
+        announceStopFlushRecovery();
     }
 
     /// A warned head-ahead episode ends only by this cluster's state overtaking the head and being written
