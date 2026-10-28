@@ -116,6 +116,26 @@ class ReplicaCutoverGateTest {
         org.mockito.Mockito.verify(channel).tick();
     }
 
+    /// The engine seams, through the real forwarding `RabiaNode` of an assembled worker: `setPassiveClientReady` sets and clears the flag and
+    /// `completePassiveRestore` fires the post-restore listeners. Mutation: drop either forward in `RabiaNode` (return `Unit.unit()` without
+    /// delegating to the engine).
+    @Test
+    @SuppressWarnings("unchecked")
+    void rabiaNode_forwardsTheTwoEngineSeams() throws ReflectiveOperationException {
+        node = boot(MessageRouter.DelegateRouter.delegate(), ReplicaCutover.production());
+
+        var cluster = (RabiaNode<KVCommand<AetherKey>>) component(node, "clusterNode");
+        var fired = new java.util.concurrent.atomic.AtomicInteger();
+
+        cluster.onStateRestored(fired::incrementAndGet);
+        cluster.setPassiveClientReady(true);
+        assertThat(cluster.isPassiveClientReady()).isTrue();
+        cluster.setPassiveClientReady(false);
+        assertThat(cluster.isPassiveClientReady()).as("the seam clears, unlike the latch").isFalse();
+        cluster.completePassiveRestore();
+        assertThat(fired.get()).as("the post-restore listeners fire once per install").isEqualTo(1);
+    }
+
     private AetherNode boot(MessageRouter.DelegateRouter router, ReplicaCutover cutover) {
         return AetherNode.aetherNode(workerConfig(new NodeId("worker-gate-" + UUID.randomUUID())),
                                      router,
