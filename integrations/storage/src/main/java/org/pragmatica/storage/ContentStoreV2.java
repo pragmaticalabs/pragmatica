@@ -12,8 +12,10 @@ import org.pragmatica.lang.Unit;
 /// Per-operation guarantees in local mode (one node, one [StorageInstance]):
 /// - `create`/`commit`: the bytes are in the instance before the entry that names them, so a reader that finds the entry
 ///   finds the bytes. A writer that fails or is aborted releases every block credit it took. Not atomic across a crash
-///   between the manifest write and the entry write: that leaves unreferenced blocks, which the instance's collector
-///   reclaims once nothing credits them.
+///   between the manifest write and the entry write: the blocks already stored keep the credits their writes took, so the
+///   instance's collector, which reclaims a block only when its last credit is released, never reclaims them. They stay
+///   until a sweep of credited but unreferenced blocks exists. A crash inside `delete`, between dropping the entry and
+///   releasing its blocks, leaves the same.
 /// - `open`: every block is integrity-checked by the instance as it is read; a failed block fails the `next` that reaches
 ///   it. A stream holds at most `read_ahead + 1` blocks.
 /// - `stat`, `lookup`, `list`, `delete`, `update`, `bind`: confined to this store's namespace. Each is a sequence of atomic

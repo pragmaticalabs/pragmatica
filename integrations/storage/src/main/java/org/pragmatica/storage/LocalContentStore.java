@@ -357,7 +357,8 @@ final class LocalContentStore implements ContentStoreV2 {
 
     // --- List ---
     /// Objects in order of (name, id), unnamed objects first. Local mode reads every entry of the namespace to order and
-    /// filter them, so a page costs the namespace's object count.
+    /// filter them, found by filtering every ref of the instance, so a page costs the instance's ref count plus a read of each
+    /// of the namespace's entries.
     @Override
     public Promise<Page<ObjectInfo>> list(Option<String> namePrefix, Option<Cursor> after, int limit) {
         if (limit < 1 || limit > MAX_PAGE) {

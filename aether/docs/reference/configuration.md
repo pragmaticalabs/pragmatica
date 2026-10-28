@@ -558,7 +558,9 @@ latency dominate on S3 (a 5 GiB object at 4 MiB is 1280 PUTs); S3-backed content
 blocks. No default changes here.
 
 **Streaming content store settings.** The streaming store (`ContentStoreV2`, local mode) reads three more keys from the
-same `ContentStoreConfig` section; each has a default, so an existing section binds unchanged.
+same `ContentStoreConfig` section; each has a default, so an existing section binds unchanged. Nothing provisions the
+streaming store yet: until it is (the next step of the upload overhaul), the keys are validated with the section and have
+no other effect.
 
 | Key | Default | Meaning |
 |-----|---------|---------|
