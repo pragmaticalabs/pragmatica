@@ -13,7 +13,16 @@ fast-forward — never forced.
   after 500 ms of quiet and at most 5 s after the first change, and an incarnation change is flushed at
   once. Runtime state (placements, partition owners, leases, node registrations) is never backed up
   `[mechanism: sealed AetherKey = ClusterStateKey | RuntimeKey; BackupKeyClassificationTest]`.
-- **RPO:** changes made after the last successful push. With the remote unreachable, commits queue in the
+- **RPO:** changes made after the last successful push; the flush delay is up to about 5.5 s (see the
+  [backup RPO](../../reference/configuration.md#backup-configuration)). A graceful stop flushes before it completes (bounded by 10 s; a failed
+  or overrunning flush raises `backup-stop-flush-failed` and the stop proceeds); a crash does not (#1569). **The window can orphan acked
+  stream records:** a stream created inside it is missing from the restored state, so the restart gives it a new incarnation and the old
+  life (WAL directory `<stream>@<incarnation>` and any sealed segments) is left unread. Nothing deletes it; the node raises
+  `storage-stream-wal-orphaned` for each such life, naming the stream, both incarnations and the sealed-segment count. **Keep it: that is the safe default.** There is **no CLI or API verb** that releases a kept life and no recovery procedure for
+  its records exists yet (#1569). The only manual remedy is to delete `<walPath of the streams storage instance>/<stream>@<orphan incarnation>`,
+  which permanently destroys that life's unsealed acknowledged records; do it only if they are knowingly abandoned, and never touch the
+  directory of the committed incarnation (the warning names both). The life's sealed segments have no supported removal and stay, so the
+  warning repeats on every boot while it has sealed segments, until storage-identity adoption (#1569). With the remote unreachable, commits queue in the
   leader's local repository, so they also depend on that node's disk surviving; `BACKUP_PUSH_FAILING`
   fires after 60 s of lag.
 - **Consensus itself is in memory** on every node. There is no per-node consensus snapshot any more (the
