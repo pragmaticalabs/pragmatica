@@ -106,7 +106,7 @@ class ApplyStateTest {
         for (var form : java.util.List.of("2.0", "2.9", "2.0000001", "2e0", "20e-1", "4294967298", "0", "1", "-2")) {
             ApplyState.fromJson(good.replace("\"schemaVersion\": 2", "\"schemaVersion\": " + form))
                       .onSuccess(state -> fail("schema " + form + " must be refused"))
-                      .onFailure(cause -> assertThat(cause.message()).as(form).contains("schema").contains("not supported").contains("reads and writes schema 2"));
+                      .onFailure(cause -> assertThat(cause.message()).as(form).contains("schema " + java.util.Map.of("2.0", "2.0", "2.9", "2.9", "2.0000001", "2.0000001", "2e0", "2.0", "20e-1", "2.0", "4294967298", "4294967298", "0", "0", "1", "1", "-2", "-2").get(form)).contains("not supported").contains("reads and writes schema 2"));
         }
     }
 
