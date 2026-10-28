@@ -80,6 +80,8 @@ import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarnings;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -115,6 +117,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     MembershipLiveness liveness,
                                     AtomicLong activationEpoch,
                                     Set<NodeId> abandonedReaps,
+                                    Set<NodeId> heldReaps,
+                                    Set<NodeId> directedReaps,
                                     ConcurrentHashMap<NodeId, Long> refusedReaps,
                                     ConcurrentHashMap<NodeId, NodeRole> provisionedRoleIntents,
                                     ConcurrentHashMap<NodeId, RoleMismatch> roleMismatchLedger,
@@ -133,7 +137,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     Set<NodeId> seenInstances,
                                     Set<NodeId> confirmedReaps,
                                     Set<NodeId> listedAbsent,
-                                    ConcurrentHashMap<NodeId, String> knownInstanceIds,
+                                    ConcurrentHashMap<NodeId, Set<String>> knownInstanceIds,
                                     Set<NodeId> drainGraceChains,
                                     ConcurrentHashMap<NodeId, Long> incarnations,
                                     ConcurrentHashMap<NodeId, Long> failedReaps,
@@ -269,6 +273,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicBoolean(false),
                                                 liveness,
                                                 new AtomicLong(0L),
+                                                ConcurrentHashMap.newKeySet(),
+                                                ConcurrentHashMap.newKeySet(),
                                                 ConcurrentHashMap.newKeySet(),
                                                 new ConcurrentHashMap<>(),
                                                 new ConcurrentHashMap<>(),
@@ -554,6 +560,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         // A rejoin under the same id ends the parked episode: the new incarnation's death, if it comes, arrives
         // as its own `NodeRemoved` (verify-1057-r3 NIT-1 — a stale park would run a second chain beside it).
         abandonedReaps.remove(joined.nodeId());
+        closeHeldAsRejoined(joined.nodeId());
         forgetIncarnation(joined.nodeId());
         // #689: `NodeJoined` is the CORE channel and carries no role — read the role the FSM classified
         // this join by (`MembershipFsm.memberDescriptor`), never the observer's frozen first sighting.
@@ -2377,18 +2384,19 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         if (reason.isSurplusTrim()) {
             surplusTrimGraceExpired(targetNodeId, reason);
         } else {
-            reapDrainedNode(targetNodeId);
+            reapDrainedNode(targetNodeId, reason);
         }
 
         drainCommandClear.accept(targetNodeId);
     }
 
     @Contract
-    private void reapDrainedNode(NodeId targetNodeId) {
+    private void reapDrainedNode(NodeId targetNodeId, DrainReason drainReason) {
         if (!active.get()) {
             return;
         }
 
+        markDirected(targetNodeId, drainReason);
         retirementRefusal.get()
                          .apply(targetNodeId)
                          .onPresent(reason -> parkRefusedReap(targetNodeId, reason))
@@ -2400,6 +2408,19 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         log.info("CTM v2: drain grace expired for {} — reaping container + clearing DRAIN command", targetNodeId);
         drainGraceChains.add(targetNodeId);
         confirmedReap(targetNodeId, activationEpoch.get(), incarnation(targetNodeId), FAILED_REAP_RETRIES);
+    }
+
+    /// #1038: a retirement an operator or the replacement protocol asked for is a directed reap, not the cluster acting on its own, and is the
+    /// only kind [#confirmedReap] does not hold while auto-heal is disabled. Every other drain reason that reaches the grace backstop
+    /// (`JOIN_GRACE_REAP`, a never-joined zombie; the surplus trims) is the cluster's own decision and is held like a departed node's reap.
+    /// The origin is recorded when the drain's grace expires, before the refusal check, and travels with the reap through a refusal retry and
+    /// the unconfirmed re-check; the cluster's own reap ([#terminateDeparted]) replaces it.
+    private void markDirected(NodeId nodeId, DrainReason reason) {
+        if (reason == DrainReason.OPERATOR_COMMAND || reason == DrainReason.REPLACED) {
+            directedReaps.add(nodeId);
+        } else {
+            directedReaps.remove(nodeId);
+        }
     }
 
     /// R1′ — a surplus trim at grace expiry keys on the TARGET first. The membership inputs are read ONCE, so
@@ -2577,17 +2598,87 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// verdict (a voter is refused only until it is voted out), so a silent return here left the VM running and billing.
     ///
     /// #1038: this is where AUTOMATIC deletion starts (the departed reap and the orphan sweep both pass through it), so a disabled
-    /// auto-heal holds it. Operator-requested retirement does not come through here.
+    /// auto-heal holds it at the sink ([#confirmedReap]). Operator-requested retirement does not come through here.
     @Contract
     private void terminateDeparted(NodeId nodeId) {
-        if (!active.get() || !isAutoHealEnabled()) {
+        if (!active.get()) {
             return;
         }
-
+        // The cluster's own reap begins here: any directed origin an earlier drain of this node left no longer describes it.
+        directedReaps.remove(nodeId);
         retirementRefusal.get()
                          .apply(nodeId)
                          .onPresent(reason -> parkRefusedReap(nodeId, reason))
                          .onEmpty(() -> terminateRetired(nodeId));
+    }
+
+    /// #1038: whether an AUTOMATIC deletion of `nodeId` may go ahead. Auto-heal enabled: it may, and a reap this leader held earlier is
+    /// announced as released. Disabled: it may not, the reap is held ([#holdReap]). Every automatic deletion path asks here, so disabling
+    /// auto-heal stops the cluster acting on a dead node's VM as well as minting its replacement.
+    private boolean reapMayProceed(NodeId nodeId, String path) {
+        if (!isAutoHealEnabled()) {
+            holdReap(nodeId, path);
+
+            return false;
+        }
+
+        if (heldReaps.remove(nodeId)) {
+            OperatorWarnings.raise(log,
+                                   warningSink.get(),
+                                   OperatorWarningCode.INSTANCE_REAP_RELEASED,
+                                   nodeId.id(),
+                                   "Auto-heal is enabled again: the reap of the instance of node {} is no longer held",
+                                   nodeId.id());
+        }
+
+        return true;
+    }
+
+    /// Held, not dropped: parked as abandoned, so the next SWIM FAULTY for the node or the next activation's replay re-arms it once auto-heal
+    /// is back, and the periodic orphan sweep finds the instance again. The operator is told once per node (the held set is the flood guard,
+    /// the release clears it); a repeat is a debug line. Guarantee earned: the instance is not deleted by this cluster while auto-heal is
+    /// disabled, not that the event is visible on a leader change (see [OperatorWarningCode#INSTANCE_REAP_RELEASED]).
+    @Contract
+    private void holdReap(NodeId nodeId, String path) {
+        abandonedReaps.add(nodeId);
+        if (heldReaps.add(nodeId)) {
+            OperatorWarnings.raise(log,
+                                   warningSink.get(),
+                                   OperatorWarningCode.INSTANCE_REAP_HELD,
+                                   nodeId.id(),
+                                   "Auto-heal is disabled, so the instance of node {} was NOT deleted ({}); it is kept for diagnosis and keeps billing; enable auto-heal to have it reaped, or terminate it at the provider yourself",
+                                   nodeId.id(),
+                                   path);
+        } else {
+            log.debug("CTM: {} of {} held again — auto-heal is still disabled", path, nodeId);
+        }
+    }
+
+    /// A node that joined again has nothing left to reap: the held warning about its previous incarnation is closed with the release resolution.
+    @Contract
+    private void closeHeldAsRejoined(NodeId nodeId) {
+        if (heldReaps.remove(nodeId)) {
+            OperatorWarnings.raise(log,
+                                   warningSink.get(),
+                                   OperatorWarningCode.INSTANCE_REAP_RELEASED,
+                                   nodeId.id(),
+                                   "Node {} joined the cluster again: the held reap of its previous incarnation no longer applies (nothing was deleted)",
+                                   nodeId.id());
+        }
+    }
+
+    /// A held reap whose instance is gone anyway (a directed reap deleted it after the node's own removal was held) has nothing left to hold: the
+    /// held warning is closed with the release resolution. Idempotent with [#reapMayProceed], which removes the mark first when auto-heal is back.
+    @Contract
+    private void closeHeldAsDeleted(NodeId nodeId) {
+        if (heldReaps.remove(nodeId)) {
+            OperatorWarnings.raise(log,
+                                   warningSink.get(),
+                                   OperatorWarningCode.INSTANCE_REAP_RELEASED,
+                                   nodeId.id(),
+                                   "The instance of node {} is gone: it was deleted by a directed retirement, so the held reap no longer applies",
+                                   nodeId.id());
+        }
     }
 
     /// Every retirement reap is a CONFIRMED reap ([#confirmedReap]): a failed or refused attempt is retried, bounded, and the bound being spent ends in
@@ -2622,7 +2713,33 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
             return;
         }
+        // A confirmed node has no instance of its own left to delete (its directed reap, or its own earlier reap, deleted it), so its hold would
+        // announce a deletion that already happened. But the memory is per NODE id and the instance that reuses the id may be another one,
+        // which never joined: while auto-heal is disabled it is looked at first ([#recheckConfirmedReap]) and, being new, takes the gate like any
+        // other (a directed reap is exempt there, so a second directed retirement of the node deletes the new instance). While auto-heal is
+        // enabled nothing is held, and a second reap of a confirmed node stays a no-op that asks the provider nothing ([#reapedAgain]).
+        if (confirmedReaps.contains(nodeId) && !isAutoHealEnabled()) {
+            recheckConfirmedReap(nodeId, epoch, generation, retriesLeft);
 
+            return;
+        }
+
+        gatedReap(nodeId, epoch, generation, retriesLeft);
+    }
+
+    /// #1038: the one place the gate is enforced. Every chain that deletes an instance passes here, first attempt and every retry, so a
+    /// disable that lands between two attempts holds the next one. Only a directed reap ([#markDirected]) is exempt.
+    @Contract
+    private void gatedReap(NodeId nodeId, long epoch, long generation, int retriesLeft) {
+        if (!directedReaps.contains(nodeId) && !reapMayProceed(nodeId, reapPath(nodeId))) {
+            return;
+        }
+
+        reapOf(nodeId, epoch, generation, retriesLeft);
+    }
+
+    @Contract
+    private void reapOf(NodeId nodeId, long epoch, long generation, int retriesLeft) {
         lifecycleManager.sourceOf(nodeId)
                         .fold(() -> lifecycleManager.terminateNode(nodeId),
                               source -> reapRetired(nodeId, source, false))
@@ -2631,6 +2748,57 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                         // the activation replay read the state they leave.
                         .onSuccess(_ -> reapConfirmed(nodeId))
                         .onFailure(cause -> reapUnconfirmed(nodeId, epoch, generation, retriesLeft, cause));
+    }
+
+    /// The node's reap is confirmed, but a later instance may carry its id without ever having joined (a replacement that booted under it,
+    /// an orphan): confirmed-gone is a fact about the instances listed when it was confirmed ([#knownInstanceIds]), not about the id. The read is
+    /// pure ([NodeLifecycleManager#readInstancesForNode]: it commits and releases nothing) and never made for an EXTERNAL node, which has no provider
+    /// instance of ours. A listing
+    /// that shows an instance outside that set drops the confirmation, so the reap goes through the gate as a first reap (held with the event
+    /// while auto-heal is disabled, deleting when enabled); otherwise nothing is left to delete and the confirmed branch of [#reapRetired] answers
+    /// without a hold. A listing that fails is a failed attempt, retried and bounded like any other.
+    @Contract
+    private void recheckConfirmedReap(NodeId nodeId, long epoch, long generation, int retriesLeft) {
+        lifecycleManager.sourceOf(nodeId)
+                        .filter(_ -> !lifecycleManager.externalNode(nodeId))
+                        .fold(() -> Promise.success(false),
+                              source -> lifecycleManager.readInstancesForNode(nodeId, source)
+                                                        .map(listed -> hasUnreapedInstance(nodeId, listed)))
+                        // Detached on purpose, as in [#reapOf]: the chain is discarded and the two handlers are its terminal effects.
+                        .onSuccess(unreaped -> afterConfirmedListing(nodeId, epoch, generation, retriesLeft, unreaped))
+                        .onFailure(cause -> reapUnconfirmed(nodeId, epoch, generation, retriesLeft, cause));
+    }
+
+    @Contract
+    private void afterConfirmedListing(NodeId nodeId, long epoch, long generation, int retriesLeft, boolean unreaped) {
+        if (!active.get() || activationEpoch.get() != epoch || !sameIncarnation(nodeId, generation)) {
+            return;
+        }
+
+        if (unreaped) {
+            confirmedReaps.remove(nodeId);
+            gatedReap(nodeId, epoch, generation, retriesLeft);
+
+            return;
+        }
+        // Nothing new under the id: the answer is the confirmed no-op, reached WITHOUT [#reapOf]/[#reapRetired]. Going through them would re-read
+        // [#confirmedReaps] later, and a concurrent chain that saw a new instance may have dropped the confirmation in between: this chain would then
+        // list and terminate without ever having passed the gate. Here a terminate is unreachable, so the decision and the action cannot be split.
+        reapedAgain(nodeId).onFailure(cause -> reapUnconfirmed(nodeId, epoch, generation, retriesLeft, cause));
+    }
+
+    private boolean hasUnreapedInstance(NodeId nodeId, List<InstanceInfo> listed) {
+        var reaped = Option.option(knownInstanceIds.get(nodeId)).or(Set.of());
+
+        return listed.stream()
+                     .filter(instance -> !(instance.status() instanceof InstanceStatus.Terminated))
+                     .anyMatch(instance -> !reaped.contains(instance.id().value()));
+    }
+
+    private String reapPath(NodeId nodeId) {
+        return drainGraceChains.contains(nodeId)
+               ? "drain-grace reap"
+               : "reap of a departed or surplus node";
     }
 
     /// The bound is spent and the instance is still not confirmed terminated: an operator event naming the node and the last cause, once, and the
@@ -2688,7 +2856,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
         var generation = incarnation(nodeId);
         var cause = persisted.map(AetherValue.UnconfirmedTerminationValue::cause).or("mark not persisted");
-        var known = Option.option(knownInstanceIds.get(nodeId)).or("never listed");
+        var known = Option.option(knownInstanceIds.get(nodeId))
+                          .map(ids -> String.join(",",
+                                                  ids.stream().sorted().toList()))
+                          .or("never listed");
 
         return providerState(nodeId, attestedInstance, force).flatMap(seen -> stillClearable(nodeId, generation).flatMap(_ -> deleteExactMark(nodeId,
                                                                                                                                               persisted))
@@ -2907,11 +3078,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                              cause.message()));
     }
 
-    private static String instanceIds(List<org.pragmatica.aether.environment.InstanceInfo> listed) {
+    private static Set<String> instanceIds(List<org.pragmatica.aether.environment.InstanceInfo> listed) {
         return listed.stream()
                      .map(info -> info.id()
                                       .value())
-                     .collect(java.util.stream.Collectors.joining(","));
+                     .collect(Collectors.toUnmodifiableSet());
     }
 
     /// Writes (or, with an empty value, removes) the replicated mark for `nodeId`. A failed write is logged: the in-memory mark and the event stand,
@@ -2974,6 +3145,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var absent = persisted.map(AetherValue.UnconfirmedTerminationValue::absent).or(false) || listedAbsent.contains(nodeId);
 
         if (!seen && absent) {
+            return;
+        }
+        // #1038: the re-check terminates the instance again. It is held like any automatic deletion unless the reap it repeats was directed
+        // (the origin is carried in memory, so a re-check under a new leader holds it); the mark's own warning stays open meanwhile.
+        if (!directedReaps.contains(nodeId) && !reapMayProceed(nodeId, "re-check of an unconfirmed termination")) {
             return;
         }
 
@@ -3161,6 +3337,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     private void reapConfirmed(NodeId nodeId) {
+        closeHeldAsDeleted(nodeId);
         replacementSources.remove(nodeId);
         failedReaps.remove(nodeId);
         var marked = unconfirmedReaps.remove(nodeId);
@@ -3282,17 +3459,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
             return;
         }
-
-        if (!isAutoHealEnabled()) {
-            // #1038: the refusal was parked while auto-heal was enabled; a retry is still an AUTOMATIC deletion. Held, not dropped
-            // silently: parked as abandoned, so the next SWIM FAULTY or the next activation's replay re-arms it once auto-heal is back.
-            abandonedReaps.add(nodeId);
-            log.warn("CTM: refused reap of {} held — auto-heal is disabled; re-armed by the next SWIM FAULTY for it or the next activation replay",
-                     nodeId);
-
-            return;
-        }
-
+        // #1038: a retry of a refusal is an automatic deletion; the sink ([#confirmedReap]) holds it.
         retirementRefusal.get()
                          .apply(nodeId)
                          .onPresent(reason -> continueRefusedReap(nodeId, epoch, retriesLeft, reason))
@@ -3583,6 +3750,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         // A deposed view never reaps: parked (abandoned) reaps die with the activation. The next activation's
         // replay re-parks any such instance its own SWIM still reports alive (SF-1) and reaps the rest.
         abandonedReaps.clear();
+        // The held mark is this leader's: the next leader's sweep finds the instance again and holds it under its own mark.
+        heldReaps.clear();
         inventoryWaitRef.set(null);
         workerTopologyPolling.cancel();
         unconfirmedRecheck.cancel();

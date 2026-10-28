@@ -460,6 +460,16 @@ public enum OperatorWarningCode {
                                 "community-assignment",
                                 WarningLevel.INFO,
                                 COMMUNITY_ASSIGNMENT_UNPLACED),
+    /// Auto-heal is disabled, so the cluster did NOT delete the instance of a node it would otherwise have reaped (#1038): a departed node,
+    /// an orphan the sweep found, a surplus trim, the reap of a never-joined (join-grace) zombie, or the retry or re-check of any of them.
+    /// A retirement directed from outside (the node-replacement protocol, a community-placement retirement) and a worker scale-down (config-directed)
+    /// are operator intent and are not held. The instance is kept for diagnosis and keeps billing. Subject is the node. Raised
+    /// once per node by the leader that held the reap. Closed by [#INSTANCE_REAP_RELEASED].
+    INSTANCE_REAP_HELD("instance-reap-held", "deployment", WarningLevel.WARNING),
+    /// The recovery of [#INSTANCE_REAP_HELD], same subject (#1038): auto-heal is enabled again and the reap of the node is no longer held (it still passes the usual liveness and refusal checks), or the instance
+    /// was deleted by a directed retirement after the reap was held, or the node joined the cluster again and has nothing to reap. INFO, published only after a published held event for the node (#752 mechanism). It
+    /// is raised by the leader that held the reap: a leader change in between leaves the held event open.
+    INSTANCE_REAP_RELEASED("instance-reap-released", "deployment", WarningLevel.INFO, INSTANCE_REAP_HELD),
     /// An upload was refused 429 because this node's `[app-http.upload] max_concurrent` was reached (#2410): the node is holding
     /// as many upload bodies as it allows. Subject is the node. Raised once, on the transition into saturation, per node, not
     /// per refused request; a refusal for one principal's own cap is a client error and raises nothing. Closed by
