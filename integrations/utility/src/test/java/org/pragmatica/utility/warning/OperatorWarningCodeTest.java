@@ -214,6 +214,9 @@ class OperatorWarningCodeTest {
         OperatorWarningCode.STREAM_PROMOTION_PAST_UNREACHABLE_PEERS,
         OperatorWarningCode.STREAM_CONSUMER_DETACH_FOUND_NOTHING,
         OperatorWarningCode.STREAM_CONSUMER_REWOUND,
+        // #2201 C-16, added on purpose at the overhaul/streams merge: a CRITICAL point event by owner ruling Q11 (e4bcbd2c7b), raised
+        // once per expiry and never per poll; the records it skipped are gone, so no event can close it.
+        OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED,
         OperatorWarningCode.OFFLINE_FRAMES_EXPIRED,
         OperatorWarningCode.ENTITY_OWNERSHIP_UNSETTLED_MINT,
         OperatorWarningCode.SWIM_MEMBER_ADDRESS_CONFLICT,

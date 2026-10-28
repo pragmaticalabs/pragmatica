@@ -2452,7 +2452,41 @@ class ClusterEventAggregatorTest {
         assertThat(codes(h)).containsExactly("stream-consumer-state-diverged", "stream-consumer-state-repaired");
     }
 
-    /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the oversized-event refusal and the
+    /// #2201 C-16: the consumer codes of a read below the ring tail reach the event log with their severities, the two
+    /// episodes close with their recoveries on the same subject, and a second episode re-raised inside the throttle window
+    /// is shown, because its recovery ended the window. The expiry is a CRITICAL point event (owner ruling Q11).
+    @Test
+    void onOperatorWarning_consumerBehindTheRingCodes_pairAndCarryTheirSeverities() {
+        var t = new AtomicLong(1_000_000L);
+        var h = clocked(t);
+        var subject = "orders[0]/g";
+
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_BEHIND_RING, subject, "behind"));
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_BACK_IN_RING, subject, "back"));
+        t.addAndGet(1_000L);
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_BEHIND_RING, subject, "behind again"));
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_SEALED_RANGE_MISSING,
+                                                                         subject + "@5",
+                                                                         "hole"));
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_SEALED_RANGE_RESTORED,
+                                                                         subject + "@5",
+                                                                         "filled"));
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED,
+                                                                         subject + "@10",
+                                                                         "skipped"));
+
+        assertThat(h.events().stream().map(e -> e.details().get("code") + "@" + e.details().get("subject") + ":" + e.severity()).toList())
+            .containsExactly("stream-consumer-behind-ring@orders[0]/g:WARNING",
+                             "stream-consumer-back-in-ring@orders[0]/g:INFO",
+                             "stream-consumer-behind-ring@orders[0]/g:WARNING",
+                             "stream-consumer-sealed-range-missing@orders[0]/g@5:WARNING",
+                             "stream-consumer-sealed-range-restored@orders[0]/g@5:INFO",
+                             "stream-consumer-cursor-expired@orders[0]/g@10:CRITICAL");
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED.hasRecovery()).as("a point event: nothing undoes a skip").isFalse();
+    }
+
+    /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the two behind-the-ring pairs of #2201
+    /// C-16 (`stream-consumer-cursor-expired` is a point event and stays unpaired), the oversized-event refusal and the
     /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378); every other code keeps the plain 60 s throttle.
     @Test
     void onOperatorWarning_onlyTheDeclaredPairsArePaired_otherCodesUnchanged() {
@@ -2471,6 +2505,8 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
                 OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN,
                 OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED,
+                OperatorWarningCode.STREAM_CONSUMER_BACK_IN_RING,
+                OperatorWarningCode.STREAM_CONSUMER_SEALED_RANGE_RESTORED,
                 OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED,
                 OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING,
                 OperatorWarningCode.STREAM_OWNER_LINEAGE_COMMITTED,
@@ -2519,6 +2555,8 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
                 OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED,
                 OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING,
+                OperatorWarningCode.STREAM_CONSUMER_BEHIND_RING,
+                OperatorWarningCode.STREAM_CONSUMER_SEALED_RANGE_MISSING,
                 OperatorWarningCode.PROVISION_ADMISSION_DEFERRED,
                 OperatorWarningCode.CORE_CAPACITY_AWAITING_DURABLE,
                 OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
@@ -2550,97 +2588,6 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.UPLOAD_NODE_CAP_SATURATED,
                 OperatorWarningCode.UPLOAD_BYTE_BUDGET_EXHAUSTED,
             });
-    /// #2201 C-16: the consumer codes of a read below the ring tail reach the event log with their severities, the two
-    /// episodes close with their recoveries on the same subject, and a second episode re-raised inside the throttle window
-    /// is shown, because its recovery ended the window. The expiry is a CRITICAL point event (owner ruling Q11).
-    @Test
-    void onOperatorWarning_consumerBehindTheRingCodes_pairAndCarryTheirSeverities() {
-        var t = new AtomicLong(1_000_000L);
-        var h = clocked(t);
-        var subject = "orders[0]/g";
-
-        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_BEHIND_RING, subject, "behind"));
-        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_BACK_IN_RING, subject, "back"));
-        t.addAndGet(1_000L);
-        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_BEHIND_RING, subject, "behind again"));
-        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_SEALED_RANGE_MISSING,
-                                                                         subject + "@5",
-                                                                         "hole"));
-        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_SEALED_RANGE_RESTORED,
-                                                                         subject + "@5",
-                                                                         "filled"));
-        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED,
-                                                                         subject + "@10",
-                                                                         "skipped"));
-
-        assertThat(h.events().stream().map(e -> e.details().get("code") + "@" + e.details().get("subject") + ":" + e.severity()).toList())
-            .containsExactly("stream-consumer-behind-ring@orders[0]/g:WARNING",
-                             "stream-consumer-back-in-ring@orders[0]/g:INFO",
-                             "stream-consumer-behind-ring@orders[0]/g:WARNING",
-                             "stream-consumer-sealed-range-missing@orders[0]/g@5:WARNING",
-                             "stream-consumer-sealed-range-restored@orders[0]/g@5:INFO",
-                             "stream-consumer-cursor-expired@orders[0]/g@10:CRITICAL");
-        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED.hasRecovery()).as("a point event: nothing undoes a skip").isFalse();
-    }
-
-    /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the two behind-the-ring pairs of #2201
-    /// C-16 (`stream-consumer-cursor-expired` is a point event and stays unpaired), the oversized-event refusal and the
-    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543 and the HTTP-listener TLS rotation refusal); every other code keeps the plain 60 s throttle.
-    @Test
-    void onOperatorWarning_onlyTheDeclaredPairsArePaired_otherCodesUnchanged() {
-        assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).toList())
-            .containsExactlyInAnyOrder(OperatorWarningCode.NODE_REPLACEMENT_COMPLETED,
-                             OperatorWarningCode.NODE_REPLACEMENT_ROLLED_BACK,
-                             OperatorWarningCode.NODE_REPLACEMENT_JOINED,
-                             OperatorWarningCode.NODE_REPLACEMENT_DRAIN_UNBLOCKED,
-                             OperatorWarningCode.NODE_REPLACEMENT_SETTLED,
-                             OperatorWarningCode.UPGRADE_COMPLETED,
-                             OperatorWarningCode.UPGRADE_ABORTED,
-                             OperatorWarningCode.UPGRADE_RESUMED,
-                             OperatorWarningCode.UPGRADE_PAUSE_ENDED,
-                             OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED,
-                             OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
-                             OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN,
-                             OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED,
-                             OperatorWarningCode.STREAM_CONSUMER_BACK_IN_RING,
-                             OperatorWarningCode.STREAM_CONSUMER_SEALED_RANGE_RESTORED,
-                             OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED,
-                             OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING,
-                             OperatorWarningCode.STREAM_OWNER_LINEAGE_COMMITTED,
-                             OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED,
-                             OperatorWarningCode.STREAM_CATCHUP_SOURCE_ANSWERING_RESTORED,
-                             OperatorWarningCode.HTTP_TLS_ROTATION_RESTORED,
-                             OperatorWarningCode.CLUSTER_TLS_RENEWAL_RESTORED,
-                             OperatorWarningCode.BACKUP_CONFIG_RESTORED,
-                             OperatorWarningCode.BACKUP_RESTORE_UNBLOCKED,
-                             OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED,
-                             OperatorWarningCode.INSTANCE_TERMINATION_REJOINED,
-                             OperatorWarningCode.INSTANCE_TERMINATION_CLEARED,
-                             OperatorWarningCode.SLICE_START_DEFERRAL_ENDED);
-        assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
-            .containsExactlyInAnyOrder(OperatorWarningCode.NODE_REPLACEMENT_STARTED,
-                             OperatorWarningCode.NODE_REPLACEMENT_JOIN_OVERDUE,
-                             OperatorWarningCode.NODE_REPLACEMENT_DRAIN_BLOCKED,
-                             OperatorWarningCode.NODE_REPLACEMENT_FAILED_KEPT_BOTH,
-                             OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED,
-                             OperatorWarningCode.UPGRADE_STARTED,
-                             OperatorWarningCode.UPGRADE_PAUSED,
-                             OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
-                             OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
-                             OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED,
-                             OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING,
-                             OperatorWarningCode.STREAM_CONSUMER_BEHIND_RING,
-                             OperatorWarningCode.STREAM_CONSUMER_SEALED_RANGE_MISSING,
-                             OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
-                             OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE,
-                             OperatorWarningCode.STREAM_OWNER_LINEAGE_REFUSED,
-                             OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_REFUSED,
-                             OperatorWarningCode.STREAM_CATCHUP_SOURCE_NOT_ANSWERING,
-                             OperatorWarningCode.HTTP_TLS_ROTATION_REFUSED,
-                             OperatorWarningCode.CLUSTER_TLS_RENEWAL_REFUSED,
-                             OperatorWarningCode.BACKUP_CONFIG_MISSING,
-                             OperatorWarningCode.BACKUP_RESTORE_BLOCKED,
-                             OperatorWarningCode.SLICE_START_AWAITING_TARGET);
         var recoveries = java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).count();
         var t = new AtomicLong(1_000_000L);
         var h = clocked(t);
