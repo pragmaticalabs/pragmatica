@@ -922,6 +922,9 @@ public interface AetherNode extends ManageableNode {
     /// #903: bound on closing the shared resource scope during stop. A factory close that never resolves must
     /// not hold storage and the cluster node open behind it; past the bound the step is logged and skipped.
     TimeSpan SHARED_SCOPE_CLOSE_BOUND = TimeSpan.timeSpan(10).seconds();
+    /// Know 3b01e624f1: how long a graceful stop waits for the KV backup's final flush (commit and push) before it reports the
+    /// failure and stops anyway. A local-only backup flushes in milliseconds; the bound is for an unreachable or slow remote.
+    TimeSpan BACKUP_STOP_FLUSH_BOUND = TimeSpan.timeSpan(10).seconds();
     /// #1730: how soon a refused (moved-record) ownership write is re-decided.
     TimeSpan OWNERSHIP_REDRIVE_DELAY = TimeSpan.timeSpan(1).seconds();
     /// Declarative stream-consumer ownership poll (#488). No role-change callback is available to a
@@ -1713,7 +1716,10 @@ public interface AetherNode extends ManageableNode {
                 periodicTasks.cancel();
                 // #1968: first, while the cluster-event layer can still carry the recovery of a backup-config-missing alert.
                 backupCoordinatorStop.run();
-                kvBackupService.onPresent(KvBackupService::stop);
+                // Know 3b01e624f1: a GRACEFUL stop flushes the KV backup first (bounded); the stop below waits for it.
+                var backupFlushed = kvBackupService.map(service -> service.stopFlushed(BACKUP_STOP_FLUSH_BOUND))
+                                                   .or(Promise.unitPromise());
+
                 router.route(ClusterStateNotification.passive());
                 router.quiesce();
                 controlLoop.stop();
@@ -1773,15 +1779,16 @@ public interface AetherNode extends ManageableNode {
                 //
                 // #1612: the chain lives in NodeStopSequence, where a failed HTTP listener stop is logged and
                 // skipped past rather than ending the shutdown.
-                return NodeStopSequence.run(NodeStopSequence.Steps.steps(clusterDeploymentManager::deactivate,
-                                                                         () -> managementServer.map(ManagementServer::stop)
-                                                                                               .or(Promise.unitPromise()),
-                                                                         appHttpServer::stop,
-                                                                         sliceInvoker::stop,
-                                                                         this::closeSharedResources,
-                                                                         this::shutdownStorage,
-                                                                         clusterNode::stop)).onSuccess(_ -> log.info("Aether node {} stopped",
-                                                                                                                     self()));
+                return backupFlushed.flatMap(() -> NodeStopSequence.run(NodeStopSequence.Steps.steps(clusterDeploymentManager::deactivate,
+                                                                                                     () -> managementServer.map(ManagementServer::stop)
+                                                                                                                           .or(Promise.unitPromise()),
+                                                                                                     appHttpServer::stop,
+                                                                                                     sliceInvoker::stop,
+                                                                                                     this::closeSharedResources,
+                                                                                                     this::shutdownStorage,
+                                                                                                     clusterNode::stop)))
+                                    .onSuccess(_ -> log.info("Aether node {} stopped",
+                                                             self()));
             }
 
             /// #903: the shared (unattributed) resource scope is released by no slice's unload, because a

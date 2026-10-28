@@ -1723,6 +1723,7 @@ class ClusterEventAggregatorTest {
         assertThat(successor.events()).isEmpty();
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::closesAcrossNodes).toList())
             .containsExactlyInAnyOrder(new OperatorWarningCode[]{
+                OperatorWarningCode.BACKUP_STOP_FLUSH_RECOVERED,
                 OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED,
                 OperatorWarningCode.INSTANCE_TERMINATION_REJOINED,
                 OperatorWarningCode.INSTANCE_TERMINATION_CLEARED,
@@ -2492,6 +2493,8 @@ class ClusterEventAggregatorTest {
     void onOperatorWarning_onlyTheDeclaredPairsArePaired_otherCodesUnchanged() {
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).toList())
             .containsExactlyInAnyOrder(new OperatorWarningCode[]{
+                OperatorWarningCode.BACKUP_STOP_FLUSH_RECOVERED,
+                OperatorWarningCode.STORAGE_STREAM_WAL_RELEASED,
                 OperatorWarningCode.NODE_REPLACEMENT_COMPLETED,
                 OperatorWarningCode.NODE_REPLACEMENT_ROLLED_BACK,
                 OperatorWarningCode.NODE_REPLACEMENT_JOINED,
@@ -2520,6 +2523,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED,
                 OperatorWarningCode.INSTANCE_TERMINATION_REJOINED,
                 OperatorWarningCode.INSTANCE_TERMINATION_CLEARED,
+                OperatorWarningCode.INSTANCE_REAP_RELEASED,
                 OperatorWarningCode.SLICE_START_DEFERRAL_ENDED,
                 OperatorWarningCode.PROVISION_ADMISSION_RESUMED,
                 OperatorWarningCode.CORE_CAPACITY_DURABLE_RESOLVED,
@@ -2544,11 +2548,14 @@ class ClusterEventAggregatorTest {
             });
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactlyInAnyOrder(new OperatorWarningCode[]{
+                OperatorWarningCode.BACKUP_STOP_FLUSH_FAILED,
+                OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED,
                 OperatorWarningCode.NODE_REPLACEMENT_STARTED,
                 OperatorWarningCode.NODE_REPLACEMENT_JOIN_OVERDUE,
                 OperatorWarningCode.NODE_REPLACEMENT_DRAIN_BLOCKED,
                 OperatorWarningCode.NODE_REPLACEMENT_FAILED_KEPT_BOTH,
                 OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED,
+                OperatorWarningCode.INSTANCE_REAP_HELD,
                 OperatorWarningCode.UPGRADE_STARTED,
                 OperatorWarningCode.UPGRADE_PAUSED,
                 OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
