@@ -13,10 +13,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Arrays;
 import java.util.Locale;
 import java.util.function.Consumer;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
@@ -28,6 +31,14 @@ import org.pragmatica.lang.Unit;
 /// writers (two CLI processes on one cluster, or a future beat thread) sharing one temp name tear each other's file.
 @SuppressWarnings({"JBCT-UTIL-02", "JBCT-EX-01"})
 final class ApplyLedger {
+    private static final String TEMP_PREFIX = "apply-state-";
+    private static final String TEMP_SUFFIX = ".tmp";
+    /// A temp file older than this belongs to a writer that died. One write is a file write plus an fsync and a
+    /// rename (milliseconds); ten minutes is orders of magnitude past any live writer, so a concurrent writer's temp
+    /// file in flight is never swept. A writer stalled longer than that (SIGSTOP, a hung disk) loses its temp file
+    /// and its own rename then fails as a typed failure with the previous ledger intact.
+    static final Duration STALE_TEMP_AGE = Duration.ofMinutes(10);
+
     private static final CopyOption[] MOVE_OPTIONS = {StandardCopyOption.ATOMIC_MOVE};
 
     // A directory cannot be opened for `force` on Windows; there the rename stays atomic but durability across
@@ -56,7 +67,7 @@ final class ApplyLedger {
 
     private static Unit doWrite(Path dir, String fileName, String json) throws Exception {
         Files.createDirectories(dir);
-        var temp = Files.createTempFile(dir, "apply-state-", ".tmp");
+        var temp = Files.createTempFile(dir, TEMP_PREFIX, TEMP_SUFFIX);
 
         try {
             tempWriter.write(temp, json.getBytes(StandardCharsets.UTF_8));
@@ -69,6 +80,60 @@ final class ApplyLedger {
         }
 
         return forceDirectory(dir);
+    }
+
+    /// Removes the ledger's own temp files (`apply-state-*.tmp`) left by a killed process and older than
+    /// [#STALE_TEMP_AGE]; nothing else in the directory is touched. Each removal is reported on stderr.
+    // FER: a sweep that cannot run or cannot delete is reported and skipped. Guarantee earned: reading the ledger never
+    // fails because of leftover files. Mechanism: the leftovers are inert (unique names, never read) and the next
+    // read tries again.
+    static Unit sweepStaleTemps(Path dir) {
+        return Result.lift(cause -> new SweepFailed(dir, cause),
+                           () -> doSweep(dir))
+                     .onFailure(cause -> System.err.println("Warning: " + cause.message()))
+                     .or(Unit.unit());
+    }
+
+    private static Unit doSweep(Path dir) throws IOException {
+        if (Files.isDirectory(dir)) {
+            try (var entries = Files.list(dir)) {
+                entries.filter(ApplyLedger::isStaleTemp).forEach(ApplyLedger::removeStaleTemp);
+            }
+        }
+
+        return Unit.unit();
+    }
+
+    private static boolean isStaleTemp(Path file) {
+        var name = file.getFileName().toString();
+
+        return name.startsWith(TEMP_PREFIX)
+               && name.endsWith(TEMP_SUFFIX)
+               && olderThanBound(file);
+    }
+
+    private static boolean olderThanBound(Path file) {
+        return Result.lift(cause -> new SweepFailed(file, cause),
+                           () -> Files.getLastModifiedTime(file).toInstant())
+                     .map(modified -> modified.isBefore(Instant.now().minus(STALE_TEMP_AGE)))
+                     .or(false);
+    }
+
+    @Contract
+    private static void removeStaleTemp(Path file) {
+        Result.lift(cause -> new SweepFailed(file, cause),
+                    () -> Files.deleteIfExists(file))
+              .onSuccess(_ -> System.err.println("Removed stale apply-state temp file " + file
+                                                + " (older than " + STALE_TEMP_AGE.toMinutes()
+                                                + " minutes, left by a killed writer)"))
+              .onFailure(cause -> System.err.println("Warning: " + cause.message()));
+    }
+
+    record SweepFailed(Path path, Throwable cause) implements org.pragmatica.lang.Cause {
+        @Override
+        public String message() {
+            return "could not sweep stale apply-state temp files at " + path + ": " + cause.getMessage();
+        }
     }
 
     private static Unit writeAndForce(Path temp, byte[] content) throws IOException {

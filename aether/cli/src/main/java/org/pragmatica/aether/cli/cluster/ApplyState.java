@@ -194,6 +194,7 @@ public record ApplyState(String applyId,
     static Result<Option<ApplyState>> read(ClusterName clusterName) {
         var path = stateFilePath(clusterName);
 
+        ApplyLedger.sweepStaleTemps(path.getParent());
         if (!Files.exists(path)) {
             return success(none());
         }
@@ -241,7 +242,7 @@ public record ApplyState(String applyId,
     record RefusedFile(Path file, Cause origin) implements Cause.Wrapped {
         @Override
         public String message() {
-            return "Apply state file " + file + " was refused: " + origin.message();
+            return "Apply state file " + file + " was refused and left untouched: " + origin.message();
         }
     }
 

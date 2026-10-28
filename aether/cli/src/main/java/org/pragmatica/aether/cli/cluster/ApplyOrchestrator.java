@@ -63,8 +63,7 @@ public final class ApplyOrchestrator {
     }
 
     private static Cause unreadableState(ClusterName clusterName, Cause cause) {
-        return new ApplyAborted("The apply state for cluster '" + clusterName
-                               + "' is unreadable and was left untouched: " + cause.message());
+        return new ApplyAborted("The apply state for cluster '" + clusterName + "' is unreadable: " + cause.message());
     }
 
     private static Result<DiffPlan> computeValidPlan(ClusterBootstrapConfig desired,

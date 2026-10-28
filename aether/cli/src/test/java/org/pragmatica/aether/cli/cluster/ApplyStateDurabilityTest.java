@@ -145,6 +145,84 @@ class ApplyStateDurabilityTest {
                                        .isInstanceOf(java.io.IOException.class);
     }
 
+    private Path tempFileAged(String name, java.time.Duration age) throws Exception {
+        var file = Files.createDirectories(ledgerFile().getParent()).resolve(name);
+
+        Files.writeString(file, "x");
+        Files.setLastModifiedTime(file, java.nio.file.attribute.FileTime.from(java.time.Instant.now().minus(age)));
+
+        return file;
+    }
+
+    private String readCapturingStderr() {
+        var originalErr = System.err;
+        var captured = new java.io.ByteArrayOutputStream();
+
+        System.setErr(new java.io.PrintStream(captured, true));
+        try {
+            ApplyState.read(CLUSTER);
+        } finally {
+            System.setErr(originalErr);
+        }
+
+        return captured.toString();
+    }
+
+    @Test
+    void read_sweepsTheLedgersOwnTempFilesOlderThanTheBound_andLogsEach() throws Exception {
+        var stale = tempFileAged("apply-state-abc123.tmp", ApplyLedger.STALE_TEMP_AGE.plusMinutes(1));
+
+        var log = readCapturingStderr();
+
+        assertThat(stale).as("a killed writer's temp file is removed").doesNotExist();
+        assertThat(log).contains("Removed stale apply-state temp file").contains(stale.toString()).contains("10 minutes");
+    }
+
+    @Test
+    void read_keepsATempFileInsideTheBound_soAWriterInFlightIsNeverTouched() throws Exception {
+        var fresh = tempFileAged("apply-state-def456.tmp", ApplyLedger.STALE_TEMP_AGE.minusMinutes(1));
+        var justWritten = tempFileAged("apply-state-ghi789.tmp", java.time.Duration.ZERO);
+
+        var log = readCapturingStderr();
+
+        assertThat(fresh).exists();
+        assertThat(justWritten).exists();
+        assertThat(log).doesNotContain("Removed");
+    }
+
+    @Test
+    void read_sweepsOnlyFilesMatchingTheLedgersTempNamePattern() throws Exception {
+        var old = ApplyLedger.STALE_TEMP_AGE.plusHours(5);
+        var others = List.of(tempFileAged("apply-state.json.tmp", old),
+                             tempFileAged("other-old.tmp", old),
+                             tempFileAged("apply-state-keep.txt", old),
+                             tempFileAged("xapply-state-1.tmp", old));
+        var ledgerOld = ApplyStateFixtures.state(CLUSTER);
+
+        ApplyState.save(ledgerOld).onFailure(cause -> fail(cause.message()));
+        Files.setLastModifiedTime(ledgerFile(), java.nio.file.attribute.FileTime.from(java.time.Instant.now().minus(old)));
+
+        ApplyState.read(CLUSTER).onFailure(cause -> fail(cause.message())).onSuccess(read -> assertThat(read.unwrap()).isEqualTo(ledgerOld));
+
+        others.forEach(file -> assertThat(file).as(file.getFileName().toString()).exists());
+        assertThat(ledgerFile()).as("an old ledger is not a temp file").exists();
+    }
+
+    @Test
+    void read_sweepsEvenWhenNoLedgerExists_andNeverFailsBecauseOfTheSweep() throws Exception {
+        var stale = tempFileAged("apply-state-zzz.tmp", ApplyLedger.STALE_TEMP_AGE.plusHours(1));
+
+        ApplyState.read(CLUSTER).onFailure(cause -> fail("absent is not a failure: " + cause.message()))
+                  .onSuccess(read -> assertThat(read.isPresent()).isFalse());
+
+        assertThat(stale).doesNotExist();
+    }
+
+    @Test
+    void read_absentClusterDirectory_printsNothing() {
+        assertThat(readCapturingStderr()).isEmpty();
+    }
+
     @Test
     void delete_absentLedger_isSuccess_presentLedger_isRemoved() {
         ApplyState.delete(CLUSTER).onFailure(cause -> fail("absent is not a failure: " + cause.message()));
