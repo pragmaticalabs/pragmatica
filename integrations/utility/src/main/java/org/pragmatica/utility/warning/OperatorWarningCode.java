@@ -576,7 +576,8 @@ public enum OperatorWarningCode {
     STORAGE_INTEGRITY_FAILED("storage-integrity-failed", "storage", WarningLevel.CRITICAL),
     /// The newest version of a durable anchor on one tier cannot be read back as written, or two durable tiers hold
     /// different values for it. The anchor is not read, and no older version is read in its place, until an operator
-    /// accepts a version. The subject is the instance; raised once per tier and anchor name. Closed by
+    /// accepts a version. The subject is `<instance>/<anchor>@<tier position>:<tier level>` (`@diverged` when two tiers
+    /// disagree), so each tier and anchor is throttled and closed on its own; raised once per subject. Closed by
     /// [#STORAGE_ANCHOR_READABLE].
     STORAGE_ANCHOR_CORRUPT("storage-anchor-corrupt", "storage", WarningLevel.CRITICAL),
     /// The recovery of [#STORAGE_ANCHOR_CORRUPT], same subject: the newest version of that anchor on that tier reads back

@@ -116,6 +116,9 @@ class StorageInstanceAnchorTest {
         corrupt(tempDir.resolve("corrupted"), other, 2);
         assertThat(causeOf(instance.latestAnchor(other))).isInstanceOf(AnchorError.AnchorCorrupt.class);
         assertThat(anchorWarnings()).as("a second anchor is its own condition").hasSize(2);
+        assertThat(anchorWarnings().stream().map(OperatorWarning::subject))
+            .as("each anchor is its own subject, so the event feed throttles and closes them apart")
+            .containsExactlyInAnyOrder("content/" + NAME.value() + "@0:LOCAL_DISK", "content/" + other.value() + "@0:LOCAL_DISK");
     }
 
     /// The recovery: once that tier's newest version reads back whole (here a newer version was written), the condition
@@ -135,6 +138,8 @@ class StorageInstanceAnchorTest {
 
         assertThat(recoveries()).hasSize(1);
         assertThat(anchorWarnings()).hasSize(1);
+        assertThat(recoveries().getFirst().subject()).as("the recovery closes its own warning's subject")
+                                                     .isEqualTo(anchorWarnings().getFirst().subject());
     }
 
     @Test

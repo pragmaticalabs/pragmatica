@@ -1011,7 +1011,7 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     private Promise<Option<Anchor>> agreed(AnchorName name, Anchor anchor) {
-        reportAnchorReadable("diverged " + name.value());
+        reportAnchorReadable(name.value() + "@diverged");
 
         return Promise.success(some(anchor));
     }
@@ -1029,7 +1029,7 @@ final class DefaultStorageInstance implements StorageInstance {
     private Promise<Option<Anchor>> diverged(AnchorName name, long version) {
         var cause = AnchorError.AnchorDiverged.anchorDiverged(name, version);
 
-        reportAnchorCorrupt("diverged " + name.value(), cause);
+        reportAnchorCorrupt(name.value() + "@diverged", cause);
 
         return cause.promise();
     }
@@ -1037,7 +1037,7 @@ final class DefaultStorageInstance implements StorageInstance {
     /// What one anchor condition is keyed by: the tier's place among the durable tiers (two tiers may share a level) and
     /// the anchor's name.
     private String anchorPart(StorageTier tier, AnchorName name) {
-        return "tier " + durableTiers.indexOf(tier) + " (" + tier.level() + ") " + name.value();
+        return name.value() + "@" + durableTiers.indexOf(tier) + ":" + tier.level();
     }
 
     private Unit reportAnchorCorrupt(String part, Cause cause) {

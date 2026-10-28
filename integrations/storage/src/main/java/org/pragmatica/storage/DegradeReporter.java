@@ -70,18 +70,19 @@ public final class DegradeReporter {
         return degradedFor(code, WHOLE_INSTANCE, template, args);
     }
 
-    /// Opens `code` for `part` of this instance and raises it, once per part. Returns true when this call was the
-    /// transition. [#recoveredFor] closes it.
+    /// Opens `code` for `part` of this instance and raises it, once per part, with the subject `<instance>/<part>`, so
+    /// the event feed throttles and pairs each part on its own. Returns true when this call was the transition.
+    /// [#recoveredFor] closes it.
     public synchronized boolean degradedFor(OperatorWarningCode code, String part, String template, Object... args) {
         var warning = OperatorWarning.operatorWarning(code,
-                                                      instance,
+                                                      subjectOf(part),
                                                       MessageFormatter.arrayFormat(template, args).getMessage());
 
         if (open.putIfAbsent(new Condition(code, part), warning) != null) {
             return false;
         }
 
-        OperatorWarnings.raise(log, sink.get(), code, instance, "{}", warning.message());
+        OperatorWarnings.raise(log, sink.get(), code, warning.subject(), "{}", warning.message());
 
         return true;
     }
@@ -90,14 +91,17 @@ public final class DegradeReporter {
     /// condition that was not open, or whose code has no recovery, raises nothing.
     public synchronized boolean recovered(OperatorWarningCode code, String template, Object... args) {
         return recoveryOf(code).filter(_ -> open.remove(new Condition(code, WHOLE_INSTANCE)) != null)
-                         .map(recovery -> raiseRecovery(recovery, template, args))
+                         .map(recovery -> raiseRecovery(recovery, instance, template, args))
                          .or(false);
     }
 
     /// Closes `code` for `part` of this instance and raises its recovery, once, as [#recovered] does for the whole instance.
     public synchronized boolean recoveredFor(OperatorWarningCode code, String part, String template, Object... args) {
         return recoveryOf(code).filter(_ -> open.remove(new Condition(code, part)) != null)
-                         .map(recovery -> raiseRecovery(recovery, template, args))
+                         .map(recovery -> raiseRecovery(recovery,
+                                                        subjectOf(part),
+                                                        template,
+                                                        args))
                          .or(false);
     }
 
@@ -111,8 +115,14 @@ public final class DegradeReporter {
         return open.containsKey(new Condition(code, part));
     }
 
-    private boolean raiseRecovery(OperatorWarningCode recovery, String template, Object... args) {
-        OperatorWarnings.raise(log, sink.get(), recovery, instance, template, args);
+    private String subjectOf(String part) {
+        return part.isEmpty()
+               ? instance
+               : instance + "/" + part;
+    }
+
+    private boolean raiseRecovery(OperatorWarningCode recovery, String subject, String template, Object... args) {
+        OperatorWarnings.raise(log, sink.get(), recovery, subject, template, args);
 
         return true;
     }

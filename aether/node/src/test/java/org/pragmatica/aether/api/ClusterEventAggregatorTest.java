@@ -2453,7 +2453,7 @@ class ClusterEventAggregatorTest {
     }
 
     /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the oversized-event refusal and the
-    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378); every other code keeps the plain 60 s throttle.
+    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450); every other code keeps the plain 60 s throttle.
     @Test
     void onOperatorWarning_onlyTheDeclaredPairsArePaired_otherCodesUnchanged() {
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).toList())
@@ -2500,6 +2500,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STORAGE_MAINTENANCE_STARTED,
                 OperatorWarningCode.STORAGE_PREFETCH_STARTED,
                 OperatorWarningCode.STORAGE_WRITE_BEHIND_FLUSHED,
+                OperatorWarningCode.STORAGE_ANCHOR_READABLE,
                 OperatorWarningCode.WORKER_ASSIGNED,
                 OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED,
                 OperatorWarningCode.UPLOAD_NODE_CAP_RESTORED,
@@ -2544,6 +2545,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STORAGE_MAINTENANCE_NOT_STARTED,
                 OperatorWarningCode.STORAGE_PREFETCH_NOT_STARTED,
                 OperatorWarningCode.STORAGE_WRITE_BEHIND_FLUSH_FAILED,
+                OperatorWarningCode.STORAGE_ANCHOR_CORRUPT,
                 OperatorWarningCode.WORKER_ASSIGNMENT_OVERDUE,
                 OperatorWarningCode.TOPIC_TIER_MISMATCH,
                 OperatorWarningCode.JSON_CONFIG_REJECTED,
