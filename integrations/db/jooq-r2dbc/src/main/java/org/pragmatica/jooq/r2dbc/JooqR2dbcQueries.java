@@ -54,7 +54,8 @@ public interface JooqR2dbcQueries {
                                                         ResultQuery<R> query) {
         query.attach(DSL.using(connection, dialect).configuration());
 
-        return ReactiveOperations.collectFromPublisher(query, e -> R2dbcError.fromException(e, query.getSQL()));
+        return ReactiveOperations.collectFromPublisher(query,
+                                                       e -> R2dbcError.fromException(e, query.getSQL()));
     }
 
     /// Executes the query on the connection.
@@ -73,11 +74,15 @@ public interface JooqR2dbcQueries {
     private static Promise<Integer> executeRowCount(Connection connection, SQLDialect dialect, RowCountQuery query) {
         query.attach(DSL.using(connection, dialect).configuration());
 
-        return ReactiveOperations.<Integer> collectFromPublisher(query, e -> R2dbcError.fromException(e, query.getSQL()))
+        return ReactiveOperations.<Integer> collectFromPublisher(query,
+                                                                 e -> R2dbcError.fromException(e,
+                                                                                               query.getSQL()))
                                  .map(JooqR2dbcQueries::sum);
     }
 
     private static int sum(List<Integer> counts) {
-        return counts.stream().mapToInt(Integer::intValue).sum();
+        return counts.stream()
+                     .mapToInt(Integer::intValue)
+                     .sum();
     }
 }

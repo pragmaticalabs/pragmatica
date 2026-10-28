@@ -112,8 +112,7 @@ final class ConnectionFactoryJooqR2dbcOperations implements JooqR2dbcOperations 
 
     @Override
     public <R extends Record> Promise<R> fetchOne(ResultQuery<R> query) {
-        return withConnection(conn -> JooqR2dbcQueries.fetchAll(conn, dialect, query)
-                                                      .flatMap(records -> extractSingleRecord(records).async()));
+        return withConnection(conn -> JooqR2dbcQueries.fetchAll(conn, dialect, query).flatMap(records -> extractSingleRecord(records).async()));
     }
 
     @Override
@@ -149,9 +148,10 @@ final class ConnectionFactoryJooqR2dbcOperations implements JooqR2dbcOperations 
     }
 
     private static <R extends Record> Option<R> firstRecord(List<R> result) {
-        return result.isEmpty()
-               ? Option.none()
-               : Option.some(result.getFirst());
+        return result.stream()
+                     .findFirst()
+                     .map(Option::some)
+                     .orElse(Option.none());
     }
 
     private <T> Promise<T> withConnection(Fn1<Promise<T>, Connection> operation) {
