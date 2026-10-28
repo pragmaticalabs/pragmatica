@@ -7,7 +7,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 
@@ -93,9 +92,7 @@ public record ApplyState(String applyId,
     }
 
     public static String newApplyId() {
-        return ULID.ulid()
-                   .encoded()
-                   .toLowerCase(Locale.ROOT);
+        return ULID.ulid().encoded();
     }
 
     static boolean isApplyId(String candidate) {
