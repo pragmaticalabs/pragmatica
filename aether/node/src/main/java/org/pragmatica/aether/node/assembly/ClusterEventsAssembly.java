@@ -254,6 +254,7 @@ public sealed interface ClusterEventsAssembly {
         // emits TraceInjected through a thin sink that keeps the aether-invoke module free of any
         // ClusterEvent dependency.
         eventAggregator.bindSelfCommandedDrain(drainProcedure::isCommandedDrain);
+        eventAggregator.bindSelfCoreAbsenceDrain(drainProcedure::isCoreAbsenceDrain);
         eventAggregator.bindSelfIsVoter(() -> isInstalledVoterOrUnknown(clusterNode.voterConfiguration(), config.self()));
         alertManager.bindEventSink(eventAggregator::emit, clusterEventsHlcClock);
         alertManager.bindClusterEventsSource(eventAggregator::events);

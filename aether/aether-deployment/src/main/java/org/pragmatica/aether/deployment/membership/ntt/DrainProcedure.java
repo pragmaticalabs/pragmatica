@@ -236,6 +236,12 @@ public final class DrainProcedure {
         return state.get() != DrainState.INACTIVE && initiatedReason.get() == DrainReason.COMMANDED;
     }
 
+    /// Whether this node is dissolving because it lost the core (`CORE_ABSENCE`, #590): a self-initiated fence, not a
+    /// catch-up (#2439). False for every other reason, `COMMANDED` and `QUORUM_LOSS` included.
+    public boolean isCoreAbsenceDrain() {
+        return state.get() != DrainState.INACTIVE && initiatedReason.get() == DrainReason.CORE_ABSENCE;
+    }
+
     /// Current observability state. Exposed for `/api/status` projections and tests.
     public DrainState state() {
         return state.get();
