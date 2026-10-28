@@ -138,6 +138,17 @@ class ContentStoreV2CreditsTest {
             assertThat(failureOf(writer.write(ByteBuffer.wrap(new byte[]{1})))).isEqualTo(ContentStoreError.General.WRITER_CLOSED);
             writer.abort().await().unwrap();
             assertThat(fixture.storage.listRefs("o/alpha/")).as("abort after commit changed nothing").hasSize(1);
+
+            var aborted = fixture.store("alpha").create(ObjectSpec.objectSpec("a/c")).await().unwrap();
+            var other = payload(CHUNK * 3 + 1, 22);
+
+            feed(aborted, other, 0, 13).await().unwrap();
+            aborted.abort().await().unwrap();
+
+            assertThat(failureOf(aborted.write(ByteBuffer.wrap(new byte[]{1})))).isEqualTo(ContentStoreError.General.WRITER_CLOSED);
+            assertThat(failureOf(aborted.commit(none()))).isEqualTo(ContentStoreError.General.WRITER_CLOSED);
+            assertThat(fixture.storage.listRefs("o/alpha/")).as("the aborted writer created no object").hasSize(1);
+            assertCredits(fixture, chunkIdsOf(other).subList(0, 3), 0, "the three full chunks the aborted writer stored");
         }
 
         @Test

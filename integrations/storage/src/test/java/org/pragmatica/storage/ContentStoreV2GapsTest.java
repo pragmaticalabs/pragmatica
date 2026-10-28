@@ -8,7 +8,11 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.SplittableRandom;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiFunction;
 
@@ -25,6 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Unit.unit;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.storage.V2Fixture.failureOf;
 import static org.pragmatica.storage.V2Fixture.payload;
 import static org.pragmatica.storage.V2Fixture.uploaded;
@@ -113,6 +118,22 @@ class ContentStoreV2GapsTest {
 
         assertThat(ObjectEntry.fromBytes(bytes).isSuccess()).isTrue();
         assertThat(ObjectEntry.fromBytes(Arrays.copyOf(bytes, bytes.length + 1)).isFailure()).isTrue();
+    }
+
+    /// The format byte is checked, not only read: the same entry framed again with format 2 is refused, and framed again
+    /// unchanged is the control.
+    @Test
+    void anEntryOfAFormatThisBuildDoesNotKnow_isRefused() {
+        var meta = ObjectMeta.objectMeta(none(), "t", 1, new Sha256(new byte[Sha256.LENGTH]), "o", Instant.EPOCH, none(), Map.of());
+        var bytes = ObjectEntry.objectEntry(new BlockId(new byte[Sha256.LENGTH]), meta).toBytes().unwrap();
+        var payload = ContentEnvelope.payloadOf(ContentEnvelope.ENTRY, bytes).unwrap();
+        var unknown = payload.clone();
+
+        unknown[0] = 2;
+
+        assertThat(ObjectEntry.fromBytes(ContentEnvelope.wrap(ContentEnvelope.ENTRY, payload)).isSuccess()).isTrue();
+        assertThat(causeOf(ObjectEntry.fromBytes(ContentEnvelope.wrap(ContentEnvelope.ENTRY, unknown))))
+            .isEqualTo(ContentStoreError.General.ENTRY_PARSE_FAILED);
     }
 
     @Test
@@ -376,6 +397,129 @@ class ContentStoreV2GapsTest {
         }
 
         assertThat(failing.refCountOf(firstBlock)).as("the writer released the one block it had stored").isLessThanOrEqualTo(0);
+    }
+
+    /// A store of 16-byte chunks and a window of one, whose first block put waits for `held` and whose other puts complete
+    /// inline.
+    private static ContentStoreV2 storeWithFirstBlockHeld(Promise<Unit> held) {
+        var puts = new AtomicInteger();
+
+        return new V2Fixture(tier((_, _) -> puts.incrementAndGet() == 1
+                                            ? held
+                                            : Promise.success(unit())))
+            .store(ContentStoreConfig.contentStoreConfig(V2Fixture.CHUNK, Compression.NONE, "alpha", 1, 2));
+    }
+
+    /// B-1, one interleaving: the second write waits for the window and is resolved on the test thread by the block that
+    /// settles there, whose store of the next chunk completes inline; the continuation writes the third piece at once. That
+    /// write used to find the pump busy and, with no block left being stored, was never pumped.
+    @Test
+    void aWriteMadeByTheContinuationOfAWriteTheWindowHeld_resolves() {
+        var held = Promise.<Unit>promise();
+        var target = storeWithFirstBlockHeld(held);
+        var writer = target.create(ObjectSpec.objectSpec("t")).await().unwrap();
+        var data = payload(49, 7);
+
+        writer.write(ByteBuffer.wrap(data, 0, 32)).await().unwrap();
+
+        var chain = writer.write(ByteBuffer.wrap(data, 32, 16)).flatMap(_ -> writer.write(ByteBuffer.wrap(data, 48, 1)));
+
+        assertThat(chain.isResolved()).as("the second write waits for the window").isFalse();
+
+        held.succeed(unit());
+
+        assertThat(chain.await(timeSpan(3).seconds()).isSuccess()).as("the third write resolved").isTrue();
+        assertThat(V2Fixture.read(target, writer.commit(none()).await().unwrap().ref(), ByteRange.whole())).isEqualTo(data);
+    }
+
+    /// B-1 over many interleavings: every other block store completes inline, the rest a moment later on another thread, and
+    /// the producer chains each write in the continuation of the one before. Hung 3 of the first 5 uploads before the fix.
+    @Test
+    void aChainedProducer_overBlockStoresThatCompleteInlineAndLater_neverHangs() {
+        var scheduler = Executors.newSingleThreadScheduledExecutor();
+        var random = new SplittableRandom(42);
+
+        try {
+            for (var upload = 0; upload < 100; upload++) {
+                var puts = new AtomicInteger();
+                var mixed = new V2Fixture(tier((_, _) -> puts.incrementAndGet() % 2 == 0
+                                                         ? Promise.success(unit())
+                                                         : later(scheduler)));
+                var window = 1 + random.nextInt(3);
+                var target = mixed.store(ContentStoreConfig.contentStoreConfig(V2Fixture.CHUNK, Compression.NONE, "alpha", window, 2));
+                var data = payload(200, upload);
+                var pieces = new ArrayList<Integer>();
+
+                for (var left = data.length; left > 0; left -= pieces.getLast()) {
+                    pieces.add(Math.min(left, 1 + random.nextInt(40)));
+                }
+
+                var writer = target.create(ObjectSpec.objectSpec("t")).await().unwrap();
+                var committed = chained(writer, data, 0, pieces, 0).flatMap(_ -> writer.commit(none()))
+                                                                   .await(timeSpan(5).seconds());
+
+                assertThat(committed.isSuccess()).as("upload " + upload + ", window " + window + ", pieces " + pieces).isTrue();
+            }
+        } finally {
+            scheduler.shutdownNow();
+        }
+    }
+
+    private static Promise<Unit> later(ScheduledExecutorService scheduler) {
+        var done = Promise.<Unit>promise();
+
+        scheduler.schedule(() -> done.succeed(unit()), 1, TimeUnit.MILLISECONDS);
+
+        return done;
+    }
+
+    private static Promise<Unit> chained(ObjectWriter writer, byte[] data, int offset, List<Integer> pieces, int index) {
+        if (index == pieces.size()) {
+            return Promise.success(unit());
+        }
+
+        var count = pieces.get(index);
+
+        return writer.write(ByteBuffer.wrap(data, offset, count))
+                     .flatMap(_ -> chained(writer, data, offset + count, pieces, index + 1));
+    }
+
+    /// The caller's buffer is the writer's until the write resolves: a write the full window holds back has not resolved,
+    /// and once it has, a caller that reuses its buffer does not change the object.
+    @Test
+    void aWrite_resolvesOnlyOnceItHasTakenEveryByte_andTheCallerMayReuseItsBufferThen() {
+        var held = Promise.<Unit>promise();
+        var target = storeWithFirstBlockHeld(held);
+        var writer = target.create(ObjectSpec.objectSpec("t")).await().unwrap();
+        var data = payload(64, 9);
+        var original = data.clone();
+        var write = writer.write(ByteBuffer.wrap(data));
+
+        assertThat(write.isResolved()).as("held by the full window, the buffer not yet taken").isFalse();
+
+        held.succeed(unit());
+        write.await(timeSpan(3).seconds()).unwrap();
+        Arrays.fill(data, (byte) 0);
+
+        assertThat(V2Fixture.read(target, writer.commit(none()).await().unwrap().ref(), ByteRange.whole())).isEqualTo(original);
+    }
+
+    /// An ingress that aborts on disconnect may still be awaiting a write the window holds back: the abort fails it.
+    @Test
+    void abortingAWriterWhoseWriteIsHeldBack_failsThatWrite() {
+        var held = Promise.<Unit>promise();
+        var writer = storeWithFirstBlockHeld(held).create(ObjectSpec.objectSpec("t")).await().unwrap();
+        var write = writer.write(ByteBuffer.wrap(payload(64, 9)));
+
+        assertThat(write.isResolved()).as("held by the full window").isFalse();
+
+        var abort = writer.abort();
+
+        assertThat(write.isResolved()).as("settled by the abort, before the held block").isTrue();
+        assertThat(failureOf(write)).isEqualTo(ContentStoreError.General.WRITER_CLOSED);
+
+        held.succeed(unit());
+        abort.await(timeSpan(3).seconds()).unwrap();
     }
 
     @Test
