@@ -6,11 +6,14 @@
 package org.pragmatica.aether.forge;
 
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.ClassOrderer;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestClassOrder;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.pragmatica.aether.ember.EmberCluster;
@@ -26,6 +29,7 @@ import java.net.http.HttpRequest;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -72,6 +76,7 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// forwarded-read path, and the observability surface. It does NOT prove real-network read forwarding
 /// or ownership failover across machines — that needs the live cluster harness.
 @Tag("Heavy")
+@TestClassOrder(ClassOrderer.OrderAnnotation.class)
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class DeclarativeConsumerPlacementTest {
@@ -365,6 +370,86 @@ class DeclarativeConsumerPlacementTest {
             assertThat(spreadReceived() - baseline)
                     .describedAs("exactly one node is assigned per partition, and it stays the only one")
                     .isEqualTo(EVENT_COUNT);
+        }
+    }
+
+    /// #1385 / #1879: an assignee that dies right after a burst must not leave the burst uncommitted. The partition's
+    /// consumer commits its cursor within one checkpoint cadence of the last ack even when nothing else arrives, so the
+    /// successor that reads the committed cursor redelivers only what lies past the last checkpoint. The batch is delivered
+    /// and left quiet for several cadences, then the node holding the most partitions is killed (not gracefully); once the
+    /// partitions are attached again, no event is delivered a second time. Runs last: it removes a node from the shared
+    /// cluster.
+    @Nested
+    @Order(Integer.MAX_VALUE)
+    class AssigneeMove {
+        private static final Duration QUIET_BEYOND_CADENCE = Duration.ofSeconds(8);
+
+        @Test
+        void declaredConsumer_assigneeMove_redeliversOnlyPastLastCheckpoint() {
+            var baseline = settledSpreadReceived();
+
+            publishSpreadBatch(EVENT_COUNT);
+            await().atMost(DELIVERY_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .untilAsserted(() -> assertThat(spreadReceived() - baseline).isEqualTo(EVENT_COUNT));
+            sleep(QUIET_BEYOND_CADENCE);
+
+            var victim = busiestNonLeaderAssignee();
+            var receivedBefore = receivedByHost();
+
+            assertThat(receivedBefore.get(victim)).describedAs("the victim consumed part of the batch, or the test proves nothing")
+                                                  .isGreaterThanOrEqualTo(2);
+
+            LifecycleAwait.nodeBestEffort("kill assignee " + victim + " in declaredConsumer_assigneeMove_redeliversOnlyPastLastCheckpoint()",
+                                          cluster,
+                                          cluster.killNode(victim, false));
+            await().atMost(WAIT_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .until(() -> !hostNodes().contains(victim) && totalAttachedSubscriptions() == EXPECTED_ATTACHMENTS);
+            settledSpreadReceived();
+            sleep(Duration.ofSeconds(12));
+
+            var survivorsBefore = receivedBefore.entrySet()
+                                                .stream()
+                                                .filter(entry -> !entry.getKey().equals(victim))
+                                                .mapToInt(Map.Entry::getValue)
+                                                .sum();
+
+            assertThat(spreadReceived() - survivorsBefore)
+                    .describedAs("events delivered again after the assignee %s died: the cursor committed within one cadence of "
+                                 + "the last ack, so nothing lies past the last checkpoint", victim)
+                    .isZero();
+        }
+
+        /// The hosting node that is not the leader and is the assignee of the most spread-events partitions.
+        private String busiestNonLeaderAssignee() {
+            var leader = cluster.currentLeader().or("");
+
+            return ASSIGNMENT_ROW.matcher(spreadFragment())
+                                 .results()
+                                 .map(match -> match.group(1))
+                                 .filter(node -> !node.equals(leader))
+                                 .collect(Collectors.groupingBy(node -> node, Collectors.counting()))
+                                 .entrySet()
+                                 .stream()
+                                 .max(Map.Entry.comparingByValue())
+                                 .map(Map.Entry::getKey)
+                                 .orElseThrow(() -> new AssertionError("no non-leader node is assigned a spread-events partition"));
+        }
+
+        /// What each hosting node's slice instance has received so far.
+        private Map<String, Integer> receivedByHost() {
+            var hosts = hostNodes();
+
+            return cluster.status()
+                          .nodes()
+                          .stream()
+                          .filter(node -> hosts.contains(node.id()))
+                          .collect(Collectors.toMap(EmberCluster.NodeStatus::id,
+                                                    node -> firstInt(COUNT_FIELD,
+                                                                     httpPost(BASE_APP_HTTP_PORT + node.mgmtPort() - BASE_MGMT_PORT,
+                                                                              "/api/stream-consumer/received-spread",
+                                                                              "{}"))));
         }
     }
 
