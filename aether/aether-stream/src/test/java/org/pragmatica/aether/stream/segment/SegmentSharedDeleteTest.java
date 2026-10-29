@@ -321,6 +321,33 @@ class SegmentSharedDeleteTest {
         assertThat(warnings.getFirst().subject()).isEqualTo("node node-1 storage streams");
     }
 
+    /// The threshold itself: two failing runs raise nothing, the third raises once, a fourth does not repeat it.
+    @Test
+    void deleteFailing_isRaisedAtTheThirdConsecutiveFailingRun_notBefore() throws InterruptedException {
+        var warnings = new CopyOnWriteArrayList<OperatorWarning>();
+        var collection = SharedSegmentCollection.sharedSegmentCollection(collector, snapshots, NO_GRACE);
+        var old = System.currentTimeMillis() - 2 * HOUR;
+
+        collection.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add), "node-1");
+        seal("orders", 0, 0, old, events(0, old));
+        seal("orders", 0, 1, System.currentTimeMillis(), events(1, System.currentTimeMillis()));
+        enforcer(_ -> Option.some(HOURLY), RetentionEnforcer.SegmentRetentionFloor.NONE).enforceNow().await();
+        shared.failDeletes.set(true);
+
+        collection.runOnce();
+        collection.runOnce();
+        Thread.sleep(300);
+        assertThat(warnings).as("two failing runs").isEmpty();
+
+        collection.runOnce();
+        Thread.sleep(300);
+        assertThat(warnings).extracting(OperatorWarning::code).containsExactly(OperatorWarningCode.STREAM_SEGMENT_DELETE_FAILING);
+
+        collection.runOnce();
+        Thread.sleep(300);
+        assertThat(warnings).as("raised once").hasSize(1);
+    }
+
     private RetentionEnforcer enforcer(StreamRetentionSource source, RetentionEnforcer.SegmentRetentionFloor floor) {
         return RetentionEnforcer.retentionEnforcer(storage, index, source, HOUR, floor, Option.none());
     }
