@@ -100,9 +100,8 @@ class EmberDrainEvictionWiringTest {
             "org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState$Active";
     /// First line of `ClusterDeploymentState.Active.onEntry`; the FSM state is already Active when it is logged.
     private static final String ACTIVATION_MARKER = "became leader, activating cluster deployment manager";
-    /// Logged by `Active.onEntry` after the first line, once the state is rebuilt from the KV store: a pong sent before it can
-    /// meet an `Active` that is still rebuilding and be ignored.
-    private static final String REBUILT_MARKER = "worker nodes from KVStore";
+    /// The last line of `Active.onEntry`: a pong sent before it can meet an `Active` that is still entering and be ignored.
+    private static final String REBUILT_MARKER = "Cluster deployment manager activation complete on node";
 
     private EmberCluster cluster;
 
@@ -144,7 +143,7 @@ class EmberDrainEvictionWiringTest {
                            System.currentTimeMillis() + 60_000L,
                            () -> contains(capture, ACTIVATION_MARKER),
                            capture::messages);
-            awaitCondition("the leader's cluster deployment manager must finish rebuilding its state from the KV store before the pong is sent",
+            awaitCondition("the leader's cluster deployment manager must finish its activation before the pong is sent",
                            System.currentTimeMillis() + 60_000L,
                            () -> contains(capture, REBUILT_MARKER),
                            capture::messages);
@@ -154,11 +153,8 @@ class EmberDrainEvictionWiringTest {
             assertThat(drainingAtPongThreadEviction.get())
                 .describedAs("the pong's synchronous callback must start the eviction on the pong's own thread while "
                              + "the DRAINING report is present; false means the registration is missing or the CDM "
-                             + "ignored the pong. Timing assumption: the pong is sent after the CDM logged its activation, "
-                             + "so it meets an Active CDM. Residual window: that line is the first of Active.onEntry, so a "
-                             + "pong landing while onEntry is still running can be ignored and the eviction then starts "
-                             + "from onEntry's resume on another thread; a failure here with the registration intact "
-                             + "points at that window, not at the product")
+                             + "ignored the pong. The pong is sent after the CDM logged the END of its activation, so it meets a fully entered "
+                             + "Active CDM")
                 .isTrue();
 
             var started = "Starting drain eviction for node " + drainee;
