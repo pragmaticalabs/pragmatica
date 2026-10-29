@@ -35,7 +35,8 @@ import static org.pragmatica.consensus.NodeId.nodeId;
 /// Each is an ENABLED test of today's behaviour, with the real assertion of the target design `@Disabled` beside it.
 ///
 /// - TW-O3: `authorizePassiveClient()` sets the passive-client flag once and nothing clears it, so a worker that
-///   loses its feed stays "ready" (W4 replaces the setter with `setPassiveClientReady(boolean)`).
+///   loses its feed stays "ready". W3 adds `setPassiveClientReady(boolean)` beside it (unreachable from production wiring until W4);
+///   W4 deletes the latch and drives the setter from the readiness computation.
 /// - TW-O4: a passive engine fed a `Decision` or a quorum notification applies nothing and stays out of every
 ///   serving state. The replica feed applies outside the engine (W3), so this must remain true; it fails if the
 ///   apply path is ever routed through the engine on a worker. There is no real-assertion twin: the design
@@ -157,16 +158,52 @@ class ReplicaFeedEngineTripwireTest {
         passive.settleForTesting().await();
 
         assertThat(passive.isPassiveClientReady()).as("TW-O3: a quorum-lost notification and a decision change nothing, the flag is a latch").isTrue();
-        assertThat(clearingSetter()).as("TW-O3: no public method of the engine can clear the flag today; W4 adds setPassiveClientReady(boolean) and deletes authorizePassiveClient").isNull();
     }
 
-    @Disabled("W4 (cutover): enable when RabiaEngine.setPassiveClientReady(boolean) replaces authorizePassiveClient and readiness is computed by ReplicaReadiness")
+    /// W3 adds the clearing seam beside the latch; W4 deletes `authorizePassiveClient` and drives this setter from the readiness computation.
+    /// Mutation: `passiveClientReady = ready` without `passiveClient &&` (a non-passive engine reports ready), or never clear.
+    @Test
+    void setPassiveClientReady_setsAndClears_andWritesNoEngineState() {
+        var passive = passiveEngine(new TestStateMachine());
+        var coreEngine = engine(CORE_1, new TestStateMachine(), false);
+
+        passive.setPassiveClientReady(true);
+        assertThat(passive.isPassiveClientReady()).isTrue();
+        passive.setPassiveClientReady(false);
+        assertThat(passive.isPassiveClientReady()).as("unlike the latch, the seam clears").isFalse();
+        coreEngine.setPassiveClientReady(true);
+        assertThat(coreEngine.isPassiveClientReady()).as("ignored on an engine that is not a passive client").isFalse();
+        assertThat(passive.isActive() || passive.isPaused() || passive.isObserving()).as("no engine state moved").isFalse();
+        assertThat(passive.currentPhaseForTesting()).isEqualTo(Phase.ZERO);
+    }
+
+    /// Mutation: fire the listeners on an engine that is not a passive client; or never fire them.
+    @Test
+    void completePassiveRestore_firesThePostRestoreListeners_onlyOnAPassiveClient() {
+        var passive = passiveEngine(new TestStateMachine());
+        var coreEngine = engine(CORE_1, new TestStateMachine(), false);
+        var passiveFired = new AtomicInteger();
+        var coreFired = new AtomicInteger();
+
+        passive.onStateRestored(passiveFired::incrementAndGet);
+        coreEngine.onStateRestored(coreFired::incrementAndGet);
+        passive.completePassiveRestore();
+        passive.completePassiveRestore();
+        coreEngine.completePassiveRestore();
+
+        assertThat(passiveFired.get()).as("one run per install").isEqualTo(2);
+        assertThat(coreFired.get()).isZero();
+        assertThat(passive.isActive() || passive.isPaused() || passive.isObserving()).as("no engine state moved").isFalse();
+    }
+
+    @Disabled("W4 (cutover): enable when authorizePassiveClient is deleted and production wiring drives RabiaEngine.setPassiveClientReady(boolean) from ReplicaReadiness")
     @Test
     void isPassiveClientReady_isFalse_whenReadinessFails() {
         var passive = passiveEngine(new TestStateMachine());
         var setter = clearingSetter();
 
-        assertThat(setter).as("W4 adds RabiaEngine.setPassiveClientReady(boolean); readiness is set and cleared from one computation").isNotNull();
+        assertThat(setter).as("W3 added RabiaEngine.setPassiveClientReady(boolean); readiness is set and cleared from one computation").isNotNull();
+        assertThat(methodOrNull(RabiaEngine.class, "authorizePassiveClient")).as("W4 deletes the latch").isNull();
         invoke(setter, passive, true);
         assertThat(passive.isPassiveClientReady()).isTrue();
         invoke(setter, passive, false);

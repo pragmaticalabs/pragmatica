@@ -139,7 +139,7 @@ public record HierarchyPeerPolicy(NodeId self, boolean worker, AtomicReference<V
     }
 
     /// Two deterministic uplinks distribute community traffic and retain a second path on failure.
-    static Set<NodeId> coreUplinks(NodeId self, Set<NodeId> cores) {
+    public static Set<NodeId> coreUplinks(NodeId self, Set<NodeId> cores) {
         return cores.stream()
                     .sorted(Comparator.<NodeId> comparingLong(peer -> score(self, peer))
                                       .reversed()
