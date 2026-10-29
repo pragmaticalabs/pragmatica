@@ -418,26 +418,48 @@ public final class RetentionEnforcer implements AutoCloseable {
     }
 
     /// Once per pressure episode (#1604): the tier is at or above [SegmentTierPressure#WARN_AT], so seals
-    /// will soon fail and owner publishes will be refused at [SegmentTierPressure#REFUSE_AT].
-    /// TODO(#1574): raise it as a CRITICAL OperatorWarning cluster event as well.
+    /// will soon fail and owner publishes will be refused at [SegmentTierPressure#REFUSE_AT]. The episode is raised as
+    /// [OperatorWarningCode#STREAM_SEGMENT_DISK_PRESSURE] and closed by [OperatorWarningCode#STREAM_SEGMENT_DISK_PRESSURE_RELIEVED]
+    /// when the tier falls below the warning ratio (#2258, spec 3.2 item 8).
     @Contract
     private void reportPressure() {
         var utilization = pressure.utilization();
 
         if (utilization < SegmentTierPressure.WARN_AT) {
-            underPressure.set(false);
+            relieveEpisode(utilization);
 
             return;
         }
 
         if (underPressure.compareAndSet(false, true)) {
-            log.warn("Durable stream segment tier is {}% full on this node (warning at {}%): stream seals fail when it "
-                    + "is full and owner publishes are refused (SEGMENT_TIER_FULL) from {}%. Raise [streaming] "
-                    + "segment_disk_max_bytes or add disk, or shorten retention",
-                     Math.round(utilization * 100),
-                     Math.round(SegmentTierPressure.WARN_AT * 100),
-                     Math.round(SegmentTierPressure.REFUSE_AT * 100));
+            OperatorWarnings.raise(log,
+                                   operatorWarnings,
+                                   OperatorWarningCode.STREAM_SEGMENT_DISK_PRESSURE,
+                                   pressureSubject(),
+                                   "Durable stream segment tier is {}% full on this node (warning at {}%): stream seals fail when it "
+                                   + "is full and owner publishes are refused (SEGMENT_TIER_FULL) from {}%. Raise [streaming] "
+                                   + "segment_disk_max_bytes or add disk, or shorten retention",
+                                   Math.round(utilization * 100),
+                                   Math.round(SegmentTierPressure.WARN_AT * 100),
+                                   Math.round(SegmentTierPressure.REFUSE_AT * 100));
         }
+    }
+
+    @Contract
+    private void relieveEpisode(double utilization) {
+        if (underPressure.compareAndSet(true, false)) {
+            OperatorWarnings.raise(log,
+                                   operatorWarnings,
+                                   OperatorWarningCode.STREAM_SEGMENT_DISK_PRESSURE_RELIEVED,
+                                   pressureSubject(),
+                                   "Durable stream segment tier is {}% full on this node, below the {}% warning",
+                                   Math.round(utilization * 100),
+                                   Math.round(SegmentTierPressure.WARN_AT * 100));
+        }
+    }
+
+    private String pressureSubject() {
+        return "node " + nodeId + " storage streams";
     }
 
     /// Reclaim in three steps, so a restart never finds a partition's refs gone without the floor that says they
