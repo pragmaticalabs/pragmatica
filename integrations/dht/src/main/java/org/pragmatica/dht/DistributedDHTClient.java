@@ -368,6 +368,11 @@ public final class DistributedDHTClient implements DHTClient {
     }
 
     @Override
+    public LocalUsage localUsage(String prefix) {
+        return new LocalUsage(node.storage().usedBytes(prefix), node.storage().maxBytes(prefix));
+    }
+
+    @Override
     public Promise<Unit> put(byte[] key, byte[] value) {
         if (!node.replicationResolved()) {
             return DHTError.REPLICATION_UNRESOLVED.promise();
@@ -396,7 +401,8 @@ public final class DistributedDHTClient implements DHTClient {
                               ownerEpochSource.currentEpochIncarnation(),
                               ownerEpochSource.currentEpochTerm(),
                               ownerEpochSource.currentEpochCounter(),
-                              node.replicationFence());
+                              node.replicationFence(),
+                              false);
     }
 
     /// A put with an explicit stamp. The fallback read's re-homing uses it with the copy's ORIGINAL stamp (#1777
@@ -441,9 +447,9 @@ public final class DistributedDHTClient implements DHTClient {
                       .fold(result -> result.fold(cause -> afterFailedWrite(key,
                                                                             stamp,
                                                                             localPut,
-                                                                            indeterminateIfFenced(cause,
-                                                                                                  quorum,
-                                                                                                  collector)),
+                                                                            refinedPutFailure(cause,
+                                                                                              quorum,
+                                                                                              collector)),
                                                   Promise::success))
                       .withFailure(cause -> noteIfStale(cause, stamp))
                       .withSuccess(_ -> clearIfNoReplicaRefusedAsStale(collector))
@@ -584,11 +590,15 @@ public final class DistributedDHTClient implements DHTClient {
 
     /// The version and owner epoch one put is stamped with — what a rollback must match exactly — and the replication
     /// change its quorum was sized under (#1777 R1c), read when the put starts.
+    ///
+    /// `repair` marks a write that re-homes a copy a client already holds (the fallback read's read-repair): replicas account it
+    /// and never refuse it for capacity (#2258, spec 3.2 item 7). Every client write is stamped `false`.
     private record WriteStamp(long version,
                               long epochIncarnation,
                               long epochTerm,
                               long epochCounter,
-                              long replicationVersion) {}
+                              long replicationVersion,
+                              boolean repair) {}
 
     /// A put that lost its quorum to owner-epoch fences is INDETERMINATE (#1818, the owner's fence ruling):
     /// this node's own store may have accepted it because its high-water lags, and anti-entropy copies bypass
@@ -601,9 +611,23 @@ public final class DistributedDHTClient implements DHTClient {
     /// A put that times out after a fence refused it is just as indeterminate as one the collector failed on
     /// fences: a slow or lost reply must not skip the rollback and leave the refused accept to spread.
     private static <T> Cause indeterminateIfFenced(Cause cause, int quorum, QuorumCollector<T> collector) {
-        return collector.fencedCount() > 0 && !(cause instanceof DHTError.WriteIndeterminate)
+        return collector.fencedCount() > 0 && !(cause instanceof DHTError.WriteIndeterminate || cause instanceof DHTError.ReplicaFull)
                ? DHTError.writeIndeterminate(quorum, collector.successCount(), collector.fencedCount())
                : cause;
+    }
+
+    /// The failure of a put, with a capacity refusal ahead of every other answer (#2258, spec 3.2 item 7): a put that missed
+    /// its write quorum and was refused for capacity by at least one replica fails [DHTError.ReplicaFull] whatever the others
+    /// answered — a fence refusal or a timeout included — because that is what the writer can act on. A put with no capacity
+    /// refusal keeps the failure it had.
+    private static <T> Cause refinedPutFailure(Cause cause, int quorum, QuorumCollector<T> collector) {
+        if (cause instanceof DHTError.ReplicaFull || collector.successCount() >= quorum) {
+            return indeterminateIfFenced(cause, quorum, collector);
+        }
+
+        return collector.capacityRefusal()
+                        .<Cause> map(full -> full)
+                        .or(() -> indeterminateIfFenced(cause, quorum, collector));
     }
 
     /// The rollback after an INDETERMINATE put OR remove (#1777 track 3, v1882 r9b) puts this node's own
@@ -827,6 +851,10 @@ public final class DistributedDHTClient implements DHTClient {
     }
 
     private static Cause putRefusal(DHTMessage.PutResponse response) {
+        if (response.capacityExceeded()) {
+            return DHTError.replicaFull(response.usedBytes(), response.maxBytes());
+        }
+
         if (response.fenced()) {
             return DHTError.replicaFenced(response.sender());
         }
@@ -1204,8 +1232,9 @@ public final class DistributedDHTClient implements DHTClient {
                                          entry.epochTerm(),
                                          entry.epochCounter(),
 
-        // the re-homing is this node's write now, sized under the change it applied
-        node.replicationFence())).map(_ -> Option.some(value))
+        // the re-homing is this node's write now, sized under the change it applied; it is a repair write (#2258)
+        node.replicationFence(),
+                                         true)).map(_ -> Option.some(value))
                          .recover(_ -> Option.some(value));
     }
 
@@ -1306,7 +1335,8 @@ public final class DistributedDHTClient implements DHTClient {
                                            stamp.version(),
                                            stamp.epochIncarnation(),
                                            stamp.epochTerm(),
-                                           stamp.epochCounter())
+                                           stamp.epochCounter(),
+                                           stamp.repair())
                    .onSuccess(_ -> collector.onLocalSuccess(unit()))
                    .onFailure(collector::onLocalFailure);
     }
@@ -1369,7 +1399,8 @@ public final class DistributedDHTClient implements DHTClient {
                                                   stamp.epochIncarnation(),
                                                   stamp.epochTerm(),
                                                   stamp.epochCounter(),
-                                                  stamp.replicationVersion()),
+                                                  stamp.replicationVersion(),
+                                                  stamp.repair()),
                         correlationId,
                         collector);
     }

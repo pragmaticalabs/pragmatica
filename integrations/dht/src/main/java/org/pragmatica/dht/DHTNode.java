@@ -36,6 +36,7 @@ import org.pragmatica.dht.storage.KeyStamp;
 import org.pragmatica.dht.storage.StorageEngine;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.hlc.HlcTimestamp;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -1021,12 +1022,15 @@ public final class DHTNode {
             return;
         }
 
+        // a client put over the cap is refused by the engine and stores nothing; the writer's `repair` mark lifts the cap for the
+        // re-homing of a copy a client already holds (#2258)
         storage.putVersioned(request.key(),
                              request.value(),
                              request.version(),
                              request.epochIncarnation(),
                              request.epochTerm(),
-                             request.epochCounter())
+                             request.epochCounter(),
+                             request.repair())
                .onSuccess(written -> responseHandler.accept(new DHTMessage.PutResponse(request.requestId(),
                                                                                        nodeId,
                                                                                        true,
@@ -1034,13 +1038,21 @@ public final class DHTNode {
                                                                                        false,
                                                                                        false,
                                                                                        false)))
-               .onFailure(cause -> responseHandler.accept(new DHTMessage.PutResponse(request.requestId(),
-                                                                                     nodeId,
-                                                                                     false,
-                                                                                     false,
-                                                                                     cause instanceof DHTError.StaleEpochWrite,
-                                                                                     false,
-                                                                                     false)));
+               .onFailure(cause -> responseHandler.accept(putRefusal(request, cause)));
+    }
+
+    private DHTMessage.PutResponse putRefusal(DHTMessage.PutRequest request, Cause cause) {
+        if (cause instanceof DHTError.ReplicaFull full) {
+            return DHTMessage.PutResponse.capacityRefusal(request.requestId(), nodeId, full.usedBytes(), full.maxBytes());
+        }
+
+        return new DHTMessage.PutResponse(request.requestId(),
+                                          nodeId,
+                                          false,
+                                          false,
+                                          cause instanceof DHTError.StaleEpochWrite,
+                                          false,
+                                          false);
     }
 
     /// Handle a remove request: store a tombstone stamped with the remover's version and owner epoch, fenced like a

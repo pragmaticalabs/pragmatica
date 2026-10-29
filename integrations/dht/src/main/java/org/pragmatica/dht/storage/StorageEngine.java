@@ -20,6 +20,7 @@ import java.util.List;
 import org.pragmatica.dht.ConsistentHashRing;
 import org.pragmatica.dht.DHTMessage;
 import org.pragmatica.dht.Partition;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -289,6 +290,11 @@ public interface StorageEngine {
     default List<String> accountedPrefixes() {
         return List.of();
     }
+
+    /// Where this engine reports the transitions of its bounded prefix from now on (#2258, spec 3.2 item 8). An engine with no
+    /// bound reports nothing.
+    @Contract
+    default void capacityListener(DhtCapacityListener listener) {}
 
     /// Client puts refused for capacity since start, across the bounded prefixes.
     default long refusedPuts() {
