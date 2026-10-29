@@ -48,38 +48,43 @@ Two consequences follow directly:
     that cluster.** The delivered key is what every node encrypts under from then on. The first
     rotation carries NO decrypt overlap (there is no prior record to carry), so boot-key ciphertext
     is rejected from the moment it lands; subsequent rotations carry the previous key.
-  - **A ROTATED CLUSTER CANNOT GROW UNTIL AN OPERATOR ACTS — INCLUDING AUTO-HEAL.**
+  - **A node that boots after a rotation is out of step with the cluster's gossip for a short
+    window, and the seeds say so (#1200).** Its key is derived from `cluster_secret`, which the
+    rotated cluster no longer accepts, so its SWIM datagrams are dropped and it cannot decrypt the
+    cluster's. This does not strand it, because the node does not wait for SWIM to find the cluster:
+    it dials the cores it was configured with (its `--peers`, set from `AETHER_PEERS` for every node
+    the leader mints) itself. A core that has no installed configuration and no connection to any
+    configured core after 2 seconds initiates that dial regardless of the single-dialer order
+    (`MembershipAssembly.bootstrapInitiator`), and its dial targets come from two redundant feeds,
+    the configured topology and SWIM seeding, neither of which needs a datagram to decrypt. It forms
+    quorum, syncs, and the replay of the rotation record gives it the cluster key; SWIM then works.
+    Measured on an in-JVM cluster (`EmberGossipKeyRotatedJoinTest`): the replacement's gossip was
+    rejected for about a second and it was SWIM-present within seconds; the pin goes red when both
+    target feeds, or the initiator rule, are removed. **Not measured on a multi-host cluster.** An
+    earlier version of this text, and of the comment in `AetherNode`, called this an unrecoverable
+    deadlock, and a later one named SWIM seeding as the mechanism; both were wrong.
 
-    **If a node will not join after a rotation, CHECK THE SEED NODES' LOGS, NOT THE NEW NODE'S.**
-    Look for `Failed to decrypt gossip from <id>` on the seeds. This is the first thing to know
-    because it inverts where you will instinctively look: a node the cluster has never heard of
-    logs **nothing** about the cause — worse, it logs `Aether node <id> started, cluster forming...`
-    and then stays quiet, because an unreachable quorum is retried and never exits. The only
-    evidence is on the healthy machines you have no reason to suspect.
-
-    The mechanism: a node booting after a rotation derives its gossip key from `cluster_secret`,
-    which the rotated cluster no longer accepts; its SWIM datagrams are dropped and it cannot decrypt
-    the cluster's either. SWIM therefore discovers no peers, the QUIC dial set stays self-only, no
-    quorum forms, and the consensus replay that carries the rotation record — the only way to obtain
-    the cluster key — never runs. The node cannot join, and the cycle cannot resolve itself.
-    **So an emergency rotation, performed precisely because something was compromised, leaves the
-    cluster unable to self-heal: auto-heal replacements, scale-up and re-provisioned nodes all fail
-    to join until they are given the rotated key material out of band.** Existing running nodes are
-    unaffected.
-
-    Which nodes say so for themselves:
+    What an operator sees:
+    - On the SEED nodes, the operator event `gossip-key-unknown-from-peer` (WARNING, once per sender
+      address until it recovers, never a key; at most 16 new senders per minute, the rest summarised
+      by one `gossip-key-unknown-senders-suppressed` event; the subject is the sender's `ip:port`) when a datagram arrives under a key id they do not hold, and the recovery
+      `gossip-key-peer-decrypted` when that sender's gossip next decrypts. The per-datagram
+      `Failed to decrypt gossip from <address>` WARN remains. Source addresses are spoofable, so the
+      address in the event is a lead, not proof. An event that is not followed by its recovery means
+      the sender never caught up.
     - A **restarted existing member** refuses to boot with a `FATAL` line naming gossip-key
-      divergence (#683) — its peers still hold it in their configured seed set, so they probe it and
-      it can see gossip arriving under a key id it does not hold.
-    - A **node the cluster has never heard of** — an auto-heal replacement or scale-up node — cannot
-      detect it at all. Nobody probes an address they do not know, so it receives nothing, and its
-      silence is indistinguishable from a partition, down seeds, or a wrong advertise address. Hence
-      the instruction above.
+      divergence (#683) when it sees gossip under a key id it does not hold.
+    - A node whose peer list names no reachable core cannot join, rotated or not. Auto-heal and
+      scale-up always give a node the live members (the leader refuses to provision with none).
 
-    A general key-delivery path for joining nodes is not in rc4. It is an architecture change — it
-    needs either a second trust root or a deliberately weakened revocation — and the choice is an open
-    **owner decision tracked as #1200**. Until that lands, the out-of-band re-provisioning described
-    above is the supported answer.
+    **The limit of rotation (#2474).** Gossip-key rotation replaces the SWIM encryption key. It does
+    not change what admits a node: QUIC peers authenticate with mutual TLS whose certificate
+    authority is derived from `cluster_secret` (`SelfSignedCertificateProvider`, `TlsConfig`,
+    `QuicTlsProvider`). A node holding `cluster_secret` is admitted to consensus and receives the
+    current gossip key by replaying the rotation record. Rotation therefore protects gossip
+    confidentiality against a leaked GOSSIP KEY only; after a `cluster_secret` leak it changes nothing
+    about who can join or read cluster state. The remedy for a `cluster_secret` compromise is open
+    (#2474).
 
     **Exposure introduced by the boot refusal, stated as capability.** The refusal counts
     same-key-id-consecutive undecryptable datagrams, and an unencrypted datagram is **not**

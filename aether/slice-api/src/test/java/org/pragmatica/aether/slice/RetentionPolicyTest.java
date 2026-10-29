@@ -156,7 +156,7 @@ class RetentionPolicyTest {
 
         @Test
         void shouldEvict_isFalse_whenEveryLimitIsExceededButTheModeIsUnknown() {
-            var policy = new RetentionPolicy(10, 10, 10, RetentionMode.UNKNOWN, org.pragmatica.lang.Option.none());
+            var policy = new RetentionPolicy(10, 10, 10, RetentionMode.UNKNOWN, org.pragmatica.lang.Option.none(), RetentionDimensions.NONE);
 
             assertThat(policy.shouldEvict(1_000, 1_000, 1_000)).isFalse();
         }
@@ -165,7 +165,7 @@ class RetentionPolicyTest {
         /// green result above could mean the limits were never exceeded.
         @Test
         void shouldEvict_isTrue_forTheSameInputsUnderAKnownMode() {
-            var policy = new RetentionPolicy(10, 10, 10, RetentionMode.ANY, org.pragmatica.lang.Option.none());
+            var policy = new RetentionPolicy(10, 10, 10, RetentionMode.ANY, org.pragmatica.lang.Option.none(), RetentionDimensions.NONE);
 
             assertThat(policy.shouldEvict(1_000, 1_000, 1_000)).isTrue();
         }

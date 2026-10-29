@@ -8,7 +8,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -23,23 +22,19 @@ import org.pragmatica.lang.Option;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
-/// Streams audit E-02 (#2201): stream configuration keys that are parsed and accepted but have no runtime effect. The deploy validator
-/// ([StreamResourceValidator#partition], the production publish path) knows the list and drops the alias that declares one, naming the rule. The
-/// activation path ([StreamSectionBinding#bindStreamSection], what a node provisions a stream from) has no such guard: the same section binds, the
-/// stream is created with the inert value, and nothing says it does nothing. A configuration pushed through the KV layer, which
-/// `config-provisioning.md` ranks highest, reaches activation without passing the validator.
-///
-/// Two halves of the finding, each a TRIPWIRE (enabled, GREEN) beside a REAL assertion (`@Disabled`, RED today), both over the real validator and the
-/// real binder for every inert key the validator names:
-///   - parity: whatever the validator rejects as inert, the activation binder must not accept silently (refuse it, or make the key effective, in which
-///     case the validator stops rejecting it and the implication holds vacuously);
-///   - the validator side is a control (GREEN now and after a refuse-side fix): it still names the rule.
+/// Streams audit E-02 (#2201), fixed by spec 3.2 item 9: stream configuration keys that are parsed and accepted but have no runtime effect. The
+/// deploy validator ([StreamResourceValidator#partition], the production publish path) and the activation path
+/// ([StreamSectionBinding#bindStreamSection], what a node provisions a stream from) now judge a declaration by one table, `InertKeyRules`, so a
+/// configuration pushed through the KV layer, which `config-provisioning.md` ranks highest, cannot reach activation with a key the validator
+/// refuses and bind silently. For every inert key the validator names, over the real validator and the real binder:
+///   - parity: whatever the validator rejects as inert, the activation binder does not accept silently (refuse it, or make the key effective, in
+///     which case the validator stops rejecting it and the implication holds vacuously);
+///   - the validator still names the rule (the conjunction's first half is the control).
 class InertStreamConfigParityTripwireTest {
     private static final Artifact APP_ARTIFACT = Artifact.artifact("com.example:my-app:1.0.0").unwrap();
     private static final ProvisioningContext ACTIVATION = ProvisioningContext.provisioningContext()
                                                                              .withExtension(ReplicationContext.Source.class,
                                                                                             ReplicationContext.Source.fixed(ReplicationContext.BUILT_IN));
-    private static final String ENABLE = "E-02 tripwire: the activation binder now refuses a configuration key the validator rejects as inert; delete this tripwire and enable the real assertion beside it (#2201)";
 
     private record InertKey(String name, String line, String rule) {
         @Override
@@ -67,39 +62,20 @@ class InertStreamConfigParityTripwireTest {
 
     @ParameterizedTest
     @MethodSource("inertStreamKeys")
-    void inertStreamKey_isRejectedByTheValidator_butBoundSilentlyAtActivation_tripwire(InertKey key) {
-        var toml = streamSection(key.line());
-
-        assertThat(rejectedRules(toml)).as("control: the deploy validator drops the alias, naming the rule").contains("[streams.orders]::" + key.rule());
-        assertThat(StreamSectionBinding.bindStreamSection(providerOf(toml), "streams.orders", ACTIVATION).isSuccess()).as(ENABLE + " [" + key + "]").isTrue();
-    }
-
-    @Disabled("E-02 real assertion, RED today: a key the validator rejects as inert must not bind silently at activation (#2201)")
-    @ParameterizedTest
-    @MethodSource("inertStreamKeys")
     void inertStreamKey_isNotBoundSilentlyAtActivation(InertKey key) {
         var toml = streamSection(key.line());
 
+        assertThat(rejectedRules(toml)).as("control: the deploy validator drops the alias, naming the rule").contains("[streams.orders]::" + key.rule());
         assertThat(rejectedRules(toml).contains("[streams.orders]::" + key.rule()) && StreamSectionBinding.bindStreamSection(providerOf(toml), "streams.orders", ACTIVATION).isSuccess())
             .as("the validator rejects `%s` as inert, yet the activation binder accepts it; satisfied by making the key effective; deleting the validation also satisfies it and is NOT the fix", key.line())
             .isFalse();
     }
 
-    /// `consistency = "strong"` is refused by the separate whole-publish gate ([StreamResourceValidator#ensureHonourableConsistency], #1262), not by
-    /// the per-section inert rule; the activation binder takes it all the same.
-    @Test
-    void strongConsistency_isRefusedByThePublishGate_butBoundSilentlyAtActivation_tripwire() {
-        var toml = streamSection("consistency = \"strong\"");
-
-        assertThat(StreamResourceValidator.ensureHonourableConsistency(Option.some(toml)).isFailure()).as("control: the publish gate refuses STRONG").isTrue();
-        assertThat(StreamSectionBinding.bindStreamSection(providerOf(toml), "streams.orders", ACTIVATION).isSuccess()).as(ENABLE + " [consistency]").isTrue();
-    }
-
-    @Disabled("E-02 real assertion, RED today: a STRONG declaration the publish gate refuses must not bind silently at activation (#2201)")
     @Test
     void strongConsistency_isNotBoundSilentlyAtActivation() {
         var toml = streamSection("consistency = \"strong\"");
 
+        assertThat(StreamResourceValidator.ensureHonourableConsistency(Option.some(toml)).isFailure()).as("control: the publish gate refuses STRONG").isTrue();
         assertThat(StreamResourceValidator.ensureHonourableConsistency(Option.some(toml)).isFailure()
                    && StreamSectionBinding.bindStreamSection(providerOf(toml), "streams.orders", ACTIVATION).isSuccess())
             .as("the publish gate refuses STRONG, yet the activation binder accepts it; satisfied by making the key effective; deleting the validation also satisfies it and is NOT the fix")
@@ -108,20 +84,11 @@ class InertStreamConfigParityTripwireTest {
 
     @ParameterizedTest
     @MethodSource("inertConsumerKeys")
-    void inertConsumerKey_isRejectedByTheValidator_butIgnoredSilentlyAtActivation_tripwire(InertKey key) {
+    void inertConsumerKey_isNotIgnoredSilentlyAtActivation(InertKey key) {
         var toml = consumerSection(key.line());
 
         assertThat(rejectedRules(toml)).as("control: the deploy validator drops the stream, naming the consumer section")
                                        .contains("[streams.orders.consumers.billing]::" + key.rule());
-        assertThat(StreamSectionBinding.bindStreamSection(providerOf(toml), "streams.orders", ACTIVATION).isSuccess()).as(ENABLE + " [" + key + "]").isTrue();
-    }
-
-    @Disabled("E-02 real assertion, RED today: a consumer key the validator rejects as inert must not be ignored silently at activation (#2201)")
-    @ParameterizedTest
-    @MethodSource("inertConsumerKeys")
-    void inertConsumerKey_isNotIgnoredSilentlyAtActivation(InertKey key) {
-        var toml = consumerSection(key.line());
-
         assertThat(rejectedRules(toml).contains("[streams.orders.consumers.billing]::" + key.rule())
                    && StreamSectionBinding.bindStreamSection(providerOf(toml), "streams.orders", ACTIVATION).isSuccess())
             .as("the validator rejects `%s` as inert, yet the activation binder accepts the section; satisfied by making the key effective; deleting the validation also satisfies it and is NOT the fix", key.line())
