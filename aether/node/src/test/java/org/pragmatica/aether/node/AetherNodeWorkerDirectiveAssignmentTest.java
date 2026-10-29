@@ -32,6 +32,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageRouter;
 import org.slf4j.LoggerFactory;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -59,6 +60,39 @@ class AetherNodeWorkerDirectiveAssignmentTest {
         verify(detector).markAssigned();
     }
 
+    /// The DARK readiness latch rides the activation directive: a WORKER directive for this node runs the supplied latch exactly once, one for
+    /// another node or a rejected one does not. Mutation: drop `authorizePassiveClient.run()` in `activateWorkerMode`.
+    @Test
+    void handleActivationDirective_workerDirectiveForThisWorker_runsTheLatchOnce() {
+        var runs = new java.util.concurrent.atomic.AtomicInteger();
+
+        handle(SELF, ActivationDirectiveValue.worker("c-0", ""), runs::incrementAndGet);
+        assertThat(runs.get()).isEqualTo(1);
+    }
+
+    @Test
+    void handleActivationDirective_otherNodeOrRejectedRole_doesNotRunTheLatch() {
+        var runs = new java.util.concurrent.atomic.AtomicInteger();
+
+        handle(OTHER, ActivationDirectiveValue.worker("c-0", ""), runs::incrementAndGet);
+        handle(SELF, ActivationDirectiveValue.core(), runs::incrementAndGet);
+        assertThat(runs.get()).isZero();
+    }
+
+    /// The projection client's fresh callback (DARK): latch first, then the worker-ready step. Mutation: drop `clusterNode.authorizePassiveClient()`
+    /// or `workerReady.run()` in `projectionReady`.
+    @Test
+    @SuppressWarnings("unchecked")
+    void projectionReady_setsTheLatch_thenRunsWorkerReady() {
+        RabiaNode<KVCommand<AetherKey>> cluster = Mockito.mock(RabiaNode.class);
+        var ran = new java.util.concurrent.atomic.AtomicInteger();
+
+        WorkerHierarchyAssembly.projectionReady(cluster, ran::incrementAndGet);
+
+        verify(cluster).authorizePassiveClient();
+        assertThat(ran.get()).isEqualTo(1);
+    }
+
     @Test
     void handleActivationDirective_directiveForAnotherNode_doesNotRelease() {
         handle(OTHER, ActivationDirectiveValue.worker("c-0", ""));
@@ -75,6 +109,11 @@ class AetherNodeWorkerDirectiveAssignmentTest {
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     private void handle(NodeId target, ActivationDirectiveValue value) {
+        handle(target, value, () -> {});
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private void handle(NodeId target, ActivationDirectiveValue value, Runnable latch) {
         var config = Mockito.mock(AetherNodeConfig.class);
 
         when(config.self()).thenReturn(SELF);
@@ -98,6 +137,7 @@ class AetherNodeWorkerDirectiveAssignmentTest {
                                              announcer,
                                              Mockito.mock(GovernorAuthorityClient.class),
                                              () -> false,
-                                             LoggerFactory.getLogger(AetherNodeWorkerDirectiveAssignmentTest.class));
+                                             LoggerFactory.getLogger(AetherNodeWorkerDirectiveAssignmentTest.class),
+                                             latch);
     }
 }
