@@ -34,6 +34,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
+import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.lang.utils.Causes;
 
 import org.junit.jupiter.api.AfterEach;
@@ -49,11 +50,13 @@ import static org.awaitility.Awaitility.await;
 /// nothing else. The feed here counts subscriptions per owner and releases them on `releaseAll`, as the node's does.
 class SliceStoreConfigWatchLifecycleTest {
     private static final String DEP_CLASS = "org.pragmatica.aether.slice.dependency.WatchingDepFactory";
+    private static final String CODEC_THROWS_CLASS = "org.pragmatica.aether.slice.dependency.WatchingCodecThrowsFactory";
     private static final String SLOW_CLASS = "org.pragmatica.aether.slice.dependency.WatchingSlowFactory";
     private static final Artifact SLOW = artifact("org.example:slow:1.0.0");
     private static final Artifact X = artifact("org.example:x:1.0.0");
     private static final Artifact Y = artifact("org.example:y:1.0.0");
     private static final Artifact D = artifact("org.example:d:1.0.0");
+    private static final Artifact CODEC_THROWS = artifact("org.example:codec-throws:1.0.0");
     private static final SliceInvokerFacade STUB_INVOKER = new SliceInvokerFacade() {
         @Override
         public <R, T> Result<MethodHandle<R, T>> methodHandle(String artifact, String method, TypeToken<T> requestType, TypeToken<R> responseType) {
@@ -73,6 +76,7 @@ class SliceStoreConfigWatchLifecycleTest {
     @BeforeEach
     void setUp() throws IOException {
         var jars = Map.of(SLOW.asString(), jar(SLOW, SLOW_CLASS, ""),
+                          CODEC_THROWS.asString(), jar(CODEC_THROWS, CODEC_THROWS_CLASS, ""),
                           D.asString(), jar(D, DEP_CLASS, ""),
                           X.asString(), jar(X, DEP_CLASS, "[slices]\n" + D.asString() + "\n"),
                           Y.asString(), jar(Y, DEP_CLASS, "[slices]\n" + D.asString() + "\n"));
@@ -162,27 +166,31 @@ class SliceStoreConfigWatchLifecycleTest {
     // ---------------------------------------------------------------- residual edge R8
 
     @Test
-    void tripwire_aSliceRegisteredAndSubscribedButNeverEntered_isReleasedByNothing() {
-        var resolved = DependencyResolver.resolveWithContext(X,
-                                                             repository,
-                                                             registry,
-                                                             sharedLoader,
-                                                             STUB_INVOKER,
-                                                             noResources(),
-                                                             Option.some((art, classLoader) -> Option.some(IntrinsicConfigProvider.intrinsicConfigProvider("node",
-                                                                                                                                                   Map.of("watched.key", "v")))),
-                                                             Option.empty(),
-                                                             SliceLoadingContext.noResourceOverlay(),
-                                                             Option.some(feed))
-                                         .await();
+    void tripwire_aFailureAfterRegistration_leavesTheSubscriptionHeld_andNothingReleasesIt() {
+        var withCodec = (sliceStore) SliceStore.sliceStore(registry,
+                                                           List.of(repository),
+                                                           sharedLoader,
+                                                           STUB_INVOKER,
+                                                           noResources(),
+                                                           SliceActionConfig.sliceActionConfig(),
+                                                           Option.some(IntrinsicConfigProvider.intrinsicConfigProvider("node", Map.of("watched.key", "v"))),
+                                                           Option.some(SliceCodec.sliceCodec(List.of())),
+                                                           Option.empty(),
+                                                           SliceLoadingContext.noResourceOverlay(),
+                                                           Option.some(feed));
 
-        assertThat(resolved.isSuccess()).isTrue();
-        assertThat(registry.lookup(X).isPresent()).isTrue();
-        assertThat(store.loaded()).as("no SliceStore entry was ever created for X").isEmpty();
+        var loaded = withCodec.loadSlice(CODEC_THROWS).await();
 
-        store.unloadSlice(X).await();
+        assertThat(loaded.isFailure()).as("the load fails AFTER the slice was created, subscribed and registered").isTrue();
+        assertThat(withCodec.loaded()).as("no SliceStore entry was ever created").isEmpty();
 
-        assertThat(feed.count(X)).as("TRIPWIRE, residual edge R8 (ACCEPTED rc5 limit). This pins the CONSEQUENCE, not the cause: a slice registered and subscribed whose SliceStore entry was never created is released by nothing. Revisit trigger: any registry unload path, or a reachable throw in createEntry after registration; then unregister the slice AND release its subscriptions together, and replace this test with one that forces the throw").isEqualTo(1);
+        withCodec.unloadSlice(CODEC_THROWS).await();
+
+        assertThat(registry.lookup(CODEC_THROWS).isPresent() && feed.count(CODEC_THROWS) == 1)
+            .as("TRIPWIRE, residual edge R8 (ACCEPTED rc5 limit): the leak ITSELF - a slice that failed after registration is still "
+                + "registered and still subscribed, and nothing releases it. If this fails the leak is fixed (unregister and release "
+                + "together): delete this tripwire and enable the real assertion that a failed load leaves no subscription "
+                + "and no registration").isTrue();
     }
 
     // ---------------------------------------------------------------- scaffolding
