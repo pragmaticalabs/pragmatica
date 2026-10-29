@@ -4586,6 +4586,9 @@ public interface AetherNode extends ManageableNode {
         // #1640: a new cluster-events owner re-sends every event waiting for redelivery at once.
         kvRouterBuilder.onPut(AetherKey.StreamPartitionOwnershipKey.class,
                               eventAggregator::onStreamPartitionOwnershipPut);
+        // #1671: the committed gate of the KV-derived cluster events follows the ownership record, and its removal.
+        kvRouterBuilder.onRemove(AetherKey.StreamPartitionOwnershipKey.class,
+                                 eventAggregator::onStreamPartitionOwnershipRemove);
         entries.addAll(kvRouterBuilder.build().asRouteEntries());
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, nodeDeploymentManager::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, controlLoop::onQuorumStateChange));
@@ -4846,6 +4849,8 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeResponse.class, sliceInvoker::onInvokeResponse));
         entries.addAll(httpForwardRouteEntries(appHttpServer, managementServerRef));
         entries.add(MessageRouter.Entry.route(KVStoreLocalIO.Request.Find.class, kvStore::find));
+        // #1671: and, with no ownership record, the committed leader.
+        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, eventAggregator::onLeaderCommitted));
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
                                               notification -> handleLeaderCommit(notification, leaderManager)));
         loadBalancerManager.onPresent(lbm -> {

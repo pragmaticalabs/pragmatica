@@ -34,6 +34,9 @@ import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.SystemStreamFactories;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.hlc.HlcTimestamp;
@@ -101,32 +104,89 @@ class ClusterEventAggregatorCommittedGateTest {
         assertThat(raisedBy(nodeA)).containsExactly("node-a");
     }
 
-    /// NT-169c: no ownership record at the index (bootstrap, quorum loss): the lowest NodeId of the committed core passes, so the
-    /// "neither side passes" window is closed for the fact. The two nodes list the membership in different orders.
+    /// NT-169c: no ownership record at the index (bootstrap, quorum loss): the leader named by the committed `LeaderKey` raises
+    /// the fact, whatever each node's local view says, so the "neither side passes" window is closed for it.
     @Test
-    void ClusterEvents_noOwnershipRecordAtIndex_lowestCoreNodePasses() {
-        bothNodes(() -> false, () -> false);
-        nodeA.bindCommittedOwnerSources(Option::none, () -> List.of(NODE_B, NODE_A));
-        nodeB.bindCommittedOwnerSources(Option::none, () -> List.of(NODE_A, NODE_B));
+    void ClusterEvents_noOwnershipRecordAtIndex_committedLeaderRaisesIt() {
+        bothNodes(() -> false, () -> true);
 
-        both(loadedPut("n1"));
+        both(leaderPut(NODE_B, 1L), loadedPut("n1"));
+
+        assertThat(raisedBy(nodeA)).containsExactly("node-b");
+    }
+
+    /// v-2500 T1: the roster is not an input. Two nodes with different local views and no record still raise one copy, because the
+    /// committed leader is the same at the index on both.
+    @Test
+    void ClusterEvents_noRecord_nodesWithDifferentLocalViews_raiseExactlyOneCopy() {
+        bothNodes(() -> true, () -> true);
+
+        both(leaderPut(NODE_A, 1L), loadedPut("n1"));
 
         assertThat(raisedBy(nodeA)).containsExactly("node-a");
     }
 
-    /// v-2500 T1: with no record, the roster each node reads is its own installed voter configuration, which a lagging node adopts
-    /// out of step with the KV apply. Two nodes that hold different rosters at the same index must still raise the fact exactly once.
+    /// The leader decides in notification order too, and a record, once there, outranks the leader.
     @Test
-    void ClusterEvents_noRecord_nodesHoldingDifferentRosters_raiseExactlyOneCopy() {
-        var nodeC = new NodeId("node-c");
+    void ClusterEvents_leaderFollowsTheIndex_andARecordOutranksIt() {
+        bothNodes(() -> true, () -> true);
 
-        bothNodes(() -> false, () -> false);
-        nodeA.bindCommittedOwnerSources(Option::none, () -> List.of(NODE_A, NODE_B, nodeC));
-        nodeB.bindCommittedOwnerSources(Option::none, () -> List.of(NODE_B, nodeC));
+        both(leaderPut(NODE_A, 1L), loadedPut("first"), leaderPut(NODE_B, 2L), loadedPut("second"), ownershipPut(NODE_A), loadedPut("third"));
+
+        assertThat(raisedBy(nodeA, "first")).containsExactly("node-a");
+        assertThat(raisedBy(nodeA, "second")).containsExactly("node-b");
+        assertThat(raisedBy(nodeA, "third")).containsExactly("node-a");
+    }
+
+    /// v-2500 T4: a removal of the record (a snapshot install synthesises one for a vanished key) clears the owner this node holds;
+    /// the gate falls back to the leader.
+    @Test
+    void ClusterEvents_recordRemoved_theGateFallsBackToTheLeader() {
+        bothNodes(() -> true, () -> true);
+
+        both(ownershipPut(NODE_B), leaderPut(NODE_A, 1L), loadedPut("before"));
+        nodeA.onStreamPartitionOwnershipRemove(ownershipRemove());
+        nodeB.onStreamPartitionOwnershipRemove(ownershipRemove());
+        both(loadedPut("after"));
+
+        assertThat(raisedBy(nodeA, "before")).containsExactly("node-b");
+        assertThat(raisedBy(nodeA, "after")).containsExactly("node-a");
+    }
+
+    /// v-2500 T4: a removal of some other partition's record leaves the owner alone.
+    @Test
+    void ClusterEvents_removalOfAnotherPartitionsRecord_isIgnored() {
+        bothNodes(() -> true, () -> true);
+
+        both(ownershipPut(NODE_B));
+        nodeA.onStreamPartitionOwnershipRemove(ownershipRemoveOf("orders"));
+        nodeB.onStreamPartitionOwnershipRemove(ownershipRemoveOf("orders"));
+        both(loadedPut("after"));
+
+        assertThat(raisedBy(nodeA)).containsExactly("node-b");
+    }
+
+    /// v-2500 T4: with nothing committed to decide (no record, no leader, nothing bound), the node-local view decides, as in
+    /// `emit`: the empty case is the legacy gate, not a pass for everyone and not a drop for everyone.
+    @Test
+    void ClusterEvents_nothingCommitted_theLocalViewDecides() {
+        bothNodes(() -> false, () -> true);
 
         both(loadedPut("n1"));
 
-        assertThat(raisedBy(nodeA)).as("the same committed state at the index: one copy").hasSize(1);
+        assertThat(raisedBy(nodeA)).containsExactly("node-b");
+    }
+
+    /// A node that has not yet seen a leader notification reads the committed leader from the store.
+    @Test
+    void ClusterEvents_noLeaderNotificationSeen_theStoredLeaderDecides() {
+        bothNodes(() -> false, () -> false);
+        nodeA.bindCommittedOwnerSources(Option::none, () -> Option.some(NODE_B));
+        nodeB.bindCommittedOwnerSources(Option::none, () -> Option.some(NODE_B));
+
+        both(loadedPut("n1"));
+
+        assertThat(raisedBy(nodeA)).containsExactly("node-b");
     }
 
     /// A node that has not yet seen an ownership notification (it joined after the last one) reads the committed record from the
@@ -134,8 +194,8 @@ class ClusterEventAggregatorCommittedGateTest {
     @Test
     void ClusterEvents_noNotificationSeenYet_theStoredRecordDecides_andANotificationTakesOver() {
         bothNodes(() -> false, () -> false);
-        nodeA.bindCommittedOwnerSources(() -> Option.some(NODE_B), List::of);
-        nodeB.bindCommittedOwnerSources(() -> Option.some(NODE_B), List::of);
+        nodeA.bindCommittedOwnerSources(() -> Option.some(NODE_B), Option::none);
+        nodeB.bindCommittedOwnerSources(() -> Option.some(NODE_B), Option::none);
 
         both(loadedPut("first"), ownershipPut(NODE_A), loadedPut("second"));
 
@@ -252,6 +312,8 @@ class ClusterEventAggregatorCommittedGateTest {
     private static void deliver(ClusterEventAggregator node, ValuePut<?, ?> notification) {
         if (notification.cause().key() instanceof StreamPartitionOwnershipKey) {
             node.onStreamPartitionOwnershipPut((ValuePut<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue>) notification);
+        } else if (notification.cause().key() instanceof LeaderKey) {
+            node.onLeaderCommitted(notification);
         } else {
             node.onNodeArtifactPut((ValuePut<NodeArtifactKey, NodeArtifactValue>) notification);
         }
@@ -285,6 +347,19 @@ class ClusterEventAggregatorCommittedGateTest {
                                                                                                               epoch.localCounter(),
                                                                                                               HlcTimestamp.ZERO)),
                               Option.none());
+    }
+
+    /// A committed `LOAD` of the artifact on `node`: the KV-derived `DeploymentStarted`.
+    private static ValuePut<LeaderKey, LeaderValue> leaderPut(NodeId leader, long viewSequence) {
+        return new ValuePut<>(new KVCommand.Put<>(LeaderKey.INSTANCE, LeaderValue.leaderValue(leader, viewSequence)), Option.none());
+    }
+
+    private static ValueRemove<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> ownershipRemove() {
+        return ownershipRemoveOf(STREAM);
+    }
+
+    private static ValueRemove<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> ownershipRemoveOf(String stream) {
+        return new ValueRemove<>(new KVCommand.Remove<>(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream, 0), Option.none()), Option.none());
     }
 
     /// A committed `LOAD` of the artifact on `node`: the KV-derived `DeploymentStarted`.

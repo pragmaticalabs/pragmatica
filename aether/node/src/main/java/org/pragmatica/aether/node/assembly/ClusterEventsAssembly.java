@@ -42,6 +42,8 @@ import org.pragmatica.cluster.state.kvstore.*;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.rabia.VoterConfiguration;
@@ -262,9 +264,9 @@ public sealed interface ClusterEventsAssembly {
         eventAggregator.bindSelfIsVoter(() -> isInstalledVoterOrUnknown(clusterNode.voterConfiguration(), config.self()));
         // #1671 (I-35): the facts raised from a committed KV notification are gated on the committed ownership record of the
         // cluster-events partition (read from the store only until this node has seen an ownership notification), and with no
-        // record on the lowest member of the installed, consensus-committed voter configuration.
+        // record on the committed leader (the same).
         eventAggregator.bindCommittedOwnerSources(() -> committedClusterEventsOwner(kvStore, clusterEventsStreamName),
-                                                  () -> installedVoters(clusterNode.voterConfiguration()));
+                                                  () -> committedLeader(kvStore));
         alertManager.bindEventSink(eventAggregator::emit, clusterEventsHlcClock);
         alertManager.bindClusterEventsSource(eventAggregator::events);
         // #957: AlertForwarder was never constructed anywhere in src/main, so no alert left this
@@ -445,10 +447,9 @@ public sealed interface ClusterEventsAssembly {
                       .map(AetherValue.StreamPartitionOwnershipValue::owner);
     }
 
-    private static List<NodeId> installedVoters(Option<VoterConfiguration> installed) {
-        return installed.map(configuration -> configuration.roster()
-                                                           .members())
-                        .or(List.of());
+    private static Option<NodeId> committedLeader(KVStore<AetherKey, AetherValue> kvStore) {
+        return kvStore.getTyped(LeaderKey.INSTANCE, LeaderValue.class)
+                      .map(LeaderValue::leader);
     }
 
     /// #2306: a node counts as a voter unless an installed configuration excludes it. No configuration yet (genesis pending)

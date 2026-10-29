@@ -71,6 +71,9 @@ import org.pragmatica.aether.slice.stream.FrameworkStreamPublisher;
 import org.pragmatica.aether.slice.stream.SystemStreams;
 import org.pragmatica.aether.stream.StreamPartitionManager.Exhaustion;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
@@ -340,8 +343,11 @@ public final class ClusterEventAggregator {
     /// The committed record read from the store, for a node that has not yet seen an ownership notification (it joined or
     /// restarted after the last one). Bound by `AetherNode`; unbound it names nothing.
     private volatile Supplier<Option<NodeId>> committedOwnerLookup = Option::none;
-    /// The committed core membership, for the partition with no ownership record. Bound by `AetherNode`; unbound it is empty.
-    private volatile Supplier<List<NodeId>> coreMembers = List::of;
+    /// The leader named by the committed `LeaderKey`, as of the last KV notification this node processed: the deterministic
+    /// stand-in for the owner while the partition has no ownership record. In commit order like [#committedOwner].
+    private final AtomicReference<Option<NodeId>> committedLeader = new AtomicReference<>(Option.none());
+    /// The committed leader read from the store, for a node that has not yet seen a leader notification. Bound by `AetherNode`.
+    private volatile Supplier<Option<NodeId>> committedLeaderLookup = Option::none;
     /// #1653: cluster-events ownership changes applied on this node; the event feed re-anchors when it moves.
     private final AtomicLong ownershipChanges = new AtomicLong();
     private volatile long lastEventsFrom = -1;
@@ -637,23 +643,39 @@ public final class ClusterEventAggregator {
         publishSafely(event);
     }
 
-    /// Binds the sources the committed-record gate of [#emitCommitted] reads when no ownership notification has been seen:
-    /// the record in the store, and the committed core membership.
+    /// Binds the sources the committed gate of [#emitCommitted] reads when no notification of that kind has been seen on this
+    /// node: the ownership record and the leader record, as they stand in the store.
     @Contract
     public void bindCommittedOwnerSources(Supplier<Option<NodeId>> committedOwnerLookup,
-                                          Supplier<List<NodeId>> coreMembers) {
+                                          Supplier<Option<NodeId>> committedLeaderLookup) {
         this.committedOwnerLookup = committedOwnerLookup;
-        this.coreMembers = coreMembers;
+        this.committedLeaderLookup = committedLeaderLookup;
+    }
+
+    /// #1671: the committed leader, from the `LeaderKey` notification. Commit order, like the ownership record.
+    @Contract
+    public void onLeaderCommitted(ValuePut<?, ?> put) {
+        if (put.cause().key() instanceof LeaderKey && put.cause().value() instanceof LeaderValue leader) {
+            committedLeader.set(Option.some(leader.leader()));
+        }
     }
 
     /// #1671 (I-35): emit for a fact DERIVED FROM A COMMITTED KV NOTIFICATION. Exactly one node passes per KV index, because
     /// the decision is made from state every node holds identically at that index, not from a node-local view that can lag it:
     /// the owner named by the committed ownership record of the cluster-events partition at this notification; with no record,
-    /// the lowest NodeId of the committed core membership. Neither side of a handover can pass twice or not at all.
+    /// the leader named by the committed `LeaderKey` at this notification. Neither side of a handover can pass twice or not at
+    /// all. (The installed voter configuration is NOT used: a lagging node adopts a newer one ahead of its KV apply, so two nodes
+    /// can hold different rosters at one index.)
     ///
-    /// Only the facts raised from a KV notification use this; facts raised from anywhere else ([#emit]: ISR transitions,
-    /// connections, access denials, scaling) keep the node-local gate and its residual duplicate or drop. With none of the
-    /// three sources available (an unbound aggregator, as in unit harnesses) it behaves as [#emit].
+    /// **Limit: a record that names a dead owner.** The gate is strictly the record, with no liveness fallback and no queue: from
+    /// the owner's death until the next ownership record (or, with no record, the next leader record) every surviving node
+    /// suppresses the facts it derives, logged at DEBUG as "not owner". [unverified: window length]. The node-local gate it
+    /// replaces had the same dependence, since the stream publish also needs the new owner.
+    ///
+    /// Only the facts raised from a KV notification use this. Facts raised from anywhere else ([#emit]: ISR transitions,
+    /// connections, access denials, scaling) keep the node-local gate and its residual duplicate or drop; config and blueprint
+    /// events are single-origin API facts, #2503. With none of the sources available (an unbound aggregator, as in unit
+    /// harnesses) it behaves as [#emit].
     @Contract
     public void emitCommitted(ClusterEvent event) {
         if (replayingCheck.getAsBoolean()) {
@@ -675,19 +697,17 @@ public final class ClusterEventAggregator {
     private boolean passesCommittedGate() {
         return committedOwner.get()
                              .orElse(committedOwnerLookup)
+                             .orElse(this::committedLeaderNow)
                              .map(selfNode::equals)
-                             .or(this::lowestCoreMemberIsSelf);
+                             .or(ownerCheck::getAsBoolean);
     }
 
-    /// No committed record: the lowest NodeId of the committed core passes. With no membership either, nothing in the
-    /// committed state decides, and the node-local gate is the answer (it is false while ownership is unresolvable, which
+    /// No committed ownership record: the committed leader stands in for the owner. With no leader record either, nothing in the
+    /// committed state decides, and the node-local gate is the answer (false while ownership is unresolvable, which
     /// [#suppressUnowned] then reports).
-    private boolean lowestCoreMemberIsSelf() {
-        return coreMembers.get()
-                          .stream()
-                          .min(Comparator.naturalOrder())
-                          .map(selfNode::equals)
-                          .orElseGet(ownerCheck::getAsBoolean);
+    private Option<NodeId> committedLeaderNow() {
+        return committedLeader.get()
+                              .orElse(committedLeaderLookup);
     }
 
     /// Split the owner-gate's two falses (#957) so the loud one is actually loud.
@@ -848,6 +868,15 @@ public final class ClusterEventAggregator {
             committedOwner.set(Option.some(put.cause().value().owner()));
             ownershipChanges.incrementAndGet();
             redelivery.redeliver(true);
+        }
+    }
+
+    /// #1671: the committed record is gone (a snapshot install synthesises a removal for a vanished key), so no owner is recorded
+    /// any more and the gate falls to the stored record, then the leader.
+    @Contract
+    public void onStreamPartitionOwnershipRemove(ValueRemove<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> remove) {
+        if (isClusterEventsPartition(remove.cause().key())) {
+            committedOwner.set(Option.none());
         }
     }
 
