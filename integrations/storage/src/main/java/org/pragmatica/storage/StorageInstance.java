@@ -108,6 +108,14 @@ public interface StorageInstance {
     /// Delete a named reference.
     Promise<Unit> deleteRef(String name);
 
+    /// [#deleteRef] carrying `authority` over a cluster-shared tier (#2258): if this release orphans the block, its record
+    /// keeps the authority and [StorageGarbageCollector] then deletes the block from every tier ([#deleteEverywhere]). A
+    /// release that leaves another reference standing records nothing. The default carries no authority, which is the safe
+    /// direction for an implementation without a lifecycle record.
+    default Promise<Unit> deleteRef(String name, SharedDelete authority) {
+        return deleteRef(name);
+    }
+
     /// Releases one reference credited by [#put] -- the debit for a block that carries no name of its
     /// own. [ContentStore] stores chunk blocks with plain `put` and names only the manifest, so
     /// `put`'s credit is the only thing holding a chunk; this is how that credit is given back when the
@@ -186,16 +194,46 @@ public interface StorageInstance {
         return putRef(name, content);
     }
 
-    /// Delete a block from all tiers and remove its lifecycle metadata. Used by explicit content/manifest
-    /// deletion and stream retention -- never by GC, which uses [#deleteFromPrivateTiers] (#250).
+    /// [#putRef] landing on the tiers `scope` names ([TierScope]). The default writes every tier, today's behaviour.
+    default Promise<BlockId> putRef(String name, byte[] content, TierScope scope) {
+        return putRef(name, content);
+    }
+
+    /// [#replaceRef] landing on the tiers `scope` names.
+    default Promise<BlockId> replaceRef(String name, byte[] content, TierScope scope) {
+        return putRef(name, content, scope);
+    }
+
+    /// How many [TierScope#PRIVATE] writes fell back to every tier because the instance has no private durable tier.
+    default long privateScopeFallbacks() {
+        return 0L;
+    }
+
+    /// The predicate an [SharedDelete#IF_IDENTIFIED] orphan's block must pass to be deleted from a shared tier: true only
+    /// for a block whose own bytes confine it to one owner's fact (a sealed segment's identity header). Without one, no
+    /// such orphan is deleted from a shared tier. The default ignores it.
+    default Unit sharedDeleteIdentification(java.util.function.Predicate<byte[]> identified) {
+        return unit();
+    }
+
+    /// Collect `orphan` -- the record exactly as the caller's scan saw it -- from EVERY tier, the shared tier first, when its
+    /// record carries shared-delete authority ([BlockLifecycle#sharedDelete]); otherwise exactly as
+    /// [#deleteFromPrivateTiers]. Same claim and the same `false` for a record touched since the scan. The default collects
+    /// from private tiers only, the safe direction.
+    default Promise<Boolean> deleteEverywhere(BlockLifecycle orphan) {
+        return deleteFromPrivateTiers(orphan);
+    }
+
+    /// Delete a block from all tiers and remove its lifecycle metadata, whatever its references. No production code calls
+    /// it at rc5: content/manifest deletion releases (#981), and stream retention releases a segment's ref with shared-delete
+    /// authority ([#deleteRef(String, SharedDelete)]) and leaves the block to the collector's [#deleteEverywhere] (#2258).
     Promise<Unit> delete(BlockId id);
 
     /// Collect `orphan` -- the lifecycle record exactly as the caller's scan saw it -- from
     /// node-private tiers. A tier reporting [StorageTier#isShared] is skipped -- this node's local
     /// refcount belief is not authoritative for a cluster-shared tier, so orphan-driven garbage
-    /// collection must never issue a delete against it. Used by [StorageGarbageCollector];
-    /// a caller that legitimately needs "delete everywhere" (stream retention) must keep
-    /// using [#delete] -- content/manifest deletion no longer does; it releases (#981).
+    /// collection must never issue a delete against it. Used by [StorageGarbageCollector] for an orphan without
+    /// shared-delete authority; one with it goes through [#deleteEverywhere] (#2258).
     ///
     /// Resolves to `true` when the block was collected and `false` when it was NOT, because its
     /// record no longer equals `orphan` -- something (a deduplicating [#put], a read, a

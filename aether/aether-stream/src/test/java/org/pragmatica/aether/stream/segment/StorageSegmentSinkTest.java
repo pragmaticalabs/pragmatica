@@ -64,9 +64,15 @@ class StorageSegmentSinkTest {
             var blockId = storage.resolveRef(refName);
             assertThat(blockId.isEmpty()).isFalse();
 
+            // #2258: the block is the identity header, then the events.
             blockId.onPresent(id ->
                 storage.get(id).await()
-                       .onSuccess(opt -> opt.onPresent(data -> assertThat(data).isEqualTo(new byte[]{1, 2, 3})))
+                       .onSuccess(opt -> opt.onPresent(data -> {
+                           var split = SegmentProvenance.split(data).unwrap();
+
+                           assertThat(split.identified()).isTrue();
+                           assertThat(split.events()).isEqualTo(new byte[]{1, 2, 3});
+                       }))
             );
         }
 

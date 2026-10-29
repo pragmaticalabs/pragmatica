@@ -38,19 +38,35 @@ public final class SegmentIndex {
     /// Refs of a rebuilt listing that belong to an incarnation this index does not (yet) serve, by stream and
     /// incarnation. [#adopt] installs the matching ones and hands back the rest as garbage.
     private final ConcurrentHashMap<String, Map<Long, List<String>>> staged = new ConcurrentHashMap<>();
+    /// Refs a rebuild or an adoption found at or below their partition's durable reclaim floor and did not install
+    /// (#2258, spec 3.2 item 6): left by a crash between the floor write and the ref release, already reclaimed. The node
+    /// releases them ([#drainReclaimedBelowFloor]); nothing reads them.
+    private final java.util.concurrent.ConcurrentLinkedQueue<String> belowFloor = new java.util.concurrent.ConcurrentLinkedQueue<>();
+
+    /// Whether a segment's block carries the identity header ([SegmentProvenance#MAGIC2], #2258), which is what lets
+    /// retention release it with authority to delete it from the shared tier.
+    public enum IdentityMark {
+        /// Not known yet: a ref rebuilt from its name after a restart, until its block is read.
+        UNKNOWN,
+        /// Sealed by this build, or learned from the block: the block carries the header.
+        IDENTIFIED,
+        /// Learned from the block: written before the header existed. Never deleted from the shared tier.
+        LEGACY
+    }
 
     public record SegmentRef(long startOffset,
                              long endOffset,
                              long maxTimestamp,
                              int compressionOrdinal,
                              boolean encrypted,
-                             int originalSize) {
+                             int originalSize,
+                             IdentityMark identity) {
         public static SegmentRef segmentRef(long startOffset, long endOffset, long maxTimestamp) {
-            return new SegmentRef(startOffset, endOffset, maxTimestamp, 0, false, 0);
+            return new SegmentRef(startOffset, endOffset, maxTimestamp, 0, false, 0, IdentityMark.UNKNOWN);
         }
 
         public static SegmentRef segmentRef(long startOffset, long endOffset) {
-            return new SegmentRef(startOffset, endOffset, 0L, 0, false, 0);
+            return new SegmentRef(startOffset, endOffset, 0L, 0, false, 0, IdentityMark.UNKNOWN);
         }
 
         public static SegmentRef segmentRef(long startOffset,
@@ -59,7 +75,17 @@ public final class SegmentIndex {
                                             int compressionOrdinal,
                                             boolean encrypted,
                                             int originalSize) {
-            return new SegmentRef(startOffset, endOffset, maxTimestamp, compressionOrdinal, encrypted, originalSize);
+            return new SegmentRef(startOffset,
+                                  endOffset,
+                                  maxTimestamp,
+                                  compressionOrdinal,
+                                  encrypted,
+                                  originalSize,
+                                  IdentityMark.UNKNOWN);
+        }
+
+        public SegmentRef withIdentity(IdentityMark mark) {
+            return new SegmentRef(startOffset, endOffset, maxTimestamp, compressionOrdinal, encrypted, originalSize, mark);
         }
 
         boolean containsOffset(long offset) {
@@ -86,11 +112,33 @@ public final class SegmentIndex {
                            int compressionOrdinal,
                            boolean encrypted,
                            int originalSize) {
+        addSegment(streamName,
+                   partition,
+                   startOffset,
+                   endOffset,
+                   maxTimestamp,
+                   compressionOrdinal,
+                   encrypted,
+                   originalSize,
+                   IdentityMark.UNKNOWN);
+    }
+
+    @Contract
+    public void addSegment(String streamName,
+                           int partition,
+                           long startOffset,
+                           long endOffset,
+                           long maxTimestamp,
+                           int compressionOrdinal,
+                           boolean encrypted,
+                           int originalSize,
+                           IdentityMark identity) {
         var key = PartitionKey.partitionKey(streamName, partition);
         var map = partitions.computeIfAbsent(key, _ -> new ConcurrentSkipListMap<>());
 
         map.put(startOffset,
-                SegmentRef.segmentRef(startOffset, endOffset, maxTimestamp, compressionOrdinal, encrypted, originalSize));
+                SegmentRef.segmentRef(startOffset, endOffset, maxTimestamp, compressionOrdinal, encrypted, originalSize)
+                          .withIdentity(identity));
         sealedThrough.compute(key, (_, current) -> contiguousEnd(map, option(current).or(NOTHING_SEALED)));
     }
 
@@ -109,16 +157,32 @@ public final class SegmentIndex {
     /// never overwritten either.
     @Contract
     public void recordLearned(String streamName, int partition, long startOffset, Option<Long> maxTimestamp, int size) {
+        recordLearned(streamName, partition, startOffset, maxTimestamp, size, IdentityMark.UNKNOWN);
+    }
+
+    /// As above, also recording whether the block carries the identity header (#2258), learned in the same read. A known
+    /// mark is never overwritten.
+    @Contract
+    public void recordLearned(String streamName,
+                              int partition,
+                              long startOffset,
+                              Option<Long> maxTimestamp,
+                              int size,
+                              IdentityMark identity) {
         option(partitions.get(PartitionKey.partitionKey(streamName, partition))).onPresent(map -> map.computeIfPresent(startOffset,
                                                                                                                        (_, ref) -> learned(ref,
                                                                                                                                            maxTimestamp,
-                                                                                                                                           size)));
+                                                                                                                                           size,
+                                                                                                                                           identity)));
     }
 
-    private static SegmentRef learned(SegmentRef ref, Option<Long> maxTimestamp, int size) {
+    private static SegmentRef learned(SegmentRef ref, Option<Long> maxTimestamp, int size, IdentityMark identity) {
         var timed = maxTimestamp.map(timestamp -> withKnownTimestamp(ref, timestamp)).or(ref);
+        var sized = withKnownSize(timed, size);
 
-        return withKnownSize(timed, size);
+        return sized.identity() == IdentityMark.UNKNOWN
+               ? sized.withIdentity(identity)
+               : sized;
     }
 
     private static SegmentRef withKnownSize(SegmentRef ref, int size) {
@@ -129,7 +193,8 @@ public final class SegmentIndex {
                                        ref.maxTimestamp(),
                                        ref.compressionOrdinal(),
                                        ref.encrypted(),
-                                       size);
+                                       size)
+                           .withIdentity(ref.identity());
     }
 
     private static SegmentRef withKnownTimestamp(SegmentRef ref, long maxTimestamp) {
@@ -140,7 +205,8 @@ public final class SegmentIndex {
                                        maxTimestamp,
                                        ref.compressionOrdinal(),
                                        ref.encrypted(),
-                                       ref.originalSize());
+                                       ref.originalSize())
+                           .withIdentity(ref.identity());
     }
 
     @Contract
@@ -178,6 +244,30 @@ public final class SegmentIndex {
                            int compressionOrdinal,
                            boolean encrypted,
                            int originalSize) {
+        addSegment(streamName,
+                   incarnation,
+                   partition,
+                   startOffset,
+                   endOffset,
+                   maxTimestamp,
+                   compressionOrdinal,
+                   encrypted,
+                   originalSize,
+                   IdentityMark.UNKNOWN);
+    }
+
+    /// As above, recording whether the block carries the identity header: a segment this build seals does (#2258).
+    @Contract
+    public void addSegment(String streamName,
+                           long incarnation,
+                           int partition,
+                           long startOffset,
+                           long endOffset,
+                           long maxTimestamp,
+                           int compressionOrdinal,
+                           boolean encrypted,
+                           int originalSize,
+                           IdentityMark identity) {
         if (incarnation == incarnationOf(streamName)) {
             addSegment(streamName,
                        partition,
@@ -186,7 +276,8 @@ public final class SegmentIndex {
                        maxTimestamp,
                        compressionOrdinal,
                        encrypted,
-                       originalSize);
+                       originalSize,
+                       identity);
         }
     }
 
@@ -362,6 +453,35 @@ public final class SegmentIndex {
         sealedThrough.clear();
         partitions.forEach(this::anchorAtFloor);
         reclaimedThrough.forEach(sealedThrough::putIfAbsent);
+    }
+
+    /// The refs a rebuild or an adoption left out because their partition's durable floor already reclaimed them, each
+    /// handed out once. The caller releases them without knowing their mark ([org.pragmatica.storage.SharedDelete#IF_IDENTIFIED]):
+    /// rebuild reads no block.
+    public List<String> drainReclaimedBelowFloor() {
+        var drained = new java.util.ArrayList<String>();
+
+        for (var name = belowFloor.poll(); name != null; name = belowFloor.poll()) {
+            drained.add(name);
+        }
+
+        return drained;
+    }
+
+    /// A segment that ends at or below the partition's durable reclaim floor is not served: retention reclaimed it, and its
+    /// ref survived only because a crash came between the floor write and the release. Installing it would serve a range
+    /// the floor says is gone, and its block may already be collected.
+    private void pruneBelowFloor(PartitionKey key, ConcurrentSkipListMap<Long, SegmentRef> map) {
+        var floor = option(reclaimedThrough.get(key)).or(NOTHING_SEALED);
+
+        map.values()
+           .stream()
+           .filter(ref -> ref.endOffset() <= floor)
+           .toList()
+           .forEach(ref -> {
+               map.remove(ref.startOffset());
+               belowFloor.add(refNameOf(key.streamName(), key.partition(), ref));
+           });
     }
 
     /// A ref of the life this index serves for its stream is installed; any other life's is staged for [#adopt].
