@@ -145,6 +145,23 @@ class ResponseSequenceTest {
         assertThat(written).containsExactly("answer");
     }
 
+    @Test
+    void aSecondCompletionOfAPendingSlot_isIgnored_theFirstOneCounts() throws InterruptedException {
+        var sequence = new ResponseSequence(loop, timeSpan(0).millis());
+        var first = sequence.reserve();
+        var second = sequence.reserve();
+        var written = Collections.synchronizedList(new ArrayList<String>());
+        var all = new CountDownLatch(2);
+
+        sequence.complete(second, () -> record(written, all, "answer"), false);
+        sequence.complete(second, () -> record(written, all, "late"), false);
+        sequence.complete(first, () -> record(written, all, "first"), false);
+
+        assertThat(all.await(10, TimeUnit.SECONDS)).isTrue();
+        Thread.sleep(200);
+        assertThat(written).containsExactly("first", "answer");
+    }
+
     private static void reserveMany(ResponseSequence sequence, List<ResponseSequence.Slot> into, CountDownLatch finished) {
         for (var i = 0; i < SLOTS; i++) {
             into.add(sequence.reserve());
