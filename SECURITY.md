@@ -67,8 +67,7 @@ Two consequences follow directly:
     What an operator sees:
     - On the SEED nodes, the operator event `gossip-key-unknown-from-peer` (WARNING, once per sender
       address until it recovers, never a key; at most 16 new senders per minute, the rest summarised
-      by one `gossip-key-unknown-senders-suppressed` event; the subject carries no port, so two nodes
-      on one host share it) when a datagram arrives under a key id they do not hold, and the recovery
+      by one `gossip-key-unknown-senders-suppressed` event; the subject is the sender's `ip:port`) when a datagram arrives under a key id they do not hold, and the recovery
       `gossip-key-peer-decrypted` when that sender's gossip next decrypts. The per-datagram
       `Failed to decrypt gossip from <address>` WARN remains. Source addresses are spoofable, so the
       address in the event is a lead, not proof. An event that is not followed by its recovery means

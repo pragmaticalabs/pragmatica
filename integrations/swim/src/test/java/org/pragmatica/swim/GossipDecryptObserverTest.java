@@ -35,8 +35,10 @@ class GossipDecryptObserverTest {
 
         assertThat(published).singleElement().satisfies(warning -> {
             assertThat(warning.code()).isEqualTo(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER);
-            assertThat(warning.subject()).isEqualTo("10.0.0.7");
-            assertThat(warning.message()).contains("10.0.0.7")
+            assertThat(warning.subject()).isEqualTo("10.0.0.7:7000");
+            assertThat(warning.code().code()).as("wire string, as operators match on it").isEqualTo("gossip-key-unknown-from-peer");
+            assertThat(warning.code().level()).isEqualTo(org.pragmatica.utility.warning.WarningLevel.WARNING);
+            assertThat(warning.message()).contains("10.0.0.7:7000")
                                          .contains("20260914")
                                          .contains("gossip-key-peer-decrypted")
                                          .contains("peer list")
@@ -47,14 +49,29 @@ class GossipDecryptObserverTest {
     }
 
     @Test
-    void unknownKey_twoSenders_twoWarnings_andAPortChangeIsTheSameSender() throws Exception {
+    void unknownKey_threeSenders_threeWarnings_twoNodesOnOneHostAreTwoSenders() throws Exception {
         observer.unknownKey(STRANDED, 1);
         observer.unknownKey(STRANDED_OTHER_PORT, 1);
         observer.unknownKey(OTHER, 1);
 
-        awaitPublished(2);
+        awaitPublished(3);
 
-        assertThat(published).extracting(OperatorWarning::subject).containsExactlyInAnyOrder("10.0.0.7", "10.0.0.8");
+        assertThat(published).extracting(OperatorWarning::subject).containsExactlyInAnyOrder("10.0.0.7:7000", "10.0.0.7:7999", "10.0.0.8:7000");
+    }
+
+    /// Two nodes on one host (a dev machine, Ember): a decryptable datagram from one must not close the warning raised for the other.
+    @Test
+    void decrypted_fromAnotherPortOfTheSameHost_doesNotCloseTheOtherNodesWarning() throws Exception {
+        observer.unknownKey(STRANDED, 1);
+        observer.decrypted(STRANDED_OTHER_PORT);
+        observer.decrypted(STRANDED);
+
+        awaitPublished(2);
+        Thread.sleep(200);
+
+        assertThat(published).extracting(OperatorWarning::subject).containsExactly("10.0.0.7:7000", "10.0.0.7:7000");
+        assertThat(published).extracting(OperatorWarning::code)
+                             .containsExactly(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER, OperatorWarningCode.GOSSIP_KEY_PEER_DECRYPTED);
     }
 
     @Test
@@ -67,7 +84,9 @@ class GossipDecryptObserverTest {
 
         assertThat(published).extracting(OperatorWarning::code)
                              .containsExactly(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER, OperatorWarningCode.GOSSIP_KEY_PEER_DECRYPTED);
-        assertThat(published).extracting(OperatorWarning::subject).containsOnly("10.0.0.7");
+        assertThat(published).extracting(OperatorWarning::subject).containsOnly("10.0.0.7:7000");
+        assertThat(published.getLast().code().code()).isEqualTo("gossip-key-peer-decrypted");
+        assertThat(published.getLast().code().level()).isEqualTo(org.pragmatica.utility.warning.WarningLevel.INFO);
         assertThat(OperatorWarningCode.GOSSIP_KEY_PEER_DECRYPTED.recoveryOf().or(OperatorWarningCode.JSON_CONFIG_APPLIED))
             .as("the recovery is declared as the pair of the warning, which is what lets the event layer close it")
             .isEqualTo(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER);
@@ -132,10 +151,12 @@ class GossipDecryptObserverTest {
 
         assertThat(summaries).as("exactly one aggregate event").hasSize(1);
         assertThat(summaries.getFirst().subject()).isEqualTo(GossipDecryptObserver.Reporting.SUPPRESSED_SUBJECT);
+        assertThat(summaries.getFirst().code().code()).isEqualTo("gossip-key-unknown-senders-suppressed");
+        assertThat(summaries.getFirst().code().level()).isEqualTo(org.pragmatica.utility.warning.WarningLevel.INFO);
         assertThat(summaries.getFirst().message()).as("a lower bound, since the tracking set is capped").startsWith("At least " + GossipDecryptObserver.Reporting.MAX_SUPPRESSED_TRACKED);
         assertThat(published).as("the sender that opened the new window is reported in it")
                              .extracting(OperatorWarning::subject)
-                             .contains(spoofed(20_000).getAddress().getHostAddress());
+                             .contains(subjectOf(spoofed(20_000)));
     }
 
     @Test
@@ -182,7 +203,11 @@ class GossipDecryptObserverTest {
         bounded.unknownKey(spoofed(0), 1);
         awaitPublished(raised + 1);
 
-        assertThat(published.getLast().subject()).as("the evicted eldest sender is reported again").isEqualTo(spoofed(0).getAddress().getHostAddress());
+        assertThat(published.getLast().subject()).as("the evicted eldest sender is reported again").isEqualTo(subjectOf(spoofed(0)));
+    }
+
+    private static String subjectOf(InetSocketAddress address) {
+        return address.getAddress().getHostAddress() + ":" + address.getPort();
     }
 
     private static InetSocketAddress spoofed(int i) {

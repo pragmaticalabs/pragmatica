@@ -12,6 +12,7 @@ import java.util.Set;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Stream;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
@@ -200,6 +201,16 @@ public final class ClusterEventAggregator {
     /// A recovery is published exactly when its key is here, so it never appears without the warning it closes and is
     /// never throttled away from one an operator saw. Bounded by the (code, subject) pairs the node can raise.
     private final Set<String> openRecoverable = ConcurrentHashMap.newKeySet();
+
+    /// The most open-or-pending recoverable warnings the aggregator holds per code (#1200). The set above is "bounded by the (code, subject)
+    /// pairs the node can raise", an assumption a code whose subject is an UNAUTHENTICATED value (a UDP source address) breaks: spoofed
+    /// subjects never send the recovery, so their marks stay open for ever and every one of them is also an event in the retained ring. A
+    /// new subject beyond the cap is dropped here (counted in [#openCapDropped]); the condition is already in the node log. Subjects that
+    /// are already open keep their recovery.
+    static final int MAX_OPEN_RECOVERABLE_PER_CODE = 256;
+
+    private final java.util.concurrent.atomic.AtomicLong openCapDropped = new java.util.concurrent.atomic.AtomicLong();
+
     /// Warnings with a recovery that are admitted but not yet in the log, each holding the recovery that arrived meanwhile.
     /// Recoveries raised during snapshot/resync replay, by the key of the warning they close, released after it (#752).
     private final ConcurrentHashMap<String, ClusterEvent> replayHeldRecoveries = new ConcurrentHashMap<>();
@@ -867,6 +878,15 @@ public final class ClusterEventAggregator {
     }
 
     private void onCondition(OperatorWarning warning, String key) {
+        if (warning.code().hasRecovery() && overOpenCap(warning.code(), key)) {
+            openCapDropped.incrementAndGet();
+            LOG.debug("ClusterEventAggregator: dropping OperatorWarning {} for {}: {} recoverable warnings of this code are already open",
+                      warning.code().code(),
+                      warning.subject(),
+                      MAX_OPEN_RECOVERABLE_PER_CODE);
+
+            return;
+        }
         // A recurrence makes a repair still held from replay stale: the tick must not publish it behind the new condition.
         replayHeldRecoveries.remove(key);
         var window = admit(operatorWarningThrottle, key);
@@ -1031,6 +1051,31 @@ public final class ClusterEventAggregator {
 
     public int trackedScheduledOutcomes() {
         return scheduledOutcomes.size();
+    }
+
+    /// Whether `key` is a NEW subject of `code` and `code` already has [#MAX_OPEN_RECOVERABLE_PER_CODE] open or pending recoverable warnings.
+    private boolean overOpenCap(OperatorWarningCode code, String key) {
+        if (openRecoverable.size() + awaitingDelivery.size() < MAX_OPEN_RECOVERABLE_PER_CODE || openRecoverable.contains(key) || awaitingDelivery.containsKey(key)) {
+            return false;
+        }
+
+        var prefix = code.code() + ":";
+        var held = Stream.concat(openRecoverable.stream(),
+                                 awaitingDelivery.keySet().stream())
+                         .filter(entry -> entry.startsWith(prefix))
+                         .count();
+
+        return held >= MAX_OPEN_RECOVERABLE_PER_CODE;
+    }
+
+    /// Recoverable warnings dropped because their code already had [#MAX_OPEN_RECOVERABLE_PER_CODE] open ones (observability).
+    public long openCapDropped() {
+        return openCapDropped.get();
+    }
+
+    /// Open (published, unrecovered) recoverable warnings currently held (observability).
+    public int openRecoverableCount() {
+        return openRecoverable.size();
     }
 
     /// Operator-warning throttle keys currently held (observability for #1617 R3).

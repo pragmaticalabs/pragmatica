@@ -269,7 +269,9 @@ class AetherNodeStartSwimTest {
 
             assertThat(published).singleElement().satisfies(warning -> {
                 assertThat(warning.code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER);
-                assertThat(warning.subject()).isEqualTo("127.0.0.1");
+                assertThat(warning.subject()).startsWith("127.0.0.1:");
+                assertThat(warning.code().code()).isEqualTo("gossip-key-unknown-from-peer");
+                assertThat(warning.code().level()).isEqualTo(org.pragmatica.utility.warning.WarningLevel.WARNING);
             });
 
             send(sender, swimPort, aesGcm(NODE_KEY, NODE_KEY_ID).encrypt("probe".getBytes(StandardCharsets.UTF_8)).unwrap());
@@ -278,6 +280,32 @@ class AetherNodeStartSwimTest {
             assertThat(published).extracting(org.pragmatica.utility.warning.OperatorWarning::code)
                                  .containsExactly(org.pragmatica.utility.warning.OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER,
                                                   org.pragmatica.utility.warning.OperatorWarningCode.GOSSIP_KEY_PEER_DECRYPTED);
+            assertThat(published.get(1).code().code()).isEqualTo("gossip-key-peer-decrypted");
+            assertThat(published.get(1).code().level()).isEqualTo(org.pragmatica.utility.warning.WarningLevel.INFO);
+            assertThat(published.get(1).subject()).as("the recovery closes the same subject").isEqualTo(published.get(0).subject());
+        } finally {
+            detector.stop();
+        }
+    }
+
+    /// #1200 — feed 2 of a replacement's dial targets (feed 1 is pinned in `ReplacementDialMechanismTest`): SWIM seeding announces every configured
+    /// core as a discovered member the moment the protocol starts, without any datagram having decrypted. Removing it, and the configured-descriptor
+    /// seed, is what turns `EmberGossipKeyRotatedJoinTest` red.
+    @Test
+    void start_configuredCores_areSeededAsDiscoveredMembers_beforeAnyDatagramDecrypts() throws Exception {
+        var detector = detectorWithSwimPort(freeUdpPort());
+        var discovered = new java.util.concurrent.CopyOnWriteArrayList<NodeId>();
+
+        detector.addObservationListener(observation -> {
+            if (observation instanceof org.pragmatica.swim.SwimObservation.MemberDiscovered member) {
+                discovered.add(member.nodeInfo().id());
+            }
+        });
+
+        try {
+            assertThat(detector.start(Option.none(), GossipEncryptor.none()).await().isSuccess()).isTrue();
+            assertThat(discovered).as("the configured peer, announced as discovered, with nothing received").contains(PEER);
+            assertThat(discovered).as("never self").doesNotContain(SELF);
         } finally {
             detector.stop();
         }

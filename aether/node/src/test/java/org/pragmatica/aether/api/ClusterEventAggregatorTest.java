@@ -1420,6 +1420,39 @@ class ClusterEventAggregatorTest {
 
     /// A warning is a per-node fact, so a NON-OWNER still publishes it. The event carries the code
     /// catalogue's severity, the logged message as its summary, and the filterable details.
+    /// #1200 — a code whose subject is an UNAUTHENTICATED value (a UDP source address) must not let a spoofer grow the aggregator's open set or fill
+    /// the retained ring: 10,000 distinct subjects publish at most the per-code cap, count the rest as dropped, and an unrelated event raised
+    /// before the flood is still retained after it. The recovery of an open subject still publishes (control).
+    @Test
+    void onOperatorWarning_tenThousandSpoofedSubjects_areBoundedAtTheAggregator_andUnrelatedEventsSurvive() {
+        var t = new AtomicLong(1_000_000L);
+        var h = clocked(t);
+
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.CORE_ABSENCE_FENCE, "core", "unrelated, raised before the flood"));
+
+        for (var i = 0; i < 10_000; i++) {
+            h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER,
+                                                                             "10." + (i / 65_536) + "." + (i / 256 % 256) + "." + (i % 256) + ":7000",
+                                                                             "spoofed"));
+        }
+
+        var events = h.events();
+        var gossip = events.stream().filter(event -> "gossip-key-unknown-from-peer".equals(event.details().get("code"))).toList();
+
+        assertThat(gossip).as("at most the per-code cap").hasSize(ClusterEventAggregator.MAX_OPEN_RECOVERABLE_PER_CODE);
+        assertThat(h.aggregator().openCapDropped()).isEqualTo(10_000L - ClusterEventAggregator.MAX_OPEN_RECOVERABLE_PER_CODE);
+        assertThat(h.aggregator().openRecoverableCount()).isLessThanOrEqualTo(ClusterEventAggregator.MAX_OPEN_RECOVERABLE_PER_CODE);
+        assertThat(events.stream().anyMatch(event -> "core-absence-fence".equals(event.details().get("code"))))
+            .as("the unrelated event is still in the retained ring")
+            .isTrue();
+
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.GOSSIP_KEY_PEER_DECRYPTED, "10.0.0.0:7000", "repaired"));
+
+        assertThat(h.events().stream().anyMatch(event -> "gossip-key-peer-decrypted".equals(event.details().get("code"))))
+            .as("control: an open subject still gets its recovery")
+            .isTrue();
+    }
+
     @Test
     void onOperatorWarning_notOwner_emitsEventCarryingCodeAndSubject() {
         var h = Harness.create(Harness.defaultRetention(), NOT_OWNER);

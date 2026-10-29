@@ -77,8 +77,9 @@ public interface GossipDecryptObserver {
     ///   sending (inside the window budget), and its recovery is simply not raised.
     /// That is forward recovery: the log WARN per datagram is unchanged and stands as the record of everything suppressed.
     ///
-    /// The subject is the sender's address WITHOUT its port, so two nodes on one host (a dev machine, Ember) share a subject: a decryptable
-    /// datagram from either closes the warning raised for the other.
+    /// The subject is the sender's `ip:port`. A node sends its SWIM datagrams from its one bound UDP socket, so the port is stable for the life of
+    /// the process (and, being derived from the node's configured port, across restarts), and two nodes on one host (a dev machine, Ember) get
+    /// their own warning and their own recovery.
     final class Reporting implements GossipDecryptObserver {
         static final int MAX_REPORTED = 256;
         static final int MAX_NEW_SENDERS_PER_WINDOW = 16;
@@ -164,7 +165,7 @@ public interface GossipDecryptObserver {
                                    sink.get(),
                                    OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER,
                                    subject,
-                                   "Gossip from {} was dropped: it is encrypted under key id {}, which this node does not hold. The usual cause is a node that booted with a gossip key the cluster has rotated away from; it normally catches up within seconds, when it joins consensus and replays the rotation record, and gossip-key-peer-decrypted closes this event when its gossip decrypts. If it is not closed, check that the sender's peer list names reachable cores and that its cluster_secret matches the cluster's. The address is a UDP source address, which can be spoofed, and carries no port",
+                                   "Gossip from {} was dropped: it is encrypted under key id {}, which this node does not hold. The usual cause is a node that booted with a gossip key the cluster has rotated away from; it normally catches up within seconds, when it joins consensus and replays the rotation record, and gossip-key-peer-decrypted closes this event when its gossip decrypts. If it is not closed, check that the sender's peer list names reachable cores and that its cluster_secret matches the cluster's. The address is a UDP source address, which can be spoofed",
                                    subject,
                                    keyId);
         }
@@ -208,10 +209,11 @@ public interface GossipDecryptObserver {
         }
 
         private static String subject(InetSocketAddress sender) {
-            return sender.getAddress() == null
-                   ? sender.getHostString()
-                   : sender.getAddress()
-                           .getHostAddress();
+            return (sender.getAddress() == null
+                    ? sender.getHostString()
+                    : sender.getAddress()
+                            .getHostAddress())
+                 + ":" + sender.getPort();
         }
     }
 }

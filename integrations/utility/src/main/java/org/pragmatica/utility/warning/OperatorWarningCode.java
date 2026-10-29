@@ -629,7 +629,7 @@ public enum OperatorWarningCode {
     /// A peer's SWIM datagram was encrypted under a gossip key id this node does not hold (#1200), and was dropped. The usual cause is a node that
     /// booted with only its `cluster_secret`-derived key after the cluster rotated its gossip key: its gossip and the cluster's cannot be read by
     /// either side until the node joins consensus and replays the rotation record, which normally takes seconds. Subject is the sender's address
-    /// without its port, never a key; a UDP source address can be spoofed. An event that is not followed by its recovery means the sender did not
+    /// as `ip:port`, never a key; a UDP source address can be spoofed. An event that is not followed by its recovery means the sender did not
     /// catch up: check its peer list and `cluster_secret`. At most 16 new senders raise it per minute. Closed by [#GOSSIP_KEY_PEER_DECRYPTED].
     GOSSIP_KEY_UNKNOWN_FROM_PEER("gossip-key-unknown-from-peer", "membership", WarningLevel.WARNING),
     /// The recovery of [#GOSSIP_KEY_UNKNOWN_FROM_PEER], same subject (#1200): a datagram from that sender decrypted. INFO, published only after
