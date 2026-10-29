@@ -497,6 +497,9 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `replica-fsync-failed` (WARNING — a replica withheld its ack because fsync failed; the owner does not count that copy)
 - `node-never-joined` (WARNING — a configured core member died on this node's view without this node ever observing it reachable; it never joined, so no `NODE_FAILED` event or CRITICAL node-health alert is raised for it, issue #1835)
 - `swim-member-address-conflict` (WARNING — an ANNOUNCE for a member arrived from an address other than the one that member is pinned to and was refused, or gossip carried another address for a pinned member and its address was ignored; `subject` is the member, the message names both addresses; replace the member under a fresh NodeId or restore its address)
+- `gossip-key-unknown-from-peer` (WARNING — a SWIM datagram arrived under a gossip key id this node does not hold, usually from a node that booted with only its `cluster_secret`-derived key after the cluster rotated its gossip key; it catches up once it joins consensus and replays the rotation record; once per sender address until it recovers, at most 16 new senders per minute; `subject` is the sender's address, never a key; a warning never followed by its recovery means the sender did not catch up, issue #1200)
+- `gossip-key-peer-decrypted` (INFO — the recovery of `gossip-key-unknown-from-peer`: a datagram from that sender decrypted; same `subject`)
+- `gossip-key-unknown-senders-suppressed` (INFO — more than 16 new sender addresses sent gossip under an unheld key id within a minute, almost certainly spoofed, and were not reported one by one; the message gives the count, a lower bound at 1024; `subject` is `unknown-gossip-key-senders`; a point event with no recovery, issue #1200)
 - `swim-member-identity-conflict` (WARNING — an ANNOUNCE presented a process token that the member's live process did not answer with; ignored, nothing retired; `subject` is the member)
 - `stream-event-exceeds-read-cap` (CRITICAL — a partition's owner promotion is refused because a peer answered its watermark probe with a page cut before its first event, which alone exceeds that peer's `maxReadResponseBytes`; raise the cap on that peer; `subject` is `stream[partition]`, issue #1431)
 - `stream-consumer-state-diverged` (WARNING — a declarative stream consumer this node held as attached had no subscription in its consumer runtime, so that partition was not consumed while reported attached; a reconcile pass forgets and re-attaches it, issue #752; `subject` is `group:stream[partition]`)
@@ -3912,26 +3915,26 @@ running node applies it through its existing `GossipKeyRotationHandler`. The res
 a race against a concurrent one is reported as a failure, never as a success for a write that did not
 land.
 
-**Three consequences an operator must accept before invoking this — see SECURITY.md:**
+**Consequences an operator must accept before invoking this — see SECURITY.md:**
 
 1. The key material is stored in the consensus log and its snapshots, readable by any KV reader.
 2. **The first rotation has no decrypt overlap.** With no prior record there is no previous key to
    carry, so the emergency rotation — the one that runs during an actual leak response — replaces the
    boot key outright. Only rotations from the second onward are seamless.
-3. **A rotated cluster cannot grow until you act, and that includes auto-heal.**
+3. **A node that boots after a rotation is out of step with the cluster's gossip until it replays the
+   rotation record.** It holds only the `cluster_secret`-derived key, which the cluster no longer
+   accepts, so its gossip is rejected in both directions. It dials the cores it was configured with itself, forms quorum
+   and receives the record by consensus replay, so this normally takes seconds (about one second on an
+   in-JVM cluster; not measured on a multi-host cluster, #1200). Auto-heal replacements and scale-up
+   nodes are included.
 
-   **If a node will not join after a rotation, check the SEED nodes' logs, not the new node's** —
-   look for `Failed to decrypt gossip from <id>` on the seeds. A node the cluster has never heard of
-   logs nothing about the cause: it prints `Aether node <id> started, cluster forming...` and then
-   stays quiet, because an unreachable quorum is retried and never exits. The evidence is on the
-   healthy machines.
-
-   A node booting after a rotation holds only the `cluster_secret`-derived key, which the cluster no
-   longer accepts; it cannot complete SWIM in either direction, so no quorum forms and the consensus
-   replay that would deliver the cluster key never runs. Auto-heal replacements, scale-up and
-   re-provisioned nodes all fail to join until given the rotated key material out of band. Existing
-   running nodes are unaffected. A **restarted existing member** does say so for itself — it refuses
-   to boot with a `FATAL` line naming gossip-key divergence — because its peers still probe it.
+   **If a node does not catch up, check the SEED nodes, not the new node.** The seeds raise the
+   operator event `gossip-key-unknown-from-peer` (subject: the sender's address) and log
+   `Failed to decrypt gossip from <address>`; `gossip-key-peer-decrypted` closes the event when that
+   sender's gossip decrypts. A **restarted existing member** that never catches up refuses to boot
+   with a `FATAL` line naming gossip-key divergence.
+4. **Rotation protects only against a leaked gossip key.** Admission is `cluster_secret`-derived
+   mutual TLS: a holder of `cluster_secret` still joins and replays the record (#2474).
 
 **RBAC:** ADMIN (exact route; an appended path segment is 404, never a weaker permission) · **Routing:** LEADER
 

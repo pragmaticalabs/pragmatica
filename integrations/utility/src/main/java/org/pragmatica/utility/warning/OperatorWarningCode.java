@@ -664,6 +664,20 @@ public enum OperatorWarningCode {
     /// only after the warning for the subject. Detected at the next adoption of the same stream in this process; a life released while the
     /// process was down is announced afresh, or not at all, by the next boot.
     STORAGE_STREAM_WAL_RELEASED("storage-stream-wal-released", "storage", WarningLevel.INFO, STORAGE_STREAM_WAL_ORPHANED),
+    /// A peer's SWIM datagram was encrypted under a gossip key id this node does not hold (#1200), and was dropped. The usual cause is a node that
+    /// booted with only its `cluster_secret`-derived key after the cluster rotated its gossip key: its gossip and the cluster's cannot be read by
+    /// either side until the node joins consensus and replays the rotation record, which normally takes seconds. Subject is the sender's address
+    /// as `ip:port`, never a key; a UDP source address can be spoofed. An event that is not followed by its recovery means the sender did not
+    /// catch up: check its peer list and `cluster_secret`. At most 16 new senders raise it per minute. Closed by [#GOSSIP_KEY_PEER_DECRYPTED].
+    GOSSIP_KEY_UNKNOWN_FROM_PEER("gossip-key-unknown-from-peer", "membership", WarningLevel.WARNING),
+    /// The recovery of [#GOSSIP_KEY_UNKNOWN_FROM_PEER], same subject (#1200): a datagram from that sender decrypted. INFO, published only after
+    /// a published unknown-key event for the sender (#752 mechanism).
+    GOSSIP_KEY_PEER_DECRYPTED("gossip-key-peer-decrypted", "membership", WarningLevel.INFO, GOSSIP_KEY_UNKNOWN_FROM_PEER),
+    /// The summary of the senders [#GOSSIP_KEY_UNKNOWN_FROM_PEER] did not report one by one because more than 16 new sender addresses arrived within a
+    /// minute (#1200), almost certainly spoofed or a flood: the count of suppressed sender addresses (a lower bound when it reaches the tracking cap
+    /// of 1024). Subject is `unknown-gossip-key-senders`. INFO: it states a count, closes nothing and opens nothing (a WARNING needs a recovery), and the
+    /// per-datagram WARN in the node log carries every datagram.
+    GOSSIP_KEY_UNKNOWN_SENDERS_SUPPRESSED("gossip-key-unknown-senders-suppressed", "membership", WarningLevel.INFO),
     /// The recovery of [#JSON_CONFIG_REJECTED], same subject (#2378): a valid `[json]` configuration was adopted after a
     /// refusal. INFO, published only after a published rejection for the subject (#752 mechanism).
     JSON_CONFIG_APPLIED("json-config-applied", "json", WarningLevel.INFO, JSON_CONFIG_REJECTED);
