@@ -668,6 +668,86 @@ public class RabiaEngine<C extends Command> {
                                  .or(false);
     }
 
+    /// Voter or observer, answered in one place (L-1). Three independent bits decide it: `declared` is `observerMode`
+    /// (an authorization or a roster that left this node out set it), `rosterPresent` is `voters.isPresent()` (false only
+    /// while genesis is pending), `member` is `isVoter(self)`. `declared` and `member` are independent BY DESIGN:
+    /// `ROSTER_OBSERVER` (an installed voter that was authorized to observe) is a real, pinned state
+    /// (`RabiaEnginePauseResumeTest.observerModeInRoster_staysObservingAfterResume`,
+    /// `ReplicaFeedEngineTripwireTest.anObserversCompletedSlot_reachesTheStateMachineAsAFrontier`).
+    /// The two inputs are read in sequence, not as one snapshot, and the writers still write them separately, so this
+    /// closes no torn read; it only gives the 13 readers one vocabulary. `LifecycleRoleTruthTableTest` pins every
+    /// predicate against the expression it replaced, on all six values.
+    enum Role {
+        /// Genesis pending, nothing declared: the role is decided later ([#installGenesis]).
+        PRE_GENESIS(false, false, false),
+        /// Genesis pending and observation authorized.
+        PRE_GENESIS_OBSERVER(true, false, false),
+        /// Installed voter, not observing.
+        VOTER(false, true, true),
+        /// Installed voter that was authorized to observe (pinned state).
+        ROSTER_OBSERVER(true, true, true),
+        /// Roster installed without this node, observing.
+        REMOVED(true, true, false),
+        /// Roster installed without this node, observation never declared (transient: activation is refused).
+        REMOVED_UNDECLARED(false, true, false);
+        private final boolean declared;
+        private final boolean rosterPresent;
+        private final boolean member;
+        Role(boolean declared, boolean rosterPresent, boolean member) {
+            this.declared = declared;
+            this.rosterPresent = rosterPresent;
+            this.member = member;
+        }
+        static Role of(boolean declared, boolean rosterPresent, boolean member) {
+            if (!rosterPresent) {
+                return declared
+                       ? PRE_GENESIS_OBSERVER
+                       : PRE_GENESIS;
+            }
+
+            if (member) {
+                return declared
+                       ? ROSTER_OBSERVER
+                       : VOTER;
+            }
+
+            return declared
+                   ? REMOVED
+                   : REMOVED_UNDECLARED;
+        }
+        /// `observerMode` alone (variant A): activation as an observer, promotion, completed-slot routing.
+        boolean isDeclaredObserver() {
+            return declared;
+        }
+        /// `isVoter(self)` (variant C): may propose, request and relay as a voter.
+        boolean votes() {
+            return member;
+        }
+        /// `observerMode || !isVoter(self)` (variant B): does not take part as a voter. True for every role but `VOTER`.
+        boolean observes() {
+            return declared || !member;
+        }
+        /// `voters.isPresent() && !isVoter(self)` (variant D): a roster exists and leaves this node out.
+        boolean isRemoved() {
+            return rosterPresent && !member;
+        }
+        /// `!observerMode && !isVoter(self)` (variant D): neither declared nor installed, so activation is refused.
+        boolean isUndeclaredNonMember() {
+            return ! declared && !member;
+        }
+        boolean rosterPresent() {
+            return rosterPresent;
+        }
+    }
+
+    Role role() {
+        var roster = voters;
+
+        return Role.of(observerMode,
+                       roster.isPresent(),
+                       roster.map(v -> v.contains(self)).or(false));
+    }
+
     /// Ballots count only from installed voters at the current epoch. An old-epoch ballot for a slot at
     /// or past a change's R+1 therefore never counts, and neither does any ballot of a removed voter.
     private boolean acceptsBallot(NodeId node, long epoch) {
@@ -1129,14 +1209,14 @@ public class RabiaEngine<C extends Command> {
             return;
         }
         // A pending genesis decides the role later ([#installGenesis]); until then authorize as a voter.
-        if (voters.isPresent() && !isVoter(self)) {
+        if (role().isRemoved()) {
             authorizeObservation();
 
             return;
         }
 
         log.info("Node {}: consensus activation authorized", self);
-        if (observerMode) {
+        if (role().isDeclaredObserver()) {
             log.info("Node {}: promoting from observer to full consensus", self);
             observerMode = false;
         }
@@ -1273,7 +1353,7 @@ public class RabiaEngine<C extends Command> {
     /// A node removed from the electorate before or during the pause (#1799) has no vote to resume:
     /// it returns to Observing, the state it left ([#startPhase] refuses to run there).
     private boolean resumesAsObserver() {
-        return observerMode || !isVoter(self);
+        return role().observes();
     }
 
     private void doResumeFromPause() {
@@ -1359,7 +1439,7 @@ public class RabiaEngine<C extends Command> {
     /// agreed slot as well ([ReconfigurationCommand#successorOf]); refusing early only spares the log a
     /// slot and gives the caller a precise cause.
     private Result<ReconfigurationCommand> admissibleCommand(ClusterConfig target) {
-        if (!engineState.get().isActive() || !isVoter(self)) {
+        if (!engineState.get().isActive() || !role().votes()) {
             return ReconfigurationError.NOT_ACTIVE.result();
         }
 
@@ -1421,7 +1501,7 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        if (!acceptsBallot(request.sender(), request.epoch()) || !isVoter(self)) {
+        if (!acceptsBallot(request.sender(), request.epoch()) || !role().votes()) {
             return;
         }
 
@@ -1529,7 +1609,7 @@ public class RabiaEngine<C extends Command> {
     private void openSlotAfterChange() {
         var current = engineState.get();
 
-        if (current instanceof EngineState.Idle && isVoter(self) && pendingBatches.isEmpty() && requestedConfiguration.isEmpty()) {
+        if (current instanceof EngineState.Idle && role().votes() && pendingBatches.isEmpty() && requestedConfiguration.isEmpty()) {
             startPhaseWithBatch(current, Batch.emptyBatch());
         }
     }
@@ -1542,7 +1622,7 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        var joins = configuration.contains(self) && !isVoter(self);
+        var joins = configuration.contains(self) && !role().votes();
 
         installVoters(configuration);
         observerMode = !configuration.contains(self);
@@ -2195,7 +2275,7 @@ public class RabiaEngine<C extends Command> {
     private void startPhase() {
         var current = engineState.get();
 
-        if (!current.isActive() || !isVoter(self) || authorityFailure.isPresent()) {
+        if (!current.isActive() || !role().votes() || authorityFailure.isPresent()) {
             return;
         }
 
@@ -2901,7 +2981,7 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        if (!observerMode && !isVoter(self)) {
+        if (role().isUndeclaredNonMember()) {
             warnOutsideElectorate();
 
             return;
@@ -2911,7 +2991,7 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        if (observerMode) {
+        if (role().isDeclaredObserver()) {
             activateAsObserver();
 
             return;
@@ -3127,7 +3207,7 @@ public class RabiaEngine<C extends Command> {
             return;
         }
         // Observer snapshots are not evidence from the consensus electorate.
-        if (observerMode || !isVoter(self)) {
+        if (role().observes()) {
             return;
         }
 
@@ -3248,7 +3328,7 @@ public class RabiaEngine<C extends Command> {
         }
         // An observer is outside the electorate: its own state cannot supply the missing
         // member of a response majority, even on a cold start or with durable history.
-        if (observerMode || !isVoter(self)) {
+        if (role().observes()) {
             return responses.size() >= clusterSize / 2 + 1
                    ? Option.some(responses)
                    : Option.none();
@@ -4134,7 +4214,7 @@ public class RabiaEngine<C extends Command> {
             safeExecute(this::releaseBufferedDecision);
         }
 
-        if (observerMode) {
+        if (role().isDeclaredObserver()) {
             advancePhaseAsObserver(nextPhase);
 
             return;
