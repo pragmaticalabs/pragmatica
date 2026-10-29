@@ -182,7 +182,8 @@ class WaveExecutorCloudProvisioningTest {
         assertThat(provider.terminated).as("every VM the failing step created is destroyed")
                                        .containsExactlyInAnyOrder("vm-1", "vm-2");
         assertThat(result.isFailure()).isTrue();
-        result.onFailure(cause -> assertThat(cause.message()).contains("apply failed part-way: capacity exhausted (test cause)")
+        result.onFailure(cause -> assertThat(cause.message()).contains("apply failed part-way: The create call for node ")
+                                                             .contains("failed: capacity exhausted (test cause)")
                                                              .contains("destroyed: node " + nodeIdOf(provider, 0)
                                                                        + "  provider hetzner  server vm-1  ip 10.0.1.1")
                                                              .contains("destroyed: node " + nodeIdOf(provider, 1))

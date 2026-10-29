@@ -224,15 +224,15 @@ public final class WaveExecutor {
                                                                            ClusterBootstrapConfig desired,
                                                                            ApplyRecorder recorder) {
         var image = NodeUserDataRenderer.pinnedImageFor(desired, source, role);
+        var cluster = desired.cluster().name();
 
-        return ProviderResolver.resolveDockerCompute(source, image).flatMap(compute -> provisionViaCompute(compute,
-                                                                                                           sourceName,
-                                                                                                           role,
-                                                                                                           count,
-                                                                                                           source,
-                                                                                                           desired.cluster()
-                                                                                                                  .name(),
-                                                                                                           recorder));
+        return ProviderResolver.resolveDockerComputeForCluster(source, image, cluster).flatMap(compute -> provisionViaCompute(compute,
+                                                                                                                              sourceName,
+                                                                                                                              role,
+                                                                                                                              count,
+                                                                                                                              source,
+                                                                                                                              cluster,
+                                                                                                                              recorder));
     }
 
     /// One create per node, ids minted BEFORE the call (the container name is the node id), each recorded write-ahead

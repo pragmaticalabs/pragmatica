@@ -101,10 +101,12 @@ class WaveExecutorLedgerTest {
     private class Hooked implements ComputeProvider {
         Function<ProvisionSpec, Promise<InstanceInfo>> onProvision = spec -> harness.provider.provision(spec);
         Function<InstanceId, Promise<Unit>> onTerminate = id -> harness.provider.terminate(id);
+        /// What the provider does to its own answer before the caller sees it (the Docker provider re-stamps it).
+        Function<InstanceInfo, InstanceInfo> restamp = Function.identity();
 
         @Override
         public Promise<InstanceInfo> provision(ProvisionSpec spec) {
-            return onProvision.apply(spec);
+            return onProvision.apply(spec).map(restamp::apply);
         }
 
         @Override
@@ -315,6 +317,31 @@ class WaveExecutorLedgerTest {
         harness.assertEveryVmHasARow(ledger.ledger(CLUSTER));
     }
 
+    /// G2: the VM is billed and, having no apply label, invisible to every audit. Its server id must not live only in the
+    /// CLI output: the row records it as TERMINATE_FAILED, so a lost operator machine does not lose the VM.
+    @Test
+    void labelMissing_andTheTerminateFails_theLedgerRowKeepsTheServerIdAsTerminateFailed() {
+        var hooked = new Hooked();
+
+        hooked.onProvision = spec -> {
+            var created = harness.provider.provision(spec).await().unwrap();
+            var stripped = new java.util.HashMap<>(created.tags());
+
+            stripped.remove(WaveNodeProvisioning.APPLY_LABEL);
+
+            return Promise.success(new InstanceInfo(created.id(), created.status(), created.addresses(), created.type(), stripped,
+                                                    created.nodeId(), created.observedZone()));
+        };
+        hooked.onTerminate = _ -> Causes.cause("provider refused the delete (test cause)").promise();
+
+        provisionCloud(hooked, 1, cloudRecorder()).onSuccess(_ -> fail("a VM without its apply label must fail the action"));
+
+        assertThat(ledger.ledger(CLUSTER).resources()).singleElement().satisfies(row -> {
+            assertThat(row.state()).isEqualTo(ApplyResource.State.TERMINATE_FAILED);
+            assertThat(row.serverId().or("")).isEqualTo("srv-1");
+        });
+    }
+
     @Test
     void providerDropsTheApplyLabel_failsAndTerminatesTheVm() {
         var hooked = new Hooked();
@@ -334,6 +361,9 @@ class WaveExecutorLedgerTest {
 
         assertThat(harness.provider.totalTerminates()).isEqualTo(1);
         assertThat(harness.provider.nodeIdsByServer()).isEmpty();
+        assertThat(ledger.ledger(CLUSTER).resources()).as("the terminate is recorded").singleElement()
+                                                      .extracting(ApplyResource::state)
+                                                      .isEqualTo(ApplyResource.State.TERMINATED);
     }
 
     @Test
@@ -399,11 +429,16 @@ class WaveExecutorLedgerTest {
             }
         };
 
+        var shortInfo = new InstanceInfo(new InstanceId("0123456789ab"), org.pragmatica.aether.environment.InstanceStatus.RUNNING, List.of(),
+                                         org.pragmatica.aether.environment.InstanceType.ON_DEMAND, Map.of(),
+                                         org.pragmatica.lang.Option.some("n-1"), org.pragmatica.lang.Option.none());
+
         listing.add("0123456789ab");
         assertThat(WaveNodeProvisioning.filteredListing(lister, info, "n-1", "applyid").isSuccess()).as("short id of the same container").isTrue();
 
         listing.clear();
         listing.add(fullId);
+        assertThat(WaveNodeProvisioning.filteredListing(lister, shortInfo, "n-1", "applyid").isSuccess()).as("full id listed, short id created").isTrue();
         assertThat(WaveNodeProvisioning.filteredListing(lister, info, "n-1", "applyid").isSuccess()).as("full id").isTrue();
 
         listing.clear();
@@ -454,7 +489,20 @@ class WaveExecutorLedgerTest {
 
     // ---------------------------------------------------------------- docker
 
+    /// The real Docker provider answers `provision` with the instance re-stamped from `docker inspect`: only the
+    /// `aether.cluster|role|node-id` tags (dots), never a custom label such as the apply label.
+    private static InstanceInfo restampedLikeDockerInspect(InstanceInfo created) {
+        return new InstanceInfo(created.id(),
+                                created.status(),
+                                created.addresses(),
+                                created.type(),
+                                Map.of("aether.cluster", "prod-cluster", "aether.role", "core", "aether.node-id", created.nodeId().or("")),
+                                created.nodeId(),
+                                created.observedZone());
+    }
+
     private ClusterBootstrapConfig installDocker(Hooked hooked) {
+        hooked.restamp = WaveExecutorLedgerTest::restampedLikeDockerInspect;
         ProviderResolver.dockerFactoryOverride = new EnvironmentIntegrationFactory() {
             @Override
             public String providerName() {
@@ -580,6 +628,59 @@ class WaveExecutorLedgerTest {
                                  spec.imageId(),
                                  spec.userData(),
                                  spec.placement());
+    }
+
+    /// B1: the wave's Docker provider must carry the apply's cluster as its scope. Without `cluster_name` the real
+    /// provider refuses to list or terminate ("no cluster scope known") unless the host exports AETHER_CLUSTER_NAME, so
+    /// the label check fails and the just-created container is left running.
+    @Test
+    void dockerProvider_isCreatedWithTheAppliesClusterAsItsScope() {
+        var seen = new ArrayList<CloudConfig>();
+
+        ProviderResolver.dockerFactoryOverride = new EnvironmentIntegrationFactory() {
+            @Override
+            public String providerName() {
+                return "docker";
+            }
+
+            @Override
+            public Result<EnvironmentIntegration> create(CloudConfig config) {
+                seen.add(config);
+
+                return Result.success(EnvironmentIntegration.withLocalCompute(new Hooked()));
+            }
+        };
+
+        var desired = parse(DOCKER);
+        var plan = plan(new DiffAction.AddRole(sourceNameOrDefault("local"), NodeRole.CORE, 1));
+
+        WaveExecutor.execute(plan, desired, desired, recorderFor(plan)).onFailure(cause -> fail(cause.message()));
+
+        assertThat(seen).hasSize(1);
+        assertThat(seen.getFirst().compute()).containsEntry("cluster_name", "prod-cluster");
+    }
+
+    /// G1: a create whose reply is lost (timeout, 5xx) may have created the VM. The operator is told so, with the label to
+    /// look for; the row stays INTENDED and the resume lookup (P3) decides.
+    @Test
+    void createWithALostReply_saysTheNodeMayExist_andNamesTheLabelToLookFor() {
+        var hooked = new Hooked();
+        var nodeIds = new ArrayList<String>();
+
+        hooked.onProvision = spec -> {
+            nodeIds.add(spec.context().nodeId().or(""));
+            harness.provider.provision(spec);
+
+            return Causes.cause("HTTP 504 gateway timeout (test cause)").promise();
+        };
+
+        provisionCloud(hooked, 1, cloudRecorder()).onSuccess(_ -> fail("the reply was lost"))
+                                                 .onFailure(cause -> assertThat(cause.message()).contains("HTTP 504 gateway timeout")
+                                                                                                   .contains("may nevertheless exist")
+                                                                                                   .contains("aether-node-id=" + nodeIds.getFirst())
+                                                                                                   .contains("resume"));
+
+        assertThat(ledger.ledger(CLUSTER).resources()).singleElement().extracting(ApplyResource::state).isEqualTo(ApplyResource.State.INTENDED);
     }
 
     /// Parity with the group path: the per-node spec is the group path's spec for the same node id, plus the labels.

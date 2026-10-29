@@ -127,6 +127,7 @@ sealed interface WaveNodeProvisioning {
                                                   LabelCheck labelCheck) {
         return recorder.intend(nodeId, provider)
                        .flatMap(_ -> answered(compute.provision(spec).await(),
+                                              nodeId,
                                               recorder))
                        .flatMap(info -> recordCreated(compute, info, nodeId, provider, recorder, labelCheck));
     }
@@ -161,10 +162,25 @@ sealed interface WaveNodeProvisioning {
         return ! listed.isEmpty() && (created.startsWith(listed) || listed.startsWith(created));
     }
 
-    private static Result<InstanceInfo> answered(Result<InstanceInfo> answer, ApplyRecorder recorder) {
+    private static Result<InstanceInfo> answered(Result<InstanceInfo> answer, String nodeId, ApplyRecorder recorder) {
         recorder.providerAnswered();
 
-        return answer;
+        return answer.mapError(cause -> new CreateUnconfirmed(nodeId, cause));
+    }
+
+    /// A create that failed or whose reply was lost (timeout, 5xx) may nevertheless have created the VM. The row stays
+    /// INTENDED; the resume lookup by label decides (an existing node is adopted, never created twice).
+    record CreateUnconfirmed(String nodeId, Cause origin) implements Cause.Wrapped {
+        @Override
+        public String message() {
+            return "The create call for node " + nodeId
+                 + " failed: " + origin.message()
+                 + ". The node may nevertheless exist at the provider"
+                 + " (look for the label " + NODE_LABEL
+                 + "=" + nodeId
+                 + "); the ledger keeps it as INTENDED and `aether cluster apply --resume`"
+                 + " looks it up and decides, so do not create it again by hand.";
+        }
     }
 
     /// The VM exists from here on. If the label check or the created row fails it is terminated NOW by the id the
@@ -198,7 +214,9 @@ sealed interface WaveNodeProvisioning {
         // FER: when the terminate succeeded, a failed TERMINATED write only leaves the row INTENDED/CREATED for a VM that
         // is gone. Guarantee earned: no billed VM is hidden. Mechanism: the resume lookup by label finds nothing and marks
         // the row ABSENT.
-        outcome.onSuccess(_ -> bestEffort(recorder.terminated(nodeId)));
+        outcome.onSuccess(_ -> bestEffort(recorder.terminated(nodeId)))
+               .onFailure(_ -> bestEffort(recorder.terminateFailed(nodeId,
+                                                                   info.id().value())));
 
         return PartiallyProvisioned.partiallyProvisioned(List.of(node), cause);
     }

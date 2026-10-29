@@ -269,15 +269,18 @@ class ApplyOrchestratorTest {
         @Test
         void executeAndPersist_ledgerIsDurableAndRunning_whenTheExecutorStarts() {
             var seen = new java.util.concurrent.atomic.AtomicReference<ApplyState>();
+            var recorderState = new java.util.concurrent.atomic.AtomicReference<ApplyState>();
 
             run((plan, stored, desired, recorder) -> {
                 seen.set(ApplyState.read(CLUSTER).unwrap().unwrap());
+                recorderState.set(recorder.snapshot());
                 var recorded = createAndRecord("n-1");
                 harness.assertNoLeak(recorded.applyId(), ApplyState.read(CLUSTER).unwrap().unwrap());
                 return countingSuccess(plan, stored, desired, recorder);
             }).onFailure(cause -> fail(cause.message()));
 
             harness.assertAtMostOneCreatePerNodeId();
+            assertEquals(seen.get(), recorderState.get(), "the recorder starts from exactly the ledger that was saved");
             assertEquals(ApplyPhase.RUNNING, seen.get().phase());
             assertEquals(ClusterBootstrapOrchestrator.computeConfigHash(forgeConfig(5)), seen.get().configHash());
             assertEquals(List.of("ScaleUp|forge|core|3->5"), seen.get().actions().stream().map(ApplyAction::key).toList());

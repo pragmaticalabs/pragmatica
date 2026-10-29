@@ -107,6 +107,12 @@ public final class ApplyRecorder {
         return transition(nodeId, Option.none(), ApplyResource.State.TERMINATE_FAILED, Step.S7);
     }
 
+    /// S7, failure side for a VM whose id only the provider's answer carried (the CREATED row was never written): the row
+    /// keeps the server id, so the billed VM survives the loss of the operator's terminal.
+    synchronized Result<Unit> terminateFailed(String nodeId, String serverId) {
+        return transition(nodeId, Option.some(serverId), ApplyResource.State.TERMINATE_FAILED, Step.S7);
+    }
+
     private Result<Unit> transition(String nodeId, Option<String> serverId, ApplyResource.State to, Step step) {
         return state.resources()
                     .stream()
