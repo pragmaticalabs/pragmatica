@@ -571,6 +571,34 @@ class ReplicaFeedClientRelayTest {
         assertThat(mesh.isCore(mesh.subscribeTargets(member).getLast())).isTrue();
     }
 
+    /// A governor whose heartbeat claims a frontier behind the member's (under the same tag) is not a reason to discard the member's position: it sends
+    /// the member back to a core, which resumes it with no snapshot. Mutation: discard the position on such a heartbeat from a governor (drop `behindOrAhead`'s
+    /// governor branch).
+    @Test
+    void aGovernorsHeartbeatBehindTheMember_sendsItBackToACore_keepingItsPosition() {
+        var mesh = meshWithData();
+        var gov = mesh.governorReady("w-gov");
+        var member = mesh.worker("w-1");
+
+        mesh.run(8);
+        assertThat(mesh.subscribeTargets(member)).containsExactly(gov.id);
+        var installs = member.installs.get();
+        var beat = (ReplicaHeartbeat) mesh.log.stream()
+                                             .filter(sent -> sent.to().equals(member.id) && sent.message() instanceof ReplicaHeartbeat)
+                                             .reduce((first, second) -> second)
+                                             .orElseThrow()
+                                             .message();
+
+        member.client.onHeartbeat(new ReplicaHeartbeat(gov.id, beat.requestId(), beat.subSeq() + 1, beat.tag(), 0L, true, 0L));
+        mesh.pump();
+        mesh.run(6);
+
+        assertThat(mesh.isCore(mesh.subscribeTargets(member).getLast())).isTrue();
+        assertThat(mesh.lastSubscribe(member).unwrap().mode()).isEqualTo(SubscribeMode.FROM_ANCHOR);
+        assertThat(member.installs.get()).as("the position was kept").isEqualTo(installs);
+        assertThat(member.readiness.ready()).isTrue();
+    }
+
     /// The governor-ring window: a governor whose ring has recorded no effect batch since its snapshot install can verify no anchor and refuses an anchored
     /// member `EVICTED`. The member's fallback is a core: it keeps its position, resumes there with no snapshot, and asks the governor again only after
     /// the retry interval, so the window costs one refused subscribe per interval and never a snapshot, however long the cluster stays quiet.
