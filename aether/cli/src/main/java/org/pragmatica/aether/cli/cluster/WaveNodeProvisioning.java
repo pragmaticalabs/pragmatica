@@ -169,7 +169,8 @@ sealed interface WaveNodeProvisioning {
     }
 
     /// A create that failed or whose reply was lost (timeout, 5xx) may nevertheless have created the VM. The row stays
-    /// INTENDED; the resume lookup by label decides (an existing node is adopted, never created twice).
+    /// INTENDED. The text says what is true today: `--resume` does not yet look the node up (P3 adds the lookup by label
+    /// and changes this text with it).
     record CreateUnconfirmed(String nodeId, Cause origin) implements Cause.Wrapped {
         @Override
         public String message() {
@@ -178,8 +179,8 @@ sealed interface WaveNodeProvisioning {
                  + ". The node may nevertheless exist at the provider"
                  + " (look for the label " + NODE_LABEL
                  + "=" + nodeId
-                 + "); the ledger keeps it as INTENDED and `aether cluster apply --resume`"
-                 + " looks it up and decides, so do not create it again by hand.";
+                 + "); check the provider for that label before re-running."
+                 + " `aether cluster apply --resume` does not look it up yet and would create the node again.";
         }
     }
 

@@ -371,10 +371,15 @@ public final class ProviderResolver {
                             .flatMap(ProviderResolver::extractCompute);
     }
 
+    /// Test seam (package-private): compute-map entries added to the Docker provider's config, e.g. a unique
+    /// `network_name` so a daemon test never touches the shared default network. Empty in production.
+    static volatile Map<String, String> dockerComputeOverrides = Map.of();
+
     private static Map<String, String> dockerCompute(SourceProfile source, Option<String> image) {
         var compute = new HashMap<>(backupEnvironment(source));
 
         image.onPresent(name -> compute.put("image_name", name));
+        compute.putAll(dockerComputeOverrides);
 
         return Map.copyOf(compute);
     }

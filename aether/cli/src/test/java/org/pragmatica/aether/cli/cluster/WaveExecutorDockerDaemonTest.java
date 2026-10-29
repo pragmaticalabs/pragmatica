@@ -27,11 +27,20 @@ import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 /// wave's Docker add must create the container, pass its own label check and record it, with AETHER_CLUSTER_NAME unset.
 /// Skipped where there is no usable daemon, no local alpine image to derive from, or the variable is exported.
 class WaveExecutorDockerDaemonTest {
-    private final String suffix = HexFormat.of().formatHex(new byte[] {(byte) (System.nanoTime() >> 8), (byte) System.nanoTime(), 7});
+    private final String suffix = randomSuffix();
     private final ClusterName cluster = ClusterName.clusterName("p2daemon" + suffix).unwrap();
     private final String image = "aether-p2-daemon-test:" + suffix;
-    private static final String NETWORK = "aether-network";
-    private boolean createdNetwork;
+    /// The test's OWN network, passed to the provider as `network_name`: the shared default `aether-network` is used by
+    /// the bootstrap tests, and removing it here could pull it from under a concurrent run.
+    private final String network = "aether-p2-net-" + suffix;
+
+    private static String randomSuffix() {
+        var bytes = new byte[6];
+
+        new java.security.SecureRandom().nextBytes(bytes);
+
+        return HexFormat.of().formatHex(bytes);
+    }
 
     @RegisterExtension
     final LedgerDirExtension ledger = new LedgerDirExtension();
@@ -65,8 +74,8 @@ class WaveExecutorDockerDaemonTest {
         Assumptions.assumeTrue(run("FROM " + base.lines().findFirst().orElseThrow() + "\nCMD [\"sleep\", \"300\"]\n", "docker", "build", "-q", "-t", image, "-") != null,
                                "could not build the test image offline");
 
-        // The wave joins the network bootstrap creates; make it exist for the test and remove only what the test made.
-        createdNetwork = run(null, "docker", "network", "inspect", NETWORK) == null && run(null, "docker", "network", "create", NETWORK) != null;
+        Assumptions.assumeTrue(run(null, "docker", "network", "create", network) != null, "could not create the test network");
+        ProviderResolver.dockerComputeOverrides = java.util.Map.of("network_name", network);
     }
 
     @AfterEach
@@ -82,9 +91,8 @@ class WaveExecutorDockerDaemonTest {
 
         run(null, "docker", "rmi", "-f", image);
 
-        if (createdNetwork) {
-            run(null, "docker", "network", "rm", NETWORK);
-        }
+        ProviderResolver.dockerComputeOverrides = java.util.Map.of();
+        run(null, "docker", "network", "rm", network);
     }
 
     @Test
@@ -119,5 +127,8 @@ class WaveExecutorDockerDaemonTest {
         var labelled = run(null, "docker", "ps", "-aq", "--no-trunc", "--filter", "label=aether-apply=" + onDisk.applyId());
 
         assertThat(labelled).as("the container carries the apply label").isEqualTo(onDisk.resources().getFirst().serverId().or(""));
+        assertThat(run(null, "docker", "inspect", "--format", "{{json .NetworkSettings.Networks}}", labelled)).as("the container joined the test's own network, not the shared default")
+                .contains("\"" + network + "\"")
+                .doesNotContain("\"aether-network\"");
     }
 }
