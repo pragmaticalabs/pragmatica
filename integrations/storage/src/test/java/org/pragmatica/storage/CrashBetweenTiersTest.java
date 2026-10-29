@@ -105,6 +105,8 @@ class CrashBetweenTiersTest {
         assertThat(id2).as("same content, same block").isEqualTo(id);
         assertThat(storage.resolveRef("b").unwrap()).isEqualTo(id);
         assertThat(storage.get(id).await().unwrap().isPresent()).as("the new reference stands on readable content").isTrue();
+        assertThat(priv.holds(id)).as("private copy written after the delete, not wiped by it").isTrue();
+        assertThat(shared.holds(id)).as("shared copy written again").isTrue();
         assertThat(lc.refCount()).isEqualTo(1);
         assertThat(lc.sharedDelete()).as("the put revived the block: no authority left").isEqualTo(SharedDelete.NONE);
     }
