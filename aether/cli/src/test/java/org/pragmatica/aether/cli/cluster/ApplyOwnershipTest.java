@@ -17,7 +17,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// Ownership as a provider REPORTS it on a listed server (the client-side half of "a terminate needs both labels").
 class ApplyOwnershipTest {
     private static final String CLUSTER = "prod";
-    private static final String APPLY = "0123456789abcdefghijklmnop";
+    private static final String APPLY = "0123456789abcdefghjkmnpqrs";
 
     private static InstanceInfo listed(Map<String, String> tags) {
         return new InstanceInfo(new InstanceId("srv-1"), InstanceStatus.RUNNING, List.of(), InstanceType.ON_DEMAND, tags);

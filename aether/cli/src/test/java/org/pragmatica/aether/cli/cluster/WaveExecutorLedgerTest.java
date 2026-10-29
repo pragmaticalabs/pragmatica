@@ -679,7 +679,7 @@ class WaveExecutorLedgerTest {
     @Test
     void dockerPerNodeSpec_isTheGroupPathsSpecForTheSameNodeId_plusOnlyTheLabels() {
         var group = NodeGroupConfig.nodeGroupConfig(sourceNameOrDefault("local"), "core", 1, "default", "default", Map.of("aether-cluster", "prod-cluster"));
-        var labels = WaveExecutor.provisionTags(CLUSTER, sourceNameOrDefault("local"), NodeRole.CORE, "0123456789abcdefghijklmnop");
+        var labels = WaveExecutor.provisionTags(CLUSTER, sourceNameOrDefault("local"), NodeRole.CORE, "0123456789abcdefghjkmnpqrs");
         var groupPath = CloudProviderSupport.provisionSpecFor(group, "aether-prod-cluster-node-x", Map.of()).unwrap();
         var perNode = CloudProviderSupport.provisionSpecFor(group, "aether-prod-cluster-node-x", labels).unwrap();
 

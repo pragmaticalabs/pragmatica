@@ -17,7 +17,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// the provider reports it, whatever the selector returned.
 class ApplyLiveSweepTest {
     private static final String CLUSTER = "p3live20261030abcdef1234";
-    private static final String APPLY = "0123456789abcdefghijklmnop";
+    private static final String APPLY = "0123456789abcdefghjkmnpqrs";
 
     private final ApplyChaosHarness harness = new ApplyChaosHarness();
     private final HookedProvider provider = new HookedProvider(harness);
