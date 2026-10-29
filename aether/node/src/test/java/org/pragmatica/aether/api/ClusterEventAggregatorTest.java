@@ -1453,6 +1453,29 @@ class ClusterEventAggregatorTest {
             .isTrue();
     }
 
+    /// The cap is for the code whose subject can be forged and for no other: a recoverable code with a trustworthy subject still publishes its 300th
+    /// open subject, and each of them still gets its recovery.
+    @Test
+    void onOperatorWarning_aNonSpoofableRecoverableCode_publishesItsThreeHundredthOpenSubject() {
+        var t = new AtomicLong(1_000_000L);
+        var h = clocked(t);
+
+        for (var i = 0; i < 300; i++) {
+            h.aggregator().onOperatorWarning(diverged("g:s[" + i + "]"));
+        }
+
+        var diverged = h.events().stream().filter(event -> "stream-consumer-state-diverged".equals(event.details().get("code"))).toList();
+
+        assertThat(diverged).hasSize(300);
+        assertThat(h.aggregator().openCapDropped()).isZero();
+
+        h.aggregator().onOperatorWarning(repaired("g:s[299]"));
+
+        assertThat(h.events().stream().anyMatch(event -> "stream-consumer-state-repaired".equals(event.details().get("code")) && "g:s[299]".equals(event.details().get("subject"))))
+            .as("the 300th subject gets its recovery")
+            .isTrue();
+    }
+
     @Test
     void onOperatorWarning_notOwner_emitsEventCarryingCodeAndSubject() {
         var h = Harness.create(Harness.defaultRetention(), NOT_OWNER);

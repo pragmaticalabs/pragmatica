@@ -202,7 +202,11 @@ public final class ClusterEventAggregator {
     /// never throttled away from one an operator saw. Bounded by the (code, subject) pairs the node can raise.
     private final Set<String> openRecoverable = ConcurrentHashMap.newKeySet();
 
-    /// The most open-or-pending recoverable warnings the aggregator holds per code (#1200). The set above is "bounded by the (code, subject)
+    /// The codes whose subject is an UNAUTHENTICATED value, and which therefore get the cap below. Any other recoverable code keeps every subject
+    /// it raises: dropping a legitimate operator event is the worse failure, and only these subjects can be forged.
+    private static final Set<OperatorWarningCode> SPOOFABLE_SUBJECT_CODES = Set.of(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER);
+
+    /// The most open-or-pending recoverable warnings the aggregator holds per spoofable-subject code (#1200). The set above is "bounded by the (code, subject)
     /// pairs the node can raise", an assumption a code whose subject is an UNAUTHENTICATED value (a UDP source address) breaks: spoofed
     /// subjects never send the recovery, so their marks stay open for ever and every one of them is also an event in the retained ring. A
     /// new subject beyond the cap is dropped here (counted in [#openCapDropped]); the condition is already in the node log. Subjects that
@@ -878,7 +882,7 @@ public final class ClusterEventAggregator {
     }
 
     private void onCondition(OperatorWarning warning, String key) {
-        if (warning.code().hasRecovery() && overOpenCap(warning.code(), key)) {
+        if (SPOOFABLE_SUBJECT_CODES.contains(warning.code()) && overOpenCap(warning.code(), key)) {
             openCapDropped.incrementAndGet();
             LOG.debug("ClusterEventAggregator: dropping OperatorWarning {} for {}: {} recoverable warnings of this code are already open",
                       warning.code().code(),
