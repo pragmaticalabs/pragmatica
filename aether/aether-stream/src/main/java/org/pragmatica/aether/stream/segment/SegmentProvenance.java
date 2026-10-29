@@ -81,10 +81,9 @@ public sealed interface SegmentProvenance {
         var tokens = entries.stream().map(start -> start.key()
                                                         .token()
                                                         .getBytes(StandardCharsets.UTF_8)).toList();
-        var headerSize = Long.BYTES + Short.BYTES + name.length + Integer.BYTES + 2 * Long.BYTES + Integer.BYTES
-                         + tokens.stream()
-                                 .mapToInt(token -> Short.BYTES + token.length + Long.BYTES)
-                                 .sum();
+        var headerSize = Long.BYTES + Short.BYTES + name.length + Integer.BYTES + 2 * Long.BYTES + Integer.BYTES + tokens.stream()
+                                                                                                                         .mapToInt(token -> Short.BYTES + token.length + Long.BYTES)
+                                                                                                                         .sum();
         var buffer = ByteBuffer.allocate(headerSize + events.length).order(ByteOrder.BIG_ENDIAN);
 
         buffer.putLong(MAGIC2)
@@ -130,9 +129,7 @@ public sealed interface SegmentProvenance {
             return Result.success(new Split(none(), block));
         }
 
-        var magic = ByteBuffer.wrap(block)
-                              .order(ByteOrder.BIG_ENDIAN)
-                              .getLong();
+        var magic = ByteBuffer.wrap(block).order(ByteOrder.BIG_ENDIAN).getLong();
 
         if (magic == MAGIC2) {
             return parseIdentified(block);
@@ -173,7 +170,8 @@ public sealed interface SegmentProvenance {
         var buffer = ByteBuffer.wrap(block).order(ByteOrder.BIG_ENDIAN).position(Long.BYTES);
 
         return Result.lift(_ -> cause("Segment provenance header is corrupt"),
-                           () -> readEntries(buffer, buffer.getInt()))
+                           () -> readEntries(buffer,
+                                             buffer.getInt()))
                      .flatMap(entries -> Result.allOf(entries))
                      .map(entries -> new Split(some(entries),
                                                remainder(block,

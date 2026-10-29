@@ -70,8 +70,7 @@ public final class StreamFootprint {
         // #2258: the adopted life's OWN refs that its own durable reclaim floor already reclaimed (a crash came between the
         // floor write and the release) were not installed; they are released now. No other life's ref is touched: other
         // lives are kept and announced (know 6d0c58fd67, d19f755873).
-        index.drainReclaimedBelowFloor()
-             .forEach(refName -> storage.deleteRef(refName, SharedDelete.IF_IDENTIFIED));
+        index.drainReclaimedBelowFloor().forEach(refName -> storage.deleteRef(refName, SharedDelete.IF_IDENTIFIED));
 
         return Promise.success(otherLives(streamName, incarnation));
     }
@@ -141,9 +140,9 @@ public final class StreamFootprint {
 
     private Promise<Unit> dropAll(String streamName, List<String> refNames) {
         return Promise.allOf(refNames.stream().distinct().map(this::release).toList()).map(results -> logFailures(streamName,
-                                                                                                                       results.stream()
-                                                                                                                              .filter(result -> result.isFailure())
-                                                                                                                              .count()));
+                                                                                                                  results.stream()
+                                                                                                                         .filter(result -> result.isFailure())
+                                                                                                                         .count()));
     }
 
     private Promise<Unit> release(String refName) {

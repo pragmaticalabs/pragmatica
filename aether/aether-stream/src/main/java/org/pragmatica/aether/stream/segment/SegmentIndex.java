@@ -38,6 +38,7 @@ public final class SegmentIndex {
     /// Refs of a rebuilt listing that belong to an incarnation this index does not (yet) serve, by stream and
     /// incarnation. [#adopt] installs the matching ones and hands back the rest as garbage.
     private final ConcurrentHashMap<String, Map<Long, List<String>>> staged = new ConcurrentHashMap<>();
+
     /// Refs a rebuild or an adoption found at or below their partition's durable reclaim floor and did not install
     /// (#2258, spec 3.2 item 6): left by a crash between the floor write and the ref release, already reclaimed. The node
     /// releases them ([#drainReclaimedBelowFloor]); nothing reads them.
@@ -85,7 +86,13 @@ public final class SegmentIndex {
         }
 
         public SegmentRef withIdentity(IdentityMark mark) {
-            return new SegmentRef(startOffset, endOffset, maxTimestamp, compressionOrdinal, encrypted, originalSize, mark);
+            return new SegmentRef(startOffset,
+                                  endOffset,
+                                  maxTimestamp,
+                                  compressionOrdinal,
+                                  encrypted,
+                                  originalSize,
+                                  mark);
         }
 
         boolean containsOffset(long offset) {
@@ -137,8 +144,7 @@ public final class SegmentIndex {
         var map = partitions.computeIfAbsent(key, _ -> new ConcurrentSkipListMap<>());
 
         map.put(startOffset,
-                SegmentRef.segmentRef(startOffset, endOffset, maxTimestamp, compressionOrdinal, encrypted, originalSize)
-                          .withIdentity(identity));
+                SegmentRef.segmentRef(startOffset, endOffset, maxTimestamp, compressionOrdinal, encrypted, originalSize).withIdentity(identity));
         sealedThrough.compute(key, (_, current) -> contiguousEnd(map, option(current).or(NOTHING_SEALED)));
     }
 
@@ -480,9 +486,11 @@ public final class SegmentIndex {
            .filter(ref -> ref.endOffset() <= floor)
            .toList()
            .forEach(ref -> {
-               map.remove(ref.startOffset());
-               belowFloor.add(refNameOf(key.streamName(), key.partition(), ref));
-           });
+                        map.remove(ref.startOffset());
+                        belowFloor.add(refNameOf(key.streamName(),
+                                                 key.partition(),
+                                                 ref));
+                    });
     }
 
     /// A ref of the life this index serves for its stream is installed; any other life's is staged for [#adopt].

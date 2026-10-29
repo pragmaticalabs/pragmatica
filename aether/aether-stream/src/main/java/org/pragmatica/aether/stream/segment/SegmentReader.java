@@ -93,14 +93,11 @@ public final class SegmentReader {
     }
 
     private static Result<SegmentFacts> factsOf(String refName, byte[] raw, SegmentProvenance.Split split) {
-        return deserializeAndFilter(refName,
-                                    split.events(),
-                                    Long.MIN_VALUE,
-                                    Integer.MAX_VALUE).map(events -> new SegmentFacts(latestTimestamp(events),
-                                                                                       raw.length,
-                                                                                       split.identified()
-                                                                                       ? SegmentIndex.IdentityMark.IDENTIFIED
-                                                                                       : SegmentIndex.IdentityMark.LEGACY));
+        return deserializeAndFilter(refName, split.events(), Long.MIN_VALUE, Integer.MAX_VALUE).map(events -> new SegmentFacts(latestTimestamp(events),
+                                                                                                                               raw.length,
+                                                                                                                               split.identified()
+                                                                                                                               ? SegmentIndex.IdentityMark.IDENTIFIED
+                                                                                                                               : SegmentIndex.IdentityMark.LEGACY));
     }
 
     private static Option<Long> latestTimestamp(List<RawEvent> events) {

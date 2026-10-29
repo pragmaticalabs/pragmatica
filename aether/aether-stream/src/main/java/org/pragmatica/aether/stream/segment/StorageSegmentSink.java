@@ -117,9 +117,7 @@ public final class StorageSegmentSink implements SegmentSink {
     /// partition and the range, so two different segments never share a content-addressed block, and the provenance slice
     /// as before.
     private static byte[] withIdentity(SealedSegment segment, long incarnation, Option<AppendLog> log) {
-        var slice = log.map(wal -> sliceThrough(wal,
-                                                segment.endOffset()))
-                       .filter(entries -> !entries.isEmpty());
+        var slice = log.map(wal -> sliceThrough(wal, segment.endOffset())).filter(entries -> !entries.isEmpty());
 
         return SegmentProvenance.withIdentity(SegmentIndex.durableName(segment.streamName(), incarnation),
                                               segment.partition(),

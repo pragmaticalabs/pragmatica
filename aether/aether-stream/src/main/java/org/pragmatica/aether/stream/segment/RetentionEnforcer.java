@@ -611,7 +611,6 @@ public final class RetentionEnforcer implements AutoCloseable {
         if (plan.through() <= index.reclaimedThrough(plan.streamName(), plan.partition())) {
             return Promise.success(plan);
         }
-
         // #2258: a floor is a fact of this node, read back from its ref NAME only, so its block stays on private tiers.
         return storage.putRef(plan.floorRef(plan.through()),
                               encodeFloor(plan.through()),
@@ -807,7 +806,12 @@ public final class RetentionEnforcer implements AutoCloseable {
     private Unit recordLearned(SegmentIndex.PartitionKey key,
                                SegmentIndex.SegmentRef ref,
                                SegmentReader.SegmentFacts facts) {
-        index.recordLearned(key.streamName(), key.partition(), ref.startOffset(), facts.maxTimestamp(), facts.size(), facts.identity());
+        index.recordLearned(key.streamName(),
+                            key.partition(),
+                            ref.startOffset(),
+                            facts.maxTimestamp(),
+                            facts.size(),
+                            facts.identity());
 
         return unit();
     }
@@ -915,7 +919,6 @@ public final class RetentionEnforcer implements AutoCloseable {
         var refName = index.refNameOf(streamName, partition, ref);
 
         index.removeSegment(streamName, partition, ref.startOffset());
-
         // deleteRef changes node-local metadata only and settles at once on the production instance.
         var released = storage.deleteRef(refName, authorityOf(ref)).await();
 

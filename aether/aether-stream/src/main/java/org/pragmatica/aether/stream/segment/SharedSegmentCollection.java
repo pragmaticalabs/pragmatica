@@ -24,6 +24,7 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.option;
 
+
 /// The `streams` instance's own run that deletes released segments from every tier, the cluster-shared tier included
 /// (#2258, spec 3.2 item 6): [StorageGarbageCollector#collectSharedDeletes] every [#INTERVAL], bounded by
 /// [SharedDeleteLimits#DEFAULT]. It is separate from the node's 5-minute storage maintenance tick, which demotes and
@@ -46,7 +47,9 @@ public final class SharedSegmentCollection implements AutoCloseable {
     private volatile String nodeId = "local";
     private volatile ScheduledFuture<?> scheduled;
 
-    private SharedSegmentCollection(StorageGarbageCollector collector, SnapshotManager snapshots, SharedDeleteLimits limits) {
+    private SharedSegmentCollection(StorageGarbageCollector collector,
+                                    SnapshotManager snapshots,
+                                    SharedDeleteLimits limits) {
         this.collector = collector;
         this.snapshots = snapshots;
         this.limits = limits;
@@ -72,8 +75,8 @@ public final class SharedSegmentCollection implements AutoCloseable {
     }
 
     public boolean isScheduled() {
-        return !closed.get() && option(scheduled).filter(future -> !future.isCancelled())
-                                                 .isPresent();
+        return ! closed.get() && option(scheduled).filter(future -> !future.isCancelled())
+                                       .isPresent();
     }
 
     @Contract
@@ -93,7 +96,10 @@ public final class SharedSegmentCollection implements AutoCloseable {
         var run = collector.collectSharedDeletes(snapshots, limits);
 
         if (run.deleted() > 0 || run.failed() > 0) {
-            log.debug("Shared-tier segment collection: deleted={} failed={} deferred={}", run.deleted(), run.failed(), run.deferred());
+            log.debug("Shared-tier segment collection: deleted={} failed={} deferred={}",
+                      run.deleted(),
+                      run.failed(),
+                      run.deferred());
         }
 
         report(run);
