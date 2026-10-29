@@ -82,7 +82,7 @@ final class TieredReader implements TieredStreamReader {
     ///   - otherwise the events [SegmentReader] returned, which stop at the first gap between segments (a segment removed
     ///     from the middle): that prefix starts at `fromOffset`, and the next read starts inside the gap and is answered as the
     ///     expiry it is. Events missing INSIDE one segment are passed through as read: only the entity-log fold refuses them
-    ///     (); a plain stream consumer () has no contiguity check and skips them
+    ///     (`SealedHistoryRecoveryTest`); a plain stream consumer (`ConsumerRuntimeState`) has no contiguity check and skips them
     ///     silently (#2497, rc6).
     private Promise<List<RawEvent>> startingAt(String streamName,
                                                int partition,
