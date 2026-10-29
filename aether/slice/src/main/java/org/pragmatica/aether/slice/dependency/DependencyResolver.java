@@ -18,6 +18,8 @@ import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.aether.slice.DefaultSliceBridge;
 import org.pragmatica.aether.slice.SliceCreationContext;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
+import org.pragmatica.aether.slice.ConfigChangeFeed;
+import org.pragmatica.aether.slice.ConfigWatch;
 import org.pragmatica.aether.slice.SliceLoadingContext;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.SliceManifest;
@@ -99,12 +101,38 @@ public interface DependencyResolver {
                                                      Option<Fn2<Option<ConfigurationProvider>, Artifact, ClassLoader>> compositeBuilder,
                                                      Option<SliceCodec> nodeCodec,
                                                      Fn1<Option<ResourceProviderFacade>, ClassLoader> resourceOverlayBuilder) {
+        return resolveWithContext(artifact,
+                                  repository,
+                                  registry,
+                                  sharedLibraryLoader,
+                                  invokerFacade,
+                                  resourceFacade,
+                                  compositeBuilder,
+                                  nodeCodec,
+                                  resourceOverlayBuilder,
+                                  Option.none());
+    }
+
+    /// `configFeed`, when present, is handed to every slice's loading context (the one asked for and each
+    /// `[slices]` dependency) together with THAT slice's artifact, so `Watched`/`Live` declared by any of them
+    /// subscribe under their own artifact (#774).
+    static Promise<ResolvedSlice> resolveWithContext(Artifact artifact,
+                                                     Repository repository,
+                                                     SliceRegistry registry,
+                                                     SharedLibraryClassLoader sharedLibraryLoader,
+                                                     SliceInvokerFacade invokerFacade,
+                                                     ResourceProviderFacade resourceFacade,
+                                                     Option<Fn2<Option<ConfigurationProvider>, Artifact, ClassLoader>> compositeBuilder,
+                                                     Option<SliceCodec> nodeCodec,
+                                                     Fn1<Option<ResourceProviderFacade>, ClassLoader> resourceOverlayBuilder,
+                                                     Option<ConfigChangeFeed> configFeed) {
         Fn1<SliceLoadingContext, Artifact> contextFor = slice -> loadingContextFor(slice,
                                                                                    invokerFacade,
                                                                                    resourceFacade,
                                                                                    compositeBuilder,
                                                                                    nodeCodec,
-                                                                                   resourceOverlayBuilder);
+                                                                                   resourceOverlayBuilder,
+                                                                                   configFeed);
         var loadingContext = contextFor.apply(artifact);
 
         return registry.lookup(artifact)
@@ -126,11 +154,14 @@ public interface DependencyResolver {
                                                          ResourceProviderFacade resourceFacade,
                                                          Option<Fn2<Option<ConfigurationProvider>, Artifact, ClassLoader>> compositeBuilder,
                                                          Option<SliceCodec> nodeCodec,
-                                                         Fn1<Option<ResourceProviderFacade>, ClassLoader> resourceOverlayBuilder) {
+                                                         Fn1<Option<ResourceProviderFacade>, ClassLoader> resourceOverlayBuilder,
+                                                         Option<ConfigChangeFeed> configFeed) {
         var loadingContext = SliceLoadingContext.sliceLoadingContext(invokerFacade,
                                                                      resourceFacade,
                                                                      artifact.asString(),
-                                                                     nodeCodec);
+                                                                     nodeCodec,
+                                                                     configFeed.map(feed -> ConfigWatch.configWatch(feed,
+                                                                                                                    artifact.asString())));
 
         compositeBuilder.onPresent(builder -> loadingContext.setCompositeBuilder(classLoader -> builder.apply(artifact,
                                                                                                               classLoader)));
@@ -391,7 +422,8 @@ public interface DependencyResolver {
             return createSliceFromClass(sliceClass,
                                         loadingContext,
                                         List.of(),
-                                        List.of()).flatMap(slice -> registerSlice(artifact, slice, registry))
+                                        List.of()).onFailure(_ -> loadingContext.releaseConfigWatches())
+                                       .flatMap(slice -> registerSlice(artifact, slice, registry))
                                        .map(slice -> resolvedSlice(slice, loadingContext));
         }
 
@@ -421,9 +453,8 @@ public interface DependencyResolver {
                                                                             SliceRegistry registry) {
         log.info("Creating and registering slice {} with context", artifact.asString());
 
-        return createSliceFromClass(sliceClass, loadingContext, resolvedSlices, sliceDeps).flatMap(slice -> registerSlice(artifact,
-                                                                                                                          slice,
-                                                                                                                          registry))
+        return createSliceFromClass(sliceClass, loadingContext, resolvedSlices, sliceDeps).onFailure(_ -> loadingContext.releaseConfigWatches())
+                                   .flatMap(slice -> registerSlice(artifact, slice, registry))
                                    .map(slice -> resolvedSlice(slice, loadingContext));
     }
 
