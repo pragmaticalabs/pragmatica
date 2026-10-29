@@ -713,6 +713,9 @@ public interface SystemTags {
         pin(table, 2188, "org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaSnapshotRequest");
         pin(table, 2189, "org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaSnapshotChunk");
         pin(table, 2190, "org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaHeartbeat");
+        // per-holder stream registry references (#1978, #2160; owner ruling Q19 (a)) -- next free after 2190
+        pin(table, 2191, "org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistryHolderKey");
+        pin(table, 2192, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistryHolderValue");
         // ---- 2191..16383 RESERVED ----
         rejectDuplicateTags(table);
 

@@ -2217,6 +2217,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                               cause.message()));
         }
 
+        private static final long SLICE_HOLDER_ATTEMPT = 0L;
+
         private enum RefcountAction {
             ACQUIRE,
             RELEASE
@@ -2247,19 +2249,29 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
             for (var declaration : declarations) {
                 bindings.flatMap(b -> b.addressFor(declaration.alias()))
-                        .onPresent(address -> appendRefCommand(registry, commands, address, action));
+                        .onPresent(address -> appendRefCommands(registry, commands, sliceKey, address, action));
             }
 
             return List.copyOf(commands);
         }
 
-        private void appendRefCommand(org.pragmatica.aether.slice.stream.KvBackedStreamRegistry registry,
-                                      List<KVCommand<AetherKey>> sink,
-                                      ResourceAddress address,
-                                      RefcountAction action) {
+        /// One reference per (stream, this node, this artifact): the slice's own holder key (#1978, I-36). Attempt 0, because a node
+        /// has one instance of an artifact at a time; acquire and release of the same instance name the same key.
+        private void appendRefCommands(org.pragmatica.aether.slice.stream.KvBackedStreamRegistry registry,
+                                       List<KVCommand<AetherKey>> sink,
+                                       SliceNodeKey sliceKey,
+                                       ResourceAddress address,
+                                       RefcountAction action) {
             switch (action) {
-                case ACQUIRE -> sink.add(registry.acquireCommand(blueprintTemplate(address)));
-                case RELEASE -> registry.releaseCommand(address).onPresent(sink::add);
+                case ACQUIRE -> sink.addAll(registry.acquireCommands(blueprintTemplate(address),
+                                                                     ctx.self(),
+                                                                     sliceKey.artifact(),
+                                                                     SLICE_HOLDER_ATTEMPT,
+                                                                     ctx.nowMs()));
+                case RELEASE -> sink.add(org.pragmatica.aether.slice.stream.KvBackedStreamRegistry.releaseCommand(address,
+                                                                                                                  ctx.self(),
+                                                                                                                  sliceKey.artifact(),
+                                                                                                                  SLICE_HOLDER_ATTEMPT));
             }
         }
 

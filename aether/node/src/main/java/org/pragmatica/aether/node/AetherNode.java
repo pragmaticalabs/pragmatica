@@ -143,6 +143,7 @@ import org.pragmatica.aether.stream.segment.RetentionEnforcer;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.stream.KvBackedStreamRegistry;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
@@ -2751,6 +2752,9 @@ public interface AetherNode extends ManageableNode {
                                                               aetherEntries));
         var growthLog = LoggerFactory.getLogger(AetherNode.class);
         var selfId = config.self();
+        // #1978 (I-36): the references a node held to stream-registry entries leave with it. Every core node runs the same idempotent sweep.
+        wireStreamRegistrySweep(aetherEntries,
+                                KvBackedStreamRegistry.kvBackedStreamRegistry(clusterNode, kvStore)::sweepHoldersOf);
         var gossipEncryptionOut = SwimAssembly.gossipEncryption(new SwimAssembly.GossipEncryptionInputs(config));
         var rotatingEncryptor = gossipEncryptionOut.rotatingEncryptor();
         var gossipKeyRotationHandler = gossipEncryptionOut.gossipKeyRotationHandler();
@@ -4064,6 +4068,16 @@ public interface AetherNode extends ManageableNode {
             // #964 S2: an unparseable config string is UNRECOGNISED, never the wire sentinel.
             default -> AetherValue.ProvisioningSource.UNRECOGNISED;
         };
+    }
+
+    /// #1978 (I-36): a node that leaves committed membership, or is decommissioned, loses the stream-registry references it held. The
+    /// sweep is idempotent (it removes keys), so running it on every node is the same outcome as running it on one.
+    @Contract
+    static void wireStreamRegistrySweep(List<MessageRouter.Entry<?>> entries, Consumer<NodeId> sweep) {
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
+                                              decision -> sweep.accept(decision.nodeId())));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
+                                              decision -> sweep.accept(decision.nodeId())));
     }
 
     /// RC1 Step 2: register a `MembershipDecision` subscriber against every concrete variant

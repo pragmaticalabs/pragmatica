@@ -13,9 +13,10 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistryHolderKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistryKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistryValue;
 import org.pragmatica.aether.slice.stream.StreamRegistry.StreamRegistryError.General;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -233,54 +234,58 @@ class KvBackedStreamRegistryTest {
 
     @Nested
     class CommandBuilders {
+        private final NodeId holder = NodeId.nodeId("node-1").unwrap();
+        private final Artifact slice = Artifact.artifact("com.example:orders-slice:1.0.0").unwrap();
 
         @Test
-        void acquireCommandOnNewAddressUsesTemplateWithRefcount1() {
+        void acquireCommandsOnNewAddressPutTheEntryTemplateAndTheHoldersOwnKey() {
             var template = blueprintEntry(APP_ORDERS);
 
-            var command = registry.acquireCommand(template);
+            var commands = registry.acquireCommands(template, holder, slice, 0L, 1_000L);
 
-            assertThat(command).isInstanceOf(KVCommand.Put.class);
-            var put = (KVCommand.Put<AetherKey, AetherValue>) command;
-            assertThat(put.key()).isEqualTo(StreamRegistryKey.streamRegistryKey(APP_ORDERS));
-            assertThat(((StreamRegistryValue) put.value()).entry().refCount()).isEqualTo(1);
+            assertThat(commands).hasSize(2);
+            assertThat(commands.get(0).key()).isEqualTo(StreamRegistryKey.streamRegistryKey(APP_ORDERS));
+            assertThat(commands.get(1).key()).isEqualTo(StreamRegistryHolderKey.streamRegistryHolderKey(APP_ORDERS, holder, slice, 0L));
+            assertThat(commands).allMatch(KVCommand.Put.class::isInstance);
         }
 
         @Test
-        void acquireCommandOnExistingIncrements() {
+        void acquireCommandsOnExistingEntryPutOnlyTheHoldersOwnKey() {
             registry.register(blueprintEntry(APP_ORDERS));
 
-            var command = registry.acquireCommand(blueprintEntry(APP_ORDERS));
+            var commands = registry.acquireCommands(blueprintEntry(APP_ORDERS), holder, slice, 0L, 1_000L);
 
-            var put = (KVCommand.Put<AetherKey, AetherValue>) command;
-            assertThat(((StreamRegistryValue) put.value()).entry().refCount()).isEqualTo(2);
+            assertThat(commands).singleElement()
+                                .satisfies(command -> assertThat(command.key()).isEqualTo(StreamRegistryHolderKey.streamRegistryHolderKey(APP_ORDERS, holder, slice, 0L)));
         }
 
         @Test
-        void releaseCommandOnAbsentReturnsNone() {
-            assertThat(registry.releaseCommand(APP_ORDERS).isEmpty()).isTrue();
+        void releaseCommandRemovesOnlyTheHoldersOwnKey() {
+            var command = KvBackedStreamRegistry.releaseCommand(APP_ORDERS, holder, slice, 3L);
+
+            assertThat(command).isInstanceOf(KVCommand.Remove.class);
+            assertThat(command.key()).isEqualTo(StreamRegistryHolderKey.streamRegistryHolderKey(APP_ORDERS, holder, slice, 3L));
         }
 
         @Test
-        void releaseCommandOnLastRefIsRemove() {
+        void aReleaseOfALaterAttemptDoesNotTouchAnEarlierOne() {
             registry.register(blueprintEntry(APP_ORDERS));
+            kvStore.process(kvStore.createBatch(registry.acquireCommands(blueprintEntry(APP_ORDERS), holder, slice, 1L, 1_000L)));
+            kvStore.process(kvStore.createBatch(registry.acquireCommands(blueprintEntry(APP_ORDERS), holder, slice, 2L, 1_001L)));
 
-            var command = registry.releaseCommand(APP_ORDERS);
+            kvStore.process(kvStore.createBatch(List.of(KvBackedStreamRegistry.releaseCommand(APP_ORDERS, holder, slice, 1L))));
 
-            assertThat(command.isPresent()).isTrue();
-            assertThat(command.unwrap()).isInstanceOf(KVCommand.Remove.class);
+            assertThat(registry.lookup(APP_ORDERS).unwrap().refCount()).as("registrar + attempt 2").isEqualTo(2);
         }
 
         @Test
-        void releaseCommandWhenAboveOneIsPutDecremented() {
+        void aSliceHolderKeepsTheEntryVisibleAfterTheRegistrarLetsGo() {
             registry.register(blueprintEntry(APP_ORDERS));
-            registry.acquireReference(APP_ORDERS).await();
+            kvStore.process(kvStore.createBatch(registry.acquireCommands(blueprintEntry(APP_ORDERS), holder, slice, 0L, 1_000L)));
 
-            var command = registry.releaseCommand(APP_ORDERS);
+            registry.releaseReference(APP_ORDERS).await().unwrap();
 
-            assertThat(command.unwrap()).isInstanceOf(KVCommand.Put.class);
-            var put = (KVCommand.Put<AetherKey, AetherValue>) command.unwrap();
-            assertThat(((StreamRegistryValue) put.value()).entry().refCount()).isEqualTo(1);
+            assertThat(registry.lookup(APP_ORDERS).unwrap().refCount()).isEqualTo(1);
         }
     }
 

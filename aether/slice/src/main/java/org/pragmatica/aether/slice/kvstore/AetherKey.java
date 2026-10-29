@@ -2604,6 +2604,38 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
+    /// #1978 / #2160 (I-36, owner ruling Q19 (a)): one reference to a stream-registry entry, held by one holder. The reference count is
+    /// the NUMBER of these keys, never a count one node read and another overwrote: acquire puts the holder's own key, release removes
+    /// only that key, and a crashed holder's key is removed by the departure sweep. `attempt` tells apart two acquires by one holder (a
+    /// delayed release of an earlier attempt cannot remove a later one); the slice path uses attempt 0, there being one instance of an
+    /// artifact per node. Runtime state: it names nodes a restored cluster no longer has.
+    record StreamRegistryHolderKey(ResourceAddress address, NodeId node, Artifact artifact, long attempt) implements RuntimeKey {
+        @Override
+        public String asString() {
+            return "stream-registry-holder/" + address.namespace()
+                                                      .value()
+                 + "/" + address.name()
+                                .value()
+                 + "/" + address.version()
+                                .asString()
+                 + "/" + node.id()
+                 + "/" + artifact.asString()
+                 + "/" + attempt;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static StreamRegistryHolderKey streamRegistryHolderKey(ResourceAddress address,
+                                                                      NodeId node,
+                                                                      Artifact artifact,
+                                                                      long attempt) {
+            return new StreamRegistryHolderKey(address, node, artifact, attempt);
+        }
+    }
+
     // Stage 2 (stream-namespaces) additive graft: per-blueprint alias->ResourceAddress bindings.
     // Persistent/replicated deploy-time state (NOT ephemeral) — written by BlueprintService at
     // deploy and read by the per-slice runtime FSM to resolve refcount targets (spec §8.5).

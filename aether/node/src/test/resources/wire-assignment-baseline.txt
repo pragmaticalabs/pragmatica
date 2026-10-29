@@ -222,6 +222,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$StreamCursorCheckpointKey (s
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$StreamPartitionOwnershipKey (stream:java.lang.String,partition:int)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$StreamPartitionRecoveryKey (stream:java.lang.String,partition:int)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$StreamRegistrationKey (streamName:java.lang.String,configSection:java.lang.String,artifact:org.pragmatica.aether.artifact.Artifact,methodName:org.pragmatica.aether.slice.MethodName)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$StreamRegistryHolderKey (address:org.pragmatica.aether.slice.resource.ResourceAddress,node:org.pragmatica.consensus.NodeId,artifact:org.pragmatica.aether.artifact.Artifact,attempt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$StreamRegistryKey (address:org.pragmatica.aether.slice.resource.ResourceAddress)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$TopicPublisherKey (address:org.pragmatica.aether.slice.resource.ResourceAddress,artifact:org.pragmatica.aether.artifact.Artifact,nodeId:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$TopicSubscriptionKey (address:org.pragmatica.aether.slice.resource.ResourceAddress,artifact:org.pragmatica.aether.artifact.Artifact,methodName:org.pragmatica.aether.slice.MethodName,nodeId:org.pragmatica.consensus.NodeId)
@@ -302,6 +303,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$StreamCursorCheckpointValu
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$StreamPartitionOwnershipValue (owner:org.pragmatica.consensus.NodeId,ownerEpoch:org.pragmatica.aether.slice.generation.Epoch,ownershipTerm:long,transferredAt:org.pragmatica.hlc.HlcTimestamp,isr:java.util.List<org.pragmatica.consensus.NodeId>,isrVersion:long,failoverRefused:boolean,fenced:java.util.List<org.pragmatica.consensus.NodeId>,failoverRefusalSeq:long,epochStarts:java.util.List<org.pragmatica.aether.slice.kvstore.AetherValue$EpochStart>)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$StreamPartitionRecoveryValue (state:org.pragmatica.aether.slice.kvstore.AetherValue$PartitionRecoveryState,reasons:java.util.Set<org.pragmatica.aether.slice.kvstore.AetherValue$PartitionRecoveryReason>)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$StreamRegistrationValue (nodeId:org.pragmatica.consensus.NodeId,consumerGroup:java.lang.String,batchMode:boolean,eventType:java.lang.String)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$StreamRegistryHolderValue (acquiredAtEpochMillis:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$StreamRegistryValue (entry:org.pragmatica.aether.slice.stream.StreamRegistryEntry)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$TopicPublisherValue (nodeId:org.pragmatica.consensus.NodeId,tier:org.pragmatica.aether.slice.kvstore.AetherValue$TopicTier)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$TopicSubscriptionValue (nodeId:org.pragmatica.consensus.NodeId,tier:org.pragmatica.aether.slice.kvstore.AetherValue$TopicTier)
@@ -644,6 +646,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherKey$StreamCursorCheckpointKey 112
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$StreamPartitionOwnershipKey 1132
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$StreamPartitionRecoveryKey 1713
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$StreamRegistrationKey 1133
+TAG  org.pragmatica.aether.slice.kvstore.AetherKey$StreamRegistryHolderKey 2191
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$StreamRegistryKey 1134
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$TopicPublisherKey 2174
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$TopicSubscriptionKey 1135
@@ -740,6 +743,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamCursorCheckpointValue
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamPartitionOwnershipValue 1652
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamPartitionRecoveryValue 1714
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamRegistrationValue 1653
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamRegistryHolderValue 2192
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamRegistryValue 1654
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$TopicPublisherValue 2175
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$TopicSubscriptionValue 2169

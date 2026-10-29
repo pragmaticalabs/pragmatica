@@ -30,13 +30,13 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintStreamBindingsKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistryHolderKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistryKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue.NamedAddress;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistryValue;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -304,41 +304,34 @@ class NodeDeploymentStateStuckReconcileTest {
         assertThat(local.state()).as("the committed %s is adopted into the local view", beyond).isEqualTo(beyond);
     }
 
-    /// The lost-reference hazard: `acquireCommand` is an absolute Put (refCount = applied mirror + 1). This node's first
-    /// write is lost; a SECOND holder acquires the same stream meanwhile (mirror refCount 1); the re-drive must be built
-    /// from the CURRENT mirror and write 2. Replaying the first write's snapshot (1) would leave one count for two
-    /// holders, and the first release would delete the stream under the other.
-    ///
-    /// The mirror cannot tell "another holder acquired" from "this node's own original landed late": in the second case
-    /// the same 2 is written and the instance holds one reference too many. That leak keeps the stream alive (the safe
-    /// direction) and is listed in the PR's known limits; per-holder reference entries (rc5) remove both cases.
+    /// The lost-reference hazard, gone by construction (#2160, I-36): a reference is this node's own holder key, so the re-drive writes
+    /// the SAME key as the lost original. If the original lands late as well there is still one reference for this instance, and
+    /// another holder's reference is a key of its own, never a count both write.
     @Test
-    void theRedriveCountsAHolderThatAcquiredAfterTheLostOriginal() {
+    void theRedriveWritesTheSameHolderKeyAsTheLostOriginal() {
         commit(SliceState.ROUTING);
         var key = seed(SliceState.ROUTING);
 
         activeState().remediateStuckRouting(key);
-        var lost = streamRefPuts(cluster.batches.getFirst()).getFirst();
+        var lost = holderPuts(cluster.batches.getFirst()).getFirst();
 
-        assertThat(refCount(lost)).as("precondition: alone, the first write acquires the first reference").isEqualTo(1);
-        // the other holder's acquire lands; this node's first write never does
         applyToKv(lost);
         cluster.batches.clear();
         commit(SliceState.ROUTING);
 
         activeState().remediateStuckRouting(seed(SliceState.ROUTING));
 
-        assertThat(refCount(streamRefPuts(cluster.batches.getFirst()).getFirst()))
-                .as("the mirror already counts one holder, so the re-drive writes two; a snapshot would write one for two holders")
-                .isEqualTo(2);
+        assertThat(holderPuts(cluster.batches.getFirst()).getFirst().key())
+                .as("the re-drive names the instance's own holder key: the late original and the re-drive are one reference")
+                .isEqualTo(lost.key());
+    }
+
+    private static List<KVCommand<AetherKey>> holderPuts(List<KVCommand<AetherKey>> batch) {
+        return batch.stream().filter(command -> command.key() instanceof StreamRegistryHolderKey).toList();
     }
 
     private static List<KVCommand<AetherKey>> streamRefPuts(List<KVCommand<AetherKey>> batch) {
         return batch.stream().filter(command -> command.key() instanceof StreamRegistryKey).toList();
-    }
-
-    private static int refCount(KVCommand<AetherKey> command) {
-        return ((StreamRegistryValue) ((KVCommand.Put<AetherKey, ?>) command).value()).entry().refCount();
     }
 
     private SliceNodeKey servingSeed(SliceState state) {
