@@ -35,6 +35,7 @@ class KvBackedStreamRegistryHoldersTest {
     private static final ResourceAddress ORDERS = resourceAddress("com.example.app:orders:1.0.0").unwrap();
 
     private KVStore<AetherKey, AetherValue> kvStore;
+    private HeldCluster registrarCluster;
     private HeldCluster nodeA;
     private HeldCluster nodeB;
     private KvBackedStreamRegistry registrar;
@@ -44,7 +45,8 @@ class KvBackedStreamRegistryHoldersTest {
     @BeforeEach
     void setUp() {
         kvStore = new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
-        registrar = new KvBackedStreamRegistry(new HeldCluster("registrar", kvStore), kvStore);
+        registrarCluster = new HeldCluster("registrar", kvStore);
+        registrar = new KvBackedStreamRegistry(registrarCluster, kvStore);
         nodeA = new HeldCluster("node-a", kvStore);
         nodeB = new HeldCluster("node-b", kvStore);
         registryA = new KvBackedStreamRegistry(nodeA, kvStore);
@@ -94,11 +96,11 @@ class KvBackedStreamRegistryHoldersTest {
     @Test
     void sweepOfANodeHoldingNothing_appliesNothing() {
         var before = registrar.lookup(ORDERS).unwrap().refCount();
-        var applies = nodeA.applies();
+        var applies = registrarCluster.applies();
 
-        registryA.sweepHoldersOf(NodeId.nodeId("node-z").unwrap()).await().unwrap();
+        registrar.sweepHoldersOf(NodeId.nodeId("node-z").unwrap()).await().unwrap();
 
-        assertThat(nodeA.applies()).isEqualTo(applies);
+        assertThat(registrarCluster.applies()).isEqualTo(applies);
         assertThat(registrar.lookup(ORDERS).unwrap().refCount()).isEqualTo(before);
     }
 
