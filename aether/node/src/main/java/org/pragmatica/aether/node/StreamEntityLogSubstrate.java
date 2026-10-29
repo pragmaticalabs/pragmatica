@@ -219,9 +219,10 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// (#1240), so on that node the window no longer has to cover the checkpoint lag. A node taking the
     /// partition over reads only its own ring, so there the window must stay ahead of the checkpoint
     /// interval, or the fold refuses rather than serving state missing writes. Age-based eviction is
-    /// pushed far out (a finite value, NOT `Long.MAX_VALUE`, because `evictByAge` computes
-    /// `now - maxAgeMs` and would underflow); size and count do the bounding, and every evicted record is
-    /// handed to the segment sealer, which retains it until it is sealed (#1234).
+    /// pushed far out (a finite value, 365 days, standing in for "never"); the ring age tick
+    /// (`StreamPartitionManager.evictRingsByAge`) excludes `entity:` rings by name, so size and count do the
+    /// bounding, and every evicted record is handed to the segment sealer, which retains it until it is
+    /// sealed (#1234).
     private static StreamConfig entityStreamConfig(String keyspace,
                                                    int partitionCount,
                                                    ReplicationFactors replication) {
