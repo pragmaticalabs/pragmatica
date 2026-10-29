@@ -33,7 +33,7 @@ class ApplyRollbackTest {
         return ApplyOrchestrator.rollback(CLUSTER, scenario.computes(), _ -> {
             drains.incrementAndGet();
             return org.pragmatica.lang.Result.unitResult();
-        }, org.pragmatica.lang.Option::none, out::add);
+        }, () -> org.pragmatica.lang.Result.success(org.pragmatica.lang.Option.none()), out::add);
     }
 
     @Test
@@ -215,7 +215,7 @@ class ApplyRollbackTest {
         ApplyOrchestrator.rollback(CLUSTER, scenario.computes(), node -> {
             drained.add(node);
             return Causes.cause("cluster unreachable (test cause)").result();
-        }, org.pragmatica.lang.Option::none, out::add).onFailure(cause -> fail(cause.message()));
+        }, () -> org.pragmatica.lang.Result.success(org.pragmatica.lang.Option.none()), out::add).onFailure(cause -> fail(cause.message()));
 
         assertThat(drained).containsExactly("n-1");
         assertThat(scenario.provider.terminated).containsExactly(server);
@@ -456,7 +456,7 @@ class ApplyRollbackTest {
                    : scenario.harness.provider.listInstances(filter);
         };
 
-        ApplyOrchestrator.rollback(CLUSTER, scenario.computes(), _ -> org.pragmatica.lang.Result.unitResult(), org.pragmatica.lang.Option::none, out::add)
+        ApplyOrchestrator.rollback(CLUSTER, scenario.computes(), _ -> org.pragmatica.lang.Result.unitResult(), () -> org.pragmatica.lang.Result.success(org.pragmatica.lang.Option.none()), out::add)
                          .onSuccess(_ -> fail("no longer verifiably ours"));
 
         assertThat(scenario.provider.terminated).isEmpty();
@@ -478,7 +478,7 @@ class ApplyRollbackTest {
     @Test
     void rollback_withNoLedger_saysThereIsNothingToRollBack() {
         ApplyOrchestrator.rollback(ClusterName.clusterName("never-applied").unwrap(), _ -> fail("no provider needed"), _ -> org.pragmatica.lang.Result.unitResult(),
-                                   org.pragmatica.lang.Option::none, out::add)
+                                   () -> org.pragmatica.lang.Result.success(org.pragmatica.lang.Option.none()), out::add)
                          .onSuccess(_ -> fail("nothing to roll back"))
                          .onFailure(cause -> assertThat(cause.message()).contains("Nothing to roll back"));
     }

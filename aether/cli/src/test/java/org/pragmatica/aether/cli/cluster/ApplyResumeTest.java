@@ -81,7 +81,7 @@ class ApplyResumeTest {
         return new ApplyScenario(ledger, CLUSTER, recorder);
     }
 
-    private Result<ApplyResult> resume(ApplyScenario scenario, java.util.function.Supplier<Option<ClusterConfigView>> view) {
+    private Result<ApplyResult> resume(ApplyScenario scenario, java.util.function.Supplier<Result<Option<ClusterConfigView>>> view) {
         var desired = desired();
 
         return ApplyOrchestrator.resume(desired, desired, scenario.computes(), (plan, stored, wanted, recorder) -> {
@@ -106,7 +106,7 @@ class ApplyResumeTest {
             rowsSeen.set(recorder.snapshot().resources().size());
 
             return Result.success(ApplyResult.applyResult(plan, 0, 0, 0));
-        }, Option::none).onFailure(cause -> fail(cause.message()));
+        }, () -> Result.success(Option.none())).onFailure(cause -> fail(cause.message()));
 
         assertThat(applyId.get()).as("the same apply, not a fresh one").isEqualTo(scenario.recorder.applyId());
         assertThat(rowsSeen.get()).as("its rows are still there").isEqualTo(1);
@@ -119,7 +119,7 @@ class ApplyResumeTest {
         scenario.createWithLostReply("n-1");
         scenario.provider.onFilteredList = _ -> org.pragmatica.lang.utils.Causes.cause("HTTP 503 (test cause)").promise();
 
-        resume(scenario, Option::none).onSuccess(_ -> fail("must refuse")).onFailure(cause -> assertThat(cause.message()).contains("Nothing was created"));
+        resume(scenario, () -> Result.success(Option.none())).onSuccess(_ -> fail("must refuse")).onFailure(cause -> assertThat(cause.message()).contains("Nothing was created"));
 
         assertThat(executions.get()).as("the executor never ran").isZero();
         assertThat(scenario.harness.provider.totalCreates()).isEqualTo(1);
@@ -132,7 +132,7 @@ class ApplyResumeTest {
 
         scenario.createWithLostReply("n-1");
 
-        resume(scenario, Option::none).onFailure(cause -> fail(cause.message()));
+        resume(scenario, () -> Result.success(Option.none())).onFailure(cause -> fail(cause.message()));
 
         assertThat(scenario.harness.provider.totalCreates()).as("no create on resume").isEqualTo(1);
         assertThat(scenario.provider.filteredListings).as("the lookup ran before the executor").isGreaterThanOrEqualTo(1);
@@ -155,7 +155,7 @@ class ApplyResumeTest {
                 scenario.harness.provider.create("late-node", scenario.labels());
 
                 return Result.success(ApplyResult.applyResult(plan, 0, 0, 0));
-            }, Option::none).onFailure(cause -> fail(cause.message()));
+            }, () -> Result.success(Option.none())).onFailure(cause -> fail(cause.message()));
         } finally {
             System.setOut(originalOut);
         }
@@ -170,7 +170,7 @@ class ApplyResumeTest {
         scenario.createRecorded("n-1");
         scenario.recorder.phase(ApplyPhase.ABORTED).unwrap();
 
-        resume(scenario, Option::none).onSuccess(_ -> fail("aborted: rollback only"))
+        resume(scenario, () -> Result.success(Option.none())).onSuccess(_ -> fail("aborted: rollback only"))
                                       .onFailure(cause -> assertThat(cause.message()).contains("Refused").contains("--rollback"));
 
         assertThat(executions.get()).isZero();
@@ -185,7 +185,7 @@ class ApplyResumeTest {
         scenario.createRecorded("n-1");
         scenario.recorder.phase(ApplyPhase.COMMITTED).unwrap();
 
-        resume(scenario, Option::none).onFailure(cause -> fail(cause.message()));
+        resume(scenario, () -> Result.success(Option.none())).onFailure(cause -> fail(cause.message()));
 
         assertThat(executions.get()).isZero();
         assertThat(scenario.provider.terminated).isEmpty();
@@ -199,7 +199,7 @@ class ApplyResumeTest {
         scenario.createRecorded("n-1");
         scenario.recorder.phase(ApplyPhase.COMMITTING).unwrap();
 
-        resume(scenario, () -> Option.some(new ClusterConfigView("hash-other", 99))).onSuccess(_ -> fail("moved: roll back"))
+        resume(scenario, () -> Result.success(Option.some(new ClusterConfigView("hash-other", 99)))).onSuccess(_ -> fail("moved: roll back"))
                                                                                       .onFailure(cause -> assertThat(cause.message()).contains("Refused"));
 
         assertThat(scenario.onDisk().phase()).as("written before returning").isEqualTo(ApplyPhase.ABORTED);
@@ -212,7 +212,7 @@ class ApplyResumeTest {
 
         scenario.recorder.phase(ApplyPhase.COMMITTING).unwrap();
 
-        resume(scenario, Option::none).onSuccess(_ -> fail("cannot decide"))
+        resume(scenario, () -> Result.success(Option.none())).onSuccess(_ -> fail("cannot decide"))
                                       .onFailure(cause -> assertThat(cause.message()).contains("cannot determine the commit state"));
 
         assertThat(scenario.onDisk().phase()).isEqualTo(ApplyPhase.COMMITTING);
@@ -223,7 +223,7 @@ class ApplyResumeTest {
         var scenario = scenarioWithMatchingHash();
         var other = ClusterBootstrapConfigParser.parse(DOCKER.replace("count = 1", "count = 2")).unwrap();
 
-        ApplyOrchestrator.resume(other, other, scenario.computes(), (plan, stored, wanted, recorder) -> Result.success(ApplyResult.applyResult(plan, 0, 0, 0)), Option::none)
+        ApplyOrchestrator.resume(other, other, scenario.computes(), (plan, stored, wanted, recorder) -> Result.success(ApplyResult.applyResult(plan, 0, 0, 0)), () -> Result.success(Option.none()))
                          .onSuccess(_ -> fail("hash mismatch"))
                          .onFailure(cause -> assertThat(cause.message()).contains("hash mismatch"));
     }

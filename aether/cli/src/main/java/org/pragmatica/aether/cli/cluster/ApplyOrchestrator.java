@@ -67,7 +67,7 @@ public final class ApplyOrchestrator {
                                       ClusterBootstrapConfig currentStored,
                                       Function<String, Result<ComputeProvider>> computeFor,
                                       Fn4<Result<ApplyResult>, DiffPlan, ClusterBootstrapConfig, ClusterBootstrapConfig, ApplyRecorder> executor,
-                                      Supplier<Option<ApplyCommitRecovery.ClusterConfigView>> view) {
+                                      Supplier<Result<Option<ApplyCommitRecovery.ClusterConfigView>>> view) {
         var clusterName = desired.cluster().name();
 
         return loadRequiredState(clusterName).flatMap(state -> validateResumeState(state, desired))
@@ -129,7 +129,7 @@ public final class ApplyOrchestrator {
     static Result<ApplyRollback.Report> rollback(ClusterName cluster,
                                                  Function<String, Result<ComputeProvider>> computeFor,
                                                  ApplyRollback.Drain drain,
-                                                 Supplier<Option<ApplyCommitRecovery.ClusterConfigView>> view,
+                                                 Supplier<Result<Option<ApplyCommitRecovery.ClusterConfigView>>> view,
                                                  Consumer<String> out) {
         return ApplyState.read(cluster)
                          .mapError(cause -> unreadableState(cluster, cause))
@@ -148,11 +148,19 @@ public final class ApplyOrchestrator {
     /// anything runs or is refused, so the next call starts from the proven state.
     private static Result<ApplyState> gate(ApplyState state,
                                            ApplyCommitRecovery.Verb verb,
-                                           Supplier<Option<ApplyCommitRecovery.ClusterConfigView>> view) {
-        var decision = ApplyCommitRecovery.decide(state,
-                                                  state.phase() == ApplyPhase.COMMITTING
-                                                  ? view.get()
-                                                  : Option.none());
+                                           Supplier<Result<Option<ApplyCommitRecovery.ClusterConfigView>>> view) {
+        // The cluster is consulted only when the ledger is COMMITTING; a view that cannot be built refuses before any verb runs.
+        return (state.phase() == ApplyPhase.COMMITTING
+                ? view.get()
+                : success(Option.<ApplyCommitRecovery.ClusterConfigView> none())).flatMap(seen -> gateOn(state,
+                                                                                                         verb,
+                                                                                                         ApplyCommitRecovery.decide(state,
+                                                                                                                                    seen)));
+    }
+
+    private static Result<ApplyState> gateOn(ApplyState state,
+                                             ApplyCommitRecovery.Verb verb,
+                                             ApplyCommitRecovery.Decision decision) {
         var moved = decision.phase() == state.phase()
                     ? success(state)
                     : ApplyState.save(state.withPhase(decision.phase())).map(_ -> state.withPhase(decision.phase()));
@@ -170,14 +178,24 @@ public final class ApplyOrchestrator {
                            : ProviderResolver.resolveCloudComputeForCleanup(provider);
     }
 
-    /// What the cluster holds, or empty when it cannot be read.
-    static Option<ApplyCommitRecovery.ClusterConfigView> clusterView() {
-        return ClusterHttpClient.fetch(CLUSTER_CONFIG_GET)
-                                .flatMap(JsonMapper.defaultJsonMapper()::readTree)
-                                .flatMap(node -> ClusterBootstrapConfigParser.parse(node.path("tomlContent").asText("")).map(config -> new ApplyCommitRecovery.ClusterConfigView(ClusterBootstrapOrchestrator.computeConfigHash(config),
-                                                                                                                                                                                 node.path("configVersion")
-                                                                                                                                                                                     .asLong(0))))
-                                .option();
+    /// What the cluster holds: empty when it cannot be reached (retry later), a typed failure when what it holds cannot be compared
+    /// with this apply's config. The cluster stores the TOML as the operator sent it, references unresolved, while the ledger
+    /// hashes the RESOLVED config, so the stored TOML is parsed through [ClusterApplyCommand#parseResolved] too: both sides then hash
+    /// the same thing, and a landed commit whose config holds a `${env:...}` reference is recognised as landed. A reference that
+    /// does not resolve is a refusal naming it, never a "not landed".
+    static Result<Option<ApplyCommitRecovery.ClusterConfigView>> clusterView() {
+        return ClusterHttpClient.fetch(CLUSTER_CONFIG_GET).fold(_ -> success(Option.none()), ApplyOrchestrator::viewOf);
+    }
+
+    private static Result<Option<ApplyCommitRecovery.ClusterConfigView>> viewOf(String body) {
+        return JsonMapper.defaultJsonMapper()
+                         .readTree(body)
+                         .flatMap(node -> ClusterApplyCommand.parseResolved(node.path("tomlContent").asText("")).map(config -> new ApplyCommitRecovery.ClusterConfigView(ClusterBootstrapOrchestrator.computeConfigHash(config),
+                                                                                                                                                                         node.path("configVersion")
+                                                                                                                                                                             .asLong(0))))
+                         .map(Option::some)
+                         .mapError(cause -> new ApplyAborted("Refused: cannot determine the commit state, the cluster's stored config cannot be compared with this apply's: " + cause.message()
+                                                            + ". Nothing was changed."));
     }
 
     /// Absent state is "nothing to resume"; a state that is present but refused (see

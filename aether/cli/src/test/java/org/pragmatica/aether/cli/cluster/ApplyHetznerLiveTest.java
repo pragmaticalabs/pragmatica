@@ -203,7 +203,7 @@ class ApplyHetznerLiveTest {
             var servers = afterResume.resources().stream().map(row -> row.serverId().or("")).toList();
             var out = new java.util.ArrayList<String>();
 
-            ApplyOrchestrator.rollback(cluster, computes, _ -> org.pragmatica.lang.Result.unitResult(), org.pragmatica.lang.Option::none, out::add).onFailure(cause -> fail(cause.message()));
+            ApplyOrchestrator.rollback(cluster, computes, _ -> org.pragmatica.lang.Result.unitResult(), () -> org.pragmatica.lang.Result.success(org.pragmatica.lang.Option.none()), out::add).onFailure(cause -> fail(cause.message()));
             report.addAll(out);
 
             var stillThere = listByApplyLabel(cleanup, applyId);
@@ -212,7 +212,7 @@ class ApplyHetznerLiveTest {
             assertThat(stillThere).isEmpty();
             assertThat(ApplyState.read(cluster).unwrap().isPresent()).isFalse();
 
-            ApplyOrchestrator.rollback(cluster, computes, _ -> org.pragmatica.lang.Result.unitResult(), org.pragmatica.lang.Option::none, out::add)
+            ApplyOrchestrator.rollback(cluster, computes, _ -> org.pragmatica.lang.Result.unitResult(), () -> org.pragmatica.lang.Result.success(org.pragmatica.lang.Option.none()), out::add)
                              .onSuccess(_ -> fail("a second rollback has nothing to do"))
                              .onFailure(cause -> report.add("second rollback: " + cause.message()));
 
