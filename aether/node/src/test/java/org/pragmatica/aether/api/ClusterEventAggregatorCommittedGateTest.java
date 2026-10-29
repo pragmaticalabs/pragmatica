@@ -58,6 +58,8 @@ class ClusterEventAggregatorCommittedGateTest {
     private StreamPartitionManager manager;
     private ClusterEventAggregator nodeA;
     private ClusterEventAggregator nodeB;
+    private org.pragmatica.aether.slice.stream.FrameworkStreamPublisher<ClusterEvent> publisher;
+    private org.pragmatica.aether.slice.stream.FrameworkStreamConsumer<ClusterEvent> consumer;
 
     @BeforeEach
     void setUp() {
@@ -157,6 +159,25 @@ class ClusterEventAggregatorCommittedGateTest {
         assertThat(raisedBy(nodeA, ClusterEvent.CommunityMemberJoined.class)).containsExactly("node-b");
     }
 
+    /// A snapshot or resync replay re-delivers old notifications: the committed gate suppresses the side effect, like `emit`.
+    @Test
+    void ClusterEvents_replayInProgress_suppressesTheCommittedEmit() {
+        bothNodes(() -> true, () -> true);
+        var replaying = ClusterEventAggregator.clusterEventAggregator(() -> publisher,
+                                                                      () -> consumer,
+                                                                      () -> true,
+                                                                      NODE_B,
+                                                                      HlcClock.hlcClock(NODE_B),
+                                                                      () -> 3,
+                                                                      () -> true,
+                                                                      () -> true);
+
+        replaying.onStreamPartitionOwnershipPut(ownershipPut(NODE_B));
+        replaying.onNodeArtifactPut(loadedPut("n1"));
+
+        assertThat(raisedBy(nodeA)).as("nothing was published while replaying").isEmpty();
+    }
+
     /// The stated residual: a fact that does not originate in a KV notification (an ISR transition) keeps the node-local gate,
     /// whatever the committed record says.
     @Test
@@ -182,8 +203,8 @@ class ClusterEventAggregatorCommittedGateTest {
                                                64L * 1024,
                                                ConsistencyMode.EVENTUAL,
                                                1);
-        var publisher = SystemStreamFactories.<ClusterEvent>systemStreamPublisher(SystemStreams.CLUSTER_EVENTS, manager, CODEC, config).unwrap();
-        var consumer = SystemStreamFactories.<ClusterEvent>systemStreamConsumer(SystemStreams.CLUSTER_EVENTS, manager, CODEC, CODEC, config).unwrap();
+        publisher = SystemStreamFactories.<ClusterEvent>systemStreamPublisher(SystemStreams.CLUSTER_EVENTS, manager, CODEC, config).unwrap();
+        consumer = SystemStreamFactories.<ClusterEvent>systemStreamConsumer(SystemStreams.CLUSTER_EVENTS, manager, CODEC, CODEC, config).unwrap();
 
         nodeA = aggregator(NODE_A, localViewA, publisher, consumer);
         nodeB = aggregator(NODE_B, localViewB, publisher, consumer);
