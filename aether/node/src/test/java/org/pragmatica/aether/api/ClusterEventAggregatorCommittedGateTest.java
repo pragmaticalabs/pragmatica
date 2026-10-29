@@ -108,7 +108,7 @@ class ClusterEventAggregatorCommittedGateTest {
     /// the fact, whatever each node's local view says, so the "neither side passes" window is closed for it.
     @Test
     void ClusterEvents_noOwnershipRecordAtIndex_committedLeaderRaisesIt() {
-        bothNodes(() -> false, () -> true);
+        bothNodes(() -> true, () -> true);
 
         both(leaderPut(NODE_B, 1L), loadedPut("n1"));
 

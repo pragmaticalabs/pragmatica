@@ -133,6 +133,18 @@ class ClusterEventsCommittedGateBootTest {
                                                                                                                  List.of(new KVCommand.Mutation<>(key, expected, value))))));
     }
 
+    /// What the node holds is what the notifications delivered, in commit order, not what the store holds now: a store that is AHEAD of
+    /// the notifications (state restored without a notification) does not move the gate until a notification says so.
+    @Test
+    @Timeout(value = 120, unit = SECONDS)
+    void bootedNode_gatesOnTheLastLeaderNotification_notOnAStoreThatIsAhead() {
+        boot();
+        commitLeaderKey(OTHER, 1_000_000L);
+        restoreSnapshotNaming(node.self());
+
+        assertThat(raisedBy("store-ahead")).as("the leader route holds what the notification delivered").isFalse();
+    }
+
     private void boot() {
         var self = NodeId.nodeId("committed-gate-boot-" + UUID.randomUUID()).unwrap();
 
