@@ -119,6 +119,26 @@ class Http1ResponseOrderTest {
 
             assertThat(statuses(response)).containsExactly("200", "504");
             assertThat(bodies(response)).containsExactly("f1");
+            var timedOut = response.substring(response.indexOf("HTTP/1.1 504"));
+            var headers = timedOut.substring(0, timedOut.indexOf("\r\n\r\n")).toLowerCase();
+
+            assertThat(headers).contains("connection: close").contains("content-type: application/json").contains("x-request-id:");
+            assertThat(timedOut).contains("Gateway Timeout");
+        } finally {
+            server.stop().await(timeSpan(10).seconds());
+        }
+    }
+
+    /// A response timeout of zero disables the bound: a slow handler still gets its own answer, not a 504.
+    @Test
+    void responseTimeoutOfZero_leavesASlowHandlerItsRealAnswer() throws IOException {
+        var server = start(config(timeSpan(0).millis()));
+
+        try {
+            var response = send(server.port(), "GET /slow HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n");
+
+            assertThat(statuses(response)).containsExactly("200");
+            assertThat(bodies(response)).containsExactly("slow");
         } finally {
             server.stop().await(timeSpan(10).seconds());
         }

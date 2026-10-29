@@ -162,6 +162,26 @@ class ResponseSequenceTest {
         assertThat(written).containsExactly("first", "answer");
     }
 
+    @Test
+    void aSlotCompletedBeforeItsTimeout_cancelsItsTimer() {
+        var timers = new java.util.concurrent.ScheduledThreadPoolExecutor(1);
+
+        timers.setRemoveOnCancelPolicy(true);
+
+        try {
+            var sequence = new ResponseSequence(timers, timeSpan(60).seconds());
+            var slot = sequence.reserve();
+
+            sequence.guard(slot, () -> {});
+            assertThat(timers.getQueue()).as("the timer is scheduled").hasSize(1);
+            sequence.complete(slot, () -> {}, false);
+
+            assertThat(timers.getQueue().stream().filter(task -> task instanceof java.util.concurrent.ScheduledFuture<?> f && f.getDelay(TimeUnit.SECONDS) > 30)).as("the 60 s timer is cancelled").isEmpty();
+        } finally {
+            timers.shutdownNow();
+        }
+    }
+
     private static void reserveMany(ResponseSequence sequence, List<ResponseSequence.Slot> into, CountDownLatch finished) {
         for (var i = 0; i < SLOTS; i++) {
             into.add(sequence.reserve());
