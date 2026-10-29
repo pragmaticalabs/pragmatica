@@ -41,6 +41,11 @@ class QuestionMarkEscapeTest {
     }
 
     @Test
+    void unescape_dollarTagWithADigitAfterTheFirstCharacter_isAQuote() {
+        assertThat(QuestionMarkEscape.unescape("SELECT $a1$ ?? $a1$ ?? x")).isEqualTo("SELECT $a1$ ?? $a1$ ? x");
+    }
+
+    @Test
     void unescape_insideComments_isUnchanged() {
         assertThat(QuestionMarkEscape.unescape("a ?? b -- note ??\nc ?? d /* x ?? /* nested ?? */ still ?? */ e ?? f"))
             .isEqualTo("a ? b -- note ??\nc ? d /* x ?? /* nested ?? */ still ?? */ e ? f");
