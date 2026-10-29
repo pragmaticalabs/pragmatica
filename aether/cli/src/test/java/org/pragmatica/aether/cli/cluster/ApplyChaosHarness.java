@@ -162,6 +162,12 @@ final class ApplyChaosHarness {
         private final Map<String, Integer> terminateCalls = new LinkedHashMap<>();
         private int listCalls;
         private int serverSeq;
+        private int failCreateNumber;
+
+        /// The `n`th create (1-based, counting every attempt) is refused by the provider: counted, no VM exists.
+        void failNthCreate(int n) {
+            failCreateNumber = n;
+        }
 
         /// The next create for `nodeId` is accepted and billed at once but becomes listable only after
         /// `listings` more `listInstances` calls (the slow-landing create).
@@ -250,7 +256,9 @@ final class ApplyChaosHarness {
                                         InstanceStatus.RUNNING,
                                         List.of("10.0.0." + serverSeq),
                                         InstanceType.ON_DEMAND,
-                                        Map.copyOf(allTags));
+                                        Map.copyOf(allTags),
+                                        org.pragmatica.lang.Option.some(nodeId),
+                                        org.pragmatica.lang.Option.none());
             var late = lateNodes.remove(nodeId);
 
             if (late == null) {
@@ -266,6 +274,12 @@ final class ApplyChaosHarness {
         @Override
         public Promise<InstanceInfo> provision(ProvisionSpec spec) {
             var context = spec.context();
+
+            if (totalCreates() + 1 == failCreateNumber) {
+                createCalls.merge(context.nodeId().or(""), 1, Integer::sum);
+
+                return Causes.cause("provider refused the create (test cause)").promise();
+            }
 
             return Promise.success(create(context.nodeId().or(""), context.extraTags()));
         }

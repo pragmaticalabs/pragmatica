@@ -31,6 +31,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// composition the leader's auto-heal uses (except `ssh_key_ids`, which are empty on apply; see #1724). Driven against a fake provider that captures each [ProvisionSpec] it is
 /// handed, so the assertions read exactly what a real provider would receive.
 class WaveExecutorCloudProvisioningTest {
+    private static final org.pragmatica.aether.environment.ClusterName CLUSTER = org.pragmatica.aether.environment.ClusterName.clusterName("prod-cluster").unwrap();
+
+    @org.junit.jupiter.api.extension.RegisterExtension
+    final LedgerDirExtension ledger = new LedgerDirExtension();
+
     private static final String ZONED = """
             config_version = "1.0.0"
 
@@ -81,7 +86,7 @@ class WaveExecutorCloudProvisioningTest {
         var provider = new CapturingProvider();
         var desired = parse(ZONED);
 
-        WaveExecutor.provisionCloudNodes(provider, desired, source(desired), NodeRole.WORKER, 1, INPUTS).unwrap();
+        WaveExecutor.provisionCloudNodes(provider, desired, source(desired), NodeRole.WORKER, 1, INPUTS, ledger.recorder(CLUSTER)).unwrap();
 
         var spec = provider.specs.getFirst();
         var userData = spec.userData().or("");
@@ -105,7 +110,7 @@ class WaveExecutorCloudProvisioningTest {
         var provider = new CapturingProvider();
         var desired = parse(ZONED);
 
-        WaveExecutor.provisionCloudNodes(provider, desired, source(desired), NodeRole.CORE, 1, INPUTS).unwrap();
+        WaveExecutor.provisionCloudNodes(provider, desired, source(desired), NodeRole.CORE, 1, INPUTS, ledger.recorder(CLUSTER)).unwrap();
 
         assertThat(provider.specs.getFirst().placement()).isEqualTo(Option.some(new PlacementHint.ZoneHint("fsn1")));
     }
@@ -116,7 +121,7 @@ class WaveExecutorCloudProvisioningTest {
         var provider = new CapturingProvider();
         var desired = parse(ZONELESS);
 
-        WaveExecutor.provisionCloudNodes(provider, desired, source(desired), NodeRole.CORE, 1, INPUTS).unwrap();
+        WaveExecutor.provisionCloudNodes(provider, desired, source(desired), NodeRole.CORE, 1, INPUTS, ledger.recorder(CLUSTER)).unwrap();
 
         assertThat(provider.specs.getFirst().placement()).as("#1695: no zone means no placement hint")
                                                          .isEqualTo(Option.none());
@@ -129,8 +134,8 @@ class WaveExecutorCloudProvisioningTest {
         var provider = new CapturingProvider();
         var desired = parse(ZONED);
 
-        WaveExecutor.provisionCloudNodes(provider, desired, source(desired), NodeRole.CORE, 2, INPUTS).unwrap();
-        WaveExecutor.provisionCloudNodes(provider, desired, source(desired), NodeRole.CORE, 2, INPUTS).unwrap();
+        WaveExecutor.provisionCloudNodes(provider, desired, source(desired), NodeRole.CORE, 2, INPUTS, ledger.recorder(CLUSTER)).unwrap();
+        WaveExecutor.provisionCloudNodes(provider, desired, source(desired), NodeRole.CORE, 2, INPUTS, ledger.recorder(CLUSTER)).unwrap();
 
         var ids = provider.specs.stream()
                                 .map(spec -> spec.context().nodeId().unwrap())
@@ -148,7 +153,7 @@ class WaveExecutorCloudProvisioningTest {
         var provider = new CapturingProvider();
         var desired = parse(ZONED);
 
-        var tracked = WaveExecutor.provisionCloudNodes(provider, desired, source(desired), NodeRole.CORE, 1, INPUTS)
+        var tracked = WaveExecutor.provisionCloudNodes(provider, desired, source(desired), NodeRole.CORE, 1, INPUTS, ledger.recorder(CLUSTER))
                                   .unwrap();
 
         var spec = provider.specs.getFirst();
@@ -171,7 +176,7 @@ class WaveExecutorCloudProvisioningTest {
 
         provider.failOnCall = 3;
 
-        var result = WaveExecutor.provisionCloudNodes(provider, desired, source(desired), NodeRole.CORE, 3, INPUTS);
+        var result = WaveExecutor.provisionCloudNodes(provider, desired, source(desired), NodeRole.CORE, 3, INPUTS, ledger.recorder(CLUSTER));
 
         assertThat(provider.specs).as("the wave stops at the failure").hasSize(3);
         assertThat(provider.terminated).as("every VM the failing step created is destroyed")
@@ -193,7 +198,7 @@ class WaveExecutorCloudProvisioningTest {
         provider.failOnCall = 3;
         provider.terminateFails = "vm-1";
 
-        var result = WaveExecutor.provisionCloudNodes(provider, desired, source(desired), NodeRole.CORE, 3, INPUTS);
+        var result = WaveExecutor.provisionCloudNodes(provider, desired, source(desired), NodeRole.CORE, 3, INPUTS, ledger.recorder(CLUSTER));
         var first = nodeIdOf(provider, 0);
 
         assertThat(result.isFailure()).isTrue();
@@ -251,7 +256,7 @@ class WaveExecutorCloudProvisioningTest {
     @Test
     void createdNodes_sshSourceFailure_listsNoBilledVmAndNoDeleteCommand() {
         var desired = parse(SSH_SOURCE);
-        var created = new WaveExecutor.CreatedNodes();
+        var created = new WaveExecutor.CreatedNodes(ledger.recorder(CLUSTER));
 
         created.record(List.of(org.pragmatica.aether.environment.ProvisionedNode.provisionedNode("dc-1-core-0",
                                                                                                   "ssh",
@@ -313,11 +318,15 @@ class WaveExecutorCloudProvisioningTest {
                 return Promise.failure(org.pragmatica.lang.utils.Causes.cause("capacity exhausted (test cause)"));
             }
 
-            return InstanceInfo.instanceInfo(InstanceId.instanceId("vm-" + specs.size()).unwrap(),
-                                             InstanceStatus.RUNNING,
-                                             List.of("10.0.1." + specs.size()),
-                                             InstanceType.ON_DEMAND)
-                               .async();
+            var tags = new java.util.HashMap<>(spec.context().extraTags());
+
+            tags.put("aether-node-id", spec.context().nodeId().or(""));
+
+            return Promise.success(new InstanceInfo(InstanceId.instanceId("vm-" + specs.size()).unwrap(),
+                                                    InstanceStatus.RUNNING,
+                                                    List.of("10.0.1." + specs.size()),
+                                                    InstanceType.ON_DEMAND,
+                                                    tags));
         }
 
         @Override

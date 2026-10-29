@@ -204,7 +204,7 @@ class ApplyStateLedgerRefusalTest {
                                        ApplyOrchestrator.executeAndPersist(ClusterBootstrapConfigDiff.diff(config(3), config(5)),
                                                                            config(3),
                                                                            config(5),
-                                                                           (plan, stored, desired) -> fail("must not execute")))) {
+                                                                           (plan, stored, desired, recorder) -> fail("must not execute")))) {
                 outcome.onSuccess(result -> fail("a refused ledger must stop the apply"))
                        .onFailure(cause -> {
                            assertThat(cause.message()).contains(applyStatePath().toString()).contains("schema 3");
@@ -237,7 +237,8 @@ class ApplyStateLedgerRefusalTest {
 
         private org.pragmatica.lang.Result<ApplyResult> stubExecutor(org.pragmatica.aether.config.cluster.DiffPlan plan,
                                                                      ClusterBootstrapConfig stored,
-                                                                     ClusterBootstrapConfig desired) {
+                                                                     ClusterBootstrapConfig desired,
+                                                                     ApplyRecorder recorder) {
             executed.incrementAndGet();
 
             return org.pragmatica.lang.Result.success(ApplyResult.applyResult(plan, 0, 0, 0));
