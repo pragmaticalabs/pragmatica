@@ -46,7 +46,7 @@ import org.slf4j.LoggerFactory;
 /// - **after the first rotation the `cluster_secret`-derived key scheme is superseded for good.**
 ///   A node booting afterwards holds only the derived key, so its SWIM gossip is rejected in both
 ///   directions until the consensus replay of the rotation record hands it the cluster key. It
-///   dials its configured peers, so this normally takes seconds (about one second on an in-JVM
+///   dials the cores it was configured with itself, so this normally takes seconds (about one second on an in-JVM
 ///   cluster, #1200), auto-heal replacements and scale-up nodes included; the seeds raise the
 ///   operator event `gossip-key-unknown-from-peer` meanwhile. [GossipKeyDivergenceGuard] refuses a
 ///   boot that never catches up where it is detectable;

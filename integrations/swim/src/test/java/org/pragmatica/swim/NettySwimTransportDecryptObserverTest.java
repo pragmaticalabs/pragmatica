@@ -81,6 +81,35 @@ class NettySwimTransportDecryptObserverTest {
         }
     }
 
+    /// The per-datagram WARN is the record of everything the observer suppresses or evicts, so it must survive: one line per undecryptable datagram,
+    /// naming the sender.
+    @Test
+    void undecryptableDatagram_stillLogsOneWarnPerDatagram_naming_theSender() throws Exception {
+        var port = freeUdpPort();
+        var transport = NettySwimTransport.nettySwimTransport(mock(Serializer.class),
+                                                              mock(Deserializer.class),
+                                                              AesGcmGossipEncryptor.aesGcmGossipEncryptor(HELD_KEY, 1).unwrap())
+                                          .unwrap();
+
+        try (var sender = new DatagramSocket(); var log = org.pragmatica.testlogging.LogCapture.capture(NettySwimTransport.class, org.apache.logging.log4j.Level.WARN, true)) {
+            assertThat(transport.start(port, (_, _) -> {}).await().isSuccess()).isTrue();
+
+            for (var i = 0; i < 3; i++) {
+                send(sender, port, AesGcmGossipEncryptor.aesGcmGossipEncryptor(ROTATED_KEY, 2).unwrap().encrypt(PAYLOAD).unwrap());
+            }
+
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+
+            while (log.messages().size() < 3 && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+
+            assertThat(log.messages()).hasSize(3).allMatch(message -> message.startsWith("Failed to decrypt gossip from /127.0.0.1:") && message.contains("Unknown gossip key ID: 2"));
+        } finally {
+            transport.stop().await();
+        }
+    }
+
     private GossipDecryptObserver recording() {
         return new GossipDecryptObserver() {
             @Override

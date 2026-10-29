@@ -6,6 +6,7 @@ import java.net.InetSocketAddress;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.utility.warning.OperatorWarning;
@@ -35,7 +36,13 @@ class GossipDecryptObserverTest {
         assertThat(published).singleElement().satisfies(warning -> {
             assertThat(warning.code()).isEqualTo(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER);
             assertThat(warning.subject()).isEqualTo("10.0.0.7");
-            assertThat(warning.message()).contains("10.0.0.7").contains("20260914").contains("AETHER_GOSSIP_KEY");
+            assertThat(warning.message()).contains("10.0.0.7")
+                                         .contains("20260914")
+                                         .contains("gossip-key-peer-decrypted")
+                                         .contains("peer list")
+                                         .doesNotContain("AETHER_GOSSIP_KEY")
+                                         .doesNotContain("cannot join")
+                                         .doesNotContain("leader provision");
         });
     }
 
@@ -94,19 +101,96 @@ class GossipDecryptObserverTest {
                                               OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER);
     }
 
-    /// Source addresses of UDP datagrams are spoofable; the set of reported senders is bounded rather than growing with the flood.
+    /// An unknown key id needs no key and a UDP source address is spoofable, so 10,000 distinct senders cost the cluster no more than the window
+    /// budget of events, however many arrive, plus ONE summary naming how many were suppressed; and the observer's memory stays within its caps.
     @Test
-    void unknownKey_flood_isBoundedInMemory_andEveryDistinctSenderStillGetsItsWarning() throws Exception {
-        var distinct = GossipDecryptObserver.Reporting.MAX_REPORTED + 50;
+    void unknownKey_tenThousandSpoofedSenders_raiseOnlyTheWindowBudget_thenOneSummary() throws Exception {
+        var clock = new AtomicLong(1_000_000L);
+        var flooded = GossipDecryptObserver.reporting(() -> sink, clock::get);
 
-        for (var i = 0; i < distinct; i++) {
-            observer.unknownKey(new InetSocketAddress("10." + (i / 256) + "." + (i % 256) + ".1", 7000), 1);
+        for (var i = 0; i < 10_000; i++) {
+            flooded.unknownKey(spoofed(i), 1);
         }
 
-        awaitPublished(Math.min(distinct, OperatorWarningSink.HAND_OFF_CAPACITY));
+        awaitPublished(GossipDecryptObserver.Reporting.MAX_NEW_SENDERS_PER_WINDOW);
+        Thread.sleep(300);
 
-        assertThat(published.size()).as("each distinct sender raised, none twice").isLessThanOrEqualTo(distinct);
-        assertThat(published).extracting(OperatorWarning::subject).doesNotHaveDuplicates();
+        assertThat(published).as("the window budget, not 10,000")
+                             .hasSize(GossipDecryptObserver.Reporting.MAX_NEW_SENDERS_PER_WINDOW)
+                             .extracting(OperatorWarning::code)
+                             .containsOnly(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER);
+        assertThat(((GossipDecryptObserver.Reporting) flooded).reportedCount()).as("remembered senders stay within the cap")
+                                                                                .isLessThanOrEqualTo(GossipDecryptObserver.Reporting.MAX_REPORTED);
+
+        clock.addAndGet(GossipDecryptObserver.Reporting.WINDOW_MILLIS + 1);
+        flooded.unknownKey(spoofed(20_000), 1);
+        awaitPublished(GossipDecryptObserver.Reporting.MAX_NEW_SENDERS_PER_WINDOW + 2);
+
+        var summaries = published.stream()
+                                 .filter(warning -> warning.code() == OperatorWarningCode.GOSSIP_KEY_UNKNOWN_SENDERS_SUPPRESSED)
+                                 .toList();
+
+        assertThat(summaries).as("exactly one aggregate event").hasSize(1);
+        assertThat(summaries.getFirst().subject()).isEqualTo(GossipDecryptObserver.Reporting.SUPPRESSED_SUBJECT);
+        assertThat(summaries.getFirst().message()).as("a lower bound, since the tracking set is capped").startsWith("At least " + GossipDecryptObserver.Reporting.MAX_SUPPRESSED_TRACKED);
+        assertThat(published).as("the sender that opened the new window is reported in it")
+                             .extracting(OperatorWarning::subject)
+                             .contains(spoofed(20_000).getAddress().getHostAddress());
+    }
+
+    @Test
+    void unknownKey_aWindowWithinBudget_raisesNoSummary() throws Exception {
+        var clock = new AtomicLong(1_000_000L);
+        var quiet = GossipDecryptObserver.reporting(() -> sink, clock::get);
+
+        for (var i = 0; i < 5; i++) {
+            quiet.unknownKey(spoofed(i), 1);
+        }
+
+        clock.addAndGet(GossipDecryptObserver.Reporting.WINDOW_MILLIS + 1);
+        quiet.unknownKey(spoofed(100), 1);
+        awaitPublished(6);
+        Thread.sleep(300);
+
+        assertThat(published).hasSize(6).extracting(OperatorWarning::code).containsOnly(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER);
+    }
+
+    /// The reported-sender set evicts its eldest beyond [Reporting#MAX_REPORTED]; an evicted sender that keeps sending is reported again.
+    @Test
+    void unknownKey_moreSendersThanTheSetHolds_evictsTheEldest_whichIsThenReportedAgain() throws Exception {
+        var clock = new AtomicLong(1_000_000L);
+        var bounded = GossipDecryptObserver.reporting(() -> sink, clock::get);
+        var windows = GossipDecryptObserver.Reporting.MAX_REPORTED / GossipDecryptObserver.Reporting.MAX_NEW_SENDERS_PER_WINDOW + 4;
+        var next = 0;
+
+        for (var window = 0; window < windows; window++) {
+            for (var i = 0; i < GossipDecryptObserver.Reporting.MAX_NEW_SENDERS_PER_WINDOW; i++) {
+                bounded.unknownKey(spoofed(next++), 1);
+            }
+
+            clock.addAndGet(GossipDecryptObserver.Reporting.WINDOW_MILLIS + 1);
+        }
+
+        assertThat(((GossipDecryptObserver.Reporting) bounded).reportedCount()).as("the set holds exactly its cap").isEqualTo(GossipDecryptObserver.Reporting.MAX_REPORTED);
+
+        var before = windows * GossipDecryptObserver.Reporting.MAX_NEW_SENDERS_PER_WINDOW;
+
+        awaitPublished(Math.min(before, OperatorWarningSink.HAND_OFF_CAPACITY));
+        Thread.sleep(300);
+        var raised = published.size();
+
+        bounded.unknownKey(spoofed(0), 1);
+        awaitPublished(raised + 1);
+
+        assertThat(published.getLast().subject()).as("the evicted eldest sender is reported again").isEqualTo(spoofed(0).getAddress().getHostAddress());
+    }
+
+    private static InetSocketAddress spoofed(int i) {
+        try {
+            return new InetSocketAddress(java.net.InetAddress.getByAddress(new byte[]{10, (byte) (i >> 16), (byte) (i >> 8), (byte) i}), 7000);
+        } catch (java.net.UnknownHostException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     private void awaitPublished(int expected) throws InterruptedException {

@@ -30,9 +30,11 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///
 /// This pins behaviour that already holds (measured on `c7a53bb7de`, before any change of #1200): the replacement boots on its
 /// `cluster_secret`-derived key, which the rotated cluster rejects, so its SWIM gossip is dropped for about a second; it dials its configured
-/// peers (the SWIM seeding feeds the QUIC dial set without any datagram decrypting), forms quorum, replays the rotation record and recovers.
-/// The issue's "the cycle closes" is not what happens. A change that made the replacement wait on SWIM before dialing, or that kept the
-/// rotation record from reaching it, turns this red.
+/// peers ITSELF after a 2 s isolation grace (`MembershipAssembly.bootstrapInitiator`), forms quorum, replays the rotation record and recovers.
+/// The issue's "the cycle closes" is not what happens. Found by removal, one candidate at a time, on this pin: removing the FSM descriptor seed
+/// from the configured topology (`MembershipAssembly`, "Item 1") alone, or the SWIM seeding alone, leaves it green because the two feeds are
+/// redundant; removing BOTH turns it red, and so does switching the isolation initiator rule off (the replacement then waits for peers to
+/// dial it). A change that made the replacement wait on SWIM before dialing, or that kept the rotation record from reaching it, turns it red too.
 ///
 /// The seeds are named `aa-N` so that they sort below the replacement's `aether-node-...` id: production replacement ids are time-ordered and
 /// sort above their seeds, and QUIC's single-dialer rule has the lower id initiate.

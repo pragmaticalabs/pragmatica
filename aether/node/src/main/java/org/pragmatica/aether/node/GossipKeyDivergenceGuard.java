@@ -26,9 +26,9 @@ import org.slf4j.LoggerFactory;
 /// `cluster_secret`-derived keyId leaves it. A node booting afterwards derives its key from
 /// `cluster_secret` and can neither be understood by the cluster nor understand it, until the
 /// consensus replay of the rotation record hands it the cluster key. That replay normally arrives
-/// within seconds: the node seeds its SWIM protocol from its configured peers, which feeds the QUIC
-/// dial set without any datagram decrypting, so it dials them, forms quorum and syncs (#1200
-/// corrected an earlier claim here that this was a deadlock). This gate covers the node for which it
+/// within seconds: the node dials the cores it was configured with itself, after a 2 s isolation grace
+/// (`MembershipAssembly.bootstrapInitiator`), without any datagram decrypting, so it forms quorum and
+/// syncs (#1200 corrected an earlier claim here that this was a deadlock). This gate covers the node for which it
 /// does not arrive: one that keeps receiving gossip it cannot decrypt, for longer than the arming
 /// delay, without ever decrypting one datagram. It is not getting through to the cluster, and without
 /// this gate it never says so.
@@ -55,8 +55,8 @@ import org.slf4j.LoggerFactory;
 /// It fires only if the cluster SENDS to this node. Peers probe their configured seed set, so a
 /// RESTARTED member is probed and the divergence is detected precisely. A node the cluster has never
 /// heard of — a CTM auto-heal replacement or a scale-up node — is probed by nobody until they
-/// discover it, and its own ANNOUNCE is dropped undecrypted by the seeds. It normally dials its
-/// seeds and replays the rotation record within seconds (#1200), so this gate rarely matters for it;
+/// discover it, and its own ANNOUNCE is dropped undecrypted by the seeds. It normally dials
+/// its configured cores itself and replays the rotation record within seconds (#1200), so this gate rarely matters for it;
 /// if it does not catch up, this gate cannot fire, and the signal is on the healthy seeds: the
 /// `Failed to decrypt gossip from ...` WARN and the operator event `gossip-key-unknown-from-peer`
 /// (with `gossip-key-peer-decrypted` as its recovery). SECURITY.md states this.

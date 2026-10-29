@@ -51,18 +51,24 @@ Two consequences follow directly:
   - **A node that boots after a rotation is out of step with the cluster's gossip for a short
     window, and the seeds say so (#1200).** Its key is derived from `cluster_secret`, which the
     rotated cluster no longer accepts, so its SWIM datagrams are dropped and it cannot decrypt the
-    cluster's. This does not strand it. The node seeds its own SWIM protocol from its configured core
-    peers, which feeds the QUIC dial set without any datagram decrypting (`CoreSwimHealthDetector`
-    `seedMembers` -> `SwimProtocol.addSeedMember` -> `MemberDiscovered` -> `DiscoveredNodes`), so it
-    dials its seeds, forms quorum, syncs, and the replay of the rotation record gives it the cluster
-    key. SWIM then works. Measured on an in-JVM cluster (`EmberGossipKeyRotatedJoinTest`): an
-    auto-healed replacement's gossip was rejected for about a second and the replacement was
-    SWIM-present within seconds. **Not measured on a multi-host cluster.** An earlier version of this
-    text, and of the comment in `AetherNode`, called this an unrecoverable deadlock; that was wrong.
+    cluster's. This does not strand it, because the node does not wait for SWIM to find the cluster:
+    it dials the cores it was configured with (its `--peers`, set from `AETHER_PEERS` for every node
+    the leader mints) itself. A core that has no installed configuration and no connection to any
+    configured core after 2 seconds initiates that dial regardless of the single-dialer order
+    (`MembershipAssembly.bootstrapInitiator`), and its dial targets come from two redundant feeds,
+    the configured topology and SWIM seeding, neither of which needs a datagram to decrypt. It forms
+    quorum, syncs, and the replay of the rotation record gives it the cluster key; SWIM then works.
+    Measured on an in-JVM cluster (`EmberGossipKeyRotatedJoinTest`): the replacement's gossip was
+    rejected for about a second and it was SWIM-present within seconds; the pin goes red when both
+    target feeds, or the initiator rule, are removed. **Not measured on a multi-host cluster.** An
+    earlier version of this text, and of the comment in `AetherNode`, called this an unrecoverable
+    deadlock, and a later one named SWIM seeding as the mechanism; both were wrong.
 
     What an operator sees:
     - On the SEED nodes, the operator event `gossip-key-unknown-from-peer` (WARNING, once per sender
-      address, never a key) when a datagram arrives under a key id they do not hold, and the recovery
+      address until it recovers, never a key; at most 16 new senders per minute, the rest summarised
+      by one `gossip-key-unknown-senders-suppressed` event; the subject carries no port, so two nodes
+      on one host share it) when a datagram arrives under a key id they do not hold, and the recovery
       `gossip-key-peer-decrypted` when that sender's gossip next decrypts. The per-datagram
       `Failed to decrypt gossip from <address>` WARN remains. Source addresses are spoofable, so the
       address in the event is a lead, not proof. An event that is not followed by its recovery means

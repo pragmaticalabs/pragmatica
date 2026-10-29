@@ -2749,14 +2749,19 @@ public interface AetherNode extends ManageableNode {
         // The consequence is a window, not a cycle (corrected under #1200; an earlier version of this
         // comment called it a deadlock). A node booting into a cluster that has already rotated encrypts
         // SWIM under its cluster_secret-derived key, which the rotated accept set no longer contains, so
-        // peers drop its datagrams and it drops theirs. But SWIM is not the only writer of the QUIC dial
-        // set: the node seeds its own SWIM protocol from its configured core peers
-        // (CoreSwimHealthDetector#seedMembers -> SwimProtocol#addSeedMember -> a MemberDiscovered
-        // observation -> DiscoveredNodes), and that needs no decrypt. So the joiner dials its seeds,
-        // forms quorum, syncs, and the replay of the rotation record installs the cluster key, after
-        // which SWIM works. Measured on an in-JVM cluster (EmberGossipKeyRotatedJoinTest): the
-        // replacement's gossip is rejected for about a second and it is SWIM-present within seconds.
-        // TopologyObserverTest.SwimOnlyDialSet pins only that the observer itself starts self-only.
+        // peers drop its datagrams and it drops theirs. But it does not wait for SWIM to find the
+        // cluster: a genesis-pending core with no connection to any configured core after
+        // PENDING_CORE_ISOLATION_GRACE (2 s) initiates the dial itself, regardless of the single-dialer
+        // order (MembershipAssembly#bootstrapInitiator -> isolatedPendingCore), toward the cores it was
+        // configured with (--peers, set from AETHER_PEERS for every node the leader mints). Its dial
+        // targets come from two redundant feeds that need no decrypt: the FSM descriptors seeded from
+        // the configured topology (MembershipAssembly, "Item 1 (activation)") and SWIM seeding
+        // (CoreSwimHealthDetector#seedMembers/#seedPeerDirectory). So the joiner forms quorum, syncs, and
+        // the replay of the rotation record installs the cluster key, after which SWIM works. Measured
+        // on an in-JVM cluster (EmberGossipKeyRotatedJoinTest): the replacement's gossip is rejected for
+        // about a second and it is SWIM-present within seconds; the pin goes red when both feeds, or
+        // the initiator rule, are removed. TopologyObserverTest.SwimOnlyDialSet pins only that the
+        // observer itself starts self-only.
         // The seeds log the rejected datagrams and raise `gossip-key-unknown-from-peer` (and
         // `gossip-key-peer-decrypted` when the sender recovers). GossipKeyRotationBootDivergenceTest
         // pins the encryptor-level divergence only. Admission is a different matter: it is

@@ -24,8 +24,8 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_GOS
 /// rotation carries no decrypt overlap — there is no prior record to carry — so boot-key ciphertext
 /// is rejected the moment it lands; later rotations carry the previous key. A node booting
 /// afterwards holds only the `cluster_secret`-derived key, so its gossip is rejected both ways until
-/// the consensus replay of the rotation record hands it the cluster key; it dials its configured
-/// peers, so this normally takes seconds (#1200), and the seeds raise `gossip-key-unknown-from-peer`
+/// the consensus replay of the rotation record hands it the cluster key; it dials the cores it
+/// was configured with itself, so this normally takes seconds (#1200), and the seeds raise `gossip-key-unknown-from-peer`
 /// meanwhile. And rotation protects only against a leaked gossip key: a holder of `cluster_secret`
 /// is still admitted and replays the record (#2474).
 @Command(name = "rotate-gossip-key", description = "Rotate the SWIM gossip encryption key in place (ADMIN; after a suspected gossip-key leak)")

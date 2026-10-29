@@ -2769,8 +2769,8 @@ accepting the previous one for the overlap. Use it after a suspected gossip-key 
 **Before you run this, know the limits — SECURITY.md has the detail.** The **first** rotation has no
 overlap, because there is no prior record whose key could be carried; it replaces the boot key
 outright. A node booting afterwards holds only the derived key, so its gossip is rejected in both
-directions until the consensus replay of the rotation record hands it the cluster key; it dials its
-configured peers, so this normally takes seconds (measured about a second on an in-JVM cluster,
+directions until the consensus replay of the rotation record hands it the cluster key; it dials the
+cores it was configured with itself, so this normally takes seconds (measured about a second on an in-JVM cluster,
 #1200). And rotation protects only against a leaked **gossip key**: admission is
 `cluster_secret`-derived mutual TLS, so a holder of `cluster_secret` still joins and replays the
 record (#2474). Existing running nodes keep working.
