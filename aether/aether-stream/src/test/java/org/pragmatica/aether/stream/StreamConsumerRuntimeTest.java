@@ -1466,6 +1466,34 @@ class StreamConsumerRuntimeTest {
             }
         }
 
+        /// The timer is armed by the first ack after a commit and by no other: fifty acks inside one cadence schedule one task,
+        /// not fifty.
+        @Test
+        void quietPartition_manyAcksInsideACadence_armOneTimer() throws Exception {
+            createTestStream("orders");
+            var commits = new CopyOnWriteArrayList<Long>();
+            var delivered = new CopyOnWriteArrayList<Long>();
+            var storeRuntime = (ConsumerRuntimeState) streamConsumerRuntime(manager,
+                                                                            DeadLetterHandler.deadLetterHandler(),
+                                                                            recordingStore(commits));
+
+            try {
+                storeRuntime.subscribe("orders",
+                                       0,
+                                       ConsumerConfig.consumerConfig("group-1", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 30_000L, 3, ""),
+                                       (offset, payload, ts) -> record(delivered, offset),
+                                       IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED);
+                for (var event = 0; event < 50; event++) {
+                    manager.publishLocal("orders", 0, ("event-" + event).getBytes(UTF_8), 1000L + event);
+                }
+                awaitCursorAt(storeRuntime, "orders", 0, "group-1", 50L, 10_000);
+
+                assertThat(storeRuntime.trailingCommitTimersArmed()).isEqualTo(1L);
+            } finally {
+                storeRuntime.close();
+            }
+        }
+
         /// A head the delivery path already committed is not committed again by the timer that was armed before it: the
         /// first ack arms the timer inside the first cadence, the second ack (past the cadence) commits through the periodic
         /// trigger, and the timer then finds nothing ahead of that commit.

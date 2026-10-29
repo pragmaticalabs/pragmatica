@@ -53,6 +53,8 @@ class StreamReadRouterTest {
     private final SealedTierFixture tier = new SealedTierFixture();
     /// How many answers carry the owner's real bounds before its ring starts answering a tail of -1.
     private volatile int realAnswers = Integer.MAX_VALUE;
+    /// When set, every answer carries exactly these bounds (earliest retained, visible head).
+    private volatile long[] forcedBounds = null;
     private final AtomicInteger answers = new AtomicInteger();
     private final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
     private final List<Long> delivered = new CopyOnWriteArrayList<>();
@@ -147,22 +149,57 @@ class StreamReadRouterTest {
 
     /// What the wire carries when the owner's ring is closing: `tailOffset()` answers -1, the visible head is as it was.
     private ReadForwardResponse boundsOf(ReadForwardResponse response) {
+        return Option.option(forcedBounds).map(bounds -> withBounds(response, bounds[0], bounds[1])).or(() -> closingAfterRealAnswers(response));
+    }
+
+    private ReadForwardResponse closingAfterRealAnswers(ReadForwardResponse response) {
         return answers.incrementAndGet() > realAnswers
-               ? new ReadForwardResponse(response.sender(),
-                                         response.correlationId(),
-                                         response.success(),
-                                         response.events(),
-                                         response.truncated(),
-                                         response.errorMessage(),
-                                         -1L,
-                                         response.visibleHead(),
-                                         response.history(),
-                                         response.historyVouched(),
-                                         response.ownerEpoch(),
-                                         response.divergenceResumeAt(),
-                                         response.divergenceLossFrom(),
-                                         response.refusal())
+               ? withBounds(response, -1L, response.visibleHead())
                : response;
+    }
+
+    private static ReadForwardResponse withBounds(ReadForwardResponse response, long earliestRetained, long visibleHead) {
+        return new ReadForwardResponse(response.sender(),
+                                       response.correlationId(),
+                                       response.success(),
+                                       response.events(),
+                                       response.truncated(),
+                                       response.errorMessage(),
+                                       earliestRetained,
+                                       visibleHead,
+                                       response.history(),
+                                       response.historyVouched(),
+                                       response.ownerEpoch(),
+                                       response.divergenceResumeAt(),
+                                       response.divergenceLossFrom(),
+                                       response.refusal());
+    }
+
+    private StreamPartitionManager.EpochRead.Position positionOfForwardedRead(long fromOffset, long earliestRetained, long visibleHead) {
+        forcedBounds = new long[] {earliestRetained, visibleHead};
+
+        return forwardingRouter().readValidated(STREAM, PARTITION, fromOffset, 3, Epoch.ZERO).await().unwrap().position();
+    }
+
+    @Test
+    void forwardedRead_belowAKnownTail_isATierRead() {
+        assertThat(positionOfForwardedRead(5L, 20L, 29L)).isEqualTo(StreamPartitionManager.EpochRead.Position.TIER);
+    }
+
+    @Test
+    void forwardedRead_atAKnownTail_isARingRead() {
+        assertThat(positionOfForwardedRead(20L, 20L, 29L)).isEqualTo(StreamPartitionManager.EpochRead.Position.RING);
+    }
+
+    @Test
+    void forwardedRead_ownerRingTailUnknown_isNamedUnknown() {
+        assertThat(positionOfForwardedRead(5L, -1L, 29L)).isEqualTo(StreamPartitionManager.EpochRead.Position.UNKNOWN);
+    }
+
+    /// An owner that answers no bounds at all (it holds no ring) names no tier read.
+    @Test
+    void forwardedRead_ownerWithoutARing_isARingRead() {
+        assertThat(positionOfForwardedRead(5L, -1L, -1L)).isEqualTo(StreamPartitionManager.EpochRead.Position.RING);
     }
 
     private void consume(StreamReadRouter router) {

@@ -133,6 +133,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     private final ConcurrentHashMap<ConsumerKey, ConsumerState> consumers = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final ScheduledFuture<?> idleConsumerChecker;
+    private final AtomicLong trailingCommitTimersArmed = new AtomicLong(0);
     /// #654: node-wide count of cursor commits (final flush or periodic checkpoint) that resolved
     /// with a failure or never settled at all ([#reportIfUnsettled]). One counted incident per commit:
     /// whichever of [#reportIfUnsettled], [#onCursorCommitFailure], or [#reportIfLocalOnly] first wins
@@ -1956,8 +1957,15 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     @Contract
     private void armTrailingCommit(ConsumerKey key, ConsumerState state) {
         if (state.claimTrailingCommit()) {
+            trailingCommitTimersArmed.incrementAndGet();
             SharedScheduler.schedule(() -> trailingCommit(key, state), state.checkpointInterval());
         }
+    }
+
+    /// Test seam (#1385): how many trailing-commit timers were scheduled over this runtime's life. One per burst, never one
+    /// per ack.
+    long trailingCommitTimersArmed() {
+        return trailingCommitTimersArmed.get();
     }
 
     @Contract
