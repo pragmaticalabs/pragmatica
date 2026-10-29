@@ -414,7 +414,8 @@ public sealed interface WorkerHierarchyAssembly {
                                                                                                                                                  peers),
                                                                                                                       installPeers,
                                                                                                                       installEndpoints,
-                                                                                                                      () -> projectionReady(clusterNode, workerReady),
+                                                                                                                      () -> projectionReady(clusterNode,
+                                                                                                                                            workerReady),
                                                                                                                       message -> metadataFailureReporter.report(config.self(),
                                                                                                                                                                 message),
                                                                                                                       metadataFailureReporter::report,
@@ -689,9 +690,11 @@ public sealed interface WorkerHierarchyAssembly {
     }
 
     /// The projection client's first-fresh callback (DARK path): set the engine's passive-client latch, then the worker-ready step.
-    static void projectionReady(RabiaNode<KVCommand<AetherKey>> clusterNode, Runnable workerReady) {
+    static Unit projectionReady(RabiaNode<KVCommand<AetherKey>> clusterNode, Runnable workerReady) {
         clusterNode.authorizePassiveClient();
         workerReady.run();
+
+        return Unit.unit();
     }
 
     /// What a WORKER activation directive does to the engine's readiness: DARK sets the passive-client latch (the live setter); LIVE does
