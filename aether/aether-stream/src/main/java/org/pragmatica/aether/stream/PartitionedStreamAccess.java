@@ -12,7 +12,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.stream.IntStream;
-import java.util.stream.Stream;
 
 import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.ReadPreference;
@@ -24,7 +23,6 @@ import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.segment.CursorStore;
-import org.pragmatica.aether.stream.segment.SegmentError;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
@@ -38,7 +36,6 @@ import org.pragmatica.serialization.Serializer;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.allOf;
-import static org.pragmatica.lang.Result.success;
 
 
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01"})
@@ -59,7 +56,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     private final int partitionCount;
     private final Option<Function<T, Object>> partitionKeyExtractor;
     private final CursorCheckpointWriter cursorWriter;
-    private final Option<TieredStreamReader> tieredReader;
+    private final SealedTierFallback tierFallback;
     private final Option<CursorStore> cursorStore;
     private final ReadPreference readPreference;
     private final Option<ReplicaRegistry> replicaRegistry;
@@ -144,7 +141,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
         this.partitionCount = partitionCount;
         this.partitionKeyExtractor = partitionKeyExtractor;
         this.cursorWriter = cursorWriter;
-        this.tieredReader = tieredReader;
+        this.tierFallback = SealedTierFallback.sealedTierFallback(partitionManager, tieredReader);
         this.cursorStore = cursorStore;
         this.readPreference = readPreference;
         this.replicaRegistry = replicaRegistry;
@@ -735,119 +732,19 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                                             int partition,
                                                             long fromOffset,
                                                             int maxEvents) {
-        if (cause instanceof StreamError.CursorExpired expired) {
-            return readEvicted(partition, fromOffset, maxEvents, expired.requestedOffset());
+        if (cause instanceof StreamError.CursorExpired) {
+            return readEvicted(partition, fromOffset, maxEvents);
         }
 
         return cause.promise();
     }
 
-    /// An offset the ring no longer holds is IN FLIGHT while the segment sealer still retains it (#1234): its
-    /// seal may not have landed yet (it may also already be indexed — the sealer lets it go only after), and the
-    /// caller must back off and re-read rather than skip it. Asked BEFORE the cold read: the sink indexes a segment before the sealer lets it go, so
-    /// an offset not retained at this point is already findable in the index — there is no instant at which
-    /// it is in neither place.
-    private Promise<List<StreamEvent<T>>> readEvicted(int partition,
-                                                      long fromOffset,
-                                                      int maxEvents,
-                                                      long expiredOffset) {
-        return partitionManager.sealInFlight(streamName, partition, fromOffset)
-               ? new SegmentError.SealInFlight(streamName, partition, fromOffset).promise()
-               : readWithSegmentFallback(partition, fromOffset, maxEvents, expiredOffset);
-    }
-
-    private Promise<List<StreamEvent<T>>> readWithSegmentFallback(int partition,
-                                                                  long fromOffset,
-                                                                  int maxEvents,
-                                                                  long expiredOffset) {
-        return tieredReader.map(reader -> readFromTieredReader(reader, partition, fromOffset, maxEvents))
-                           .or(() -> cursorExpiredPromise(partition, expiredOffset));
-    }
-
-    private Promise<List<StreamEvent<T>>> cursorExpiredPromise(int partition, long expiredOffset) {
-        return new StreamError.CursorExpired(expiredOffset,
-                                             partitionManager.partitionBuffer(streamName, partition)
-                                                             .map(OffHeapRingBuffer::tailOffset)
-                                                             .or(0L)).promise();
-    }
-
-    /// The cold read is bounded by the partition's VISIBLE position exactly as the ring read is (#1352):
-    /// DROP_OLDEST seals every evictee, acknowledged or not — the WAL and the replicas hold it, and its publisher
-    /// was told at most that the outcome is unknown — so the durable tier can hold offsets above visible, and
-    /// serving one there would expose an event the ring refuses for the same offset. An offset above visible
-    /// reads as the ring reads it (`OffHeapRingBuffer.readChecked`: `fromOffset > head` ⇒ `[]`, nothing yet);
-    /// below it the tier is asked for no more than `[fromOffset, visible]`. Visible only rises, so a consumer
-    /// waiting here is woken by the same advance that would wake it on the ring.
-    private Promise<List<StreamEvent<T>>> readFromTieredReader(TieredStreamReader reader,
-                                                               int partition,
-                                                               long fromOffset,
-                                                               int maxEvents) {
-        var visible = visibleOffset(partition);
-
-        if (fromOffset > visible) {
-            return Promise.success(List.of());
-        }
-
-        return reader.read(streamName,
-                           partition,
-                           fromOffset,
-                           (int) Math.min(maxEvents, visible - fromOffset + 1))
-                     .flatMap(sealedEvents -> combineWithBufferEvents(sealedEvents, partition, fromOffset, maxEvents));
-    }
-
-    /// `-1` (nothing visible) when the partition has no ring here — this path is reached only after a local
-    /// ring read, so that is a ring released under the reader, and nothing may be served from the tier in its name.
-    private long visibleOffset(int partition) {
-        return partitionManager.partitionBuffer(streamName, partition)
-                               .map(OffHeapRingBuffer::visibleOffset)
-                               .or(-1L);
-    }
-
-    /// Continue a cold read into the ring (#1234). With nothing sealed at `fromOffset` the ring is the only
-    /// remaining source, so its failure — `CursorExpired` for an offset held by neither tier — is returned
-    /// as-is: answering `[]` here stalled the consumer at that cursor forever. After a sealed prefix, a ring
-    /// failure is absorbed by FER (degrade forward, [#bufferReadFallback]): the sealed prefix is returned and
-    /// the next read, which starts right after it, reaches this method with nothing sealed and surfaces the
-    /// failure then — the consumer makes progress and still sees the error at the exact offset it occurs.
-    /// The one exception is a corrupted ring (#1247 review M2), which fails the read on either path.
-    private Promise<List<StreamEvent<T>>> combineWithBufferEvents(List<OffHeapRingBuffer.RawEvent> sealedEvents,
-                                                                  int partition,
-                                                                  long fromOffset,
-                                                                  int maxEvents) {
-        var remaining = maxEvents - sealedEvents.size();
-        var sealed = toStreamEvents(sealedEvents, partition);
-
-        if (remaining <= 0) {
-            return Promise.success(sealed);
-        }
-
-        if (sealedEvents.isEmpty()) {
-            return readBufferEvents(partition, fromOffset, remaining).async();
-        }
-
-        return readBufferEvents(partition,
-                                sealedEvents.getLast().offset() + 1,
-                                remaining).fold(this::bufferReadFallback, Result::success)
-                               .map(bufferEvents -> List.copyOf(Stream.concat(sealed.stream(),
-                                                                              bufferEvents.stream())
-                                                                      .toList()))
-                               .async();
-    }
-
-    private Result<List<StreamEvent<T>>> readBufferEvents(int partition, long fromOffset, int maxEvents) {
-        return partitionManager.readServing(streamName, partition, fromOffset, maxEvents)
-                               .map(rawEvents -> toStreamEvents(rawEvents, partition));
-    }
-
-    /// FER (degrade forward) for the ring tail after a segment fallback: any buffer failure except a
-    /// corrupted ring returns the sealed events alone — a short read the consumer continues from its next
-    /// offset, which is what this path always did. A corrupted ring is the exception (#1247 review M2): its
-    /// events cannot be trusted and "no buffer events" would silently truncate the read, so
-    /// [StreamError.RingIndexCorrupted] reaches the caller.
-    private Result<List<StreamEvent<T>>> bufferReadFallback(Cause cause) {
-        return cause instanceof StreamError.RingIndexCorrupted
-               ? cause.result()
-               : success(List.of());
+    /// An offset the ring no longer holds is answered by [SealedTierFallback], the one decision the consumer paths share
+    /// (#2201 C-16): in flight while the sealer retains it, else the tier bounded by the visible position, continued into
+    /// the ring.
+    private Promise<List<StreamEvent<T>>> readEvicted(int partition, long fromOffset, int maxEvents) {
+        return tierFallback.read(streamName, partition, fromOffset, maxEvents)
+                           .map(rawEvents -> toStreamEvents(rawEvents, partition));
     }
 
     private List<StreamEvent<T>> toStreamEvents(List<OffHeapRingBuffer.RawEvent> rawEvents, int partition) {

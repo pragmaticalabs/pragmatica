@@ -357,10 +357,29 @@ public final class ProviderResolver {
                             .flatMap(ProviderResolver::extractCompute);
     }
 
+    /// The provider for a WAVE add: scoped to the apply's cluster. A scope-less Docker provider refuses to list or
+    /// terminate ("no cluster scope known") unless the host exports AETHER_CLUSTER_NAME, and the wave does both (the
+    /// label check after the create, the terminate of an unrecorded container).
+    static Result<ComputeProvider> resolveDockerComputeForCluster(SourceProfile source,
+                                                                  Option<String> image,
+                                                                  ClusterName cluster) {
+        var compute = new HashMap<>(dockerCompute(source, image));
+
+        compute.put("cluster_name", cluster.value());
+
+        return lookupFactory("docker").flatMap(factory -> factory.create(dockerCloudConfig(Map.copyOf(compute))))
+                            .flatMap(ProviderResolver::extractCompute);
+    }
+
+    /// Test seam (package-private): compute-map entries added to the Docker provider's config, e.g. a unique
+    /// `network_name` so a daemon test never touches the shared default network. Empty in production.
+    static volatile Map<String, String> dockerComputeOverrides = Map.of();
+
     private static Map<String, String> dockerCompute(SourceProfile source, Option<String> image) {
         var compute = new HashMap<>(backupEnvironment(source));
 
         image.onPresent(name -> compute.put("image_name", name));
+        compute.putAll(dockerComputeOverrides);
 
         return Map.copyOf(compute);
     }

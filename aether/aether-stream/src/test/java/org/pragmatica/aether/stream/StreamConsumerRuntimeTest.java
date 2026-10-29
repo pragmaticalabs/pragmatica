@@ -264,7 +264,7 @@ class StreamConsumerRuntimeTest {
             manager.publishLocal("orders", 0, "event".getBytes(), 1000L);
             // Wait for retries to exhaust (5 retries with backoff)
             Thread.sleep(5000);
-            var dlEntries = runtime.deadLetterHandler().read("orders", 10);
+            var dlEntries = runtime.deadLetterHandler().read("orders", 10).await().unwrap();
 
             assertThat(dlEntries).isNotEmpty();
             assertThat(dlEntries.getFirst().offset()).isEqualTo(0L);
@@ -298,7 +298,7 @@ class StreamConsumerRuntimeTest {
             // First event was skipped, second delivered
             assertThat(deliveredOffsets).contains(0L, 1L);
             // Dead letter should have the skipped event
-            var dlEntries = runtime.deadLetterHandler().read("orders", 10);
+            var dlEntries = runtime.deadLetterHandler().read("orders", 10).await().unwrap();
 
             assertThat(dlEntries).isNotEmpty();
             assertThat(dlEntries.getFirst().offset()).isEqualTo(0L);
@@ -358,7 +358,7 @@ class StreamConsumerRuntimeTest {
                 assertThat(tailLatch.await(10, TimeUnit.SECONDS)).isTrue();
                 assertThat(deliveredOffsets).containsExactly(0L, 1L, 2L);
                 // Exactly one entry: failed append attempts must not mint duplicates.
-                var dlEntries = flakyRuntime.deadLetterHandler().read("orders", 10);
+                var dlEntries = flakyRuntime.deadLetterHandler().read("orders", 10).await().unwrap();
 
                 assertThat(dlEntries).hasSize(1);
                 assertThat(dlEntries.getFirst().offset()).isEqualTo(0L);
@@ -398,7 +398,7 @@ class StreamConsumerRuntimeTest {
                 manager.publishLocal("orders", 0, "next".getBytes(UTF_8), 2000L);
                 assertThat(tailLatch.await(10, TimeUnit.SECONDS)).isTrue();
                 assertThat(deliveredOffsets).containsExactly(0L, 1L);
-                assertThat(flakyRuntime.deadLetterHandler().read("orders", 10)).hasSize(1);
+                assertThat(flakyRuntime.deadLetterHandler().read("orders", 10).await().unwrap()).hasSize(1);
             } finally {
                 flakyRuntime.close();
             }
@@ -458,7 +458,7 @@ class StreamConsumerRuntimeTest {
                 awaitOffset(delivered, 1L, 2_000);
                 assertThat(delivered).describedAs("the backlog already in the ring is delivered after the dead-letter, with no further append")
                                      .containsExactly(1L);
-                assertThat(observedRuntime.deadLetterHandler().read("orders", 10)).singleElement()
+                assertThat(observedRuntime.deadLetterHandler().read("orders", 10).await().unwrap()).singleElement()
                           .extracting(DeadLetterEntry::offset)
                           .isEqualTo(0L);
                 awaitCursorAt(observedRuntime, "orders", 0, "group-dlq", 2L, 5_000);
@@ -504,7 +504,7 @@ class StreamConsumerRuntimeTest {
         }
 
         @Override
-        public List<DeadLetterEntry> read(String streamName, int maxCount) {
+        public Promise<List<DeadLetterEntry>> read(String streamName, int maxCount) {
             return delegate.read(streamName, maxCount);
         }
     }
@@ -551,7 +551,7 @@ class StreamConsumerRuntimeTest {
             manager.publishLocal("orders", 0, "next".getBytes(UTF_8), 2000L);
             awaitSize(1);
             assertThat(delivered).describedAs("the event behind the throwing one is delivered").containsExactly(1L);
-            assertThat(runtime.deadLetterHandler().read("orders", 10)).describedAs("the throwing event is dead-lettered once")
+            assertThat(runtime.deadLetterHandler().read("orders", 10).await().unwrap()).describedAs("the throwing event is dead-lettered once")
                                                                       .hasSize(1);
         }
 
@@ -759,7 +759,7 @@ class StreamConsumerRuntimeTest {
                 assertThat(sink.thrown.get()).describedAs("control: the sink really threw once").isEqualTo(1);
                 assertThat(delivered).describedAs("the next event is delivered past a sink that threw synchronously")
                                      .contains(1L);
-                assertThat(throwingRuntime.deadLetterHandler().read("orders", 10)).describedAs("the poison event is still dead-lettered once the sink recovers")
+                assertThat(throwingRuntime.deadLetterHandler().read("orders", 10).await().unwrap()).describedAs("the poison event is still dead-lettered once the sink recovers")
                                                                                   .hasSize(1);
             } finally {
                 throwingRuntime.close();
@@ -830,7 +830,7 @@ class StreamConsumerRuntimeTest {
             manager.publishLocal("orders", 0, "next".getBytes(UTF_8), 2000L);
             awaitContains(delivered, 1L);
             assertThat(delivered).containsExactly(1L);
-            assertThat(runtime.deadLetterHandler().read("orders", 10)).hasSize(1);
+            assertThat(runtime.deadLetterHandler().read("orders", 10).await().unwrap()).hasSize(1);
         }
 
         /// #1266 review F2: every outcome ends with the holds clear — cancellation included.
@@ -975,7 +975,7 @@ class StreamConsumerRuntimeTest {
         }
 
         @Override
-        public List<DeadLetterEntry> read(String streamName, int maxCount) {
+        public Promise<List<DeadLetterEntry>> read(String streamName, int maxCount) {
             return delegate.read(streamName, maxCount);
         }
     }
@@ -1003,7 +1003,7 @@ class StreamConsumerRuntimeTest {
         }
 
         @Override
-        public List<DeadLetterEntry> read(String streamName, int maxCount) {
+        public Promise<List<DeadLetterEntry>> read(String streamName, int maxCount) {
             return delegate.read(streamName, maxCount);
         }
     }
@@ -1043,7 +1043,7 @@ class StreamConsumerRuntimeTest {
         }
 
         @Override
-        public List<DeadLetterEntry> read(String streamName, int maxCount) {
+        public Promise<List<DeadLetterEntry>> read(String streamName, int maxCount) {
             return delegate.read(streamName, maxCount);
         }
     }
@@ -2672,20 +2672,32 @@ class StreamConsumerRuntimeTest {
     /// #1238 [unverified] item, traced: a ring released on role loss (`completeRelease` -> `ring.close()`,
     /// which clears the append listeners) leaves a consumer that stays assigned here with neither a
     /// listener nor a poller. The periodic attachment check must notice and fall back to polling.
+    ///
+    /// The delivery loop's pass that delivered offset 0 can still be running (or run once more, on a notification that
+    /// arrived during it) when the cursor shows 1, and its next read, with the ring already gone, is served by the owner's
+    /// log: offsets 1 and 2 reach the handler although no listener or poller exists, which the "nothing moves" control
+    /// reads as a defect. So the owner's log is closed (`ownerServing` false, reads return nothing) until the loop has been
+    /// silent for a window, and opened only then: from that point only a listener or a poller could deliver.
     @Nested
     class RingReleasedUnderConsumer {
         private static final long REMOTE_HEAD_EXCLUSIVE = 3L;
+        private static final long SILENT_WINDOW_MS = 300;
+        private static final long AWAIT_BOUND_MS = 30_000;
 
         @Test
         void revalidatePushAttachments_fallsBackToPolling_whenTheRingIsReleased() throws Exception {
             var releasing = streamPartitionManager(64 * 1024 * 1024L);
             var role = new AtomicReference<>(Role.OWNER);
             var delivered = new CopyOnWriteArrayList<Long>();
+            var ownerServing = new AtomicBoolean(false);
+            var reads = new AtomicInteger();
             var consumer = new ConsumerRuntimeState(releasing,
                                                     DeadLetterHandler.deadLetterHandler(),
                                                     none(),
                                                     none(),
                                                     (stream, partition, from, max) -> localOrRemote(releasing,
+                                                                                                    ownerServing,
+                                                                                                    reads,
                                                                                                     stream,
                                                                                                     partition,
                                                                                                     from,
@@ -2715,9 +2727,16 @@ class StreamConsumerRuntimeTest {
                 releasing.reconcileReshuffle();
                 assertThat(releasing.partitionBuffer("s", 0).isPresent()).describedAs("ring released on role loss")
                           .isFalse();
-                Thread.sleep(300);
+                awaitNoReadsFor(reads);
+                assertThat(delivered).describedAs("the loop is silent and the owner's log is closed").containsExactly(0L);
+
+                var readsBeforeOpening = reads.get();
+
+                ownerServing.set(true);
+                Thread.sleep(SILENT_WINDOW_MS);
                 assertThat(delivered).describedAs("the defect state: listener cleared by close, no poller — nothing moves")
                           .containsExactly(0L);
+                assertThat(reads.get()).describedAs("and nothing reads the owner's log either").isEqualTo(readsBeforeOpening);
 
                 consumer.revalidatePushAttachments();
                 awaitSize(delivered, 3);
@@ -2745,12 +2764,19 @@ class StreamConsumerRuntimeTest {
         /// Stands in for the node's routed reader: local while the ring is here, else the owner's log
         /// (offsets `from` .. [#REMOTE_HEAD_EXCLUSIVE]).
         private static Promise<List<OffHeapRingBuffer.RawEvent>> localOrRemote(StreamPartitionManager local,
+                                                                                AtomicBoolean ownerServing,
+                                                                                AtomicInteger reads,
                                                                                 String stream,
                                                                                 int partition,
                                                                                 long from,
                                                                                 int max) {
+            reads.incrementAndGet();
             if (local.partitionBuffer(stream, partition).isPresent()) {
                 return local.readLocal(stream, partition, from, max).async();
+            }
+
+            if (!ownerServing.get()) {
+                return Promise.success(List.of());
             }
 
             return Promise.success(LongStream.range(from, REMOTE_HEAD_EXCLUSIVE)
@@ -2767,11 +2793,25 @@ class StreamConsumerRuntimeTest {
         }
 
         private static void awaitSize(List<Long> delivered, int size) throws InterruptedException {
-            var deadline = System.currentTimeMillis() + 2_000;
+            var deadline = System.currentTimeMillis() + AWAIT_BOUND_MS;
 
             while (delivered.size() < size && System.currentTimeMillis() < deadline) {
                 Thread.sleep(10);
             }
+            assertThat(delivered).describedAs("deliveries within %d ms", AWAIT_BOUND_MS).hasSizeGreaterThanOrEqualTo(size);
+        }
+
+        /// Returns once the reader has not been called for [#SILENT_WINDOW_MS]: no pass is running or about to run.
+        private static void awaitNoReadsFor(AtomicInteger reads) throws InterruptedException {
+            var deadline = System.currentTimeMillis() + AWAIT_BOUND_MS;
+            var seen = reads.get();
+
+            Thread.sleep(SILENT_WINDOW_MS);
+            while (reads.get() != seen && System.currentTimeMillis() < deadline) {
+                seen = reads.get();
+                Thread.sleep(SILENT_WINDOW_MS);
+            }
+            assertThat(reads.get()).describedAs("the delivery loop went silent within %d ms", AWAIT_BOUND_MS).isEqualTo(seen);
         }
     }
 

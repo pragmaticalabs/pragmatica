@@ -43,7 +43,7 @@ public interface JooqConnector extends DatabaseConnector {
         };
     }
 
-    static <R extends Record> Result<R> extractSingleResult(org.jooq.Result<R> result) {
+    static <R extends Record> Result<R> extractSingleResult(List<R> result) {
         if (result.isEmpty()) {
             return DatabaseConnectorError.ResultNotFound.INSTANCE.result();
         }
@@ -55,7 +55,7 @@ public interface JooqConnector extends DatabaseConnector {
         return Result.success(result.getFirst());
     }
 
-    static <R extends Record> Option<R> extractOptionalResult(org.jooq.Result<R> result) {
+    static <R extends Record> Option<R> extractOptionalResult(List<R> result) {
         return result.isEmpty()
                ? Option.none()
                : Option.some(result.getFirst());

@@ -20,10 +20,11 @@ class WaveExecutorTest {
     // wiring at the point the fix changed: the real cluster name reaches the group tags.
     @Test
     void provisionTags_carriesRealClusterSourceAndRole() {
-        var tags = WaveExecutor.provisionTags(clusterName("prod-cluster").unwrap(), sourceNameOrDefault("eu-1"), NodeRole.CORE);
+        var tags = WaveExecutor.provisionTags(clusterName("prod-cluster").unwrap(), sourceNameOrDefault("eu-1"), NodeRole.CORE, "0123456789abcdefghijklmnop");
 
         assertEquals("prod-cluster", tags.get("aether-cluster"));
         assertEquals("eu-1", tags.get("aether-source"));
         assertEquals("core", tags.get("aether-role"));
+        assertEquals("0123456789abcdefghijklmnop", tags.get("aether-apply"));
     }
 }

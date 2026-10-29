@@ -113,6 +113,17 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING.level()).isEqualTo(WarningLevel.WARNING);
     }
 
+    /// #2201 C-16, owner ruling 2026-10-28 on Q11: a cursor expiry is critical and closed by an INFO recovery of the same
+    /// subsystem when the cursor is re-established; both wire strings are pinned.
+    @Test
+    void cursorExpired_isCritical_andIsClosedByCursorResumed() {
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED.code()).isEqualTo("stream-consumer-cursor-expired");
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED.level()).isEqualTo(WarningLevel.CRITICAL);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_RESUMED.code()).isEqualTo("stream-consumer-cursor-resumed");
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_RESUMED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_RESUMED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED);
+    }
+
     /// #2450 A3-0: a corrupt durable anchor is critical and closed by an INFO recovery of the same subsystem.
     @Test
     void anchorCorrupt_isCritical_andIsClosedByAnInfoRecovery() {
@@ -313,5 +324,22 @@ class OperatorWarningCodeTest {
                              .filter(entry -> entry.getValue() > 1)
                              .map(Map.Entry::getKey))
             .containsExactly("a-b");
+    }
+    /// Operators match on the wire string, level and category (#1574), so the gossip-key pair and its summary (#1200) are pinned as shipped.
+    @Test
+    void gossipKeyCodes_areStable_theirLevelsAndPairingAsShipped() {
+        assertThat(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER.code()).isEqualTo("gossip-key-unknown-from-peer");
+        assertThat(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER.subsystem()).isEqualTo("membership");
+        assertThat(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER.hasRecovery()).isTrue();
+        assertThat(OperatorWarningCode.GOSSIP_KEY_PEER_DECRYPTED.code()).isEqualTo("gossip-key-peer-decrypted");
+        assertThat(OperatorWarningCode.GOSSIP_KEY_PEER_DECRYPTED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.GOSSIP_KEY_PEER_DECRYPTED.subsystem()).isEqualTo("membership");
+        assertThat(OperatorWarningCode.GOSSIP_KEY_PEER_DECRYPTED.recoveryOf().or(OperatorWarningCode.JSON_CONFIG_APPLIED))
+            .isEqualTo(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER);
+        assertThat(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_SENDERS_SUPPRESSED.code()).isEqualTo("gossip-key-unknown-senders-suppressed");
+        assertThat(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_SENDERS_SUPPRESSED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_SENDERS_SUPPRESSED.subsystem()).isEqualTo("membership");
+        assertThat(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_SENDERS_SUPPRESSED.recoveryOf().isEmpty()).as("a point event").isTrue();
     }
 }
