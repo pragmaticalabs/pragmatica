@@ -166,6 +166,16 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         return false;
     }
 
+    /// Sets and clears the readiness [#isPassiveClientReady] reports (W-OBS W3); the replica readiness computation is the only caller.
+    default org.pragmatica.lang.Unit setPassiveClientReady(boolean ready) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// Fires the post-restore listeners ([#onStateRestored]) after a worker installed its replica snapshot (W-OBS W3).
+    default org.pragmatica.lang.Unit completePassiveRestore() {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
     default Result<Unit> installPassiveCoreDirectory(List<NodeId> members) {
         return ReconfigurationError.NOT_PASSIVE_CLIENT.result();
     }
@@ -786,6 +796,16 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             @Override
             public boolean isPassiveClientReady() {
                 return consensus().isPassiveClientReady();
+            }
+
+            @Override
+            public org.pragmatica.lang.Unit setPassiveClientReady(boolean ready) {
+                return consensus().setPassiveClientReady(ready);
+            }
+
+            @Override
+            public org.pragmatica.lang.Unit completePassiveRestore() {
+                return consensus().completePassiveRestore();
             }
 
             @Override

@@ -63,8 +63,7 @@ public final class ApplyOrchestrator {
     }
 
     private static Cause unreadableState(ClusterName clusterName, Cause cause) {
-        return new ApplyAborted("The apply state for cluster '" + clusterName
-                               + "' is unreadable and was left untouched: " + cause.message());
+        return new ApplyAborted("The apply state for cluster '" + clusterName + "' is unreadable: " + cause.message());
     }
 
     private static Result<DiffPlan> computeValidPlan(ClusterBootstrapConfig desired,
@@ -182,28 +181,34 @@ public final class ApplyOrchestrator {
                          .flatMap(_ -> persistInitialAndExecute(plan, stored, desired, executor));
     }
 
+    /// The ledger is written BEFORE the executor runs and a failed write stops the apply: VMs created with no
+    /// ledger behind them cannot be resumed, rolled back or even named. A failed executor leaves the state in
+    /// place (phase RUNNING) for `--resume`/`--rollback`.
     private static Result<ApplyResult> persistInitialAndExecute(DiffPlan plan,
                                                                 ClusterBootstrapConfig stored,
                                                                 ClusterBootstrapConfig desired,
                                                                 Fn3<Result<ApplyResult>, DiffPlan, ClusterBootstrapConfig, ClusterBootstrapConfig> executor) {
         var clusterName = desired.cluster().name();
-        var configHash = ClusterBootstrapOrchestrator.computeConfigHash(desired);
-        var state = ApplyState.initialState(clusterName,
-                                            configHash,
-                                            Instant.now().toString());
 
-        ApplyState.save(state);
-
-        return executor.apply(plan, stored, desired)
-                       .onSuccess(_ -> ApplyState.delete(clusterName))
-                       .onFailure(_ -> markStateFailed(state));
+        return ApplyState.save(startedState(plan, desired))
+                         .flatMap(_ -> executor.apply(plan, stored, desired))
+                         .onSuccess(_ -> clearFinishedState(clusterName));
     }
 
-    @Contract
-    private static void markStateFailed(ApplyState state) {
-        var failed = state.withWaveStatus(state.currentWaveIndex(), ApplyState.WaveStatus.FAILED);
+    private static ApplyState startedState(DiffPlan plan, ClusterBootstrapConfig desired) {
+        return ApplyState.startedApply(desired.cluster().name(),
+                                       ClusterBootstrapOrchestrator.computeConfigHash(desired),
+                                       0L,
+                                       Instant.now().toString(),
+                                       ApplyAction.fromPlan(plan));
+    }
 
-        ApplyState.save(failed);
+    // FER: the apply already succeeded, so a state file that cannot be removed is reported, not failed. Guarantee
+    // earned: the exit status tells the truth about the VMs. Mechanism: the leftover file is readable, and the
+    // next apply replaces it (executeAndPersist refuses only an UNREADABLE one).
+    @Contract
+    private static void clearFinishedState(ClusterName clusterName) {
+        ApplyState.delete(clusterName).onFailure(cause -> System.err.println("Warning: the apply succeeded but its state file could not be removed: " + cause.message()));
     }
 
     private static Result<ApplyState> validateResumeState(ApplyState state, ClusterBootstrapConfig desired) {
