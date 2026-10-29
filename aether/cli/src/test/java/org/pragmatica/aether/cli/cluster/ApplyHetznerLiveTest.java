@@ -13,7 +13,6 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.pragmatica.aether.config.cluster.CloudCredentialSchema;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
-import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.config.cluster.DiffAction;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.environment.ClusterName;
@@ -44,8 +43,8 @@ class ApplyHetznerLiveTest {
     private static final java.security.SecureRandom RANDOM = new java.security.SecureRandom();
     /// Dated and random: the sweep's safety must not depend on nobody else using a `p3live*` name.
     private static final String CLUSTER_NAME = "p3live" + java.time.LocalDate.now().toString().replace("-", "") + randomHex(5);
-    /// The credentials reference an operator writes (`${env:HCLOUD_TOKEN}`), resolved by [ConfigReferenceResolver] exactly as
-    /// `aether cluster bootstrap` resolves it. The scalar `credentials` is the Hetzner `api_token` verbatim, so a literal here
+    /// The credentials reference an operator writes (`${env:HCLOUD_TOKEN}`), resolved by [ClusterApplyCommand#parseResolved], the reader
+    /// `aether cluster apply --resume` uses (it resolves references exactly as `aether cluster bootstrap` does). The scalar `credentials` is the Hetzner `api_token` verbatim, so a literal here
     /// (it once said "hcloud-token") is sent to Hetzner as the token and answered with 401.
     private static final String CONFIG = configFor("HCLOUD_TOKEN");
 
@@ -84,9 +83,10 @@ class ApplyHetznerLiveTest {
 
     private final ClusterName cluster = ClusterName.clusterName(CLUSTER_NAME).unwrap();
 
-    /// The config as the operator's tooling hands it to the wave: `${env:...}` references resolved from the environment.
+    /// The config as `aether cluster apply --resume` reads it: through the command's own reader, not a resolver call of the test's
+    /// own, so the paid run exercises the apply's credential path.
     private static ClusterBootstrapConfig resolved(String toml) {
-        return ClusterBootstrapConfigParser.parse(ConfigReferenceResolver.resolveAll(toml).unwrap()).unwrap();
+        return ClusterApplyCommand.parseResolved(toml).unwrap();
     }
 
     /// Always runs: the api_token the create path is configured with is the ENVIRONMENT's value, never the reference text or a
@@ -135,8 +135,9 @@ class ApplyHetznerLiveTest {
         var desired = resolved(CONFIG);
         var source = desired.sources().get("eu-1");
         var action = ApplyAction.actionKey(new DiffAction.AddRole(sourceNameOrDefault("eu-1"), NodeRole.WORKER, SERVERS));
+        // the create path exactly as WaveExecutor builds it, the lookup/audit/rollback provider through the function the apply uses
         var compute = ProviderResolver.resolveCloudCompute(source).unwrap();
-        var cleanup = ProviderResolver.resolveCloudComputeForCleanup("hetzner").unwrap();
+        var cleanup = ApplyOrchestrator.productionComputes(cluster).apply("hetzner").unwrap();
         var report = new java.util.ArrayList<String>();
 
         // The create path must be configured with the environment's token, not a literal (a 401 would only show at the first create).

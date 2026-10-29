@@ -162,7 +162,9 @@ public final class ApplyOrchestrator {
                                         : new ApplyAborted("Refused: " + decision.explanation()).result());
     }
 
-    private static Function<String, Result<ComputeProvider>> productionComputes(ClusterName cluster) {
+    /// The providers the apply's own lookups, audit and rollback use (credentials from the environment): package-visible so the
+    /// paid run builds its lookup provider through this very function.
+    static Function<String, Result<ComputeProvider>> productionComputes(ClusterName cluster) {
         return provider -> "docker".equals(provider)
                            ? ProviderResolver.resolveDockerComputeWithoutBackup(cluster)
                            : ProviderResolver.resolveCloudComputeForCleanup(provider);

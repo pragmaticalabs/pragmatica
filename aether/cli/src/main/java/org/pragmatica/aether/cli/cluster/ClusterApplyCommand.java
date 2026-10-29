@@ -82,8 +82,8 @@ class ClusterApplyCommand implements Callable<Integer> {
     }
 
     private int handleResume() {
-        return readAndParseConfig().flatMap(this::resumeApply)
-                                 .fold(ClusterApplyCommand::onFailure, v -> v);
+        return readAndResolveConfig().flatMap(this::resumeApply)
+                                   .fold(ClusterApplyCommand::onFailure, v -> v);
     }
 
     private Integer rollbackWithTarget() {
@@ -119,15 +119,31 @@ class ClusterApplyCommand implements Callable<Integer> {
         return ExitCode.SUCCESS;
     }
 
+    /// As written, `${env:...}` / `${secrets:...}` references left in place. Enough where only structure is read (`--rollback`
+    /// needs the cluster's name and nothing else, so it must not fail on a reference it does not use).
     private Result<ClusterBootstrapConfig> readAndParseConfig() {
         return readConfigFile().flatMap(ClusterBootstrapConfigParser::parse);
     }
 
+    /// The config the wave ACTS on: references resolved from the operator's environment, exactly as `aether cluster bootstrap`
+    /// resolves them. The scalar `credentials` is the provider's `api_token` verbatim, so an unresolved reference would be sent
+    /// to the provider as the token (a 401 at the first call of `--resume`).
+    private Result<ClusterBootstrapConfig> readAndResolveConfig() {
+        return readConfigFile().flatMap(ClusterApplyCommand::parseResolved);
+    }
+
+    static Result<ClusterBootstrapConfig> parseResolved(String rawToml) {
+        return ConfigReferenceResolver.resolveAll(rawToml).flatMap(ClusterBootstrapConfigParser::parse);
+    }
+
+    /// The cluster stores the TOML as the operator sent it, references unresolved (resolved values are never sent to or kept by the
+    /// cluster), so the stored config is resolved the same way as the desired one: the diff must compare like with like, and a
+    /// stored source the wave removes is reached with its own credentials.
     private Result<ClusterBootstrapConfig> fetchAndParseStoredConfig() {
         return ClusterHttpClient.fetch(CLUSTER_CONFIG_GET)
                                 .flatMap(MAPPER::readTree)
                                 .flatMap(ClusterApplyCommand::extractStoredToml)
-                                .flatMap(ClusterBootstrapConfigParser::parse);
+                                .flatMap(ClusterApplyCommand::parseResolved);
     }
 
     private static Result<String> extractStoredToml(JsonNode node) {
