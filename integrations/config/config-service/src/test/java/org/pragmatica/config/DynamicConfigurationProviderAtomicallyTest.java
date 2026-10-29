@@ -1,5 +1,6 @@
 package org.pragmatica.config;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -7,14 +8,19 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.LockSupport;
 
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.pragmatica.config.DynamicConfigurationProvider.dynamicConfigurationProvider;
 
 /// W-5b: the read protocol a binder uses. A read is accepted only if no overlay write started or finished while it
 /// ran; otherwise it is retried, and after the bound it FAILS - it never returns the torn state.
 class DynamicConfigurationProviderAtomicallyTest {
+    /// A loop that stops spending attempts (or never leaves the wait) would spin forever: the bound turns that hang into
+    /// an assertion failure instead of a job timeout.
+    private static final Duration HANG_BOUND = Duration.ofSeconds(10);
     private static final int ATTEMPTS = 8;
     private static final int KEYS = 200;
 
@@ -59,24 +65,28 @@ class DynamicConfigurationProviderAtomicallyTest {
 
     @Test
     void atomically_fails_whenEveryAttemptIsOverwritten() {
-        var calls = new AtomicInteger();
+        assertTimeoutPreemptively(HANG_BOUND, () -> {
+            var calls = new AtomicInteger();
 
-        var result = provider.atomically(() -> readWhileWriting(calls, Integer.MAX_VALUE));
+            var result = provider.atomically(() -> readWhileWriting(calls, Integer.MAX_VALUE));
 
-        assertThat(result.isFailure()).as("a torn state is never returned").isTrue();
-        result.onSuccess(value -> org.junit.jupiter.api.Assertions.fail("returned " + value))
-              .onFailure(cause -> assertThat(cause).isSameAs(DynamicConfigurationProvider.OVERLAY_KEPT_CHANGING));
-        assertThat(calls).as("bounded retries").hasValue(ATTEMPTS);
+            assertThat(result.isFailure()).as("a torn state is never returned").isTrue();
+            result.onSuccess(value -> org.junit.jupiter.api.Assertions.fail("returned " + value))
+                  .onFailure(cause -> assertThat(cause).isSameAs(DynamicConfigurationProvider.OVERLAY_KEPT_CHANGING));
+            assertThat(calls).as("bounded retries").hasValue(ATTEMPTS);
+        });
     }
 
     @Test
     void atomically_givesASlowRead_everyAttempt_whatEverTheWaitBound() {
-        var calls = new AtomicInteger();
+        assertTimeoutPreemptively(HANG_BOUND, () -> {
+            var calls = new AtomicInteger();
 
-        var result = provider.atomically(() -> slowReadWhileWriting(calls));
+            var result = provider.atomically(() -> slowReadWhileWriting(calls));
 
-        assertThat(result.isFailure()).isTrue();
-        assertThat(calls).as("a read slower than the wait bound still gets all attempts").hasValue(ATTEMPTS);
+            assertThat(result.isFailure()).isTrue();
+            assertThat(calls).as("a read slower than the wait bound still gets all attempts").hasValue(ATTEMPTS);
+        });
     }
 
     private String slowReadWhileWriting(AtomicInteger calls) {
@@ -113,18 +123,73 @@ class DynamicConfigurationProviderAtomicallyTest {
 
     @Test
     void atomically_doesNotRunTheRead_whileAWriteWindowIsOpen() throws Exception {
-        var inside = new CountDownLatch(1);
-        var release = new CountDownLatch(1);
-        var writer = Thread.ofPlatform().daemon().start(() -> provider.inWriteWindow(() -> holdOpen(inside, release)));
-        var calls = new AtomicInteger();
+        assertTimeoutPreemptively(HANG_BOUND, () -> {
+            var inside = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var writer = Thread.ofPlatform().daemon().start(() -> provider.inWriteWindow(() -> holdOpen(inside, release)));
+            var calls = new AtomicInteger();
 
-        assertThat(inside.await(5, TimeUnit.SECONDS)).isTrue();
-        var result = provider.atomically(() -> readCounting(calls));
-        release.countDown();
-        writer.join(5_000);
+            assertThat(inside.await(5, TimeUnit.SECONDS)).isTrue();
+            var result = provider.atomically(() -> readCounting(calls));
+            release.countDown();
+            writer.join(5_000);
 
-        assertThat(result.isFailure()).as("an odd version is never accepted").isTrue();
-        assertThat(calls).as("the read is not even started while a write runs").hasValue(0);
+            assertThat(result.isFailure()).as("an odd version is never accepted").isTrue();
+            assertThat(calls).as("the read is not even started while a write runs").hasValue(0);
+        });
+    }
+
+    @Test
+    void atomically_waitsForAWriteWindow_thatClosesWhileItWaits() {
+        assertTimeoutPreemptively(HANG_BOUND, () -> {
+            var inside = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var writer = Thread.ofPlatform().daemon().start(() -> provider.inWriteWindow(() -> holdOpen(inside, release)));
+            var calls = new AtomicInteger();
+
+            assertThat(inside.await(5, TimeUnit.SECONDS)).isTrue();
+            // The window is closed FROM INSIDE the wait: the reader has seen it open, so a wait bound of 0 gives up
+            // before the callback ever runs and the read fails.
+            var result = provider.atomicallyObserving(() -> readCounting(calls), release::countDown);
+            writer.join(5_000);
+
+            assertThat(result.isSuccess()).as("the window closed while the reader waited for it: the read goes through").isTrue();
+            assertThat(calls).hasValue(1);
+        });
+    }
+
+    @Test
+    void atomically_restartsTheWaitAfterACompletedRead() {
+        assertTimeoutPreemptively(HANG_BOUND, () -> {
+            var inside = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var calls = new AtomicInteger();
+
+            var result = provider.atomicallyObserving(() -> slowOverwrittenReadThenOpenWindow(calls, inside, release), release::countDown);
+
+            assertThat(result.isSuccess()).as("attempt 2 meets an open window and waits a FRESH bound; a wait still counted from entry gives up at once").isTrue();
+            assertThat(calls).hasValue(2);
+        });
+    }
+
+    /// Attempt 1 outlasts the 5 ms wait bound by far (so a deadline fixed at entry is long past), loses to a write, and
+    /// leaves a write window open for attempt 2 to meet. Only the reader's own wait callback closes it.
+    private String slowOverwrittenReadThenOpenWindow(AtomicInteger calls, CountDownLatch inside, CountDownLatch release) {
+        if (calls.incrementAndGet() == 1) {
+            sleep(30);
+            provider.put("a", "overwritten");
+            Thread.ofPlatform().daemon().start(() -> provider.inWriteWindow(() -> holdOpen(inside, release)));
+            await(inside);
+        }
+        return provider.getString("a").or("");
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            latch.await(5, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     @Test

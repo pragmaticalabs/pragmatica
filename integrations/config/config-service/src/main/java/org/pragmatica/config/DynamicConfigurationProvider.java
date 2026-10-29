@@ -39,6 +39,9 @@ public final class DynamicConfigurationProvider implements ConfigurationProvider
     public static final Cause OVERLAY_KEPT_CHANGING = Causes.cause("Config overlay kept changing during a consistent read");
 
     private static final int ATOMIC_ATTEMPTS = 8;
+
+    private static final Runnable NOT_OBSERVED = () -> {};
+
     private static final long ATOMIC_WAIT_NANOS = 5_000_000L;
     private static final int SNAPSHOT_ATTEMPTS = 1000;
     private static final long SNAPSHOT_WAIT_NANOS = 100_000_000L;
@@ -90,7 +93,7 @@ public final class DynamicConfigurationProvider implements ConfigurationProvider
         /// the wait restarts after every completed read.
         // PAT-01: a seqlock retry loop is the primitive itself; its exits are the accepted read and the two bounds.
         @SuppressWarnings("JBCT-PAT-01")
-        <R> Option<R> consistent(Fn0<R> read, int attempts, long waitNanos) {
+        <R> Option<R> consistent(Fn0<R> read, int attempts, long waitNanos, Runnable onWaiting) {
             var waitDeadline = System.nanoTime() + waitNanos;
             var failed = 0;
 
@@ -109,6 +112,7 @@ public final class DynamicConfigurationProvider implements ConfigurationProvider
                 } else if (System.nanoTime() >= waitDeadline) {
                     return none();
                 } else {
+                    onWaiting.run();
                     Thread.onSpinWait();
                 }
             }
@@ -128,7 +132,14 @@ public final class DynamicConfigurationProvider implements ConfigurationProvider
     /// [#OVERLAY_KEPT_CHANGING] - no torn result is ever returned. `read` may be called more than once and must
     /// have no side effects; no lock is held while it runs.
     public <R> Result<R> atomically(Fn0<R> read) {
-        return overlay.consistent(read, ATOMIC_ATTEMPTS, ATOMIC_WAIT_NANOS)
+        return atomicallyObserving(read, NOT_OBSERVED);
+    }
+
+    /// [#atomically] with a callback run each time the reader finds a write in flight and is about to wait for it.
+    /// Package-private: it lets a test close the window from inside the wait, so "the reader waits for a window and
+    /// gets through" and "the wait restarts after a completed read" are ordered by a latch, not by a clock margin.
+    <R> Result<R> atomicallyObserving(Fn0<R> read, Runnable onWaiting) {
+        return overlay.consistent(read, ATOMIC_ATTEMPTS, ATOMIC_WAIT_NANOS, onWaiting)
                       .toResult(OVERLAY_KEPT_CHANGING);
     }
 
@@ -150,7 +161,7 @@ public final class DynamicConfigurationProvider implements ConfigurationProvider
 
     @Override
     public Map<String, String> asMap() {
-        return overlay.consistent(this::mergedWithBase, SNAPSHOT_ATTEMPTS, SNAPSHOT_WAIT_NANOS)
+        return overlay.consistent(this::mergedWithBase, SNAPSHOT_ATTEMPTS, SNAPSHOT_WAIT_NANOS, NOT_OBSERVED)
                       .or(this::mergedWithBase);
     }
 
@@ -212,7 +223,7 @@ public final class DynamicConfigurationProvider implements ConfigurationProvider
     /// write in flight for the whole wait, in which case the last copy is returned: this signature has no failure
     /// channel, and the binder path ([#atomically]) never takes this fallback.
     public Map<String, String> overlayMap() {
-        return overlay.consistent(this::copyOfOverlay, SNAPSHOT_ATTEMPTS, SNAPSHOT_WAIT_NANOS)
+        return overlay.consistent(this::copyOfOverlay, SNAPSHOT_ATTEMPTS, SNAPSHOT_WAIT_NANOS, NOT_OBSERVED)
                       .or(this::copyOfOverlay);
     }
 
