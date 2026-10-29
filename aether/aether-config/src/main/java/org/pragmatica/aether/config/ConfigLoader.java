@@ -239,6 +239,10 @@ public final class ConfigLoader {
                                                 "streaming",
                                                 "segment_disk_max_bytes",
                                                 defaults.segmentDiskMaxBytes());
+        var dhtSegmentMaxBytes = parseDataSize(doc,
+                                               "streaming",
+                                               "dht_segment_max_bytes",
+                                               defaults.dhtSegmentMaxBytes());
         var isrLagMax = parseTimeSpan(doc, "streaming", "isr_lag_max", defaults.isrLagMax());
         var promotionEscapeAfter = parseTimeSpan(doc,
                                                  "streaming",
@@ -252,6 +256,7 @@ public final class ConfigLoader {
                                                           reshuffleConcurrency,
                                                           caughtUpMaxLagOffsets)
                                          .withSegmentDiskMaxBytes(segmentDiskMaxBytes)
+                                         .withDhtSegmentMaxBytes(dhtSegmentMaxBytes)
                                          .withIsrLagMax(isrLagMax)
                                          .withPromotionEscapeAfter(promotionEscapeAfter));
     }

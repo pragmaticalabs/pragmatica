@@ -194,6 +194,7 @@ import org.pragmatica.dht.ConsistentHashRing;
 import org.pragmatica.dht.DHTClient;
 import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.dht.DHTNode;
+import org.pragmatica.dht.storage.DhtPrefixAccounting;
 import org.pragmatica.dht.storage.MemoryStorageEngine;
 import org.pragmatica.consensus.net.quic.QuicClusterNetwork;
 import org.pragmatica.lang.Cause;
@@ -565,8 +566,18 @@ public interface AetherNode extends ManageableNode {
         // backed by it. The SAME instance is threaded into assembleNode for its KV-router
         // notification wiring and the ManageableNode accessor — one high-water per node.
         var ownershipEpochHighWater = OwnershipEpochHighWater.ownershipEpochHighWater(kvStore);
+        // #2258: the engine counts its bytes per prefix and refuses client puts above `[streaming] dht_segment_max_bytes` on
+        // `stream-segments`; the `<name>-blocks` of every configured instance join the registered prefixes
+        var dhtAccounting = DhtPrefixAccounting.dhtPrefixAccounting(config.streaming()
+                                                                          .effectiveDhtSegmentMaxBytes(Runtime.getRuntime()
+                                                                                                              .maxMemory()));
+
+        config.storageConfig()
+              .keySet()
+              .forEach(name -> dhtAccounting.register(name + "-blocks"));
         var dhtStorage = MemoryStorageEngine.memoryStorageEngine(HighWaterOwnerEpochGate.highWaterOwnerEpochGate(ownershipEpochHighWater,
-                                                                                                                 BootstrapModule.CORE_PARTITION_ID));
+                                                                                                                 BootstrapModule.CORE_PARTITION_ID),
+                                                                 dhtAccounting);
         var dhtRing = ConsistentHashRing.<NodeId> consistentHashRing();
 
         if (!configuredWorker(config)) {
@@ -2510,6 +2521,11 @@ public interface AetherNode extends ManageableNode {
         var operatorWarningSink = eventAggregatorOut.operatorWarningSink();
         // A0b: the storage instances were built before this sink existed; hand it to them now.
         StorageFactory.bindOperatorWarnings(storageSetups, operatorWarningSink);
+        // #2258: the DHT engine's capacity transitions of this node become operator warnings (the engine knows no warning type)
+        var dhtCapacityWarnings = DhtCapacityWarnings.dhtCapacityWarnings(config.self().id());
+
+        dhtCapacityWarnings.operatorWarnings(operatorWarningSink);
+        dhtNode.storage().capacityListener(dhtCapacityWarnings);
         // #1564 / #1617 (R10): deploy warnings are raised through this node's operator-warning sink.
         var blueprintService = BlueprintService.blueprintService(clusterNode,
                                                                  kvStore,

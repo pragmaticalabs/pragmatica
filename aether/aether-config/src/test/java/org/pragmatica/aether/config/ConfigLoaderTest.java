@@ -755,6 +755,38 @@ class ConfigLoaderTest {
                                      .isEqualTo(StreamingConfig.DERIVE_SEGMENT_DISK_MAX_BYTES));
     }
 
+    /// #2258: the cap on this node's DHT bytes of `stream-segments` is a per-node knob; unset derives max(64 MiB, max heap / 4).
+    @Test
+    void loadFromString_dhtSegmentMaxBytes_parsedAsDataSize_andDefaultsToDeriveFromTheHeap() {
+        var withCap = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [streaming]
+            dht_segment_max_bytes = "256MB"
+            """;
+        var withoutCap = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [streaming]
+            reshuffle_concurrency = 2
+            """;
+
+        ConfigLoader.loadFromString(withCap)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.streaming().effectiveDhtSegmentMaxBytes(512L << 20)).isEqualTo(256L << 20));
+        ConfigLoader.loadFromString(withoutCap)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.streaming().dhtSegmentMaxBytes()).isEqualTo(StreamingConfig.DERIVE_DHT_SEGMENT_MAX_BYTES);
+                assertThat(config.streaming().effectiveDhtSegmentMaxBytes(512L << 20)).as("-Xmx512m: a quarter is 128 MiB").isEqualTo(128L << 20);
+                assertThat(config.streaming().effectiveDhtSegmentMaxBytes(128L << 20)).as("the 64 MiB floor").isEqualTo(64L << 20);
+            });
+    }
+
     /// #1730: the ISR lag bound is configurable; unset keeps the 30 s default.
     @Test
     void loadFromString_isrLagMax_parsedAsDuration_andDefaultsTo30Seconds() {
