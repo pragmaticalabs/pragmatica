@@ -19,6 +19,7 @@ import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.aether.resource.ResourceProvider;
+import org.pragmatica.aether.slice.RetentionDimensions;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.StreamPartitionManager;
@@ -110,7 +111,7 @@ class RingAgeTickBootTest {
     }
 
     private static void createStream(StreamPartitionManager manager) {
-        var retention = RetentionPolicy.retentionPolicy(100_000, 256L * 1024 * 1024, MAX_AGE_MS);
+        var retention = RetentionPolicy.retentionPolicy(100_000, 256L * 1024 * 1024, MAX_AGE_MS).withDeclared(RetentionDimensions.AGE);
 
         manager.ensureStreamMaterialized(StreamConfig.streamConfig(STREAM, 1, retention, "earliest"))
                .onFailure(cause -> fail("ensureStreamMaterialized: " + cause.message()));

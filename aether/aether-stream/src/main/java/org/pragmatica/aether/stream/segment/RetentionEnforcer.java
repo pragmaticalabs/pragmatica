@@ -31,6 +31,7 @@ import org.pragmatica.storage.SnapshotManager;
 import org.pragmatica.storage.StorageError;
 import org.pragmatica.storage.StorageGarbageCollector;
 import org.pragmatica.storage.StorageInstance;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -211,6 +212,28 @@ public final class RetentionEnforcer implements AutoCloseable {
                                  pressure,
                                  PressureRelief.snapshotBounded(snapshots, collector));
     }
+
+    /// RED stub (#2201 PR-0b part 1, first commit): today's enforcer behind the per-stream signature -- `source` is ignored
+    /// and every stream keeps the node default age. The per-stream enforcer lands in the next commit.
+    static RetentionEnforcer retentionEnforcer(StorageInstance storage,
+                                               SegmentIndex index,
+                                               StreamRetentionSource source,
+                                               long defaultAgeMs,
+                                               SegmentRetentionFloor retentionFloor,
+                                               Option<SegmentReader> ageReader) {
+        return new RetentionEnforcer(storage,
+                                     index,
+                                     RetentionPolicy.retentionPolicy(Long.MAX_VALUE, Long.MAX_VALUE, defaultAgeMs),
+                                     retentionFloor,
+                                     RefDurability.LIVE,
+                                     ageReader,
+                                     SegmentTierPressure.NONE,
+                                     PressureRelief.NONE);
+    }
+
+    /// RED stub (#2201 PR-0b part 1, first commit): no warning is raised yet.
+    @Contract
+    public void operatorWarnings(OperatorWarningSink sink, String nodeId) {}
 
     /// As above with the durability and relief steps supplied directly -- for tests that inject a failing or
     /// observing step. Package-private on purpose: production goes through the [SnapshotManager] overload.
