@@ -309,6 +309,30 @@ class ApplyResumeTest {
         scenario.harness.assertNoLeak(onDisk.applyId(), onDisk);
     }
 
+    /// DONE is final: even when the action's nodes have since vanished (the audit records them GONE), a resume does not
+    /// create them again. The remainder arithmetic alone would, since nothing is recorded as existing any more.
+    @Test
+    void resume_aDoneAction_isNeverRedone_evenWhenItsNodesHaveVanished() {
+        var scenario = scenarioWithMatchingHash();
+        var desired = installDocker(scenario.provider);
+        var plan = plan(new DiffAction.AddRole(sourceNameOrDefault("local"), NodeRole.CORE, 2));
+        var key = ApplyAction.actionKey(plan.additions().getFirst());
+
+        withLedgerActions(scenario, List.of(key));
+        WaveExecutor.execute(plan, desired, desired, ApplyRecorder.applyRecorder(scenario.onDisk())).onFailure(cause -> fail(cause.message()));
+
+        var createsBefore = scenario.harness.provider.totalCreates();
+        var vanished = ApplyRecorder.applyRecorder(scenario.onDisk());
+
+        scenario.onDisk().resources().forEach(row -> vanished.gone(row.nodeId()).unwrap());
+        scenario.harness.provider.nodeIdsByServer().keySet().forEach(server -> scenario.harness.provider.terminate(new org.pragmatica.aether.environment.InstanceId(server)).await());
+
+        WaveExecutor.execute(plan, desired, desired, ApplyRecorder.applyRecorder(scenario.onDisk())).onFailure(cause -> fail(cause.message()));
+
+        assertThat(scenario.onDisk().actions()).extracting(ApplyAction::status).containsExactly(ApplyAction.Status.DONE);
+        assertThat(scenario.harness.provider.totalCreates() - createsBefore).as("a DONE action creates nothing on resume").isZero();
+    }
+
     private void withLedgerActions(ApplyScenario scenario, List<String> keys) {
         var base = scenario.recorder.snapshot();
 
