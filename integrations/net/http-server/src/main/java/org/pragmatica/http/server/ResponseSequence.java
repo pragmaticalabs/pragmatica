@@ -150,6 +150,16 @@ final class ResponseSequence {
     private void run(Slot slot) {
         slot.write.run();
         closed = slot.closes;
+        if (closed) {
+            abandonPending();
+        }
+    }
+
+    /// The connection ends with the write that just ran: the slots queued behind it will never be written, so their timers
+    /// are cancelled instead of firing later to answer a request nobody can receive.
+    private void abandonPending() {
+        pending.forEach(Slot::cancelTimer);
+        pending.clear();
     }
 
     static final class Slot {

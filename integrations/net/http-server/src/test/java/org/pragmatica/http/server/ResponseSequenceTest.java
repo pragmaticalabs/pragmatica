@@ -182,6 +182,38 @@ class ResponseSequenceTest {
         }
     }
 
+    @Test
+    void aWriteThatClosesTheConnection_cancelsTheTimersOfTheSlotsBehindIt() throws InterruptedException {
+        var timers = new java.util.concurrent.ScheduledThreadPoolExecutor(1);
+
+        timers.setRemoveOnCancelPolicy(true);
+
+        try {
+            var sequence = new ResponseSequence(timers, timeSpan(60).seconds());
+            var closing = sequence.reserve();
+            var behind = sequence.reserve();
+            var fired = new java.util.concurrent.atomic.AtomicBoolean(false);
+            var written = new CountDownLatch(1);
+
+            sequence.guard(behind, () -> fired.set(true));
+            assertThat(timers.getQueue()).as("the timer behind is scheduled").hasSize(1);
+            sequence.complete(closing, written::countDown, true);
+
+            assertThat(written.await(10, TimeUnit.SECONDS)).isTrue();
+            awaitEmpty(timers);
+            assertThat(timers.getQueue()).as("the timer of the slot behind a closing write is cancelled").isEmpty();
+            assertThat(fired).isFalse();
+        } finally {
+            timers.shutdownNow();
+        }
+    }
+
+    private static void awaitEmpty(java.util.concurrent.ScheduledThreadPoolExecutor timers) throws InterruptedException {
+        for (var i = 0; i < 100 && !timers.getQueue().isEmpty(); i++) {
+            Thread.sleep(50);
+        }
+    }
+
     private static void reserveMany(ResponseSequence sequence, List<ResponseSequence.Slot> into, CountDownLatch finished) {
         for (var i = 0; i < SLOTS; i++) {
             into.add(sequence.reserve());
