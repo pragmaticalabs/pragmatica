@@ -267,7 +267,7 @@ class R2dbcJooqConnectorLiveQueryTest {
     }
 
     private static void runSharedQuery(org.jooq.ResultQuery<org.jooq.Record> shared, AtomicInteger wrong) {
-        for (var i = 0; i < 100; i++) {
+        for (var i = 0; i < 600; i++) {
             var sameBackend = success(connector.transactional(tx -> tx.fetchOne(tx.dsl().resultQuery("SELECT pg_backend_pid()"))
                                                                     .flatMap(own -> tx.fetchOne(shared).map(other -> own.get(0, Integer.class).equals(other.get(0, Integer.class))))));
 

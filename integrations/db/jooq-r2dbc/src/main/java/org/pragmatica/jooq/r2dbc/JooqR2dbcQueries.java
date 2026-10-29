@@ -27,7 +27,9 @@ import org.pragmatica.r2dbc.ReactiveOperations;
 import io.r2dbc.spi.Connection;
 import org.jooq.DSLContext;
 import org.jooq.Field;
+import org.jooq.Param;
 import org.jooq.Query;
+import org.jooq.QueryPart;
 import org.jooq.Record;
 import org.jooq.ResultQuery;
 import org.jooq.RowCountQuery;
@@ -45,8 +47,9 @@ import org.jooq.impl.DSL;
 /// a driver failure is mapped to [R2dbcError] with the SQLSTATE jOOQ's wrapping exception carries (see
 /// [R2dbcError#fromException]).
 ///
-/// Bind values are re-bound by their runtime type, so a custom jOOQ `Converter` or `Binding` on a field is not applied
-/// to them.
+/// The fresh query is built from the caller's own parameters (see [QueryParams]), so a field's `Converter` or `Binding` is
+/// applied to its bind values. A query whose parameters cannot be mapped one to one onto its placeholders is refused with
+/// a typed error.
 public interface JooqR2dbcQueries {
     /// Fetches every record of the query on the connection.
     ///
@@ -86,8 +89,17 @@ public interface JooqR2dbcQueries {
     private static <R extends Record> Promise<List<R>> fetchCopy(Connection connection,
                                                                  SQLDialect dialect,
                                                                  ResultQuery<R> query) {
-        return ReactiveOperations.<Record> collectFromPublisher(copyOf(DSL.using(connection, dialect),
-                                                                       query),
+        return QueryParams.of(query)
+                          .async()
+                          .flatMap(params -> runFetch(DSL.using(connection, dialect),
+                                                      query,
+                                                      params));
+    }
+
+    private static <R extends Record> Promise<List<R>> runFetch(DSLContext ctx,
+                                                                ResultQuery<R> query,
+                                                                List<Param<?>> params) {
+        return ReactiveOperations.<Record> collectFromPublisher(copyOf(ctx, query, params),
                                                                 e -> R2dbcError.fromException(e,
                                                                                               query.getSQL()))
                                  .map(rows -> asRecordType(rows,
@@ -95,8 +107,15 @@ public interface JooqR2dbcQueries {
     }
 
     private static Promise<Integer> executeCopy(Connection connection, SQLDialect dialect, RowCountQuery query) {
-        var copy = DSL.using(connection, dialect).query(query.getSQL(),
-                                                        query.getBindValues().toArray());
+        return QueryParams.of(query)
+                          .async()
+                          .flatMap(params -> runExecute(DSL.using(connection, dialect),
+                                                        query,
+                                                        params));
+    }
+
+    private static Promise<Integer> runExecute(DSLContext ctx, RowCountQuery query, List<Param<?>> params) {
+        var copy = ctx.query(query.getSQL(), params.toArray(new QueryPart[0]));
 
         return ReactiveOperations.<Integer> collectFromPublisher(copy,
                                                                  e -> R2dbcError.fromException(e,
@@ -104,9 +123,8 @@ public interface JooqR2dbcQueries {
                                  .map(JooqR2dbcQueries::sum);
     }
 
-    private static ResultQuery<Record> copyOf(DSLContext ctx, ResultQuery<?> query) {
-        var copy = ctx.resultQuery(query.getSQL(),
-                                   query.getBindValues().toArray());
+    private static ResultQuery<Record> copyOf(DSLContext ctx, ResultQuery<?> query, List<Param<?>> params) {
+        var copy = ctx.resultQuery(query.getSQL(), params.toArray(new QueryPart[0]));
 
         return query.fields().length == 0
                ? copy

@@ -11,6 +11,7 @@ import org.pragmatica.lang.Promise;
 
 import io.r2dbc.spi.ConnectionFactories;
 import org.jooq.impl.DSL;
+import org.jooq.impl.SQLDataType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -122,6 +123,27 @@ class R2dbcJooqConnectorH2QueryTest {
         Long id = record.value1();
 
         assertThat(id).isEqualTo(1L);
+    }
+
+    /// A query part that renders a `?` the parameter walk cannot see (raw SQL) while reporting a bind value: its parameters
+    /// cannot be mapped onto its placeholders, so the query is refused with a typed error rather than run with a raw value.
+    @Test
+    void fetchOne_parametersThatCannotBeMappedToPlaceholders_areRefusedWithATypedError() {
+        var opaque = new org.jooq.impl.CustomField<Integer>("opaque", SQLDataType.INTEGER) {
+            @Override
+            public void accept(org.jooq.Context<?> ctx) {
+                if (ctx instanceof org.jooq.RenderContext render) {
+                    render.sql("?");
+                } else {
+                    ctx.visit(DSL.val(5));
+                }
+            }
+        };
+
+        var cause = failure(connector.fetchOne(connector.dsl().select(opaque)));
+
+        assertThat(cause).isInstanceOf(DatabaseConnectorError.QueryFailed.class);
+        assertThat(cause.message()).contains("Cannot map the parameters");
     }
 
     @Test
