@@ -69,6 +69,11 @@ class QuestionMarkEscapeTest {
     }
 
     @Test
+    void unescape_consecutiveDollarsInsideAnIdentifier_openNoQuote() {
+        assertThat(QuestionMarkEscape.unescape("SELECT 1 AS a$$b$$, j ?? 'k'")).isEqualTo("SELECT 1 AS a$$b$$, j ? 'k'");
+    }
+
+    @Test
     void unescape_aTagCannotStartWithADigit() {
         assertThat(QuestionMarkEscape.unescape("SELECT $1$ ?? $1$ ?? x")).isEqualTo("SELECT $1$ ? $1$ ? x");
     }
