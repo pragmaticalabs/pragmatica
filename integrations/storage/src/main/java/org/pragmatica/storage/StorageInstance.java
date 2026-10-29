@@ -467,6 +467,9 @@ final class DefaultStorageInstance implements StorageInstance {
     private final List<StorageTier> requiredTiers;
     /// [#requiredTiers] without the shared ones: where a [TierScope#PRIVATE] write lands (#2258).
     private final List<StorageTier> privateRequiredTiers;
+    /// The tier a [TierScope#PRIVATE] claim names, the last of [#privateRequiredTiers]; none when a private write falls back
+    /// to every tier: no private durable tier, or write-behind (#2258).
+    private final Option<TierLevel> privateClaimLevel;
     /// [TierScope#PRIVATE] writes that fell back to every tier: no private durable tier (#2258).
     private final AtomicLong privateFallbacks = new AtomicLong();
 
@@ -646,6 +649,10 @@ final class DefaultStorageInstance implements StorageInstance {
         this.sharedLevels = sharedLevelsOf(this.tiers);
         this.metadataStore = metadataStore;
         this.writePolicy = writePolicy;
+        this.privateClaimLevel = writePolicy == WritePolicy.WRITE_BEHIND || privateRequiredTiers.stream()
+                                                                                                .noneMatch(StorageTier::isDurable)
+                                 ? none()
+                                 : some(privateRequiredTiers.getLast().level());
         this.logRoot = logRoot;
         this.tornTailSink = tornTailSink;
         this.writeBehindQueue = writePolicy == WritePolicy.WRITE_BEHIND
@@ -1420,18 +1427,21 @@ final class DefaultStorageInstance implements StorageInstance {
     /// block is and not REMOTE. With no private durable tier, or under write-behind, the write falls back to every tier and
     /// is counted: a cursor commit keeps working in that degraded mode at today's cost.
     private Promise<BlockId> handlePrivatePut(BlockId id, byte[] content) {
-        if (writePolicy == WritePolicy.WRITE_BEHIND || privateRequiredTiers.stream().noneMatch(StorageTier::isDurable)) {
-            privateFallbacks.incrementAndGet();
+        return privateClaimLevel.fold(() -> privateFallbackPut(id, content), level -> claimPrivately(id, content, level));
+    }
 
-            return handlePut(id, content);
-        }
+    private Promise<BlockId> privateFallbackPut(BlockId id, byte[] content) {
+        privateFallbacks.incrementAndGet();
 
+        return handlePut(id, content);
+    }
+
+    private Promise<BlockId> claimPrivately(BlockId id, byte[] content, TierLevel level) {
         return content.length > maxBlockBytes
                ? StorageError.BlockTooLarge.blockTooLarge(content.length, maxBlockBytes).promise()
                : claimOrAwait(id,
                               content,
-                              BlockLifecycle.blockLifecycle(id,
-                                                            privateRequiredTiers.getLast().level()),
+                              BlockLifecycle.blockLifecycle(id, level),
                               (claimed, bytes) -> writeScoped(claimed, bytes, privateRequiredTiers),
                               (held, bytes) -> creditOwnedBlock(held).fold(() -> handlePrivatePut(held, bytes),
                                                                            lc -> Promise.success(deduplicated(lc.blockId()))),
