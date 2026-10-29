@@ -35,11 +35,11 @@ import org.pragmatica.utility.KSUID;
 /// payload bytes. Subscribers decode the envelope, then the payload with the subscription's own type.
 /// The keyless [#publish(Object)] mints a fresh time-sortable KSUID per call; the keyed
 /// [#publish(Object, String)] uses the caller's key (#1237), so a retry after an outcome-unknown result
-/// carries the same `messageId` — the necessary condition for dedup to collapse it (see
-/// [Publisher#publish(Object, String)] for what is not yet sufficient). Retrying through the keyless
+/// carries the same `messageId` — the necessary condition for a subscriber's dedup to collapse it; the log
+/// itself does not deduplicate (see [Publisher#publish(Object, String)]). Retrying through the keyless
 /// overload writes a second copy under an identity nothing can match.
 public record DurableTopicPublisher<T>(Serializer serializer, StreamPublisher<TopicEventEnvelope> stream) implements Publisher<T> {
-    private static final Cause BLANK_IDEMPOTENCY_KEY = Causes.cause("Durable publish idempotency key must not be blank: it becomes the message ID that deduplication matches retries on");
+    private static final Cause BLANK_IDEMPOTENCY_KEY = Causes.cause("Durable publish idempotency key must not be blank: it is stamped on the event as its message ID, the identity a retry carries");
 
     @Override
     public Promise<Unit> publish(T message) {

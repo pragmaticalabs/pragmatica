@@ -264,7 +264,7 @@ class StreamConsumerRuntimeTest {
             manager.publishLocal("orders", 0, "event".getBytes(), 1000L);
             // Wait for retries to exhaust (5 retries with backoff)
             Thread.sleep(5000);
-            var dlEntries = runtime.deadLetterHandler().read("orders", 10);
+            var dlEntries = runtime.deadLetterHandler().read("orders", 10).await().unwrap();
 
             assertThat(dlEntries).isNotEmpty();
             assertThat(dlEntries.getFirst().offset()).isEqualTo(0L);
@@ -298,7 +298,7 @@ class StreamConsumerRuntimeTest {
             // First event was skipped, second delivered
             assertThat(deliveredOffsets).contains(0L, 1L);
             // Dead letter should have the skipped event
-            var dlEntries = runtime.deadLetterHandler().read("orders", 10);
+            var dlEntries = runtime.deadLetterHandler().read("orders", 10).await().unwrap();
 
             assertThat(dlEntries).isNotEmpty();
             assertThat(dlEntries.getFirst().offset()).isEqualTo(0L);
@@ -358,7 +358,7 @@ class StreamConsumerRuntimeTest {
                 assertThat(tailLatch.await(10, TimeUnit.SECONDS)).isTrue();
                 assertThat(deliveredOffsets).containsExactly(0L, 1L, 2L);
                 // Exactly one entry: failed append attempts must not mint duplicates.
-                var dlEntries = flakyRuntime.deadLetterHandler().read("orders", 10);
+                var dlEntries = flakyRuntime.deadLetterHandler().read("orders", 10).await().unwrap();
 
                 assertThat(dlEntries).hasSize(1);
                 assertThat(dlEntries.getFirst().offset()).isEqualTo(0L);
@@ -398,7 +398,7 @@ class StreamConsumerRuntimeTest {
                 manager.publishLocal("orders", 0, "next".getBytes(UTF_8), 2000L);
                 assertThat(tailLatch.await(10, TimeUnit.SECONDS)).isTrue();
                 assertThat(deliveredOffsets).containsExactly(0L, 1L);
-                assertThat(flakyRuntime.deadLetterHandler().read("orders", 10)).hasSize(1);
+                assertThat(flakyRuntime.deadLetterHandler().read("orders", 10).await().unwrap()).hasSize(1);
             } finally {
                 flakyRuntime.close();
             }
@@ -458,7 +458,7 @@ class StreamConsumerRuntimeTest {
                 awaitOffset(delivered, 1L, 2_000);
                 assertThat(delivered).describedAs("the backlog already in the ring is delivered after the dead-letter, with no further append")
                                      .containsExactly(1L);
-                assertThat(observedRuntime.deadLetterHandler().read("orders", 10)).singleElement()
+                assertThat(observedRuntime.deadLetterHandler().read("orders", 10).await().unwrap()).singleElement()
                           .extracting(DeadLetterEntry::offset)
                           .isEqualTo(0L);
                 awaitCursorAt(observedRuntime, "orders", 0, "group-dlq", 2L, 5_000);
@@ -504,7 +504,7 @@ class StreamConsumerRuntimeTest {
         }
 
         @Override
-        public List<DeadLetterEntry> read(String streamName, int maxCount) {
+        public Promise<List<DeadLetterEntry>> read(String streamName, int maxCount) {
             return delegate.read(streamName, maxCount);
         }
     }
@@ -551,7 +551,7 @@ class StreamConsumerRuntimeTest {
             manager.publishLocal("orders", 0, "next".getBytes(UTF_8), 2000L);
             awaitSize(1);
             assertThat(delivered).describedAs("the event behind the throwing one is delivered").containsExactly(1L);
-            assertThat(runtime.deadLetterHandler().read("orders", 10)).describedAs("the throwing event is dead-lettered once")
+            assertThat(runtime.deadLetterHandler().read("orders", 10).await().unwrap()).describedAs("the throwing event is dead-lettered once")
                                                                       .hasSize(1);
         }
 
@@ -759,7 +759,7 @@ class StreamConsumerRuntimeTest {
                 assertThat(sink.thrown.get()).describedAs("control: the sink really threw once").isEqualTo(1);
                 assertThat(delivered).describedAs("the next event is delivered past a sink that threw synchronously")
                                      .contains(1L);
-                assertThat(throwingRuntime.deadLetterHandler().read("orders", 10)).describedAs("the poison event is still dead-lettered once the sink recovers")
+                assertThat(throwingRuntime.deadLetterHandler().read("orders", 10).await().unwrap()).describedAs("the poison event is still dead-lettered once the sink recovers")
                                                                                   .hasSize(1);
             } finally {
                 throwingRuntime.close();
@@ -830,7 +830,7 @@ class StreamConsumerRuntimeTest {
             manager.publishLocal("orders", 0, "next".getBytes(UTF_8), 2000L);
             awaitContains(delivered, 1L);
             assertThat(delivered).containsExactly(1L);
-            assertThat(runtime.deadLetterHandler().read("orders", 10)).hasSize(1);
+            assertThat(runtime.deadLetterHandler().read("orders", 10).await().unwrap()).hasSize(1);
         }
 
         /// #1266 review F2: every outcome ends with the holds clear — cancellation included.
@@ -975,7 +975,7 @@ class StreamConsumerRuntimeTest {
         }
 
         @Override
-        public List<DeadLetterEntry> read(String streamName, int maxCount) {
+        public Promise<List<DeadLetterEntry>> read(String streamName, int maxCount) {
             return delegate.read(streamName, maxCount);
         }
     }
@@ -1003,7 +1003,7 @@ class StreamConsumerRuntimeTest {
         }
 
         @Override
-        public List<DeadLetterEntry> read(String streamName, int maxCount) {
+        public Promise<List<DeadLetterEntry>> read(String streamName, int maxCount) {
             return delegate.read(streamName, maxCount);
         }
     }
@@ -1043,7 +1043,7 @@ class StreamConsumerRuntimeTest {
         }
 
         @Override
-        public List<DeadLetterEntry> read(String streamName, int maxCount) {
+        public Promise<List<DeadLetterEntry>> read(String streamName, int maxCount) {
             return delegate.read(streamName, maxCount);
         }
     }

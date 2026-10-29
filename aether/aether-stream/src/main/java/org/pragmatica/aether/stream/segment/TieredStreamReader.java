@@ -56,7 +56,7 @@ final class TieredReader implements TieredStreamReader {
     /// offset at or below the contiguous sealed watermark was sealed and then reclaimed by retention, so it
     /// fails as `CursorExpired` naming the next sealed offset instead. Only when nothing is sealed at or
     /// above `fromOffset` does it answer empty, leaving the range to the ring (and an in-flight seal to the
-    /// caller, which asks the sealer — see `PartitionedStreamAccess`).
+    /// caller, which asks the sealer — see `SealedTierFallback`).
     @Override
     public Promise<List<RawEvent>> read(String streamName, int partition, long fromOffset, int maxEvents) {
         return index.contiguousSealedEnd(streamName, partition, fromOffset)
