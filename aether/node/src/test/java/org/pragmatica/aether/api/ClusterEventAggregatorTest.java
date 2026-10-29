@@ -9,6 +9,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.controller.RollbackEvent;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
+import org.pragmatica.aether.metrics.deployment.ReconciliationAdjustment;
 import org.pragmatica.aether.node.NodeCodecs;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.ConsistencyMode;
@@ -964,6 +965,28 @@ class ClusterEventAggregatorTest {
         h.aggregator().onAutoRollback(autoRollbackExecuted());
 
         assertThat(h.events()).isEmpty();
+    }
+
+    /// H-3: the reconciliation event lives beside `DeploymentEvent`, so either cluster FSM can raise it. Red when the
+    /// aggregator stops mapping it: an increase is SCALE_UP, a decrease SCALE_DOWN, each with its counts and trigger.
+    @Test
+    void reconciliationAdjustment_mapsToScaleUpAndScaleDown_withItsCounts() {
+        var h = Harness.create();
+
+        h.aggregator().onReconciliationAdjustment(ReconciliationAdjustment.reconciliationAdjustment(ROLLBACK_ARTIFACT, 1, 3));
+        h.aggregator().onReconciliationAdjustment(ReconciliationAdjustment.reconciliationAdjustment(ROLLBACK_ARTIFACT, 3, 2));
+
+        var events = h.events();
+
+        assertThat(events).hasSize(2);
+        assertThat(events.get(0)).isInstanceOf(ClusterEvent.ScaleUp.class);
+        assertThat(events.get(0).details()).containsEntry("artifact", ROLLBACK_ARTIFACT.asString())
+                                           .containsEntry("previousInstances", "1")
+                                           .containsEntry("desiredInstances", "3")
+                                           .containsEntry("trigger", "reconciliation");
+        assertThat(events.get(1)).isInstanceOf(ClusterEvent.ScaleDown.class);
+        assertThat(events.get(1).details()).containsEntry("previousInstances", "3")
+                                           .containsEntry("desiredInstances", "2");
     }
 
     private static SliceFailureEvent.AllInstancesFailed allInstancesFailed() {
@@ -2453,8 +2476,46 @@ class ClusterEventAggregatorTest {
         assertThat(codes(h)).containsExactly("stream-consumer-state-diverged", "stream-consumer-state-repaired");
     }
 
-    /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the oversized-event refusal and the
-    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378); every other code keeps the plain 60 s throttle.
+    /// #2201 C-16: the consumer codes of a read below the ring tail reach the event log with their severities, the two
+    /// episodes close with their recoveries on the same subject, and a second episode re-raised inside the throttle window
+    /// is shown, because its recovery ended the window. The expiry is CRITICAL (owner ruling Q11) and is closed by
+    /// `stream-consumer-cursor-resumed` on its own subject (owner ruling 2026-10-28 on Q11).
+    @Test
+    void onOperatorWarning_consumerBehindTheRingCodes_pairAndCarryTheirSeverities() {
+        var t = new AtomicLong(1_000_000L);
+        var h = clocked(t);
+        var subject = "orders[0]/g";
+
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_BEHIND_RING, subject, "behind"));
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_BACK_IN_RING, subject, "back"));
+        t.addAndGet(1_000L);
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_BEHIND_RING, subject, "behind again"));
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_SEALED_RANGE_MISSING,
+                                                                         subject + "@5",
+                                                                         "hole"));
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_SEALED_RANGE_RESTORED,
+                                                                         subject + "@5",
+                                                                         "filled"));
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED,
+                                                                         subject + "@10",
+                                                                         "skipped"));
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_CURSOR_RESUMED,
+                                                                         subject + "@10",
+                                                                         "resumed"));
+
+        assertThat(h.events().stream().map(e -> e.details().get("code") + "@" + e.details().get("subject") + ":" + e.severity()).toList())
+            .containsExactly("stream-consumer-behind-ring@orders[0]/g:WARNING",
+                             "stream-consumer-back-in-ring@orders[0]/g:INFO",
+                             "stream-consumer-behind-ring@orders[0]/g:WARNING",
+                             "stream-consumer-sealed-range-missing@orders[0]/g@5:WARNING",
+                             "stream-consumer-sealed-range-restored@orders[0]/g@5:INFO",
+                             "stream-consumer-cursor-expired@orders[0]/g@10:CRITICAL",
+                             "stream-consumer-cursor-resumed@orders[0]/g@10:INFO");
+    }
+
+    /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the three consumer pairs of #2201
+    /// C-16 (behind the ring, the hole, and the cursor expiry), the oversized-event refusal and the
+    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450); every other code keeps the plain 60 s throttle.
     @Test
     void onOperatorWarning_onlyTheDeclaredPairsArePaired_otherCodesUnchanged() {
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).toList())
@@ -2474,6 +2535,9 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
                 OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN,
                 OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED,
+                OperatorWarningCode.STREAM_CONSUMER_BACK_IN_RING,
+                OperatorWarningCode.STREAM_CONSUMER_SEALED_RANGE_RESTORED,
+                OperatorWarningCode.STREAM_CONSUMER_CURSOR_RESUMED,
                 OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED,
                 OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING,
                 OperatorWarningCode.STREAM_OWNER_LINEAGE_COMMITTED,
@@ -2504,6 +2568,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STORAGE_MAINTENANCE_STARTED,
                 OperatorWarningCode.STORAGE_PREFETCH_STARTED,
                 OperatorWarningCode.STORAGE_WRITE_BEHIND_FLUSHED,
+                OperatorWarningCode.STORAGE_ANCHOR_READABLE,
                 OperatorWarningCode.WORKER_ASSIGNED,
                 OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED,
                 OperatorWarningCode.UPLOAD_NODE_CAP_RESTORED,
@@ -2526,6 +2591,9 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
                 OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED,
                 OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING,
+                OperatorWarningCode.STREAM_CONSUMER_BEHIND_RING,
+                OperatorWarningCode.STREAM_CONSUMER_SEALED_RANGE_MISSING,
+                OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED,
                 OperatorWarningCode.PROVISION_ADMISSION_DEFERRED,
                 OperatorWarningCode.CORE_CAPACITY_AWAITING_DURABLE,
                 OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
@@ -2551,6 +2619,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STORAGE_MAINTENANCE_NOT_STARTED,
                 OperatorWarningCode.STORAGE_PREFETCH_NOT_STARTED,
                 OperatorWarningCode.STORAGE_WRITE_BEHIND_FLUSH_FAILED,
+                OperatorWarningCode.STORAGE_ANCHOR_CORRUPT,
                 OperatorWarningCode.WORKER_ASSIGNMENT_OVERDUE,
                 OperatorWarningCode.TOPIC_TIER_MISMATCH,
                 OperatorWarningCode.JSON_CONFIG_REJECTED,

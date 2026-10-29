@@ -306,6 +306,44 @@ public enum OperatorWarningCode {
     /// epoch below the consumer's cursor. The records the group processed above that offset are gone from the log and the
     /// records now at those offsets are delivered; the message names the group, the partition and the offsets.
     STREAM_CONSUMER_REWOUND("stream-consumer-rewound", "stream-consumer", WarningLevel.WARNING),
+    /// A stream consumer's cursor is below its partition's ring tail, so its reads are served from the sealed tier (#2201
+    /// C-16, owner ruling Q10): raised once per `(group, partition)` episode, when a read first needs the tier. A new group
+    /// that starts at `earliest` on a stream with sealed history raises one episode by design. The message names the group,
+    /// the partition and the cursor.
+    STREAM_CONSUMER_BEHIND_RING("stream-consumer-behind-ring", "stream-consumer", WarningLevel.WARNING),
+    /// The recovery of a [#STREAM_CONSUMER_BEHIND_RING], same subject: a read was served from the ring again, or the
+    /// consumer was cancelled while behind it (the message says which).
+    STREAM_CONSUMER_BACK_IN_RING("stream-consumer-back-in-ring",
+                                 "stream-consumer",
+                                 WarningLevel.INFO,
+                                 STREAM_CONSUMER_BEHIND_RING),
+    /// A stream consumer's position is no longer held by its partition's owner (reclaimed by retention) and the group had not
+    /// read it, so its cursor was moved forward to the earliest offset the owner holds and the range will never be delivered (#2201 C-16; the single exception to
+    /// redelivery-never-skip, owner ruling Q9). CRITICAL (Q11): the group lost records it was configured to receive. Raised
+    /// once per expiry, never per poll, and closed by [#STREAM_CONSUMER_CURSOR_RESUMED] once the cursor is re-established;
+    /// that closes the alert, never the loss: the skip is done and nothing later undoes it. The message names the group, the
+    /// partition, the skipped range and its count.
+    STREAM_CONSUMER_CURSOR_EXPIRED("stream-consumer-cursor-expired", "stream-consumer", WarningLevel.CRITICAL),
+    /// The recovery of a [#STREAM_CONSUMER_CURSOR_EXPIRED], same subject (owner ruling 2026-10-28 on Q11: no unclosed
+    /// expiry): the group's cursor is re-established, because a read from the offset it moved to succeeded, the cursor moved
+    /// again first (a later expiry or a rewind), or the consumer was cancelled (the message says which). The skipped range
+    /// stays undelivered.
+    STREAM_CONSUMER_CURSOR_RESUMED("stream-consumer-cursor-resumed",
+                                   "stream-consumer",
+                                   WarningLevel.INFO,
+                                   STREAM_CONSUMER_CURSOR_EXPIRED),
+    /// A stream consumer waits at an offset that no sealed segment holds while a later offset is sealed: a hole in the
+    /// sealed range, above what retention reclaimed (#2201 C-16). The cursor does not move; the group retries with the poll
+    /// backoff until the range is repaired. Retention never reclaims at or above a hole (its bound stops at the contiguous
+    /// sealed watermark), so an unfilled hole holds the group. Raised once per `(group, partition, offset)`. The message
+    /// names the range.
+    STREAM_CONSUMER_SEALED_RANGE_MISSING("stream-consumer-sealed-range-missing", "stream-consumer", WarningLevel.WARNING),
+    /// The recovery of a [#STREAM_CONSUMER_SEALED_RANGE_MISSING], same subject: a later read from that offset succeeded,
+    /// the cursor moved off it, or the consumer was cancelled while waiting at it (the message says which).
+    STREAM_CONSUMER_SEALED_RANGE_RESTORED("stream-consumer-sealed-range-restored",
+                                          "stream-consumer",
+                                          WarningLevel.INFO,
+                                          STREAM_CONSUMER_SEALED_RANGE_MISSING),
     /// A partition's owner promotion is refused because a peer ANSWERED its watermark probe with a page cut before its
     /// first event: that event alone exceeds the peer's read cap (#1431). Not an unreachable peer; the operator raises
     /// the peer's `maxReadResponseBytes`. The message names the partition, the peer and the offset.
@@ -584,6 +622,16 @@ public enum OperatorWarningCode {
     /// instance; the message names the tier and the block. Raised once per instance (later corrupt reads are in the node log only), and
     /// nothing observable proves a repair, so there is no recovery code.
     STORAGE_INTEGRITY_FAILED("storage-integrity-failed", "storage", WarningLevel.CRITICAL),
+    /// The newest version of a durable anchor on one tier cannot be read back as written, or two durable tiers hold
+    /// different values for it. The anchor is not read, and no older version is read in its place, until an operator
+    /// accepts a version. The subject is `<instance>/<anchor>@<tier position>:<tier level>` (`@diverged` when two tiers
+    /// disagree), so each tier and anchor is throttled and closed on its own; raised once per subject. Closed by
+    /// [#STORAGE_ANCHOR_READABLE].
+    STORAGE_ANCHOR_CORRUPT("storage-anchor-corrupt", "storage", WarningLevel.CRITICAL),
+    /// The recovery of [#STORAGE_ANCHOR_CORRUPT], same subject: the newest version of that anchor on that tier reads back
+    /// as written again (a newer version was written, or an operator accepted one). INFO, published only after a published
+    /// [#STORAGE_ANCHOR_CORRUPT].
+    STORAGE_ANCHOR_READABLE("storage-anchor-readable", "storage", WarningLevel.INFO, STORAGE_ANCHOR_CORRUPT),
     /// A write-behind flush to a slower tier failed, so the block is acknowledged but not yet on that tier. The subject is the instance. Closed
     /// by [#STORAGE_WRITE_BEHIND_FLUSHED].
     STORAGE_WRITE_BEHIND_FLUSH_FAILED("storage-write-behind-flush-failed", "storage", WarningLevel.WARNING),

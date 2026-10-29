@@ -1048,6 +1048,7 @@ public final class ConfigLoader {
         var prefetch = doc.getBoolean(sectionName, "prefetch").or(true);
         var prefetchMaxInFlight = prefetchMaxInFlight(doc, sectionName);
         var maxBlockBytes = maxBlockBytes(doc, sectionName);
+        var anchorRetention = anchorRetention(doc, sectionName);
 
         return StorageConfig.storageConfig(memoryMaxBytes,
                                            diskMaxBytes,
@@ -1061,7 +1062,24 @@ public final class ConfigLoader {
                                            promotion,
                                            prefetch,
                                            prefetchMaxInFlight,
-                                           maxBlockBytes);
+                                           maxBlockBytes).withAnchorRetention(anchorRetention);
+    }
+
+    /// How many versions of each durable anchor the instance keeps below the newest. A value that is not an integer of at
+    /// least 2 is refused like any wrong-typed value (#1455), never defaulted: with fewer, a cold boot that finds the
+    /// newest version corrupt has no older one for an operator to accept.
+    private static int anchorRetention(TomlDocument doc, String sectionName) {
+        return doc.getParsed(sectionName,
+                             "anchor_retention",
+                             "an integer of at least 2",
+                             ConfigLoader::anchorRetentionOf)
+                  .or(StorageConfig.DEFAULT_ANCHOR_RETENTION);
+    }
+
+    private static Option<Integer> anchorRetentionOf(String text) {
+        return Number.parseInt(text)
+                     .option()
+                     .filter(value -> value >= StorageConfig.MIN_ANCHOR_RETENTION);
     }
 
     /// The largest block the instance accepts. A value that is not a positive integer is refused like any wrong-typed

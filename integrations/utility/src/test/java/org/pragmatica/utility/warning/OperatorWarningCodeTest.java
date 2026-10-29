@@ -113,6 +113,27 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING.level()).isEqualTo(WarningLevel.WARNING);
     }
 
+    /// #2201 C-16, owner ruling 2026-10-28 on Q11: a cursor expiry is critical and closed by an INFO recovery of the same
+    /// subsystem when the cursor is re-established; both wire strings are pinned.
+    @Test
+    void cursorExpired_isCritical_andIsClosedByCursorResumed() {
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED.code()).isEqualTo("stream-consumer-cursor-expired");
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED.level()).isEqualTo(WarningLevel.CRITICAL);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_RESUMED.code()).isEqualTo("stream-consumer-cursor-resumed");
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_RESUMED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_RESUMED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED);
+    }
+
+    /// #2450 A3-0: a corrupt durable anchor is critical and closed by an INFO recovery of the same subsystem.
+    @Test
+    void anchorCorrupt_isCritical_andIsClosedByAnInfoRecovery() {
+        assertThat(OperatorWarningCode.STORAGE_ANCHOR_CORRUPT.code()).isEqualTo("storage-anchor-corrupt");
+        assertThat(OperatorWarningCode.STORAGE_ANCHOR_CORRUPT.level()).isEqualTo(WarningLevel.CRITICAL);
+        assertThat(OperatorWarningCode.STORAGE_ANCHOR_READABLE.code()).isEqualTo("storage-anchor-readable");
+        assertThat(OperatorWarningCode.STORAGE_ANCHOR_READABLE.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STORAGE_ANCHOR_READABLE.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.STORAGE_ANCHOR_CORRUPT);
+    }
+
     /// #2429: the identity ledger's two codes are what the operator and the events API see: the strings, the level and the
     /// recovery relation are a contract.
     @Test
