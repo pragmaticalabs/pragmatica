@@ -348,6 +348,7 @@ public final class ClusterEventAggregator {
     private final AtomicReference<Option<NodeId>> committedLeader = new AtomicReference<>(Option.none());
     /// The committed leader read from the store, for a node that has not yet seen a leader notification. Bound by `AetherNode`.
     private volatile Supplier<Option<NodeId>> committedLeaderLookup = Option::none;
+    private final AtomicLong committedEmitsPassed = new AtomicLong();
     /// #1653: cluster-events ownership changes applied on this node; the event feed re-anchors when it moves.
     private final AtomicLong ownershipChanges = new AtomicLong();
     private volatile long lastEventsFrom = -1;
@@ -691,7 +692,14 @@ public final class ClusterEventAggregator {
             return;
         }
 
+        committedEmitsPassed.incrementAndGet();
         publishSafely(event);
+    }
+
+    /// Test seam (#1671): how many facts the committed gate has let through on this node. Counted at the gate, so a test of the wiring
+    /// does not depend on the stream landing the event.
+    public long committedEmitsPassed() {
+        return committedEmitsPassed.get();
     }
 
     private boolean passesCommittedGate() {

@@ -193,10 +193,9 @@ class ClusterEventsCommittedGateBootTest {
             .onFailure(cause -> fail("start() must succeed: " + cause.message()));
     }
 
-    /// Whether the committed gate let the fact through to the publish path: raised through `emitCommitted`, and counted as accepted by the
-    /// redelivery stage (whether or not the lone node's stream lands it).
+    /// Whether the committed gate let the fact through: raised through `emitCommitted`, and counted by the aggregator as passed.
     private boolean raisedBy(String marker) {
-        var before = accepted();
+        var before = node.eventAggregator().committedEmitsPassed();
 
         node.eventAggregator()
             .emitCommitted(new ClusterEvent.DeploymentStarted(org.pragmatica.hlc.HlcClock.hlcClock(node.self()).now(),
@@ -204,11 +203,7 @@ class ClusterEventsCommittedGateBootTest {
                                                               "Deploying " + marker,
                                                               Map.of("artifact", marker, "nodeId", marker)));
 
-        return accepted() > before;
-    }
-
-    private long accepted() {
-        return node.eventAggregator().redeliveryCounters().get("accepted");
+        return node.eventAggregator().committedEmitsPassed() > before;
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
