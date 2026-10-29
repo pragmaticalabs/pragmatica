@@ -69,6 +69,8 @@ MinimumLiveIsrTest 0
 EmberVoterHealTest 116
 TransportWiringTripwireEmberTest 10
 EmberStoragePrefetchOverSwimTest 18
+# EmberGossipKeyRotatedJoinTest 74 (#1200): surefire class time 72.3, 73.8, 72.5 and 72.5 s on cloudbb-3 at 038fe26d18 (1 test, 3 nodes, a crashed core replaced by auto-heal, 20 s settle; BB_DEDUP=0 repeats); maximum rounded up.
+EmberGossipKeyRotatedJoinTest 74
 EmberColdRestartAckedLossTripwireTest 134
 EmberConsumerPathTripwireTest 15
 EmberCursorCheckpointLoadTripwireTest 55

@@ -317,13 +317,10 @@ public sealed interface MembershipAssembly {
         // boot. Without this the descriptor map is empty until SWIM supplies NodeInfo observations, the
         // desired-connection set would have no address-known members, and formation would stall waiting
         // for the first gossip round. Last-wins: SWIM-resolved addresses overwrite these as they arrive.
-        config.topology()
-              .coreNodes()
-              .stream()
-              .map(info -> configuredMember(info,
-                                            config.self(),
-                                            config.workerConfig().isPresent()))
-              .forEach(membershipFsm::onMemberDescriptor);
+        seedConfiguredDescriptors(config.topology().coreNodes(),
+                                  config.self(),
+                                  config.workerConfig().isPresent(),
+                                  membershipFsm);
         metricsCollector.setPingAuthority(node -> isCoreMember(membershipFsm, node),
                                           node -> clusterNode.leaderManager()
                                                              .leader()
@@ -1041,10 +1038,21 @@ public sealed interface MembershipAssembly {
     /// once it is isolated: no connection to any configured core after the grace window. That is the
     /// joiner the formed seeds cannot see. The window starts at the transport's first dial decision,
     /// not at construction: a node built long before it starts would otherwise start out "isolated".
-    private static boolean bootstrapInitiator(RabiaNode<KVCommand<AetherKey>> node,
-                                              NodeId self,
-                                              Set<NodeId> configuredPeers,
-                                              AtomicLong dialingSinceNanos) {
+    /// Feed 1 of a replacement's dial targets (#1200): the FSM descriptors of the cores it was configured with (`--peers`), so
+    /// `desiredConnections()` carries their dial addresses from the first moment, before any gossip. Pinned by `ReplacementDialMechanismTest`.
+    static Unit seedConfiguredDescriptors(java.util.List<NodeInfo> coreNodes,
+                                          NodeId self,
+                                          boolean worker,
+                                          MembershipFsm membershipFsm) {
+        coreNodes.stream().map(info -> configuredMember(info, self, worker)).forEach(membershipFsm::onMemberDescriptor);
+
+        return Unit.unit();
+    }
+
+    static boolean bootstrapInitiator(RabiaNode<KVCommand<AetherKey>> node,
+                                      NodeId self,
+                                      Set<NodeId> configuredPeers,
+                                      AtomicLong dialingSinceNanos) {
         return node.voterConfiguration()
                    .map(configuration -> !configuration.contains(self))
                    .or(() -> isolatedPendingCore(node,
@@ -1067,9 +1075,9 @@ public sealed interface MembershipAssembly {
         return dialingSinceNanos.get();
     }
 
-    private static boolean isolatedPendingCore(RabiaNode<KVCommand<AetherKey>> node,
-                                               Set<NodeId> configuredPeers,
-                                               long dialingSinceNanos) {
+    static boolean isolatedPendingCore(RabiaNode<KVCommand<AetherKey>> node,
+                                       Set<NodeId> configuredPeers,
+                                       long dialingSinceNanos) {
         return System.nanoTime() - dialingSinceNanos >= PENDING_CORE_ISOLATION_GRACE.nanos() && node.network()
                                                                                                     .connectedPeers()
                                                                                                     .stream()

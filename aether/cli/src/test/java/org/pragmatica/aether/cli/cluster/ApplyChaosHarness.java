@@ -120,6 +120,27 @@ final class ApplyChaosHarness {
                                                .isEmpty();
     }
 
+    /// The write-ahead invariant of cluster-apply spec 4.2: EVERY VM the provider holds, labelled or not, has a ledger
+    /// row (INTENDED or later) for its node id, at every moment, including right after a kill. Equality with the rows
+    /// that hold a VM is the weaker-in-time `assertNoLeak`, true only after recovery.
+    void assertEveryVmHasARow(ApplyState ledger) {
+        var rowNodeIds = ledger.resources()
+                               .stream()
+                               .map(ApplyResource::nodeId)
+                               .collect(java.util.stream.Collectors.toSet());
+        var unrecorded = new ArrayList<String>();
+
+        provider.nodeIdsByServer()
+                .forEach((server, nodeId) -> {
+                    if (!rowNodeIds.contains(nodeId)) {
+                        unrecorded.add("VM " + server + " (node " + nodeId + ") exists at the provider with no ledger row");
+                    }
+                });
+
+        assertThat(unrecorded).as("write-ahead invariant: every billed VM has a ledger row at or before the moment it exists")
+                              .isEmpty();
+    }
+
     /// For scenarios with no ledger on disk (a refused apply): no VM may carry the apply label at all.
     void assertNoApplyLabelledVm() {
         assertThat(provider.inventoryWithLabel(APPLY_LABEL)).as("no VM may carry an apply label when no ledger exists")
@@ -141,6 +162,12 @@ final class ApplyChaosHarness {
         private final Map<String, Integer> terminateCalls = new LinkedHashMap<>();
         private int listCalls;
         private int serverSeq;
+        private int failCreateNumber;
+
+        /// The `n`th create (1-based, counting every attempt) is refused by the provider: counted, no VM exists.
+        void failNthCreate(int n) {
+            failCreateNumber = n;
+        }
 
         /// The next create for `nodeId` is accepted and billed at once but becomes listable only after
         /// `listings` more `listInstances` calls (the slow-landing create).
@@ -187,6 +214,19 @@ final class ApplyChaosHarness {
             return matching;
         }
 
+        /// Every VM the provider holds (listable or still landing), server id -> node id.
+        Map<String, String> nodeIdsByServer() {
+            var all = new LinkedHashMap<>(visible);
+
+            all.putAll(hidden);
+
+            var result = new LinkedHashMap<String, String>();
+
+            all.forEach((server, info) -> result.put(server, info.tags().getOrDefault(NODE_LABEL, "")));
+
+            return result;
+        }
+
         Set<String> inventoryWithLabel(String label) {
             var all = new LinkedHashMap<>(visible);
 
@@ -216,7 +256,9 @@ final class ApplyChaosHarness {
                                         InstanceStatus.RUNNING,
                                         List.of("10.0.0." + serverSeq),
                                         InstanceType.ON_DEMAND,
-                                        Map.copyOf(allTags));
+                                        Map.copyOf(allTags),
+                                        org.pragmatica.lang.Option.some(nodeId),
+                                        org.pragmatica.lang.Option.none());
             var late = lateNodes.remove(nodeId);
 
             if (late == null) {
@@ -232,6 +274,12 @@ final class ApplyChaosHarness {
         @Override
         public Promise<InstanceInfo> provision(ProvisionSpec spec) {
             var context = spec.context();
+
+            if (totalCreates() + 1 == failCreateNumber) {
+                createCalls.merge(context.nodeId().or(""), 1, Integer::sum);
+
+                return Causes.cause("provider refused the create (test cause)").promise();
+            }
 
             return Promise.success(create(context.nodeId().or(""), context.extraTags()));
         }

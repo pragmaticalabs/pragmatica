@@ -66,13 +66,37 @@ class ErrorResponseWireMappingTest {
         assertThat(PgConnection.isStaleStatementError(unrelated)).isFalse();
     }
 
-    /// Encodes an ErrorResponse body as the backend sends it — `S` severity, `V` non-localized
-    /// severity, `C` SQLSTATE, `M` message, then the terminating zero — and decodes it.
+    /// #2183: under a non-English `lc_messages` the server sends `S` localized and `V` non-localized; the level is the
+    /// non-localized one, so it reads `ERROR` whatever the server's language.
+    @Test
+    void level_isTheNonLocalizedSeverity_whenTheServerLocalizesS() {
+        var response = decode("FEHLER", "ERROR", "23505", "doppelter Schlüsselwert").asServerResponse();
+
+        assertThat(response.level()).isEqualTo("ERROR");
+        assertThat(response.code()).isEqualTo("23505");
+    }
+
+    /// A server older than 9.6 sends no `V` field; `S` is then the only severity there is.
+    @Test
+    void level_fallsBackToS_whenTheServerSendsNoV() {
+        var response = decode("ERROR", null, "23505", "duplicate key value").asServerResponse();
+
+        assertThat(response.level()).isEqualTo("ERROR");
+    }
+
     private static ErrorResponse decode(String severity, String sqlstate, String message) {
+        return decode(severity, severity, sqlstate, message);
+    }
+
+    /// Encodes an ErrorResponse body as the backend sends it — `S` severity (localized), `V` non-localized
+    /// severity (omitted when null), `C` SQLSTATE, `M` message, then the terminating zero — and decodes it.
+    private static ErrorResponse decode(String severity, String nonLocalizedSeverity, String sqlstate, String message) {
         var body = new ByteArrayOutputStream();
 
         field(body, 'S', severity);
-        field(body, 'V', severity);
+        if (nonLocalizedSeverity != null) {
+            field(body, 'V', nonLocalizedSeverity);
+        }
         field(body, 'C', sqlstate);
         field(body, 'M', message);
         body.write(0);
