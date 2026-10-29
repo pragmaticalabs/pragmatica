@@ -311,6 +311,22 @@ class ApplyRollbackTest {
 
     /// Fail closed: a listing that fails, at either listing the decision needs, terminates nothing and says so.
     @Test
+    void audit_aProviderThatIgnoresTheSelector_neverAdoptsAServerWithoutBothLabels() {
+        var scenario = new ApplyScenario(ledger, CLUSTER);
+
+        scenario.createRecorded("n-1");
+        scenario.harness.provider.create("unlabelled", java.util.Map.of());
+        scenario.harness.provider.create("other-cluster", java.util.Map.of(ApplyChaosHarness.APPLY_LABEL, scenario.recorder.applyId(), "aether-cluster", "another-cluster"));
+        scenario.provider.onFilteredList = _ -> scenario.harness.provider.listInstances();
+
+        var report = ApplyReconciler.audit(scenario.recorder, CLUSTER, scenario.computes()).unwrap();
+
+        assertThat(report.adopted()).isEmpty();
+        assertThat(report.relabelled()).hasSize(2);
+        assertThat(scenario.onDisk().resources()).hasSize(1);
+    }
+
+    @Test
     void rollback_aFailedOwnershipListing_terminatesNothing() {
         var scenario = new ApplyScenario(ledger, CLUSTER);
 
