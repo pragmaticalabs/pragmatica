@@ -5,6 +5,7 @@
 package org.pragmatica.aether.stream.segment;
 
 import java.util.List;
+import java.util.stream.IntStream;
 
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.StreamError;
@@ -69,20 +70,48 @@ final class TieredReader implements TieredStreamReader {
 
     private Promise<List<RawEvent>> readContiguous(String streamName, int partition, long fromOffset, int maxEvents) {
         return reader.readEvents(streamName, partition, fromOffset, maxEvents)
-                     .flatMap(events -> startingAt(fromOffset, events))
+                     .flatMap(events -> startingAt(streamName, partition, fromOffset, events))
                      .onSuccess(events -> triggerPrefetchIfNearEnd(streamName, partition, fromOffset, maxEvents, events));
     }
 
-    /// #2224 (I-32): the index answered `contiguousSealedEnd` and `segmentRange` in two calls, and retention may remove the
-    /// cursor's segment between them; the range then starts at the NEXT segment. Sealed offsets are dense inside a segment,
-    /// so a first event above `fromOffset` means the cursor's segment was reclaimed under the read: answered as the expiry
-    /// it is (naming where the held range now begins) instead of as events that skip the reclaimed ones.
-    private static Promise<List<RawEvent>> startingAt(long fromOffset, List<RawEvent> events) {
-        return Option.from(events.stream().findFirst())
-                     .map(RawEvent::offset)
-                     .filter(first -> first != fromOffset)
-                     .map(first -> new StreamError.CursorExpired(fromOffset, first).<List<RawEvent>> promise())
-                     .or(() -> Promise.success(events));
+    /// #2224 (I-32): the index answered `contiguousSealedEnd` and `segmentRange` in two calls, and retention may remove segments
+    /// between them. The answer is events starting at `fromOffset`, or the expiry:
+    ///   - nothing came back: the cursor's segment was removed under the read, so it is answered like any unheld offset
+    ///     ([#holeOrNothingSealed]: `CursorExpired` naming the next sealed offset);
+    ///   - the first event is above `fromOffset`: the cursor's segment was removed and the range started at the next one, so
+    ///     `CursorExpired(fromOffset, firstOffset)`;
+    ///   - otherwise the run up to its first gap. A segment removed from the middle leaves a gap; the prefix is a valid answer
+    ///     (events from `fromOffset`, no skip) and the next read starts inside the gap and is answered as the expiry it is.
+    private Promise<List<RawEvent>> startingAt(String streamName,
+                                               int partition,
+                                               long fromOffset,
+                                               List<RawEvent> events) {
+        return events.isEmpty()
+               ? holeOrNothingSealed(streamName, partition, fromOffset)
+               : startingAtFirst(fromOffset, events);
+    }
+
+    private static Promise<List<RawEvent>> startingAtFirst(long fromOffset, List<RawEvent> events) {
+        var first = events.getFirst().offset();
+
+        return first == fromOffset
+               ? Promise.success(densePrefix(events))
+               : new StreamError.CursorExpired(fromOffset, first).promise();
+    }
+
+    private static List<RawEvent> densePrefix(List<RawEvent> events) {
+        return events.subList(0,
+                              IntStream.range(1,
+                                              events.size())
+                                       .filter(index -> isGapBefore(events, index))
+                                       .findFirst()
+                                       .orElse(events.size()));
+    }
+
+    private static boolean isGapBefore(List<RawEvent> events, int index) {
+        return events.get(index)
+                     .offset() != events.get(index - 1)
+                                        .offset() + 1;
     }
 
     private static int boundedCount(long fromOffset, long contiguousEnd, int maxEvents) {

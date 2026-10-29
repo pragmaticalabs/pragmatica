@@ -19,6 +19,7 @@ import org.pragmatica.storage.MetadataStore;
 import static org.pragmatica.lang.Option.option;
 
 
+// test seam: not for subclassing -- opened only so a test can spy on the lookups; no production subclass may exist.
 public class SegmentIndex {
     private static final long NOTHING_SEALED = -1L;
 
@@ -297,15 +298,23 @@ public class SegmentIndex {
                      .or(List.of());
     }
 
+    /// The refs overlapping `[fromOffset, toOffset]`. Retention removes segments while a read runs, so the lookups never assume the
+    /// map still holds what an earlier call saw: when the cursor's segment is gone the start is the first remaining key, and a
+    /// start above `toOffset` means nothing overlaps (an empty answer, not an inconsistent `subMap` range).
     private List<SegmentRef> collectOverlapping(ConcurrentSkipListMap<Long, SegmentRef> map,
                                                 long fromOffset,
                                                 long toOffset) {
-        if (map.isEmpty()) {
-            return List.of();
-        }
+        return Option.any(option(map.floorKey(fromOffset)),
+                          () -> option(map.firstEntry()).map(Map.Entry::getKey))
+                     .filter(startKey -> startKey <= toOffset)
+                     .map(startKey -> overlapping(map, startKey, fromOffset, toOffset))
+                     .or(List.of());
+    }
 
-        var startKey = option(map.floorKey(fromOffset)).or(map.firstKey());
-
+    private static List<SegmentRef> overlapping(ConcurrentSkipListMap<Long, SegmentRef> map,
+                                                long startKey,
+                                                long fromOffset,
+                                                long toOffset) {
         return map.subMap(startKey, true, toOffset, true)
                   .values()
                   .stream()
