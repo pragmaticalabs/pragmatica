@@ -282,16 +282,33 @@ class ReplicaFeedClientRelayTest {
         /// first effect batch (its ring starts empty at its snapshot install and can verify no anchor below its floor; in a live cluster the governor's
         /// own announcement is that batch).
         Worker governorReady(String name) {
+            var gov = governorServing(name);
+
+            commit(put("announcement", "1"));
+            run(3);
+            announced.set(Option.some(gov.id));
+            run(2);
+
+            return gov;
+        }
+
+        /// The same, announced at once: its ring has recorded no effect batch since its snapshot install (a quiet cluster).
+        Worker governorReadyQuiet(String name) {
+            var gov = governorServing(name);
+
+            announced.set(Option.some(gov.id));
+            run(2);
+
+            return gov;
+        }
+
+        private Worker governorServing(String name) {
             var gov = worker(name);
 
             run(4);
             gov.governor.set(true);
             run(4);
             assertThat(gov.gate.mayServeMembers()).as("precondition: the governor serves").isTrue();
-            commit(put("announcement", "1"));
-            run(3);
-            announced.set(Option.some(gov.id));
-            run(2);
 
             return gov;
         }
@@ -521,10 +538,11 @@ class ReplicaFeedClientRelayTest {
         assertThat(member.readiness.ready()).isTrue();
     }
 
-    /// NT-O31 (b), a member ahead of the new governor: the governor is behind the member's applied frontier, so it answers `AHEAD`; the member discards
-    /// its position and takes a snapshot from a core, and ends equal to the cores. Mutation: drop the `AHEAD` case in the ring, or keep the position.
+    /// NT-O31 (b), a member ahead of the new governor: the governor is behind the member's applied frontier, so it answers `AHEAD`; only a core decides
+    /// whether the position is usable, so the member keeps it, resumes from a core's ring with no snapshot, and ends equal to the cores. Mutation: treat a
+    /// governor's refusal like a core's (discard the position).
     @Test
-    void aMemberAheadOfTheNewGovernor_isRefusedAhead_andSnapshotsFromACore() {
+    void aMemberAheadOfTheNewGovernor_isRefusedAhead_andResumesFromACoreWithoutASnapshot() {
         var mesh = meshWithData();
         var behind = mesh.worker("w-behind");
 
@@ -549,8 +567,93 @@ class ReplicaFeedClientRelayTest {
 
         assertThat(member.valueOf("d")).isEqualTo("4");
         assertThat(member.readiness.ready()).isTrue();
-        assertThat(member.installs.get()).as("one snapshot, from a core").isEqualTo(installs + 1);
+        assertThat(member.installs.get()).as("no snapshot: the position was kept").isEqualTo(installs);
         assertThat(mesh.isCore(mesh.subscribeTargets(member).getLast())).isTrue();
+    }
+
+    /// The governor-ring window: a governor whose ring has recorded no effect batch since its snapshot install can verify no anchor and refuses an anchored
+    /// member `EVICTED`. The member's fallback is a core: it keeps its position, resumes there with no snapshot, and asks the governor again only after
+    /// the retry interval, so the window costs one refused subscribe per interval and never a snapshot, however long the cluster stays quiet.
+    /// Mutation: discard the position on a governor's refusal (a snapshot per interval).
+    @Test
+    void aGovernorThatCannotVerifyAnAnchor_sendsTheMemberBackToACore_withoutASnapshot() {
+        var mesh = meshWithData();
+        var member = mesh.worker("w-1");
+
+        mesh.run(4);
+        var gov = mesh.governorReadyQuiet("w-gov");
+        var installs = member.installs.get();
+
+        mesh.run(60);
+
+        assertThat(mesh.sentBy(gov, ReplicaRefused.class)).extracting(sent -> ((ReplicaRefused) sent.message()).reason()).contains(RefusalReason.EVICTED);
+        assertThat(mesh.subscribeTargets(member).stream().filter(gov.id::equals).count()).as("asked again after each interval").isGreaterThan(1L);
+        assertThat(member.installs.get()).as("never a snapshot").isEqualTo(installs);
+        assertThat(member.readiness.ready()).isTrue();
+        assertThat(mesh.isCore(mesh.subscribeTargets(member).getLast()) || member.client.source().equals(Option.some(gov.id))).isTrue();
+    }
+
+    /// Spec 2.8 (b) through the relay: with both cores gone for good the governor stops serving within its freshness bound plus the silence interval, and
+    /// its member stops being ready within the same bound plus its own silence interval, not a bound per level. The governor's counted heartbeat and the
+    /// member's are carried across a re-parent for one silence interval only. Mutation: carry them for the whole freshness bound (drop `carryBeatsFor`).
+    @Test
+    void whenBothCoresAreGone_theGovernorAndItsMemberLeaveReadinessWithinOneBoundAndTwoSilences() {
+        var mesh = meshWithData();
+        var gov = mesh.governorReady("w-gov");
+        var member = mesh.worker("w-1");
+
+        mesh.run(8);
+        assertThat(mesh.subscribeTargets(member)).containsExactly(gov.id);
+        mesh.cores.forEach(core -> core.up.set(false));
+        mesh.run(7);
+
+        assertThat(member.readiness.ready()).as("7 s: the silence interval is still being waited out").isTrue();
+
+        mesh.run(50);
+
+        assertThat(gov.gate.mayServeMembers()).as("17 s after the cores died: the governor serves nobody").isFalse();
+        assertThat(member.readiness.ready()).as("17 s after the cores died: the member is not ready (spec bound 30 s from the last heartbeat, not 60 s)").isFalse();
+    }
+
+    /// The hand-off acts only on a session that follows a governor: a node that becomes the governor while already on a core keeps its session.
+    /// Mutation: end the session whatever its source (drop the uplink filter in `handOffOnGovernorEdge`).
+    @Test
+    void aMemberOnACore_thatBecomesTheGovernor_keepsItsCoreSession() {
+        var mesh = meshWithData();
+        var member = mesh.worker("w-1");
+
+        mesh.run(6);
+        var subscribes = mesh.subscribeTargets(member).size();
+
+        member.governor.set(true);
+        mesh.run(4);
+
+        assertThat(mesh.subscribeTargets(member)).hasSize(subscribes);
+        assertThat(member.gate.mayServeMembers()).isTrue();
+    }
+
+    /// A rebalance moves a session only once it is live: a join in progress (granted nothing yet) is not interrupted when a governor appears.
+    /// Mutation: drop the `Phase.LIVE` test in `rebalance`.
+    @Test
+    void aJoinInProgress_isNotInterruptedByAGovernorAppearing() {
+        var mesh = meshWithData();
+        var gov = mesh.governorReady("w-gov");
+        var member = mesh.worker("w-1");
+
+        mesh.announced.set(Option.none());
+        member.holdInbound.set(true);
+        mesh.run(4);
+        var subscribes = mesh.subscribeTargets(member).size();
+
+        mesh.announced.set(Option.some(gov.id));
+        mesh.run(3);
+
+        assertThat(mesh.subscribeTargets(member)).as("still the same join").hasSize(subscribes);
+
+        mesh.release(member);
+        mesh.run(8);
+
+        assertThat(member.readiness.ready()).isTrue();
     }
 
     /// NT-O34, join storm: six members join at once into a governor whose serve cap is 2 (and cores with the same cap, chunks of a few bytes so the

@@ -38,6 +38,7 @@ public final class ReplicaReadiness {
     private final ArrayDeque<Beat> beats = new ArrayDeque<>();
     private IncarnationTag beatTag = IncarnationTag.NONE;
     private boolean caughtUp;
+    private long carriedUntilNanos;
     private boolean published;
     private boolean lastPublished;
 
@@ -69,6 +70,7 @@ public final class ReplicaReadiness {
     public synchronized Unit onHeartbeat(IncarnationTag tag, long nextSlot, boolean serving) {
         if (serving && !isAhead(tag, nextSlot)) {
             beatTag = tag;
+            carriedUntilNanos = 0L;
             beats.addLast(new Beat(nanos.getAsLong(), nextSlot));
         }
 
@@ -102,6 +104,15 @@ public final class ReplicaReadiness {
         return Unit.unit();
     }
 
+    /// A resume onto another source keeps the counted heartbeats only until `graceNanos` from now, or until the new source counts its own.
+    public synchronized Unit carryBeatsFor(long graceNanos) {
+        if (carriedUntilNanos == 0L) {
+            carriedUntilNanos = nanos.getAsLong() + graceNanos;
+        }
+
+        return Unit.unit();
+    }
+
     public synchronized boolean ready() {
         return isSynced(nanos.getAsLong())
                && workerRole.getAsBoolean()
@@ -126,7 +137,9 @@ public final class ReplicaReadiness {
     }
 
     private Option<Beat> counted() {
-        return Option.option(beats.peekLast());
+        return carriedUntilNanos != 0L && nanos.getAsLong() > carriedUntilNanos
+               ? Option.none()
+               : Option.option(beats.peekLast());
     }
 
     private boolean isFresh(Beat newest, long now) {

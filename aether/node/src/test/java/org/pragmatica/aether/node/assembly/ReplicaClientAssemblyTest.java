@@ -212,4 +212,67 @@ class ReplicaClientAssemblyTest {
         assertThat(uplinks).hasSize(2).isSorted().isSubsetOf(cores);
         assertThat(ReplicaClientAssembly.uplinks(self, cores)).isEqualTo(uplinks);
     }
+
+    private static final org.pragmatica.cluster.state.kvstore.IncarnationTag TAG = org.pragmatica.cluster.state.kvstore.IncarnationTag.incarnationTag(1, "A");
+
+    /// A replica that is current against its source (readiness `servable`), or one that never heard a heartbeat.
+    private static org.pragmatica.cluster.replica.ReplicaReadiness readiness(boolean current) {
+        var position = org.pragmatica.cluster.replica.ReplicaPosition.replicaPosition(TAG,
+                                                                                       10,
+                                                                                       List.of(new org.pragmatica.cluster.state.kvstore.AnchorPair(9, "x")));
+        var readiness = org.pragmatica.cluster.replica.ReplicaReadiness.replicaReadiness(System::nanoTime,
+                                                                                         () -> position,
+                                                                                         () -> true,
+                                                                                         () -> true,
+                                                                                         _ -> {},
+                                                                                         org.pragmatica.cluster.replica.ReplicaClientLimits.DEFAULT);
+
+        if (current) {
+            readiness.caughtUp(true);
+            readiness.onHeartbeat(TAG, 10, true);
+        }
+
+        return readiness;
+    }
+
+    /// A client that has chosen a core uplink (`followsCore` true), or one that has chosen nothing.
+    private static org.pragmatica.cluster.replica.ReplicaFeedClient<AetherKey, org.pragmatica.aether.slice.kvstore.AetherValue> client(boolean followingACore) {
+        var store = new org.pragmatica.cluster.state.kvstore.KVStore<AetherKey, org.pragmatica.aether.slice.kvstore.AetherValue>(org.pragmatica.messaging.MessageRouter.mutable(),
+                                                                                                                                  null,
+                                                                                                                                  null);
+        var limits = org.pragmatica.cluster.replica.ReplicaClientLimits.DEFAULT;
+        var core = NodeId.nodeId("core-1").unwrap();
+        var client = org.pragmatica.cluster.replica.ReplicaFeedClient.replicaFeedClient(NodeId.nodeId("worker-1").unwrap(),
+                                                                                         org.pragmatica.cluster.replica.ReplicaApplier.replicaApplier(store, limits.bufferBytes()),
+                                                                                         readiness(true),
+                                                                                         (_, _) -> {},
+                                                                                         () -> followingACore
+                                                                                               ? List.of(core)
+                                                                                               : List.<NodeId> of(),
+                                                                                         Runnable::run,
+                                                                                         System::nanoTime,
+                                                                                         limits,
+                                                                                         () -> {},
+                                                                                         new org.pragmatica.cluster.replica.ReplicaFeedClient.GovernorArm(() -> false, Option::none));
+
+        client.tick();
+
+        return client;
+    }
+
+    /// I-W5 wiring: each of the three terms of the serve gate comes from its own object; with the other two held true, one false closes the gate.
+    /// Mutations: replace the governor term, the `followsCore` term or the `servable` term in `serveGate` by `() -> true`.
+    @Test
+    void serveGate_needsEachOfItsThreeTerms_wiredFromTheirOwnObjects() {
+        var governor = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var arm = new org.pragmatica.cluster.replica.ReplicaFeedClient.GovernorArm(governor::get, Option::none);
+        var following = client(true);
+        var idle = client(false);
+
+        assertThat(ReplicaClientAssembly.serveGate(arm, following, readiness(true)).mayServeMembers()).as("control: all three hold").isTrue();
+        assertThat(ReplicaClientAssembly.serveGate(arm, idle, readiness(true)).mayServeMembers()).as("its upstream is not a core").isFalse();
+        assertThat(ReplicaClientAssembly.serveGate(arm, following, readiness(false)).mayServeMembers()).as("its replica is not current").isFalse();
+        governor.set(false);
+        assertThat(ReplicaClientAssembly.serveGate(arm, following, readiness(true)).mayServeMembers()).as("it is not the governor").isFalse();
+    }
 }

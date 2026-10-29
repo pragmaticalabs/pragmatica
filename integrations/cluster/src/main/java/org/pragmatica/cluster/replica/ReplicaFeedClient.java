@@ -352,6 +352,7 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
         session = new Session(++requestCounter, source, mode, nanos.getAsLong());
         currentSource = Option.some(source);
         if (resume) {
+            readiness.carryBeatsFor(limits.silenceMillis() * NANOS_PER_MILLI);
             applier.beginLive();
         } else {
             readiness.sourceChanged();
@@ -417,7 +418,7 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
             avoided.add(open.source);
             end(open, RETRY_AFTER_FAILURE_MILLIS);
         } else if (readiness.isAhead(beat.tag(), beat.nextSlot())) {
-            failed(open, Step.DISCARD_POSITION);
+            behindOrAhead(open);
         } else {
             readiness.onHeartbeat(beat.tag(), beat.nextSlot(), true);
         }
@@ -426,9 +427,40 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
     // ---- refusal ----
     private void refused(Session open, ReplicaRefused message) {
         refusals.incrementAndGet();
+        if (isGovernor(open)) {
+            fellBackFromGovernor(open);
+
+            return;
+        }
+
         switch (message.reason()) {
             case BUSY, NOT_SERVING -> turnedAway(open);
             default -> positionUnusable(open);
+        }
+    }
+
+    private boolean isGovernor(Session open) {
+        return ! uplinks.get()
+                        .contains(open.source);
+    }
+
+    /// A governor can refuse a position it cannot verify (`EVICTED`: its ring starts empty at its own snapshot install and holds no pair at or above
+    /// its floor until the cluster commits an effect batch past the member's newest pair, which in a quiet cluster can take long; `AHEAD`: it is behind
+    /// this node), but only a core decides whether a position is usable. So a governor's refusal, of any reason, keeps the position and falls back to
+    /// a core (which resumes it from the anchor, or refuses it itself); the governor is asked again after its retry delay. The cost while the governor's
+    /// ring cannot verify is one refused subscribe per member per interval, never a snapshot.
+    private void fellBackFromGovernor(Session open) {
+        avoided.add(open.source);
+        end(open, 0L);
+    }
+
+    /// The source's heartbeat claims a frontier behind this replica's. A core being behind makes the position unusable; a governor being behind just
+    /// sends the member back to a core.
+    private void behindOrAhead(Session open) {
+        if (isGovernor(open)) {
+            fellBackFromGovernor(open);
+        } else {
+            failed(open, Step.DISCARD_POSITION);
         }
     }
 

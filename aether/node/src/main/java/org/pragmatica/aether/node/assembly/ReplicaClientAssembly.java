@@ -116,10 +116,15 @@ public sealed interface ReplicaClientAssembly {
         in.defer().accept(() -> SharedScheduler.scheduleAtFixedRate(client::tick, TICK));
         in.defer().accept(() -> SharedScheduler.scheduleAtFixedRate(() -> serial.execute(installer::tick), TICK));
 
-        return new Started(client,
-                           ReplicaServeGate.replicaServeGate(in.governorArm().selfIsGovernor(),
-                                                             client::followsCore,
-                                                             readiness::servable));
+        return new Started(client, serveGate(in.governorArm(), client, readiness));
+    }
+
+    /// The gate of a governor's member serving (I-W5): the node is the governor, its own upstream is a core, and its replica is current against it.
+    /// Each term is wired from a different object, so each is pinned on its own by `ReplicaClientAssemblyTest`.
+    static ReplicaServeGate serveGate(ReplicaFeedClient.GovernorArm arm,
+                                      ReplicaFeedClient<?, ?> client,
+                                      ReplicaReadiness readiness) {
+        return ReplicaServeGate.replicaServeGate(arm.selfIsGovernor(), client::followsCore, readiness::servable);
     }
 
     /// One thread, so the client's state and the directory installs never race; it dies when idle.
