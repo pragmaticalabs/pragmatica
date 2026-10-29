@@ -144,6 +144,20 @@ class ApplyReconcilerTest {
         assertThat(scenario.harness.provider.nodeIdsByServer().values()).containsExactly("n-10");
     }
 
+    /// Even when the provider ignores the selector and returns everything, node identity is still compared exactly.
+    @Test
+    void lookup_aProviderThatIgnoresTheSelector_stillMatchesTheNodeIdentityExactly() {
+        var scenario = scenario();
+
+        scenario.recorder.intend("n-1", "hetzner").unwrap();
+        scenario.harness.provider.create("n-10", scenario.labels());
+        scenario.provider.onFilteredList = _ -> scenario.harness.provider.listInstances();
+
+        ApplyReconciler.reconcileIntents(scenario.recorder, scenario.computes()).unwrap();
+
+        assertThat(scenario.row("n-1").state()).isEqualTo(ApplyResource.State.ABSENT);
+    }
+
     @Test
     void cloudRows_areLookedUpByTheNodeIdLabel() {
         var scenario = scenario();

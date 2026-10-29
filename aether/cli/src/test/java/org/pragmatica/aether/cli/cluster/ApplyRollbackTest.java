@@ -119,13 +119,18 @@ class ApplyRollbackTest {
         for (var shape : shapes) {
             var scenario = new ApplyScenario(ledger, CLUSTER);
             var server = scenario.createRecorded("n-1");
+            var steps = new java.util.ArrayList<ApplyRecorder.Step>();
+
+            ApplyRecorder.stepHook = steps::add;
 
             scenario.harness.provider.terminate(new InstanceId(server)).await();
             scenario.provider.onTerminate = shape;
 
             rollback(scenario).onFailure(cause -> fail(cause.message()));
 
+            ApplyRecorder.stepHook = _ -> {};
             assertThat(scenario.provider.terminated).as("a VM the listing does not show is never terminated").isEmpty();
+            assertThat(steps).as("and no TERMINATING row is written for it either").doesNotContain(ApplyRecorder.Step.S6);
         }
     }
 
@@ -266,6 +271,38 @@ class ApplyRollbackTest {
         assertThat(scenario.row("n-late").state()).isEqualTo(ApplyResource.State.ADOPTED);
     }
 
+    /// A ledger server that is gone is GONE even when another listed server's id extends its id.
+    @Test
+    void audit_aVanishedLedgerServer_isGone_evenWhenAnotherServersIdExtendsIt() {
+        var scenario = new ApplyScenario(ledger, CLUSTER);
+
+        scenario.createRecorded("n-1");
+        scenario.harness.provider.terminate(new InstanceId("srv-1")).await();
+        scenario.harness.provider.nextServerNumber(10);
+        scenario.harness.provider.create("n-late", scenario.labels());
+
+        var report = ApplyReconciler.audit(scenario.recorder, CLUSTER, scenario.computes()).unwrap();
+
+        assertThat(report.gone()).containsExactly("n-1");
+        assertThat(report.adopted()).singleElement().asString().contains("srv-10");
+    }
+
+    /// ... and it is GONE, not "relabelled", when the only server that merely extends its id exists under other labels.
+    @Test
+    void audit_aVanishedLedgerServer_isGoneNotRelabelled_whenAForeignServersIdExtendsIt() {
+        var scenario = new ApplyScenario(ledger, CLUSTER);
+
+        scenario.createRecorded("n-1");
+        scenario.harness.provider.terminate(new InstanceId("srv-1")).await();
+        scenario.harness.provider.nextServerNumber(10);
+        scenario.harness.provider.create("foreign", java.util.Map.of());
+
+        var report = ApplyReconciler.audit(scenario.recorder, CLUSTER, scenario.computes()).unwrap();
+
+        assertThat(report.gone()).containsExactly("n-1");
+        assertThat(report.relabelled()).isEmpty();
+    }
+
     /// The second label: a server carrying this apply's label under ANOTHER cluster's label is not this apply's.
     @Test
     void rollback_aServerWithTheApplyLabelButAnotherClustersLabel_isRefusedAndNamed() {
@@ -275,10 +312,19 @@ class ApplyRollbackTest {
         scenario.recorder.intend("n-1", "hetzner").unwrap();
         scenario.recorder.created("n-1", stranger).unwrap();
 
+        var filters = new java.util.ArrayList<java.util.Map<String, String>>();
+
+        scenario.provider.onFilteredList = filter -> {
+            filters.add(filter);
+
+            return scenario.harness.provider.listInstances(filter);
+        };
+
         rollback(scenario).onSuccess(_ -> fail("not this cluster's"))
                           .onFailure(cause -> assertThat(cause.message()).contains("NOT terminated").contains(stranger));
 
         assertThat(scenario.provider.terminated).isEmpty();
+        assertThat(filters).as("the ownership listing selects on BOTH labels").allSatisfy(filter -> assertThat(filter).containsKeys("aether-cluster", ApplyChaosHarness.APPLY_LABEL));
     }
 
     @Test
@@ -288,9 +334,19 @@ class ApplyRollbackTest {
         scenario.createRecorded("n-1");
         scenario.harness.provider.create("stranger", java.util.Map.of(ApplyChaosHarness.APPLY_LABEL, scenario.recorder.applyId(), "aether-cluster", "another-cluster"));
 
+        var filters = new java.util.ArrayList<java.util.Map<String, String>>();
+
+        scenario.provider.onFilteredList = filter -> {
+            filters.add(filter);
+
+            return scenario.harness.provider.listInstances(filter);
+        };
+
         var report = ApplyReconciler.audit(scenario.recorder, CLUSTER, scenario.computes()).unwrap();
 
         assertThat(report.adopted()).isEmpty();
+        assertThat(report.relabelled()).as("kept out of the listing by the selector itself, not just refused afterwards").isEmpty();
+        assertThat(filters).as("the audit selects on BOTH labels").allSatisfy(filter -> assertThat(filter).containsKeys("aether-cluster", ApplyChaosHarness.APPLY_LABEL));
         assertThat(scenario.onDisk().resources()).hasSize(1);
     }
 
