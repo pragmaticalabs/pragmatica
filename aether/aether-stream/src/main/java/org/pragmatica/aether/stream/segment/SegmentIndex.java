@@ -452,6 +452,7 @@ public final class SegmentIndex {
             .forEach(this::placeRef);
         sealedThrough.clear();
         partitions.forEach(this::anchorAtFloor);
+        partitions.forEach(this::pruneBelowFloor);
         reclaimedThrough.forEach(sealedThrough::putIfAbsent);
     }
 
@@ -524,6 +525,7 @@ public final class SegmentIndex {
             if (key.streamName()
                    .equals(streamName)) {
                 anchorAtFloor(key, map);
+                pruneBelowFloor(key, map);
             }
         });
         reclaimedThrough.forEach((key, floor) -> {

@@ -72,8 +72,12 @@ public final class SegmentReader {
 
     /// What a segment rebuilt after a restart lacks, learned from ONE read of its block (#1604; #2201 3.2 item 4): its
     /// newest event timestamp, and `size`, the block's length after decryption and decompression, which is what the
-    /// index records as `originalSize` at seal.
-    public record SegmentFacts(Option<Long> maxTimestamp, int size) {}
+    /// index records as `originalSize` at seal; and whether the block carries the identity header (#2258).
+    public record SegmentFacts(Option<Long> maxTimestamp, int size, SegmentIndex.IdentityMark identity) {
+        public SegmentFacts(Option<Long> maxTimestamp, int size) {
+            this(maxTimestamp, size, SegmentIndex.IdentityMark.UNKNOWN);
+        }
+    }
 
     /// A read that THROWS while starting is a failed read, as in [#containedStep].
     public Promise<SegmentFacts> segmentFacts(String streamName, int partition, SegmentIndex.SegmentRef ref) {
@@ -84,13 +88,19 @@ public final class SegmentReader {
 
     private Promise<SegmentFacts> readFacts(String refName, SegmentIndex.SegmentRef ref) {
         return rawBlock(refName, ref).flatMap(raw -> SegmentProvenance.split(raw)
-                                                                      .flatMap(split -> deserializeAndFilter(refName,
-                                                                                                             split.events(),
-                                                                                                             Long.MIN_VALUE,
-                                                                                                             Integer.MAX_VALUE))
-                                                                      .map(events -> new SegmentFacts(latestTimestamp(events),
-                                                                                                      raw.length))
+                                                                      .flatMap(split -> factsOf(refName, raw, split))
                                                                       .async());
+    }
+
+    private static Result<SegmentFacts> factsOf(String refName, byte[] raw, SegmentProvenance.Split split) {
+        return deserializeAndFilter(refName,
+                                    split.events(),
+                                    Long.MIN_VALUE,
+                                    Integer.MAX_VALUE).map(events -> new SegmentFacts(latestTimestamp(events),
+                                                                                       raw.length,
+                                                                                       split.identified()
+                                                                                       ? SegmentIndex.IdentityMark.IDENTIFIED
+                                                                                       : SegmentIndex.IdentityMark.LEGACY));
     }
 
     private static Option<Long> latestTimestamp(List<RawEvent> events) {

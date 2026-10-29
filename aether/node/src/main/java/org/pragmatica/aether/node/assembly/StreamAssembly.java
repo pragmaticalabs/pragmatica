@@ -124,6 +124,7 @@ import org.pragmatica.aether.stream.segment.RetentionEnforcer;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.SegmentReader;
 import org.pragmatica.aether.stream.segment.SegmentSealer;
+import org.pragmatica.aether.stream.segment.SharedSegmentCollection;
 import org.pragmatica.aether.stream.segment.StorageSegmentSink;
 import org.pragmatica.aether.stream.segment.StreamFootprint;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
@@ -162,6 +163,8 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.storage.AppendLog;
+import org.pragmatica.storage.SharedDelete;
+import org.pragmatica.storage.StorageGarbageCollector;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
@@ -286,6 +289,10 @@ public sealed interface StreamAssembly {
         // append re-populates the index.
         streamSegmentIndex.rebuildFromRefs(streamStorageSetup.metadataStore());
         var streamStorage = streamStorageSetup.instance();
+        // #2258 (spec 3.2 item 6): the refs a crash left at or below a durable reclaim floor are released now (rebuild did not
+        // install them); StorageFactory gave the instance its identification predicate.
+        streamSegmentIndex.drainReclaimedBelowFloor()
+                          .forEach(refName -> streamStorage.deleteRef(refName, SharedDelete.IF_IDENTIFIED));
         // A4/A5: per-node durable cursor store + tiered reader over the same disk-backed stream storage;
         // registered as SPI extensions below so StreamAccessFactory persists consumer offsets and serves
         // post-restart reads from sealed cold segments.
@@ -442,6 +449,11 @@ public sealed interface StreamAssembly {
                                                                           streamSegmentTierPressure);
         // #2201 3.2 item 6: every node runs its own retention over its own segments, from node start to node stop
         // (AetherNode's stop path closes it); it is no longer pinned to the leader by StreamingCoordinator.
+        // #2258: the released segments' blocks are deleted from every tier by their own bounded run, started and closed
+        // with the enforcer.
+        streamRetentionEnforcer.sharedCollection(SharedSegmentCollection.sharedSegmentCollection(streamStorageSetup.garbageCollector(),
+                                                                                                 streamStorageSetup.snapshotManager(),
+                                                                                                 StorageGarbageCollector.SharedDeleteLimits.DEFAULT));
         streamRetentionEnforcer.operatorWarnings(operatorWarningSink,
                                                  config.self().id());
         streamRetentionEnforcer.start();

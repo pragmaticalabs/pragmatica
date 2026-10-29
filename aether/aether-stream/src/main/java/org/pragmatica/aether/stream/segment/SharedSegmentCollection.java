@@ -96,6 +96,8 @@ public final class SharedSegmentCollection implements AutoCloseable {
             log.debug("Shared-tier segment collection: deleted={} failed={} deferred={}", run.deleted(), run.failed(), run.deferred());
         }
 
+        report(run);
+
         return run;
     }
 

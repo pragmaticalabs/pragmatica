@@ -97,11 +97,11 @@ public final class StorageSegmentSink implements SegmentSink {
     /// later replays the segment from the tier installs it before appending the segment's records.
     @Override
     public Promise<Unit> seal(SealedSegment segment, Option<AppendLog> log) {
-        var raw = withProvenance(segment, log);
+        var incarnation = index.incarnationOf(segment.streamName());
+        var raw = withIdentity(segment, incarnation, log);
         var originalSize = raw.length;
         var compressed = compressionCodec.compress(raw).or(raw);
         var processedData = applyEncryption(compressed);
-        var incarnation = index.incarnationOf(segment.streamName());
 
         return store(segment,
                      incarnation,
@@ -113,14 +113,20 @@ public final class StorageSegmentSink implements SegmentSink {
                     .onSuccess(_ -> logSealed(segment));
     }
 
-    private static byte[] withProvenance(SealedSegment segment, Option<AppendLog> log) {
-        var events = segment.serializedEvents();
+    /// Every block this build seals carries the identity header ([SegmentProvenance#withIdentity], #2258): the life, the
+    /// partition and the range, so two different segments never share a content-addressed block, and the provenance slice
+    /// as before.
+    private static byte[] withIdentity(SealedSegment segment, long incarnation, Option<AppendLog> log) {
+        var slice = log.map(wal -> sliceThrough(wal,
+                                                segment.endOffset()))
+                       .filter(entries -> !entries.isEmpty());
 
-        return log.map(wal -> sliceThrough(wal,
-                                           segment.endOffset()))
-                  .filter(slice -> !slice.isEmpty())
-                  .map(slice -> SegmentProvenance.withSlice(slice, events))
-                  .or(events);
+        return SegmentProvenance.withIdentity(SegmentIndex.durableName(segment.streamName(), incarnation),
+                                              segment.partition(),
+                                              segment.startOffset(),
+                                              segment.endOffset(),
+                                              slice,
+                                              segment.serializedEvents());
     }
 
     private static List<EpochStart> sliceThrough(AppendLog wal, long endOffset) {
@@ -184,7 +190,8 @@ public final class StorageSegmentSink implements SegmentSink {
                          segment.maxTimestamp(),
                          compressionOrdinal,
                          encrypted,
-                         originalSize);
+                         originalSize,
+                         SegmentIndex.IdentityMark.IDENTIFIED);
 
         return unit();
     }

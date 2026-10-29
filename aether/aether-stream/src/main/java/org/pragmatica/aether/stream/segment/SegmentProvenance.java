@@ -123,14 +123,50 @@ public sealed interface SegmentProvenance {
                      .array();
     }
 
-    /// A block split into its slice and its events. A block without the header is all events and no slice; a
-    /// header that does not parse is a corrupt block.
+    /// A block split into its slice and its events. Three forms: no header (all events, no slice), the provenance header
+    /// (`MAGIC`) and the identity header (`MAGIC2`); a header that does not parse is a corrupt block.
     static Result<Split> split(byte[] block) {
-        return block.length < Long.BYTES || ByteBuffer.wrap(block)
-                                                      .order(ByteOrder.BIG_ENDIAN)
-                                                      .getLong() != MAGIC
-               ? Result.success(new Split(none(), block))
-               : parse(block);
+        if (block.length < Long.BYTES) {
+            return Result.success(new Split(none(), block));
+        }
+
+        var magic = ByteBuffer.wrap(block)
+                              .order(ByteOrder.BIG_ENDIAN)
+                              .getLong();
+
+        if (magic == MAGIC2) {
+            return parseIdentified(block);
+        }
+
+        return magic == MAGIC
+               ? parse(block)
+               : Result.success(new Split(none(), block));
+    }
+
+    private static Result<Split> parseIdentified(byte[] block) {
+        var buffer = ByteBuffer.wrap(block).order(ByteOrder.BIG_ENDIAN).position(Long.BYTES);
+
+        return Result.lift(_ -> cause("Segment identity header is corrupt"),
+                           () -> skipIdentity(buffer))
+                     .flatMap(count -> count == NO_SLICE
+                                       ? Result.success(Option.<List<EpochStart>> none())
+                                       : Result.lift(_ -> cause("Segment identity header is corrupt"),
+                                                     () -> readEntries(buffer, count))
+                                               .flatMap(entries -> Result.allOf(entries))
+                                               .map(Option::some))
+                     .map(slice -> new Split(slice,
+                                             remainder(block,
+                                                       buffer.position()),
+                                             true));
+    }
+
+    /// Skips the durable name, partition and range, and answers the slice count that follows them.
+    private static int skipIdentity(ByteBuffer buffer) {
+        var nameLength = Short.toUnsignedInt(buffer.getShort());
+
+        buffer.position(buffer.position() + nameLength + Integer.BYTES + 2 * Long.BYTES);
+
+        return buffer.getInt();
     }
 
     private static Result<Split> parse(byte[] block) {
