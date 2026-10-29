@@ -125,9 +125,9 @@ public sealed interface IdentityLedgerWiring {
 
         tokens.attachLedger(ledger);
         var loading = ledger.open(isNewDirectory(location));
-
-        tokens.preload(loading.facts(), loading.origin() == IdentityLedger.Origin.WIPED);
+        // The listener goes in BEFORE the preload: loading the offers journal of a wiped node can already report an unusable file.
         ledger.onDurabilityChange(change -> raiseTransition(sink, subject, change));
+        tokens.preload(loading.facts(), loading.origin() == IdentityLedger.Origin.WIPED);
         raiseAtBoot(sink, subject, location, loading);
 
         return Unit.unit();
@@ -178,7 +178,7 @@ public sealed interface IdentityLedgerWiring {
                                                            sink,
                                                            OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE,
                                                            subject,
-                                                           "The identity ledger write failed ({}): retirements from now on will not survive a restart until a write succeeds.",
+                                                           "The identity ledger or its offers journal failed ({}): retirements from now on will not survive a restart until a write succeeds.",
                                                            cause.message()));
     }
 

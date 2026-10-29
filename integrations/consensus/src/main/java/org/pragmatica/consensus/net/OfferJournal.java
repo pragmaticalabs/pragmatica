@@ -35,6 +35,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.FileOps;
+import org.pragmatica.lang.utils.Causes;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -91,10 +92,12 @@ public interface OfferJournal {
 
         @Contract
         private void unusable(Cause cause) {
-            log.warn("The identity offers journal {} cannot be used and is treated as holding no offers: {}",
-                     file,
-                     cause.message());
-            report(Option.some(cause));
+            var named = Causes.cause("The identity offers journal " + file
+                                    + " cannot be used and is treated as holding no offers",
+                                     Option.some(cause));
+
+            log.warn("{}: {}", named.message(), cause.message());
+            report(Option.some(named));
         }
 
         /// Only transitions are reported: a failure while failing is already known, a success is news only after a failure.

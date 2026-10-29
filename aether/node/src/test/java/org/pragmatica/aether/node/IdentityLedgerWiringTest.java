@@ -361,6 +361,21 @@ class IdentityLedgerWiringTest {
         assertThat(tokens.admit(PEER_A, 10L)).as("two seats heard").isEqualTo(Admission.ADMITTED);
     }
 
+    /// A wiped node whose offers journal is unreadable carries on as if it held no offers, but says so: the operator event names the
+    /// journal (the listener is registered before the journal is read).
+    @Test
+    void wire_anUnreadableOffersJournal_isReportedToTheOperator_andCountsAsNoOffers() throws Exception {
+        var location = new IdentityLedgerWiring.Location(directory.resolve("identity").resolve("n1").resolve("ledger"), true);
+        var tokens = BootTokens.bootTokens(1L);
+
+        Files.createDirectories(location.file().getParent());
+        Files.writeString(location.file().resolveSibling("ledger.offers"), "garbage, not a journal");
+        IdentityLedgerWiring.wire(location, SELF, tokens, sink);
+
+        await("the offers journal event", () -> events.stream().anyMatch(event -> event.message().contains("offers journal")));
+        assertThat(tokens.admit(PEER_A, 10L)).as("no offers counted: still closed").isEqualTo(Admission.UNAVAILABLE);
+    }
+
     private static String readFile(Path file) {
         return FileOps.readString(file).or("");
     }

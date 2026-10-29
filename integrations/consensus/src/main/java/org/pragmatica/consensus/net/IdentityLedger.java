@@ -131,7 +131,10 @@ public interface IdentityLedger {
         // for the offers kept beside it.
         var journal = OfferJournal.offerJournal(file.resolveSibling(file.getFileName() + ".offers"),
                                                 writer,
-                                                change -> reportDurability(durable, listeners, change));
+                                                change -> change.fold(Unit::unit,
+                                                                      cause -> reportJournalLoss(durable,
+                                                                                                 listeners,
+                                                                                                 cause)));
 
         return new FileLedger(file,
                               journal,
@@ -143,6 +146,18 @@ public interface IdentityLedger {
                               new AtomicBoolean(),
                               new ConcurrentLinkedQueue<>(),
                               listeners);
+    }
+
+    /// The offers journal could not be read or written: always told to the listeners (the journal reports its own transitions once),
+    /// even when the flag already reads "not durable" because the node is wiped, since that earlier signal said nothing of the journal.
+    /// Its recovery is not told: the flag is the ledger's, and only the ledger's own next successful write can restore it.
+    private static Unit reportJournalLoss(AtomicBoolean durable,
+                                          ConcurrentLinkedQueue<Consumer<Option<Cause>>> listeners,
+                                          Cause cause) {
+        durable.set(false);
+        listeners.forEach(listener -> listener.accept(Option.some(cause)));
+
+        return Unit.unit();
     }
 
     /// A transition of durability, reported once to every listener: lost (the cause) or back (empty).

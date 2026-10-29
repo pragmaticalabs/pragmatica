@@ -125,9 +125,11 @@ class OfferJournalTest {
 
     @Test
     void load_aWrongHeaderWithAValidDigest_isRefusedByTheHeader_andLoud() throws Exception {
-        var body = "aether-identity-offers-v0\nO\tseat-a\nT\tx\tTOKEN_CONFLICT\n";
+        // The digest covers the header the journal expects, so only a check of the first line itself can refuse this file.
+        var offers = "O\tseat-a\nT\tx\tTOKEN_CONFLICT\n";
+        var digest = IdentityFacts.digestOf("aether-identity-offers-v1\n" + offers);
 
-        Files.writeString(file(), body + "D\t" + IdentityFacts.digestOf(body) + "\n");
+        Files.writeString(file(), "aether-identity-offers-v0\n" + offers + "D\t" + digest + "\n");
 
         assertThat(journal(DurableWriter.fileOps()).load()).isEmpty();
         assertThat(health).hasSize(1);
