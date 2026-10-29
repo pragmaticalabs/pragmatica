@@ -153,6 +153,24 @@ class AsyncJooqConnectorConverterLiveQueryTest {
         assertThat(ids.stream().map(r -> r.get(ID))).containsExactly(2);
     }
 
+    @Test
+    void fetch_withAnInlinedValue_runsWithoutAPlaceholderForIt() {
+        success(connector.execute(connector.dsl().query("INSERT INTO conv_items(id) VALUES (1), (2), (3)")));
+        var ids = success(connector.fetch(connector.dsl().select(ID).from(TABLE).where(ID.eq(DSL.inline(2)).or(ID.eq(3)))));
+
+        assertThat(ids.stream().map(r -> r.get(ID))).containsExactlyInAnyOrder(2, 3);
+    }
+
+    @Test
+    void fetch_queryBuiltForStaticStatements_runsWithItsValuesInlined() {
+        success(connector.execute(connector.dsl().query("INSERT INTO conv_items(id) VALUES (1), (2), (3)")));
+        var inlined = DSL.using(connector.dsl().configuration().derive(new org.jooq.conf.Settings().withStatementType(org.jooq.conf.StatementType.STATIC_STATEMENT)));
+
+        var ids = success(connector.fetch(inlined.select(ID).from(TABLE).where(ID.eq(1))));
+
+        assertThat(ids.stream().map(r -> r.get(ID))).containsExactly(1);
+    }
+
     private static String raw(String column, int id) {
         return success(connector.fetchOne(connector.dsl().resultQuery("SELECT " + column + "::text FROM conv_items WHERE id = " + id))).get(0, String.class);
     }
