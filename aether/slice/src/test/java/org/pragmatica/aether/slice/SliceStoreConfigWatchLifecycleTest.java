@@ -166,31 +166,49 @@ class SliceStoreConfigWatchLifecycleTest {
     // ---------------------------------------------------------------- residual edge R8
 
     @Test
-    void tripwire_aFailureAfterRegistration_leavesTheSubscriptionHeld_andNothingReleasesIt() {
-        var withCodec = (sliceStore) SliceStore.sliceStore(registry,
-                                                           List.of(repository),
-                                                           sharedLoader,
-                                                           STUB_INVOKER,
-                                                           noResources(),
-                                                           SliceActionConfig.sliceActionConfig(),
-                                                           Option.some(IntrinsicConfigProvider.intrinsicConfigProvider("node", Map.of("watched.key", "v"))),
-                                                           Option.some(SliceCodec.sliceCodec(List.of())),
-                                                           Option.empty(),
-                                                           SliceLoadingContext.noResourceOverlay(),
-                                                           Option.some(feed));
+    void aFailedLoadAfterRegistration_leavesNeitherARegistrationNorASubscription() {
+        var withCodec = storeWithNodeCodec();
 
         var loaded = withCodec.loadSlice(CODEC_THROWS).await();
 
         assertThat(loaded.isFailure()).as("the load fails AFTER the slice was created, subscribed and registered").isTrue();
         assertThat(withCodec.loaded()).as("no SliceStore entry was ever created").isEmpty();
+        // The unwind is a failure callback of the load's Promise and may run just after `await()` returns.
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
+            assertThat(registry.lookup(CODEC_THROWS).isPresent()).as("a slice whose load failed must not stay registered").isFalse();
+            assertThat(feed.count(CODEC_THROWS)).as("nor keep its subscription").isZero();
+        });
+    }
 
-        withCodec.unloadSlice(CODEC_THROWS).await();
+    @Test
+    void unwindingAFailedLoad_neverTakesAwayAnInstanceAnEarlierLoadRegistered() {
+        store.loadSlice(X).await();
+        store.unloadSlice(X).await();
+        assertThat(registry.lookup(D).isPresent() && feed.count(D) == 1).as("precondition: D was registered and subscribed by X's load").isTrue();
 
-        assertThat(registry.lookup(CODEC_THROWS).isPresent() && feed.count(CODEC_THROWS) == 1)
-            .as("TRIPWIRE, residual edge R8 (ACCEPTED rc5 limit): the leak ITSELF - a slice that failed after registration is still "
-                + "registered and still subscribed, and nothing releases it. If this fails the leak is fixed (unregister and release "
-                + "together): delete this tripwire and enable the real assertion that a failed load leaves no subscription "
-                + "and no registration").isTrue();
+        store.unwindFailedLoad(D, true).await();
+
+        assertThat(registry.lookup(D).isPresent()).as("this load did not register D: it must not unregister it").isTrue();
+        assertThat(feed.count(D)).as("nor release the live instance's subscription").isEqualTo(1);
+
+        store.unwindFailedLoad(D, false).await();
+
+        assertThat(registry.lookup(D).isPresent()).as("a load that registered the slice unregisters it again").isFalse();
+        assertThat(feed.count(D)).as("and releases what it subscribed").isZero();
+    }
+
+    private sliceStore storeWithNodeCodec() {
+        return (sliceStore) SliceStore.sliceStore(registry,
+                                                  List.of(repository),
+                                                  sharedLoader,
+                                                  STUB_INVOKER,
+                                                  noResources(),
+                                                  SliceActionConfig.sliceActionConfig(),
+                                                  Option.some(IntrinsicConfigProvider.intrinsicConfigProvider("node", Map.of("watched.key", "v"))),
+                                                  Option.some(SliceCodec.sliceCodec(List.of())),
+                                                  Option.empty(),
+                                                  SliceLoadingContext.noResourceOverlay(),
+                                                  Option.some(feed));
     }
 
     // ---------------------------------------------------------------- scaffolding

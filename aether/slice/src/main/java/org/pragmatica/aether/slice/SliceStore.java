@@ -287,8 +287,31 @@ public interface SliceStore {
 
         private Promise<LoadedSliceEntry> startLoading(Artifact artifact) {
             log.debug("Loading slice {}", artifact);
+            var alreadyRegistered = registry.lookup(artifact).isPresent();
 
-            return loadFromLocation(artifact);
+            return loadFromLocation(artifact).onFailure(_ -> unwindFailedLoad(artifact, alreadyRegistered));
+        }
+
+        /// A load can fail AFTER the slice was created, subscribed and registered (its codec cannot be bound, say): no
+        /// entry is ever created, so no unload will ever come for it. Take back what THIS load did - unregister the
+        /// slice and release its subscriptions, together; releasing a slice that stays registered is wrong, and so is
+        /// unregistering one it did not register (an earlier load, as a dependency, owns that instance).
+        Promise<Unit> unwindFailedLoad(Artifact artifact, boolean alreadyRegistered) {
+            if (alreadyRegistered) {
+                return Promise.unitPromise();
+            }
+
+            return Promise.success(unregisterQuietly(artifact)).flatMap(_ -> releaseConfigWatches(artifact));
+        }
+
+        /// A failure that happened before registration leaves nothing to unregister; the release must happen regardless.
+        private Unit unregisterQuietly(Artifact artifact) {
+            registry.unregister(artifact)
+                    .onFailure(cause -> log.debug("Nothing to unregister for {}: {}",
+                                                  artifact,
+                                                  cause.message()));
+
+            return Unit.unit();
         }
 
         private Promise<LoadedSliceEntry> loadFromLocation(Artifact artifact) {
