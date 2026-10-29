@@ -1456,6 +1456,9 @@ class StreamConsumerRuntimeTest {
                                        IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED);
                 manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
                 awaitContains(commits, 1L, 3 * CADENCE_MS + 1_000);
+                // Let the first commit settle (it resets the delivery path's clock), so that only the trailing timer can commit the
+                // second burst: an ack that finds the clock stale commits through the periodic trigger and hides the timer.
+                Thread.sleep(CADENCE_MS / 3);
                 manager.publishLocal("orders", 0, "event-2".getBytes(UTF_8), 2000L);
                 manager.publishLocal("orders", 0, "event-3".getBytes(UTF_8), 3000L);
                 awaitContains(commits, 3L, 3 * CADENCE_MS + 1_000);
