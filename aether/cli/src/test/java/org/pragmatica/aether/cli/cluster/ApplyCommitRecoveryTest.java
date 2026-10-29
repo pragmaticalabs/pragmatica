@@ -79,6 +79,15 @@ class ApplyCommitRecoveryTest {
         assertThat(decision.explanation()).contains("moved");
     }
 
+    /// The same config hash is only a commit when the version advanced: an unchanged version means nobody moved the config.
+    @Test
+    void sameHashButTheVersionDidNotAdvance_isNotCommitted() {
+        var decision = ApplyCommitRecovery.decide(ledgerIn(ApplyPhase.COMMITTING), Option.some(new ClusterConfigView(HASH, STORED)));
+
+        assertThat(decision.usable()).containsExactly(Verb.RESUME);
+        assertThat(decision.phase()).isEqualTo(ApplyPhase.COMMITTING);
+    }
+
     @Test
     void unreadableCluster_noVerbProceeds_andTheLedgerIsNotMoved() {
         var decision = ApplyCommitRecovery.decide(ledgerIn(ApplyPhase.COMMITTING), Option.none());

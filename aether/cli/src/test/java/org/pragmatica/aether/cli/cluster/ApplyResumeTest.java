@@ -135,7 +135,32 @@ class ApplyResumeTest {
         resume(scenario, Option::none).onFailure(cause -> fail(cause.message()));
 
         assertThat(scenario.harness.provider.totalCreates()).as("no create on resume").isEqualTo(1);
+        assertThat(scenario.provider.filteredListings).as("the lookup ran before the executor").isGreaterThanOrEqualTo(1);
         assertThat(executions.get()).isEqualTo(1);
+    }
+
+    @Test
+    void resume_auditAdoptsAVmTheLedgerDoesNotKnow_andSaysSo() {
+        var scenario = scenarioWithMatchingHash();
+        var originalOut = System.out;
+        var captured = new java.io.ByteArrayOutputStream();
+
+        scenario.createRecorded("n-1");
+        // lands after the executor ran, before the audit
+        var desired = desired();
+
+        System.setOut(new java.io.PrintStream(captured, true));
+        try {
+            ApplyOrchestrator.resume(desired, desired, scenario.computes(), (plan, stored, wanted, recorder) -> {
+                scenario.harness.provider.create("late-node", scenario.labels());
+
+                return Result.success(ApplyResult.applyResult(plan, 0, 0, 0));
+            }, Option::none).onFailure(cause -> fail(cause.message()));
+        } finally {
+            System.setOut(originalOut);
+        }
+
+        assertThat(captured.toString()).contains("Adopted a VM found under the apply label").contains("late-node");
     }
 
     @Test

@@ -195,6 +195,34 @@ class ApplyRollbackTest {
     }
 
     @Test
+    void rollback_terminatingRowWriteFails_noTerminateIsIssued_theRowIsKept() {
+        var scenario = new ApplyScenario(ledger, CLUSTER);
+        var original = ApplyLedger.tempWriter;
+        var writes = new AtomicInteger();
+
+        scenario.createRecorded("n-1");
+        // the ROLLING_BACK phase write succeeds, the TERMINATING row write after it fails
+        ApplyLedger.tempWriter = (temp, content) -> writes.incrementAndGet() >= 2
+                                                    ? failWrite()
+                                                    : original.write(temp, content);
+
+        try {
+            rollback(scenario).onSuccess(_ -> fail("nothing could be recorded, nothing may be terminated"))
+                              .onFailure(cause -> assertThat(cause.message()).contains("TERMINATING row could not be written"));
+        } finally {
+            ApplyLedger.tempWriter = original;
+        }
+
+        assertThat(scenario.provider.terminated).isEmpty();
+        assertThat(scenario.harness.provider.nodeIdsByServer()).hasSize(1);
+        assertThat(scenario.row("n-1").state()).isEqualTo(ApplyResource.State.CREATED);
+    }
+
+    private static Unit failWrite() {
+        throw new java.io.UncheckedIOException(new java.io.IOException("No space left on device (test cause)"));
+    }
+
+    @Test
     void rollback_withNoLedger_saysThereIsNothingToRollBack() {
         ApplyOrchestrator.rollback(ClusterName.clusterName("never-applied").unwrap(), _ -> fail("no provider needed"), _ -> org.pragmatica.lang.Result.unitResult(),
                                    org.pragmatica.lang.Option::none, out::add)
