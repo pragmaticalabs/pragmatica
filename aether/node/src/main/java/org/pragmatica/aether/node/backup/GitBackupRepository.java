@@ -276,8 +276,11 @@ public record GitBackupRepository(Path dir,
                                                         .result();
     }
 
+    /// A remote that moved between our read of its head and our push answers `[rejected]` when the client already knows, and
+    /// `[remote rejected] (failed to update ref)` when the server finds the ref changed under the push (concurrent writers, the
+    /// whole-cluster stop). Both mean "read the head again"; a hook's refusal is a different `[remote rejected]` and stays a failure.
     private static boolean isRejection(String output) {
-        return output.contains("[rejected]") || output.contains("non-fast-forward") || output.contains("fetch first");
+        return output.contains("[rejected]") || output.contains("non-fast-forward") || output.contains("fetch first") || output.contains("failed to update ref");
     }
 
     /// Run git and succeed with its output only on exit 0.

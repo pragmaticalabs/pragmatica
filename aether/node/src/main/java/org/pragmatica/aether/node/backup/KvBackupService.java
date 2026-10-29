@@ -56,8 +56,9 @@ import static org.pragmatica.lang.Result.success;
 /// burst of changes is one commit and a continuous stream still lands. A flush whose entry section equals
 /// the last one written commits nothing: a revision that moved only through runtime keys is not a backup.
 ///
-/// **Leadership.** Only the leader flushes. Gaining leadership always runs one flush, so a new leader
-/// closes any gap its predecessor left; losing it stops the worker.
+/// **Leadership.** Only the leader flushes on the debounce. Gaining leadership always runs one flush, so a new
+/// leader closes any gap its predecessor left; losing it stops the worker. A graceful stop is the exception: every
+/// node that holds the full state flushes, leader or not.
 ///
 /// **Ordering and the lineage gate.** Each document carries `(lineage, incarnation, revision)` from the
 /// committed cluster incarnation and the KV committed revision; [BackupDecision] decides against the head
@@ -68,20 +69,26 @@ import static org.pragmatica.lang.Result.success;
 /// successful push carries every pending commit.
 ///
 /// **Graceful stop.** [#stopFlushed] runs one final flush on the worker before the worker is released, so
-/// changes still inside the debounce window reach the backup before the stop completes. The flush is bounded
-/// by a deadline; one that fails or times out is reported ([Code#BACKUP_STOP_FLUSH_FAILED]) and the stop
-/// proceeds. Leadership is decided when the stop is requested, so a demotion that arrives afterwards (peers
-/// stopping drop the quorum) does not cancel the flush; a node that led and was demoted before its own stop
-/// flushes nothing, and says so. A crash gets no such flush: the backup then trails by up to
-/// `maxDelay + quiet` (#1569).
+/// changes still inside the debounce window reach the backup before the stop completes. EVERY node that holds
+/// the full state runs it, leader or not (#2506): a whole-cluster stop demotes the leader as its peers go, and the
+/// node that acked a write need not be the leader. Each node decides its own state against the head and pushes
+/// fast-forward only, so the head never moves backwards within an incarnation id; a head strictly ahead in the
+/// same incarnation already contains this node's state and COVERS it, and a rejected push is decided again until
+/// the deadline. A flush that fails, times out or finds the head at a higher incarnation is reported
+/// ([Code#BACKUP_STOP_FLUSH_FAILED]) and the stop proceeds. A crash gets no such flush: the backup then trails by
+/// up to `maxDelay + quiet` (#1569).
+///
+/// Guarantee: a write acked at revision `r` is in the head after a whole-cluster graceful stop if at least one
+/// node that applied `r` completed its stop flush as written, unchanged or covered. It rests on a revision being a
+/// function of the applied log, so two full-state nodes at one revision hold the same backed-up entries.
 ///
 /// **Warnings** are transition-only ([BackupWarning]).
 public final class KvBackupService {
     private static final Logger LOG = LoggerFactory.getLogger(KvBackupService.class);
     private static final String SUBJECT_PREFIX = "kv backup";
     private static final Cause NO_STOP_FLUSH_MARKER = Causes.cause("no stop-time flush failure is open");
-
-    private static final Cause DEMOTED_BEFORE_STOP = Causes.cause("this node was demoted before the stop was requested, so it flushed nothing");
+    // Re-decide after a rejected push until the stop deadline ends the wait (and the worker is released), not a fixed number of times.
+    private static final int STOP_REDECIDE_UNBOUNDED = Integer.MAX_VALUE;
 
     /// The subject every backup commit carries ([#commitMessage]): `kv backup lineage=… incarnation=… revision=…`.
     private static final Pattern SUBJECT = Pattern.compile("kv backup lineage=(\\S*) incarnation=(\\d+) revision=(\\d+)");
@@ -98,7 +105,6 @@ public final class KvBackupService {
     private final Timing timing;
     private final Runnable onStop;
     private final AtomicBoolean leader = new AtomicBoolean(false);
-    private final AtomicBoolean ledThisLife = new AtomicBoolean(false);
     private final AtomicBoolean dirty = new AtomicBoolean(false);
     private final AtomicBoolean tickScheduled = new AtomicBoolean(false);
     private final AtomicBoolean stopped = new AtomicBoolean(false);
@@ -251,47 +257,67 @@ public final class KvBackupService {
         onStop.run();
     }
 
-    /// A graceful stop: flush what the debounce is still holding, then [#stop]. The leader commits the current
-    /// state and pushes it, bounded by `deadline`; a node that never led has nothing to flush. A flush that fails or
-    /// overruns is reported as [Code#BACKUP_STOP_FLUSH_FAILED] and logged, and the stop proceeds all the same:
-    /// a backup that cannot be reached must not hold a node's shutdown.
-    ///
-    /// Leadership is read HERE, on the caller thread, at call time: the worker may run late, and a demotion
-    /// landing in between must not turn a requested flush into a silent skip (#2506). A node that led this life
-    /// but is no longer leader when asked to stop skips the flush with [Code#BACKUP_STOP_FLUSH_FAILED] naming why.
+    /// Whether a node holds the full backed-up state. A worker is fed a replica without the cluster configuration
+    /// (`ReplicaFilter`), so its snapshot at a given revision is a strict subset of a core's: it must never write.
+    public enum Replica {
+        FULL,
+        PARTIAL
+    }
+
+    /// A graceful stop of a full-state node ([#stopFlushed(TimeSpan, Replica)]).
+    public Promise<Unit> stopFlushed(TimeSpan deadline) {
+        return stopFlushed(deadline, Replica.FULL);
+    }
+
+    /// A graceful stop: flush what the debounce is still holding, then [#stop]. Every node with the full state runs one
+    /// bounded flush of its own state, whether or not it leads (see the class comment); a [Replica#PARTIAL] node has no
+    /// authority over the backup and only stops. A flush that fails or overruns is reported as
+    /// [Code#BACKUP_STOP_FLUSH_FAILED] and logged, and the stop proceeds all the same: a backup that cannot be reached must
+    /// not hold a node's shutdown.
     ///
     /// FER: the stop is not undone by a lost flush — the node is going down either way. Guarantee earned: stop
     /// always completes within `deadline` plus the stop itself; the backup then trails by the unflushed window,
-    /// which the warning says. Mechanism: a single attempt on the worker, no retry (the node is stopping).
-    public Promise<Unit> stopFlushed(TimeSpan deadline) {
+    /// which the warning says. Mechanism: a single bounded attempt on the worker, no retry beyond the re-decide after a
+    /// rejected push (the node is stopping).
+    public Promise<Unit> stopFlushed(TimeSpan deadline, Replica replica) {
         return stopped.get()
                ? Promise.unitPromise()
-               : flushBounded(deadline, leader.get()).onResultRun(this::stop);
+               : flushBounded(deadline, replica).onResultRun(this::stop);
     }
 
-    private Promise<Unit> flushBounded(TimeSpan deadline, boolean leaderAtCall) {
-        return leaderAtCall
+    private Promise<Unit> flushBounded(TimeSpan deadline, Replica replica) {
+        return replica == Replica.FULL
                ? onWorker(this::flushForStop).timeout(deadline)
                          .recover(this::absorbStopFlushFailure)
-               : skipStopFlush();
-    }
-
-    /// FER (the stop goes ahead): a node that never led has no backup to flush and stays quiet; one that led and lost
-    /// leadership before its own stop (peers stopped first) cannot flush, and the operator is told so, not left to find
-    /// the gap at the next start. Guarantee earned: the skip is never silent; it is not closed (item 3 of #2506 is open).
-    private Promise<Unit> skipStopFlush() {
-        return ledThisLife.get()
-               ? Promise.success(absorbStopFlushFailure(DEMOTED_BEFORE_STOP))
                : Promise.unitPromise();
     }
 
-    /// One pass as the leader the stop was requested by, whether or not the debounce had fired and whatever
-    /// leadership says by now; a clean backup (nothing changed since the last write, nothing queued for push)
-    /// ends in `UNCHANGED`. Worker thread only.
+    /// One pass of this node's own state, whether or not it leads and whether or not the debounce had fired; a clean backup
+    /// (nothing changed since the last write, nothing queued for push) ends in `UNCHANGED`. Worker thread only.
     private Result<Unit> flushForStop() {
-        return attemptFlush(2).onSuccess(this::settle)
-                           .onFailure(this::onCommitFailure)
-                           .flatMap(KvBackupService::landed);
+        return attemptFlush(STOP_REDECIDE_UNBOUNDED).onFailure(this::onCommitFailure)
+                           .flatMap(this::settleUnlessCovered);
+    }
+
+    private Result<Unit> settleUnlessCovered(Outcome outcome) {
+        return isCovered(outcome)
+               ? Result.unitResult()
+               : Result.success(outcome)
+                       .onSuccess(this::settle)
+                       .flatMap(KvBackupService::landed);
+    }
+
+    /// A head strictly ahead within this node's own incarnation (same lineage, and not a fork, so the same incarnation id)
+    /// contains this node's state; a head at a higher incarnation is another life of the lineage and does not.
+    private static boolean isCovered(Outcome outcome) {
+        return outcome.kind() == OutcomeKind.STALE && Option.all(outcome.head(),
+                                                                 outcome.ours())
+                                                            .map(KvBackupService::sameIncarnation)
+                                                            .or(false);
+    }
+
+    private static boolean sameIncarnation(BackupHeader head, BackupHeader ours) {
+        return head.incarnation() == ours.incarnation();
     }
 
     private static Result<Unit> landed(Outcome outcome) {
@@ -522,7 +548,6 @@ public final class KvBackupService {
     public void onLeaderChange(LeaderNotification.LeaderChange change) {
         if (change.localNodeIsLeader()) {
             if (leader.compareAndSet(false, true)) {
-                ledThisLife.set(true);
                 // A new leader always flushes once: it closes any gap its predecessor left.
                 scheduler.schedule(this::resetForNewLeadership, 0);
                 markDirty();

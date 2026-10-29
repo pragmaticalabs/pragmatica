@@ -22,11 +22,11 @@ class AetherNodeBackupCoordinatorStopWiringTest {
         var source = AssemblySource.spaced();
 
         assertThat(source).containsOnlyOnce("backupCoordinatorStop.run();")
-                          .containsOnlyOnce("service.stopFlushed(BACKUP_STOP_FLUSH_BOUND)");
+                          .containsOnlyOnce("service.stopFlushed(BACKUP_STOP_FLUSH_BOUND, backupReplica())");
 
         // Offsets are comparable because `stop()` is one method in one file; the joined text puts `AetherNode.java` first.
         var stopsCoordinator = source.indexOf("backupCoordinatorStop.run();");
-        var stopsService = source.indexOf("service.stopFlushed(BACKUP_STOP_FLUSH_BOUND)");
+        var stopsService = source.indexOf("service.stopFlushed(BACKUP_STOP_FLUSH_BOUND, backupReplica())");
 
         assertThat(stopsCoordinator).as("stop() runs the coordinator's stop").isPositive();
         assertThat(stopsCoordinator).as("and does so before the backup service stops").isLessThan(stopsService);
@@ -39,6 +39,14 @@ class AetherNodeBackupCoordinatorStopWiringTest {
         var source = AssemblySource.spaced();
 
         assertThat(source).containsOnlyOnce("backupFlushed.flatMap(() -> NodeStopSequence.run(");
+    }
+
+    /// Know 6ee3dc3f0d (P-C): a worker holds a partial replica and must not stop-flush; the role is read from the node's own worker configuration.
+    @Test
+    void stop_flushesAsAPartialReplica_onlyForAWorker() {
+        assertThat(AetherNode.backupReplica(true)).isEqualTo(KvBackupService.Replica.PARTIAL);
+        assertThat(AetherNode.backupReplica(false)).isEqualTo(KvBackupService.Replica.FULL);
+        assertThat(AssemblySource.spaced()).containsOnlyOnce("AetherNode.backupReplica(config.workerConfig().isPresent())");
     }
 
     @Test

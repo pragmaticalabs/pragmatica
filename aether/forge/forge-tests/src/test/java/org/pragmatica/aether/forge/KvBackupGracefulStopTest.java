@@ -16,8 +16,11 @@ import java.util.concurrent.locks.LockSupport;
 import java.util.regex.Pattern;
 
 import org.pragmatica.aether.ember.EmberCluster;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
+import org.pragmatica.aether.slice.kvstore.BackupEntryCodec;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
@@ -43,11 +46,12 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 ///
 /// The inputs are fixed, the outcome is not free of timing: the backup is settled first (control), the stream is created, and the graceful stop is
 /// issued within a few milliseconds of its commit (control: under 300 ms, inside the quiet window), where a stop without the flush loses it every time.
-/// All five nodes stop at once, so peers dropping the quorum demote the leader while its flush is being scheduled. #2506: the flush used to read
+/// All five nodes stop at once, so peers dropping the quorum demote the leader while (or before) its flush is scheduled. #2506: the flush used to read
 /// leadership on the backup worker and was skipped silently when the demotion won (red 1 of 2 nightly runs; 3 of 3 with an 80 ms worker delay).
-/// It now decides leadership when the stop is requested, so the flush runs whenever the leader was asked to stop as leader. The residual case, a
-/// leader demoted BEFORE its own stop call, is reported by the node (`BACKUP_STOP_FLUSH_FAILED`) but not closed (#2506 item 3), so this test can
-/// still go red in that window; the red is the tripwire, and `KvBackupServiceTest.GracefulStop` pins the ordering deterministically.
+/// Know 6ee3dc3f0d: every node that holds the full state now runs the stop flush, leader or not, so the write lands if ANY node that applied it
+/// completes its flush; the guarantee is per node and per revision, not a property of who happened to lead. The second test probes that a
+/// revision is a function of the applied log (P-A). A crashed leader with graceful peers (T-2 of the design) has no Ember primitive:
+/// `EmberCluster.killNode` runs the same stop path, flush included, so that case is pinned at the unit level (`KvBackupServiceTest`).
 @Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 class KvBackupGracefulStopTest {
@@ -75,11 +79,57 @@ class KvBackupGracefulStopTest {
     @Test
     void gracefulStopInsideTheQuietWindow_streamConfigSurvivesTheRestore(@TempDir Path dir) {
         startCluster(dir);
-        // control 1: the backup settles, so the only unflushed change is the one made below
-        LockSupport.parkNanos(Duration.ofSeconds(12).toNanos());
 
         var key = StreamConfigKey.streamConfigKey(STREAM_ADDRESS);
+        var created = createStreamAfterTheBackupSettled(key);
 
+        var insideMs = insideMs(created);
+
+        LifecycleAwait.settled("cluster stop", cluster, cluster.stop());
+        assertThat(insideMs).as("control: the stop was issued inside the 500 ms quiet window").isLessThan(300L);
+
+        startAndAwaitReady();
+
+        assertThat(committedIncarnation(key)).as("the stream config committed inside the quiet window is in the restored state, same life")
+                                             .isEqualTo(created.incarnation());
+    }
+
+    /// Probe P-A of the c1 design: a KV revision is a function of the applied log, so two nodes sampled at the same revision hold the same
+    /// backed-up entries. The cluster takes a burst of writes while every node is sampled (revision and backed-up entries under one store
+    /// monitor, as the backup service captures them). Instrument controls: the revisions repeat across nodes (so the comparison is not vacuous)
+    /// and entries differ across revisions (so the comparison can see a difference).
+    @Test
+    void sameRevision_holdsSameBackedUpEntries_onEveryNode(@TempDir Path dir) {
+        startCluster(dir);
+        LockSupport.parkNanos(Duration.ofSeconds(12).toNanos());
+
+        var samples = new java.util.TreeMap<Long, java.util.Map<String, java.util.Set<java.util.Map<AetherKey, AetherValue>>>>();
+        var deadline = System.nanoTime() + Duration.ofSeconds(8).toNanos();
+        var next = 0;
+
+        while (System.nanoTime() < deadline) {
+            if (next < 4 && System.nanoTime() > deadline - Duration.ofSeconds(8 - next).toNanos()) {
+                httpPost(cluster.getLeaderManagementPort().or(anyMgmtPort()), "/api/v1/streams/probe/p" + next + "/1.0.0", "{\"partitions\":1}");
+                next++;
+            }
+
+            sampleEveryNode(samples);
+        }
+
+        var sharedRevisions = samples.values().stream().filter(byNode -> byNode.size() >= 2).count();
+
+        assertThat(sharedRevisions).as("control: revisions were observed on at least two nodes").isGreaterThanOrEqualTo(3L);
+        assertThat(samples.values().stream().flatMap(byNode -> byNode.values().stream()).flatMap(java.util.Set::stream).distinct().count())
+                .as("control: the entries changed across revisions").isGreaterThanOrEqualTo(3L);
+        assertThat(samples).allSatisfy((revision, byNode) -> assertThat(byNode.values().stream().flatMap(java.util.Set::stream).distinct().count())
+                                                       .as("revision " + revision + " seen on " + byNode.keySet()).isEqualTo(1L));
+    }
+
+    private record Created(long incarnation, long startedNanos) {}
+
+    private Created createStreamAfterTheBackupSettled(StreamConfigKey key) {
+        // control 1: the backup settles, so the only unflushed change is the one made below
+        LockSupport.parkNanos(Duration.ofSeconds(12).toNanos());
         assertThat(committedIncarnation(key)).as("control: the stream does not exist yet").isEqualTo(-1L);
 
         var response = httpPost(cluster.getLeaderManagementPort().or(anyMgmtPort()), "/api/v1/streams/probe/quiet/1.0.0", "{\"partitions\":1}");
@@ -96,15 +146,41 @@ class KvBackupGracefulStopTest {
 
         assertThat(committed).as("the stream config was committed").isGreaterThan(0L);
 
-        var insideMs = Duration.ofNanos(System.nanoTime() - t0).toMillis();
+        return new Created(committed, t0);
+    }
 
-        LifecycleAwait.settled("cluster stop", cluster, cluster.stop());
-        assertThat(insideMs).as("control: the stop was issued inside the 500 ms quiet window").isLessThan(300L);
+    private static long insideMs(Created created) {
+        return Duration.ofNanos(System.nanoTime() - created.startedNanos()).toMillis();
+    }
 
-        startAndAwaitReady();
+    private void sampleEveryNode(java.util.Map<Long, java.util.Map<String, java.util.Set<java.util.Map<AetherKey, AetherValue>>>> samples) {
+        for (var node : cluster.allNodes()) {
+            var store = node.kvStore();
+            long revision;
+            java.util.Map<AetherKey, AetherValue> backedUp;
 
-        assertThat(committedIncarnation(key)).as("the stream config committed inside the quiet window is in the restored state, same life")
-                                             .isEqualTo(committed);
+            synchronized (store) {
+                revision = store.committedRevision();
+                backedUp = backedUpEntries(store.snapshot());
+            }
+
+            samples.computeIfAbsent(revision, _ -> new java.util.HashMap<>())
+                   .computeIfAbsent(node.self().id(), _ -> new java.util.HashSet<>())
+                   .add(backedUp);
+        }
+    }
+
+    /// The store is mixed (it also holds the leader key), so keys are read as objects, not cast.
+    private static java.util.Map<AetherKey, AetherValue> backedUpEntries(java.util.Map<?, ?> all) {
+        var result = new java.util.HashMap<AetherKey, AetherValue>();
+
+        all.forEach((key, value) -> {
+            if (key instanceof AetherKey aetherKey && value instanceof AetherValue aetherValue && BackupEntryCodec.isBackedUp(aetherKey)) {
+                result.put(aetherKey, aetherValue);
+            }
+        });
+
+        return result;
     }
 
     private void startCluster(Path dir) {

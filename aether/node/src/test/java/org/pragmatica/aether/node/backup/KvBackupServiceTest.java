@@ -28,6 +28,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GossipKeyRotationValue;
 import org.pragmatica.aether.slice.kvstore.BackupEntryCodec;
 import org.pragmatica.aether.slice.kvstore.BackupEntryCodec.BackupHeader;
+import org.pragmatica.aether.slice.kvstore.ReplicaFilter;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
@@ -1067,9 +1068,9 @@ class KvBackupServiceTest {
             assertThat(commitCount(remote)).as("and writes no further commit").isEqualTo(2);
         }
 
-        /// #2506 (1): leadership is decided when the stop is REQUESTED. A demotion that arrives after the call but before the worker
-        /// runs the flush (peers stopping drop the quorum) must not cancel it. The manual scheduler holds the worker still, so the
-        /// demotion lands in exactly that window, with no timing involved.
+        /// #2506: a demotion that arrives after the call but before the worker runs the flush (peers stopping drop the quorum) must
+        /// not cancel it, under any design: no node reads leadership on the stop path. The manual scheduler holds the worker still, so
+        /// the demotion lands in exactly that window, with no timing involved.
         @Test
         void stopFlushed_stillFlushes_whenADemotionArrivesBeforeTheWorkerRuns() {
             var remote = bareRemote(temp.resolve("remote.git"));
@@ -1190,8 +1191,70 @@ class KvBackupServiceTest {
             var stopped = settle(service.stopFlushed(DEADLINE));
 
             assertThat(stopped.isSuccess()).isTrue();
-            assertThat(remoteDocument(remote).entries()).containsKey(key);
             assertThat(warnings).isEmpty();
+            assertThat(remoteDocument(remote).entries()).containsKey(key);
+        }
+
+        /// A worker holds a replica without part of the backed-up state (see the pin below), so at the same revision its snapshot is not a
+        /// core's: it must write nothing and warn about nothing, and still stop.
+        @Test
+        void stopFlushed_writesNothingAndStaysQuiet_forAPartialReplica() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var node = follower(remote, 1, "worker");
+
+            node.apply(ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+
+            var stopped = settle(node.service().stopFlushed(DEADLINE, KvBackupService.Replica.PARTIAL));
+
+            assertThat(stopped.isSuccess()).isTrue();
+            assertThat(remoteHasBranch(remote)).as("a partial replica never writes the backup").isFalse();
+            assertThat(node.warnings()).isEmpty();
+        }
+
+        /// Probe P-C (#2506): the worker replica feed excludes the cluster configuration, which the backup contains. If this goes red the
+        /// exclusion set changed and `Replica.PARTIAL` may no longer be needed (or a new excluded key needs the same care).
+        @Test
+        void theWorkerReplicaFeed_excludesABackedUpKey_soAWorkerStateIsPartial() {
+            var key = AetherKey.ClusterConfigKey.clusterConfigKey(1);
+
+            assertThat(BackupEntryCodec.isBackedUp(key)).isTrue();
+            assertThat(ReplicaFilter.replicaFilter().excludes(key)).isTrue();
+        }
+
+        /// The stop flush settles its outcome like any flush: another cluster owning the head ends this node FORKED, loudly, besides the stop warning.
+        @Test
+        void stopFlushed_entersTheForkedStatus_whenAnotherClusterOwnsTheHead() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            otherCluster(remote, "01K4ZT9Q6W3X8Y2B7C5D1OTHER0", "other");
+
+            var node = follower(remote, 1, "forked");
+
+            node.apply(ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+
+            var stopped = settle(node.service().stopFlushed(DEADLINE));
+
+            assertThat(stopped.isSuccess()).isTrue();
+            assertThat(node.service().status()).isEqualTo(KvBackupService.Status.FORKED);
+            assertThat(node.warnings()).extracting(BackupWarning::code).contains(Code.BACKUP_FORKED, Code.BACKUP_STOP_FLUSH_FAILED);
+        }
+
+        /// A repository that cannot take the commit is a commit failure of the stop flush too, not only a stop warning.
+        @Test
+        void stopFlushed_entersTheCommitFailedStatus_whenTheRepositoryCannotTakeACommit() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            writeFile(temp.resolve("blocker"), "a file where the repository directory should be");
+
+            var node = follower(remote, 1, "blocker/repository");
+
+            node.apply(ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+
+            var stopped = settle(node.service().stopFlushed(DEADLINE));
+
+            assertThat(stopped.isSuccess()).isTrue();
+            assertThat(node.service().status()).isEqualTo(KvBackupService.Status.COMMIT_FAILED);
+            assertThat(node.warnings()).extracting(BackupWarning::code).contains(Code.BACKUP_STOP_FLUSH_FAILED);
         }
 
         private void assertFiveNodesLeaveTheHighest(boolean ascending) {
