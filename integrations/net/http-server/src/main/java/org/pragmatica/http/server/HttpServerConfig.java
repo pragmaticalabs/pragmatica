@@ -43,6 +43,11 @@ import org.pragmatica.net.tcp.TlsConfig;
 ///                             [BodyRateLimit]): it bounds a client that trickles just inside the idle bound.
 /// @param classifier           consulted on the request HEADERS, before any body byte is read (see [RequestClassifier]);
 ///                             none means every request is aggregated up to `maxContentLength`.
+/// @param responseTimeout      HTTP/1.1: how long a dispatched request may wait for its response. A request whose response
+///                             has not completed by then is answered 504 in its place in the connection's response order
+///                             (see `ResponseSequence`), and the connection is closed once the earlier responses are
+///                             written; without a bound one stuck handler stalls every response pipelined behind it.
+///                             Zero or negative disables the bound.
 public record HttpServerConfig(String name,
                                int port,
                                Option<TlsConfig> tls,
@@ -52,12 +57,17 @@ public record HttpServerConfig(String name,
                                SocketOptions socketOptions,
                                TimeSpan readTimeout,
                                BodyRateLimit bodyRateLimit,
-                               Option<RequestClassifier> classifier) {
+                               Option<RequestClassifier> classifier,
+                               TimeSpan responseTimeout) {
     private static final int DEFAULT_MAX_CONTENT_LENGTH = 65536;
     /// 60 s mirrors nginx's `client_body_timeout` default. It is a guess, not a measurement: long enough for a
     /// client on a slow link to send a 10 MiB body over HTTP/3 (about 1.4 Mbit/s), short enough that a stalled
     /// connection stops pinning its aggregation buffer within a minute.
     public static final TimeSpan DEFAULT_READ_TIMEOUT = TimeSpan.timeSpan(60).seconds();
+    /// 60 s, a guess like [#DEFAULT_READ_TIMEOUT]: longer than any ordinary handler, short enough that a hung one stops
+    /// holding a connection and everything pipelined behind it within a minute. Raise it for a server whose handlers
+    /// legitimately run longer.
+    public static final TimeSpan DEFAULT_RESPONSE_TIMEOUT = TimeSpan.timeSpan(60).seconds();
 
     public HttpServerConfig {
         webSocketEndpoints = List.copyOf(webSocketEndpoints);
@@ -82,7 +92,8 @@ public record HttpServerConfig(String name,
              socketOptions,
              readTimeout,
              bodyRateLimit,
-             Option.empty());
+             Option.empty(),
+             DEFAULT_RESPONSE_TIMEOUT);
     }
 
     public static HttpServerConfig httpServerConfig(String name, int port) {
@@ -95,7 +106,8 @@ public record HttpServerConfig(String name,
                                     SocketOptions.defaultConfig(),
                                     DEFAULT_READ_TIMEOUT,
                                     BodyRateLimit.DEFAULT,
-                                    Option.empty());
+                                    Option.empty(),
+                                    DEFAULT_RESPONSE_TIMEOUT);
     }
 
     public HttpServerConfig withTls(TlsConfig tls) {
@@ -108,7 +120,8 @@ public record HttpServerConfig(String name,
                                     socketOptions,
                                     readTimeout,
                                     bodyRateLimit,
-                                    classifier);
+                                    classifier,
+                                    responseTimeout);
     }
 
     public HttpServerConfig withMaxContentLength(int maxContentLength) {
@@ -121,7 +134,8 @@ public record HttpServerConfig(String name,
                                     socketOptions,
                                     readTimeout,
                                     bodyRateLimit,
-                                    classifier);
+                                    classifier,
+                                    responseTimeout);
     }
 
     public HttpServerConfig withWebSocket(WebSocketEndpoint endpoint) {
@@ -138,7 +152,8 @@ public record HttpServerConfig(String name,
                                     socketOptions,
                                     readTimeout,
                                     bodyRateLimit,
-                                    classifier);
+                                    classifier,
+                                    responseTimeout);
     }
 
     public HttpServerConfig withChunkedWrite() {
@@ -151,7 +166,8 @@ public record HttpServerConfig(String name,
                                     socketOptions,
                                     readTimeout,
                                     bodyRateLimit,
-                                    classifier);
+                                    classifier,
+                                    responseTimeout);
     }
 
     public HttpServerConfig withBodyRateLimit(BodyRateLimit bodyRateLimit) {
@@ -164,7 +180,8 @@ public record HttpServerConfig(String name,
                                     socketOptions,
                                     readTimeout,
                                     bodyRateLimit,
-                                    classifier);
+                                    classifier,
+                                    responseTimeout);
     }
 
     public HttpServerConfig withReadTimeout(TimeSpan readTimeout) {
@@ -177,7 +194,24 @@ public record HttpServerConfig(String name,
                                     socketOptions,
                                     readTimeout,
                                     bodyRateLimit,
-                                    classifier);
+                                    classifier,
+                                    responseTimeout);
+    }
+
+    /// How long a dispatched HTTP/1.1 request may wait for its response before it is answered 504 (see
+    /// [#responseTimeout]); zero or negative disables the bound.
+    public HttpServerConfig withResponseTimeout(TimeSpan responseTimeout) {
+        return new HttpServerConfig(name,
+                                    port,
+                                    tls,
+                                    maxContentLength,
+                                    webSocketEndpoints,
+                                    chunkedWriteEnabled,
+                                    socketOptions,
+                                    readTimeout,
+                                    bodyRateLimit,
+                                    classifier,
+                                    responseTimeout);
     }
 
     /// Classify every request on its HEADERS (see [RequestClassifier]).
@@ -191,7 +225,8 @@ public record HttpServerConfig(String name,
                                     socketOptions,
                                     readTimeout,
                                     bodyRateLimit,
-                                    Option.some(classifier));
+                                    Option.some(classifier),
+                                    responseTimeout);
     }
 
     /// The classifier in force: the configured one, else one that aggregates every request up to `maxContentLength`.

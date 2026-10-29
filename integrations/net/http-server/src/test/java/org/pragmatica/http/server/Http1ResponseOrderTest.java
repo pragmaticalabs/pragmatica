@@ -41,6 +41,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class Http1ResponseOrderTest {
     private static final Pattern BODY_PATH = Pattern.compile("\"path\":\"([^\"]*)\"");
     private static final Pattern STATUS = Pattern.compile("HTTP/1\\.1 (\\d{3})");
+    private static final int TRIALS = 300;
     private final List<String> dispatched = new CopyOnWriteArrayList<>();
 
     @Test
@@ -84,6 +85,113 @@ class Http1ResponseOrderTest {
                + "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: " + version + "\r\n\r\n";
     }
 
+    /// B1: an earlier response completed on another thread with no delay and a later one completed synchronously on the
+    /// event loop must still leave in request order. Many fresh connections, because the inversion is a race.
+    @Test
+    void zeroDelayAsyncAnswer_followedBySynchronousOne_isAnsweredInRequestOrder() throws IOException {
+        var server = start(config(timeSpan(60).seconds()));
+
+        try {
+            var inverted = 0;
+
+            for (var i = 0; i < TRIALS; i++) {
+                var response = send(server.port(), "GET /a" + i + " HTTP/1.1\r\nHost: h\r\n\r\n" + "GET /b" + i + " HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n");
+
+                if (!bodies(response).equals(List.of("a" + i, "b" + i))) {
+                    inverted++;
+                }
+            }
+
+            assertThat(inverted).as("connections whose responses left out of request order").isZero();
+        } finally {
+            server.stop().await(timeSpan(10).seconds());
+        }
+    }
+
+    /// T1: a handler that never answers is answered 504 in its place once the response timeout passes: the earlier response
+    /// is written first, then the 504, then the connection closes; nothing behind it is written.
+    @Test
+    void handlerThatNeverAnswers_isAnswered504InItsPlace_andTheConnectionCloses() throws IOException {
+        var server = start(config(timeSpan(700).millis()));
+
+        try {
+            var response = send(server.port(), "GET /f1 HTTP/1.1\r\nHost: h\r\n\r\n" + "GET /hang HTTP/1.1\r\nHost: h\r\n\r\n" + "GET /f2 HTTP/1.1\r\nHost: h\r\n\r\n");
+
+            assertThat(statuses(response)).containsExactly("200", "504");
+            assertThat(bodies(response)).containsExactly("f1");
+        } finally {
+            server.stop().await(timeSpan(10).seconds());
+        }
+    }
+
+    /// T2: behind a handler that never answers, the codec accepts 128 unanswered requests and closes the connection at the
+    /// next; the answers already computed for the 127 behind the hung one are discarded with it, and nothing is written. The
+    /// loss is the documented bound of the response order (see `ResponseSequence`).
+    @Test
+    void overTheCodecsPipelineCap_behindAHungHandler_closesTheConnectionAndDiscardsTheHeldAnswers() throws IOException {
+        var server = start(config(timeSpan(0).millis()));
+
+        try {
+            var raw = new StringBuilder("GET /hang HTTP/1.1\r\nHost: h\r\n\r\n");
+
+            for (var i = 0; i < 200; i++) {
+                raw.append("GET /f").append(i).append(" HTTP/1.1\r\nHost: h\r\n\r\n");
+            }
+
+            assertThat(statuses(send(server.port(), raw.toString()))).isEmpty();
+        } finally {
+            server.stop().await(timeSpan(10).seconds());
+        }
+    }
+
+    /// G1: an accepted WebSocket upgrade is a response too: its 101 is written after the earlier response.
+    @Test
+    void acceptedWebSocketUpgrade_isAnsweredAfterTheEarlierResponse() throws IOException {
+        var server = start(config(timeSpan(60).seconds()));
+
+        try (var socket = new Socket("127.0.0.1", server.port())) {
+            socket.setSoTimeout(10_000);
+            socket.getOutputStream().write(("GET /slow HTTP/1.1\r\nHost: h\r\n\r\n" + upgrade("/ws", "13")).getBytes(StandardCharsets.US_ASCII));
+            socket.getOutputStream().flush();
+
+            var seen = new StringBuilder();
+            var buffer = new byte[4096];
+
+            while (statuses(seen.toString()).size() < 2) {
+                var read = socket.getInputStream().read(buffer);
+
+                if (read < 0) {
+                    break;
+                }
+                seen.append(new String(buffer, 0, read, StandardCharsets.US_ASCII));
+            }
+
+            assertThat(statuses(seen.toString())).containsExactly("200", "101");
+        } finally {
+            server.stop().await(timeSpan(10).seconds());
+        }
+    }
+
+    private HttpServerConfig config(org.pragmatica.lang.io.TimeSpan responseTimeout) {
+        return HttpServerConfig.httpServerConfig("response-order", 0)
+                               .withWebSocket(webSocketEndpoint("/ws", () -> (_, _) -> {}))
+                               .withResponseTimeout(responseTimeout);
+    }
+
+    private HttpServer start(HttpServerConfig config) {
+        return HttpServer.httpServer(config, this::handle).await(timeSpan(10).seconds()).unwrap();
+    }
+
+    private static String send(int port, String raw) throws IOException {
+        try (var socket = new Socket("127.0.0.1", port)) {
+            socket.setSoTimeout(15_000);
+            socket.getOutputStream().write(raw.getBytes(StandardCharsets.US_ASCII));
+            socket.getOutputStream().flush();
+
+            return new String(socket.getInputStream().readAllBytes(), StandardCharsets.US_ASCII);
+        }
+    }
+
     private String exchange(String raw) throws IOException {
         var config = HttpServerConfig.httpServerConfig("response-order", 0).withWebSocket(webSocketEndpoint("/ws", () -> (_, _) -> {}));
         var server = HttpServer.httpServer(config, this::handle).await(timeSpan(10).seconds()).unwrap();
@@ -106,6 +214,10 @@ class Http1ResponseOrderTest {
 
         if (request.path().equals("/slow")) {
             CompletableFuture.runAsync(() -> writer.ok(body), CompletableFuture.delayedExecutor(500, TimeUnit.MILLISECONDS));
+        } else if (request.path().equals("/hang")) {
+            return;
+        } else if (request.path().startsWith("/a")) {
+            CompletableFuture.runAsync(() -> writer.ok(body));
         } else {
             writer.ok(body);
         }
