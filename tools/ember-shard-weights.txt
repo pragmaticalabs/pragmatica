@@ -15,6 +15,8 @@
 AssemblyTraceTest 13
 EmberAllHoldersRestartKeepRetirementTest 24
 # The ten *TripwireTest classes below (#2201): surefire class time at 27b5fa9a4b on three hosts (3 runs, spread under 3 s per class: 132.7-134.5 s ColdRestart, 14.1 ConsumerPath, 54.5 CursorCheckpoint, 12.1 ForwardedPublishLoop, 32.7-32.8 ForwardLane, 69.3-69.9 MemoryBudget, 58.8-61.2 OwnerRestart, 13.6-14.2 ReplicationBatching, 16.4-18.3 SealedTier, 69.9 WalFailStop); maximum rounded up. Their @Disabled tests are skipped, so re-measure when one is enabled.
+# EmberConfigForgePortTest 0 (#2456): surefire class time 0.096 s, 0.087 s and 0.084 s on bigboy at 4d280108fe (7 tests, pure config, no cluster; BB_DEDUP=0 repeats); rounded to 0 like EmberConfigBasePortTest.
+# EmberReplicaTripwireTest 22 (#2456): surefire class time 21.29 s, 20.98 s and 20.93 s on bigboy at 4d280108fe (3 tests, 1 @Disabled, BB_DEDUP=0 repeats); maximum rounded up. Re-measure when the disabled test is enabled.
 EmberAmnesiacRestartTest 162
 EmberBlackholedReplicaRecoveryTest 94
 EmberBootstrapAdminKeyAuthTest 10
@@ -77,3 +79,5 @@ EmberOwnerRestartAckedTailTripwireTest 62
 EmberReplicationBatchingTripwireTest 15
 EmberSealedTierRetentionTripwireTest 17
 EmberWalFailStopNodeTripwireTest 70
+EmberConfigForgePortTest 0
+EmberReplicaTripwireTest 22
