@@ -221,6 +221,14 @@ class AsyncJooqConnectorLiveQueryTest {
     }
 
     @Test
+    void execute_boundValue_updatesOnlyTheMatchingRow() {
+        var updated = success(connector.execute(connector.dsl().query("UPDATE live_items SET name = 'bound' WHERE id = ?", 2)));
+
+        assertThat(updated).isEqualTo(1);
+        assertThat(success(connector.fetchOne(connector.dsl().resultQuery("SELECT name FROM live_items WHERE id = 1"))).get(0, String.class)).isNotEqualTo("bound");
+    }
+
+    @Test
     void execute_queryThatIsNotARowCountQuery_failsWithATypedConnectorError() {
         var cause = failure(connector.execute(connector.dsl().resultQuery("SELECT 1")));
 
