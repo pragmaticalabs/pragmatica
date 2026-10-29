@@ -61,7 +61,9 @@ class StorageMaintenanceWiringTest {
     /// Explicit `[storage.artifacts]` temp dir for the #783 test below -- redirects `content`'s
     /// synthesized sibling disk path (`StorageFactory.defaultContentConfig`) to somewhere writable;
     /// the hardcoded `StorageConfig.storageConfig()` default (`/data/aether/storage`) is not
-    /// creatable in a test sandbox.
+    /// creatable in a test sandbox. The test points `artifacts` at a CHILD of this directory: the synthesized
+    /// `content` is `artifacts`' SIBLING, so `artifacts` at the temp dir itself puts `content` at the shared
+    /// `/tmp/content`, where two concurrent test processes claim the same mount (#2459).
     @TempDir
     Path artifactsDir;
 
@@ -284,7 +286,7 @@ class StorageMaintenanceWiringTest {
         var defaults = StorageConfig.storageConfig();
         var artifactsConfig = new StorageConfig(defaults.memoryMaxBytes(),
                                                 defaults.diskMaxBytes(),
-                                                artifactsDir.toString(),
+                                                artifactsDir.resolve("artifacts").toString(),
                                                 artifactsDir.resolve("snapshots").toString(),
                                                 defaults.snapshotMutationThreshold(),
                                                 defaults.snapshotMaxInterval(),
