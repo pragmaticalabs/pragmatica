@@ -263,17 +263,7 @@ class BootstrapStateJsonBackCompatTest {
     /// and must refuse for the same reason.
     @Test
     void applyStateFromJson_unknownResourceType_fails() {
-        var json = """
-            {
-              "clusterName": "ledger-guard-cluster",
-              "configHash": "h",
-              "startedAt": "2026-04-01T00:00:00Z",
-              "currentWaveIndex": 0,
-              "waves": ["PENDING", "PENDING", "PENDING"],
-              "createdResources": [{"type": "FutureThing", "resourceId": "x-9"}],
-              "destroyedNodeIds": []
-            }
-            """;
+        var json = ApplyStateFixtures.json("ledger-guard-cluster", "{\"type\": \"FutureThing\", \"resourceId\": \"x-9\"}");
 
         ApplyState.fromJson(json)
                   .onSuccess(state -> fail("An unknown apply-ledger entry must not be dropped silently: "
