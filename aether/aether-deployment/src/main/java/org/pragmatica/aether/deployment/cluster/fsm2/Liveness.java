@@ -1,0 +1,130 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+package org.pragmatica.aether.deployment.cluster.fsm2;
+
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import org.pragmatica.consensus.NodeId;
+
+
+/// Core liveness evidence (spec R-2.11 (b), D-4 (ii), G-4): a core listed **continuously** in this leader's core SWIM view
+/// (`coreView`, CI-15c) for one full suspicion window, counted from the leader's own observation, is joined. The `Rebuild`
+/// snapshot's view is sampled at `Rebuild` and only starts the clock; it never supersedes by itself.
+///
+/// - **Window**: `AbsenceBounds#coreSuspicion` `[guess: one window, per the ruling]`.
+/// - **Pending** (G-4): a departed core that `coreView` lists is liveness-pending, and its C17b is deferred until the window
+///   resolves: positively when the window completes (the core becomes joined, so the record is superseded and rewritten, or J8's core arm
+///   records a different known process, W3'), negatively
+///   when the core leaves `coreView` or a removal input arrives.
+/// - **With `coreView = none`** (unwired) nothing is tracked and nothing is pending (L-18 fail-safe: the backstop and the deferral
+///   are no-ops).
+public sealed interface Liveness {
+    /// Sample the view and promote the cores whose window is complete. Called on a seam refresh, on `Rebuild` and on every tick.
+    static ClusterModel refresh(ClusterModel m, Ctx ctx) {
+        return promote(m.seams.coreView().fold(() -> unwired(m), view -> track(m, ctx, view)),
+                       ctx);
+    }
+
+    /// Design-out: with no view there is no listing to measure, so the clocks and the vetoes are dropped with it.
+    private static ClusterModel unwired(ClusterModel m) {
+        m.livenessSince = PMap.empty(m.scans);
+        m.livenessVetoed = PSet.empty(m.scans);
+
+        return m;
+    }
+
+    private static ClusterModel track(ClusterModel m, Ctx ctx, Set<NodeId> view) {
+        view.stream()
+            .sorted()
+            .filter(node -> !m.livenessSince.containsKey(node) && !m.livenessVetoed.contains(node))
+            .forEach(node -> m.livenessSince = m.livenessSince.put(node,
+                                                                   ctx.monoNs()));
+        m.livenessSince.keys()
+                       .stream()
+                       .filter(node -> !view.contains(node))
+                       .forEach(node -> m.livenessSince = m.livenessSince.remove(node));
+        m.livenessVetoed.toList()
+                        .stream()
+                        .filter(node -> !view.contains(node))
+                        .forEach(node -> m.livenessVetoed = m.livenessVetoed.remove(node));
+
+        return m;
+    }
+
+    private static ClusterModel promote(ClusterModel m, Ctx ctx) {
+        completed(m, ctx).forEach(node -> windowCompleted(m, ctx, node));
+
+        return m;
+    }
+
+    /// W3' (CTO ruling 2026-10-14): a positive resolution for a core whose DEPARTED record names a different known process than `admissions[n]`
+    /// is evaluated as the join table on `NodeJoined(n)` with that admission, which takes J8's core arm. Any other resolution joins the node, so
+    /// its record is superseded on read; an unknown process is not a different one (C8). A complete window is seen again on every refresh; the
+    /// repeat is idempotent (J8 writes once while its write is in flight, and warns with that write only).
+    private static ClusterModel windowCompleted(ClusterModel m, Ctx ctx, NodeId node) {
+        return isAnotherProcess(m, node)
+               ? Joins.onLivenessResolved(m, ctx, node)
+               : Joins.markJoined(m, ctx, node);
+    }
+
+    private static boolean isAnotherProcess(ClusterModel m, NodeId node) {
+        return m.records.get(node)
+                        .filter(Departures::isDeparted)
+                        .map(record -> m.admissions.get(node)
+                                                   .or(Admission.UNKNOWN)
+                                                   .isDifferentProcessFrom(record.process()))
+                        .or(false);
+    }
+
+    private static List<NodeId> completed(ClusterModel m, Ctx ctx) {
+        return m.livenessSince.entries()
+                              .stream()
+                              .filter(entry -> isComplete(ctx,
+                                                          entry.getValue()))
+                              .map(Map.Entry::getKey)
+                              .sorted()
+                              .toList();
+    }
+
+    private static boolean isComplete(Ctx ctx, long since) {
+        return ctx.monoNs() - since >= ctx.settings()
+                                          .bounds()
+                                          .coreSuspicion();
+    }
+
+    /// A removal input (or a C17s submission) for `node` breaks its listing: the sample it came from is older than the removal, so
+    /// the core accrues liveness again only after a sample that does not list it `[guess: the spec says only that a removal input resolves the
+    /// window negatively (R-2.11, G-4); the veto keeps a stale sample from restarting the clock the removal just stopped]`.
+    static ClusterModel broken(ClusterModel m, NodeId node) {
+        m.livenessSince = m.livenessSince.remove(node);
+        if (isListed(m, node)) {
+            m.livenessVetoed = m.livenessVetoed.add(node);
+        }
+
+        return m;
+    }
+
+    /// G-4: a departed `node` that this leader's view lists is liveness-pending, with its window unresolved: until the window completes (the node
+    /// becomes joined: the record is superseded, or, naming another known process, replaced by J8's ADMITTED write, W3') or a removal input broke
+    /// the listing. Only the removal of its rows waits; after a negative resolution C17b proceeds.
+    ///
+    /// The `joined` term is also enforced by C17b's own guard (`DepartureFlow#cleanup` builds nothing for a joined node), so it changes no C17b
+    /// decision; it keeps this predicate meaning what G-4 names: a window not yet resolved.
+    static boolean isPending(ClusterModel m, NodeId node) {
+        return ! m.livenessVetoed.contains(node)
+               && !m.joined.contains(node)
+               && isListed(m, node);
+    }
+
+    private static boolean isListed(ClusterModel m, NodeId node) {
+        return m.seams.coreView()
+                      .map(view -> view.contains(node))
+                      .or(false);
+    }
+
+    record unused() implements Liveness {}
+}
