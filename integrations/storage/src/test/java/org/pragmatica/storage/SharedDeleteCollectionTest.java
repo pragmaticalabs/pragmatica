@@ -117,6 +117,10 @@ class SharedDeleteCollectionTest {
 
         storage.putRef("b", bytes("two names")).await();
         storage.deleteRef("a", SharedDelete.AUTHORISED).await();
+
+        assertThat(store.getLifecycle(id).unwrap().refCount()).isEqualTo(1);
+        assertThat(store.getLifecycle(id).unwrap().sharedDelete()).as("between the releases").isEqualTo(SharedDelete.NONE);
+
         storage.deleteRef("b").await();
 
         assertThat(store.getLifecycle(id).unwrap().sharedDelete()).isEqualTo(SharedDelete.NONE);
