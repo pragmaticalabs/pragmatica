@@ -144,13 +144,17 @@ class DynamicConfigurationProviderAtomicallyTest {
         assertTimeoutPreemptively(HANG_BOUND, () -> {
             var inside = new CountDownLatch(1);
             var release = new CountDownLatch(1);
-            var writer = Thread.ofPlatform().daemon().start(() -> provider.inWriteWindow(() -> holdOpen(inside, release)));
+            var closed = new CountDownLatch(1);
+            var writer = Thread.ofPlatform().daemon().start(() -> {
+                provider.inWriteWindow(() -> holdOpen(inside, release));
+                closed.countDown();
+            });
             var calls = new AtomicInteger();
 
             assertThat(inside.await(5, TimeUnit.SECONDS)).isTrue();
             // The window is closed FROM INSIDE the wait: the reader has seen it open, so a wait bound of 0 gives up
             // before the callback ever runs and the read fails.
-            var result = provider.atomicallyObserving(() -> readCounting(calls), release::countDown);
+            var result = provider.atomicallyObserving(() -> readCounting(calls), () -> closeAndAwait(release, closed));
             writer.join(5_000);
 
             assertThat(result.isSuccess()).as("the window closed while the reader waited for it: the read goes through").isTrue();
@@ -163,9 +167,11 @@ class DynamicConfigurationProviderAtomicallyTest {
         assertTimeoutPreemptively(HANG_BOUND, () -> {
             var inside = new CountDownLatch(1);
             var release = new CountDownLatch(1);
+            var closed = new CountDownLatch(1);
             var calls = new AtomicInteger();
 
-            var result = provider.atomicallyObserving(() -> slowOverwrittenReadThenOpenWindow(calls, inside, release), release::countDown);
+            var result = provider.atomicallyObserving(() -> slowOverwrittenReadThenOpenWindow(calls, inside, release, closed),
+                                                      () -> closeAndAwait(release, closed));
 
             assertThat(result.isSuccess()).as("attempt 2 meets an open window and waits a FRESH bound; a wait still counted from entry gives up at once").isTrue();
             assertThat(calls).hasValue(2);
@@ -174,14 +180,25 @@ class DynamicConfigurationProviderAtomicallyTest {
 
     /// Attempt 1 outlasts the 5 ms wait bound by far (so a deadline fixed at entry is long past), loses to a write, and
     /// leaves a write window open for attempt 2 to meet. Only the reader's own wait callback closes it.
-    private String slowOverwrittenReadThenOpenWindow(AtomicInteger calls, CountDownLatch inside, CountDownLatch release) {
+    private String slowOverwrittenReadThenOpenWindow(AtomicInteger calls, CountDownLatch inside, CountDownLatch release, CountDownLatch closed) {
         if (calls.incrementAndGet() == 1) {
             sleep(30);
             provider.put("a", "overwritten");
-            Thread.ofPlatform().daemon().start(() -> provider.inWriteWindow(() -> holdOpen(inside, release)));
+            Thread.ofPlatform().daemon().start(() -> {
+                provider.inWriteWindow(() -> holdOpen(inside, release));
+                closed.countDown();
+            });
             await(inside);
         }
         return provider.getString("a").or("");
+    }
+
+    /// Closes the window from inside the readers wait and returns only once the writer has left it. The readers wait is
+    /// bounded (5 ms) from the moment this callback returns, so a callback that returns while the writer is still
+    /// being scheduled leaves the close to a clock margin that a loaded runner loses.
+    private static void closeAndAwait(CountDownLatch release, CountDownLatch closed) {
+        release.countDown();
+        await(closed);
     }
 
     private static void await(CountDownLatch latch) {
