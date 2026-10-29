@@ -151,6 +151,30 @@ class ApplyRollbackTest {
         assertThat(ApplyState.read(CLUSTER).unwrap().isPresent()).isFalse();
     }
 
+    /// The audit sees the VM; it vanishes before the terminate step looks: GONE, without a TERMINATING row and without a call.
+    @Test
+    void rollback_aVmThatVanishesAfterTheAudit_isGone_withoutATerminatingRowOrACall() {
+        var scenario = new ApplyScenario(ledger, CLUSTER);
+        var server = scenario.createRecorded("n-1");
+        var listings = new AtomicInteger();
+        var steps = new java.util.ArrayList<ApplyRecorder.Step>();
+
+        scenario.provider.onFilteredList = filter -> {
+            if (listings.incrementAndGet() == 2) {
+                scenario.harness.provider.terminate(new InstanceId(server)).await();
+            }
+
+            return scenario.harness.provider.listInstances(filter);
+        };
+        ApplyRecorder.stepHook = steps::add;
+
+        rollback(scenario).onFailure(cause -> fail(cause.message()));
+
+        ApplyRecorder.stepHook = _ -> {};
+        assertThat(scenario.provider.terminated).isEmpty();
+        assertThat(steps).doesNotContain(ApplyRecorder.Step.S6);
+    }
+
     @Test
     void rollback_afterCommit_isRefused_andTouchesNothing() {
         var scenario = new ApplyScenario(ledger, CLUSTER);
