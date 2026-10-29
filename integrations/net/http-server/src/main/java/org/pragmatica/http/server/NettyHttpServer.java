@@ -58,6 +58,7 @@ import io.netty.handler.timeout.IdleState;
 import io.netty.handler.timeout.IdleStateEvent;
 import io.netty.handler.timeout.IdleStateHandler;
 import io.netty.util.AttributeKey;
+import io.netty.util.ReferenceCountUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -317,11 +318,14 @@ final class NettyHttpServer implements HttpServer {
     /// Once handed over, the handshake either completes or fails with the connection closed: the endpoint is
     /// matched on the raw path, as Netty's handshake path check is, and a version Netty cannot handshake is
     /// answered with 426 here, before anything is installed, so a client may retry on the same connection.
-    private static class WebSocketUpgradeRouter extends ChannelInboundHandlerAdapter {
+    static class WebSocketUpgradeRouter extends ChannelInboundHandlerAdapter {
         private static final Logger log = LoggerFactory.getLogger(WebSocketUpgradeRouter.class);
 
         private final Map<String, WebSocketEndpoint> wsEndpoints;
         private final int maxMessageLength;
+        /// Set on the event loop when an upgrade is refused with its connection closing (#2433): a request pipelined behind
+        /// it on the same connection is dropped, not passed on.
+        private boolean refused;
 
         WebSocketUpgradeRouter(Map<String, WebSocketEndpoint> wsEndpoints, int maxMessageLength) {
             this.wsEndpoints = wsEndpoints;
@@ -332,7 +336,9 @@ final class NettyHttpServer implements HttpServer {
         @Contract
         @Override
         public void channelRead(ChannelHandlerContext ctx, Object msg) {
-            if (msg instanceof FullHttpRequest request && isWebSocketUpgrade(request) && !hasMultipleHosts(request)) {
+            if (refused) {
+                ReferenceCountUtil.release(msg);
+            } else if (msg instanceof FullHttpRequest request && isWebSocketUpgrade(request) && !hasMultipleHosts(request)) {
                 route(ctx, request);
             } else {
                 ctx.fireChannelRead(msg);
@@ -386,8 +392,9 @@ final class NettyHttpServer implements HttpServer {
                                                 .build();
         }
 
-        private static void refuse(ChannelHandlerContext ctx, FullHttpRequest request, String path) {
+        private void refuse(ChannelHandlerContext ctx, FullHttpRequest request, String path) {
             log.debug("Refusing WebSocket upgrade to {}: no endpoint registered", path);
+            refused = true;
             request.release();
             var response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.NOT_FOUND);
 
@@ -404,7 +411,7 @@ final class NettyHttpServer implements HttpServer {
 
     /// Per-channel HTTP request handler.
     /// NOT @Sharable - each channel gets its own instance to maintain WebSocket state safely.
-    private static class HttpRequestHandler extends SimpleChannelInboundHandler<Object> {
+    static class HttpRequestHandler extends SimpleChannelInboundHandler<Object> {
         private static final Logger log = LoggerFactory.getLogger(HttpRequestHandler.class);
         private static final AttributeKey<Option<WebSocketState>> WS_STATE = AttributeKey.valueOf("wsState");
 
@@ -414,8 +421,9 @@ final class NettyHttpServer implements HttpServer {
         /// response, read on the event loop, hence atomic. While it is non-zero the client is waiting on us, so a
         /// silent connection is not idle.
         private final AtomicInteger pendingResponses = new AtomicInteger();
-        /// Set on the event loop when a request is refused with its connection closing (#2419): a request pipelined behind
-        /// it on the same connection is dropped, not dispatched.
+        /// Set on the event loop when the exchange ends the connection (#2419, #2433): a request answered with a refusal that
+        /// closes it, or one that asked for `Connection: close` (or is HTTP/1.0 without keep-alive). A request pipelined
+        /// behind it on the same connection is dropped, not dispatched. Every way of ending an exchange sets it.
         private boolean refusing;
 
         HttpRequestHandler(BiConsumer<HttpRequest, ResponseWriter> handler,
@@ -468,11 +476,10 @@ final class NettyHttpServer implements HttpServer {
                                      String requestId,
                                      RequestTarget target) {
             var requestContext = createRequestContext(requestId, request, target);
-            var responseWriter = new NettyResponseWriter(ctx,
-                                                         requestId,
-                                                         HttpUtil.isKeepAlive(request),
-                                                         pendingResponses::decrementAndGet);
+            var keepAlive = HttpUtil.isKeepAlive(request);
+            var responseWriter = new NettyResponseWriter(ctx, requestId, keepAlive, pendingResponses::decrementAndGet);
 
+            refusing = !keepAlive;
             pendingResponses.incrementAndGet();
             try {
                 handler.accept(requestContext, responseWriter);
@@ -486,28 +493,31 @@ final class NettyHttpServer implements HttpServer {
         /// `GET /bad-request` for an unreadable request line, the real line with no body for oversized headers)
         /// marked by a failed `decoderResult()`. It must never reach the handler as a real request: it is answered
         /// and the connection is closed, because the decoder's position in the byte stream is no longer trustworthy.
+        ///
+        /// Netty's `HttpObjectDecoder` enters its bad-message state after such a failure and discards the rest of the
+        /// connection's input, so nothing pipelined behind it is decoded; the `refusing` flag that [#refuse] sets is defence
+        /// in depth, pinned by `Http1PipelineDropTest`.
         private void rejectUndecodable(ChannelHandlerContext ctx, String requestId, FullHttpRequest request) {
             var cause = request.decoderResult().cause();
             var status = undecodableStatus(cause, request);
 
             log.debug("Rejecting undecodable request {} with {}: {}", requestId, status.code(), cause.getMessage());
             pendingResponses.incrementAndGet();
-            new NettyResponseWriter(ctx, requestId, false, pendingResponses::decrementAndGet).error(status,
-                                                                                                    status.message());
+            refuse(ctx, requestId, status, status.message(), pendingResponses::decrementAndGet);
         }
 
         /// #2419: a request target whose percent-escapes cannot be decoded is answered 400 on this transport as on HTTP/3,
         /// instead of the decoder's exception escaping the handler and closing the connection with no response.
         private void rejectMalformedTarget(ChannelHandlerContext ctx, String requestId, Result<RequestTarget> target) {
             target.onFailure(cause -> log.debug("Rejecting request {} with 400: {}", requestId, cause.message()));
-            refusing = true;
             // Not counted in pendingResponses, unlike the two rejects above: that count only keeps the read-idle close away
             // from a connection awaiting a response, and this one closes with the response (keepAlive false) and is no
             // longer read from (refusing), so there is no later idle check the count could change.
-            new NettyResponseWriter(ctx,
-                                    requestId,
-                                    false,
-                                    () -> {}).error(HttpStatus.BAD_REQUEST, "Malformed request target");
+            refuse(ctx,
+                   requestId,
+                   HttpStatus.BAD_REQUEST,
+                   "Malformed request target",
+                   () -> {});
         }
 
         /// #2386: RFC 9112 §3.2 — a request with more than one `Host` line is answered 400, and the connection is
@@ -515,8 +525,22 @@ final class NettyHttpServer implements HttpServer {
         private void rejectMultipleHosts(ChannelHandlerContext ctx, String requestId) {
             log.debug("Rejecting request {} with 400: more than one Host header line", requestId);
             pendingResponses.incrementAndGet();
-            new NettyResponseWriter(ctx, requestId, false, pendingResponses::decrementAndGet).error(HttpStatus.BAD_REQUEST,
-                                                                                                    "More than one Host header");
+            refuse(ctx,
+                   requestId,
+                   HttpStatus.BAD_REQUEST,
+                   "More than one Host header",
+                   pendingResponses::decrementAndGet);
+        }
+
+        /// The one way a refusal is answered: the response closes the connection, and nothing pipelined behind the request
+        /// is dispatched (#2433).
+        private void refuse(ChannelHandlerContext ctx,
+                            String requestId,
+                            HttpStatus status,
+                            String message,
+                            Runnable onWritten) {
+            refusing = true;
+            new NettyResponseWriter(ctx, requestId, false, onWritten).error(status, message);
         }
 
         /// An over-long line with no headers decoded is the request line (414); an over-long line after the headers
