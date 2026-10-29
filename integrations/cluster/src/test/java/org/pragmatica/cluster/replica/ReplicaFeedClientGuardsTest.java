@@ -285,4 +285,30 @@ class ReplicaFeedClientGuardsTest {
         assertThat(net.client.counters().get("replica_buffer_overflow_total")).isEqualTo(3L);
         assertThat(net.client.counters().get("replica_snapshot_loop_total")).as("two, a success, one: no streak of three").isZero();
     }
+
+    /// The streak resets when the loop signal fires (X6b): four overflows in a row raise it once, not twice. Mutation: drop `consecutiveOverflows = 0`
+    /// in the loop branch of `overflowed`.
+    @Test
+    void afterTheLoopSignal_theStreakStartsOver() {
+        var net = new Net(1, new ReplicaClientLimits(30_000, 5_000, 3_000, 400, 250), ReplicaFeedLimits.DEFAULT);
+
+        net.genesis();
+        net.holdChunks.set(true);
+        for (var round = 0; round < 3; round++) {
+            net.advance(300);
+            net.step();
+            net.commitAll(1 + round, put("k" + round, "v"));
+            net.step();
+        }
+
+        assertThat(net.client.counters().get("replica_snapshot_loop_total")).isEqualTo(1L);
+
+        net.advance(31_000);
+        net.step();
+        net.commitAll(4, put("k4", "v"));
+        net.step();
+
+        assertThat(net.client.counters().get("replica_buffer_overflow_total")).isEqualTo(4L);
+        assertThat(net.client.counters().get("replica_snapshot_loop_total")).as("a streak of one, not four").isEqualTo(1L);
+    }
 }

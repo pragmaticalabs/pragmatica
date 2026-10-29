@@ -136,6 +136,22 @@ class ReplicaCutoverGateTest {
         assertThat(fired.get()).as("the post-restore listeners fire once per install").isEqualTo(1);
     }
 
+    /// The call site (N17): the callback an assembled DARK worker hands its projection client is `projectionReady`, so a fresh projection sets the
+    /// engine latch. Mutation: replace the argument at the `workerMetadataChannel(...)` call with `() -> {}`, or with the worker-ready step alone.
+    @Test
+    @SuppressWarnings("unchecked")
+    void aDarkWorkersProjectionClient_setsTheLatch_whenItsProjectionBecomesReady() throws ReflectiveOperationException {
+        node = boot(MessageRouter.DelegateRouter.delegate(), ReplicaCutover.production());
+
+        var channel = (org.pragmatica.aether.worker.metadata.WorkerMetadataChannel) component(node, "workerMetadataChannel");
+        var cluster = (RabiaNode<KVCommand<AetherKey>>) component(node, "clusterNode");
+        var callback = (Runnable) field(channel.client(), "projectionReady");
+
+        assertThat(cluster.isPassiveClientReady()).as("precondition").isFalse();
+        callback.run();
+        assertThat(cluster.isPassiveClientReady()).isTrue();
+    }
+
     private AetherNode boot(MessageRouter.DelegateRouter router, ReplicaCutover cutover) {
         return AetherNode.aetherNode(workerConfig(new NodeId("worker-gate-" + UUID.randomUUID())),
                                      router,
