@@ -113,6 +113,27 @@ public record ApplyState(String applyId,
                           destroyedNodeIds);
     }
 
+    public ApplyState withActionStatus(String key, ApplyAction.Status status) {
+        return applyState(applyId,
+                          clusterName,
+                          configHash,
+                          storedVersion,
+                          startedAt,
+                          phase,
+                          actions.stream()
+                                 .map(action -> action.key()
+                                                      .equals(key)
+                                                ? ApplyAction.applyAction(key,
+                                                                          action.planned(),
+                                                                          status)
+                                                : action)
+                                 .toList(),
+                          resources,
+                          reservations,
+                          createdResources,
+                          destroyedNodeIds);
+    }
+
     /// Records a VM row: replaces the row of the same node id (a state change), or appends (a new node).
     public ApplyState withNode(ApplyResource row) {
         var updated = new ArrayList<>(resources.stream()

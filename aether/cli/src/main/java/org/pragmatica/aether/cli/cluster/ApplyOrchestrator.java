@@ -14,7 +14,7 @@ import org.pragmatica.aether.config.cluster.DiffPlan;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Functions.Fn3;
+import org.pragmatica.lang.Functions.Fn4;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
@@ -173,7 +173,7 @@ public final class ApplyOrchestrator {
     static Result<ApplyResult> executeAndPersist(DiffPlan plan,
                                                  ClusterBootstrapConfig stored,
                                                  ClusterBootstrapConfig desired,
-                                                 Fn3<Result<ApplyResult>, DiffPlan, ClusterBootstrapConfig, ClusterBootstrapConfig> executor) {
+                                                 Fn4<Result<ApplyResult>, DiffPlan, ClusterBootstrapConfig, ClusterBootstrapConfig, ApplyRecorder> executor) {
         var clusterName = desired.cluster().name();
 
         return ApplyState.read(clusterName)
@@ -187,11 +187,15 @@ public final class ApplyOrchestrator {
     private static Result<ApplyResult> persistInitialAndExecute(DiffPlan plan,
                                                                 ClusterBootstrapConfig stored,
                                                                 ClusterBootstrapConfig desired,
-                                                                Fn3<Result<ApplyResult>, DiffPlan, ClusterBootstrapConfig, ClusterBootstrapConfig> executor) {
+                                                                Fn4<Result<ApplyResult>, DiffPlan, ClusterBootstrapConfig, ClusterBootstrapConfig, ApplyRecorder> executor) {
         var clusterName = desired.cluster().name();
+        var started = startedState(plan, desired);
 
-        return ApplyState.save(startedState(plan, desired))
-                         .flatMap(_ -> executor.apply(plan, stored, desired))
+        return ApplyState.save(started)
+                         .flatMap(_ -> executor.apply(plan,
+                                                      stored,
+                                                      desired,
+                                                      ApplyRecorder.applyRecorder(started)))
                          .onSuccess(_ -> clearFinishedState(clusterName));
     }
 

@@ -45,6 +45,17 @@ public sealed interface ForwardError extends HttpError {
         public HttpStatus status() {
             return HttpStatus.SERVICE_UNAVAILABLE;
         }
+
+        /// Terminal wins over the origin's classification: a verdict is never also "worth retrying".
+        @Override
+        public boolean isTerminal() {
+            return true;
+        }
+
+        @Override
+        public boolean isTransient() {
+            return false;
+        }
     }
 
     /// Every attempt failed and at least one may have reached a node.
@@ -56,6 +67,19 @@ public sealed interface ForwardError extends HttpError {
         @Override
         public HttpStatus status() {
             return HttpStatus.SERVICE_UNAVAILABLE;
+        }
+
+        /// The outcome of the write is unknown, so this wrapper is neither terminal nor transient whatever its origin says: a
+        /// timeout origin is transient, and a transient-only retry policy would re-drive the write. The caller retries with the
+        /// same identity or not at all.
+        @Override
+        public boolean isTerminal() {
+            return false;
+        }
+
+        @Override
+        public boolean isTransient() {
+            return false;
         }
     }
 
