@@ -5,6 +5,7 @@
 package org.pragmatica.aether.stream.topic;
 
 import org.pragmatica.aether.resource.DurableTopicSpec;
+import org.pragmatica.aether.slice.RetentionDimensions;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.lang.parse.TimeSpan;
@@ -114,6 +115,14 @@ class DurableTopicSubstrateTest {
         // is an infinite-allocation request, which is exactly how this pin was minted.
         assertThat(config.retention().maxCount()).isEqualTo(sizingDefaults.maxCount());
         assertThat(config.retention().maxBytes()).isEqualTo(sizingDefaults.maxBytes());
+    }
+
+    /// NT-132 (#2201 Q6 = B, review R32-04): a topic's retention is its age, so its policy declares the age ONLY. Its count and
+    /// bytes are ring sizing; declared, they would cut a 7-day topic's sealed history at 100,000 events and 256 MiB.
+    @Test
+    void topicAndDlqRetention_declareTheAgeOnly() {
+        assertThat(DurableTopicSubstrate.topicStreamConfig(ADDRESS, spec(4, 3, "7d")).retention().declared()).isEqualTo(RetentionDimensions.AGE);
+        assertThat(DurableTopicSubstrate.dlqStreamConfig(ADDRESS, spec(4, 3, "7d")).retention().declared()).isEqualTo(RetentionDimensions.AGE);
     }
 
     @Test

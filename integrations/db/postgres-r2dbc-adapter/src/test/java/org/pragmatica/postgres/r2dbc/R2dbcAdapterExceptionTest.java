@@ -83,4 +83,12 @@ class R2dbcAdapterExceptionTest {
                                                                 origin -> assertThat(origin.error()).isSameAs(cause));
         assertThat(exception.getMessage()).isEqualTo(cause.message());
     }
+
+    @Test
+    void conversionFailed_neverCarriesANullMessage_evenWhenTheFailureHasNone() {
+        var exception = R2dbcAdapterException.conversionFailed("doc", "JSONB", Object.class, new IllegalStateException());
+
+        assertThat(exception.getMessage()).contains("'doc'").contains("JSONB").contains("java.lang.Object").contains("IllegalStateException");
+        assertThat(exception.getCause()).isInstanceOf(IllegalStateException.class);
+    }
 }

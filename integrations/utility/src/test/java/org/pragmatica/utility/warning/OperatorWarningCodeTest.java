@@ -335,4 +335,22 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.CONFIG_WATCH_CALLBACK_RECOVERED.level()).isEqualTo(WarningLevel.INFO);
         assertThat(OperatorWarningCode.CONFIG_WATCH_CALLBACK_RECOVERED.recoveryOf()).isEqualTo(Option.some(OperatorWarningCode.CONFIG_WATCH_CALLBACK_FAILED));
     }
+
+    /// Operators match on the wire string, level and category (#1574), so the gossip-key pair and its summary (#1200) are pinned as shipped.
+    @Test
+    void gossipKeyCodes_areStable_theirLevelsAndPairingAsShipped() {
+        assertThat(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER.code()).isEqualTo("gossip-key-unknown-from-peer");
+        assertThat(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER.subsystem()).isEqualTo("membership");
+        assertThat(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER.hasRecovery()).isTrue();
+        assertThat(OperatorWarningCode.GOSSIP_KEY_PEER_DECRYPTED.code()).isEqualTo("gossip-key-peer-decrypted");
+        assertThat(OperatorWarningCode.GOSSIP_KEY_PEER_DECRYPTED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.GOSSIP_KEY_PEER_DECRYPTED.subsystem()).isEqualTo("membership");
+        assertThat(OperatorWarningCode.GOSSIP_KEY_PEER_DECRYPTED.recoveryOf().or(OperatorWarningCode.JSON_CONFIG_APPLIED))
+            .isEqualTo(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER);
+        assertThat(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_SENDERS_SUPPRESSED.code()).isEqualTo("gossip-key-unknown-senders-suppressed");
+        assertThat(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_SENDERS_SUPPRESSED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_SENDERS_SUPPRESSED.subsystem()).isEqualTo("membership");
+        assertThat(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_SENDERS_SUPPRESSED.recoveryOf().isEmpty()).as("a point event").isTrue();
+    }
 }

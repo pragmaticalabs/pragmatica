@@ -17,8 +17,10 @@ package org.pragmatica.consensus.net.quic;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -61,6 +63,8 @@ import static org.junit.jupiter.api.Assertions.fail;
 class QuicBootTokenAdmissionTest {
     private static final NodeId SERVER_NODE = NodeId.randomNodeId();
     private static final NodeId CLIENT_NODE = NodeId.randomNodeId();
+    private static final NodeId RETIRED_NODE = new NodeId("retired-elsewhere");
+    private static final NodeId OTHER_SEAT = new NodeId("third-seat");
     private static final NodeAddress SERVER_ADDRESS = new NodeAddress("127.0.0.1", 9200);
     private static final NodeAddress CLIENT_ADDRESS = new NodeAddress("127.0.0.1", 9201);
     private static final TimeSpan AWAIT_TIMEOUT = TimeSpan.timeSpan(8).seconds();
@@ -258,6 +262,105 @@ class QuicBootTokenAdmissionTest {
 
         assertThat(dial.get(15, TimeUnit.SECONDS)).isFalse();
         assertThat(clientTokens.isRetired(SERVER_NODE)).isTrue();
+    }
+
+    /// ID-1c, the acceptor's side of the merge at join: a WIPED acceptor of three configured seats leaves that state only when the
+    /// recorded offers of a majority of the seats are in WITHOUT the dialer's own. One other seat has offered already (and that alone
+    /// released nothing: the lone-stray test below is the control); the dialer's Hello is the one that completes the majority, so the
+    /// merge must happen BEFORE the dialer is admitted, and what it vouched for is on disk by then.
+    @Test
+    void acceptor_wipedNode_mergesAMajorityWithoutTheDialersOwnOfferBeforeAdmittingIt(@TempDir Path directory) throws Exception {
+        var wipedServer = wipedRegistry(SERVER_TOKEN, directory.resolve("server"), SERVER_NODE);
+        var port = startServer(wipedServer);
+
+        wipedServer.mergeOffered(OTHER_SEAT, Option.some(IdentityFacts.identityFacts())).await(AWAIT_TIMEOUT);
+        assertThat(wipedServer.admit(CLIENT_NODE, CLIENT_TOKEN)).as("control: one other seat is not a majority yet").isEqualTo(BootTokens.Admission.UNAVAILABLE);
+
+        var voucher = loadedRegistryRetiring(CLIENT_TOKEN, directory.resolve("client"));
+
+        assertThat(connects(voucher, port)).as("its Hello completes the majority, but it arrived while wiped: judged on its redial").isFalse();
+        assertThat(wipedServer.isRetired(RETIRED_NODE)).as("having merged what it vouched for").isTrue();
+        assertThat(Files.readString(directory.resolve("server").resolve("ledger"))).as("durably, before the admission").contains(RETIRED_NODE.id());
+        assertThat(registered.get()).as("nothing was registered by the Hello that ended the state").isZero();
+        assertThat(connects(voucher, port)).as("the redial is judged against the merged ledger: admitted").isTrue();
+        assertThat(registered.get()).isEqualTo(1);
+    }
+
+    /// The hazard of #2429: a retired stray process, with an empty fresh ledger, reaches a wiped core first and keeps coming.
+    /// RED under "one peer merge", green under the majority rule.
+    @Test
+    void acceptor_wipedNode_isNotReleasedByALoneStrayWithAnEmptyLedger_howeverOftenItComes(@TempDir Path directory) {
+        var wipedServer = wipedRegistry(SERVER_TOKEN, directory.resolve("server"), SERVER_NODE);
+        var port = startServer(wipedServer);
+
+        for (var attempt = 0; attempt < 3; attempt++) {
+            assertThat(connects(loadedRegistryRetiring(CLIENT_TOKEN, directory.resolve("client"), IdentityFacts.identityFacts()), port))
+                .as("a lone stray is never admitted by a wiped core").isFalse();
+        }
+
+        assertThat(wipedServer.admit(CLIENT_NODE, CLIENT_TOKEN)).isEqualTo(BootTokens.Admission.UNAVAILABLE);
+        assertThat(Files.exists(directory.resolve("server").resolve("ledger"))).as("and nothing was written").isFalse();
+    }
+
+    /// ID-1c, the dialer's side: a WIPED dialer fails every dial for want of knowing the acceptor until a majority of the seats
+    /// has vouched without the acceptor's own offer. One other seat has offered; the acceptor's Hello answer completes the majority
+    /// and carries its retirements, which are merged before the acceptor is attached.
+    @Test
+    void dialer_wipedNode_mergesAMajorityWithoutTheAcceptorsOwnOfferBeforeAttaching(@TempDir Path directory) throws Exception {
+        var port = startServer(loadedRegistryRetiring(SERVER_TOKEN, directory.resolve("server")));
+        var wipedClient = wipedRegistry(CLIENT_TOKEN, directory.resolve("client"), CLIENT_NODE);
+
+        wipedClient.mergeOffered(OTHER_SEAT, Option.some(IdentityFacts.identityFacts())).await(AWAIT_TIMEOUT);
+
+        assertThat(connects(wipedClient, port)).as("the acceptor's Hello completes the majority, but arrived while wiped: judged on the redial").isFalse();
+        assertThat(wipedClient.isRetired(RETIRED_NODE)).isTrue();
+        assertThat(Files.readString(directory.resolve("client").resolve("ledger"))).as("durably").contains(RETIRED_NODE.id());
+        assertThat(connects(wipedClient, port)).as("the redial: attached").isTrue();
+    }
+
+    /// Two wiped nodes cannot end each other's wiped state: neither can vouch for anything.
+    @Test
+    void wipedNodes_cannotEndEachOthersWipedState(@TempDir Path directory) {
+        var wipedServer = wipedRegistry(SERVER_TOKEN, directory.resolve("server"), SERVER_NODE);
+        var port = startServer(wipedServer);
+        var wipedClient = wipedRegistry(CLIENT_TOKEN, directory.resolve("client"), CLIENT_NODE);
+
+        assertThat(connects(wipedClient, port)).isFalse();
+        assertThat(wipedServer.admit(CLIENT_NODE, CLIENT_TOKEN)).isEqualTo(BootTokens.Admission.UNAVAILABLE);
+        assertThat(wipedClient.admit(SERVER_NODE, SERVER_TOKEN)).isEqualTo(BootTokens.Admission.UNAVAILABLE);
+    }
+
+    /// The configured seats of the three-core cluster these tests stand for: the server, the client and one more.
+    private static void configureSeats(BootTokens tokens, NodeId self) {
+        tokens.seats(self, Set.of(SERVER_NODE, CLIENT_NODE, OTHER_SEAT));
+    }
+
+    private static BootTokens wipedRegistry(long token, Path ledgerDirectory, NodeId self) {
+        var tokens = BootTokens.bootTokens(token);
+
+        configureSeats(tokens, self);
+        var ledger = IdentityLedger.identityLedger(ledgerDirectory.resolve("ledger"), IdentityLedger.DurableWriter.fileOps());
+
+        tokens.attachLedger(ledger);
+        tokens.preload(ledger.open(false).facts(), true);
+
+        return tokens;
+    }
+
+    private static BootTokens loadedRegistryRetiring(long token, Path ledgerDirectory) {
+        return loadedRegistryRetiring(token, ledgerDirectory, IdentityFacts.terminated(RETIRED_NODE, BootTokens.TOKEN_CONFLICT));
+    }
+
+    private static BootTokens loadedRegistryRetiring(long token, Path ledgerDirectory, IdentityFacts retirements) {
+        var tokens = BootTokens.bootTokens(token);
+        var ledger = IdentityLedger.identityLedger(ledgerDirectory.resolve("ledger"), IdentityLedger.DurableWriter.fileOps());
+
+        tokens.attachLedger(ledger);
+        ledger.open(true);
+        tokens.preload(IdentityFacts.identityFacts(), false);
+        tokens.merged(retirements).await(AWAIT_TIMEOUT);
+
+        return tokens;
     }
 
     /// Forces and renames as usual, but holds the directory force while the gate is closed.
