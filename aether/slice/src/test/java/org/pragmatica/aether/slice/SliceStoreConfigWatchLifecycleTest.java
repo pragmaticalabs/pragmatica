@@ -23,10 +23,12 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.SliceStore.sliceStore;
 import org.pragmatica.aether.slice.dependency.DependencyResolver;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
+import org.pragmatica.aether.slice.dependency.WatchingCodecThrowsLaterFactory;
 import org.pragmatica.aether.slice.dependency.WatchingSlowFactory;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.config.IntrinsicConfigProvider;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
@@ -58,6 +60,9 @@ class SliceStoreConfigWatchLifecycleTest {
     private static final Artifact Y = artifact("org.example:y:1.0.0");
     private static final Artifact D = artifact("org.example:d:1.0.0");
     private static final Artifact CODEC_THROWS = artifact("org.example:codec-throws:1.0.0");
+    private static final Artifact CODEC_THROWS_DEP = artifact("org.example:codec-throws-dep:1.0.0");
+    private static final Artifact E = artifact("org.example:e:1.0.0");
+    private static final Artifact XE = artifact("org.example:xe:1.0.0");
     private static final SliceInvokerFacade STUB_INVOKER = new SliceInvokerFacade() {
         @Override
         public <R, T> Result<MethodHandle<R, T>> methodHandle(String artifact, String method, TypeToken<T> requestType, TypeToken<R> responseType) {
@@ -78,6 +83,9 @@ class SliceStoreConfigWatchLifecycleTest {
     void setUp() throws IOException {
         var jars = Map.of(SLOW.asString(), jar(SLOW, SLOW_CLASS, ""),
                           CODEC_THROWS.asString(), jar(CODEC_THROWS, CODEC_THROWS_CLASS, ""),
+                          CODEC_THROWS_DEP.asString(), jar(CODEC_THROWS_DEP, CODEC_THROWS_CLASS, "[slices]\n" + D.asString() + "\n"),
+                          E.asString(), jar(E, "org.pragmatica.aether.slice.dependency.WatchingCodecThrowsLaterFactory", ""),
+                          XE.asString(), jar(XE, DEP_CLASS, "[slices]\n" + E.asString() + "\n"),
                           D.asString(), jar(D, DEP_CLASS, ""),
                           X.asString(), jar(X, DEP_CLASS, "[slices]\n" + D.asString() + "\n"),
                           Y.asString(), jar(Y, DEP_CLASS, "[slices]\n" + D.asString() + "\n"));
@@ -173,12 +181,59 @@ class SliceStoreConfigWatchLifecycleTest {
         var loaded = withCodec.loadSlice(CODEC_THROWS).await();
 
         assertThat(loaded.isFailure()).as("the load fails AFTER the slice was created, subscribed and registered").isTrue();
+        assertCodecBindFailure(loaded, CODEC_THROWS);
         assertThat(withCodec.loaded()).as("no SliceStore entry was ever created").isEmpty();
         // The unwind is a failure callback of the load's Promise and may run just after `await()` returns.
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
             assertThat(registry.lookup(CODEC_THROWS).isPresent()).as("a slice whose load failed must not stay registered").isFalse();
             assertThat(feed.count(CODEC_THROWS)).as("nor keep its subscription").isZero();
         });
+    }
+
+    @Test
+    void aFailedLoadWithSliceDependencies_isTheSameTypedFailureNamingTheTopLevelSlice_andKeepsItsRegisteredDependency() {
+        var withCodec = storeWithNodeCodec();
+
+        var loaded = withCodec.loadSlice(CODEC_THROWS_DEP).await();
+
+        assertCodecBindFailure(loaded, CODEC_THROWS_DEP);
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
+            assertThat(registry.lookup(CODEC_THROWS_DEP).isPresent()).as("the failed top-level slice is unwound").isFalse();
+            assertThat(feed.count(CODEC_THROWS_DEP)).isZero();
+        });
+        assertThat(registry.lookup(D).isPresent() && feed.count(D) == 1).as("its dependency was created by this load but stays: it is registered and live").isTrue();
+    }
+
+    @Test
+    void aFailedTopLevelLoad_ofAnInstanceAnEarlierLoadRegistered_leavesItRegisteredAndSubscribed() {
+        WatchingCodecThrowsLaterFactory.codecCalls.set(0);
+        var withCodec = storeWithNodeCodec();
+
+        assertThat(withCodec.loadSlice(XE).await().isSuccess()).as("XE loads, E is created as its dependency (codec call 1)").isTrue();
+        assertThat(registry.lookup(E).isPresent() && feed.count(E) == 1).as("E registered and subscribed by XE's load").isTrue();
+
+        var again = withCodec.loadSlice(E).await();
+
+        assertCodecBindFailure(again, E);
+        await().pollDelay(Duration.ofMillis(500)).atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
+            assertThat(registry.lookup(E).isPresent()).as("E is still XE's live dependency: must stay registered").isTrue();
+            assertThat(feed.count(E)).as("and subscribed").isEqualTo(1);
+        });
+    }
+
+    /// The failure is the typed `CodecBindFailed`, names the artifact whose load failed, and carries the slice's own
+    /// exception as its source.
+    private static void assertCodecBindFailure(Result<SliceStore.LoadedSlice> loaded, Artifact artifact) {
+        loaded.onSuccess(_ -> Assertions.fail("the load of a slice whose codec throws succeeded"))
+              .onFailure(cause -> assertCodecBindCause(cause, artifact));
+    }
+
+    private static void assertCodecBindCause(Cause cause, Artifact artifact) {
+        assertThat(cause).isInstanceOfSatisfying(SliceLoadingFailure.Fatal.CodecBindFailed.class,
+                                                 failure -> assertThat(failure.artifact()).isEqualTo(artifact.asString()));
+        assertThat(cause.message()).contains(artifact.asString());
+        assertThat(cause.source().isPresent()).as("the cause keeps the slice's own failure as its source").isTrue();
+        cause.source().onPresent(source -> assertThat(source.message()).contains("codec(parent) blew up"));
     }
 
     @Test
@@ -218,8 +273,7 @@ class SliceStoreConfigWatchLifecycleTest {
         var loaded = withCodec.loadSlice(CODEC_THROWS).await();
 
         assertThat(loaded.isFailure()).as("the throw is a failed load").isTrue();
-        loaded.onSuccess(_ -> Assertions.fail("the load of a slice whose codec throws succeeded"))
-              .onFailure(cause -> assertThat(cause).isInstanceOf(SliceLoadingFailure.Fatal.CodecBindFailed.class));
+        assertCodecBindFailure(loaded, CODEC_THROWS);
         assertThat(withCodec.entries()).as("no half entry is left in the map").doesNotContainKey(CODEC_THROWS);
         assertThat(registry.lookup(CODEC_THROWS).isPresent()).as("the earlier load still owns the registered instance").isTrue();
         assertThat(feed.count(CODEC_THROWS)).isEqualTo(1);
