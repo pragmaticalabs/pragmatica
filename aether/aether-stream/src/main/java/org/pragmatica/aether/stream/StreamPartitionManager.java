@@ -5163,7 +5163,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     /// Before a stream materializes: serve the life `config` names (#1278 review), so recovery anchors only at that
-    /// life's sealed watermark and floor, and reclaim any other life of the name.
+    /// life's sealed watermark and floor. Any other life of the name is announced, never reclaimed (#2452, [#reportOtherLives]).
     private Result<Unit> adoptIncarnation(StreamConfig config) {
         return reportOtherLives(config,
                                 streamFootprint.adopt(config.name(), config.incarnation()).await(FOOTPRINT_TIMEOUT));

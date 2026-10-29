@@ -161,6 +161,25 @@ class ConsumerBehindTheRingTest {
             read -> assertThat(read.subject() + " " + read.message()).startsWith(subjectAt(12)).contains("a read from the offset it moved to succeeded"));
     }
 
+    /// An epoch rewind below the offset an expiry moved the cursor to, before any read from it, ends the episode as moved: the
+    /// read that later succeeds is from the rewound offset, not from the one the expiry moved to.
+    @Test
+    void rewindBeforeAReadFromTheExpiredCursor_endsTheEpisodeAsMoved() throws InterruptedException {
+        start((from, epoch) -> switch (from.intValue()) {
+            case 0 -> new StreamError.CursorExpired(0L, 7L).<StreamPartitionManager.EpochRead> promise();
+            case 7 -> new StreamError.EpochDiverged(E2, 3L, StreamError.EpochDiverged.NO_PROVEN_LOSS).<StreamPartitionManager.EpochRead> promise();
+            case 3 -> tier(events(3, 3), E2);
+            default -> ring(List.of(), epoch);
+        });
+
+        keepWaking(() -> delivered.contains(3L) && !warningsOf(STREAM_CONSUMER_CURSOR_RESUMED).isEmpty());
+
+        assertThat(warningsOf(STREAM_CONSUMER_CURSOR_RESUMED)).singleElement().satisfies(warning -> {
+            assertThat(warning.subject()).isEqualTo(subjectAt(7));
+            assertThat(warning.message()).contains("moved again");
+        });
+    }
+
     /// A consumer cancelled after an expiry and before any read from the new cursor succeeded would leave the CRITICAL open
     /// for good: its recovery is raised with the reason.
     @Test
