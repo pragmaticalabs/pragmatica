@@ -22,6 +22,8 @@ import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import org.pragmatica.lang.Option;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -324,5 +326,13 @@ class OperatorWarningCodeTest {
                              .filter(entry -> entry.getValue() > 1)
                              .map(Map.Entry::getKey))
             .containsExactly("a-b");
+    }
+
+    /// #774: the level of the config-watch pair is part of the operator contract.
+    @Test
+    void configWatchPair_isAWarning_thatItsInfoRecoveryCloses() {
+        assertThat(OperatorWarningCode.CONFIG_WATCH_CALLBACK_FAILED.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.CONFIG_WATCH_CALLBACK_RECOVERED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.CONFIG_WATCH_CALLBACK_RECOVERED.recoveryOf()).isEqualTo(Option.some(OperatorWarningCode.CONFIG_WATCH_CALLBACK_FAILED));
     }
 }

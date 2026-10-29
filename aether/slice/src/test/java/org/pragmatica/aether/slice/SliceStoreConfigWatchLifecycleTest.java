@@ -151,8 +151,8 @@ class SliceStoreConfigWatchLifecycleTest {
 
         assertThat(feed.count(D)).as("STATED LIMIT: the registry only unregisters through SliceStore.cleanup, so a dependency "
                                      + "that is never its own entry lives (and stays subscribed) until node stop. If this "
-                                     + "fails the registry gained a dependency-unload hook: call feed.releaseAll(D) from it "
-                                     + "and replace this tripwire").isEqualTo(1);
+                                     + "fails the registry gained a dependency-unload hook (ACCEPTED rc5 limit; revisit trigger): unregister "
+                                     + "and feed.releaseAll(D) together, and replace this tripwire").isEqualTo(1);
 
         feed.shutdown().await();
 
@@ -182,9 +182,7 @@ class SliceStoreConfigWatchLifecycleTest {
 
         store.unloadSlice(X).await();
 
-        assertThat(feed.count(X)).as("TRIPWIRE, residual edge R8: a slice registered and subscribed whose SliceStore entry was never "
-                                     + "created (createEntry throwing after registration) is released by nothing. Decide release at "
-                                     + "resolveWithContext post-registration failure, then replace this tripwire").isEqualTo(1);
+        assertThat(feed.count(X)).as("TRIPWIRE, residual edge R8 (ACCEPTED rc5 limit). This pins the CONSEQUENCE, not the cause: a slice registered and subscribed whose SliceStore entry was never created is released by nothing. Revisit trigger: any registry unload path, or a reachable throw in createEntry after registration; then unregister the slice AND release its subscriptions together, and replace this test with one that forces the throw").isEqualTo(1);
     }
 
     // ---------------------------------------------------------------- scaffolding

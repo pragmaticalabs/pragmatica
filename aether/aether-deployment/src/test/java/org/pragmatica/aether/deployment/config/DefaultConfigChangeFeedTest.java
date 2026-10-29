@@ -36,6 +36,7 @@ import org.junit.jupiter.api.Timeout;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.pragmatica.config.DynamicConfigurationProvider.dynamicConfigurationProvider;
 
 /// The delivery engine of `Watched`: registration, serial delivery, failure containment, release.
@@ -352,6 +353,91 @@ class DefaultConfigChangeFeedTest {
         return events.stream().filter(event -> event.code() == code).count();
     }
 
+    // ---------------------------------------------------------------- a binder that throws
+
+    @Test
+    void binderThrowingAtDelivery_isABindFailure_laterChangesStillDelivered_andReleaseCompletes() {
+        var seen = new CopyOnWriteArrayList<Pair>();
+        var binds = new AtomicInteger();
+        feed.subscribe(OWNER, SECTION, () -> bindThrowingOnSecondCall(binds), recordingTo(seen));
+
+        change(KEY_A, "boom");
+        await().atMost(Duration.ofSeconds(5)).until(() -> countOf(OperatorWarningCode.CONFIG_WATCH_CALLBACK_FAILED) == 1);
+        change(KEY_A, "after");
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> seen.contains(new Pair("after", "-")));
+        assertThat(seen).as("the throwing bind delivered nothing; the next good bind delivered").doesNotContain(new Pair("boom", "-"));
+        releaseWithin(OWNER);
+        assertThat(feed.subscriberCount(OWNER)).isZero();
+    }
+
+    private Result<Pair> bindThrowingOnSecondCall(AtomicInteger binds) {
+        if (binds.incrementAndGet() == 2) {
+            throw new IllegalStateException("value-object factory rejects the value");
+        }
+        return bindPair();
+    }
+
+    @Test
+    void binderThrowingAtRegistration_failsTheRegistration_andRegistersNothing() {
+        var result = feed.subscribe(OWNER, SECTION, () -> {
+            throw new IllegalStateException("factory throws");
+        }, recordingTo(new CopyOnWriteArrayList<>()));
+
+        assertThat(result.isFailure()).isTrue();
+        assertThat(feed.subscriberCount(OWNER)).isZero();
+    }
+
+    record Box(String text, boolean explodesOnEquals) {
+        @Override
+        public boolean equals(Object other) {
+            if (explodesOnEquals) {
+                throw new IllegalStateException("equals blew up");
+            }
+            return other instanceof Box box && box.text.equals(text);
+        }
+
+        @Override
+        public int hashCode() {
+            return text.hashCode();
+        }
+    }
+
+    @Test
+    void aDeliveryThatThrowsHard_stillCompletesItsInFlightPromise_andLaterChangesAreDelivered() {
+        var current = new AtomicReference<>(new Box("first", false));
+        var seen = new CopyOnWriteArrayList<String>();
+        feed.subscribe(OWNER, SECTION, () -> Result.success(current.get()), box -> record(seen, box));
+
+        current.set(new Box("bomb", true));
+        feed.publish(KEY_A);
+        sleep(200);
+        current.set(new Box("after", false));
+        feed.publish(KEY_A);
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> seen.contains("after"));
+        releaseWithin(OWNER);
+    }
+
+    @Test
+    void aDeliveryThatThrowsHard_doesNotLeaveAReleaseWaitingForever() {
+        var current = new AtomicReference<>(new Box("first", false));
+        var seen = new CopyOnWriteArrayList<String>();
+        feed.subscribe(OWNER, SECTION, () -> Result.success(current.get()), box -> record(seen, box));
+
+        current.set(new Box("bomb", true));
+        feed.publish(KEY_A);
+        sleep(200);
+
+        releaseWithin(OWNER);
+        assertThat(feed.subscriberCount(OWNER)).isZero();
+    }
+
+    private static Promise<Unit> record(List<String> into, Box box) {
+        into.add(box.text());
+        return Promise.unitPromise();
+    }
+
     // ---------------------------------------------------------------- no lost update around registration
 
     @Test
@@ -378,7 +464,7 @@ class DefaultConfigChangeFeedTest {
         join(writer);
 
         await().pollInterval(Duration.ofMillis(1)).atMost(Duration.ofSeconds(5)).until(() -> last.get() != null && last.get().b().equals(value));
-        feed.releaseAll(owner).await();
+        releaseWithin(owner);
     }
 
     private static Promise<Unit> remember(AtomicReference<Pair> last, Pair pair) {
@@ -476,13 +562,20 @@ class DefaultConfigChangeFeedTest {
 
     // ---------------------------------------------------------------- release
 
+    /// A release that never completes would hang the build (a blocked fork is not reaped by the surefire timeout):
+    /// bound it so the failure is an assertion.
+    private void releaseWithin(String owner) {
+        assertTimeoutPreemptively(Duration.ofSeconds(10), () -> feed.releaseAll(owner).await());
+    }
+
+
     @Test
     void releaseAll_stopsDeliveries_dropsTheCount_andIsIdempotent() {
         var seen = new CopyOnWriteArrayList<Pair>();
         subscribe(recordingTo(seen));
 
-        feed.releaseAll(OWNER).await();
-        feed.releaseAll(OWNER).await();
+        releaseWithin(OWNER);
+        releaseWithin(OWNER);
         change(KEY_A, "1");
         sleep(200);
 
@@ -495,7 +588,7 @@ class DefaultConfigChangeFeedTest {
         var seen = new CopyOnWriteArrayList<Pair>();
         var subscription = (ConfigSubscription<?>) subscribe(recordingTo(seen)).unwrap();
 
-        feed.releaseAll(OWNER).await();
+        releaseWithin(OWNER);
         overlay.put(KEY_A, "after-release");
         subscription.trigger(99, 0);
         sleep(200);
@@ -517,7 +610,7 @@ class DefaultConfigChangeFeedTest {
         change(KEY_A, "3");
         var released = feed.releaseAll(OWNER);
         finish.countDown();
-        released.await();
+        assertTimeoutPreemptively(Duration.ofSeconds(10), () -> released.await());
         sleep(200);
 
         assertThat(seen.stream().map(Pair::a).toList()).as("the pending change behind the running delivery never starts once release has been called")
@@ -547,7 +640,7 @@ class DefaultConfigChangeFeedTest {
 
         assertThat(released.isResolved()).as("release waits for the running callback").isFalse();
         finish.countDown();
-        released.await();
+        assertTimeoutPreemptively(Duration.ofSeconds(10), () -> released.await());
         assertThat(finished).isTrue();
     }
 
@@ -565,7 +658,7 @@ class DefaultConfigChangeFeedTest {
         subscribe(recordingTo(new CopyOnWriteArrayList<>()));
         feed.subscribe(OWNER + "-other", SECTION, this::bindPair, _ -> Promise.unitPromise());
 
-        feed.releaseAll(OWNER).await();
+        releaseWithin(OWNER);
 
         assertThat(feed.subscriberCount(OWNER)).isZero();
         assertThat(feed.subscriberCount(OWNER + "-other")).isEqualTo(1);
@@ -575,7 +668,7 @@ class DefaultConfigChangeFeedTest {
     void shutdown_releasesEverything_andRefusesLaterSubscriptions() {
         subscribe(recordingTo(new CopyOnWriteArrayList<>()));
 
-        feed.shutdown().await();
+        assertTimeoutPreemptively(Duration.ofSeconds(10), () -> feed.shutdown().await());
         var late = subscribe(recordingTo(new CopyOnWriteArrayList<>()));
 
         assertThat(feed.subscriberCount(OWNER)).isZero();

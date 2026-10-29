@@ -166,19 +166,21 @@ final class ConfigSubscription<T> implements Watched.Subscription {
 
     @Contract
     private void drain() {
-        deliverPending();
-        drainScheduled.set(false);
-        // A trigger that landed after the loop's last look but before the flag cleared saw the flag set and
-        // scheduled nothing: look once more.
-        scheduleDrain();
+        try {
+            deliverPending();
+        } finally {
+            drainScheduled.set(false);
+            // A trigger that landed after the loop's last look but before the flag cleared saw the flag set and
+            // scheduled nothing: look once more.
+            scheduleDrain();
+        }
     }
 
     private Unit deliverPending() {
         var target = pending.get();
 
         while (target > deliveredRev && beginDelivery()) {
-            deliver(target);
-            endDelivery();
+            deliverThenSettle(target);
             target = pending.get();
         }
 
@@ -206,9 +208,19 @@ final class ConfigSubscription<T> implements Watched.Subscription {
         return unit();
     }
 
+    /// Whatever the delivery does, the in-flight Promise is completed (a `release` waits on it) and the sequence is
+    /// marked delivered (the drain must not spin on a delivery that failed hard).
+    private Unit deliverThenSettle(long target) {
+        try {
+            return deliver(target);
+        } finally {
+            deliveredRev = target;
+            endDelivery();
+        }
+    }
+
     private Unit deliver(long target) {
         bindNow().onFailure(cause -> bindFailed(cause, target)).onSuccess(value -> deliverBound(value, target));
-        deliveredRev = target;
 
         return unit();
     }
@@ -238,10 +250,18 @@ final class ConfigSubscription<T> implements Watched.Subscription {
     }
 
     // ---------------------------------------------------------------- binding and callback
+    /// The record bound from one consistent configuration state. The binder is the slice's generated bind expression
+    /// plus its value-object factory; JBCT says they never throw, nothing enforces it on the config path, and a throw
+    /// here would kill the drain. So a throw IS a bind failure: the previous record stays, one event, the next change
+    /// is delivered.
     private Result<T> bindNow() {
         return env.readProtocol()
-                  .atomically(bind)
+                  .atomically(this::bindContained)
                   .flatMap(bound -> bound);
+    }
+
+    private Result<T> bindContained() {
+        return Result.lift(Causes::fromThrowable, bind::apply).flatMap(bound -> bound);
     }
 
     /// Contained callback: everything but a `VirtualMachineError` becomes a failure, and the Promise it returns is

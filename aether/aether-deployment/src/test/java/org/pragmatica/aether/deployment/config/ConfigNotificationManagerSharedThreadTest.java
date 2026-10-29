@@ -30,7 +30,8 @@ class ConfigNotificationManagerSharedThreadTest {
     private static final Artifact SLICE_A = Artifact.artifact("org.example:slice-a:1.0.0").unwrap();
     private static final Artifact SLICE_B = Artifact.artifact("org.example:slice-b:1.0.0").unwrap();
 
-    private static final CountDownLatch RELEASE_A = new CountDownLatch(1);
+    /// Fresh per test: a latch left open by one test would let A through in the next.
+    private static volatile CountDownLatch release = new CountDownLatch(1);
     private static final AtomicBoolean A_ENTERED = new AtomicBoolean();
     private static final List<String> B_CALLS = new CopyOnWriteArrayList<>();
 
@@ -39,7 +40,7 @@ class ConfigNotificationManagerSharedThreadTest {
         public static void notifyConfigUpdate(Object sliceInstance, String section, ConfigFacade config) {
             A_ENTERED.set(true);
             try {
-                RELEASE_A.await(10, TimeUnit.SECONDS);
+                release.await(10, TimeUnit.SECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
@@ -54,6 +55,7 @@ class ConfigNotificationManagerSharedThreadTest {
     }
 
     private ConfigNotificationManager notifyBoth() {
+        release = new CountDownLatch(1);
         A_ENTERED.set(false);
         B_CALLS.clear();
         var manager = ConfigNotificationManager.configNotificationManager();
@@ -74,7 +76,7 @@ class ConfigNotificationManagerSharedThreadTest {
         assertThat(B_CALLS).as("W-1 TRIPWIRE: B is still waiting behind blocked A on the shared thread. "
                                + "If this fails the legacy path no longer shares one thread: enable "
                                + "everyOtherSlice_isNotifiedWhileASliceIsBlocked and delete this test").isEmpty();
-        RELEASE_A.countDown();
+        release.countDown();
         await().atMost(Duration.ofSeconds(5)).until(() -> B_CALLS.size() == 1);
         manager.shutdown();
     }
@@ -87,7 +89,7 @@ class ConfigNotificationManagerSharedThreadTest {
         await().atMost(Duration.ofSeconds(5)).until(A_ENTERED::get);
 
         await().atMost(Duration.ofSeconds(2)).until(() -> B_CALLS.size() == 1);
-        RELEASE_A.countDown();
+        release.countDown();
         manager.shutdown();
     }
 }
