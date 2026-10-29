@@ -106,6 +106,8 @@ public interface IdentityLedger {
     }
 
     Path file();
+    /// The offers a WIPED node has been handed and not yet acted on, kept beside the ledger (#2429, ID-1c).
+    OfferJournal offers();
     /// Read the file and settle the state this node starts in. `createdNow` is the caller's statement that this node is
     /// being created now (its ledger directory did not exist), which turns a missing file into [Origin#CREATED]. A
     /// CREATED ledger is written empty at once, so a later restart finds a file and does not mistake itself for a
@@ -123,18 +125,56 @@ public interface IdentityLedger {
     Unit onDurabilityChange(Consumer<Option<Cause>> listener);
 
     static IdentityLedger identityLedger(Path file, DurableWriter writer) {
+        var durable = new AtomicBoolean(true);
+        var listeners = new ConcurrentLinkedQueue<Consumer<Option<Cause>>>();
+        // The offers journal reports through the ledger's own durability channel: the operator sees one signal for the ledger and
+        // for the offers kept beside it.
+        var journal = OfferJournal.offerJournal(file.resolveSibling(file.getFileName() + ".offers"),
+                                                writer,
+                                                change -> change.fold(Unit::unit,
+                                                                      cause -> reportJournalLoss(durable,
+                                                                                                 listeners,
+                                                                                                 cause)));
+
         return new FileLedger(file,
+                              journal,
                               writer,
                               new AtomicReference<>(IdentityFacts.identityFacts()),
                               new AtomicReference<>(IdentityFacts.identityFacts()),
                               new AtomicBoolean(),
-                              new AtomicBoolean(true),
+                              durable,
                               new AtomicBoolean(),
                               new ConcurrentLinkedQueue<>(),
-                              new ConcurrentLinkedQueue<>());
+                              listeners);
+    }
+
+    /// The offers journal could not be read or written: always told to the listeners (the journal reports its own transitions once),
+    /// even when the flag already reads "not durable" because the node is wiped, since that earlier signal said nothing of the journal.
+    /// Its recovery is not told: the flag is the ledger's, and only the ledger's own next successful write can restore it.
+    private static Unit reportJournalLoss(AtomicBoolean durable,
+                                          ConcurrentLinkedQueue<Consumer<Option<Cause>>> listeners,
+                                          Cause cause) {
+        durable.set(false);
+        listeners.forEach(listener -> listener.accept(Option.some(cause)));
+
+        return Unit.unit();
+    }
+
+    /// A transition of durability, reported once to every listener: lost (the cause) or back (empty).
+    private static Unit reportDurability(AtomicBoolean durable,
+                                         ConcurrentLinkedQueue<Consumer<Option<Cause>>> listeners,
+                                         Option<Cause> change) {
+        if (durable.getAndSet(change.isEmpty()) == change.isEmpty()) {
+            return Unit.unit();
+        }
+
+        listeners.forEach(listener -> listener.accept(change));
+
+        return Unit.unit();
     }
 
     record FileLedger(Path file,
+                      OfferJournal offers,
                       DurableWriter writer,
                       AtomicReference<IdentityFacts> state,
                       AtomicReference<IdentityFacts> written,
@@ -288,21 +328,11 @@ public interface IdentityLedger {
         }
 
         private Unit markDurable() {
-            return durableFlag.getAndSet(true)
-                   ? Unit.unit()
-                   : notifyListeners(Option.none());
+            return reportDurability(durableFlag, listeners, Option.none());
         }
 
         private Unit markNotDurable(Cause cause) {
-            return durableFlag.getAndSet(false)
-                   ? notifyListeners(Option.some(cause))
-                   : Unit.unit();
-        }
-
-        private Unit notifyListeners(Option<Cause> change) {
-            listeners.forEach(listener -> listener.accept(change));
-
-            return Unit.unit();
+            return reportDurability(durableFlag, listeners, Option.some(cause));
         }
 
         @Override

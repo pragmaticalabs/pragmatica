@@ -40,6 +40,10 @@ public interface SwimTransport {
     @Contract
     default void dropPeers(java.util.function.Predicate<InetSocketAddress> drop) {}
 
+    /// Observe the per-sender outcome of decrypting inbound datagrams (#1200). Default no-op; overridden by transports that decrypt.
+    @Contract
+    default void decryptObserver(GossipDecryptObserver observer) {}
+
     /// Stop the transport and release resources.
     Promise<Unit> stop();
 

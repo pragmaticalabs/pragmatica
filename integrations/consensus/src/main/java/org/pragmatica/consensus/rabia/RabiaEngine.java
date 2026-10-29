@@ -140,6 +140,26 @@ public class RabiaEngine<C extends Command> {
         return passiveClient && passiveClientReady;
     }
 
+    /// The worker-replica readiness seam (W-OBS W3, I-W6): sets AND clears the flag [#isPassiveClientReady] reports, from the single readiness
+    /// computation, so a worker that loses its feed stops reporting ready (unlike [#authorizePassiveClient], a latch). Writes no `engineState`.
+    /// Ignored on an engine that is not a passive client.
+    public org.pragmatica.lang.Unit setPassiveClientReady(boolean ready) {
+        passiveClientReady = passiveClient && ready;
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// A passive client installs its state from the replica feed, never through [#applyRestoredState], so the post-restore listeners
+    /// ([#onStateRestored]) would never fire on a worker. The feed client calls this after each snapshot install. Writes no `engineState`;
+    /// a no-op on an engine that is not a passive client.
+    public org.pragmatica.lang.Unit completePassiveRestore() {
+        if (passiveClient) {
+            notifyStateRestored();
+        }
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
     /// The installed voter configuration: epoch plus complete roster. Changes only through
     /// [#installVoters] — genesis, a Rabia §4 command applied at its slot, or a sync adoption of a newer
     /// epoch. Empty while genesis is pending ([#deferGenesis]).

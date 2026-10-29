@@ -141,7 +141,8 @@ SHAPE org.pragmatica.aether.node.entityforward.EntityForwardMessage$EntityUpdate
 SHAPE org.pragmatica.aether.node.prefetch.StoragePrefetchGossip (instance:java.lang.String,hints:java.util.List<org.pragmatica.aether.node.prefetch.StoragePrefetchGossip$Hint>)
 SHAPE org.pragmatica.aether.node.prefetch.StoragePrefetchGossip$Hint (blockIdHex:java.lang.String,accessCount:int)
 SHAPE org.pragmatica.aether.slice.MethodName (name:java.lang.String)
-SHAPE org.pragmatica.aether.slice.RetentionPolicy (maxCount:long,maxBytes:long,maxAgeMs:long,mode:org.pragmatica.aether.slice.RetentionMode,tierAwareRetention:org.pragmatica.lang.Option<org.pragmatica.aether.slice.TierAwareRetention>)
+SHAPE org.pragmatica.aether.slice.RetentionDimensions (count:boolean,bytes:boolean,age:boolean)
+SHAPE org.pragmatica.aether.slice.RetentionPolicy (maxCount:long,maxBytes:long,maxAgeMs:long,mode:org.pragmatica.aether.slice.RetentionMode,tierAwareRetention:org.pragmatica.lang.Option<org.pragmatica.aether.slice.TierAwareRetention>,declared:org.pragmatica.aether.slice.RetentionDimensions)
 SHAPE org.pragmatica.aether.slice.StreamConfig (name:java.lang.String,partitions:int,retention:org.pragmatica.aether.slice.RetentionPolicy,autoOffsetReset:java.lang.String,maxEventSizeBytes:long,consistencyMode:org.pragmatica.aether.slice.ConsistencyMode,replicationFactor:int,confirmationFactor:int,compression:org.pragmatica.aether.slice.StreamCompression,encryptionKeyId:org.pragmatica.lang.Option<java.lang.String>,incarnation:long)
 SHAPE org.pragmatica.aether.slice.TierAwareRetention (postSealBufferMs:long,postSealMaxCount:long)
 SHAPE org.pragmatica.aether.slice.blueprint.Blueprint (id:org.pragmatica.aether.slice.blueprint.BlueprintId,slices:java.util.List<org.pragmatica.aether.slice.blueprint.SliceSpec>,deploymentConfig:org.pragmatica.lang.Option<org.pragmatica.aether.slice.blueprint.DeploymentConfig>,securityOverrides:org.pragmatica.aether.slice.blueprint.SecurityOverrides)
@@ -385,7 +386,7 @@ SHAPE org.pragmatica.consensus.StateMachine$Batch (id:org.pragmatica.consensus.S
 SHAPE org.pragmatica.consensus.StateMachine$Batch$Id (id:java.lang.String)
 SHAPE org.pragmatica.consensus.net.NetworkMessage$DiscoverNodes (self:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.consensus.net.NetworkMessage$DiscoveredNodes (target:org.pragmatica.consensus.NodeId,nodes:java.util.List<org.pragmatica.consensus.net.NodeInfo>)
-SHAPE org.pragmatica.consensus.net.NetworkMessage$Hello (sender:org.pragmatica.consensus.NodeId,address:org.pragmatica.net.tcp.NodeAddress,labels:java.util.Map<java.lang.String, java.lang.String>,bootToken:long,intendedPeer:org.pragmatica.lang.Option<org.pragmatica.consensus.NodeId>)
+SHAPE org.pragmatica.consensus.net.NetworkMessage$Hello (sender:org.pragmatica.consensus.NodeId,address:org.pragmatica.net.tcp.NodeAddress,labels:java.util.Map<java.lang.String, java.lang.String>,bootToken:long,intendedPeer:org.pragmatica.lang.Option<org.pragmatica.consensus.NodeId>,retirements:org.pragmatica.lang.Option<java.util.Map<java.lang.String, java.lang.String>>)
 SHAPE org.pragmatica.consensus.net.NetworkMessage$HelloRefused (sender:org.pragmatica.consensus.NodeId,refused:org.pragmatica.consensus.NodeId,reason:java.lang.String)
 SHAPE org.pragmatica.consensus.net.NetworkMessage$KVSyncRequest (sender:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.consensus.net.NetworkMessage$KVSyncResponse (target:org.pragmatica.consensus.NodeId,snapshot:byte[])
@@ -553,6 +554,7 @@ TAG  org.pragmatica.aether.node.prefetch.StoragePrefetchGossip$Hint 2173
 TAG  org.pragmatica.aether.slice.ConsistencyMode 704
 TAG  org.pragmatica.aether.slice.ExecutionMode 705
 TAG  org.pragmatica.aether.slice.MethodName 103
+TAG  org.pragmatica.aether.slice.RetentionDimensions 712
 TAG  org.pragmatica.aether.slice.RetentionMode 706
 TAG  org.pragmatica.aether.slice.RetentionPolicy 707
 TAG  org.pragmatica.aether.slice.SliceState 708

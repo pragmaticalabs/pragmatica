@@ -20,6 +20,7 @@ import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.slice.ReplicationDeclaration;
 import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.aether.slice.ReplicationWarning;
+import org.pragmatica.aether.slice.RetentionDimensions;
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
@@ -722,7 +723,25 @@ public interface StreamConfigParser {
         var type = optionalEnum(section, "retention", List.of("count", "time", "size", "compound"), "count");
         var mode = optionalEnum(section, "retention_mode", List.of("any", "all"), "any").map(StreamConfigParser::parseRetentionMode);
 
-        return type.flatMap(retentionType -> retentionWithMode(section, retentionType, mode));
+        return type.flatMap(retentionType -> retentionWithMode(section, retentionType, mode))
+                   .map(policy -> policy.withDeclared(declaredDimensions(section)));
+    }
+
+    /// What the section DECLARES (#2201 Q6 = B, know 59dfb9e86c), which is what the sealed tier bounds: `count` declares
+    /// the count, `time` the age, `size` the bytes, and `compound` each of `max_count`, `max_bytes` and `max_age` it names.
+    /// A section with no `retention` key declares nothing: it is parsed as `count` so the ring is sized as before, but the
+    /// default does not become a declaration, and its sealed tier keeps the node default age.
+    private static RetentionDimensions declaredDimensions(StreamSection section) {
+        return section.string("retention")
+                      .map(type -> switch (type) {
+                               case "count" -> RetentionDimensions.COUNT;
+                               case "time" -> RetentionDimensions.AGE;
+                               case "size" -> RetentionDimensions.BYTES;
+                               default -> RetentionDimensions.retentionDimensions(section.string("max_count").isPresent(),
+                                                                                  section.string("max_bytes").isPresent(),
+                                                                                  section.string("max_age").isPresent());
+                           })
+                      .or(RetentionDimensions.NONE);
     }
 
     /// Sequential, not `Result.all`: a refused spelling stays its own typed cause instead of a composite.
@@ -828,6 +847,61 @@ public interface StreamConfigParser {
                                                                                    section,
                                                                                    groupName,
                                                                                    checkpointIntervalMs));
+    }
+
+    /// The consumer configuration a `[streams.<alias>.consumers.<group>]` section declares, read from the text of its keys
+    /// (#2201 E-02): the activation binder's reading, which [InertKeyRules] judges exactly as it judges the deploy
+    /// validator's. A value that does not parse is refused typed, never defaulted.
+    static Result<ConsumerConfig> parseConsumerSection(StreamSection consumer) {
+        var alias = consumer.alias();
+        var processing = parsedConsumerKey(consumer,
+                                           "processing",
+                                           "one of: ordered, parallel",
+                                           StreamConfigParser::parseProcessingMode,
+                                           ProcessingMode.ORDERED);
+        var onFailure = parsedConsumerKey(consumer,
+                                          "on_failure",
+                                          "one of: retry, skip, stall",
+                                          StreamConfigParser::parseErrorStrategy,
+                                          ErrorStrategy.RETRY);
+        var checkpointMs = consumer.string("checkpoint_interval")
+                                   .map(raw -> StreamValues.duration(alias, "checkpoint_interval", raw))
+                                   .or(success(1000L));
+        var readPreference = parsedConsumerKey(consumer,
+                                               "read_preference",
+                                               "one of: governor, nearest, any-replica, linearizable",
+                                               StreamConfigParser::parseReadPreference,
+                                               ReadPreference.GOVERNOR);
+
+        return Result.all(consumer.integer("batch_size").map(value -> value.or(1)),
+                          processing,
+                          onFailure,
+                          checkpointMs,
+                          consumer.integer("max_retries").map(value -> value.or(3)),
+                          readPreference)
+                     .map((batch, mode, strategy, interval, retries, preference) -> ConsumerConfig.consumerConfig(alias,
+                                                                                                                  batch,
+                                                                                                                  mode,
+                                                                                                                  strategy,
+                                                                                                                  interval,
+                                                                                                                  retries,
+                                                                                                                  consumer.string("dead_letter")
+                                                                                                                          .or(""),
+                                                                                                                  preference));
+    }
+
+    private static <T> Result<T> parsedConsumerKey(StreamSection consumer,
+                                                   String key,
+                                                   String expected,
+                                                   Functions.Fn1<Option<T>, String> parser,
+                                                   T defaultValue) {
+        return consumer.string(key)
+                       .map(raw -> parser.apply(raw)
+                                         .toResult(new StreamDeclarationError.MalformedValue(consumer.alias(),
+                                                                                             key,
+                                                                                             raw,
+                                                                                             expected)))
+                       .or(success(defaultValue));
     }
 
     private static Result<Long> parseCheckpointInterval(TomlDocument doc,

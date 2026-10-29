@@ -4,6 +4,9 @@
 package org.pragmatica.aether.slice.blueprint;
 
 import org.pragmatica.aether.slice.ReplicationFactors;
+import org.pragmatica.aether.slice.RetentionDimensions;
+import org.pragmatica.aether.slice.RetentionMode;
+import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.ReplicationFactorsError;
 import org.pragmatica.aether.slice.ReplicationWarning;
 
@@ -556,6 +559,56 @@ class StreamConfigParserTest {
             assertThat(result.isFailure()).isTrue();
             result.onFailure(cause -> assertThat(cause.message()).contains("both")
                                                                     .contains("latest"));
+        }
+    }
+
+    /// NT-11 (#2201 Q6 = B): the set of dimensions each form DECLARES, which is what the sealed tier bounds. The values filled
+    /// in for an undeclared dimension size the ring and stay as before; they are not declarations.
+    @Nested
+    class DeclaredRetention {
+        @Test
+        void time_declaresTheAge() {
+            assertThat(declared("retention = \"time\"\nretention_value = \"5m\"")).isEqualTo(RetentionDimensions.AGE);
+        }
+
+        @Test
+        void count_declaresTheCount() {
+            assertThat(declared("retention = \"count\"\nretention_value = \"500\"")).isEqualTo(RetentionDimensions.COUNT);
+        }
+
+        @Test
+        void size_declaresTheBytes() {
+            assertThat(declared("retention = \"size\"\nretention_value = \"8MB\"")).isEqualTo(RetentionDimensions.BYTES);
+        }
+
+        @Test
+        void compound_declaresOnlyTheKeysItNames() {
+            assertThat(declared("retention = \"compound\"\nmax_count = \"500\"\nmax_age = \"1h\""))
+                .isEqualTo(RetentionDimensions.retentionDimensions(true, false, true));
+            assertThat(declared("retention = \"compound\"\nmax_bytes = \"8MB\"")).isEqualTo(RetentionDimensions.BYTES);
+        }
+
+        /// The default type stays `count`, so the ring is sized as before, but the default is not a declaration: the
+        /// sealed tier of such a section keeps the node default age (24 h).
+        @Test
+        void aSectionWithoutARetentionKey_declaresNothing() {
+            var config = ownedConfig(parseResources(owned("partitions = 2"), ReplicationFactors.BUILT_IN).unwrap(), "orders");
+
+            assertThat(config.retention().declared()).isEqualTo(RetentionDimensions.NONE);
+            assertThat(config.retention().maxCount()).as("the ring is sized as before").isEqualTo(RetentionPolicy.retentionPolicy().maxCount());
+        }
+
+        @Test
+        void everyFactory_declaresNothing() {
+            assertThat(RetentionPolicy.retentionPolicy().declared()).isEqualTo(RetentionDimensions.NONE);
+            assertThat(RetentionPolicy.retentionPolicy(10, 20, 30).declared()).as("values are ring sizing, not declarations (R32-04)")
+                                                                        .isEqualTo(RetentionDimensions.NONE);
+            assertThat(RetentionPolicy.retentionPolicy(10, 20, 30, RetentionMode.ALL).declared()).isEqualTo(RetentionDimensions.NONE);
+        }
+
+        private RetentionDimensions declared(String retentionLines) {
+            return ownedConfig(parseResources(owned(retentionLines), ReplicationFactors.BUILT_IN).unwrap(), "orders").retention()
+                                                                                                                     .declared();
         }
     }
 

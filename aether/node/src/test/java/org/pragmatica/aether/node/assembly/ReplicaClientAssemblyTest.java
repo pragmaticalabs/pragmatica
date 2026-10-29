@@ -1,0 +1,211 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+package org.pragmatica.aether.node.assembly;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+
+import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
+import org.pragmatica.aether.node.assembly.ReplicaClientAssembly.DirectoryInstall;
+import org.pragmatica.aether.node.assembly.ReplicaClientAssembly.DirectoryInstaller;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.cluster.metrics.ClusterDirectory;
+import org.pragmatica.cluster.metrics.ClusterDirectory.DhtReplication;
+import org.pragmatica.cluster.metrics.DirectoryVersion;
+import org.pragmatica.cluster.node.rabia.RabiaNode;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/// The DARK client's glue: the directory installer (readiness f), the one publisher of what readiness drives (I-W6) and the uplink order.
+/// Each test names the mutation that turns it red.
+class ReplicaClientAssemblyTest {
+    private static final DhtReplication DHT = new DhtReplication(3, 2, 3, 2, 7, 0, 0, 0, true);
+
+    private final AtomicReference<Option<ClusterDirectory>> held = new AtomicReference<>(Option.none());
+    private final List<List<NodeInfo>> peersInstalled = new ArrayList<>();
+    private final List<List<NodeInfo>> endpointsInstalled = new ArrayList<>();
+    private final AtomicInteger dhtInstalled = new AtomicInteger();
+    private final AtomicReference<Result<Unit>> peersResult = new AtomicReference<>(Result.success(Unit.unit()));
+    private final DirectoryInstaller installer = DirectoryInstaller.directoryInstaller(held::get,
+                                                                                      new DirectoryInstall(peers -> record(peers),
+                                                                                                           endpointsInstalled::add,
+                                                                                                           _ -> dhtInstalled.incrementAndGet()));
+
+    private Result<Unit> record(List<NodeInfo> peers) {
+        peersInstalled.add(peers);
+
+        return peersResult.get();
+    }
+
+    private static ClusterDirectory directory(long incarnation, long term, long counter, long generation) {
+        return ClusterDirectory.clusterDirectory(DirectoryVersion.directoryVersion(incarnation, term, counter, generation), List.of(), DHT);
+    }
+
+    @Test
+    void tick_installsANewerDirectoryIntoTheThreeConsumers_once() {
+        held.set(Option.some(directory(1, 1, 1, 1)));
+
+        installer.tick();
+        installer.tick();
+
+        assertThat(peersInstalled).hasSize(1);
+        assertThat(endpointsInstalled).hasSize(1);
+        assertThat(dhtInstalled.get()).isEqualTo(1);
+        assertThat(installer.isInstalled()).isTrue();
+    }
+
+    /// Mutation: install on `!equals` instead of `isStrictlyAfter` (an older directory would replace a newer one).
+    @Test
+    void tick_neverInstallsAnOlderOrEqualDirectory() {
+        held.set(Option.some(directory(1, 2, 5, 3)));
+        installer.tick();
+        held.set(Option.some(directory(1, 1, 9, 9)));
+        installer.tick();
+
+        assertThat(peersInstalled).as("the older epoch's higher generation is refused").hasSize(1);
+
+        held.set(Option.some(directory(1, 3, 1, 1)));
+        installer.tick();
+
+        assertThat(peersInstalled).as("a newer epoch with a lower generation installs").hasSize(2);
+    }
+
+    /// Mutation: drop the `generation > 0` test in `isInstalled`.
+    @Test
+    void isInstalled_isFalse_untilADirectoryWithAGenerationIsIn() {
+        assertThat(installer.isInstalled()).isFalse();
+
+        held.set(Option.some(directory(1, 1, 1, 0)));
+        installer.tick();
+
+        assertThat(installer.isInstalled()).as("generation 0 is the empty directory").isFalse();
+    }
+
+    /// Mutation: install the endpoints and DHT replication before the peers succeed (the order of `installNow`).
+    @Test
+    void tick_aFailedPeerInstall_installsNothingElse_andIsRetried() {
+        peersResult.set(Causes.cause("no scope").result());
+        held.set(Option.some(directory(1, 1, 1, 1)));
+        installer.tick();
+
+        assertThat(endpointsInstalled).isEmpty();
+        assertThat(dhtInstalled.get()).isZero();
+        assertThat(installer.isInstalled()).isFalse();
+
+        peersResult.set(Result.success(Unit.unit()));
+        installer.tick();
+
+        assertThat(installer.isInstalled()).isTrue();
+        assertThat(peersInstalled).as("the failed attempt was retried").hasSize(2);
+    }
+
+    /// I-W6. Mutation: `setPassiveClientReady` only on the rising edge (today's latch), or run `workerReady` on the falling edge.
+    @Test
+    @SuppressWarnings("unchecked")
+    void publishReadiness_setsAndClearsTheEngineFlag_andRunsWorkerReadyOnlyWhenReady() {
+        RabiaNode<KVCommand<AetherKey>> cluster = Mockito.mock(RabiaNode.class);
+        var ran = new AtomicInteger();
+
+        ReplicaClientAssembly.publishReadiness(cluster, ran::incrementAndGet, true);
+        ReplicaClientAssembly.publishReadiness(cluster, ran::incrementAndGet, false);
+
+        var order = Mockito.inOrder(cluster);
+
+        order.verify(cluster).setPassiveClientReady(true);
+        order.verify(cluster).setPassiveClientReady(false);
+        assertThat(ran.get()).isEqualTo(1);
+    }
+
+    /// Mutation: drop the `worker` test in `replicaClient` (a LIVE core would build a client).
+    @Test
+    void replicaClient_onALiveNodeThatIsNotAWorker_buildsNothing() {
+        assertThat(ReplicaClientAssembly.replicaClient(org.pragmatica.aether.node.ReplicaCutover.LIVE, false, null).isPresent()).isFalse();
+    }
+
+    /// LIVE on a worker: the freshness gate is replaced by the readiness (not ready yet), the four messages a worker receives are routed and the two
+    /// ticks (client, directory install) are scheduled. Mutations: drop `workerProjectionFreshRef.set(readiness::ready)`; drop a route; drop either
+    /// `defer.accept`.
+    @Test
+    @SuppressWarnings("unchecked")
+    void replicaClient_onALiveWorker_replacesTheFreshnessGate_routesFourMessages_andSchedulesTwoTicks() {
+        RabiaNode<KVCommand<AetherKey>> cluster = Mockito.mock(RabiaNode.class);
+        var network = Mockito.mock(org.pragmatica.consensus.net.ClusterNetwork.class);
+
+        Mockito.when(cluster.network()).thenReturn(network);
+
+        java.util.function.BooleanSupplier original = () -> true;
+        var freshness = new AtomicReference<java.util.function.BooleanSupplier>(original);
+        var routes = new ArrayList<org.pragmatica.messaging.MessageRouter.Entry<?>>();
+        var deferred = new AtomicInteger();
+        var inputs = new ReplicaClientAssembly.Inputs(NodeId.nodeId("worker-9").unwrap(),
+                                                      new org.pragmatica.cluster.state.kvstore.KVStore<AetherKey, org.pragmatica.aether.slice.kvstore.AetherValue>(org.pragmatica.messaging.MessageRouter.mutable(),
+                                                                                                                                                        null,
+                                                                                                                                                        null),
+                                                      cluster,
+                                                      Option::none,
+                                                      Set::of,
+                                                      new DirectoryInstall(_ -> Result.success(Unit.unit()), _ -> {}, _ -> {}),
+                                                      () -> {},
+                                                      freshness,
+                                                      routes,
+                                                      _ -> deferred.incrementAndGet());
+
+        assertThat(ReplicaClientAssembly.replicaClient(org.pragmatica.aether.node.ReplicaCutover.LIVE, true, inputs).isPresent()).isTrue();
+
+        assertThat(freshness.get()).isNotSameAs(original);
+        assertThat(freshness.get().getAsBoolean()).as("a fresh replica is not ready").isFalse();
+        assertThat(routes).hasSize(4);
+        assertThat(deferred.get()).isEqualTo(2);
+    }
+
+    /// Readiness (d), against a real store. Mutation: `assignedWorker` always true, or always false.
+    @Test
+    void assignedWorker_isTrueOnlyForAWorkerDirectiveOfThisNode() {
+        var self = NodeId.nodeId("worker-9").unwrap();
+        var store = new org.pragmatica.cluster.state.kvstore.KVStore<AetherKey, org.pragmatica.aether.slice.kvstore.AetherValue>(org.pragmatica.messaging.MessageRouter.mutable(), null, null);
+
+        assertThat(ReplicaClientAssembly.assignedWorker(store, self)).as("no directive").isFalse();
+
+        store.applyEffects(directive(self, 0, org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue.core()));
+        assertThat(ReplicaClientAssembly.assignedWorker(store, self)).as("CORE directive").isFalse();
+
+        store.applyEffects(directive(self, 1, org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue.worker("c-0", "")));
+        assertThat(ReplicaClientAssembly.assignedWorker(store, self)).as("WORKER directive").isTrue();
+    }
+
+    private static org.pragmatica.cluster.state.kvstore.ReplicaEntry directive(NodeId self, long slot, org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue value) {
+        return new org.pragmatica.cluster.state.kvstore.ReplicaEntry(org.pragmatica.cluster.state.kvstore.IncarnationTag.NONE,
+                                                                     slot,
+                                                                     slot,
+                                                                     "b" + slot,
+                                                                     List.of(new KVCommand.Put<>(new AetherKey.ActivationDirectiveKey(self), value)));
+    }
+
+    /// Mutation: take the uplinks unsorted (set order is not stable across runs).
+    @Test
+    void uplinks_areTwoCores_inAFixedOrder() {
+        var self = NodeId.nodeId("worker-7").unwrap();
+        var cores = Set.of(NodeId.nodeId("core-1").unwrap(),
+                           NodeId.nodeId("core-2").unwrap(),
+                           NodeId.nodeId("core-3").unwrap(),
+                           NodeId.nodeId("core-4").unwrap(),
+                           NodeId.nodeId("core-5").unwrap());
+        var uplinks = ReplicaClientAssembly.uplinks(self, cores);
+
+        assertThat(uplinks).hasSize(2).isSorted().isSubsetOf(cores);
+        assertThat(ReplicaClientAssembly.uplinks(self, cores)).isEqualTo(uplinks);
+    }
+}

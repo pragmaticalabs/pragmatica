@@ -86,7 +86,30 @@ public final class SegmentReader {
     /// Taken from the block's own bytes, it is immune to content-addressed dedup (a shared block's first
     /// writer's creation time is not this segment's age) and to clock skew between owner and replica.
     public Promise<Option<Long>> maxEventTimestamp(String streamName, int partition, SegmentIndex.SegmentRef ref) {
-        return containedStep(streamName, partition, ref, Long.MIN_VALUE, Integer.MAX_VALUE).map(SegmentReader::latestTimestamp);
+        return segmentFacts(streamName, partition, ref).map(SegmentFacts::maxTimestamp);
+    }
+
+    /// What a segment rebuilt after a restart lacks, learned from ONE read of its block (#1604; #2201 3.2 item 4): its
+    /// newest event timestamp, and `size`, the block's length after decryption and decompression, which is what the
+    /// index records as `originalSize` at seal.
+    public record SegmentFacts(Option<Long> maxTimestamp, int size) {}
+
+    /// A read that THROWS while starting is a failed read, as in [#containedStep].
+    public Promise<SegmentFacts> segmentFacts(String streamName, int partition, SegmentIndex.SegmentRef ref) {
+        var refName = buildRefName(streamName, partition, ref);
+
+        return Result.lift(() -> readFacts(refName, ref)).fold(Cause::promise, read -> read);
+    }
+
+    private Promise<SegmentFacts> readFacts(String refName, SegmentIndex.SegmentRef ref) {
+        return rawBlock(refName, ref).flatMap(raw -> SegmentProvenance.split(raw)
+                                                                      .flatMap(split -> deserializeAndFilter(refName,
+                                                                                                             split.events(),
+                                                                                                             Long.MIN_VALUE,
+                                                                                                             Integer.MAX_VALUE))
+                                                                      .map(events -> new SegmentFacts(latestTimestamp(events),
+                                                                                                      raw.length))
+                                                                      .async());
     }
 
     private static Option<Long> latestTimestamp(List<RawEvent> events) {
@@ -239,12 +262,15 @@ public final class SegmentReader {
     }
 
     private Promise<SegmentProvenance.Split> readBlock(String refName, SegmentIndex.SegmentRef ref) {
+        return rawBlock(refName, ref).flatMap(bytes -> SegmentProvenance.split(bytes).async());
+    }
+
+    private Promise<byte[]> rawBlock(String refName, SegmentIndex.SegmentRef ref) {
         return storage.resolveRef(refName)
                       .async(SegmentError.General.SEGMENT_REF_NOT_FOUND)
                       .flatMap(storage::get)
                       .flatMap(opt -> opt.async(SegmentError.General.SEGMENT_DATA_NOT_FOUND))
-                      .map(bytes -> decryptAndDecompress(bytes, ref))
-                      .flatMap(bytes -> SegmentProvenance.split(bytes).async());
+                      .map(bytes -> decryptAndDecompress(bytes, ref));
     }
 
     private byte[] decryptAndDecompress(byte[] data, SegmentIndex.SegmentRef ref) {
