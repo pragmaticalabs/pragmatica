@@ -32,6 +32,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.MatchResult;
 import java.util.regex.Pattern;
@@ -106,6 +109,7 @@ class DeclarativeConsumerPlacementTest {
     /// Bound on redeploys while the placement is vacuous (every spread-events owner hosts the slice).
     private static final int MAX_PLACEMENT_ATTEMPTS = 5;
     private static final int EVENT_COUNT = 25;
+    private static final int BURST_PUBLISHERS = 8;
 
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration DELIVERY_TIMEOUT = Duration.ofSeconds(90);
@@ -377,21 +381,26 @@ class DeclarativeConsumerPlacementTest {
     /// consumer commits its cursor within one checkpoint cadence of the last ack even when nothing else arrives, so the
     /// successor that reads the committed cursor redelivers only what lies past the last checkpoint. The batch is delivered
     /// and left quiet for several cadences, then the node holding the most partitions is killed (not gracefully); once the
-    /// partitions are attached again, no event is delivered a second time. Runs last: it removes a node from the shared
-    /// cluster.
+    /// partitions are attached again, no event is delivered a second time. A property pin, not a RED: at rc5 the committed cursors
+    /// already reach the partition heads in this topology on most runs (the path that commits the tail there is unverified), so
+    /// it can pass before #1385 and fails only if the property is lost. Runs last: it removes a node from the shared cluster.
     @Nested
     @Order(Integer.MAX_VALUE)
     class AssigneeMove {
         private static final Duration QUIET_BEYOND_CADENCE = Duration.ofSeconds(8);
+        /// Published in parallel so the whole burst lands inside one checkpoint cadence (1 s by default): only the first
+        /// ack of each partition meets a stale clock, and the periodic trigger runs from acks alone.
+        private static final int BURST_COUNT = 80;
 
         @Test
         void declaredConsumer_assigneeMove_redeliversOnlyPastLastCheckpoint() {
             var baseline = settledSpreadReceived();
 
-            publishSpreadBatch(EVENT_COUNT);
+            sleep(QUIET_BEYOND_CADENCE);
+            publishSpreadBurst(BURST_COUNT);
             await().atMost(DELIVERY_TIMEOUT)
                    .pollInterval(POLL_INTERVAL)
-                   .untilAsserted(() -> assertThat(spreadReceived() - baseline).isEqualTo(EVENT_COUNT));
+                   .untilAsserted(() -> assertThat(spreadReceived() - baseline).isEqualTo(BURST_COUNT));
             sleep(QUIET_BEYOND_CADENCE);
 
             var victim = busiestNonLeaderAssignee();
@@ -400,20 +409,30 @@ class DeclarativeConsumerPlacementTest {
             assertThat(receivedBefore.get(victim)).describedAs("the victim consumed part of the batch, or the test proves nothing")
                                                   .isGreaterThanOrEqualTo(2);
 
+            // Cut the victim off first: Ember's in-JVM kill still closes the node, and the close flushes the final cursor, which
+            // would commit the tail of the burst on its way out and hide exactly the gap under test. A crashed machine does not.
+            LifecycleAwait.nodeBestEffort("blackhole assignee " + victim + " in declaredConsumer_assigneeMove_redeliversOnlyPastLastCheckpoint()",
+                                          cluster,
+                                          cluster.blackhole(victim));
+            sleep(Duration.ofSeconds(1));
             LifecycleAwait.nodeBestEffort("kill assignee " + victim + " in declaredConsumer_assigneeMove_redeliversOnlyPastLastCheckpoint()",
                                           cluster,
                                           cluster.killNode(victim, false));
             await().atMost(WAIT_TIMEOUT)
                    .pollInterval(POLL_INTERVAL)
                    .until(() -> !hostNodes().contains(victim) && totalAttachedSubscriptions() == EXPECTED_ATTACHMENTS);
-            settledSpreadReceived();
-            sleep(Duration.ofSeconds(12));
-
             var survivorsBefore = receivedBefore.entrySet()
                                                 .stream()
                                                 .filter(entry -> !entry.getKey().equals(victim))
                                                 .mapToInt(Map.Entry::getValue)
                                                 .sum();
+
+            // A counter read that fails answers 0, so wait until every surviving instance answers again before sampling.
+            await().atMost(WAIT_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .until(() -> spreadReceived() >= survivorsBefore);
+            settledSpreadReceived();
+            sleep(Duration.ofSeconds(12));
 
             assertThat(spreadReceived() - survivorsBefore)
                     .describedAs("events delivered again after the assignee %s died: the cursor committed within one cadence of "
@@ -454,6 +473,31 @@ class DeclarativeConsumerPlacementTest {
     }
 
     // --- publish / receive ---------------------------------------------------
+
+    private void publishSpreadBurst(int count) {
+        try (var publishers = Executors.newFixedThreadPool(BURST_PUBLISHERS)) {
+            var published = IntStream.range(0, count)
+                                     .mapToObj(i -> publishers.submit(() -> httpPost(appPort(),
+                                                                                     "/api/stream-consumer/publish-spread",
+                                                                                     "{\"payload\":\"burst-" + i + "\"}")))
+                                     .toList();
+
+            published.forEach(response -> assertThat(bodyOf(response)).describedAs("publish must succeed — it write-forwards to each partition owner")
+                                                                      .contains("published"));
+        }
+    }
+
+    private static String bodyOf(Future<String> response) {
+        try {
+            return response.get();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+
+            return ERROR_FALLBACK;
+        } catch (ExecutionException e) {
+            return ERROR_FALLBACK;
+        }
+    }
 
     private void publishSpreadBatch(int count) {
         for (var i = 0; i < count; i++) {
