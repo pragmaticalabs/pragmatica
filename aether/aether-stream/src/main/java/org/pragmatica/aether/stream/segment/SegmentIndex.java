@@ -19,7 +19,7 @@ import org.pragmatica.storage.MetadataStore;
 import static org.pragmatica.lang.Option.option;
 
 
-public final class SegmentIndex {
+public class SegmentIndex {
     private static final long NOTHING_SEALED = -1L;
 
     private final ConcurrentHashMap<PartitionKey, ConcurrentSkipListMap<Long, SegmentRef>> partitions = new ConcurrentHashMap<>();

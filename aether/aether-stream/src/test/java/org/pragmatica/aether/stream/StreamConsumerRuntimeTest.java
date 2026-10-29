@@ -1376,6 +1376,77 @@ class StreamConsumerRuntimeTest {
         }
     }
 
+    /// #1385 (I-31): a cursor advanced by acks has its commit REQUESTED within one checkpoint cadence even when no
+    /// further ack arrives. The periodic trigger runs only from the delivery path, so a burst that ends inside the
+    /// first cadence was never committed and an ungraceful move replayed it from the start.
+    @Nested
+    class QuietPartitionCommit {
+        private static final long CADENCE_MS = 300L;
+
+        private static ConsumerConfig cadence() {
+            return ConsumerConfig.consumerConfig("group-1", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, CADENCE_MS, 3, "");
+        }
+
+        private static ConsumerCursorStore recordingStore(List<Long> commits) {
+            return new ConsumerCursorStore() {
+                @Override
+                public Promise<CommitOutcome> commit(String group, String stream, int partition, long offset) {
+                    commits.add(offset);
+
+                    return Promise.success(CommitOutcome.persisted());
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String group, String stream, int partition) {
+                    return Promise.success(Option.none());
+                }
+            };
+        }
+
+        private static void awaitContains(List<Long> commits, long offset, long timeoutMs) throws InterruptedException {
+            var deadline = System.currentTimeMillis() + timeoutMs;
+
+            while (!commits.contains(offset) && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10);
+            }
+        }
+
+        @Test
+        void quietPartition_burstInsideFirstCadence_commitsHeadWithinOneCadence() throws Exception {
+            createTestStream("orders");
+            var commits = new CopyOnWriteArrayList<Long>();
+            var delivered = new CopyOnWriteArrayList<Long>();
+            var storeRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), recordingStore(commits));
+
+            try {
+                storeRuntime.subscribe("orders",
+                                       0,
+                                       cadence(),
+                                       (offset, payload, ts) -> record(delivered, offset),
+                                       IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED);
+                manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
+                manager.publishLocal("orders", 0, "event-2".getBytes(UTF_8), 2000L);
+                manager.publishLocal("orders", 0, "event-3".getBytes(UTF_8), 3000L);
+                awaitCursorAt(storeRuntime, "orders", 0, "group-1", 3L, 5_000);
+                var burstEnded = System.currentTimeMillis();
+
+                awaitContains(commits, 3L, 3 * CADENCE_MS + 1_000);
+
+                assertThat(commits).describedAs("the head after the burst is requested without a further event").contains(3L);
+                assertThat(System.currentTimeMillis() - burstEnded).describedAs("within about one cadence of the last ack")
+                                                                  .isLessThan(2 * CADENCE_MS + 1_000);
+            } finally {
+                storeRuntime.close();
+            }
+        }
+
+        private static Promise<Unit> record(List<Long> delivered, long offset) {
+            delivered.add(offset);
+
+            return Promise.unitPromise();
+        }
+    }
+
     @Nested
     class CloseTests {
         @Test
