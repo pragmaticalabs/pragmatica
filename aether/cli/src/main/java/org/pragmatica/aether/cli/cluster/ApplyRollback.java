@@ -84,13 +84,7 @@ final class ApplyRollback {
         var complete = true;
 
         for (var row : holding) {
-            if (row.state() != ApplyResource.State.GONE && !terminateRow(recorder,
-                                                                         cluster,
-                                                                         computeFor,
-                                                                         drain,
-                                                                         row,
-                                                                         lines,
-                                                                         out)) {
+            if (!terminateRow(recorder, cluster, computeFor, drain, row, lines, out)) {
                 complete = false;
             }
         }
@@ -137,7 +131,7 @@ final class ApplyRollback {
                                          Consumer<String> out) {
         var serverId = row.serverId().or("");
 
-        return switch (presenceOf(compute, cluster, recorder.applyId(), serverId)) {
+        return switch (presenceOf(compute, row.provider(), cluster, recorder.applyId(), serverId)) {
             case UNKNOWN -> keep(lines, out, row, "the provider could not be listed, so nothing was terminated");
             case ABSENT -> markGone(recorder, row, lines, out);
             case FOREIGN -> keep(lines,
@@ -155,7 +149,11 @@ final class ApplyRollback {
         UNKNOWN
     }
 
-    private static Presence presenceOf(ComputeProvider compute, ClusterName cluster, String applyId, String serverId) {
+    private static Presence presenceOf(ComputeProvider compute,
+                                       String provider,
+                                       ClusterName cluster,
+                                       String applyId,
+                                       String serverId) {
         var ours = compute.listInstances(Map.of("aether-cluster",
                                                 cluster.value(),
                                                 WaveNodeProvisioning.APPLY_LABEL,
@@ -165,23 +163,28 @@ final class ApplyRollback {
         if (ours.isFailure()) {
             return Presence.UNKNOWN;
         }
-
-        if (contains(ours.or(List.<InstanceInfo> of()), serverId)) {
+        // Exact id equality, then the labels as the provider REPORTS them: a selector the provider ignored or got wrong
+        // never makes a server "ours". A failed listing is UNKNOWN, never an empty list.
+        if (ours.or(List.<InstanceInfo> of())
+                .stream()
+                .anyMatch(info -> info.id()
+                                      .value()
+                                      .equals(serverId) && WaveNodeProvisioning.ownedBy(provider,
+                                                                                        info,
+                                                                                        cluster.value(),
+                                                                                        applyId))) {
             return Presence.OURS;
         }
 
         return compute.listInstances()
                       .await()
                       .fold(_ -> Presence.UNKNOWN,
-                            all -> contains(all, serverId)
+                            all -> all.stream()
+                                      .anyMatch(info -> info.id()
+                                                            .value()
+                                                            .equals(serverId))
                                    ? Presence.FOREIGN
                                    : Presence.ABSENT);
-    }
-
-    private static boolean contains(List<InstanceInfo> listed, String serverId) {
-        return listed.stream()
-                     .anyMatch(info -> WaveNodeProvisioning.sameContainer(info.id().value(),
-                                                                          serverId));
     }
 
     private static boolean terminateOurs(ApplyRecorder recorder,
@@ -205,10 +208,28 @@ final class ApplyRollback {
         if (recorder.terminating(row.nodeId()).isFailure()) {
             return keep(lines, out, row, "the TERMINATING row could not be written, so nothing was terminated");
         }
+        // The labels are checked again right before the call: the drain and the TERMINATING write took time, and a server that
+        // is no longer verifiably this apply's, or whose listing failed, is never terminated.
+        return switch (presenceOf(compute, row.provider(), cluster, recorder.applyId(), serverId)) {
+            case OURS -> issueTerminate(recorder, cluster, compute, row, lines, out);
+            case ABSENT -> markGone(recorder, row, lines, out);
+            case FOREIGN, UNKNOWN -> keep(lines,
+                                          out,
+                                          row,
+                                          "right before the terminate it was not verifiably this apply's (labels or listing); nothing was terminated");
+        };
+    }
 
+    private static boolean issueTerminate(ApplyRecorder recorder,
+                                          ClusterName cluster,
+                                          ComputeProvider compute,
+                                          ApplyResource row,
+                                          List<String> lines,
+                                          Consumer<String> out) {
+        var serverId = row.serverId().or("");
         var terminated = InstanceId.instanceId(serverId).async().flatMap(compute::terminate).await();
 
-        if (terminated.isSuccess() || presenceOf(compute, cluster, recorder.applyId(), serverId) == Presence.ABSENT) {
+        if (terminated.isSuccess() || presenceOf(compute, row.provider(), cluster, recorder.applyId(), serverId) == Presence.ABSENT) {
             note(lines, out, "terminated node " + row.nodeId() + " (server " + serverId + ")");
 
             return recorder.terminated(row.nodeId())

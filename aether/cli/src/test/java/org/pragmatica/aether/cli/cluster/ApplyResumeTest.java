@@ -309,6 +309,26 @@ class ApplyResumeTest {
         scenario.harness.assertNoLeak(onDisk.applyId(), onDisk);
     }
 
+    @Test
+    void resume_aPartlyDoneScaleUp_createsOnlyTheRemainder() {
+        var scenario = scenarioWithMatchingHash();
+        var desired = installDocker(scenario.provider);
+        var plan = plan(new DiffAction.ScaleUp(sourceNameOrDefault("local"), NodeRole.CORE, 1, 4));
+        var key = ApplyAction.actionKey(plan.additions().getFirst());
+
+        scenario.harness.provider.failNthCreate(3);
+        withLedgerActions(scenario, List.of(key));
+        WaveExecutor.execute(plan, desired, desired, ApplyRecorder.applyRecorder(scenario.onDisk())).onSuccess(_ -> fail("the third create fails"));
+
+        var resumed = ApplyRecorder.applyRecorder(scenario.onDisk());
+
+        ApplyReconciler.reconcileIntents(resumed, scenario.computes()).unwrap();
+        WaveExecutor.execute(plan, desired, desired, resumed).onFailure(cause -> fail(cause.message()));
+
+        assertThat(scenario.onDisk().resources().stream().filter(row -> row.state() == ApplyResource.State.CREATED).count()).as("1 -> 4 is three nodes in all").isEqualTo(3);
+        scenario.harness.assertAtMostOneCreatePerNodeId();
+    }
+
     /// DONE is final: even when the action's nodes have since vanished (the audit records them GONE), a resume does not
     /// create them again. The remainder arithmetic alone would, since nothing is recorded as existing any more.
     @Test

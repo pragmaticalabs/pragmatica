@@ -172,12 +172,20 @@ final class ApplyReconciler {
                                             recorder.applyId()))
                       .await()
                       .mapError(cause -> new AuditFailed(provider, cause))
-                      .flatMap(listed -> reconcile(compute, listed, provider, recorder, adopted, gone, relabelled));
+                      .flatMap(listed -> reconcile(compute,
+                                                   listed,
+                                                   provider,
+                                                   cluster,
+                                                   recorder,
+                                                   adopted,
+                                                   gone,
+                                                   relabelled));
     }
 
     private static Result<Unit> reconcile(ComputeProvider compute,
                                           List<InstanceInfo> listed,
                                           String provider,
+                                          ClusterName cluster,
                                           ApplyRecorder recorder,
                                           List<String> adopted,
                                           List<String> gone,
@@ -188,11 +196,13 @@ final class ApplyReconciler {
             var known = state.resources()
                              .stream()
                              .anyMatch(row -> row.serverId()
-                                                 .map(id -> WaveNodeProvisioning.sameContainer(info.id().value(),
-                                                                                               id))
+                                                 .map(id -> id.equals(info.id().value()))
                                                  .or(false));
 
-            if (!known) {
+            if (!known && !WaveNodeProvisioning.ownedBy(provider, info, cluster.value(), recorder.applyId())) {
+                relabelled.add(info.id().value()
+                              + " (listed under the apply selector but does not carry both labels, left alone)");
+            } else if (!known) {
                 var nodeId = info.nodeId()
                                  .orElse(() -> Option.option(info.tags().get(WaveNodeProvisioning.NODE_LABEL)))
                                  .or(info.id().value());
@@ -217,9 +227,9 @@ final class ApplyReconciler {
                                           && row.serverId()
                                                 .isPresent())
                            .filter(row -> listed.stream()
-                                                .noneMatch(info -> WaveNodeProvisioning.sameContainer(info.id().value(),
-                                                                                                      row.serverId()
-                                                                                                         .or(""))))
+                                                .noneMatch(info -> info.id()
+                                                                       .value()
+                                                                       .equals(row.serverId().or(""))))
                            .toList();
 
         return missing.isEmpty()
@@ -238,9 +248,9 @@ final class ApplyReconciler {
                                             List<String> gone,
                                             List<String> relabelled) {
         for (var row : missing) {
-            var stillThere = all.stream()
-                                .anyMatch(info -> WaveNodeProvisioning.sameContainer(info.id().value(),
-                                                                                     row.serverId().or("")));
+            var stillThere = all.stream().anyMatch(info -> info.id()
+                                                               .value()
+                                                               .equals(row.serverId().or("")));
 
             if (stillThere) {
                 relabelled.add(row.nodeId() + " (server " + row.serverId().or("") + ")");

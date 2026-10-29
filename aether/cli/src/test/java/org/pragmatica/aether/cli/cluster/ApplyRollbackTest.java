@@ -222,6 +222,163 @@ class ApplyRollbackTest {
         throw new java.io.UncheckedIOException(new java.io.IOException("No space left on device (test cause)"));
     }
 
+    /// B1 of the P3 verification: ids are compared exactly. The ledger's `srv-1` carries ANOTHER cluster's labels; this apply
+    /// owns `srv-10`, whose terminate fails, so it stays listed under both labels. A prefix match made `srv-1` "ours".
+    @Test
+    void rollback_aLedgerIdThatIsAPrefixOfAnOwnedServerId_isNeverTerminatedAsOurs() {
+        var scenario = new ApplyScenario(ledger, CLUSTER);
+        var otherCluster = java.util.Map.of(ApplyChaosHarness.APPLY_LABEL, scenario.recorder.applyId(), "aether-cluster", "another-cluster");
+
+        var prefixVictim = scenario.harness.provider.create("victim", otherCluster).id().value();
+
+        scenario.harness.provider.nextServerNumber(10);
+
+        var owned = scenario.harness.provider.create("owned", scenario.labels()).id().value();
+
+        assertThat(owned).startsWith(prefixVictim);
+        scenario.recorder.intend("n-victim", "hetzner").unwrap();
+        scenario.recorder.created("n-victim", prefixVictim).unwrap();
+        scenario.recorder.intend("n-owned", "hetzner").unwrap();
+        scenario.recorder.created("n-owned", owned).unwrap();
+        scenario.provider.onTerminate = id -> Causes.cause("provider refused the delete (test cause)").promise();
+
+        rollback(scenario).onSuccess(_ -> fail("incomplete"));
+
+        assertThat(scenario.provider.terminated).as("only the owned server was attempted").containsExactly(owned);
+        assertThat(scenario.harness.provider.nodeIdsByServer()).containsKey(prefixVictim);
+    }
+
+    /// The audit adopts a labelled VM whose id merely EXTENDS a ledger id; a prefix match counted it as known.
+    @Test
+    void audit_aLabelledServerWhoseIdExtendsALedgerId_isAdopted_notTakenForTheLedgerOne() {
+        var scenario = new ApplyScenario(ledger, CLUSTER);
+        var known = scenario.createRecorded("n-1");
+
+        scenario.harness.provider.nextServerNumber(10);
+
+        var extending = scenario.harness.provider.create("n-late", scenario.labels()).id().value();
+
+        assertThat(extending).startsWith(known);
+
+        var report = ApplyReconciler.audit(scenario.recorder, CLUSTER, scenario.computes()).unwrap();
+
+        assertThat(report.adopted()).singleElement().asString().contains(extending);
+        assertThat(scenario.row("n-late").state()).isEqualTo(ApplyResource.State.ADOPTED);
+    }
+
+    /// The second label: a server carrying this apply's label under ANOTHER cluster's label is not this apply's.
+    @Test
+    void rollback_aServerWithTheApplyLabelButAnotherClustersLabel_isRefusedAndNamed() {
+        var scenario = new ApplyScenario(ledger, CLUSTER);
+        var stranger = scenario.harness.provider.create("stranger", java.util.Map.of(ApplyChaosHarness.APPLY_LABEL, scenario.recorder.applyId(), "aether-cluster", "another-cluster")).id().value();
+
+        scenario.recorder.intend("n-1", "hetzner").unwrap();
+        scenario.recorder.created("n-1", stranger).unwrap();
+
+        rollback(scenario).onSuccess(_ -> fail("not this cluster's"))
+                          .onFailure(cause -> assertThat(cause.message()).contains("NOT terminated").contains(stranger));
+
+        assertThat(scenario.provider.terminated).isEmpty();
+    }
+
+    @Test
+    void audit_aServerWithTheApplyLabelButAnotherClustersLabel_isNeverAdopted() {
+        var scenario = new ApplyScenario(ledger, CLUSTER);
+
+        scenario.createRecorded("n-1");
+        scenario.harness.provider.create("stranger", java.util.Map.of(ApplyChaosHarness.APPLY_LABEL, scenario.recorder.applyId(), "aether-cluster", "another-cluster"));
+
+        var report = ApplyReconciler.audit(scenario.recorder, CLUSTER, scenario.computes()).unwrap();
+
+        assertThat(report.adopted()).isEmpty();
+        assertThat(scenario.onDisk().resources()).hasSize(1);
+    }
+
+    /// A selector the provider ignored returns servers that are not ours: the labels as REPORTED are checked again.
+    @Test
+    void rollback_aProviderThatIgnoresTheSelector_neverMakesAnUnlabelledServerOurs() {
+        var scenario = new ApplyScenario(ledger, CLUSTER);
+        var unlabelled = scenario.harness.provider.create("unlabelled", java.util.Map.of()).id().value();
+
+        scenario.recorder.intend("n-1", "hetzner").unwrap();
+        scenario.recorder.created("n-1", unlabelled).unwrap();
+        scenario.provider.onFilteredList = _ -> scenario.harness.provider.listInstances();
+
+        rollback(scenario).onSuccess(_ -> fail("not verifiably ours"));
+
+        assertThat(scenario.provider.terminated).isEmpty();
+    }
+
+    /// Fail closed: a listing that fails, at either listing the decision needs, terminates nothing and says so.
+    @Test
+    void rollback_aFailedOwnershipListing_terminatesNothing() {
+        var scenario = new ApplyScenario(ledger, CLUSTER);
+
+        scenario.createRecorded("n-1");
+
+        var listings = new AtomicInteger();
+
+        // the audit's listing works, the ownership listing of the terminate step does not
+        scenario.provider.onFilteredList = filter -> listings.incrementAndGet() == 1
+                                                     ? scenario.harness.provider.listInstances(filter)
+                                                     : Causes.cause("HTTP 503 (test cause)").promise();
+
+        rollback(scenario).onSuccess(_ -> fail("could not look: not a success"));
+
+        assertThat(scenario.provider.terminated).isEmpty();
+        assertThat(out).anyMatch(line -> line.contains("could not be listed"));
+        assertThat(scenario.row("n-1").state()).isEqualTo(ApplyResource.State.CREATED);
+    }
+
+    @Test
+    void rollback_aFailedUnfilteredListing_terminatesNothing() {
+        var scenario = new ApplyScenario(ledger, CLUSTER);
+
+        scenario.createRecorded("n-1");
+        scenario.harness.provider.terminate(new InstanceId("srv-1")).await();
+        scenario.provider.onList = _ -> Causes.cause("HTTP 503 (test cause)").promise();
+
+        rollback(scenario).onSuccess(_ -> fail("could not decide between foreign and gone"));
+
+        assertThat(scenario.provider.terminated).isEmpty();
+    }
+
+    /// The labels are checked again right before the call: a server whose labels vanish during the drain is not terminated.
+    @Test
+    void rollback_aServerThatStopsBeingOursDuringTheDrain_isNotTerminated() {
+        var scenario = new ApplyScenario(ledger, CLUSTER);
+        var server = scenario.createRecorded("n-1");
+
+        ApplyState.save(scenario.recorder.snapshot().withNode(ApplyResource.applyResource(ApplyScenario.ACTION, "n-1", "hetzner", ApplyScenario.some(server), ApplyResource.State.JOINED))).unwrap();
+
+        var listings = new AtomicInteger();
+
+        scenario.provider.onFilteredList = filter -> {
+            // 1st: audit, 2nd: presence before the drain, 3rd: right before the terminate (labels gone by then)
+            return listings.incrementAndGet() >= 3
+                   ? Promise.success(List.of())
+                   : scenario.harness.provider.listInstances(filter);
+        };
+
+        ApplyOrchestrator.rollback(CLUSTER, scenario.computes(), _ -> org.pragmatica.lang.Result.unitResult(), org.pragmatica.lang.Option::none, out::add)
+                         .onSuccess(_ -> fail("no longer verifiably ours"));
+
+        assertThat(scenario.provider.terminated).isEmpty();
+    }
+
+    @Test
+    void rollback_aHoldingRowWithNoServerId_isKept_nothingIsTerminated() {
+        var scenario = new ApplyScenario(ledger, CLUSTER);
+
+        scenario.recorder.intend("n-1", "hetzner").unwrap();
+        ApplyState.save(scenario.recorder.snapshot().withNode(ApplyResource.applyResource(ApplyScenario.ACTION, "n-1", "hetzner", org.pragmatica.lang.Option.none(), ApplyResource.State.TERMINATING))).unwrap();
+
+        rollback(scenario).onSuccess(_ -> fail("a row without a server id cannot be terminated"));
+
+        assertThat(scenario.provider.terminated).isEmpty();
+        assertThat(out).anyMatch(line -> line.contains("no server id"));
+    }
+
     @Test
     void rollback_withNoLedger_saysThereIsNothingToRollBack() {
         ApplyOrchestrator.rollback(ClusterName.clusterName("never-applied").unwrap(), _ -> fail("no provider needed"), _ -> org.pragmatica.lang.Result.unitResult(),

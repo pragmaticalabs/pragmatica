@@ -130,6 +130,20 @@ class ApplyReconcilerTest {
         assertThat(scenario.row("n-1").state()).isEqualTo(ApplyResource.State.CREATED);
     }
 
+    /// Node identity is compared exactly: a VM of node `n-10` is not node `n-1`'s.
+    @Test
+    void lookup_aNodeWhoseIdExtendsTheWantedOne_isNotTheWantedNode() {
+        var scenario = scenario();
+
+        scenario.recorder.intend("n-1", "hetzner").unwrap();
+        scenario.harness.provider.create("n-10", scenario.labels());
+
+        ApplyReconciler.reconcileIntents(scenario.recorder, scenario.computes()).unwrap();
+
+        assertThat(scenario.row("n-1").state()).isEqualTo(ApplyResource.State.ABSENT);
+        assertThat(scenario.harness.provider.nodeIdsByServer().values()).containsExactly("n-10");
+    }
+
     @Test
     void cloudRows_areLookedUpByTheNodeIdLabel() {
         var scenario = scenario();

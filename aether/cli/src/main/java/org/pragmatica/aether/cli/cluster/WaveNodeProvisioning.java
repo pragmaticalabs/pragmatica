@@ -150,16 +150,22 @@ sealed interface WaveNodeProvisioning {
         return compute.listInstances(Map.of(APPLY_LABEL, applyId))
                       .await()
                       .flatMap(listed -> listed.stream()
-                                               .anyMatch(item -> sameContainer(item.id().value(),
-                                                                               serverId)) && info.nodeId()
-                                                                                                 .equals(Option.some(nodeId))
+                                               .anyMatch(item -> item.id()
+                                                                     .value()
+                                                                     .equals(serverId)) && info.nodeId()
+                                                                                               .equals(Option.some(nodeId))
                                          ? Result.unitResult()
                                          : new LabelsMissing(nodeId, serverId).result());
     }
 
-    /// `docker run -d` answers with the full container id, `docker ps` lists the short one.
-    static boolean sameContainer(String listed, String created) {
-        return ! listed.isEmpty() && (created.startsWith(listed) || listed.startsWith(created));
+    /// Whether `info`, as a provider LISTED it, carries this cluster's label and this apply's label. Cloud providers report
+    /// custom labels on the instance; the Docker provider reports `aether.cluster` and never custom labels, so for Docker the
+    /// apply label is what the daemon's own label filter already proved. A listing the server-side selector got wrong (or
+    /// ignored) therefore never makes a server "ours" by itself.
+    static boolean ownedBy(String provider, InstanceInfo info, String cluster, String applyId) {
+        return "docker".equals(provider)
+               ? cluster.equals(info.tags().get("aether.cluster"))
+               : cluster.equals(info.tags().get("aether-cluster")) && applyId.equals(info.tags().get(APPLY_LABEL));
     }
 
     private static Result<InstanceInfo> answered(Result<InstanceInfo> answer, String nodeId, ApplyRecorder recorder) {

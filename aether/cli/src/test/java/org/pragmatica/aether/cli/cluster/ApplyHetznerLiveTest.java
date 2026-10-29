@@ -38,8 +38,9 @@ class ApplyHetznerLiveTest {
     static final int SERVERS = 3;
     private static final String TYPE = System.getProperty("aether.live.hetzner.type", "cx23");
     private static final String IMAGE = System.getProperty("aether.live.hetzner.image", "ubuntu-24.04");
-    private static final String SUFFIX = HexFormat.of().formatHex(new byte[] {(byte) System.nanoTime(), (byte) (System.nanoTime() >> 8), (byte) (System.nanoTime() >> 16)});
-    private static final String CLUSTER_NAME = "p3live" + SUFFIX;
+    private static final java.security.SecureRandom RANDOM = new java.security.SecureRandom();
+    /// Dated and random: the sweep's safety must not depend on nobody else using a `p3live*` name.
+    private static final String CLUSTER_NAME = "p3live" + java.time.LocalDate.now().toString().replace("-", "") + randomHex(5);
     private static final String CONFIG = """
             config_version = "1.0.0"
             [cluster]
@@ -56,8 +57,17 @@ class ApplyHetznerLiveTest {
             instance_type = "%s"
             image = "%s"
             """.formatted(CLUSTER_NAME, SERVERS, TYPE, IMAGE);
-    private static final WaveNodeProvisioning.JoinInputs FAKE_JOIN = new WaveNodeProvisioning.JoinInputs("live-test-secret",
+    /// A fresh random secret per run: the servers boot with it, public and without a firewall, for the length of the run.
+    private static final WaveNodeProvisioning.JoinInputs FAKE_JOIN = new WaveNodeProvisioning.JoinInputs(randomHex(16),
                                                                                                            List.of("aether-live-node-01k0peer000000000000000000:10.0.0.1:8090"));
+
+    private static String randomHex(int bytes) {
+        var raw = new byte[bytes];
+
+        RANDOM.nextBytes(raw);
+
+        return HexFormat.of().formatHex(raw);
+    }
 
     @RegisterExtension
     final LedgerDirExtension ledger = new LedgerDirExtension();
@@ -95,10 +105,13 @@ class ApplyHetznerLiveTest {
         var compute = ProviderResolver.resolveCloudCompute(source).unwrap();
         var cleanup = ProviderResolver.resolveCloudComputeForCleanup("hetzner").unwrap();
         var report = new java.util.ArrayList<String>();
+        var runApplyId = new java.util.concurrent.atomic.AtomicReference<>("");
 
         try {
             var recorder = ledger.recorder(cluster, List.of(action));
             var applyId = recorder.applyId();
+
+            runApplyId.set(applyId);
 
             report.add("cluster=" + CLUSTER_NAME + " applyId=" + applyId + " type=" + TYPE + " image=" + IMAGE + " servers<=" + SERVERS);
 
@@ -166,8 +179,11 @@ class ApplyHetznerLiveTest {
                        + cleanup.terminate(new InstanceId(servers.getFirst())).await().fold(cause -> cause.getClass().getSimpleName() + " / " + cause.message(), _ -> "success"));
         } finally {
             ApplyRecorder.stepHook = _ -> {};
-            sweep(cleanup, report);
+
+            var remaining = sweep(cleanup, CLUSTER_NAME, runApplyId.get(), report);
+
             System.out.println("=== P3 LIVE RUN REPORT ===\n" + String.join("\n", report) + "\n=== END ===");
+            assertThat(remaining).as("post-run inventory by label must be empty").isEmpty();
         }
     }
 
@@ -175,15 +191,37 @@ class ApplyHetznerLiveTest {
         return provider.listInstances(Map.of("aether-apply", applyId)).await().unwrap().stream().map(info -> info.id().value()).toList();
     }
 
-    /// Whatever the run left under `aether-cluster=<throwaway>` is deleted, and the inventory is asserted empty afterwards.
-    private static void sweep(ComputeProvider provider, List<String> report) {
-        var leftovers = provider.listInstances(Map.of("aether-cluster", CLUSTER_NAME)).await().fold(_ -> List.<String> of(), list -> list.stream().map(info -> info.id().value()).toList());
+    /// Whatever the run left is deleted, but only a server that BOTH carries `aether-cluster=<throwaway>` AND `aether-apply`
+    /// (this run's apply id; any non-blank one when the run died before it had one) as the provider REPORTS it: a selector the
+    /// provider ignored, or a server of another run, is never deleted. A thread interrupted by the test timeout would make
+    /// every `await()` below fail before the first delete, so the flag is cleared first. Returns what is still listed under
+    /// the cluster label afterwards.
+    static List<String> sweep(ComputeProvider provider, String clusterName, String applyId, List<String> report) {
+        var interrupted = Thread.interrupted();
 
-        leftovers.forEach(id -> report.add("SWEEP terminating leftover " + id + ": " + provider.terminate(new InstanceId(id)).await().fold(cause -> "FAILED " + cause.message(), _ -> "ok")));
+        if (interrupted) {
+            report.add("SWEEP: the thread was interrupted (test timeout); flag cleared so the sweep can run");
+        }
 
-        var after = provider.listInstances(Map.of("aether-cluster", CLUSTER_NAME)).await().fold(cause -> List.of("LISTING FAILED: " + cause.message()), list -> list.stream().map(info -> info.id().value()).toList());
+        provider.listInstances(Map.of("aether-cluster", clusterName))
+                .await()
+                .onFailure(cause -> report.add("SWEEP LISTING FAILED: " + cause.message()))
+                .onSuccess(listed -> listed.forEach(info -> sweepOne(provider, info, clusterName, applyId, report)));
 
-        report.add("INVENTORY AUDIT aether-cluster=" + CLUSTER_NAME + " after the run: " + after);
-        assertThat(after).as("post-run inventory by label must be empty").isEmpty();
+        return provider.listInstances(Map.of("aether-cluster", clusterName))
+                       .await()
+                       .fold(cause -> List.of("LISTING FAILED: " + cause.message()),
+                             listed -> listed.stream().map(info -> info.id().value()).toList());
+    }
+
+    private static void sweepOne(ComputeProvider provider, org.pragmatica.aether.environment.InstanceInfo info, String clusterName, String applyId, List<String> report) {
+        var id = info.id().value();
+        var cluster = info.tags().get("aether-cluster");
+        var apply = info.tags().get("aether-apply");
+        var ours = clusterName.equals(cluster) && apply != null && !apply.isBlank() && (applyId.isEmpty() || applyId.equals(apply));
+
+        report.add(ours
+                   ? "SWEEP terminating leftover " + id + ": " + provider.terminate(new InstanceId(id)).await().fold(cause -> "FAILED " + cause.message(), _ -> "ok")
+                   : "SWEEP REFUSED to delete " + id + " (cluster=" + cluster + ", apply=" + apply + "): not both labels of this run");
     }
 }
