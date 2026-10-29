@@ -10,6 +10,7 @@ import java.util.Set;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.cli.cluster.ApplyOrchestrator;
+import org.pragmatica.aether.cli.cluster.ApplyRecorder;
 import org.pragmatica.aether.cli.cluster.WaveExecutor;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.DiffPlan;
@@ -63,7 +64,8 @@ class KnownUnwiredSurfacesTest {
         var waves = MethodRef.of(WaveExecutor.class.getDeclaredMethod("execute",
                                                                       DiffPlan.class,
                                                                       ClusterBootstrapConfig.class,
-                                                                      ClusterBootstrapConfig.class));
+                                                                      ClusterBootstrapConfig.class,
+                                                                      ApplyRecorder.class));
 
         assertEquals(Set.of(freshApply, defaultedApply),
                      declaredApplyOverloads(),
