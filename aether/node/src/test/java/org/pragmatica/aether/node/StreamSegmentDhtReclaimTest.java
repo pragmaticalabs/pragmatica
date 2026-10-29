@@ -14,6 +14,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.node.assembly.StreamAssembly;
 import org.pragmatica.aether.slice.RetentionDimensions;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.stream.SegmentTierPressure;
@@ -22,6 +23,8 @@ import org.pragmatica.aether.stream.segment.SealedSegment;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.SegmentReader;
 import org.pragmatica.aether.stream.segment.StorageSegmentSink;
+import org.pragmatica.cluster.node.rabia.RabiaNode;
+import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.dht.DHTClient;
 import org.pragmatica.dht.Partition;
 import org.pragmatica.lang.Option;
@@ -30,10 +33,12 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.SharedDelete;
 import org.pragmatica.storage.StorageGarbageCollector.SharedDeleteLimits;
+import org.pragmatica.storage.TierScope;
 
 import static java.util.Arrays.copyOf;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.Mockito.mock;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 
@@ -134,6 +139,67 @@ class StreamSegmentDhtReclaimTest {
 
         assertThat(dht.holds(identified)).as("the identity header: gone from the DHT").isFalse();
         assertThat(dht.holds(legacy)).as("no header: its DHT copy stays").isTrue();
+    }
+
+    /// know e298aa0c00 (the boot drain, any life incl. unmarked life 0), through the REAL `StreamAssembly.streamReplication` boot
+    /// phase rather than a helper that emulates it: refs a crash left at or below a durable reclaim floor are present at boot, and
+    /// after boot they are released IF_IDENTIFIED (ref gone, shared copy collected) while the ref above the floor keeps both.
+    /// Red when the assembly's own `drainReclaimedBelowFloor` call is deleted -- `AdoptBelowOwnFloorTest` emulates that call and
+    /// stays green.
+    @Test
+    @SuppressWarnings("unchecked")
+    void theStreamAssemblyBoot_releasesRefsAtOrBelowTheDurableFloor_andKeepsTheOnesAbove() {
+        var dht = new InMemoryDHTClient();
+        var setup = StorageFactory.defaultStreamStorage(Option.some(dht), dir, "test-node").unwrap();
+
+        setup.dhtMarkerCheck()
+             .onPresent(check -> StorageFactory.verifyDhtMarker(dht, check)
+                                               .await()
+                                               .onFailure(cause -> fail("admitting the streams DHT tier failed: " + cause.message())));
+
+        var storage = setup.instance();
+        var sink = StorageSegmentSink.storageSegmentSink(storage, new SegmentIndex());
+        var now = System.currentTimeMillis();
+        var blocks = new ArrayList<BlockId>();
+
+        for (var offset = 0; offset < 3; offset++) {
+            sink.seal(SealedSegment.sealedSegment("orders", 0, offset, offset, 1, now, now, event(offset, now))).await().unwrap();
+            blocks.add(storage.resolveRef("streams/orders/0/" + offset + "-" + offset).unwrap());
+        }
+
+        storage.putRef("stream-floors/orders/0/1", ByteBuffer.allocate(Long.BYTES).putLong(0L).array(), TierScope.PRIVATE)
+               .await()
+               .unwrap();
+        assertThat(blocks).allSatisfy(id -> assertThat(dht.holds(id)).as("control: every segment reached the DHT").isTrue());
+
+        var config = AetherNodeContentStorageWarnBootTest.minimalConfig(Option.none(), Option.none(), ConfigurationProvider.builder().build(), dir);
+
+        try {
+            StreamAssembly.streamReplication(new StreamAssembly.StreamReplicationInputs(config,
+                                                                                         null,
+                                                                                         null,
+                                                                                         mock(RabiaNode.class),
+                                                                                         null,
+                                                                                         null,
+                                                                                         null,
+                                                                                         setup,
+                                                                                         null,
+                                                                                         null,
+                                                                                         null,
+                                                                                         null,
+                                                                                         null));
+        } catch (RuntimeException afterTheDrain) {
+            // the inputs the phase reads after the boot drain are not supplied; the drain is its first storage effect
+        }
+
+        setup.garbageCollector().collectSharedDeletes(setup.snapshotManager(), NO_GRACE);
+
+        assertThat(storage.resolveRef("streams/orders/0/0-0").isPresent()).as("below the floor: released").isFalse();
+        assertThat(storage.resolveRef("streams/orders/0/1-1").isPresent()).as("at the floor: released").isFalse();
+        assertThat(storage.resolveRef("streams/orders/0/2-2").isPresent()).as("above the floor: kept").isTrue();
+        assertThat(dht.holds(blocks.get(0))).as("below the floor: shared copy collected").isFalse();
+        assertThat(dht.holds(blocks.get(1))).as("at the floor: shared copy collected").isFalse();
+        assertThat(dht.holds(blocks.get(2))).as("above the floor: shared copy kept").isTrue();
     }
 
     private static int pass(RetentionEnforcer enforcer) {
