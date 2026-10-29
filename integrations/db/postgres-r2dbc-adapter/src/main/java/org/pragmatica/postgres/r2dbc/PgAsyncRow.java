@@ -23,6 +23,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.postgres.PgRow;
 
 import io.r2dbc.spi.ColumnMetadata;
@@ -49,6 +50,8 @@ public final class PgAsyncRow implements Row {
         return metadata;
     }
 
+    /// The R2DBC SPI reports a failed read by throwing, so the conversion failure is thrown as an [R2dbcAdapterException].
+    @Contract
     @Override
     @SuppressWarnings("unchecked")
     public <T> T get(int index, Class<T> type) {
@@ -59,6 +62,7 @@ public final class PgAsyncRow implements Row {
         }
     }
 
+    @Contract
     @Override
     @SuppressWarnings("unchecked")
     public <T> T get(String name, Class<T> type) {
