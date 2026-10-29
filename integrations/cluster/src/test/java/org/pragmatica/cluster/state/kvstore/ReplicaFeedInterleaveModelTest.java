@@ -5,7 +5,6 @@ package org.pragmatica.cluster.state.kvstore;
 
 import java.util.List;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.cluster.state.kvstore.ReplicaFeedModel.Core;
 import org.pragmatica.cluster.state.kvstore.ReplicaFeedModel.Replica;
@@ -67,18 +66,5 @@ class ReplicaFeedInterleaveModelTest {
 
         assertThat(replica.effects()).as("control: if only entries move applied, the same interleave loses nothing").containsExactlyElementsOf(EFFECTS);
         assertThat(replica.applied()).isEqualTo(START + 1);
-    }
-
-    @Test
-    void replicaApplier_doesNotExistYet_today() {
-        assertThat(ReplicaSeam.typeExists("ReplicaApplier")).as("W3 landed ReplicaApplier: with CommitRing (W1) enable realRingAndApplier_neverSkipAnEntry (TW-O16), and delete this test").isFalse();
-    }
-
-    @Disabled("W3 (ReplicaApplier): enable when the real ReplicaApplier exists; the real ring half of NT-O41 is CommitRingTest#aHeartbeat_isNeverEnqueuedBetweenTheBumpAndTheOffer")
-    @Test
-    void realRingAndApplier_neverSkipAnEntry() {
-        throw ReplicaSeam.failClosed(ReplicaSeam.typeExists("ReplicaApplier"),
-                                     "W3 ReplicaApplier (the real ring landed in W1, its interleave is CommitRingTest#aHeartbeat_isNeverEnqueuedBetweenTheBumpAndTheOffer)",
-                                     "NT-O41 against the real applier: a heartbeat between a batch's revision bump and its entry offer, fed through CommitRing to ReplicaApplier, loses no effect");
     }
 }
