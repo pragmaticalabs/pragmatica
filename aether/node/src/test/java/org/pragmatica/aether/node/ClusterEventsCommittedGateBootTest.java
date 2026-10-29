@@ -145,6 +145,43 @@ class ClusterEventsCommittedGateBootTest {
         assertThat(raisedBy("store-ahead")).as("the leader route holds what the notification delivered").isFalse();
     }
 
+    /// The ownership record that is only in the store (restored without a notification) is read by the lookup the assembly binds, for
+    /// partition 0 of the cluster-events stream, and outranks the stored leader (this node).
+    @Test
+    @Timeout(value = 120, unit = SECONDS)
+    void bootedNode_readsTheStoredOwnershipRecord_ofTheClusterEventsPartition() {
+        boot();
+        restoreSnapshotNaming(node.self());
+        assertThat(raisedBy("control")).as("control: the stored leader is this node, no record, so it raises the fact").isTrue();
+
+        restoreSnapshotWithOwner(node.self(), OTHER);
+
+        assertThat(raisedBy("stored-record")).as("the stored record names another node").isFalse();
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private void restoreSnapshotWithOwner(NodeId leader, NodeId owner) {
+        var donor = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), CODEC, CODEC);
+        var key = StreamPartitionOwnershipKey.streamPartitionOwnershipKey(SystemStreams.CLUSTER_EVENTS.asString(), 0);
+        var epoch = Epoch.epoch(0L, 7, 3);
+        var leaderValue = LeaderValue.leaderValue(leader, 3_000_000L);
+
+        donor.process(donor.createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, leaderValue))));
+        donor.process(donor.createBatch((List) List.of(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                                                                                                             UUID.randomUUID().toString(),
+                                                                                                             leaderValue,
+                                                                                                             List.of(),
+                                                                                                             List.of(new KVCommand.Mutation<>(key,
+                                                                                                                                              Option.none(),
+                                                                                                                                              Option.some(StreamPartitionOwnershipValue.streamPartitionOwnershipValue(owner,
+                                                                                                                                                                                                                      epoch,
+                                                                                                                                                                                                                      epoch.localCounter(),
+                                                                                                                                                                                                                      HlcTimestamp.ZERO))))))));
+        node.kvStore().restoreSnapshot(donor.makeSnapshot().unwrap()).onFailure(cause -> fail("restore must succeed: " + cause.message()));
+        assertThat(node.kvStore().getTyped(key, StreamPartitionOwnershipValue.class).map(StreamPartitionOwnershipValue::owner).or(leader))
+            .as("control: the record is in the store").isEqualTo(owner);
+    }
+
     private void boot() {
         var self = NodeId.nodeId("committed-gate-boot-" + UUID.randomUUID()).unwrap();
 
