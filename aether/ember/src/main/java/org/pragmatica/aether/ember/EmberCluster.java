@@ -691,8 +691,8 @@ public final class EmberCluster {
 
     /// Forge-only capacity for mixed-role acceptance fixtures; configure before starting nodes.
     public Result<Unit> withAdditionalNodeSlots(int additionalSlots) {
-        if (additionalSlots < 0 || additionalSlots > 32 || !nodes.isEmpty() || !heldBackNodes.isEmpty()) {
-            return org.pragmatica.lang.utils.Causes.cause("Additional node slots must be 0..32 and configured before start")
+        if (additionalSlots < 0 || additionalSlots > 64 || !nodes.isEmpty() || !heldBackNodes.isEmpty()) {
+            return org.pragmatica.lang.utils.Causes.cause("Additional node slots must be 0..64 and configured before start")
                                                    .result();
         }
 
