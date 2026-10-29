@@ -125,17 +125,37 @@ public interface IdentityLedger {
     Unit onDurabilityChange(Consumer<Option<Cause>> listener);
 
     static IdentityLedger identityLedger(Path file, DurableWriter writer) {
+        var durable = new AtomicBoolean(true);
+        var listeners = new ConcurrentLinkedQueue<Consumer<Option<Cause>>>();
+        // The offers journal reports through the ledger's own durability channel: the operator sees one signal for the ledger and
+        // for the offers kept beside it.
+        var journal = OfferJournal.offerJournal(file.resolveSibling(file.getFileName() + ".offers"),
+                                                writer,
+                                                change -> reportDurability(durable, listeners, change));
+
         return new FileLedger(file,
-                              OfferJournal.offerJournal(file.resolveSibling(file.getFileName() + ".offers"),
-                                                        writer),
+                              journal,
                               writer,
                               new AtomicReference<>(IdentityFacts.identityFacts()),
                               new AtomicReference<>(IdentityFacts.identityFacts()),
                               new AtomicBoolean(),
-                              new AtomicBoolean(true),
+                              durable,
                               new AtomicBoolean(),
                               new ConcurrentLinkedQueue<>(),
-                              new ConcurrentLinkedQueue<>());
+                              listeners);
+    }
+
+    /// A transition of durability, reported once to every listener: lost (the cause) or back (empty).
+    private static Unit reportDurability(AtomicBoolean durable,
+                                         ConcurrentLinkedQueue<Consumer<Option<Cause>>> listeners,
+                                         Option<Cause> change) {
+        if (durable.getAndSet(change.isEmpty()) == change.isEmpty()) {
+            return Unit.unit();
+        }
+
+        listeners.forEach(listener -> listener.accept(change));
+
+        return Unit.unit();
     }
 
     record FileLedger(Path file,
@@ -293,21 +313,11 @@ public interface IdentityLedger {
         }
 
         private Unit markDurable() {
-            return durableFlag.getAndSet(true)
-                   ? Unit.unit()
-                   : notifyListeners(Option.none());
+            return reportDurability(durableFlag, listeners, Option.none());
         }
 
         private Unit markNotDurable(Cause cause) {
-            return durableFlag.getAndSet(false)
-                   ? notifyListeners(Option.some(cause))
-                   : Unit.unit();
-        }
-
-        private Unit notifyListeners(Option<Cause> change) {
-            listeners.forEach(listener -> listener.accept(change));
-
-            return Unit.unit();
+            return reportDurability(durableFlag, listeners, Option.some(cause));
         }
 
         @Override

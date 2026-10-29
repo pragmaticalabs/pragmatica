@@ -380,6 +380,141 @@ class BootTokensLedgerTest {
         assertThat(Files.exists(file())).as("one voucher of two other seats: still wiped").isFalse();
     }
 
+    /// The wiped core's own seat never vouches, whoever claims it (a stale twin of the same NodeId, say).
+    @Test
+    void helloes_ofTheCoresOwnNodeId_neverCount_soOneRealPeerStaysWiped() {
+        var wiped = wipedOfThreeSeats(DurableWriter.fileOps());
+
+        assertThat(hello(wiped, SELF_SEAT, FIRST, NOTHING)).isEqualTo(Admission.UNAVAILABLE);
+        assertThat(hello(wiped, SEAT_A, OTHER, NOTHING)).isEqualTo(Admission.UNAVAILABLE);
+        assertThat(Files.exists(file())).as("own offer + one real peer is no majority of the two other seats").isFalse();
+    }
+
+    /// Even seat counts: with four seats the other three need two vouchers, not three (the own seat is not among the others).
+    @Test
+    void helloes_ofTwoOfThreeOtherSeats_endTheWipedState_andOneDoesNot() {
+        var wiped = boot(DurableWriter.fileOps(), false);
+
+        wiped.seats(SELF_SEAT, Set.of(SEAT_A, SEAT_C, new NodeId("seat-d")));
+
+        assertThat(hello(wiped, SEAT_A, FIRST, NOTHING)).isEqualTo(Admission.UNAVAILABLE);
+        assertThat(Files.exists(file())).as("one of three other seats: no majority").isFalse();
+        assertThat(hello(wiped, SEAT_C, OTHER, NOTHING)).isEqualTo(Admission.UNAVAILABLE);
+        assertThat(Files.exists(file())).as("two of three other seats: a majority").isTrue();
+    }
+
+    /// Repeated offers of one seat are unioned in memory ...
+    @Test
+    void helloes_ofOneSeatTwice_areUnioned() throws Exception {
+        var wiped = wipedOfThreeSeats(DurableWriter.fileOps());
+
+        hello(wiped, SEAT_A, FIRST, IdentityFacts.terminated(new NodeId("x"), BootTokens.TOKEN_CONFLICT));
+        hello(wiped, SEAT_A, FIRST, IdentityFacts.terminated(new NodeId("y"), BootTokens.TOKEN_CONFLICT));
+        hello(wiped, SEAT_C, OTHER, NOTHING);
+
+        assertThat(Files.readString(file())).contains("T\tx\t").contains("T\ty\t");
+    }
+
+    /// ... and in the journal, across a restart.
+    @Test
+    void helloes_ofOneSeatTwice_areUnionedInTheJournalAcrossARestart() throws Exception {
+        var before = wipedOfThreeSeats(DurableWriter.fileOps());
+
+        hello(before, SEAT_A, FIRST, IdentityFacts.terminated(new NodeId("x"), BootTokens.TOKEN_CONFLICT));
+        hello(before, SEAT_A, FIRST, IdentityFacts.terminated(new NodeId("y"), BootTokens.TOKEN_CONFLICT));
+
+        var after = wipedOfThreeSeats(DurableWriter.fileOps());
+
+        hello(after, SEAT_C, OTHER, NOTHING);
+
+        assertThat(Files.readString(file())).as("both offers of A survived the restart").contains("T\tx\t").contains("T\ty\t");
+    }
+
+    /// A restart reloads what it kept, and a second offer after the restart does not lose the earlier ones on disk: seven seats
+    /// need four vouchers, so the count must survive two restarts.
+    @Test
+    void helloes_keptAcrossTwoRestarts_stillCount_andNothingEarlierIsLostFromDisk() {
+        var seats = Set.of(SEAT_A, SEAT_C, new NodeId("seat-d"), new NodeId("seat-e"), new NodeId("seat-f"), new NodeId("seat-g"));
+
+        var first = boot(DurableWriter.fileOps(), false);
+
+        first.seats(SELF_SEAT, seats);
+        hello(first, SEAT_A, FIRST, IdentityFacts.terminated(new NodeId("from-a"), BootTokens.TOKEN_CONFLICT));
+        hello(first, SEAT_C, FIRST, IdentityFacts.terminated(new NodeId("from-c"), BootTokens.TOKEN_CONFLICT));
+
+        var second = boot(DurableWriter.fileOps(), false);
+
+        second.seats(SELF_SEAT, seats);
+        hello(second, new NodeId("seat-d"), FIRST, IdentityFacts.terminated(new NodeId("from-d"), BootTokens.TOKEN_CONFLICT));
+        assertThat(Files.exists(file())).as("three of six other seats: not yet").isFalse();
+
+        var third = boot(DurableWriter.fileOps(), false);
+
+        third.seats(SELF_SEAT, seats);
+        hello(third, new NodeId("seat-e"), FIRST, NOTHING);
+
+        assertThat(third.isRetired(new NodeId("from-a"))).isTrue();
+        assertThat(third.isRetired(new NodeId("from-c"))).isTrue();
+        assertThat(third.isRetired(new NodeId("from-d"))).as("four of six: released with every earlier offer").isTrue();
+    }
+
+    /// An offer whose journal write is still in flight when the node leaves WIPED by another path must neither be counted nor leave
+    /// the journal file behind.
+    @Test
+    void anOfferInFlight_whenTheNodeLeavesWiped_isMergedLikeAnyOffer_andLeavesNoJournal() {
+        var writer = new HoldsOfferWrites();
+        var wiped = wipedOfThreeSeats(writer);
+
+        writer.hold();
+        var late = wiped.mergeOffered(SEAT_A, Option.some(RETIRES_GONE));
+
+        assertThat(late.isResolved()).as("its journal write is held").isFalse();
+        assertThat(wiped.merged(NOTHING).await(BOUND).isSuccess()).as("the node leaves WIPED by another path").isTrue();
+
+        writer.release();
+        late.await(BOUND);
+
+        assertThat(Files.exists(file().resolveSibling("ledger.offers"))).as("no journal beside a ledger that exists").isFalse();
+        assertThat(wiped.isRetired(GONE)).as("the late offer is merged like any offer to a node that is not wiped").isTrue();
+    }
+
+    /// Holds the journal's F1 write while the gate is closed; the ledger's own writes pass.
+    private static final class HoldsOfferWrites implements DurableWriter {
+        final DurableWriter real = DurableWriter.fileOps();
+        volatile CountDownLatch gate = new CountDownLatch(0);
+
+        void hold() {
+            gate = new CountDownLatch(1);
+        }
+
+        void release() {
+            gate.countDown();
+        }
+
+        @Override
+        public Result<Unit> writeForced(Path file, byte[] content) {
+            if (file.getFileName().toString().startsWith(".identity-offers-")) {
+                try {
+                    gate.await(30, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+
+            return real.writeForced(file, content);
+        }
+
+        @Override
+        public Result<Unit> moveAtomic(Path source, Path target) {
+            return real.moveAtomic(source, target);
+        }
+
+        @Override
+        public Result<Unit> forceDirectory(Path dir) {
+            return real.forceDirectory(dir);
+        }
+    }
+
     /// (e) The offers are durable as they arrive: a restart in the middle of counting resumes the count.
     @Test
     void helloes_keptBeforeARestart_stillCount_afterIt() {

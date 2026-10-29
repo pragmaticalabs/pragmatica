@@ -144,7 +144,9 @@ public interface BootTokens {
                         AtomicBoolean wiped,
                         Map<NodeId, Promise<Unit>> writes,
                         AtomicReference<Set<NodeId>> configuredSeats,
-                        Map<NodeId, IdentityFacts> recordedOffers) implements BootTokens {
+                        Map<NodeId, IdentityFacts> recordedOffers,
+                        AtomicReference<NodeId> selfSeat,
+                        Object offerLock) implements BootTokens {
             @Override
             public Admission admit(NodeId peer, long token) {
                 var screened = screen(peer, token);
@@ -290,6 +292,7 @@ public interface BootTokens {
                 var all = new HashSet<>(seats);
 
                 all.add(self);
+                selfSeat.set(self);
                 configuredSeats.set(Set.copyOf(all));
 
                 return Unit.unit();
@@ -302,12 +305,17 @@ public interface BootTokens {
                 // A merge that could not be made durable leaves the registry exactly as it was (a WIPED node stays WIPED, which
                 // fails closed in [#admit]; any other node degrades to what it already knew and keeps serving from memory), the
                 // ledger reports the lost durability to the operator, and the peer offers its facts again on its next Hello.
-                return offered.filter(_ -> configuredSeats.get()
-                                                          .contains(sender))
+                return offered.filter(_ -> isOtherSeat(sender))
                               .map(facts -> takeOffer(sender, facts))
                               .or(() -> Promise.success(Unit.unit()))
                               .recover(_ -> Unit.unit())
                               .map(_ -> arrivedWiped);
+            }
+
+            /// A configured core seat, and not this node's own: the wiped core's own seat never vouches, whoever claims it.
+            private boolean isOtherSeat(NodeId sender) {
+                return configuredSeats.get()
+                                      .contains(sender) && !sender.equals(selfSeat.get());
             }
 
             private Promise<Unit> takeOffer(NodeId sender, IdentityFacts facts) {
@@ -322,14 +330,28 @@ public interface BootTokens {
                              .fold(() -> Promise.success(Unit.unit()),
                                    held -> held.offers()
                                                .record(sender, facts))
-                             .map(_ -> counted(sender, facts))
-                             .flatMap(_ -> releaseOnMajority(sender));
+                             .map(_ -> countedWhileWiped(sender, facts))
+                             .flatMap(counted -> counted
+                                                 ? releaseOnMajority(sender)
+                                                 : merged(facts));
             }
 
-            private Unit counted(NodeId sender, IdentityFacts facts) {
-                recordedOffers.merge(sender, facts, IdentityFacts::merge);
+            /// The node may have left WIPED while the journal write was in flight: under the lock [#adoptMerge] holds, a late offer is
+            /// not counted (it is merged like any offer to a node that is not wiped) and the journal file the write may have recreated
+            /// is discarded again.
+            private boolean countedWhileWiped(NodeId sender, IdentityFacts facts) {
+                synchronized (offerLock) {
+                    if (wiped.get()) {
+                        recordedOffers.merge(sender, facts, IdentityFacts::merge);
 
-                return Unit.unit();
+                        return true;
+                    }
+
+                    ledger.get().onPresent(held -> held.offers()
+                                                       .discard());
+
+                    return false;
+                }
             }
 
             private Promise<Unit> releaseOnMajority(NodeId sender) {
@@ -358,10 +380,12 @@ public interface BootTokens {
             }
 
             private Unit adoptMerge(IdentityFacts peerFacts) {
-                wiped.set(false);
-                recordedOffers.clear();
-                ledger.get().onPresent(held -> held.offers()
-                                                   .discard());
+                synchronized (offerLock) {
+                    wiped.set(false);
+                    recordedOffers.clear();
+                    ledger.get().onPresent(held -> held.offers()
+                                                       .discard());
+                }
 
                 return apply(peerFacts);
             }
@@ -432,6 +456,8 @@ public interface BootTokens {
                             new AtomicBoolean(),
                             new ConcurrentHashMap<>(),
                             new AtomicReference<>(Set.of()),
-                            new ConcurrentHashMap<>());
+                            new ConcurrentHashMap<>(),
+                            new AtomicReference<>(),
+                            new Object());
     }
 }

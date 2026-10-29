@@ -18,18 +18,26 @@ package org.pragmatica.consensus.net;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.FileOps;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 /// The offers a WIPED core has been handed and not yet acted on (#2429, ID-1c): one set of retirements per distinct configured
@@ -40,7 +48,9 @@ import org.pragmatica.lang.io.FileOps;
 /// Serialised form: `aether-identity-offers-v1`, then per offering seat an `O` line and its `T` lines (node id, cause), and a
 /// trailing digest line.
 public interface OfferJournal {
-    /// The offers on disk, empty when there is no usable file.
+    Logger log = LoggerFactory.getLogger(OfferJournal.class);
+    /// The offers on disk. Empty when there is no file; also empty, but LOUD, when there is one that cannot be used: it is logged and
+    /// reported through the health callback, and the node goes on as if it held no offers.
     Map<NodeId, IdentityFacts> load();
     /// Remember `sender`'s offer and complete once the whole set is durable. Never blocks the caller; a failed write fails the promise.
     Promise<Unit> record(NodeId sender, IdentityFacts facts);
@@ -50,19 +60,49 @@ public interface OfferJournal {
     @Contract
     void discard();
 
-    static OfferJournal offerJournal(Path file, IdentityLedger.DurableWriter writer) {
-        return new FileJournal(file, writer, new ConcurrentHashMap<>(), new Object());
+    /// `health` is told when the journal stops being usable (the cause) and when it works again (empty): the ledger hands it its own
+    /// durability channel, so a journal that cannot be written is reported to the operator like a ledger that cannot be.
+    static OfferJournal offerJournal(Path file, IdentityLedger.DurableWriter writer, Consumer<Option<Cause>> health) {
+        return new FileJournal(file, writer, health, new AtomicBoolean(), new ConcurrentHashMap<>(), new Object());
     }
 
-    record FileJournal(Path file, IdentityLedger.DurableWriter writer, Map<NodeId, IdentityFacts> held, Object lock) implements OfferJournal {
+    record FileJournal(Path file,
+                       IdentityLedger.DurableWriter writer,
+                       Consumer<Option<Cause>> health,
+                       AtomicBoolean failing,
+                       Map<NodeId, IdentityFacts> held,
+                       Object lock) implements OfferJournal {
         private static final String HEADER = "aether-identity-offers-v1";
 
         @Override
         public Map<NodeId, IdentityFacts> load() {
+            return Files.exists(file)
+                   ? loadPresent()
+                   : Map.of();
+        }
+
+        private Map<NodeId, IdentityFacts> loadPresent() {
             return FileOps.readString(file)
                           .flatMap(text -> parse(text))
                           .onSuccess(held::putAll)
+                          .onFailure(this::unusable)
                           .or(Map.of());
+        }
+
+        @Contract
+        private void unusable(Cause cause) {
+            log.warn("The identity offers journal {} cannot be used and is treated as holding no offers: {}",
+                     file,
+                     cause.message());
+            report(Option.some(cause));
+        }
+
+        /// Only transitions are reported: a failure while failing is already known, a success is news only after a failure.
+        @Contract
+        private void report(Option<Cause> change) {
+            if (failing.getAndSet(change.isPresent()) != change.isPresent()) {
+                health.accept(change);
+            }
         }
 
         @Override
@@ -70,7 +110,11 @@ public interface OfferJournal {
             var done = Promise.<Unit> promise();
 
             held.merge(sender, facts, IdentityFacts::merge);
-            Thread.ofPlatform().daemon().name("identity-offer-journal").start(() -> done.resolve(writeHeld()));
+            Thread.ofPlatform()
+                  .daemon()
+                  .name("identity-offer-journal")
+                  .start(() -> done.resolve(writeHeld().onSuccess(_ -> report(Option.none()))
+                                                     .onFailure(cause -> report(Option.some(cause)))));
 
             return done;
         }
