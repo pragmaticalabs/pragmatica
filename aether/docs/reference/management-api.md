@@ -3908,26 +3908,26 @@ running node applies it through its existing `GossipKeyRotationHandler`. The res
 a race against a concurrent one is reported as a failure, never as a success for a write that did not
 land.
 
-**Three consequences an operator must accept before invoking this — see SECURITY.md:**
+**Consequences an operator must accept before invoking this — see SECURITY.md:**
 
 1. The key material is stored in the consensus log and its snapshots, readable by any KV reader.
 2. **The first rotation has no decrypt overlap.** With no prior record there is no previous key to
    carry, so the emergency rotation — the one that runs during an actual leak response — replaces the
    boot key outright. Only rotations from the second onward are seamless.
-3. **A rotated cluster cannot grow until you act, and that includes auto-heal.**
+3. **A node that boots after a rotation is out of step with the cluster's gossip until it replays the
+   rotation record.** It holds only the `cluster_secret`-derived key, which the cluster no longer
+   accepts, so its gossip is rejected in both directions. It dials its configured peers, forms quorum
+   and receives the record by consensus replay, so this normally takes seconds (about one second on an
+   in-JVM cluster; not measured on a multi-host cluster, #1200). Auto-heal replacements and scale-up
+   nodes are included.
 
-   **If a node will not join after a rotation, check the SEED nodes' logs, not the new node's** —
-   look for `Failed to decrypt gossip from <id>` on the seeds. A node the cluster has never heard of
-   logs nothing about the cause: it prints `Aether node <id> started, cluster forming...` and then
-   stays quiet, because an unreachable quorum is retried and never exits. The evidence is on the
-   healthy machines.
-
-   A node booting after a rotation holds only the `cluster_secret`-derived key, which the cluster no
-   longer accepts; it cannot complete SWIM in either direction, so no quorum forms and the consensus
-   replay that would deliver the cluster key never runs. Auto-heal replacements, scale-up and
-   re-provisioned nodes all fail to join until given the rotated key material out of band. Existing
-   running nodes are unaffected. A **restarted existing member** does say so for itself — it refuses
-   to boot with a `FATAL` line naming gossip-key divergence — because its peers still probe it.
+   **If a node does not catch up, check the SEED nodes, not the new node.** The seeds raise the
+   operator event `gossip-key-unknown-from-peer` (subject: the sender's address) and log
+   `Failed to decrypt gossip from <address>`; `gossip-key-peer-decrypted` closes the event when that
+   sender's gossip decrypts. A **restarted existing member** that never catches up refuses to boot
+   with a `FATAL` line naming gossip-key divergence.
+4. **Rotation protects only against a leaked gossip key.** Admission is `cluster_secret`-derived
+   mutual TLS: a holder of `cluster_secret` still joins and replays the record (#2474).
 
 **RBAC:** ADMIN (exact route; an appended path segment is 404, never a weaker permission) · **Routing:** LEADER
 

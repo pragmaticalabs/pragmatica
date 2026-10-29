@@ -2763,22 +2763,23 @@ aether cluster rotate-gossip-key
 
 The leader generates 32 bytes of fresh key material and publishes it through consensus
 (`POST /api/v1/cluster/gossip-key/rotate`); every running node switches to the new key and keeps
-accepting the previous one for the overlap. Use it after a suspected `cluster_secret` or gossip-key
-leak: the daily key is derived from `cluster_secret`, so this is the only mitigation that does not
-require reconfiguring every node and replacing each one under a fresh node id (or a whole-cluster cold restart). The output carries key ids only, never key material.
+accepting the previous one for the overlap. Use it after a suspected gossip-key leak. It does not answer a
+`cluster_secret` leak (#2474). The output carries key ids only, never key material.
 
-**Before you run this, know two limits — SECURITY.md has the detail.** The **first** rotation has no
+**Before you run this, know the limits — SECURITY.md has the detail.** The **first** rotation has no
 overlap, because there is no prior record whose key could be carried; it replaces the boot key
-outright. And a rotated cluster **cannot grow until you act**: any node booting afterwards holds only
-the derived key, cannot complete SWIM in either direction, and so never reaches the consensus replay
-that would hand it the cluster key. **Auto-heal replacements and scale-up nodes are included, so an
-emergency rotation leaves the cluster unable to self-heal** until new nodes are given the rotated key
-material out of band. Existing running nodes keep working.
+outright. A node booting afterwards holds only the derived key, so its gossip is rejected in both
+directions until the consensus replay of the rotation record hands it the cluster key; it dials its
+configured peers, so this normally takes seconds (measured about a second on an in-JVM cluster,
+#1200). And rotation protects only against a leaked **gossip key**: admission is
+`cluster_secret`-derived mutual TLS, so a holder of `cluster_secret` still joins and replays the
+record (#2474). Existing running nodes keep working.
 
-**Troubleshooting a node that will not join after a rotation — check the SEED nodes' logs, not the
-new node's.** Look for `Failed to decrypt gossip from <id>` on the seeds. A node the cluster has
-never heard of logs nothing about the cause: it prints `Aether node <id> started, cluster forming...`
-and then stays quiet, because an unreachable quorum is retried and never exits. A **restarted
+**A node that does not catch up after a rotation — check the SEED nodes, not the new node.** The
+seeds raise the operator event `gossip-key-unknown-from-peer` (subject: the sender's address) and log
+`Failed to decrypt gossip from <address>`; `gossip-key-peer-decrypted` closes it when that sender's
+gossip decrypts. A warning that never closes means the sender did not catch up: check that its peer
+list names reachable cores. A **restarted
 existing member** is the exception — it refuses to boot with a `FATAL` line naming gossip-key
 divergence, because its peers still probe it and it can see the mismatched key id.
 

@@ -43,11 +43,15 @@ import org.slf4j.LoggerFactory;
 ///   carry, so the emergency rotation — the only one that runs during an actual leak response —
 ///   replaces the boot key outright and boot-key ciphertext is rejected immediately. Only rotations
 ///   from the second onward are seamless;
-/// - **after the first rotation the `cluster_secret`-derived key scheme is superseded for good, and
-///   the cluster cannot GROW until an operator acts.** A node booting afterwards holds only the
-///   derived key, so SWIM fails in both directions, no quorum forms, and the replay that would hand
-///   it the cluster key never runs — auto-heal replacements and scale-up included.
-///   [GossipKeyDivergenceGuard] refuses such a boot loudly where it is detectable.
+/// - **after the first rotation the `cluster_secret`-derived key scheme is superseded for good.**
+///   A node booting afterwards holds only the derived key, so its SWIM gossip is rejected in both
+///   directions until the consensus replay of the rotation record hands it the cluster key. It
+///   dials its configured peers, so this normally takes seconds (about one second on an in-JVM
+///   cluster, #1200), auto-heal replacements and scale-up nodes included; the seeds raise the
+///   operator event `gossip-key-unknown-from-peer` meanwhile. [GossipKeyDivergenceGuard] refuses a
+///   boot that never catches up where it is detectable;
+/// - **rotation protects only against a leaked gossip key.** Admission is `cluster_secret`-derived
+///   mutual TLS, so a holder of `cluster_secret` still joins and replays the record (#2474).
 ///
 /// The key bytes are never logged — only the ids are.
 public final class GossipKeyRoutes implements RouteSource {
