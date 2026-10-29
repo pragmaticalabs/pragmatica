@@ -93,6 +93,33 @@ class ClusterEventAggregatorCommittedGateTest {
         assertThat(raisedBy(nodeA)).containsExactly("node-a");
     }
 
+    /// NT-169c: no ownership record at the index (bootstrap, quorum loss): the lowest NodeId of the committed core passes, so the
+    /// "neither side passes" window is closed for the fact. The two nodes list the membership in different orders.
+    @Test
+    void ClusterEvents_noOwnershipRecordAtIndex_lowestCoreNodePasses() {
+        bothNodes(() -> false, () -> false);
+        nodeA.bindCommittedOwnerSources(Option::none, () -> List.of(NODE_B, NODE_A));
+        nodeB.bindCommittedOwnerSources(Option::none, () -> List.of(NODE_A, NODE_B));
+
+        both(loadedPut("n1"));
+
+        assertThat(raisedBy(nodeA)).containsExactly("node-a");
+    }
+
+    /// A node that has not yet seen an ownership notification (it joined after the last one) reads the committed record from the
+    /// store; a notification seen later takes over.
+    @Test
+    void ClusterEvents_noNotificationSeenYet_theStoredRecordDecides_andANotificationTakesOver() {
+        bothNodes(() -> false, () -> false);
+        nodeA.bindCommittedOwnerSources(() -> Option.some(NODE_B), List::of);
+        nodeB.bindCommittedOwnerSources(() -> Option.some(NODE_B), List::of);
+
+        both(loadedPut("first"), ownershipPut(NODE_A), loadedPut("second"));
+
+        assertThat(raisedBy(nodeA, "first")).containsExactly("node-b");
+        assertThat(raisedBy(nodeA, "second")).containsExactly("node-a");
+    }
+
     /// The decision follows the notification order (the KV index), not the moment the handler runs: the record changes between two
     /// facts, and each fact goes to the owner named at ITS index.
     @Test

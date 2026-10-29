@@ -2565,7 +2565,9 @@ public interface AetherNode extends ManageableNode {
                                                                                     drainProcedure,
                                                                                     alertManager,
                                                                                     clusterEventsHlcClock,
-                                                                                    eventAggregator));
+                                                                                    eventAggregator,
+                                                                                    kvStore,
+                                                                                    clusterEventsStreamName));
         var ttmManager = TTMManager.ttmManager(config.ttm(),
                                                minuteAggregator,
                                                controller::configuration)

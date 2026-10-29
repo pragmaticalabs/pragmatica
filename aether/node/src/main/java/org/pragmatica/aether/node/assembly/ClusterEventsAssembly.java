@@ -209,7 +209,9 @@ public sealed interface ClusterEventsAssembly {
                             DrainProcedure drainProcedure,
                             AlertManager alertManager,
                             HlcClock clusterEventsHlcClock,
-                            ClusterEventAggregator eventAggregator) {}
+                            ClusterEventAggregator eventAggregator,
+                            KVStore<AetherKey, AetherValue> kvStore,
+                            String clusterEventsStreamName) {}
 
     /// Binds the drain, departure, voter and alert sinks and the trace store to the aggregator.
     static Unit eventSinks(EventSinksInputs in) {
@@ -222,6 +224,8 @@ public sealed interface ClusterEventsAssembly {
         var alertManager = in.alertManager();
         var clusterEventsHlcClock = in.clusterEventsHlcClock();
         var eventAggregator = in.eventAggregator();
+        var kvStore = in.kvStore();
+        var clusterEventsStreamName = in.clusterEventsStreamName();
         // Item-8 graft: best-effort SelfDrainInitiated emit on drain initiation. The aggregator is
         // forward-declared to DrainProcedure (constructed earlier) via this ref; the emitter lambda
         // resolves it lazily and no-ops until bound. NOT leader-gated — the draining node is the only
@@ -256,6 +260,11 @@ public sealed interface ClusterEventsAssembly {
         eventAggregator.bindSelfCommandedDrain(drainProcedure::isCommandedDrain);
         eventAggregator.bindSelfCoreAbsenceDrain(drainProcedure::isCoreAbsenceDrain);
         eventAggregator.bindSelfIsVoter(() -> isInstalledVoterOrUnknown(clusterNode.voterConfiguration(), config.self()));
+        // #1671 (I-35): the facts raised from a committed KV notification are gated on the committed ownership record of the
+        // cluster-events partition (read from the store only until this node has seen an ownership notification), and with no
+        // record on the lowest member of the installed, consensus-committed voter configuration.
+        eventAggregator.bindCommittedOwnerSources(() -> committedClusterEventsOwner(kvStore, clusterEventsStreamName),
+                                                  () -> installedVoters(clusterNode.voterConfiguration()));
         alertManager.bindEventSink(eventAggregator::emit, clusterEventsHlcClock);
         alertManager.bindClusterEventsSource(eventAggregator::events);
         // #957: AlertForwarder was never constructed anywhere in src/main, so no alert left this
@@ -426,6 +435,20 @@ public sealed interface ClusterEventsAssembly {
                                 + " — correct [replication.cluster_events] and re-apply the cluster config")
                     .onFailure(failure -> LOG.warn("Cluster-events refusal alert injection failed: {}",
                                                    failure.message()));
+    }
+
+    private static Option<NodeId> committedClusterEventsOwner(KVStore<AetherKey, AetherValue> kvStore,
+                                                              String clusterEventsStreamName) {
+        return kvStore.getTyped(AetherKey.StreamPartitionOwnershipKey.streamPartitionOwnershipKey(clusterEventsStreamName,
+                                                                                                  0),
+                                AetherValue.StreamPartitionOwnershipValue.class)
+                      .map(AetherValue.StreamPartitionOwnershipValue::owner);
+    }
+
+    private static List<NodeId> installedVoters(Option<VoterConfiguration> installed) {
+        return installed.map(configuration -> configuration.roster()
+                                                           .members())
+                        .or(List.of());
     }
 
     /// #2306: a node counts as a voter unless an installed configuration excludes it. No configuration yet (genesis pending)

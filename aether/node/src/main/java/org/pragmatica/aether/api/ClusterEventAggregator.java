@@ -333,6 +333,15 @@ public final class ClusterEventAggregator {
     /// #1653 round 2: stamps each event with `details.eventId` so a redelivered copy is recognised on read.
     private final ClusterEventIdentity identity = ClusterEventIdentity.clusterEventIdentity();
     private volatile int lastReadDuplicates;
+    /// #1671 (I-35): the owner named by the committed `StreamPartitionOwnershipKey` of the cluster-events partition, as of the
+    /// last KV notification this node processed. Notifications are dispatched in commit order, so when a handler runs for
+    /// index i this is the record at i (a read of the live store could already be ahead of i).
+    private final AtomicReference<Option<NodeId>> committedOwner = new AtomicReference<>(Option.none());
+    /// The committed record read from the store, for a node that has not yet seen an ownership notification (it joined or
+    /// restarted after the last one). Bound by `AetherNode`; unbound it names nothing.
+    private volatile Supplier<Option<NodeId>> committedOwnerLookup = Option::none;
+    /// The committed core membership, for the partition with no ownership record. Bound by `AetherNode`; unbound it is empty.
+    private volatile Supplier<List<NodeId>> coreMembers = List::of;
     /// #1653: cluster-events ownership changes applied on this node; the event feed re-anchors when it moves.
     private final AtomicLong ownershipChanges = new AtomicLong();
     private volatile long lastEventsFrom = -1;
@@ -628,6 +637,59 @@ public final class ClusterEventAggregator {
         publishSafely(event);
     }
 
+    /// Binds the sources the committed-record gate of [#emitCommitted] reads when no ownership notification has been seen:
+    /// the record in the store, and the committed core membership.
+    @Contract
+    public void bindCommittedOwnerSources(Supplier<Option<NodeId>> committedOwnerLookup,
+                                          Supplier<List<NodeId>> coreMembers) {
+        this.committedOwnerLookup = committedOwnerLookup;
+        this.coreMembers = coreMembers;
+    }
+
+    /// #1671 (I-35): emit for a fact DERIVED FROM A COMMITTED KV NOTIFICATION. Exactly one node passes per KV index, because
+    /// the decision is made from state every node holds identically at that index, not from a node-local view that can lag it:
+    /// the owner named by the committed ownership record of the cluster-events partition at this notification; with no record,
+    /// the lowest NodeId of the committed core membership. Neither side of a handover can pass twice or not at all.
+    ///
+    /// Only the facts raised from a KV notification use this; facts raised from anywhere else ([#emit]: ISR transitions,
+    /// connections, access denials, scaling) keep the node-local gate and its residual duplicate or drop. With none of the
+    /// three sources available (an unbound aggregator, as in unit harnesses) it behaves as [#emit].
+    @Contract
+    public void emitCommitted(ClusterEvent event) {
+        if (replayingCheck.getAsBoolean()) {
+            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing side-effect emit of {}",
+                      event);
+
+            return;
+        }
+
+        if (!passesCommittedGate()) {
+            suppressUnowned(event);
+
+            return;
+        }
+
+        publishSafely(event);
+    }
+
+    private boolean passesCommittedGate() {
+        return committedOwner.get()
+                             .orElse(committedOwnerLookup)
+                             .map(selfNode::equals)
+                             .or(this::lowestCoreMemberIsSelf);
+    }
+
+    /// No committed record: the lowest NodeId of the committed core passes. With no membership either, nothing in the
+    /// committed state decides, and the node-local gate is the answer (it is false while ownership is unresolvable, which
+    /// [#suppressUnowned] then reports).
+    private boolean lowestCoreMemberIsSelf() {
+        return coreMembers.get()
+                          .stream()
+                          .min(Comparator.naturalOrder())
+                          .map(selfNode::equals)
+                          .orElseGet(ownerCheck::getAsBoolean);
+    }
+
     /// Split the owner-gate's two falses (#957) so the loud one is actually loud.
     ///
     /// **Another node owns** — the steady state on every non-owner, once per emit per tick. The event
@@ -783,6 +845,7 @@ public final class ClusterEventAggregator {
     @Contract
     public void onStreamPartitionOwnershipPut(ValuePut<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> put) {
         if (isClusterEventsPartition(put.cause().key())) {
+            committedOwner.set(Option.some(put.cause().value().owner()));
             ownershipChanges.incrementAndGet();
             redelivery.redeliver(true);
         }
@@ -1601,7 +1664,7 @@ public final class ClusterEventAggregator {
                                                   event.cause().key().communityId(),
                                                   event.oldValue(),
                                                   event.cause().value())
-                                .forEach(this::emit);
+                                .forEach(this::emitCommitted);
     }
 
     /// #1652 — community roster joins and leaves, projected from the committed `GovernorAnnouncementValue`
@@ -1612,7 +1675,7 @@ public final class ClusterEventAggregator {
                                                event.cause().key().communityId(),
                                                event.oldValue(),
                                                event.cause().value())
-                                .forEach(this::emit);
+                                .forEach(this::emitCommitted);
     }
 
     @Contract
@@ -1635,10 +1698,10 @@ public final class ClusterEventAggregator {
     @Contract
     private void handleDeploymentStarted(String trackingKey, String artifact, String nodeId) {
         deploymentStartTimes.put(trackingKey, System.currentTimeMillis());
-        emit(new DeploymentStarted(hlcClock.now(),
-                                   Severity.INFO,
-                                   "Deploying " + artifact + " to " + nodeId,
-                                   Map.of("artifact", artifact, "nodeId", nodeId)));
+        emitCommitted(new DeploymentStarted(hlcClock.now(),
+                                            Severity.INFO,
+                                            "Deploying " + artifact + " to " + nodeId,
+                                            Map.of("artifact", artifact, "nodeId", nodeId)));
     }
 
     @Contract
@@ -1647,10 +1710,11 @@ public final class ClusterEventAggregator {
         var durationSuffix = durationMs.map(ms -> " in " + formatDuration(ms)).or("");
         var nodeReadySuffix = buildNodeReadySuffix(nodeId);
 
-        emit(new DeploymentCompleted(hlcClock.now(),
-                                     Severity.INFO,
-                                     "Deployed " + artifact + " on " + nodeId + durationSuffix + nodeReadySuffix,
-                                     buildCompletedMetadata(artifact, nodeId, durationMs)));
+        emitCommitted(new DeploymentCompleted(hlcClock.now(),
+                                              Severity.INFO,
+                                              "Deployed " + artifact
+                                             + " on " + nodeId + durationSuffix + nodeReadySuffix,
+                                              buildCompletedMetadata(artifact, nodeId, durationMs)));
     }
 
     @Contract
@@ -1659,10 +1723,12 @@ public final class ClusterEventAggregator {
         var durationSuffix = durationMs.map(ms -> " after " + formatDuration(ms)).or("");
         var reason = value.failureReason().or("unknown");
 
-        emit(new DeploymentFailed(hlcClock.now(),
-                                  Severity.WARNING,
-                                  "Deployment of " + artifact + " failed on " + nodeId + durationSuffix + ": " + reason,
-                                  buildFailedMetadata(artifact, nodeId, reason, durationMs)));
+        emitCommitted(new DeploymentFailed(hlcClock.now(),
+                                           Severity.WARNING,
+                                           "Deployment of " + artifact
+                                          + " failed on " + nodeId + durationSuffix
+                                          + ": " + reason,
+                                           buildFailedMetadata(artifact, nodeId, reason, durationMs)));
     }
 
     /// #1573: every committed automatic rollback, CRITICAL, with its evidence. Leader-gated
