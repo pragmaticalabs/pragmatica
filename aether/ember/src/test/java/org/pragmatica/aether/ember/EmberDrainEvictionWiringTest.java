@@ -100,6 +100,9 @@ class EmberDrainEvictionWiringTest {
             "org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState$Active";
     /// First line of `ClusterDeploymentState.Active.onEntry`; the FSM state is already Active when it is logged.
     private static final String ACTIVATION_MARKER = "became leader, activating cluster deployment manager";
+    /// Logged by `Active.onEntry` after the first line, once the state is rebuilt from the KV store: a pong sent before it can
+    /// meet an `Active` that is still rebuilding and be ignored.
+    private static final String REBUILT_MARKER = "worker nodes from KVStore";
 
     private EmberCluster cluster;
 
@@ -140,6 +143,10 @@ class EmberDrainEvictionWiringTest {
             awaitCondition("the leader's cluster deployment manager must log its activation (it is Active from that line on) before the pong is sent",
                            System.currentTimeMillis() + 60_000L,
                            () -> contains(capture, ACTIVATION_MARKER),
+                           capture::messages);
+            awaitCondition("the leader's cluster deployment manager must finish rebuilding its state from the KV store before the pong is sent",
+                           System.currentTimeMillis() + 60_000L,
+                           () -> contains(capture, REBUILT_MARKER),
                            capture::messages);
             leaderRef.set(leader);
             leader.metricsCollector().onClusterSyncPong(drainingPong(drainee));
