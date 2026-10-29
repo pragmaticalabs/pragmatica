@@ -1,0 +1,2 @@
+### Fixed
+- A graceful stop of the KV backup leader no longer skips its final flush when a demotion lands between the stop request and the backup worker running (peers stopping drop the quorum): leadership is decided when the stop is requested. A node that led and was demoted before its own stop flushes nothing, and now raises `BACKUP_STOP_FLUSH_FAILED` naming the reason instead of staying silent (#2506).

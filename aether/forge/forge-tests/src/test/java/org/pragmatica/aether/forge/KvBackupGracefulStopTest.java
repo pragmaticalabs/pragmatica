@@ -41,8 +41,13 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// `StreamCrashDurabilityTest` red). `AetherNodeBackupCoordinatorStopWiringTest` pins the node's wiring as source text only; this is the
 /// behavioural pin, and it is red when `AetherNode.stop()` does not call `KvBackupService.stopFlushed`.
 ///
-/// Deterministic, not a race: the backup is settled first (control), the stream is created, and the graceful stop is issued within a few
-/// milliseconds of its commit (control: under 300 ms, inside the quiet window), where today's stop-without-flush loses it every time.
+/// The inputs are fixed, the outcome is not free of timing: the backup is settled first (control), the stream is created, and the graceful stop is
+/// issued within a few milliseconds of its commit (control: under 300 ms, inside the quiet window), where a stop without the flush loses it every time.
+/// All five nodes stop at once, so peers dropping the quorum demote the leader while its flush is being scheduled. #2506: the flush used to read
+/// leadership on the backup worker and was skipped silently when the demotion won (red 1 of 2 nightly runs; 3 of 3 with an 80 ms worker delay).
+/// It now decides leadership when the stop is requested, so the flush runs whenever the leader was asked to stop as leader. The residual case, a
+/// leader demoted BEFORE its own stop call, is reported by the node (`BACKUP_STOP_FLUSH_FAILED`) but not closed (#2506 item 3), so this test can
+/// still go red in that window; the red is the tripwire, and `KvBackupServiceTest.GracefulStop` pins the ordering deterministically.
 @Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 class KvBackupGracefulStopTest {
