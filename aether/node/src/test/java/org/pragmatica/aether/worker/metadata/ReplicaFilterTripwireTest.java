@@ -212,10 +212,10 @@ class ReplicaFilterTripwireTest {
     }
 
     /// TW-O15, the full classification: every `AetherKey` class in the sealed hierarchy, not a sample, is classified, and the EXCLUDE set is
-    /// exactly the stream cursor checkpoints and the cluster configuration. Mutation: move any other class (say `SliceTargetKey`) to EXCLUDE,
+    /// exactly the stream cursor checkpoints, the cluster configuration and the five deployment-rewrite keys (EXCLUDED until P3-D). Mutation: move any other class (say `SliceTargetKey`) to EXCLUDE,
     /// and the set has a third member.
     @Test
-    void everyAetherKeyClass_isIncluded_exceptTheStreamCursorCheckpointsAndTheClusterConfiguration() {
+    void everyAetherKeyClass_isIncluded_exceptTheCheckpointsTheConfigurationAndTheDeploymentRewriteKeys() {
         var classes = everyAetherKeyClass();
         var excluded = classes.stream()
                               .filter(keyClass -> ReplicaFilter.replicaFilter().excludes(instanceOf(keyClass)))
@@ -226,7 +226,7 @@ class ReplicaFilterTripwireTest {
                            .hasSizeGreaterThan(60)
                            .extracting(Class::getSimpleName)
                            .containsAll(unscopedKeys().keySet());
-        assertThat(excluded).as("the EXCLUDE set, over every AetherKey class").containsExactlyInAnyOrder("StreamCursorCheckpointKey", "ClusterConfigKey");
+        assertThat(excluded).as("the EXCLUDE set, over every AetherKey class").containsExactlyInAnyOrder("StreamCursorCheckpointKey", "ClusterConfigKey", "SliceDesiredKey", "SliceObservedKey", "DeploymentApplyKey", "ArtifactJudgmentKey", "NodeDepartureKey");
     }
 
     /// The ring's byte measure sizes a key by `asString()` (R-07). `StructuredKey` gives a default for key families with no canonical text;

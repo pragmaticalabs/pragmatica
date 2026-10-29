@@ -71,7 +71,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.statemachine.Fsm;
@@ -203,14 +202,6 @@ public interface ClusterDeploymentManager {
     @Contract
     @MessageReceiver
     void onGovernorAnnouncementPut(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> valuePut);
-
-    record ReconciliationAdjustment(Artifact artifact, int currentInstances, int desiredInstances) implements Message.Local {
-        public static ReconciliationAdjustment reconciliationAdjustment(Artifact artifact,
-                                                                        int currentInstances,
-                                                                        int desiredInstances) {
-            return new ReconciliationAdjustment(artifact, currentInstances, desiredInstances);
-        }
-    }
 
     enum DeploymentAtomicity {
         BEST_EFFORT,

@@ -6,7 +6,9 @@ package org.pragmatica.aether.node;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Set;
 import java.util.function.BooleanSupplier;
+import java.util.stream.Collectors;
 
 import org.pragmatica.aether.config.AlertConfig;
 import org.pragmatica.aether.resource.ResourceProvider;
@@ -25,8 +27,13 @@ import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// With webhooks enabled, the node's `AlertForwarder` builds a JDK `HttpClient` (a selector-manager thread)
-/// that nothing closed on stop (#1097's class). Pinned by the thread, counted before boot, while up and after
-/// stop; the node is held reachable to the end so a GC cannot end the thread instead of `stop()`.
+/// that nothing closed on stop (#1097's class). Pinned by the thread itself, found as the selector thread that
+/// did not exist before boot, then watched through `stop()`; the node is held reachable to the end so a GC cannot end the
+/// thread instead of `stop()`.
+///
+/// The thread is identified, not counted: every `HttpClient` an earlier test in the same JVM left unreachable keeps its
+/// selector thread until a GC collects the client, so a count taken before boot can fall during the test and hide the new
+/// thread (the control then failed with the thread present).
 class AetherNodeAlertForwarderShutdownTest {
     @TempDir
     Path tempDir;
@@ -45,7 +52,7 @@ class AetherNodeAlertForwarderShutdownTest {
     @Test
     @Timeout(value = 60, unit = SECONDS)
     void stop_endsTheWebhookClientSelectorThread() throws InterruptedException {
-        var baseline = selectorThreads();
+        var existing = selectorThreads();
         var config = AetherNodeContentStorageWarnBootTest.minimalConfig(Option.none(),
                                                                        Option.none(),
                                                                        ConfigurationProvider.builder().build(),
@@ -57,22 +64,29 @@ class AetherNodeAlertForwarderShutdownTest {
                          .unwrap();
         var running = node;
 
-        assertThat(eventually(() -> selectorThreads() > baseline)).as("control: webhook-enabled boot owns a selector thread")
-                                                                  .isTrue();
+        assertThat(eventually(() -> !startedSince(existing).isEmpty())).as("control: webhook-enabled boot owns a selector thread")
+                                                                       .isTrue();
+        var owned = startedSince(existing);
+
         node.stop().await(timeSpan(10).seconds()).onFailure(cause -> fail("stop must succeed: " + cause.message()));
         node = null;
-        assertThat(eventually(() -> selectorThreads() <= baseline)).as("selector threads after stop; baseline %d, now %d",
-                                                                      baseline,
-                                                                      selectorThreads()).isTrue();
+        assertThat(eventually(() -> owned.stream().noneMatch(Thread::isAlive))).as("the boot selector threads %s after stop", owned)
+                                                                              .isTrue();
         java.lang.ref.Reference.reachabilityFence(running);
     }
 
-    private static long selectorThreads() {
+    private static Set<Thread> startedSince(Set<Thread> existing) {
+        return selectorThreads().stream()
+                                .filter(t -> !existing.contains(t))
+                                .collect(Collectors.toUnmodifiableSet());
+    }
+
+    private static Set<Thread> selectorThreads() {
         return Thread.getAllStackTraces()
                      .keySet()
                      .stream()
                      .filter(t -> t.isAlive() && t.getName().startsWith("HttpClient-") && t.getName().endsWith("-SelectorManager"))
-                     .count();
+                     .collect(Collectors.toUnmodifiableSet());
     }
 
     private static boolean eventually(BooleanSupplier condition) throws InterruptedException {

@@ -9,6 +9,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.controller.RollbackEvent;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
+import org.pragmatica.aether.metrics.deployment.ReconciliationAdjustment;
 import org.pragmatica.aether.node.NodeCodecs;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.ConsistencyMode;
@@ -964,6 +965,28 @@ class ClusterEventAggregatorTest {
         h.aggregator().onAutoRollback(autoRollbackExecuted());
 
         assertThat(h.events()).isEmpty();
+    }
+
+    /// H-3: the reconciliation event lives beside `DeploymentEvent`, so either cluster FSM can raise it. Red when the
+    /// aggregator stops mapping it: an increase is SCALE_UP, a decrease SCALE_DOWN, each with its counts and trigger.
+    @Test
+    void reconciliationAdjustment_mapsToScaleUpAndScaleDown_withItsCounts() {
+        var h = Harness.create();
+
+        h.aggregator().onReconciliationAdjustment(ReconciliationAdjustment.reconciliationAdjustment(ROLLBACK_ARTIFACT, 1, 3));
+        h.aggregator().onReconciliationAdjustment(ReconciliationAdjustment.reconciliationAdjustment(ROLLBACK_ARTIFACT, 3, 2));
+
+        var events = h.events();
+
+        assertThat(events).hasSize(2);
+        assertThat(events.get(0)).isInstanceOf(ClusterEvent.ScaleUp.class);
+        assertThat(events.get(0).details()).containsEntry("artifact", ROLLBACK_ARTIFACT.asString())
+                                           .containsEntry("previousInstances", "1")
+                                           .containsEntry("desiredInstances", "3")
+                                           .containsEntry("trigger", "reconciliation");
+        assertThat(events.get(1)).isInstanceOf(ClusterEvent.ScaleDown.class);
+        assertThat(events.get(1).details()).containsEntry("previousInstances", "3")
+                                           .containsEntry("desiredInstances", "2");
     }
 
     private static SliceFailureEvent.AllInstancesFailed allInstancesFailed() {
