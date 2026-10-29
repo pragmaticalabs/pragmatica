@@ -57,9 +57,11 @@ final class QuestionMarkEscape {
 
     private static int tokenEnd(String sql, int index) {
         return switch (sql.charAt(index)) {
-            case '\'' -> quotedEnd(sql, index, '\'');
-            case '"' -> quotedEnd(sql, index, '"');
-            case '$' -> dollarQuotedEnd(sql, index);
+            case '\'' -> quotedEnd(sql, index, '\'', opensEscapeString(sql, index));
+            case '"' -> quotedEnd(sql, index, '"', false);
+            case '$' -> opensDollarQuote(sql, index)
+                        ? dollarQuotedEnd(sql, index)
+                        : index + 1;
             case '-' -> sql.startsWith("--", index)
                         ? lineCommentEnd(sql, index)
                         : index + 1;
@@ -70,12 +72,15 @@ final class QuestionMarkEscape {
         };
     }
 
-    /// A doubled quote inside the text is part of it; an unterminated one runs to the end.
-    private static int quotedEnd(String sql, int start, char quote) {
+    /// A doubled quote inside the text is part of it; in an escape string (`E'...'`) a backslash also escapes the next
+    /// character, a quote included. An unterminated one runs to the end.
+    private static int quotedEnd(String sql, int start, char quote, boolean backslashEscapes) {
         var index = start + 1;
 
         while (index < sql.length()) {
-            if (sql.charAt(index) == quote) {
+            if (backslashEscapes && sql.charAt(index) == '\\') {
+                index += 2;
+            } else if (sql.charAt(index) == quote) {
                 if (index + 1 < sql.length() && sql.charAt(index + 1) == quote) {
                     index += 2;
                 } else {
@@ -87,6 +92,22 @@ final class QuestionMarkEscape {
         }
 
         return sql.length();
+    }
+
+    /// `E'...'` (the `E` not the tail of a longer word) is an escape string: a backslash escapes the next character.
+    private static boolean opensEscapeString(String sql, int quote) {
+        return quote > 0
+               && (sql.charAt(quote - 1) == 'E' || sql.charAt(quote - 1) == 'e')
+               && (quote == 1 || !isIdentifierChar(sql.charAt(quote - 2)));
+    }
+
+    /// A dollar-quote tag cannot follow an identifier character: in `a$b$c` the `$` signs belong to the identifier.
+    private static boolean opensDollarQuote(String sql, int dollar) {
+        return dollar == 0 || !isIdentifierChar(sql.charAt(dollar - 1));
+    }
+
+    private static boolean isIdentifierChar(char c) {
+        return c == '_' || c == '$' || Character.isLetterOrDigit(c);
     }
 
     private static int lineCommentEnd(String sql, int start) {

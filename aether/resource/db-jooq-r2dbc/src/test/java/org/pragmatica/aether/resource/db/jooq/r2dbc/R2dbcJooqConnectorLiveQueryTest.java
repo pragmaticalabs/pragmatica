@@ -217,8 +217,8 @@ class R2dbcJooqConnectorLiveQueryTest {
 
     private static void freshUuidTable() {
         success(connector.execute(connector.dsl().query("DROP TABLE IF EXISTS live_uuids")));
-        success(connector.execute(connector.dsl().query("CREATE TABLE live_uuids(id INT PRIMARY KEY, u UUID, tags TEXT[], nums INT[])")));
-        success(connector.execute(connector.dsl().query("INSERT INTO live_uuids(id, u, tags, nums) VALUES (1, '123e4567-e89b-12d3-a456-426614174000', ARRAY['a','b'], ARRAY[1,2])")));
+        success(connector.execute(connector.dsl().query("CREATE TABLE live_uuids(id INT PRIMARY KEY, u UUID, tags TEXT[], nums INT[], ua UUID[], doc JSONB)")));
+        success(connector.execute(connector.dsl().query("INSERT INTO live_uuids(id, u, tags, nums, ua, doc) VALUES (1, '123e4567-e89b-12d3-a456-426614174000', ARRAY['a','b'], ARRAY[1,2], ARRAY['123e4567-e89b-12d3-a456-426614174000'::uuid, '00000000-0000-0000-0000-000000000001'::uuid], '{}')")));
     }
 
     /// #2481: jOOQ asks the driver for a uuid or array column as `Object`; the driver refused that target.
@@ -245,6 +245,50 @@ class R2dbcJooqConnectorLiveQueryTest {
         assertThat(record.get(0)).isEqualTo(SAMPLE_UUID);
         assertThat((Object[]) record.get(1)).containsExactly("a", "b");
         assertThat((Object[]) record.get(2)).containsExactly(1, 2);
+    }
+
+    private static final java.util.UUID OTHER_UUID = java.util.UUID.fromString("00000000-0000-0000-0000-000000000001");
+
+    @Test
+    void fetchOne_typedUuidArray_isReadTyped() {
+        freshUuidTable();
+
+        var ua = DSL.field("ua", SQLDataType.UUID.array());
+        var record = success(connector.fetchOne(connector.dsl().select(ua).from(DSL.table("live_uuids")).where(DSL.field("id", Integer.class).eq(1))));
+
+        assertThat(record.get(ua)).containsExactly(SAMPLE_UUID, OTHER_UUID);
+    }
+
+    @Test
+    void fetchOne_untypedUuidArray_returnsTheDriversNativeValue() {
+        freshUuidTable();
+
+        var record = success(connector.fetchOne(connector.dsl().select(DSL.field("ua")).from(DSL.table("live_uuids")).where(DSL.field("id", Integer.class).eq(1))));
+
+        assertThat((Object[]) record.get(0)).containsExactly(SAMPLE_UUID, OTHER_UUID);
+    }
+
+    @Test
+    void uuidArray_roundTripsThroughABoundParameter_emptyIncluded() {
+        freshUuidTable();
+        success(connector.execute(connector.dsl().query("INSERT INTO live_uuids(id, ua) VALUES (2, ?), (3, ?)", new java.util.UUID[]{OTHER_UUID}, new java.util.UUID[0])));
+
+        var ua = DSL.field("ua", SQLDataType.UUID.array());
+        var two = success(connector.fetchOne(connector.dsl().select(ua).from(DSL.table("live_uuids")).where(DSL.field("id", Integer.class).eq(2))));
+        var three = success(connector.fetchOne(connector.dsl().select(ua).from(DSL.table("live_uuids")).where(DSL.field("id", Integer.class).eq(3))));
+
+        assertThat(two.get(ua)).containsExactly(OTHER_UUID);
+        assertThat(three.get(ua)).isEmpty();
+    }
+
+    @Test
+    void fetchOne_untypedColumnTheDriverCannotConvert_failsWithAMessageNamingTheColumnTypeAndTarget() {
+        freshUuidTable();
+
+        var cause = failure(connector.fetchOne(connector.dsl().select(DSL.field("doc")).from(DSL.table("live_uuids")).where(DSL.field("id", Integer.class).eq(1))));
+
+        assertThat(cause).isInstanceOf(DatabaseConnectorError.QueryFailed.class);
+        assertThat(cause.message()).contains("'doc'").contains("JSONB").contains("java.lang.Object").doesNotContain("null");
     }
 
     @Test

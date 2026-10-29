@@ -683,6 +683,7 @@ public class DataConverter {
             case TIMETZ_ARRAY, TIME_ARRAY -> TemporalConversions::toLocalTime;
             case DATE_ARRAY -> TemporalConversions::toLocalDate;
             case BOOL_ARRAY -> BooleanConversions::toBoolean;
+            case UUID_ARRAY -> (_, text) -> UUID.fromString(text);
             case BYTEA_ARRAY -> (oide, svaluee) -> {
                 byte[] first = BlobConversions.toBytes(oide, svaluee.substring(2));
 

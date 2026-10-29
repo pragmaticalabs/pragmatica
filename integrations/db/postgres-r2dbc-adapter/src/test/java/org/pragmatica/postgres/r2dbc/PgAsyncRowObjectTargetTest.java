@@ -31,6 +31,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import reactor.core.publisher.Mono;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /// #2481: a column read with the target `Object` (what jOOQ asks for a uuid or an array column) yields the driver's own
@@ -87,6 +88,21 @@ class PgAsyncRowObjectTargetTest {
     void get_objectTarget_ofScalars_isTheNativeJavaValue() {
         assertThat(objectOf("SELECT 7::int")).isEqualTo(7);
         assertThat(objectOf("SELECT 'x'::text")).isEqualTo("x");
+    }
+
+    @Test
+    void get_objectTarget_ofUuidArray_isItsUuids() {
+        assertThat((Object[]) objectOf("SELECT ARRAY['123e4567-e89b-12d3-a456-426614174000','00000000-0000-0000-0000-000000000001']::uuid[]"))
+            .containsExactly(UUID.fromString("123e4567-e89b-12d3-a456-426614174000"), UUID.fromString("00000000-0000-0000-0000-000000000001"));
+        assertThat((Object[]) objectOf("SELECT '{}'::uuid[]")).isEmpty();
+    }
+
+    @Test
+    void get_aTypeTheDriverCannotConvert_failsWithAMessageThatNamesTheColumnTheTypeAndTheTarget() {
+        assertThatThrownBy(() -> objectOf("SELECT '{}'::jsonb AS doc")).isInstanceOf(io.r2dbc.spi.R2dbcException.class)
+                                                                         .hasMessageContaining("'doc'")
+                                                                         .hasMessageContaining("JSONB")
+                                                                         .hasMessageContaining("java.lang.Object");
     }
 
     @Test

@@ -46,6 +46,34 @@ class QuestionMarkEscapeTest {
     }
 
     @Test
+    void unescape_insideAnEscapeString_aBackslashEscapesTheNextCharacter() {
+        assertThat(QuestionMarkEscape.unescape("SELECT E'a\\'??' AS s")).isEqualTo("SELECT E'a\\'??' AS s");
+        assertThat(QuestionMarkEscape.unescape("SELECT e'a\\'??' AS s")).isEqualTo("SELECT e'a\\'??' AS s");
+        assertThat(QuestionMarkEscape.unescape("SELECT E'a\\\\' ?? x")).isEqualTo("SELECT E'a\\\\' ? x");
+        assertThat(QuestionMarkEscape.unescape("SELECT E'a\\'b' AS s, j ?? 'k'")).isEqualTo("SELECT E'a\\'b' AS s, j ? 'k'");
+    }
+
+    @Test
+    void unescape_aBackslashInAStandardString_isLiteral() {
+        assertThat(QuestionMarkEscape.unescape("SELECT 'a\\' ?? 'b'")).isEqualTo("SELECT 'a\\' ? 'b'");
+    }
+
+    @Test
+    void unescape_anEOfALongerWord_doesNotMakeAnEscapeString() {
+        assertThat(QuestionMarkEscape.unescape("SELECT name'a\\' ?? 'b'")).isEqualTo("SELECT name'a\\' ? 'b'");
+    }
+
+    @Test
+    void unescape_aDollarInsideAnIdentifier_opensNoQuote() {
+        assertThat(QuestionMarkEscape.unescape("SELECT 1 AS a$b$c, j ?? 'k'")).isEqualTo("SELECT 1 AS a$b$c, j ? 'k'");
+    }
+
+    @Test
+    void unescape_aTagCannotStartWithADigit() {
+        assertThat(QuestionMarkEscape.unescape("SELECT $1$ ?? $1$ ?? x")).isEqualTo("SELECT $1$ ? $1$ ? x");
+    }
+
+    @Test
     void unescape_insideComments_isUnchanged() {
         assertThat(QuestionMarkEscape.unescape("a ?? b -- note ??\nc ?? d /* x ?? /* nested ?? */ still ?? */ e ?? f"))
             .isEqualTo("a ? b -- note ??\nc ? d /* x ?? /* nested ?? */ still ?? */ e ? f");
