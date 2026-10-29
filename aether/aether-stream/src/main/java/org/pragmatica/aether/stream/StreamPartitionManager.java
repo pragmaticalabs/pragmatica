@@ -4864,8 +4864,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// The stream DECLARES an age (#2201 I-12, spec 3.3 item 1 after PR-0b): a `size`-typed or API-default stream carries a
     /// filled-in 24 h age it never declared, and that is ring sizing, not a bound.
     private static boolean declaresMaxAge(StreamEntry entry) {
-        var retention = entry.config()
-                             .retention();
+        var retention = entry.config().retention();
 
         return retention.declared()
                         .age() && retention.maxAgeMs() != Long.MAX_VALUE;

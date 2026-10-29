@@ -12,6 +12,7 @@ import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.lang.Option;
 
+
 /// The stream and consumer keys that parse but have no runtime effect, as ONE table (#2201 E-02, spec 3.2 item 9). The deploy
 /// validator and the activation binder both judge a declaration by it, so a key the validator refuses cannot bind silently on
 /// the path a node provisions a stream from (a configuration pushed through the KV layer reaches activation without passing
@@ -39,9 +40,10 @@ public sealed interface InertKeyRules {
 
     /// Why a STRONG declaration under `key` is refused, the same text on both paths.
     static String strongConsistencyMessage(String key) {
-        return key + " 'strong' cannot be honoured — the consensus publish path is not wired in "
-               + "this release, so every write to the stream would be refused (#1262). Remove the "
-               + "key or set it to 'eventual'.";
+        return key
+             + " 'strong' cannot be honoured — the consensus publish path is not wired in "
+             + "this release, so every write to the stream would be refused (#1262). Remove the "
+             + "key or set it to 'eventual'.";
     }
 
     /// The consumer keys of `config` that differ from the consumer default: per-consumer configuration never reaches the
@@ -49,15 +51,27 @@ public sealed interface InertKeyRules {
     static List<InertKey> inertConsumerKeys(ConsumerConfig config) {
         var defaults = ConsumerConfig.consumerConfig(config.groupId());
 
-        return Stream.of(differs("batch_size", config.maxBatchSize(), defaults.maxBatchSize()),
-                         differs("processing", lower(config.processingMode()), lower(defaults.processingMode())),
-                         differs("on_failure", lower(config.errorStrategy()), lower(defaults.errorStrategy())),
+        return Stream.of(differs("batch_size",
+                                 config.maxBatchSize(),
+                                 defaults.maxBatchSize()),
+                         differs("processing",
+                                 lower(config.processingMode()),
+                                 lower(defaults.processingMode())),
+                         differs("on_failure",
+                                 lower(config.errorStrategy()),
+                                 lower(defaults.errorStrategy())),
                          differs("checkpoint_interval",
                                  config.checkpointInterval().toString(),
                                  defaults.checkpointInterval().toString()),
-                         differs("max_retries", config.maxRetries(), defaults.maxRetries()),
-                         differs("dead_letter", config.deadLetterStream(), defaults.deadLetterStream()),
-                         differs("read_preference", lower(config.readPreference()), lower(defaults.readPreference())))
+                         differs("max_retries",
+                                 config.maxRetries(),
+                                 defaults.maxRetries()),
+                         differs("dead_letter",
+                                 config.deadLetterStream(),
+                                 defaults.deadLetterStream()),
+                         differs("read_preference",
+                                 lower(config.readPreference()),
+                                 lower(defaults.readPreference())))
                      .flatMap(Option::stream)
                      .toList();
     }
@@ -101,16 +115,18 @@ public sealed interface InertKeyRules {
     }
 
     private static String lower(Enum<?> value) {
-        return value.toString().toLowerCase();
+        return value.toString()
+                    .toLowerCase();
     }
 
     private static String consumerMessage(String key, String value) {
-        return key + " = '" + value
-               + "' has no runtime effect — per-consumer TOML config (`[streams.X.consumers.Y]`) is "
-               + "parsed but never reaches the runtime consumer (StreamConfigParser#parseConsumers has "
-               + "no production caller, per #576); every declarative consumer runs with hardcoded "
-               + "defaults regardless of this key. Remove it: per-consumer tuning is not supported "
-               + "in 1.0 (descoped in #677; post-GA wiring is its own epic).";
+        return key
+             + " = '" + value
+             + "' has no runtime effect — per-consumer TOML config (`[streams.X.consumers.Y]`) is "
+             + "parsed but never reaches the runtime consumer (StreamConfigParser#parseConsumers has "
+             + "no production caller, per #576); every declarative consumer runs with hardcoded "
+             + "defaults regardless of this key. Remove it: per-consumer tuning is not supported "
+             + "in 1.0 (descoped in #677; post-GA wiring is its own epic).";
     }
 
     record unused() implements InertKeyRules {}

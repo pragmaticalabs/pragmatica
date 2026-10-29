@@ -54,11 +54,7 @@ public final class StreamingCoordinator {
                                                             WatermarkTracker watermarkTracker,
                                                             SegmentIndex segmentIndex,
                                                             SegmentReader segmentReader) {
-        return new StreamingCoordinator(failoverHandler,
-                                        partitionManager,
-                                        watermarkTracker,
-                                        segmentIndex,
-                                        segmentReader);
+        return new StreamingCoordinator(failoverHandler, partitionManager, watermarkTracker, segmentIndex, segmentReader);
     }
 
     public static NoOpStreamingComponent noOp() {

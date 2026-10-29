@@ -734,13 +734,13 @@ public interface StreamConfigParser {
     private static RetentionDimensions declaredDimensions(StreamSection section) {
         return section.string("retention")
                       .map(type -> switch (type) {
-                          case "count" -> RetentionDimensions.COUNT;
-                          case "time" -> RetentionDimensions.AGE;
-                          case "size" -> RetentionDimensions.BYTES;
-                          default -> RetentionDimensions.retentionDimensions(section.string("max_count").isPresent(),
-                                                                             section.string("max_bytes").isPresent(),
-                                                                             section.string("max_age").isPresent());
-                      })
+                               case "count" -> RetentionDimensions.COUNT;
+                               case "time" -> RetentionDimensions.AGE;
+                               case "size" -> RetentionDimensions.BYTES;
+                               default -> RetentionDimensions.retentionDimensions(section.string("max_count").isPresent(),
+                                                                                  section.string("max_bytes").isPresent(),
+                                                                                  section.string("max_age").isPresent());
+                           })
                       .or(RetentionDimensions.NONE);
     }
 
@@ -897,7 +897,10 @@ public interface StreamConfigParser {
                                                    T defaultValue) {
         return consumer.string(key)
                        .map(raw -> parser.apply(raw)
-                                         .toResult(new StreamDeclarationError.MalformedValue(consumer.alias(), key, raw, expected)))
+                                         .toResult(new StreamDeclarationError.MalformedValue(consumer.alias(),
+                                                                                             key,
+                                                                                             raw,
+                                                                                             expected)))
                        .or(success(defaultValue));
     }
 

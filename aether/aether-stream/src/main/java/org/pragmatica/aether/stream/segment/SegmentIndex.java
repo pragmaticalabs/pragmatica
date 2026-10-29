@@ -116,8 +116,7 @@ public final class SegmentIndex {
     }
 
     private static SegmentRef learned(SegmentRef ref, Option<Long> maxTimestamp, int size) {
-        var timed = maxTimestamp.map(timestamp -> withKnownTimestamp(ref, timestamp))
-                                .or(ref);
+        var timed = maxTimestamp.map(timestamp -> withKnownTimestamp(ref, timestamp)).or(ref);
 
         return withKnownSize(timed, size);
     }

@@ -442,7 +442,8 @@ public sealed interface StreamAssembly {
                                                                           streamSegmentTierPressure);
         // #2201 3.2 item 6: every node runs its own retention over its own segments, from node start to node stop
         // (AetherNode's stop path closes it); it is no longer pinned to the leader by StreamingCoordinator.
-        streamRetentionEnforcer.operatorWarnings(operatorWarningSink, config.self().id());
+        streamRetentionEnforcer.operatorWarnings(operatorWarningSink,
+                                                 config.self().id());
         streamRetentionEnforcer.start();
         // A6: streamReplicaRegistry is created earlier (above StreamPartitionManager) so it can be
         // shared with the now-active DefaultReplicationManager. The same registry instance is the one

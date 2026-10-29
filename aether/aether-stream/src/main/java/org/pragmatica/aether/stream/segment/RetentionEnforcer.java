@@ -421,8 +421,8 @@ public final class RetentionEnforcer implements AutoCloseable {
         var policies = policiesOf(keys);
         var plans = keys.stream()
                         .flatMap(key -> option(policies.get(key.streamName())).flatMap(policy -> policy)
-                                                                         .map(policy -> planReclaim(key, policy, now))
-                                                                         .stream())
+                                              .map(policy -> planReclaim(key, policy, now))
+                                              .stream())
                         .filter(plan -> !plan.expired()
                                              .isEmpty())
                         .toList();
@@ -513,21 +513,22 @@ public final class RetentionEnforcer implements AutoCloseable {
 
         return source.policyOf(streamName)
                      .filter(policy -> policy.mode() != RetentionMode.UNKNOWN)
-                     .map(policy -> policy.declared().any()
+                     .map(policy -> policy.declared()
+                                          .any()
                                     ? policy
                                     : defaultAgePolicy());
     }
 
     private RetentionPolicy defaultAgePolicy() {
-        return RetentionPolicy.retentionPolicy(Long.MAX_VALUE, Long.MAX_VALUE, defaultAgeMs)
-                              .withDeclared(RetentionDimensions.AGE);
+        return RetentionPolicy.retentionPolicy(Long.MAX_VALUE, Long.MAX_VALUE, defaultAgeMs).withDeclared(RetentionDimensions.AGE);
     }
 
     /// A stream withheld for [#WITHHELD_PASSES] consecutive passes is raised once; the first pass that judges it again
     /// closes it. A raised stream that is gone from this node's index is closed as well.
     @Contract
     private void reportWithheld(Map<String, Option<RetentionPolicy>> policies) {
-        policies.forEach((streamName, policy) -> policy.onPresent(_ -> resumeWithheld(streamName, "its retention policy is readable again"))
+        policies.forEach((streamName, policy) -> policy.onPresent(_ -> resumeWithheld(streamName,
+                                                                                      "its retention policy is readable again"))
                                                        .onEmpty(() -> countWithheld(streamName)));
         new HashSet<>(withheldPasses.keySet()).stream()
                                               .filter(streamName -> !policies.containsKey(streamName))
@@ -555,14 +556,14 @@ public final class RetentionEnforcer implements AutoCloseable {
     @Contract
     private void resumeWithheld(String streamName, String reason) {
         option(withheldPasses.remove(streamName)).filter(passes -> passes >= WITHHELD_PASSES)
-                                                .onPresent(_ -> OperatorWarnings.raise(log,
-                                                                                       operatorWarnings,
-                                                                                       OperatorWarningCode.STREAM_RETENTION_RESUMED,
-                                                                                       streamSubject(streamName),
-                                                                                       "Retention on node {} judges stream {} again: {}",
-                                                                                       nodeId,
-                                                                                       streamName,
-                                                                                       reason));
+              .onPresent(_ -> OperatorWarnings.raise(log,
+                                                     operatorWarnings,
+                                                     OperatorWarningCode.STREAM_RETENTION_RESUMED,
+                                                     streamSubject(streamName),
+                                                     "Retention on node {} judges stream {} again: {}",
+                                                     nodeId,
+                                                     streamName,
+                                                     reason));
     }
 
     private String streamSubject(String streamName) {
@@ -570,7 +571,11 @@ public final class RetentionEnforcer implements AutoCloseable {
     }
 
     private String segmentSubject(String streamName, int partition, SegmentIndex.SegmentRef ref) {
-        return "node " + nodeId + " stream " + streamName + "[" + partition + "] " + ref.startOffset() + "-" + ref.endOffset();
+        return "node " + nodeId
+             + " stream " + streamName
+             + "[" + partition
+             + "] " + ref.startOffset()
+             + "-" + ref.endOffset();
     }
 
     /// A floor no higher than the one already recorded needs no write: the recorded one is durable already.
@@ -642,8 +647,7 @@ public final class RetentionEnforcer implements AutoCloseable {
     /// unknown-aged, so the reads go [#AGE_READ_CONCURRENCY] at a time rather than all at once. A block that
     /// could not be read is remembered for the life of the process and not read again.
     private Promise<Unit> learnUnknownAges() {
-        return ageReader.fold(Promise::unitPromise,
-                              reader -> learnInBatches(reader, pendingAges(), 0));
+        return ageReader.fold(Promise::unitPromise, reader -> learnInBatches(reader, pendingAges(), 0));
     }
 
     private List<PendingAge> pendingAges() {
@@ -757,7 +761,9 @@ public final class RetentionEnforcer implements AutoCloseable {
     }
 
     /// The age and, in the same read, the size the sealed tier's byte rule counts (#2201 3.2 item 4).
-    private Unit recordLearned(SegmentIndex.PartitionKey key, SegmentIndex.SegmentRef ref, SegmentReader.SegmentFacts facts) {
+    private Unit recordLearned(SegmentIndex.PartitionKey key,
+                               SegmentIndex.SegmentRef ref,
+                               SegmentReader.SegmentFacts facts) {
         index.recordLearned(key.streamName(), key.partition(), ref.startOffset(), facts.maxTimestamp(), facts.size());
 
         return unit();
@@ -814,7 +820,9 @@ public final class RetentionEnforcer implements AutoCloseable {
         OperatorWarnings.raise(log,
                                operatorWarnings,
                                OperatorWarningCode.STREAM_SEGMENT_UNREADABLE,
-                               segmentSubject(pending.key().streamName(), pending.key().partition(), pending.ref()),
+                               segmentSubject(pending.key().streamName(),
+                                              pending.key().partition(),
+                                              pending.ref()),
                                "The block of stream {}[{}] at offsets {}-{} on node {} cannot be read for its age ({}), for example a "
                               + "missing encryption key or a damaged block; it is not read again until the node restarts, and "
                               + "retention judges it by the age of the next newer segment",
@@ -878,6 +886,7 @@ public final class RetentionEnforcer implements AutoCloseable {
                                    ref.startOffset(),
                                    ref.endOffset());
         }
+
         log.debug("Removed expired segment {}/{}:[{}-{}] maxTimestamp={}",
                   streamName,
                   partition,

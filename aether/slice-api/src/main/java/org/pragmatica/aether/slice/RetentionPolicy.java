@@ -21,7 +21,12 @@ public record RetentionPolicy(long maxCount,
     private static final long DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000L;
 
     public static RetentionPolicy retentionPolicy() {
-        return new RetentionPolicy(DEFAULT_MAX_COUNT, DEFAULT_MAX_BYTES, DEFAULT_MAX_AGE_MS, RetentionMode.ANY, none(), RetentionDimensions.NONE);
+        return new RetentionPolicy(DEFAULT_MAX_COUNT,
+                                   DEFAULT_MAX_BYTES,
+                                   DEFAULT_MAX_AGE_MS,
+                                   RetentionMode.ANY,
+                                   none(),
+                                   RetentionDimensions.NONE);
     }
 
     public static RetentionPolicy retentionPolicy(long maxCount, long maxBytes, long maxAgeMs) {
@@ -36,7 +41,12 @@ public record RetentionPolicy(long maxCount,
                                                   long maxBytes,
                                                   long maxAgeMs,
                                                   TierAwareRetention tierAware) {
-        return new RetentionPolicy(maxCount, maxBytes, maxAgeMs, RetentionMode.ANY, Option.some(tierAware), RetentionDimensions.NONE);
+        return new RetentionPolicy(maxCount,
+                                   maxBytes,
+                                   maxAgeMs,
+                                   RetentionMode.ANY,
+                                   Option.some(tierAware),
+                                   RetentionDimensions.NONE);
     }
 
     public static RetentionPolicy retentionPolicy(long maxCount,

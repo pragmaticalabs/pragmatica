@@ -83,21 +83,17 @@ public sealed interface StreamSectionBinding {
                                                                              String section,
                                                                              String alias,
                                                                              StreamConfigParser.DeclaredStream declared) {
-        return consumerSections(provider, section).map(consumers -> inertReasons(declared.config(), consumers))
-                                                  .flatMap(reasons -> reasons.isEmpty()
-                                                                      ? Result.success(declared)
-                                                                      : new StreamDeclarationError.InertKeysRefused(alias,
-                                                                                                                    reasons).result());
+        return consumerSections(provider, section).map(consumers -> inertReasons(declared.config(),
+                                                                                 consumers))
+                               .flatMap(reasons -> reasons.isEmpty()
+                                                   ? Result.success(declared)
+                                                   : new StreamDeclarationError.InertKeysRefused(alias, reasons).result());
     }
 
     private static List<String> inertReasons(StreamConfig config, List<ConsumerConfig> consumers) {
-        var streamKeys = Stream.concat(InertKeyRules.inertStreamKeys(config)
-                                                    .stream(),
-                                       InertKeyRules.unsupportedConsistency(config)
-                                                    .stream());
-        var consumerKeys = consumers.stream()
-                                    .flatMap(consumer -> InertKeyRules.inertConsumerKeys(consumer)
-                                                                      .stream());
+        var streamKeys = Stream.concat(InertKeyRules.inertStreamKeys(config).stream(),
+                                       InertKeyRules.unsupportedConsistency(config).stream());
+        var consumerKeys = consumers.stream().flatMap(consumer -> InertKeyRules.inertConsumerKeys(consumer).stream());
 
         return Stream.concat(streamKeys, consumerKeys)
                      .map(InertKeyRules.InertKey::message)
@@ -113,7 +109,8 @@ public sealed interface StreamSectionBinding {
                              .filter(key -> key.startsWith(prefix))
                              .map(key -> key.substring(prefix.length()))
                              .filter(rest -> rest.indexOf('.') > 0)
-                             .map(rest -> rest.substring(0, rest.indexOf('.')))
+                             .map(rest -> rest.substring(0,
+                                                         rest.indexOf('.')))
                              .distinct()
                              .sorted()
                              .map(group -> StreamConfigParser.parseConsumerSection(StreamSection.providerSection(provider,

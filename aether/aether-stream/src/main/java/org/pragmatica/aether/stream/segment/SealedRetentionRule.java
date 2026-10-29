@@ -12,6 +12,7 @@ import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.lang.Option;
 
+
 /// How many of a partition's oldest sealed segments retention may reclaim (#2201 Q6 = B, know 59dfb9e86c; Q13 = A, know
 /// caf701869e: count and bytes are measured over the sealed tier).
 ///
@@ -56,15 +57,18 @@ public final class SealedRetentionRule {
             newerBytes[i] = bytes;
             ages[i] = ageOf(segment, now, unreadable, newerKnownAge);
             newerKnownAge = knownAge(segment, now).or(newerKnownAge);
-            events = saturatedAdd(events, segment.endOffset() - segment.startOffset() + 1);
-            bytes = saturatedAdd(bytes, Math.max(0, segment.originalSize()));
+            events = saturatedAdd(events,
+                                  segment.endOffset() - segment.startOffset() + 1);
+            bytes = saturatedAdd(bytes,
+                                 Math.max(0, segment.originalSize()));
         }
 
         var prefix = 0;
 
-        while (prefix < size
-               && segments.get(prefix).endOffset() <= deletableThrough
-               && reclaimable(policy, newerEvents[prefix], newerBytes[prefix], ages[prefix])) {
+        while (prefix < size && segments.get(prefix).endOffset() <= deletableThrough && reclaimable(policy,
+                                                                                                    newerEvents[prefix],
+                                                                                                    newerBytes[prefix],
+                                                                                                    ages[prefix])) {
             prefix++;
         }
 
@@ -87,7 +91,9 @@ public final class SealedRetentionRule {
     }
 
     private static boolean all(RetentionDimensions declared, boolean count, boolean bytes, boolean age) {
-        return (!declared.count() || count) && (!declared.bytes() || bytes) && (!declared.age() || age);
+        return (! declared.count() || count)
+               && (!declared.bytes() || bytes)
+               && (!declared.age() || age);
     }
 
     /// `Long.MIN_VALUE` stands for "not known", which is never old.
@@ -106,6 +112,8 @@ public final class SealedRetentionRule {
     private static long saturatedAdd(long left, long right) {
         var sum = left + right;
 
-        return sum < left ? Long.MAX_VALUE : sum;
+        return sum < left
+               ? Long.MAX_VALUE
+               : sum;
     }
 }

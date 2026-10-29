@@ -482,10 +482,9 @@ public sealed interface StreamResourceValidator {
     private static void guardStreamConfig(String alias, StreamConfig config, List<StreamValidationFailure> failures) {
         var field = "[streams." + alias + "]";
 
-        InertKeyRules.inertStreamKeys(config)
-                     .forEach(inert -> failures.add(StreamValidationFailure.streamValidationFailure(field,
-                                                                                                    RULE_INERT_STREAM_CONFIG,
-                                                                                                    inert.message())));
+        InertKeyRules.inertStreamKeys(config).forEach(inert -> failures.add(StreamValidationFailure.streamValidationFailure(field,
+                                                                                                                            RULE_INERT_STREAM_CONFIG,
+                                                                                                                            inert.message())));
     }
 
     /// A consumer key the parser refuses (#1549: `checkpoint_interval` that is not a duration of at least 1 ms)
@@ -511,10 +510,9 @@ public sealed interface StreamResourceValidator {
                                             List<StreamValidationFailure> failures) {
         var field = "[streams." + alias + ".consumers." + group + "]";
 
-        InertKeyRules.inertConsumerKeys(config)
-                     .forEach(inert -> failures.add(StreamValidationFailure.streamValidationFailure(field,
-                                                                                                    RULE_INERT_CONSUMER_CONFIG,
-                                                                                                    inert.message())));
+        InertKeyRules.inertConsumerKeys(config).forEach(inert -> failures.add(StreamValidationFailure.streamValidationFailure(field,
+                                                                                                                              RULE_INERT_CONSUMER_CONFIG,
+                                                                                                                              inert.message())));
     }
 
     /// Spec §11.1.3 multi-version warning: when a blueprint declares two or more

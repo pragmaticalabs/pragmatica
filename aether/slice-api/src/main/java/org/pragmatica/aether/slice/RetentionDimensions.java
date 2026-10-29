@@ -5,6 +5,7 @@ package org.pragmatica.aether.slice;
 
 import org.pragmatica.serialization.Codec;
 
+
 /// The retention dimensions a stream DECLARED (#2201 Q6 = B, know 59dfb9e86c): sealed-tier retention bounds exactly these.
 /// A [RetentionPolicy] carries values for all three dimensions, because the ring is sized from them, so the values alone
 /// cannot say which of them the stream asked for: a `time` stream carries a filled-in count and size it never declared.

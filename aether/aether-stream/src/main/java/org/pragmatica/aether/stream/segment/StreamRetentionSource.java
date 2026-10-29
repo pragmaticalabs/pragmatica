@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream.segment;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.lang.Option;
 
+
 /// The retention policy of a stream, by the name the segment index uses (#2201 3.2 item 2): in production the committed
 /// config this node has applied. A stream it does not answer is WITHHELD from retention for as long as it does not
 /// answer: a retention rule this node cannot read is not authority to delete (review R32-03; a node that has not yet
