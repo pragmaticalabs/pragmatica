@@ -70,10 +70,10 @@ class CrashBetweenTiersTest {
         assertThat(store2.getLifecycle(id).isPresent()).isFalse();
     }
 
-    /// An identical put that arrives while the delete holds its claim, after which the private delete FAILS and the record is
-    /// put back: the surviving reference stands on readable content and no authority.
+    /// An identical put that arrives while the delete holds its claim waits for the delete to finish and then writes the block
+    /// again: the new reference stands on readable content (a put that did not wait would be wiped by the delete in flight).
     @Test
-    void anIdenticalPutDuringTheClaim_whenThePrivateDeleteThenFails_leavesTheNewRefOnReadableContent() throws Exception {
+    void anIdenticalPutDuringTheClaim_waitsForTheDelete_andLeavesTheNewRefOnReadableContent() throws Exception {
         var shared = new Tier(TierLevel.REMOTE, true);
         var priv = new Tier(TierLevel.LOCAL_DISK, false);
         var store = MetadataStore.inMemoryMetadataStore("streams");
@@ -87,7 +87,6 @@ class CrashBetweenTiersTest {
 
         storage.deleteRef("a", SharedDelete.AUTHORISED).await();
         priv.hold = new CountDownLatch(1);
-        priv.failDeletes.set(true);
 
         var run = new Thread(() -> collector.collectSharedDeletes(snapshots, NO_GRACE));
 
