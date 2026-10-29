@@ -80,6 +80,55 @@ public final class ApplyRecorder {
                         Step.S1);
     }
 
+    /// Nodes of `key` that exist and are accounted for: what a resumed action does not create again.
+    synchronized int recordedFor(String key) {
+        return (int) state.resources()
+                          .stream()
+                          .filter(row -> row.actionKey()
+                                            .equals(key))
+                          .filter(row -> row.state() == ApplyResource.State.CREATED || row.state() == ApplyResource.State.JOINED || row.state() == ApplyResource.State.ADOPTED)
+                          .count();
+    }
+
+    synchronized ApplyAction.Status statusOf(String key) {
+        return state.actions()
+                    .stream()
+                    .filter(action -> action.key()
+                                            .equals(key))
+                    .map(ApplyAction::status)
+                    .findFirst()
+                    .orElse(ApplyAction.Status.PENDING);
+    }
+
+    /// The resume lookup found the node `nodeId` the intent row was written for: the row becomes CREATED.
+    synchronized Result<Unit> found(String nodeId, String serverId) {
+        return transition(nodeId, Option.some(serverId), ApplyResource.State.CREATED, Step.S3);
+    }
+
+    /// The resume lookup found nothing on every listing of the window: the node was never created.
+    synchronized Result<Unit> absent(String nodeId) {
+        return transition(nodeId, Option.none(), ApplyResource.State.ABSENT, Step.S3);
+    }
+
+    /// The audit found a ledger VM the provider no longer lists.
+    synchronized Result<Unit> gone(String nodeId) {
+        return transition(nodeId, Option.none(), ApplyResource.State.GONE, Step.S7);
+    }
+
+    /// The audit found a VM under the apply label the ledger has no row for: it is recorded, never ignored.
+    synchronized Result<Unit> adopt(String nodeId, String provider, String serverId) {
+        return commit(state.withNode(ApplyResource.applyResource("(adopted by audit)",
+                                                                 nodeId,
+                                                                 provider,
+                                                                 Option.some(serverId),
+                                                                 ApplyResource.State.ADOPTED)),
+                      Step.S3);
+    }
+
+    synchronized Result<Unit> phase(ApplyPhase phase) {
+        return commit(state.withPhase(phase), Step.S0);
+    }
+
     /// S2: the provider has answered and nothing is written yet. A seam only.
     Unit providerAnswered() {
         stepHook.accept(Step.S2);

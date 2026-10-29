@@ -190,7 +190,7 @@ grep -i "load\|activate\|deactivate" /var/log/aether/aether.log | tail -50
 
 ### Issue: `cluster apply --resume` Failed Part-Way
 
-The wave rollout behind `--resume` is dormant in rc4 and `--rollback` is refused as not implemented (#686); plain `cluster apply` performs scale-only writes and never reaches this.
+The wave rollout behind `--resume` is not yet started by plain `cluster apply` (#686), which performs scale-only writes; this applies to a halted wave rollout. `--resume` continues from the apply ledger (it looks up every node the ledger intended before creating anything), and `--rollback` terminates what the ledger recorded, newest first.
 
 The failing step's VMs are destroyed. The error names any VM still running and billed (a failed destroy, or one kept from an earlier step), each with its removal steps: remove each `STILL RUNNING AND BILLED` VM as printed, and keep or remove each `kept` one (see `aether cluster apply` in `reference/cli.md`).
 

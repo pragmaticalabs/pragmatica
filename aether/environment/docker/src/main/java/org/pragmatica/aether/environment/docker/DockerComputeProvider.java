@@ -619,7 +619,12 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
     }
 
     private static List<String> buildFilteredListCommand(Map<String, String> tagFilter, String cluster) {
-        var command = new ArrayList<>(List.of("docker", "ps", "-a", "--filter", "label=aether.cluster=" + cluster));
+        var command = new ArrayList<>(List.of("docker",
+                                              "ps",
+                                              "-a",
+                                              "--no-trunc",
+                                              "--filter",
+                                              "label=aether.cluster=" + cluster));
 
         tagFilter.forEach((key, value) -> addFilterArgs(command, key, value));
         command.addAll(List.of("--format",

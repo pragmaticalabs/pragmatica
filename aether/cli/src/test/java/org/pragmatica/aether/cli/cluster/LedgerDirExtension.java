@@ -51,6 +51,22 @@ final class LedgerDirExtension implements BeforeEachCallback, AfterEachCallback 
         return recorder(clusterName, List.of(TEST_ACTION));
     }
 
+    /// The same with `applyId` (the paid run mints a real one).
+    ApplyRecorder recorder(ClusterName clusterName, List<String> keys, String applyId) {
+        var base = ApplyStateFixtures.state(clusterName);
+        var state = ApplyState.applyState(applyId, clusterName, base.configHash(), base.storedVersion(), base.startedAt(), base.phase(),
+                                          keys.stream().map(key -> ApplyAction.applyAction(key, 0, ApplyAction.Status.PENDING)).toList(),
+                                          List.of(), List.of(), List.of(), List.of());
+
+        ApplyState.save(state).unwrap();
+
+        var recorder = ApplyRecorder.applyRecorder(state);
+
+        recorder.beginAction(keys.getFirst()).unwrap();
+
+        return recorder;
+    }
+
     /// The recorder over a RUNNING ledger whose actions are `keys`, PENDING, the first one started.
     ApplyRecorder recorder(ClusterName clusterName, List<String> keys) {
         var base = ApplyStateFixtures.state(clusterName);
