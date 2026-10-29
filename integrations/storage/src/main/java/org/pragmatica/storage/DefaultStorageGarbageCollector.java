@@ -1,14 +1,18 @@
 package org.pragmatica.storage;
 
+import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 
 
@@ -64,9 +68,12 @@ final class DefaultStorageGarbageCollector implements StorageGarbageCollector {
         // #737 fix round 2: grace runs from orphanedAt (when refCount reached 0), not
         // lastAccessedAt (when it was last read) -- the two diverge for a long-idle-but-still-
         // referenced block, which must get a full grace period from the moment it is orphaned.
+        // #2258: an orphan with shared-delete authority is collectSharedDeletes's, which deletes the shared copy too; this
+        // tick would delete the private copies and drop the record, and the shared copy would leak for good.
         var collected = metadataStore.listAllLifecycles()
                                      .stream()
                                      .filter(BlockLifecycle::isOrphaned)
+                                     .filter(lc -> lc.sharedDelete() == SharedDelete.NONE)
                                      .filter(lc -> lc.orphanedAt() <= cutoff)
                                      .limit(config.batchSize())
                                      .map(this::deleteBlock)
@@ -84,23 +91,98 @@ final class DefaultStorageGarbageCollector implements StorageGarbageCollector {
             return 0;
         }
 
-        var durableOrphans = durable.lifecycles()
-                                    .stream()
-                                    .filter(BlockLifecycle::isOrphaned)
-                                    .map(BlockLifecycle::blockId)
-                                    .collect(Collectors.toSet());
+        var durableOrphans = durableOrphansOf(durable);
+        // #2258 (review R32D-01): an orphan with shared-delete authority goes every tier, but only when its authority is in
+        // the durable snapshot too; one whose authority is not yet durable is left for collectSharedDeletes rather than
+        // deleted privately, which would drop its record and leak its shared copy.
         var collected = metadataStore.listAllLifecycles()
                                      .stream()
                                      .filter(BlockLifecycle::isOrphaned)
-                                     .filter(lc -> durableOrphans.contains(lc.blockId()))
+                                     .filter(lc -> option(durableOrphans.get(lc.blockId())).filter(saved -> saved.sharedDelete() == lc.sharedDelete())
+                                                                                     .isPresent())
                                      .limit(config.batchSize())
-                                     .map(this::deleteBlock)
+                                     .map(this::deleteFlaggedOrPrivate)
                                      .reduce(0, Integer::sum);
 
         stats.updateAndGet(s -> s.withCollected(collected, System.currentTimeMillis()));
         log.debug("Pressure GC collected {} block(s) orphaned in snapshot epoch {}", collected, durable.epoch());
 
         return collected;
+    }
+
+    @Override
+    public SharedDeleteRun collectSharedDeletes(SnapshotManager snapshots, SharedDeleteLimits limits) {
+        if (!active) {
+            return SharedDeleteRun.NOTHING;
+        }
+
+        var cutoff = System.currentTimeMillis() - limits.graceMs();
+        var flagged = flaggedOrphans();
+
+        if (flagged.isEmpty()) {
+            return SharedDeleteRun.NOTHING;
+        }
+
+        return snapshots.snapshotNow()
+                        .map(durable -> collectDurablyFlagged(flagged, durableOrphansOf(durable), cutoff, limits))
+                        .onFailure(cause -> log.warn("Shared-tier collection deferred: the metadata snapshot that makes its "
+                                                    + "authority durable could not be written: {}",
+                                                     cause.message()))
+                        .or(new SharedDeleteRun(0, 0, flagged.size()));
+    }
+
+    private List<BlockLifecycle> flaggedOrphans() {
+        return metadataStore.listAllLifecycles()
+                            .stream()
+                            .filter(BlockLifecycle::isOrphaned)
+                            .filter(lc -> lc.sharedDelete() != SharedDelete.NONE)
+                            .toList();
+    }
+
+    private SharedDeleteRun collectDurablyFlagged(List<BlockLifecycle> flagged,
+                                                  Map<BlockId, BlockLifecycle> durable,
+                                                  long cutoff,
+                                                  SharedDeleteLimits limits) {
+        var ready = flagged.stream()
+                           .filter(lc -> lc.orphanedAt() <= cutoff)
+                           .filter(lc -> option(durable.get(lc.blockId())).filter(saved -> saved.sharedDelete() == lc.sharedDelete())
+                                                                     .isPresent())
+                           .limit(limits.maxBlocks())
+                           .toList();
+        var deadline = System.currentTimeMillis() + limits.maxDurationMs();
+        var deleted = 0;
+        var failed = 0;
+        var started = 0;
+
+        while (started < ready.size() && System.currentTimeMillis() < deadline) {
+            var batch = ready.subList(started, Math.min(started + limits.concurrency(), ready.size()));
+            var outcomes = Promise.allOf(batch.stream()
+                                              .map(instance::deleteEverywhere)
+                                              .toList())
+                                  .await();
+
+            started += batch.size();
+            for (var outcome : outcomes.or(List.of())) {
+                if (outcome.isFailure()) {
+                    failed++;
+                } else if (outcome.or(false)) {
+                    deleted++;
+                }
+            }
+        }
+
+        var counted = deleted;
+
+        stats.updateAndGet(s -> s.withCollected(counted, System.currentTimeMillis()));
+
+        return new SharedDeleteRun(deleted, failed, flagged.size() - started);
+    }
+
+    private static Map<BlockId, BlockLifecycle> durableOrphansOf(MetadataSnapshot durable) {
+        return durable.lifecycles()
+                      .stream()
+                      .filter(BlockLifecycle::isOrphaned)
+                      .collect(Collectors.toMap(BlockLifecycle::blockId, lc -> lc, (first, _) -> first));
     }
 
     @Override
@@ -123,6 +205,14 @@ final class DefaultStorageGarbageCollector implements StorageGarbageCollector {
         return instance.deleteFromPrivateTiers(orphan)
                        .await()
                        .fold(_ -> 0, DefaultStorageGarbageCollector::countOf);
+    }
+
+    /// The pressure path: an orphan with durable shared-delete authority goes every tier, any other the private way.
+    private int deleteFlaggedOrPrivate(BlockLifecycle orphan) {
+        return (orphan.sharedDelete() == SharedDelete.NONE
+                ? instance.deleteFromPrivateTiers(orphan)
+                : instance.deleteEverywhere(orphan)).await()
+                                                    .fold(_ -> 0, DefaultStorageGarbageCollector::countOf);
     }
 
     private static int countOf(boolean collected) {

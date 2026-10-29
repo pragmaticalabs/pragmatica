@@ -465,6 +465,12 @@ final class DefaultStorageInstance implements StorageInstance {
     /// in memory. Durable tiers go first so that a failure of the last (shared) tier is compensated on
     /// node-private tiers only ([#undoRequiredWrites]).
     private final List<StorageTier> requiredTiers;
+    /// [#requiredTiers] without the shared ones: where a [TierScope#PRIVATE] write lands (#2258).
+    private final List<StorageTier> privateRequiredTiers;
+    /// [TierScope#PRIVATE] writes that fell back to every tier: no private durable tier (#2258).
+    private final AtomicLong privateFallbacks = new AtomicLong();
+    /// What an [SharedDelete#IF_IDENTIFIED] orphan's block must pass to leave a shared tier; none passes until one is set.
+    private final AtomicReference<java.util.function.Predicate<byte[]>> sharedDeleteIdentified = new AtomicReference<>(_ -> false);
     /// Every other tier: best-effort cache, a failure there is absorbed (#910).
     private final List<StorageTier> cacheTiers;
     private final MetadataStore metadataStore;
@@ -632,6 +638,9 @@ final class DefaultStorageInstance implements StorageInstance {
         this.name = name;
         this.tiers = List.copyOf(tiers);
         this.requiredTiers = requiredTiersOf(this.tiers);
+        this.privateRequiredTiers = this.requiredTiers.stream()
+                                                      .filter(tier -> !tier.isShared())
+                                                      .toList();
         this.durableTiers = this.tiers.stream().filter(StorageTier::isDurable).toList();
         this.cacheTiers = this.tiers.stream().filter(tier -> !requiredTiers.contains(tier)).toList();
         this.sharedLevels = sharedLevelsOf(this.tiers);
@@ -865,6 +874,41 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     @Override
+    public Promise<Unit> deleteRef(String refName, SharedDelete authority) {
+        metadataStore.removeRef(refName)
+                     .onPresent(id -> metadataStore.computeLifecycle(id, lc -> lc.withRefCountDecremented(authority)));
+
+        return Promise.success(unit());
+    }
+
+    @Override
+    public Promise<BlockId> putRef(String refName, byte[] content, TierScope scope) {
+        return scope == TierScope.ALL
+               ? putRef(refName, content)
+               : BlockId.blockId(content)
+                        .async()
+                        .flatMap(id -> handlePrivatePut(id, content))
+                        .map(id -> repointRef(refName, id).current());
+    }
+
+    @Override
+    public Promise<BlockId> replaceRef(String refName, byte[] content, TierScope scope) {
+        return putRef(refName, content, scope);
+    }
+
+    @Override
+    public long privateScopeFallbacks() {
+        return privateFallbacks.get();
+    }
+
+    @Override
+    public Unit sharedDeleteIdentification(java.util.function.Predicate<byte[]> identified) {
+        sharedDeleteIdentified.set(identified);
+
+        return unit();
+    }
+
+    @Override
     public Promise<Unit> release(BlockId id) {
         metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountDecremented);
 
@@ -926,6 +970,62 @@ final class DefaultStorageInstance implements StorageInstance {
         }
 
         return deleteFromPrivateTiers(id, 0).fold(result -> collected(orphan, done, result));
+    }
+
+    /// #2258: [#deleteFromPrivateTiers]'s claim, then the SHARED tier first and the private tiers after, for an orphan whose
+    /// record carries shared-delete authority. Shared first: the private copies are what this node still serves from, and a
+    /// failed shared delete must leave them, so the record goes back and the next run retries the whole delete. An
+    /// [SharedDelete#IF_IDENTIFIED] orphan is read first and goes the shared way only if [#sharedDeleteIdentification]'s
+    /// predicate accepts its bytes; a block that fails it, or cannot be read, goes the private way.
+    @Override
+    public Promise<Boolean> deleteEverywhere(BlockLifecycle orphan) {
+        if (orphan.sharedDelete() == SharedDelete.NONE) {
+            return deleteFromPrivateTiers(orphan);
+        }
+
+        var id = orphan.blockId();
+        var done = Promise.<Unit> promise();
+
+        collecting.putIfAbsent(id, done);
+        if (!metadataStore.releaseClaim(id, orphan)) {
+            finishCollecting(id, done);
+            log.debug("Block {} touched since the GC scan, not collected", id);
+
+            return Promise.success(false);
+        }
+
+        return identifiedForSharedDelete(orphan).flatMap(shared -> deleteAuthorised(id, shared))
+                                                .fold(result -> collected(orphan, done, result));
+    }
+
+    private Promise<Unit> deleteAuthorised(BlockId id, boolean shared) {
+        return shared
+               ? deleteFromSharedTiers(id, 0).flatMap(_ -> deleteFromPrivateTiers(id, 0))
+               : deleteFromPrivateTiers(id, 0);
+    }
+
+    private Promise<Boolean> identifiedForSharedDelete(BlockLifecycle orphan) {
+        return switch (orphan.sharedDelete()) {
+            case AUTHORISED -> Promise.success(true);
+            case NONE -> Promise.success(false);
+            case IF_IDENTIFIED -> readFromAnyTier(orphan.blockId(), 0).map(read -> read.map(sharedDeleteIdentified.get()::test)
+                                                                                        .or(false));
+        };
+    }
+
+    /// The block's bytes from the first tier that holds them, private tiers first: no cache marker, no promotion, no record.
+    /// A tier read that fails counts as "not there"; nothing found reads as none, which goes the private way.
+    private Promise<Option<byte[]>> readFromAnyTier(BlockId id, int tierIndex) {
+        if (tierIndex >= tiers.size()) {
+            return Promise.success(none());
+        }
+
+        return tiers.get(tierIndex)
+                    .get(id)
+                    .recover(_ -> none())
+                    .flatMap(read -> read.isPresent()
+                                     ? Promise.success(read)
+                                     : readFromAnyTier(id, tierIndex + 1));
     }
 
     private Promise<Boolean> collected(BlockLifecycle orphan, Promise<Unit> done, Result<Unit> result) {
@@ -1315,6 +1415,30 @@ final class DefaultStorageInstance implements StorageInstance {
         return id;
     }
 
+    /// #2258: [#handlePut] onto [#privateRequiredTiers]. The claim names the last private tier, so the record says where the
+    /// block is and not REMOTE. With no private durable tier, or under write-behind, the write falls back to every tier and
+    /// is counted: a cursor commit keeps working in that degraded mode at today's cost.
+    private Promise<BlockId> handlePrivatePut(BlockId id, byte[] content) {
+        if (writePolicy == WritePolicy.WRITE_BEHIND || privateRequiredTiers.stream()
+                                                                           .noneMatch(StorageTier::isDurable)) {
+            privateFallbacks.incrementAndGet();
+
+            return handlePut(id, content);
+        }
+
+        return content.length > maxBlockBytes
+               ? StorageError.BlockTooLarge.blockTooLarge(content.length, maxBlockBytes).promise()
+               : claimOrAwait(id,
+                              content,
+                              BlockLifecycle.blockLifecycle(id,
+                                                            privateRequiredTiers.getLast()
+                                                                                .level()),
+                              (claimed, bytes) -> writeScoped(claimed, bytes, privateRequiredTiers),
+                              (held, bytes) -> creditOwnedBlock(held).fold(() -> handlePrivatePut(held, bytes),
+                                                                           lc -> Promise.success(deduplicated(lc.blockId()))),
+                              this::handlePrivatePut);
+    }
+
     private Promise<BlockId> writeThroughTiers(BlockId id, byte[] content) {
         return writePolicy == WritePolicy.WRITE_BEHIND
                ? writeBehindToTiers(id, content)
@@ -1324,13 +1448,18 @@ final class DefaultStorageInstance implements StorageInstance {
     /// The claimant's write: a required tier that fails after earlier ones succeeded undoes those first
     /// ([#undoRequiredWrites]), while the claim is still held.
     private Promise<BlockId> writeToAllTiers(BlockId id, byte[] content) {
-        var lastLevel = tiers.getLast().level();
+        return writeScoped(id, content, requiredTiers);
+    }
+
+    private Promise<BlockId> writeScoped(BlockId id, byte[] content, List<StorageTier> required) {
+        var lastLevel = required.getLast().level();
 
         return writeRequiredTiers(id,
                                   content,
+                                  required,
                                   0,
                                   List.of()).fold(result -> undoOnFailure(id, result))
-                                 .map(_ -> recordRequiredPresence(id))
+                                 .map(_ -> recordRequiredPresence(id, required))
                                  .flatMap(_ -> promoteToCacheTiers(id, content))
                                  .map(_ -> trackNewBlock(id, lastLevel));
     }
@@ -1339,15 +1468,19 @@ final class DefaultStorageInstance implements StorageInstance {
     /// listing the tiers on which THIS write created the copy. Presence is recorded only once every
     /// required tier holds the block ([#recordRequiredPresence]), so a failed write leaves no record saying
     /// a tier has it (#1602 B1).
-    private Promise<Unit> writeRequiredTiers(BlockId id, byte[] content, int index, List<StorageTier> created) {
-        if (index >= requiredTiers.size()) {
+    private Promise<Unit> writeRequiredTiers(BlockId id,
+                                             byte[] content,
+                                             List<StorageTier> required,
+                                             int index,
+                                             List<StorageTier> created) {
+        if (index >= required.size()) {
             return Promise.success(unit());
         }
 
-        var tier = requiredTiers.get(index);
+        var tier = required.get(index);
 
         return createdByThisWrite(tier, id).flatMap(fresh -> putRequired(tier, id, content, created, fresh))
-                                 .flatMap(next -> writeRequiredTiers(id, content, index + 1, next));
+                                 .flatMap(next -> writeRequiredTiers(id, content, required, index + 1, next));
     }
 
     private static Promise<List<StorageTier>> putRequired(StorageTier tier,
@@ -1438,9 +1571,9 @@ final class DefaultStorageInstance implements StorageInstance {
 
     /// Every required tier now holds the block: record that on the block's record. The last tier's presence
     /// is the claim record itself ([#trackNewBlock]); the others are added to it.
-    private Unit recordRequiredPresence(BlockId id) {
-        requiredTiers.stream()
-                     .filter(tier -> tier != tiers.getLast())
+    private Unit recordRequiredPresence(BlockId id, List<StorageTier> required) {
+        required.stream()
+                     .filter(tier -> tier != required.getLast())
                      .forEach(tier -> recordTierPresence(id,
                                                          tier.level()));
 
@@ -1662,10 +1795,11 @@ final class DefaultStorageInstance implements StorageInstance {
     private Promise<BlockId> rewriteRequiredTiers(BlockId id, byte[] content) {
         return writeRequiredTiers(id,
                                   content,
+                                  requiredTiers,
                                   0,
                                   List.of()).mapError(DefaultStorageInstance::originOf)
                                  .withFailure(_ -> giveBackCredit(id))
-                                 .map(_ -> recordRequiredPresence(id))
+                                 .map(_ -> recordRequiredPresence(id, requiredTiers))
                                  .map(_ -> id);
     }
 
@@ -1930,6 +2064,19 @@ final class DefaultStorageInstance implements StorageInstance {
         return (tier.isShared()
                 ? Promise.<Unit> success(unit())
                 : tier.delete(id)).flatMap(_ -> deleteFromPrivateTiers(id, tierIndex + 1));
+    }
+
+    /// #2258: only the shared tiers, in tier order, fail-fast: the first half of [#deleteEverywhere].
+    private Promise<Unit> deleteFromSharedTiers(BlockId id, int tierIndex) {
+        if (tierIndex >= tiers.size()) {
+            return Promise.success(unit());
+        }
+
+        var tier = tiers.get(tierIndex);
+
+        return (tier.isShared()
+                ? tier.delete(id)
+                : Promise.<Unit> success(unit())).flatMap(_ -> deleteFromSharedTiers(id, tierIndex + 1));
     }
 
     /// #250 review: `delete` and `deleteFromPrivateTiers` diverge in what actually happened to the
