@@ -414,10 +414,7 @@ public sealed interface WorkerHierarchyAssembly {
                                                                                                                                                  peers),
                                                                                                                       installPeers,
                                                                                                                       installEndpoints,
-                                                                                                                      () -> {
-                                                                                                                          clusterNode.authorizePassiveClient();
-                                                                                                                          workerReady.run();
-                                                                                                                      },
+                                                                                                                      () -> projectionReady(clusterNode, workerReady),
                                                                                                                       message -> metadataFailureReporter.report(config.self(),
                                                                                                                                                                 message),
                                                                                                                       metadataFailureReporter::report,
@@ -689,6 +686,12 @@ public sealed interface WorkerHierarchyAssembly {
                                          workerAdmission,
                                          communityHealthRuntime,
                                          replicaClient);
+    }
+
+    /// The projection client's first-fresh callback (DARK path): set the engine's passive-client latch, then the worker-ready step.
+    static void projectionReady(RabiaNode<KVCommand<AetherKey>> clusterNode, Runnable workerReady) {
+        clusterNode.authorizePassiveClient();
+        workerReady.run();
     }
 
     /// What a WORKER activation directive does to the engine's readiness: DARK sets the passive-client latch (the live setter); LIVE does

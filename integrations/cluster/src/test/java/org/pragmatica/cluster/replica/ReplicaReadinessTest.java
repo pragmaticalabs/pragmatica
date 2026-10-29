@@ -88,6 +88,31 @@ class ReplicaReadinessTest {
         assertThat(readiness.ready()).isTrue();
     }
 
+    /// (c), only a young claim: with no heartbeat at least 5 s old there is nothing to catch up to yet. Mutation: drop the `>= lagNanos` filter in
+    /// `isCaughtUpToLag` (the young claim of 15 would then be required).
+    @Test
+    void ready_isTrue_whenTheOnlyHeartbeatIsYoungerThanTheLagWindow_evenIfBehindIt() {
+        readiness.sourceChanged();
+        readiness.caughtUp(true);
+        readiness.onHeartbeat(TAG, 15, true);
+        advance(1_000);
+
+        assertThat(readiness.ready()).isTrue();
+    }
+
+    /// Spec 2.8 (b)/(c) "from the current source": a claim of the previous source, older than the lag window, must not hold the replica back after a
+    /// source change. Mutation: drop `beats.clear()` in `sourceChanged`.
+    @Test
+    void afterASourceChange_aStaleClaimOfTheOldSource_isNotRequired() {
+        readiness.onHeartbeat(TAG, 100, true);
+        advance(6_000);
+        readiness.sourceChanged();
+        readiness.caughtUp(true);
+        readiness.onHeartbeat(TAG, 10, true);
+
+        assertThat(readiness.ready()).isTrue();
+    }
+
     /// (d). Mutation: drop the role check.
     @Test
     void ready_isFalse_whenTheOwnDirectiveIsNotWorker() {

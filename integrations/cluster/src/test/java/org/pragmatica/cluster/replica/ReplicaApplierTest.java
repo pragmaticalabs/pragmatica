@@ -229,6 +229,28 @@ class ReplicaApplierTest {
         return true;
     }
 
+    /// Spec 3.2 step 2: the installed state is replayed to the store's listeners as synthetic puts. Mutation: drop `store.replayNotifications()` in
+    /// `ReplicaApplier.adopt`.
+    @Test
+    void install_replaysTheInstalledStateToTheListeners() {
+        var router = org.pragmatica.messaging.MessageRouter.mutable();
+        var seen = new java.util.ArrayList<Object>();
+        var source = ClientFixtures.store();
+
+        FeedFixtures.commit(source, 0, ClientFixtures.incarnation(1, "A"));
+        FeedFixtures.commit(source, 1, FeedFixtures.put("a", "1"));
+        router.addRoute(org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut.class,
+                        (java.util.function.Consumer<org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut<?, ?>>) put -> seen.add(put.cause().key()));
+
+        var listened = ReplicaApplier.replicaApplier(ClientFixtures.store(router), 1 << 20);
+        var snapshot = source.captureReplicaSnapshot(ReplicaKeyFilter.includeAll()).unwrap();
+
+        listened.beginBuffering();
+        listened.install(snapshot.bytes(), snapshot.tag(), snapshot.revision(), snapshot.anchor()).unwrap();
+
+        assertThat(seen).contains(new Key("a"));
+    }
+
     @Test
     void discardPosition_forgetsTheHistory_butNotTheStore() {
         applier.discardPosition();

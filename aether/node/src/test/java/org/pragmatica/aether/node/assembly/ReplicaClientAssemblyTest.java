@@ -129,6 +129,71 @@ class ReplicaClientAssemblyTest {
         assertThat(ran.get()).isEqualTo(1);
     }
 
+    /// Mutation: drop the `worker` test in `replicaClient` (a LIVE core would build a client).
+    @Test
+    void replicaClient_onALiveNodeThatIsNotAWorker_buildsNothing() {
+        assertThat(ReplicaClientAssembly.replicaClient(org.pragmatica.aether.node.ReplicaCutover.LIVE, false, null).isPresent()).isFalse();
+    }
+
+    /// LIVE on a worker: the freshness gate is replaced by the readiness (not ready yet), the four messages a worker receives are routed and the two
+    /// ticks (client, directory install) are scheduled. Mutations: drop `workerProjectionFreshRef.set(readiness::ready)`; drop a route; drop either
+    /// `defer.accept`.
+    @Test
+    @SuppressWarnings("unchecked")
+    void replicaClient_onALiveWorker_replacesTheFreshnessGate_routesFourMessages_andSchedulesTwoTicks() {
+        RabiaNode<KVCommand<AetherKey>> cluster = Mockito.mock(RabiaNode.class);
+        var network = Mockito.mock(org.pragmatica.consensus.net.ClusterNetwork.class);
+
+        Mockito.when(cluster.network()).thenReturn(network);
+
+        java.util.function.BooleanSupplier original = () -> true;
+        var freshness = new AtomicReference<java.util.function.BooleanSupplier>(original);
+        var routes = new ArrayList<org.pragmatica.messaging.MessageRouter.Entry<?>>();
+        var deferred = new AtomicInteger();
+        var inputs = new ReplicaClientAssembly.Inputs(NodeId.nodeId("worker-9").unwrap(),
+                                                      new org.pragmatica.cluster.state.kvstore.KVStore<AetherKey, org.pragmatica.aether.slice.kvstore.AetherValue>(org.pragmatica.messaging.MessageRouter.mutable(),
+                                                                                                                                                        null,
+                                                                                                                                                        null),
+                                                      cluster,
+                                                      Option::none,
+                                                      Set::of,
+                                                      new DirectoryInstall(_ -> Result.success(Unit.unit()), _ -> {}, _ -> {}),
+                                                      () -> {},
+                                                      freshness,
+                                                      routes,
+                                                      _ -> deferred.incrementAndGet());
+
+        assertThat(ReplicaClientAssembly.replicaClient(org.pragmatica.aether.node.ReplicaCutover.LIVE, true, inputs).isPresent()).isTrue();
+
+        assertThat(freshness.get()).isNotSameAs(original);
+        assertThat(freshness.get().getAsBoolean()).as("a fresh replica is not ready").isFalse();
+        assertThat(routes).hasSize(4);
+        assertThat(deferred.get()).isEqualTo(2);
+    }
+
+    /// Readiness (d), against a real store. Mutation: `assignedWorker` always true, or always false.
+    @Test
+    void assignedWorker_isTrueOnlyForAWorkerDirectiveOfThisNode() {
+        var self = NodeId.nodeId("worker-9").unwrap();
+        var store = new org.pragmatica.cluster.state.kvstore.KVStore<AetherKey, org.pragmatica.aether.slice.kvstore.AetherValue>(org.pragmatica.messaging.MessageRouter.mutable(), null, null);
+
+        assertThat(ReplicaClientAssembly.assignedWorker(store, self)).as("no directive").isFalse();
+
+        store.applyEffects(directive(self, 0, org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue.core()));
+        assertThat(ReplicaClientAssembly.assignedWorker(store, self)).as("CORE directive").isFalse();
+
+        store.applyEffects(directive(self, 1, org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue.worker("c-0", "")));
+        assertThat(ReplicaClientAssembly.assignedWorker(store, self)).as("WORKER directive").isTrue();
+    }
+
+    private static org.pragmatica.cluster.state.kvstore.ReplicaEntry directive(NodeId self, long slot, org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue value) {
+        return new org.pragmatica.cluster.state.kvstore.ReplicaEntry(org.pragmatica.cluster.state.kvstore.IncarnationTag.NONE,
+                                                                     slot,
+                                                                     slot,
+                                                                     "b" + slot,
+                                                                     List.of(new KVCommand.Put<>(new AetherKey.ActivationDirectiveKey(self), value)));
+    }
+
     /// Mutation: take the uplinks unsorted (set order is not stable across runs).
     @Test
     void uplinks_areTwoCores_inAFixedOrder() {
