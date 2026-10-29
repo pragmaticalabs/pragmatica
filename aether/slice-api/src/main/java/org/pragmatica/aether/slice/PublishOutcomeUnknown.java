@@ -30,4 +30,17 @@ import org.pragmatica.lang.utils.Causes;
 public record PublishOutcomeUnknown(Cause origin, String message) implements Cause.Wrapped {
     public static final Fn1<PublishOutcomeUnknown, Cause> FACTORY = Causes.forOneValue("Publish outcome unknown: the event may already be in the log; retry only with the same message ID (%s)",
                                                                                        PublishOutcomeUnknown::new);
+
+    /// The outcome of the write is unknown, so this wrapper is neither terminal nor transient whatever its origin says: a
+    /// timeout origin is transient, and a transient-only retry policy would re-drive the write. The caller retries with the
+    /// same identity or not at all.
+    @Override
+    public boolean isTerminal() {
+        return false;
+    }
+
+    @Override
+    public boolean isTransient() {
+        return false;
+    }
 }
