@@ -43,6 +43,15 @@ public final class WaveExecutor {
                                               ClusterBootstrapConfig stored,
                                               ClusterBootstrapConfig desired,
                                               ApplyRecorder recorder) {
+        return ApplyLabels.requireMintable(desired.cluster().name(),
+                                           recorder.applyId())
+                          .flatMap(_ -> executeWaves(plan, stored, desired, recorder));
+    }
+
+    private static Result<ApplyResult> executeWaves(DiffPlan plan,
+                                                    ClusterBootstrapConfig stored,
+                                                    ClusterBootstrapConfig desired,
+                                                    ApplyRecorder recorder) {
         var managementPort = desired.operations().ports().management();
         var created = new CreatedNodes(recorder);
 

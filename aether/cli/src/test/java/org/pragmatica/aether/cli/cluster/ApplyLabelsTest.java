@@ -45,6 +45,22 @@ class ApplyLabelsTest {
         assertThat(provider.terminated).isEmpty();
     }
 
+    /// `aether-<cluster>-node-<ulid>` is 39 characters plus the cluster name: 24 fit the 63-character label limit, 25 do not.
+    @Test
+    void requireMintable_acceptsTheLongestClusterNameThatFits_andRefusesOneCharacterMore() {
+        var fits = new ClusterName("a".repeat(24));
+        var tooLong = new ClusterName("a".repeat(25));
+
+        assertThat(ApplyLabels.requireMintable(fits, ApplyStateFixtures.APPLY_ID).isSuccess()).isTrue();
+        ApplyLabels.requireMintable(tooLong, ApplyStateFixtures.APPLY_ID)
+                   .onSuccess(_ -> fail("25 characters mint 64-character node ids"))
+                   .onFailure(cause -> assertThat(cause).isInstanceOf(ApplyLabels.NodeIdTooLong.class)
+                                                         .extracting(Object::toString)
+                                                         .isNotNull());
+        ApplyLabels.requireMintable(tooLong, ApplyStateFixtures.APPLY_ID)
+                   .onFailure(cause -> assertThat(cause.message()).contains("63-character").contains("at most 24 characters").contains("Nothing was created"));
+    }
+
     @Test
     void safeValues_pass() {
         assertThat(ApplyLabels.requireSafe(CLUSTER, ApplyStateFixtures.APPLY_ID).isSuccess()).isTrue();

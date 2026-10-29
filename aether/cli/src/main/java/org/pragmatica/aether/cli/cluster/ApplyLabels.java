@@ -35,6 +35,34 @@ final class ApplyLabels {
         return requireSafe("cluster name", cluster.value()).flatMap(_ -> requireSafe("apply id", applyId));
     }
 
+    /// Plan time: every label value the apply will MINT, the node ids included, must be a safe label value, checked before
+    /// the first create. A cluster name whose minted node ids exceed the providers' 63-character label limit would otherwise
+    /// create nodes and then wedge every later lookup of them (`--resume`), so the whole apply is refused up front.
+    static Result<Unit> requireMintable(ClusterName cluster, String applyId) {
+        return requireSafe(cluster, applyId).flatMap(_ -> requireMintedNodeIdSafe(cluster));
+    }
+
+    private static Result<Unit> requireMintedNodeIdSafe(ClusterName cluster) {
+        var sample = WaveNodeProvisioning.mintedIds(cluster).get();
+
+        return SAFE.matcher(sample).matches()
+               ? Result.unitResult()
+               : new NodeIdTooLong(cluster, sample).result();
+    }
+
+    record NodeIdTooLong(ClusterName cluster, String sample) implements Cause {
+        @Override
+        public String message() {
+            var overhead = sample.length() - cluster.value().length();
+
+            return "Cluster name '" + cluster.value()
+                 + "' is too long for this apply: the node ids it would mint (for example '" + sample
+                 + "', " + sample.length()
+                 + " characters) exceed the 63-character limit providers put on the aether-node-id label. Use a cluster name of at most " + (63 - overhead)
+                 + " characters. Nothing was created.";
+        }
+    }
+
     record UnsafeLabelValue(String what, String value) implements Cause {
         @Override
         public String message() {

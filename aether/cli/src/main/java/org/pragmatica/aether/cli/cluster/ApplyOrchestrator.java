@@ -316,13 +316,15 @@ public final class ApplyOrchestrator {
                                                                 Fn4<Result<ApplyResult>, DiffPlan, ClusterBootstrapConfig, ClusterBootstrapConfig, ApplyRecorder> executor) {
         var clusterName = desired.cluster().name();
         var started = startedState(plan, desired);
-
-        return ApplyState.save(started)
-                         .flatMap(_ -> executor.apply(plan,
-                                                      stored,
-                                                      desired,
-                                                      ApplyRecorder.applyRecorder(started)))
-                         .onSuccess(_ -> clearFinishedState(clusterName));
+        // Plan time: a cluster name whose minted node ids cannot be provider labels refuses the whole apply before the ledger exists.
+        return ApplyLabels.requireMintable(clusterName,
+                                           started.applyId())
+                          .flatMap(_ -> ApplyState.save(started))
+                          .flatMap(_ -> executor.apply(plan,
+                                                       stored,
+                                                       desired,
+                                                       ApplyRecorder.applyRecorder(started)))
+                          .onSuccess(_ -> clearFinishedState(clusterName));
     }
 
     private static ApplyState startedState(DiffPlan plan, ClusterBootstrapConfig desired) {
