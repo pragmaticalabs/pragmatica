@@ -313,6 +313,16 @@ class ApplyStateTest {
         }
 
         @Test
+        void withNode_keepsCreationOrder_whenARowChangesState() {
+            var first = ApplyResource.applyResource("k", "n-1", "fake", Option.none(), ApplyResource.State.INTENDED);
+            var second = ApplyResource.applyResource("k", "n-2", "fake", Option.none(), ApplyResource.State.INTENDED);
+            var state = ApplyStateFixtures.state(CLUSTER).withNode(first).withNode(second).withNode(ApplyResource.applyResource("k", "n-1", "fake", Option.some("srv"), ApplyResource.State.CREATED));
+
+            assertThat(state.resources()).extracting(ApplyResource::nodeId).containsExactly("n-1", "n-2");
+            assertThat(state.resources().getFirst().state()).isEqualTo(ApplyResource.State.CREATED);
+        }
+
+        @Test
         void withDestroyedNode_appendsInOrder() {
             var state = ApplyStateFixtures.state(CLUSTER).withDestroyedNode("a").withDestroyedNode("b");
 
