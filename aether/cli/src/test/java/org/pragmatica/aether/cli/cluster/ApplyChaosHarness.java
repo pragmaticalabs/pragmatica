@@ -120,6 +120,27 @@ final class ApplyChaosHarness {
                                                .isEmpty();
     }
 
+    /// The write-ahead invariant of cluster-apply spec 4.2: EVERY VM the provider holds, labelled or not, has a ledger
+    /// row (INTENDED or later) for its node id, at every moment, including right after a kill. Equality with the rows
+    /// that hold a VM is the weaker-in-time `assertNoLeak`, true only after recovery.
+    void assertEveryVmHasARow(ApplyState ledger) {
+        var rowNodeIds = ledger.resources()
+                               .stream()
+                               .map(ApplyResource::nodeId)
+                               .collect(java.util.stream.Collectors.toSet());
+        var unrecorded = new ArrayList<String>();
+
+        provider.nodeIdsByServer()
+                .forEach((server, nodeId) -> {
+                    if (!rowNodeIds.contains(nodeId)) {
+                        unrecorded.add("VM " + server + " (node " + nodeId + ") exists at the provider with no ledger row");
+                    }
+                });
+
+        assertThat(unrecorded).as("write-ahead invariant: every billed VM has a ledger row at or before the moment it exists")
+                              .isEmpty();
+    }
+
     /// For scenarios with no ledger on disk (a refused apply): no VM may carry the apply label at all.
     void assertNoApplyLabelledVm() {
         assertThat(provider.inventoryWithLabel(APPLY_LABEL)).as("no VM may carry an apply label when no ledger exists")
@@ -185,6 +206,19 @@ final class ApplyChaosHarness {
             });
 
             return matching;
+        }
+
+        /// Every VM the provider holds (listable or still landing), server id -> node id.
+        Map<String, String> nodeIdsByServer() {
+            var all = new LinkedHashMap<>(visible);
+
+            all.putAll(hidden);
+
+            var result = new LinkedHashMap<String, String>();
+
+            all.forEach((server, info) -> result.put(server, info.tags().getOrDefault(NODE_LABEL, "")));
+
+            return result;
         }
 
         Set<String> inventoryWithLabel(String label) {
