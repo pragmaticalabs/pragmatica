@@ -83,6 +83,37 @@ class TieredReaderRetentionRaceTest {
               .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.CursorExpired(2, 5)));
     }
 
+    /// v-2490 B1: a SHORT read (the consumer's default batch is 1) whose segment is removed between the two lookups has a range
+    /// that ends inside the removed segment; the range lookup used to throw `inconsistent range` out of `read` instead of
+    /// answering the expiry.
+    @Test
+    void read_shortReadSegmentRemovedBetweenEndAndRange_failsCursorExpired() {
+        index.reclaimInsideNextEndLookup(0);
+
+        reader.read(STREAM, PARTITION, 2, 3)
+              .await()
+              .onSuccess(events -> fail("expected CursorExpired, got events starting at " + events.getFirst().offset()))
+              .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.CursorExpired(2, 5)));
+    }
+
+    /// v-2490 T1: an interior segment removed between the lookups leaves a gap inside the run the range lookup returns
+    /// (0..4 then 10..14). The read answers the contiguous prefix starting at `fromOffset`; the next read starts in the gap and
+    /// is answered as the expiry it is.
+    @Test
+    void read_interiorSegmentRemovedBetweenEndAndRange_returnsOnlyTheContiguousPrefix() {
+        seal(10, 14);
+        index.reclaimInsideNextEndLookup(5);
+
+        reader.read(STREAM, PARTITION, 0, 15)
+              .await()
+              .onFailure(cause -> fail(cause.message()))
+              .onSuccess(events -> assertThat(events).extracting(RawEvent::offset).containsExactly(0L, 1L, 2L, 3L, 4L));
+        reader.read(STREAM, PARTITION, 5, 10)
+              .await()
+              .onSuccess(events -> fail("expected CursorExpired, got events starting at " + events.getFirst().offset()))
+              .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.CursorExpired(5, 10)));
+    }
+
     /// Retention removing the only segment under the read leaves nothing to start at: the tier answers empty (what an
     /// unsealed range answers) rather than failing on a missing first event.
     @Test
