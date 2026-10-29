@@ -1082,6 +1082,50 @@ class KvBackupServiceTest {
             assertThat(warnings).isEmpty();
         }
 
+        /// #2506 (1): leadership is decided when the stop is REQUESTED. A demotion that arrives after the call but before the worker
+        /// runs the flush (peers stopping drop the quorum) must not cancel it. The manual scheduler holds the worker still, so the
+        /// demotion lands in exactly that window, with no timing involved.
+        @Test
+        void stopFlushed_stillFlushes_whenADemotionArrivesBeforeTheWorkerRuns() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var service = leaderService(Option.some(remote));
+            var key = ConfigKey.forKey("inside-the-window");
+
+            put(service, key, ConfigValue.configValue("inside-the-window", "v"));
+
+            var stopping = service.stopFlushed(DEADLINE);
+
+            assertThat(stopping.isResolved()).as("control: the worker has not run the flush yet").isFalse();
+            service.onLeaderChange(leaderChange(false));
+            assertThat(service.isLeader()).as("control: the demotion landed before the flush").isFalse();
+
+            var stopped = settle(stopping);
+
+            assertThat(stopped.isSuccess()).isTrue();
+            assertThat(remoteDocument(remote).entries()).as("the flush requested as leader ran despite the demotion").containsKey(key);
+            assertThat(warnings).isEmpty();
+        }
+
+        /// #2506 (2): a node that led and was demoted before its own stop (peers stopped first) flushes nothing; that is reported, naming why.
+        @Test
+        void stopFlushed_reportsTheSkippedFlush_whenTheLeaderWasDemotedBeforeTheStop() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var service = leaderService(Option.some(remote));
+            var key = ConfigKey.forKey("inside-the-window");
+
+            put(service, key, ConfigValue.configValue("inside-the-window", "v"));
+            service.onLeaderChange(leaderChange(false));
+
+            var stopped = settle(service.stopFlushed(DEADLINE));
+
+            assertThat(stopped.isSuccess()).as("a skipped flush never holds the stop").isTrue();
+            assertThat(remoteDocument(remote).entries()).as("control: nothing was flushed").doesNotContainKey(key);
+            assertThat(warnings).filteredOn(warning -> warning.code() == Code.BACKUP_STOP_FLUSH_FAILED)
+                                .singleElement()
+                                .satisfies(warning -> assertThat(warning.detail()).as("names the reason and the window the backup may be missing")
+                                                                                  .contains("demoted before the stop was requested", "5500 ms"));
+        }
+
         @Test
         void stopFlushed_isANoOp_whenAlreadyStopped() {
             var service = leaderService(Option.some(bareRemote(temp.resolve("remote.git"))));
