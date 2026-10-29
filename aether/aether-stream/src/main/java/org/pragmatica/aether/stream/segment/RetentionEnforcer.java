@@ -325,6 +325,13 @@ public final class RetentionEnforcer implements AutoCloseable {
         log.info("RetentionEnforcer started with interval={}ms, defaultAgeMs={}", interval.millis(), defaultAgeMs);
     }
 
+    /// Whether this enforcer has a pass scheduled: started and not closed. A node starts its enforcer at node start and
+    /// closes it at node stop (#2201 3.2 item 6); this is how that is observed.
+    public boolean isScheduled() {
+        return ! closed.get() && option(scheduledFuture).filter(future -> !future.isCancelled())
+                                       .isPresent();
+    }
+
     @Contract
     @Override
     public void close() {

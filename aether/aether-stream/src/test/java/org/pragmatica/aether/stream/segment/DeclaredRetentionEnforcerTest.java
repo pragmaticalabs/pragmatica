@@ -16,6 +16,7 @@ import java.util.function.Supplier;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.RetentionDimensions;
+import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -189,6 +190,24 @@ class DeclaredRetentionEnforcerTest {
         awaitWarnings(2);
         assertThat(codes()).containsExactly(OperatorWarningCode.STREAM_RETENTION_WITHHELD,
                                             OperatorWarningCode.STREAM_RETENTION_RESUMED);
+    }
+
+    /// A stream whose retention mode this build cannot read (`UNKNOWN`, written by a newer node) is withheld like an
+    /// unanswered one, and announced the same way (#964; F4, e2).
+    @Test
+    void aStreamWhoseModeIsUnknown_isWithheld_andRaisedOnce() {
+        var index = sealed(STREAM, 3, System.currentTimeMillis() - 2 * DAY);
+        var unknown = RetentionPolicy.retentionPolicy(1, 1, 1, RetentionMode.UNKNOWN)
+                                     .withDeclared(RetentionDimensions.retentionDimensions(true, true, true));
+        var enforcer = enforcer(index, StreamRetentionSource.fixed(unknown), Option.none());
+
+        for (var pass = 0; pass < 3; pass++) {
+            enforcer.enforceNow().await();
+        }
+
+        assertThat(remaining(index, STREAM)).isEqualTo(3);
+        awaitWarnings(1);
+        assertThat(codes()).containsExactly(OperatorWarningCode.STREAM_RETENTION_WITHHELD);
     }
 
     /// One pass withheld is not yet an episode: a source that answers on the next pass raises nothing.

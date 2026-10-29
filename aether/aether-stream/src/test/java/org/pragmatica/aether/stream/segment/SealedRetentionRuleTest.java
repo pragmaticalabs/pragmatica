@@ -164,6 +164,13 @@ class SealedRetentionRuleTest {
         void nothingDeclared_reclaimsNothing() {
             assertThat(prefix(segments, RetentionPolicy.retentionPolicy(0, 0, 0))).isZero();
         }
+
+        /// Under `ALL` an empty declared set would make "every declared dimension is exceeded" vacuously true and reclaim
+        /// the whole history; the rule's own guard refuses it, whatever its caller substitutes (F4, r2).
+        @Test
+        void nothingDeclared_underAll_reclaimsNothing() {
+            assertThat(prefix(segments, RetentionPolicy.retentionPolicy(0, 0, 0, RetentionMode.ALL))).isZero();
+        }
     }
 
     /// NT-134 (rule half): a segment whose age is deterministically unreadable takes the age of the next newer segment
