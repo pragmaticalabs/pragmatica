@@ -294,6 +294,25 @@ class ApplyStateTest {
         }
 
         @Test
+        void withActionStatus_changesOnlyTheNamedAction_andIgnoresAnUnknownKey() {
+            var state = ApplyState.applyState(ApplyStateFixtures.APPLY_ID,
+                                              CLUSTER,
+                                              "h",
+                                              0L,
+                                              "t",
+                                              ApplyPhase.RUNNING,
+                                              List.of(ApplyAction.applyAction("a", 1, ApplyAction.Status.PENDING), ApplyAction.applyAction("b", 2, ApplyAction.Status.PENDING)),
+                                              List.of(),
+                                              List.of(),
+                                              List.of(),
+                                              List.of());
+
+            assertThat(state.withActionStatus("b", ApplyAction.Status.DONE).actions()).containsExactly(ApplyAction.applyAction("a", 1, ApplyAction.Status.PENDING),
+                                                                                                         ApplyAction.applyAction("b", 2, ApplyAction.Status.DONE));
+            assertThat(state.withActionStatus("zzz", ApplyAction.Status.DONE)).isEqualTo(state);
+        }
+
+        @Test
         void withDestroyedNode_appendsInOrder() {
             var state = ApplyStateFixtures.state(CLUSTER).withDestroyedNode("a").withDestroyedNode("b");
 

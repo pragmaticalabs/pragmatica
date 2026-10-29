@@ -109,7 +109,7 @@ class DlqStreamSinkTest {
                     5)
             .await()
             .onFailure(cause -> fail(cause.message()));
-        var entries = sink.read(TOPIC_STREAM, 10);
+        var entries = sink.read(TOPIC_STREAM, 10).await().unwrap();
 
         assertThat(entries).hasSize(1);
         assertThat(entries.getFirst().streamName()).isEqualTo(TOPIC_STREAM);
@@ -120,10 +120,28 @@ class DlqStreamSinkTest {
     }
 
     @Test
-    void read_returnsEmpty_whenNothingDeadLettered() {
+    void read_returnsEmpty_whenTheDlqStreamExistsAndNothingIsDeadLettered() {
+        DurableTopicSubstrate.durableTopicSubstrate(manager)
+                             .activateTopic(ADDRESS,
+                                            org.pragmatica.aether.resource.DurableTopicSpec.durableTopicSpec(1,
+                                                                                                             new org.pragmatica.aether.slice.ReplicationDeclaration.Resolved(new org.pragmatica.aether.slice.ReplicationFactors(3, 3), java.util.List.of()),
+                                                                                                             org.pragmatica.lang.parse.TimeSpan.timeSpan("7d")
+                                                                                                                                               .unwrap())
+                                                                                           .unwrap())
+                             .onFailure(cause -> fail(cause.message()));
         var sink = new DlqStreamSink(codec, manager, _ -> capturing(new CopyOnWriteArrayList<>()));
 
-        assertThat(sink.read(TOPIC_STREAM, 10)).isEmpty();
+        assertThat(sink.read(TOPIC_STREAM, 10).await().unwrap()).isEmpty();
+    }
+
+    @Test
+    void read_failsWithStreamNotFound_whenThisNodeHoldsNoDlqStream_insteadOfAnsweringEmpty() {
+        var sink = new DlqStreamSink(codec, manager, _ -> capturing(new CopyOnWriteArrayList<>()));
+
+        sink.read(TOPIC_STREAM, 10)
+            .await()
+            .onSuccess(entries -> fail("a node without the DLQ stream answered " + entries))
+            .onFailure(cause -> assertThat(cause).isInstanceOf(org.pragmatica.aether.stream.StreamError.StreamNotFound.class));
     }
 
     @Test
@@ -152,8 +170,8 @@ class DlqStreamSinkTest {
                .await()
                .onFailure(cause -> fail(cause.message()));
         assertThat(topicAppends).hasSize(1);
-        assertThat(fallback.read("orders", 10)).hasSize(1);
-        assertThat(routing.read("orders", 10)).hasSize(1);
+        assertThat(fallback.read("orders", 10).await().unwrap()).hasSize(1);
+        assertThat(routing.read("orders", 10).await().unwrap()).hasSize(1);
     }
 
     /// #1266: an event whose topic envelope does not decode must be QUARANTINED RAW, never thrown out
@@ -199,7 +217,7 @@ class DlqStreamSinkTest {
         sink.append(TOPIC_STREAM, 0, 9L, "group-a", garbage, "undecodable", 1)
             .await()
             .onFailure(cause -> fail(cause.message()));
-        var entries = sink.read(TOPIC_STREAM, 10);
+        var entries = sink.read(TOPIC_STREAM, 10).await().unwrap();
 
         assertThat(entries).hasSize(1);
         assertThat(entries.getFirst().rawEvent()).isTrue();
@@ -232,7 +250,7 @@ class DlqStreamSinkTest {
             .await()
             .onFailure(cause -> fail(cause.message()));
 
-        var entries = org.pragmatica.lang.Result.lift(() -> sink.read(TOPIC_STREAM, 10));
+        var entries = org.pragmatica.lang.Result.lift(() -> sink.read(TOPIC_STREAM, 10).await().unwrap());
 
         assertThat(entries.isSuccess()).describedAs("read must not throw on an undecodable DLQ record: %s", entries)
                                        .isTrue();

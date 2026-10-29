@@ -26,7 +26,10 @@ public interface DeadLetterHandler {
                          String errorMessage,
                          int attemptCount);
 
-    List<DeadLetterEntry> read(String streamName, int maxCount);
+    /// The dead letters of `streamName`, at most `maxCount`, oldest first. The promise carries the failure: an inspection
+    /// that could not read (a seal still in flight, the owner not serving, a refused tier read) fails with its cause,
+    /// and is never answered as an empty list, which would read as "nothing was dead-lettered".
+    Promise<List<DeadLetterEntry>> read(String streamName, int maxCount);
 
     /// `failingGroup` is the consumer group whose retries exhausted (durable-pubsub-spec §9 —
     /// redrive is group-targeted, so the attribution must survive into the entry; a dead letter

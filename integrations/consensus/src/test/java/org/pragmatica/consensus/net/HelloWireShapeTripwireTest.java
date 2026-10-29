@@ -22,16 +22,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// `Hello` (second review), which is a wire change on a type whose compatibility nothing asserts. Pre-GA, breaking wire changes are ruled
 /// fine (R-024); this tripwire exists so the change cannot land without someone deciding that on purpose.
 ///
+/// Decided on purpose, ID-1c (#2429): `retirements` is the sixth component, the identity-ledger merge at join, a breaking wire change
+/// under that same pre-GA ruling (no cluster mixes builds before GA, so no old-shape decode test is owed).
+///
 /// There is no disabled twin: the real assertion is a rolling-upgrade interop test (an old-shape `Hello` decodes under the new codec,
 /// and the reverse) that cannot be written until the new shape exists. The failure message says to write it with the change.
 class HelloWireShapeTripwireTest {
     @Test
-    void hello_carriesExactlyTheFiveFieldsOfRc4_noVersionNoGeneration() {
+    void hello_carriesExactlyTheFiveFieldsOfRc4_plusTheRetirementsOfTheIdentityMerge_noVersionNoGeneration() {
         var components = Arrays.stream(NetworkMessage.Hello.class.getRecordComponents()).map(component -> component.getName()).toList();
 
         assertThat(components)
             .as("TRIPWIRE U-007: Hello changed shape. Add the old-shape/new-shape decode test for the rolling-upgrade window (or record the "
                 + "pre-GA ruling that breaks it) in the same change, then update this list.")
-            .containsExactly("sender", "address", "labels", "bootToken", "intendedPeer");
+            .containsExactly("sender", "address", "labels", "bootToken", "intendedPeer", "retirements");
     }
 }

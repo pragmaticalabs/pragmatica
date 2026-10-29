@@ -210,14 +210,14 @@ class ApplyOrchestratorTest {
             return stateRoot.resolve(CLUSTER.value()).resolve("apply-state.json");
         }
 
-        private Result<ApplyResult> run(org.pragmatica.lang.Functions.Fn3<Result<ApplyResult>, DiffPlan, ClusterBootstrapConfig, ClusterBootstrapConfig> executor) {
+        private Result<ApplyResult> run(org.pragmatica.lang.Functions.Fn4<Result<ApplyResult>, DiffPlan, ClusterBootstrapConfig, ClusterBootstrapConfig, ApplyRecorder> executor) {
             var stored = forgeConfig(3);
             var desired = forgeConfig(5);
 
             return ApplyOrchestrator.executeAndPersist(ClusterBootstrapConfigDiff.diff(stored, desired), stored, desired, executor);
         }
 
-        private Result<ApplyResult> countingSuccess(DiffPlan plan, ClusterBootstrapConfig stored, ClusterBootstrapConfig desired) {
+        private Result<ApplyResult> countingSuccess(DiffPlan plan, ClusterBootstrapConfig stored, ClusterBootstrapConfig desired, ApplyRecorder recorder) {
             executed.incrementAndGet();
 
             return Result.success(ApplyResult.applyResult(plan, 2, 0, 0));
@@ -238,14 +238,14 @@ class ApplyOrchestratorTest {
             return recorded;
         }
 
-        private Result<ApplyResult> createsOneThenFails(DiffPlan plan, ClusterBootstrapConfig stored, ClusterBootstrapConfig desired) {
+        private Result<ApplyResult> createsOneThenFails(DiffPlan plan, ClusterBootstrapConfig stored, ClusterBootstrapConfig desired, ApplyRecorder recorder) {
             executed.incrementAndGet();
             createAndRecord("n-1");
 
             return org.pragmatica.lang.utils.Causes.cause("provider refused the second create (test cause)").result();
         }
 
-        private Result<ApplyResult> failingExecutor(DiffPlan plan, ClusterBootstrapConfig stored, ClusterBootstrapConfig desired) {
+        private Result<ApplyResult> failingExecutor(DiffPlan plan, ClusterBootstrapConfig stored, ClusterBootstrapConfig desired, ApplyRecorder recorder) {
             executed.incrementAndGet();
 
             return org.pragmatica.lang.utils.Causes.cause("provider refused (test cause)").result();
@@ -269,15 +269,18 @@ class ApplyOrchestratorTest {
         @Test
         void executeAndPersist_ledgerIsDurableAndRunning_whenTheExecutorStarts() {
             var seen = new java.util.concurrent.atomic.AtomicReference<ApplyState>();
+            var recorderState = new java.util.concurrent.atomic.AtomicReference<ApplyState>();
 
-            run((plan, stored, desired) -> {
+            run((plan, stored, desired, recorder) -> {
                 seen.set(ApplyState.read(CLUSTER).unwrap().unwrap());
+                recorderState.set(recorder.snapshot());
                 var recorded = createAndRecord("n-1");
                 harness.assertNoLeak(recorded.applyId(), ApplyState.read(CLUSTER).unwrap().unwrap());
-                return countingSuccess(plan, stored, desired);
+                return countingSuccess(plan, stored, desired, recorder);
             }).onFailure(cause -> fail(cause.message()));
 
             harness.assertAtMostOneCreatePerNodeId();
+            assertEquals(seen.get(), recorderState.get(), "the recorder starts from exactly the ledger that was saved");
             assertEquals(ApplyPhase.RUNNING, seen.get().phase());
             assertEquals(ClusterBootstrapOrchestrator.computeConfigHash(forgeConfig(5)), seen.get().configHash());
             assertEquals(List.of("ScaleUp|forge|core|3->5"), seen.get().actions().stream().map(ApplyAction::key).toList());
@@ -300,10 +303,10 @@ class ApplyOrchestratorTest {
 
         @Test
         void executeAndPersist_success_removesTheLedger() {
-            run((plan, stored, desired) -> {
+            run((plan, stored, desired, recorder) -> {
                 createAndRecord("n-1");
                 createAndRecord("n-2");
-                return countingSuccess(plan, stored, desired);
+                return countingSuccess(plan, stored, desired, recorder);
             }).onFailure(cause -> fail(cause.message()))
               .onSuccess(result -> assertEquals(harness.provider.totalCreates(), result.nodesAdded(), "created == planned"));
 
@@ -320,9 +323,9 @@ class ApplyOrchestratorTest {
 
             System.setErr(new java.io.PrintStream(captured, true));
             try {
-                run((plan, stored, desired) -> {
+                run((plan, stored, desired, recorder) -> {
                     replaceLedgerWithNonEmptyDirectory();
-                    return countingSuccess(plan, stored, desired);
+                    return countingSuccess(plan, stored, desired, recorder);
                 }).onFailure(cause -> fail("the VMs exist; the exit status must not claim otherwise: " + cause.message()))
                   .onSuccess(result -> assertEquals(2, result.nodesAdded()));
             } finally {
