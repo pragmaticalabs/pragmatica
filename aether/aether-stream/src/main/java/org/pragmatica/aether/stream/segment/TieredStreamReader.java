@@ -5,7 +5,6 @@
 package org.pragmatica.aether.stream.segment;
 
 import java.util.List;
-import java.util.stream.IntStream;
 
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.StreamError;
@@ -80,8 +79,9 @@ final class TieredReader implements TieredStreamReader {
     ///     ([#holeOrNothingSealed]: `CursorExpired` naming the next sealed offset);
     ///   - the first event is above `fromOffset`: the cursor's segment was removed and the range started at the next one, so
     ///     `CursorExpired(fromOffset, firstOffset)`;
-    ///   - otherwise the run up to its first gap. A segment removed from the middle leaves a gap; the prefix is a valid answer
-    ///     (events from `fromOffset`, no skip) and the next read starts inside the gap and is answered as the expiry it is.
+    ///   - otherwise the events [SegmentReader] returned, which stop at the first gap between segments (a segment removed
+    ///     from the middle): that prefix starts at `fromOffset`, and the next read starts inside the gap and is answered as the
+    ///     expiry it is. Events missing INSIDE one segment are not this reader's to hide: the consumer of the history refuses them.
     private Promise<List<RawEvent>> startingAt(String streamName,
                                                int partition,
                                                long fromOffset,
@@ -95,23 +95,8 @@ final class TieredReader implements TieredStreamReader {
         var first = events.getFirst().offset();
 
         return first == fromOffset
-               ? Promise.success(densePrefix(events))
+               ? Promise.success(events)
                : new StreamError.CursorExpired(fromOffset, first).promise();
-    }
-
-    private static List<RawEvent> densePrefix(List<RawEvent> events) {
-        return events.subList(0,
-                              IntStream.range(1,
-                                              events.size())
-                                       .filter(index -> isGapBefore(events, index))
-                                       .findFirst()
-                                       .orElse(events.size()));
-    }
-
-    private static boolean isGapBefore(List<RawEvent> events, int index) {
-        return events.get(index)
-                     .offset() != events.get(index - 1)
-                                        .offset() + 1;
     }
 
     private static int boundedCount(long fromOffset, long contiguousEnd, int maxEvents) {

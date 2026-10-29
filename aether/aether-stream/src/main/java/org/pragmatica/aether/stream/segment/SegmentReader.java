@@ -9,6 +9,7 @@ import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.IntStream;
 
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.lang.Cause;
@@ -53,13 +54,31 @@ public final class SegmentReader {
 
     public Promise<List<RawEvent>> readEvents(String streamName, int partition, long fromOffset, int maxEvents) {
         var endOffset = fromOffset + maxEvents - 1;
-        var refs = index.segmentRange(streamName, partition, fromOffset, endOffset);
+        var refs = contiguousRun(index.segmentRange(streamName, partition, fromOffset, endOffset));
 
         if (refs.isEmpty()) {
             return Promise.success(List.of());
         }
 
         return readFromSegmentRefs(streamName, partition, refs, fromOffset, maxEvents);
+    }
+
+    /// The refs up to the first gap between two of them. Retention removes segments while a read runs, so the range lookup can
+    /// return a run with a segment missing from the middle; reading across the gap would deliver events with offsets skipped
+    /// (#2224). The run stops before the gap: the read answers the prefix, and the next read starts inside the gap.
+    private static List<SegmentIndex.SegmentRef> contiguousRun(List<SegmentIndex.SegmentRef> refs) {
+        return refs.subList(0,
+                            IntStream.range(1,
+                                            refs.size())
+                                     .filter(position -> isGapBefore(refs, position))
+                                     .findFirst()
+                                     .orElse(refs.size()));
+    }
+
+    private static boolean isGapBefore(List<SegmentIndex.SegmentRef> refs, int position) {
+        return refs.get(position)
+                   .startOffset() != refs.get(position - 1)
+                                         .endOffset() + 1;
     }
 
     /// The latest event timestamp in `ref`'s block (#1604), decoded the same way a read decodes it -- the
