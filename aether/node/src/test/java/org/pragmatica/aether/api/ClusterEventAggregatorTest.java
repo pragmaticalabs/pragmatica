@@ -1489,6 +1489,28 @@ class ClusterEventAggregatorTest {
             .isTrue();
     }
 
+    /// The cap is for NEW subjects only: with it full, an already-open subject that is raised again is not counted as dropped, and it keeps its recovery.
+    @Test
+    void onOperatorWarning_capFull_anAlreadyOpenSubjectIsNotDropped_andKeepsItsRecovery() {
+        var t = new AtomicLong(1_000_000L);
+        var h = clocked(t);
+        var first = "10.1.0.0:7000";
+
+        for (var i = 0; i < ClusterEventAggregator.MAX_OPEN_RECOVERABLE_PER_CODE; i++) {
+            h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER, "10.1." + (i / 256) + "." + (i % 256) + ":7000", "spoofed"));
+        }
+
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER, first, "raised again"));
+
+        assertThat(h.aggregator().openCapDropped()).as("an open subject is not a new one").isZero();
+
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.GOSSIP_KEY_PEER_DECRYPTED, first, "repaired"));
+
+        assertThat(h.events().stream().anyMatch(event -> "gossip-key-peer-decrypted".equals(event.details().get("code")) && first.equals(event.details().get("subject"))))
+            .as("and its recovery publishes")
+            .isTrue();
+    }
+
     /// The cap is for the code whose subject can be forged and for no other: a recoverable code with a trustworthy subject still publishes its 300th
     /// open subject, and each of them still gets its recovery.
     @Test

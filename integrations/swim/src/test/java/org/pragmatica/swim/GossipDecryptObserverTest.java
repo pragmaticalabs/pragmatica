@@ -277,9 +277,11 @@ class GossipDecryptObserverTest {
 
         awaitPublished(16);
         clock.addAndGet(GossipDecryptObserver.Reporting.WINDOW_MILLIS + 1);
-        windowed.decrypted(OTHER);
+        // a sender that was never reported, so this datagram can only roll the window (OTHER is the address of spoofed(8))
+        windowed.decrypted(new InetSocketAddress("10.9.9.9", 7000));
         awaitPublished(17);
 
+        assertThat(published).hasSize(17);
         assertThat(published.getLast().code()).isEqualTo(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_SENDERS_SUPPRESSED);
     }
 

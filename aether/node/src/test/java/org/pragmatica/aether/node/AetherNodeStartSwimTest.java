@@ -311,6 +311,38 @@ class AetherNodeStartSwimTest {
         }
     }
 
+    /// #1200 — feed 2, the peer-directory site (the cores the cluster published, which a node learns beyond its own `--peers`): a directory observed
+    /// BEFORE the start is seeded when the protocol starts, and one observed AFTER it is seeded at once. Neither needs a datagram to decrypt.
+    @Test
+    void peerDirectory_isSeededAsDiscoveredMembers_whetherObservedBeforeOrAfterTheStart() throws Exception {
+        var detector = detectorWithSwimPort(freeUdpPort());
+        var discovered = new java.util.concurrent.CopyOnWriteArrayList<NodeId>();
+        var before = new NodeId("node-3");
+        var after = new NodeId("node-4");
+
+        detector.addObservationListener(observation -> {
+            if (observation instanceof org.pragmatica.swim.SwimObservation.MemberDiscovered member) {
+                discovered.add(member.nodeInfo().id());
+            }
+        });
+        detector.observePeerDirectory(List.of(directoryEntry(before, 9003)));
+
+        try {
+            assertThat(detector.start(Option.none(), GossipEncryptor.none()).await().isSuccess()).isTrue();
+            assertThat(discovered).as("observed before the start").contains(before);
+
+            detector.observePeerDirectory(List.of(directoryEntry(before, 9003), directoryEntry(after, 9004)));
+
+            assertThat(discovered).as("observed after the start, seeded at once").contains(after);
+        } finally {
+            detector.stop();
+        }
+    }
+
+    private static NodeInfo directoryEntry(NodeId id, int port) {
+        return NodeInfo.nodeInfo(id, NodeAddress.nodeAddress("127.0.0.3", port).unwrap());
+    }
+
     private static void send(DatagramSocket sender, int port, byte[] datagram) throws Exception {
         sender.send(new DatagramPacket(datagram, datagram.length, InetAddress.getLoopbackAddress(), port));
     }
