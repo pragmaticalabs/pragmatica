@@ -51,7 +51,15 @@ public record BlockLifecycle(BlockId blockId,
                           int accessCount,
                           long orphanedAt,
                           boolean cacheOnly) {
-        this(blockId, presentIn, refCount, lastAccessedAt, createdAt, accessCount, orphanedAt, cacheOnly, SharedDelete.NONE);
+        this(blockId,
+             presentIn,
+             refCount,
+             lastAccessedAt,
+             createdAt,
+             accessCount,
+             orphanedAt,
+             cacheOnly,
+             SharedDelete.NONE);
     }
 
     /// A record that is not a cache marker: the shape every record had before [#cacheOnly] existed.

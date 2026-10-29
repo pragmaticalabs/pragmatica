@@ -99,7 +99,7 @@ final class DefaultStorageGarbageCollector implements StorageGarbageCollector {
                                      .stream()
                                      .filter(BlockLifecycle::isOrphaned)
                                      .filter(lc -> option(durableOrphans.get(lc.blockId())).filter(saved -> saved.sharedDelete() == lc.sharedDelete())
-                                                                                     .isPresent())
+                                                         .isPresent())
                                      .limit(config.batchSize())
                                      .map(this::deleteFlaggedOrPrivate)
                                      .reduce(0, Integer::sum);
@@ -124,11 +124,16 @@ final class DefaultStorageGarbageCollector implements StorageGarbageCollector {
         }
 
         return snapshots.snapshotNow()
-                        .map(durable -> collectDurablyFlagged(flagged, durableOrphansOf(durable), cutoff, limits))
+                        .map(durable -> collectDurablyFlagged(flagged,
+                                                              durableOrphansOf(durable),
+                                                              cutoff,
+                                                              limits))
                         .onFailure(cause -> log.warn("Shared-tier collection deferred: the metadata snapshot that makes its "
                                                     + "authority durable could not be written: {}",
                                                      cause.message()))
-                        .or(new SharedDeleteRun(0, 0, flagged.size()));
+                        .or(new SharedDeleteRun(0,
+                                                0,
+                                                flagged.size()));
     }
 
     private List<BlockLifecycle> flaggedOrphans() {
@@ -146,7 +151,7 @@ final class DefaultStorageGarbageCollector implements StorageGarbageCollector {
         var ready = flagged.stream()
                            .filter(lc -> lc.orphanedAt() <= cutoff)
                            .filter(lc -> option(durable.get(lc.blockId())).filter(saved -> saved.sharedDelete() == lc.sharedDelete())
-                                                                     .isPresent())
+                                               .isPresent())
                            .limit(limits.maxBlocks())
                            .toList();
         var deadline = System.currentTimeMillis() + limits.maxDurationMs();
@@ -155,11 +160,9 @@ final class DefaultStorageGarbageCollector implements StorageGarbageCollector {
         var started = 0;
 
         while (started < ready.size() && System.currentTimeMillis() < deadline) {
-            var batch = ready.subList(started, Math.min(started + limits.concurrency(), ready.size()));
-            var outcomes = Promise.allOf(batch.stream()
-                                              .map(instance::deleteEverywhere)
-                                              .toList())
-                                  .await();
+            var batch = ready.subList(started,
+                                      Math.min(started + limits.concurrency(), ready.size()));
+            var outcomes = Promise.allOf(batch.stream().map(instance::deleteEverywhere).toList()).await();
 
             started += batch.size();
             for (var outcome : outcomes.or(List.of())) {
@@ -182,7 +185,9 @@ final class DefaultStorageGarbageCollector implements StorageGarbageCollector {
         return durable.lifecycles()
                       .stream()
                       .filter(BlockLifecycle::isOrphaned)
-                      .collect(Collectors.toMap(BlockLifecycle::blockId, lc -> lc, (first, _) -> first));
+                      .collect(Collectors.toMap(BlockLifecycle::blockId,
+                                                lc -> lc,
+                                                (first, _) -> first));
     }
 
     @Override

@@ -859,7 +859,6 @@ final class DefaultSnapshotManager implements SnapshotManager {
         // 0 (unorphaned) for a live one -- rather than duplicating it here.
         if (parts.length > 6) {
             var orphanedAt = Long.parseLong(parts[6]);
-
             var flags = lineFlags(parts);
 
             return BlockLifecycle.blockLifecycle(id,

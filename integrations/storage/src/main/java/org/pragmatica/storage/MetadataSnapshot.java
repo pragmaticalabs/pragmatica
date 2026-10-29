@@ -109,7 +109,6 @@ public record MetadataSnapshot(long epoch,
           .append(lifecycle.accessCount())
           .append('|')
           .append(lifecycle.orphanedAt());
-
         var flags = lineFlags(lifecycle);
 
         return flags.isEmpty()
@@ -125,6 +124,7 @@ public record MetadataSnapshot(long epoch,
         if (lifecycle.cacheOnly()) {
             flags.add(LineFlag.CACHE_ONLY.name());
         }
+
         switch (lifecycle.sharedDelete()) {
             case AUTHORISED -> flags.add(LineFlag.SHARED_DELETE_AUTHORISED.name());
             case IF_IDENTIFIED -> flags.add(LineFlag.SHARED_DELETE_IF_IDENTIFIED.name());
