@@ -1457,6 +1457,8 @@ class ClusterEventAggregatorTest {
     /// is admitted (and gets its recovery) once they have.
     @Test
     void onOperatorWarning_capFullOfSpoofedMarks_aRealSenderIsAdmittedOnceTheyExpire() {
+        assertThat(ClusterEventAggregator.SPOOFABLE_OPEN_TTL_MS).as("ten observer windows, pinned as a number").isEqualTo(600_000L);
+        assertThat(ClusterEventAggregator.MAX_OPEN_RECOVERABLE_PER_CODE).isEqualTo(256);
         var t = new AtomicLong(1_000_000L);
         var h = clocked(t);
 
