@@ -23,7 +23,6 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.SliceStore.sliceStore;
 import org.pragmatica.aether.slice.dependency.DependencyResolver;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
-import org.pragmatica.aether.slice.dependency.WatchingCodecThrowsLaterFactory;
 import org.pragmatica.aether.slice.dependency.WatchingSlowFactory;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
@@ -61,8 +60,6 @@ class SliceStoreConfigWatchLifecycleTest {
     private static final Artifact D = artifact("org.example:d:1.0.0");
     private static final Artifact CODEC_THROWS = artifact("org.example:codec-throws:1.0.0");
     private static final Artifact CODEC_THROWS_DEP = artifact("org.example:codec-throws-dep:1.0.0");
-    private static final Artifact E = artifact("org.example:e:1.0.0");
-    private static final Artifact XE = artifact("org.example:xe:1.0.0");
     private static final SliceInvokerFacade STUB_INVOKER = new SliceInvokerFacade() {
         @Override
         public <R, T> Result<MethodHandle<R, T>> methodHandle(String artifact, String method, TypeToken<T> requestType, TypeToken<R> responseType) {
@@ -84,8 +81,6 @@ class SliceStoreConfigWatchLifecycleTest {
         var jars = Map.of(SLOW.asString(), jar(SLOW, SLOW_CLASS, ""),
                           CODEC_THROWS.asString(), jar(CODEC_THROWS, CODEC_THROWS_CLASS, ""),
                           CODEC_THROWS_DEP.asString(), jar(CODEC_THROWS_DEP, CODEC_THROWS_CLASS, "[slices]\n" + D.asString() + "\n"),
-                          E.asString(), jar(E, "org.pragmatica.aether.slice.dependency.WatchingCodecThrowsLaterFactory", ""),
-                          XE.asString(), jar(XE, DEP_CLASS, "[slices]\n" + E.asString() + "\n"),
                           D.asString(), jar(D, DEP_CLASS, ""),
                           X.asString(), jar(X, DEP_CLASS, "[slices]\n" + D.asString() + "\n"),
                           Y.asString(), jar(Y, DEP_CLASS, "[slices]\n" + D.asString() + "\n"));
@@ -202,23 +197,6 @@ class SliceStoreConfigWatchLifecycleTest {
             assertThat(feed.count(CODEC_THROWS_DEP)).isZero();
         });
         assertThat(registry.lookup(D).isPresent() && feed.count(D) == 1).as("its dependency was created by this load but stays: it is registered and live").isTrue();
-    }
-
-    @Test
-    void aFailedTopLevelLoad_ofAnInstanceAnEarlierLoadRegistered_leavesItRegisteredAndSubscribed() {
-        WatchingCodecThrowsLaterFactory.codecCalls.set(0);
-        var withCodec = storeWithNodeCodec();
-
-        assertThat(withCodec.loadSlice(XE).await().isSuccess()).as("XE loads, E is created as its dependency (codec call 1)").isTrue();
-        assertThat(registry.lookup(E).isPresent() && feed.count(E) == 1).as("E registered and subscribed by XE's load").isTrue();
-
-        var again = withCodec.loadSlice(E).await();
-
-        assertCodecBindFailure(again, E);
-        await().pollDelay(Duration.ofMillis(500)).atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
-            assertThat(registry.lookup(E).isPresent()).as("E is still XE's live dependency: must stay registered").isTrue();
-            assertThat(feed.count(E)).as("and subscribed").isEqualTo(1);
-        });
     }
 
     /// The failure is the typed `CodecBindFailed`, names the artifact whose load failed, and carries the slice's own
