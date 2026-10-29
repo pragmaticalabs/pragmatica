@@ -1440,6 +1440,63 @@ class StreamConsumerRuntimeTest {
             }
         }
 
+        /// The trailing timer is released when it fires: a burst after the first one is committed too.
+        @Test
+        void quietPartition_secondBurstAfterTheFirstCommit_isCommittedToo() throws Exception {
+            createTestStream("orders");
+            var commits = new CopyOnWriteArrayList<Long>();
+            var delivered = new CopyOnWriteArrayList<Long>();
+            var storeRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), recordingStore(commits));
+
+            try {
+                storeRuntime.subscribe("orders",
+                                       0,
+                                       cadence(),
+                                       (offset, payload, ts) -> record(delivered, offset),
+                                       IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED);
+                manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
+                awaitContains(commits, 1L, 3 * CADENCE_MS + 1_000);
+                manager.publishLocal("orders", 0, "event-2".getBytes(UTF_8), 2000L);
+                manager.publishLocal("orders", 0, "event-3".getBytes(UTF_8), 3000L);
+                awaitContains(commits, 3L, 3 * CADENCE_MS + 1_000);
+
+                assertThat(commits).describedAs("each burst's head is requested once the burst ends").contains(1L, 3L);
+            } finally {
+                storeRuntime.close();
+            }
+        }
+
+        /// A head the delivery path already committed is not committed again by the timer that was armed before it: the
+        /// first ack arms the timer inside the first cadence, the second ack (past the cadence) commits through the periodic
+        /// trigger, and the timer then finds nothing ahead of that commit.
+        @Test
+        void quietPartition_headCommittedByTheDeliveryPath_isNotCommittedAgain() throws Exception {
+            createTestStream("orders");
+            var commits = new CopyOnWriteArrayList<Long>();
+            var delivered = new CopyOnWriteArrayList<Long>();
+            var storeRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), recordingStore(commits));
+            var cadenceMs = 2 * CADENCE_MS;
+
+            try {
+                storeRuntime.subscribe("orders",
+                                       0,
+                                       ConsumerConfig.consumerConfig("group-1", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, cadenceMs, 3, ""),
+                                       (offset, payload, ts) -> record(delivered, offset),
+                                       IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED);
+                Thread.sleep(cadenceMs / 2);
+                manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
+                awaitCursorAt(storeRuntime, "orders", 0, "group-1", 1L, 5_000);
+                Thread.sleep(cadenceMs / 2 + 100);
+                manager.publishLocal("orders", 0, "event-2".getBytes(UTF_8), 2000L);
+                awaitContains(commits, 2L, 3 * cadenceMs);
+                Thread.sleep(2 * cadenceMs);
+
+                assertThat(commits).describedAs("committed once, by the delivery path").containsExactly(2L);
+            } finally {
+                storeRuntime.close();
+            }
+        }
+
         private static Promise<Unit> record(List<Long> delivered, long offset) {
             delivered.add(offset);
 

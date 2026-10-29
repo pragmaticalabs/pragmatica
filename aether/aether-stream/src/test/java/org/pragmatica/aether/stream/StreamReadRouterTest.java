@@ -6,13 +6,13 @@ package org.pragmatica.aether.stream;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
 import org.pragmatica.aether.stream.forward.StreamForwardHandler;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
@@ -51,7 +51,8 @@ class StreamReadRouterTest {
     private static final String GROUP = "group-router";
 
     private final SealedTierFixture tier = new SealedTierFixture();
-    private final AtomicBoolean ringClosesAfterFirstRead = new AtomicBoolean(false);
+    /// How many answers carry the owner's real bounds before its ring starts answering a tail of -1.
+    private volatile int realAnswers = Integer.MAX_VALUE;
     private final AtomicInteger answers = new AtomicInteger();
     private final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
     private final List<Long> delivered = new CopyOnWriteArrayList<>();
@@ -85,12 +86,35 @@ class StreamReadRouterTest {
     void forwardedTierRead_ownerRingClosing_isNotLabelledRing() {
         var router = forwardingRouter();
 
-        ringClosesAfterFirstRead.set(true);
+        realAnswers = 1;
         consume(router);
         awaitUntil(() -> delivered.size() >= 30 && answers.get() >= 4, "delivered 0..29 and read on while the owner's ring tail is unknown");
         pause(500);
 
         assertThat(codes()).as("an unknown tail neither closes the episode nor opens one").containsExactly(STREAM_CONSUMER_BEHIND_RING);
+    }
+
+    /// An owner whose ring tail is unknown from the first answer never opens the episode either: nothing says the read was
+    /// served from the tier.
+    @Test
+    void forwardedRead_ownerRingClosingFromTheStart_opensNoEpisode() {
+        var router = forwardingRouter();
+
+        realAnswers = 0;
+        consume(router);
+        awaitUntil(() -> delivered.size() >= 30 && answers.get() >= 4, "delivered 0..29 while the owner's ring tail is unknown");
+        pause(500);
+
+        assertThat(codes()).as("an unknown tail names no tier read").isEmpty();
+    }
+
+    @Test
+    void epochRead_unknownPosition_isNotATierRead() {
+        var unknown = StreamPartitionManager.EpochRead.epochRead(List.of(), Epoch.ZERO, StreamPartitionManager.EpochRead.Position.UNKNOWN);
+
+        assertThat(unknown.fromTier()).isFalse();
+        assertThat(StreamPartitionManager.EpochRead.epochRead(List.of(), Epoch.ZERO, true).position()).isEqualTo(StreamPartitionManager.EpochRead.Position.TIER);
+        assertThat(StreamPartitionManager.EpochRead.epochRead(List.of(), Epoch.ZERO, false).position()).isEqualTo(StreamPartitionManager.EpochRead.Position.RING);
     }
 
     /// NT-164 control: the same consumer with the owner's real bounds is back in the ring once it reads from it; the control
@@ -123,7 +147,7 @@ class StreamReadRouterTest {
 
     /// What the wire carries when the owner's ring is closing: `tailOffset()` answers -1, the visible head is as it was.
     private ReadForwardResponse boundsOf(ReadForwardResponse response) {
-        return ringClosesAfterFirstRead.get() && answers.incrementAndGet() > 1
+        return answers.incrementAndGet() > realAnswers
                ? new ReadForwardResponse(response.sender(),
                                          response.correlationId(),
                                          response.success(),

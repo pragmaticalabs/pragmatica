@@ -83,6 +83,19 @@ class TieredReaderRetentionRaceTest {
               .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.CursorExpired(2, 5)));
     }
 
+    /// Retention removing the only segment under the read leaves nothing to start at: the tier answers empty (what an
+    /// unsealed range answers) rather than failing on a missing first event.
+    @Test
+    void read_onlySegmentRemovedBetweenEndAndRange_answersEmpty() {
+        index.removeSegment(STREAM, PARTITION, 5);
+        index.reclaimInsideNextEndLookup(0);
+
+        reader.read(STREAM, PARTITION, 2, 10)
+              .await()
+              .onFailure(cause -> fail(cause.message()))
+              .onSuccess(events -> assertThat(events).isEmpty());
+    }
+
     /// NT-164 control: the same read with no reclaim in between returns events starting at `fromOffset`.
     @Test
     void read_notRacingAReclaim_returnsEventsFromFromOffset() {

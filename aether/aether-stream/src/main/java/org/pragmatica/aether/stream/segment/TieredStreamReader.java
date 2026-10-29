@@ -69,7 +69,20 @@ final class TieredReader implements TieredStreamReader {
 
     private Promise<List<RawEvent>> readContiguous(String streamName, int partition, long fromOffset, int maxEvents) {
         return reader.readEvents(streamName, partition, fromOffset, maxEvents)
+                     .flatMap(events -> startingAt(fromOffset, events))
                      .onSuccess(events -> triggerPrefetchIfNearEnd(streamName, partition, fromOffset, maxEvents, events));
+    }
+
+    /// #2224 (I-32): the index answered `contiguousSealedEnd` and `segmentRange` in two calls, and retention may remove the
+    /// cursor's segment between them; the range then starts at the NEXT segment. Sealed offsets are dense inside a segment,
+    /// so a first event above `fromOffset` means the cursor's segment was reclaimed under the read: answered as the expiry
+    /// it is (naming where the held range now begins) instead of as events that skip the reclaimed ones.
+    private static Promise<List<RawEvent>> startingAt(long fromOffset, List<RawEvent> events) {
+        return Option.from(events.stream().findFirst())
+                     .map(RawEvent::offset)
+                     .filter(first -> first != fromOffset)
+                     .map(first -> new StreamError.CursorExpired(fromOffset, first).<List<RawEvent>> promise())
+                     .or(() -> Promise.success(events));
     }
 
     private static int boundedCount(long fromOffset, long contiguousEnd, int maxEvents) {
