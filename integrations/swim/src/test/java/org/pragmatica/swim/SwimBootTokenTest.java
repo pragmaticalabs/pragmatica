@@ -306,7 +306,7 @@ class SwimBootTokenTest {
     }
 
     /// A refused ANNOUNCE is answered with an explicit IdentityRefused to the announcer's address.
-    /// #2429 write-ahead: with the ledger's rename stalled, the conflicting ANNOUNCE retires the NodeId in memory at
+    /// #2429 write-ahead: with the ledger's directory force stalled, the conflicting ANNOUNCE retires the NodeId in memory at
     /// once, but the announcer is told only after the retirement is on disk.
     @Test
     void announceConflict_withAStalledLedgerWrite_answersIdentityRefusedOnlyAfterTheRetirementIsDurable(@TempDir Path directory) throws Exception {
@@ -355,15 +355,13 @@ class SwimBootTokenTest {
 
             @Override
             public org.pragmatica.lang.Result<org.pragmatica.lang.Unit> moveAtomic(Path source, Path target) {
-                // Held BEFORE the rename: after it the file already names the retirement, so the "file does not hold it yet" control
-                // would race the writer thread instead of describing the stalled write.
-                await(gate.get());
-
                 return real.moveAtomic(source, target);
             }
 
             @Override
             public org.pragmatica.lang.Result<org.pragmatica.lang.Unit> forceDirectory(Path directory) {
+                await(gate.get());
+
                 return real.forceDirectory(directory);
             }
         };
