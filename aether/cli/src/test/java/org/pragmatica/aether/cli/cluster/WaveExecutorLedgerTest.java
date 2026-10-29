@@ -98,7 +98,7 @@ class WaveExecutorLedgerTest {
     }
 
     /// The harness provider with hooks: a test replaces what a create or a terminate does.
-    private final class Hooked implements ComputeProvider {
+    private class Hooked implements ComputeProvider {
         Function<ProvisionSpec, Promise<InstanceInfo>> onProvision = spec -> harness.provider.provision(spec);
         Function<InstanceId, Promise<Unit>> onTerminate = id -> harness.provider.terminate(id);
 
@@ -348,6 +348,77 @@ class WaveExecutorLedgerTest {
                                       .containsExactlyInAnyOrder(ApplyResource.State.TERMINATED, ApplyResource.State.INTENDED);
         assertThat(harness.provider.totalTerminates()).isEqualTo(1);
         harness.assertNoLeak(onDisk.applyId(), onDisk);
+    }
+
+    @Test
+    void providerReturnsAnotherNodeId_failsAndTerminatesTheVm() {
+        var hooked = new Hooked();
+
+        hooked.onProvision = spec -> {
+            var created = harness.provider.provision(spec).await().unwrap();
+
+            return Promise.success(new InstanceInfo(created.id(), created.status(), created.addresses(), created.type(), created.tags(),
+                                                    org.pragmatica.lang.Option.some("somebody-else"), org.pragmatica.lang.Option.none()));
+        };
+
+        provisionCloud(hooked, 1, cloudRecorder()).onSuccess(_ -> fail("a VM that reports another identity must fail the action"));
+
+        assertThat(harness.provider.totalTerminates()).isEqualTo(1);
+    }
+
+    @Test
+    void tearDownTerminateFails_theFirstNodeIsRecordedTerminateFailed_andNamedStillBilled() {
+        var hooked = new Hooked();
+
+        harness.provider.failNthCreate(2);
+        hooked.onTerminate = _ -> Causes.cause("provider refused the delete (test cause)").promise();
+
+        provisionCloud(hooked, 2, cloudRecorder()).onSuccess(_ -> fail("the second create fails"))
+                                                  .onFailure(cause -> assertThat(cause.message()).contains("STILL RUNNING AND BILLED"));
+
+        var onDisk = ledger.ledger(CLUSTER);
+
+        assertThat(onDisk.resources()).extracting(ApplyResource::state)
+                                      .containsExactlyInAnyOrder(ApplyResource.State.TERMINATE_FAILED, ApplyResource.State.INTENDED);
+        harness.assertNoLeak(onDisk.applyId(), onDisk);
+    }
+
+    @Test
+    void filteredListing_matchesTheShortContainerIdDockerPsPrints_andNothingElse() {
+        var fullId = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        var info = new InstanceInfo(new InstanceId(fullId), org.pragmatica.aether.environment.InstanceStatus.RUNNING, List.of(),
+                                    org.pragmatica.aether.environment.InstanceType.ON_DEMAND, Map.of(),
+                                    org.pragmatica.lang.Option.some("n-1"), org.pragmatica.lang.Option.none());
+
+        var listing = new ArrayList<String>();
+        ComputeProvider lister = new Hooked() {
+            @Override
+            public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
+                return Promise.success(listing.stream().map(id -> new InstanceInfo(new InstanceId(id), org.pragmatica.aether.environment.InstanceStatus.RUNNING, List.of(),
+                                                                                   org.pragmatica.aether.environment.InstanceType.ON_DEMAND, Map.of())).toList());
+            }
+        };
+
+        listing.add("0123456789ab");
+        assertThat(WaveNodeProvisioning.filteredListing(lister, info, "n-1", "applyid").isSuccess()).as("short id of the same container").isTrue();
+
+        listing.clear();
+        listing.add(fullId);
+        assertThat(WaveNodeProvisioning.filteredListing(lister, info, "n-1", "applyid").isSuccess()).as("full id").isTrue();
+
+        listing.clear();
+        listing.add("ffffffffffff");
+        assertThat(WaveNodeProvisioning.filteredListing(lister, info, "n-1", "applyid").isSuccess()).as("another container").isFalse();
+
+        listing.clear();
+        listing.add("");
+        assertThat(WaveNodeProvisioning.filteredListing(lister, info, "n-1", "applyid").isSuccess()).as("a blank listed id matches nothing").isFalse();
+
+        listing.clear();
+        assertThat(WaveNodeProvisioning.filteredListing(lister, info, "n-1", "applyid").isSuccess()).as("nothing listed").isFalse();
+
+        listing.add("0123456789ab");
+        assertThat(WaveNodeProvisioning.filteredListing(lister, info, "another-node", "applyid").isSuccess()).as("identity differs").isFalse();
     }
 
     @Test
