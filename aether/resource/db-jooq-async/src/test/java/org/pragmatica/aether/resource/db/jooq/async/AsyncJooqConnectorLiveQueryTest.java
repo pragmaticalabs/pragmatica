@@ -229,6 +229,15 @@ class AsyncJooqConnectorLiveQueryTest {
     }
 
     @Test
+    void fetchOne_fieldDeclaredWiderThanTheColumn_isCoercedToItsDeclaredType() {
+        var wide = DSL.field("id", Long.class);
+        var record = success(connector.fetchOne(connector.dsl().select(wide).from(DSL.table("live_items")).where(DSL.field("id", Integer.class).eq(1))));
+        Long id = record.value1();
+
+        assertThat(id).isEqualTo(1L);
+    }
+
+    @Test
     void execute_queryThatIsNotARowCountQuery_failsWithATypedConnectorError() {
         var cause = failure(connector.execute(connector.dsl().resultQuery("SELECT 1")));
 

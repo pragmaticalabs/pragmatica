@@ -10,6 +10,7 @@ import org.pragmatica.aether.resource.db.DatabaseType;
 import org.pragmatica.lang.Promise;
 
 import io.r2dbc.spi.ConnectionFactories;
+import org.jooq.impl.DSL;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -112,6 +113,15 @@ class R2dbcJooqConnectorH2QueryTest {
 
         assertThat(updated).isEqualTo(1);
         assertThat(success(connector.fetchOne(connector.dsl().resultQuery("SELECT name FROM items WHERE id = 1"))).get(0, String.class)).isNotEqualTo("bound");
+    }
+
+    @Test
+    void fetchOne_fieldDeclaredWiderThanTheColumn_isCoercedToItsDeclaredType() {
+        var wide = DSL.field("id", Long.class);
+        var record = success(connector.fetchOne(connector.dsl().select(wide).from(DSL.table("items")).where(DSL.field("id", Integer.class).eq(1))));
+        Long id = record.value1();
+
+        assertThat(id).isEqualTo(1L);
     }
 
     @Test
