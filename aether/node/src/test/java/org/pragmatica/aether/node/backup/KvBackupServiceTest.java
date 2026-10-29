@@ -1067,21 +1067,6 @@ class KvBackupServiceTest {
             assertThat(commitCount(remote)).as("and writes no further commit").isEqualTo(2);
         }
 
-        @Test
-        void stopFlushed_flushesNothing_forAFollower() {
-            var remote = bareRemote(temp.resolve("remote.git"));
-            var service = service(Option.some(remote));
-
-            incarnation(1);
-            put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
-
-            var stopped = settle(service.stopFlushed(DEADLINE));
-
-            assertThat(stopped.isSuccess()).isTrue();
-            assertThat(remoteHasBranch(remote)).as("a follower writes no backup, on stop or otherwise").isFalse();
-            assertThat(warnings).isEmpty();
-        }
-
         /// #2506 (1): leadership is decided when the stop is REQUESTED. A demotion that arrives after the call but before the worker
         /// runs the flush (peers stopping drop the quorum) must not cancel it. The manual scheduler holds the worker still, so the
         /// demotion lands in exactly that window, with no timing involved.
@@ -1106,9 +1091,10 @@ class KvBackupServiceTest {
             assertThat(warnings).isEmpty();
         }
 
-        /// #2506 (2): a node that led and was demoted before its own stop (peers stopped first) flushes nothing; that is reported, naming why.
+        /// Know 6ee3dc3f0d (#2506 c1): every core node flushes at stop, so a leader demoted BEFORE its own stop call (peers stopped first)
+        /// still lands what it applied, and says nothing.
         @Test
-        void stopFlushed_reportsTheSkippedFlush_whenTheLeaderWasDemotedBeforeTheStop() {
+        void stopFlushed_flushes_whenTheLeaderWasDemotedBeforeTheCall() {
             var remote = bareRemote(temp.resolve("remote.git"));
             var service = leaderService(Option.some(remote));
             var key = ConfigKey.forKey("inside-the-window");
@@ -1118,12 +1104,113 @@ class KvBackupServiceTest {
 
             var stopped = settle(service.stopFlushed(DEADLINE));
 
-            assertThat(stopped.isSuccess()).as("a skipped flush never holds the stop").isTrue();
-            assertThat(remoteDocument(remote).entries()).as("control: nothing was flushed").doesNotContainKey(key);
-            assertThat(warnings).filteredOn(warning -> warning.code() == Code.BACKUP_STOP_FLUSH_FAILED)
-                                .singleElement()
-                                .satisfies(warning -> assertThat(warning.detail()).as("names the reason and the window the backup may be missing")
-                                                                                  .contains("demoted before the stop was requested", "5500 ms"));
+            assertThat(stopped.isSuccess()).isTrue();
+            assertThat(remoteDocument(remote).entries()).containsKey(key);
+            assertThat(warnings).isEmpty();
+        }
+
+        /// A follower that applied the write lands it: the acking node need not be the leader, and the leader may lag it.
+        @Test
+        void stopFlushed_landsTheWrite_forAFollowerThatAppliedIt() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var node = follower(remote, 1, "follower");
+            var key = ConfigKey.forKey("applied-by-the-follower");
+
+            node.apply(key, ConfigValue.configValue("applied-by-the-follower", "v"));
+
+            var stopped = settle(node.service().stopFlushed(DEADLINE));
+
+            assertThat(stopped.isSuccess()).isTrue();
+            assertThat(remoteDocument(remote).entries()).containsKey(key);
+            assertThat(node.warnings()).isEmpty();
+        }
+
+        /// The backup is already ahead of this follower, in its own incarnation: its state is a prefix of the head, which COVERS it.
+        @Test
+        void stopFlushed_isQuietAndLeavesTheHead_whenAFollowerIsCoveredByANewerHead() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var leader = leaderService(Option.some(remote));
+            var late = ConfigKey.forKey("late");
+
+            put(leader, ConfigKey.forKey("early"), ConfigValue.configValue("early", "1"));
+            put(leader, late, ConfigValue.configValue("late", "2"));
+            scheduler.runUntilIdle(10);
+
+            var headRevision = remoteDocument(remote).header().revision();
+            var node = follower(remote, 1, "behind");
+            var stopped = settle(node.service().stopFlushed(DEADLINE));
+
+            assertThat(stopped.isSuccess()).isTrue();
+            assertThat(node.warnings()).as("covered is not a failure").isEmpty();
+            assertThat(remoteDocument(remote).header().revision()).as("and it never moves the head back").isEqualTo(headRevision);
+            assertThat(remoteDocument(remote).entries()).containsKey(late);
+        }
+
+        /// A head at a HIGHER incarnation is another life of the lineage: this node's state is not covered by it, and the loss is reported.
+        @Test
+        void stopFlushed_reports_whenTheHeadIsAtAHigherIncarnation() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            leaderService(Option.some(remote), 2);
+
+            var node = follower(remote, 1, "older-life");
+
+            node.apply(ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+
+            var stopped = settle(node.service().stopFlushed(DEADLINE));
+
+            assertThat(stopped.isSuccess()).as("the stop still goes ahead").isTrue();
+            assertThat(node.warnings()).extracting(BackupWarning::code).containsExactly(Code.BACKUP_STOP_FLUSH_FAILED);
+        }
+
+        /// Five nodes at one log, each applied a different prefix of it, all stopping at once: the head ends at the highest revision
+        /// whichever order they reach the remote in, and nobody warns.
+        @Test
+        void stopFlushed_leavesTheHighestRevisionAsHead_whenFiveNodesStopAscending() {
+            assertFiveNodesLeaveTheHighest(true);
+        }
+
+        @Test
+        void stopFlushed_leavesTheHighestRevisionAsHead_whenFiveNodesStopDescending() {
+            assertFiveNodesLeaveTheHighest(false);
+        }
+
+        /// Pushes that lose a race are re-decided until the stop deadline, not twice: three rejections in a row still land the write.
+        @Test
+        void stopFlushed_landsTheWrite_whenThePushIsRejectedThreeTimes() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var service = leaderService(Option.some(remote));
+            var key = ConfigKey.forKey("inside-the-window");
+
+            put(service, ConfigKey.forKey("early"), ConfigValue.configValue("early", "1"));
+            scheduler.runUntilIdle(10);
+            put(service, key, ConfigValue.configValue("inside-the-window", "v"));
+            installRacingHook(service, remote, 3);
+
+            var stopped = settle(service.stopFlushed(DEADLINE));
+
+            assertThat(stopped.isSuccess()).isTrue();
+            assertThat(remoteDocument(remote).entries()).containsKey(key);
+            assertThat(warnings).isEmpty();
+        }
+
+        private void assertFiveNodesLeaveTheHighest(boolean ascending) {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var nodes = new ArrayList<OtherCluster>();
+
+            for (var applied = 1; applied <= 5; applied++) {
+                nodes.add(followerAfter(remote, applied, "node-" + applied));
+            }
+
+            var stopping = new ArrayList<Promise<org.pragmatica.lang.Unit>>();
+            var order = ascending ? nodes : nodes.reversed();
+
+            order.forEach(node -> stopping.add(node.service().stopFlushed(DEADLINE)));
+            stopping.forEach(stop -> assertThat(settle(stop).isSuccess()).isTrue());
+
+            assertThat(remoteDocument(remote).entries()).containsKey(ConfigKey.forKey("entry-5"));
+            assertThat(remoteDocument(remote).header().revision()).isEqualTo(nodes.getLast().store().committedRevision());
+            assertThat(nodes).allSatisfy(node -> assertThat(node.warnings()).isEmpty());
         }
 
         @Test
@@ -1157,6 +1244,32 @@ class KvBackupServiceTest {
     /// Another cluster at this test's lineage and incarnation 1, as incarnation id `incarnation id`: its own KV store,
     /// local repository and warnings, sharing the remote and the scheduler. It is its own leader.
     private OtherCluster otherCluster(String remote, String incarnationId, String localDir) {
+        var cluster = newCluster(remote, incarnationId, 1, localDir);
+
+        cluster.service().onLeaderChange(leaderChange(true));
+        scheduler.advance(TIMING.quietMillis());
+
+        return cluster;
+    }
+
+    /// A node of THIS cluster (same lineage and incarnation id, incarnation `incarnation`) that never led: its own store, repository and
+    /// warnings, sharing the remote and the scheduler.
+    private OtherCluster follower(String remote, long incarnation, String localDir) {
+        return newCluster(remote, INCARNATION_ID, incarnation, localDir);
+    }
+
+    /// A follower that applied the first `applied` entries of the shared log (`entry-1` ... `entry-5`).
+    private OtherCluster followerAfter(String remote, int applied, String localDir) {
+        var node = follower(remote, 1, localDir);
+
+        for (var index = 1; index <= applied; index++) {
+            node.apply(ConfigKey.forKey("entry-" + index), ConfigValue.configValue("entry-" + index, "v"));
+        }
+
+        return node;
+    }
+
+    private OtherCluster newCluster(String remote, String incarnationId, long incarnation, String localDir) {
         var store = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), NODE_CODEC, NODE_CODEC);
         var otherWarnings = new ArrayList<BackupWarning>();
         var repository = GitBackupRepository.gitBackupRepository(temp.resolve(localDir),
@@ -1173,11 +1286,29 @@ class KvBackupServiceTest {
         var cluster = new OtherCluster(store, service, otherWarnings);
 
         cluster.apply(ClusterIncarnationKey.clusterIncarnationKey(),
-                      ClusterIncarnationValue.clusterIncarnationValue(LINEAGE, 1, incarnationId));
-        service.onLeaderChange(leaderChange(true));
-        scheduler.advance(TIMING.quietMillis());
+                      ClusterIncarnationValue.clusterIncarnationValue(LINEAGE, incarnation, incarnationId));
 
         return cluster;
+    }
+
+    /// A client-side pre-push hook that, for the first `times` pushes of `service`'s repository, advances the remote from a scratch clone
+    /// (an empty commit) just before git sends the push: the push is then a genuine non-fast-forward, `times` times in a row.
+    private void installRacingHook(KvBackupService service, String remote, int times) {
+        service.repository().prepare().onFailure(cause -> Assertions.fail(cause.message()));
+
+        var counter = temp.resolve("racing-hook.count");
+        var hook = service.repository().dir().resolve(".git").resolve("hooks").resolve("pre-push");
+
+        writeFile(hook,
+                  "#!/bin/sh\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE\nC='" + counter + "'\nN=$(cat \"$C\" 2>/dev/null || echo 0)\n"
+                  + "[ \"$N\" -ge " + times + " ] && exit 0\necho $((N+1)) > \"$C\"\nD=$(mktemp -d)\n"
+                  + "git clone --quiet --branch backup '" + remote + "' \"$D/c\" && git -C \"$D/c\" -c user.email=s@x -c user.name=racer commit --quiet --allow-empty -m race"
+                  + " && git -C \"$D/c\" push --quiet origin backup\nrm -rf \"$D\"\nexit 0\n");
+        try {
+            Files.setPosixFilePermissions(hook, PosixFilePermissions.fromString("rwxr-xr-x"));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     private record OtherCluster(KVStore<AetherKey, AetherValue> store, KvBackupService service, List<BackupWarning> warnings) {
