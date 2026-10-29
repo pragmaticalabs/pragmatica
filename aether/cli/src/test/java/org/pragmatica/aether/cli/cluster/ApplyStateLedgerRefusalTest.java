@@ -80,11 +80,7 @@ class ApplyStateLedgerRefusalTest {
     }
 
     private static String applyStateJson(String clusterName, String resourceEntry) {
-        return """
-            {"clusterName": "%s", "configHash": "h", "startedAt": "2026-10-18T00:00:00Z",
-             "currentWaveIndex": 0, "waves": ["PENDING", "PENDING", "PENDING"],
-             "createdResources": [%s], "destroyedNodeIds": []}
-            """.formatted(clusterName, resourceEntry);
+        return ApplyStateFixtures.json(clusterName, resourceEntry);
     }
 
     private ClusterBootstrapConfig config(int coreCount) {
@@ -125,6 +121,30 @@ class ApplyStateLedgerRefusalTest {
             ApplyState.read(clusterName)
                       .onSuccess(state -> fail("an unknown entry must not load: " + state))
                       .onFailure(cause -> assertThat(cause.message()).contains("FutureThing"));
+        }
+
+        @Test
+        void read_otherSchema_isRefusedNamingTheFileAndTheExpectedVersion() throws Exception {
+            for (var schema : List.of("3", "1")) {
+                writeApplyState(applyStateJson(clusterName.value(), "").replace("\"schemaVersion\": 2", "\"schemaVersion\": " + schema));
+
+                ApplyState.read(clusterName)
+                          .onSuccess(state -> fail("a schema-" + schema + " ledger must not load: " + state))
+                          .onFailure(cause -> assertThat(cause.message()).contains(applyStatePath().toString())
+                                                                         .contains("schema " + schema)
+                                                                         .contains("reads and writes schema 2"));
+            }
+        }
+
+        @Test
+        void read_ioFailure_isReportedAsUnreadable_notAsARefusal() throws Exception {
+            Files.createDirectories(applyStatePath());
+
+            ApplyState.read(clusterName)
+                      .onSuccess(state -> fail("a directory is not a ledger: " + state))
+                      .onFailure(cause -> assertThat(cause.message()).contains(applyStatePath().toString())
+                                                                     .contains("could not be read")
+                                                                     .doesNotContain("refused"));
         }
 
         @Test
@@ -177,6 +197,24 @@ class ApplyStateLedgerRefusalTest {
         }
 
         @Test
+        void resume_refusedLedger_saysItWasLeftUntouchedExactlyOnce_andNamesTheFile() throws Exception {
+            writeApplyState(applyStateJson(clusterName.value(), "").replace("\"schemaVersion\": 2", "\"schemaVersion\": 3"));
+
+            for (var outcome : List.of(ApplyOrchestrator.resume(config(3), config(3)),
+                                       ApplyOrchestrator.executeAndPersist(ClusterBootstrapConfigDiff.diff(config(3), config(5)),
+                                                                           config(3),
+                                                                           config(5),
+                                                                           (plan, stored, desired, recorder) -> fail("must not execute")))) {
+                outcome.onSuccess(result -> fail("a refused ledger must stop the apply"))
+                       .onFailure(cause -> {
+                           assertThat(cause.message()).contains(applyStatePath().toString()).contains("schema 3");
+                           assertThat(cause.message().split("untouched", -1).length - 1).as("occurrences of 'untouched' in: " + cause.message())
+                                                                                     .isEqualTo(1);
+                       });
+            }
+        }
+
+        @Test
         void resume_absentApplyState_stillReportsNothingToResume() {
             ApplyOrchestrator.resume(config(3), config(3))
                              .onSuccess(result -> fail("nothing to resume"))
@@ -199,7 +237,8 @@ class ApplyStateLedgerRefusalTest {
 
         private org.pragmatica.lang.Result<ApplyResult> stubExecutor(org.pragmatica.aether.config.cluster.DiffPlan plan,
                                                                      ClusterBootstrapConfig stored,
-                                                                     ClusterBootstrapConfig desired) {
+                                                                     ClusterBootstrapConfig desired,
+                                                                     ApplyRecorder recorder) {
             executed.incrementAndGet();
 
             return org.pragmatica.lang.Result.success(ApplyResult.applyResult(plan, 0, 0, 0));
@@ -280,7 +319,7 @@ class ApplyStateLedgerRefusalTest {
         @Test
         void applyState_roundTrip_preservesAllSevenResourceTypes() {
             var state = allSevenTypes().stream()
-                                       .reduce(ApplyState.initialState(clusterName, "h", "2026-10-18T00:00:00Z"),
+                                       .reduce(ApplyStateFixtures.state(clusterName),
                                                ApplyState::withResource,
                                                (a, b) -> b);
 

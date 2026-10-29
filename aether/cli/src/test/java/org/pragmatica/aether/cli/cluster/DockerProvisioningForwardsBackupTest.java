@@ -97,7 +97,7 @@ class DockerProvisioningForwardsBackupTest {
     void scaleWaveProvisioning_handsTheDockerProviderTheSourcesBackup() {
         var config = ClusterBootstrapConfigParser.parse(WITH_BACKUP).unwrap();
 
-        WaveExecutor.provisionBySourceType(sourceNameOrDefault("local"), config.sources().get("local"), NodeRole.CORE, 1, config);
+        WaveExecutor.provisionBySourceType(sourceNameOrDefault("local"), config.sources().get("local"), NodeRole.CORE, 1, config, ApplyRecorder.applyRecorder(ApplyStateFixtures.state(config.cluster().name())));
 
         assertForwarded();
     }

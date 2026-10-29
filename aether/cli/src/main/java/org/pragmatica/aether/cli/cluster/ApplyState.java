@@ -8,63 +8,152 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Function;
+import java.util.regex.Pattern;
 
 import org.pragmatica.aether.environment.ClusterName;
-import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-
-import tools.jackson.databind.JsonNode;
+import org.pragmatica.utility.ULID;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Result.success;
 
 
+/// The apply ledger, schema 2 (cluster-apply spec 4.2). The format is replaced, not migrated: a file of any other
+/// schema is refused by name and left untouched.
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
-public record ApplyState(ClusterName clusterName,
+public record ApplyState(String applyId,
+                         ClusterName clusterName,
                          String configHash,
+                         long storedVersion,
                          String startedAt,
-                         int currentWaveIndex,
-                         List<WaveStatus> waves,
+                         ApplyPhase phase,
+                         List<ApplyAction> actions,
+                         List<ApplyResource> resources,
+                         List<ApplyReservation> reservations,
                          List<CreatedResource> createdResources,
                          List<String> destroyedNodeIds) {
+    public static final int SCHEMA_VERSION = 2;
+    /// A lowercase ULID: inside every provider's label-value grammar (Hetzner `[a-zA-Z0-9_.-]`, 63 characters).
+    private static final Pattern APPLY_ID = Pattern.compile("^[0-9a-z]{26}$");
+
     public ApplyState {
-        waves = List.copyOf(waves);
+        actions = List.copyOf(actions);
+        resources = List.copyOf(resources);
+        reservations = List.copyOf(reservations);
         createdResources = List.copyOf(createdResources);
         destroyedNodeIds = List.copyOf(destroyedNodeIds);
     }
 
-    public static ApplyState applyState(ClusterName clusterName,
+    public static ApplyState applyState(String applyId,
+                                        ClusterName clusterName,
                                         String configHash,
+                                        long storedVersion,
                                         String startedAt,
-                                        int currentWaveIndex,
-                                        List<WaveStatus> waves,
+                                        ApplyPhase phase,
+                                        List<ApplyAction> actions,
+                                        List<ApplyResource> resources,
+                                        List<ApplyReservation> reservations,
                                         List<CreatedResource> createdResources,
                                         List<String> destroyedNodeIds) {
-        return new ApplyState(clusterName,
+        return new ApplyState(applyId,
+                              clusterName,
                               configHash,
+                              storedVersion,
                               startedAt,
-                              currentWaveIndex,
-                              waves,
+                              phase,
+                              actions,
+                              resources,
+                              reservations,
                               createdResources,
                               destroyedNodeIds);
     }
 
-    public static ApplyState initialState(ClusterName clusterName, String configHash, String startedAt) {
-        var waves = List.of(WaveStatus.PENDING, WaveStatus.PENDING, WaveStatus.PENDING);
-
-        return applyState(clusterName, configHash, startedAt, 0, waves, List.of(), List.of());
+    /// A fresh apply with no resources yet. `storedVersion` is the cluster's config version the plan was read at
+    /// (0 until the commit step supplies it).
+    public static ApplyState startedApply(ClusterName clusterName,
+                                          String configHash,
+                                          long storedVersion,
+                                          String startedAt,
+                                          List<ApplyAction> actions) {
+        return applyState(newApplyId(),
+                          clusterName,
+                          configHash,
+                          storedVersion,
+                          startedAt,
+                          ApplyPhase.RUNNING,
+                          actions,
+                          List.of(),
+                          List.of(),
+                          List.of(),
+                          List.of());
     }
 
-    public ApplyState withWaveStatus(int waveIndex, WaveStatus status) {
-        var updated = new ArrayList<>(waves);
+    public static String newApplyId() {
+        return ULID.ulid().encoded();
+    }
 
-        updated.set(waveIndex, status);
+    static boolean isApplyId(String candidate) {
+        return APPLY_ID.matcher(candidate).matches();
+    }
 
-        return applyState(clusterName, configHash, startedAt, waveIndex, updated, createdResources, destroyedNodeIds);
+    public ApplyState withPhase(ApplyPhase newPhase) {
+        return applyState(applyId,
+                          clusterName,
+                          configHash,
+                          storedVersion,
+                          startedAt,
+                          newPhase,
+                          actions,
+                          resources,
+                          reservations,
+                          createdResources,
+                          destroyedNodeIds);
+    }
+
+    public ApplyState withActionStatus(String key, ApplyAction.Status status) {
+        return applyState(applyId,
+                          clusterName,
+                          configHash,
+                          storedVersion,
+                          startedAt,
+                          phase,
+                          actions.stream()
+                                 .map(action -> action.key()
+                                                      .equals(key)
+                                                ? ApplyAction.applyAction(key,
+                                                                          action.planned(),
+                                                                          status)
+                                                : action)
+                                 .toList(),
+                          resources,
+                          reservations,
+                          createdResources,
+                          destroyedNodeIds);
+    }
+
+    /// Records a VM row: replaces the row of the same node id (a state change), or appends (a new node).
+    public ApplyState withNode(ApplyResource row) {
+        var updated = new ArrayList<>(resources.stream()
+                                               .filter(existing -> !existing.nodeId()
+                                                                            .equals(row.nodeId()))
+                                               .toList());
+
+        updated.add(row);
+
+        return applyState(applyId,
+                          clusterName,
+                          configHash,
+                          storedVersion,
+                          startedAt,
+                          phase,
+                          actions,
+                          updated,
+                          reservations,
+                          createdResources,
+                          destroyedNodeIds);
     }
 
     public ApplyState withResource(CreatedResource resource) {
@@ -72,7 +161,17 @@ public record ApplyState(ClusterName clusterName,
 
         updated.add(resource);
 
-        return applyState(clusterName, configHash, startedAt, currentWaveIndex, waves, updated, destroyedNodeIds);
+        return applyState(applyId,
+                          clusterName,
+                          configHash,
+                          storedVersion,
+                          startedAt,
+                          phase,
+                          actions,
+                          resources,
+                          reservations,
+                          updated,
+                          destroyedNodeIds);
     }
 
     public ApplyState withDestroyedNode(String nodeId) {
@@ -80,14 +179,17 @@ public record ApplyState(ClusterName clusterName,
 
         updated.add(nodeId);
 
-        return applyState(clusterName, configHash, startedAt, currentWaveIndex, waves, createdResources, updated);
-    }
-
-    public enum WaveStatus {
-        PENDING,
-        IN_PROGRESS,
-        COMPLETED,
-        FAILED
+        return applyState(applyId,
+                          clusterName,
+                          configHash,
+                          storedVersion,
+                          startedAt,
+                          phase,
+                          actions,
+                          resources,
+                          reservations,
+                          createdResources,
+                          updated);
     }
 
     private static final Path AETHER_DIR = Path.of(System.getProperty("user.home"), ".aether", "clusters");
@@ -97,40 +199,35 @@ public record ApplyState(ClusterName clusterName,
     static Function<ClusterName, Path> stateDirResolver = name -> AETHER_DIR.resolve(name.value());
     private static final String STATE_FILE_NAME = "apply-state.json";
 
+    /// Durable and atomic (see [ApplyLedger]); the result MUST be acted on: a ledger that was not written is a
+    /// ledger that does not exist, and the caller has to stop before creating anything it cannot account for.
     static Result<Unit> save(ApplyState state) {
-        return Result.lift(PersistenceError::new, () -> doSave(state));
+        return ApplyLedger.write(stateDirResolver.apply(state.clusterName()),
+                                 STATE_FILE_NAME,
+                                 toJson(state));
     }
 
     /// ABSENT and UNREADABLE are different facts, as for the bootstrap ledger
     /// (`BootstrapStatePersistence#read`): absent is `success(none())`, present and parsed is
-    /// `success(some(state))`, present but refused (torn file, unknown resource type, blank id) is a
+    /// `success(some(state))`, present but refused (torn file, other schema, unknown resource type, blank id) is a
     /// FAILURE carrying the parse cause. A caller that would otherwise treat "unreadable" as "none" and
     /// then write over the file (an older CLI erasing a newer CLI's ledger) must refuse instead.
     static Result<Option<ApplyState>> read(ClusterName clusterName) {
         var path = stateFilePath(clusterName);
 
+        ApplyLedger.sweepStaleTemps(path.getParent());
         if (!Files.exists(path)) {
             return success(none());
         }
 
-        return Result.lift(PersistenceError::new,
+        return Result.lift(cause -> new UnreadableFile(path, cause),
                            () -> Files.readString(path))
-                     .flatMap(ApplyState::fromJson)
+                     .flatMap(json -> fromJson(json).mapError(cause -> new RefusedFile(path, cause)))
                      .map(Option::some);
     }
 
     static Result<Unit> delete(ClusterName clusterName) {
         return Result.lift(PersistenceError::new, () -> doDelete(clusterName));
-    }
-
-    @SuppressWarnings("JBCT-EX-01")
-    private static Unit doSave(ApplyState state) throws Exception {
-        var dir = stateDirResolver.apply(state.clusterName());
-
-        Files.createDirectories(dir);
-        Files.writeString(dir.resolve(STATE_FILE_NAME), toJson(state));
-
-        return Unit.unit();
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -147,176 +244,35 @@ public record ApplyState(ClusterName clusterName,
                                .resolve(STATE_FILE_NAME);
     }
 
-    private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
-
     static String toJson(ApplyState state) {
-        var sb = new StringBuilder(512);
-
-        sb.append("{\n");
-        appendStringField(sb,
-                          "clusterName",
-                          state.clusterName().value());
-        sb.append(",\n");
-        appendStringField(sb, "configHash", state.configHash());
-        sb.append(",\n");
-        appendStringField(sb, "startedAt", state.startedAt());
-        sb.append(",\n");
-        sb.append("  \"currentWaveIndex\": ").append(state.currentWaveIndex());
-        sb.append(",\n");
-        appendWaves(sb, state.waves());
-        sb.append(",\n");
-        appendResources(sb, state.createdResources());
-        sb.append(",\n");
-        appendStringList(sb, "destroyedNodeIds", state.destroyedNodeIds());
-        sb.append("\n}");
-
-        return sb.toString();
+        return ApplyStateJson.toJson(state);
     }
 
     static Result<ApplyState> fromJson(String json) {
-        return MAPPER.readTree(json).flatMap(ApplyState::parseTree);
-    }
-
-    /// The cluster name is parsed OUT of the lifted block: a state file naming a cluster outside the
-    /// grammar is a corrupt file, and reporting it as such beats letting an unusable name through to
-    /// the path resolver and the label selectors that would then match nothing.
-    private static Result<ApplyState> parseTree(JsonNode root) {
-        return ClusterName.clusterName(root.path("clusterName").asText()).flatMap(clusterName -> liftedParse(root,
-                                                                                                             clusterName));
-    }
-
-    @SuppressWarnings("JBCT-EX-01")
-    private static Result<ApplyState> liftedParse(JsonNode root, ClusterName clusterName) {
-        return Result.lift(ParseError::new, () -> doParse(root, clusterName));
-    }
-
-    private static ApplyState doParse(JsonNode root, ClusterName clusterName) {
-        var configHash = root.path("configHash").asText();
-        var startedAt = root.path("startedAt").asText();
-        var waveIndex = root.path("currentWaveIndex").asInt(0);
-        var waves = parseWaves(root.path("waves"));
-        var resources = parseResources(root.path("createdResources"), clusterName);
-        var destroyed = parseStringList(root.path("destroyedNodeIds"));
-
-        return applyState(clusterName, configHash, startedAt, waveIndex, waves, resources, destroyed);
-    }
-
-    private static List<WaveStatus> parseWaves(JsonNode node) {
-        if (node.isMissingNode() || node.isNull() || !node.isArray()) {
-            return List.of(WaveStatus.PENDING, WaveStatus.PENDING, WaveStatus.PENDING);
-        }
-
-        var statuses = new ArrayList<WaveStatus>();
-
-        for (var element : node) {
-            statuses.add(parseWaveStatus(element.asText()));
-        }
-
-        return List.copyOf(statuses);
-    }
-
-    private static WaveStatus parseWaveStatus(String name) {
-        return Result.lift(() -> WaveStatus.valueOf(name)).or(WaveStatus.PENDING);
-    }
-
-    private static List<CreatedResource> parseResources(JsonNode node, ClusterName clusterName) {
-        if (node.isMissingNode() || node.isNull() || !node.isArray()) {
-            return List.of();
-        }
-
-        var resources = new ArrayList<CreatedResource>();
-
-        for (var element : node) {
-            resources.add(BootstrapStateJson.parseSingleResourceNode(element, clusterName));
-        }
-
-        return List.copyOf(resources);
-    }
-
-    private static List<String> parseStringList(JsonNode node) {
-        if (node.isMissingNode() || node.isNull() || !node.isArray()) {
-            return List.of();
-        }
-
-        var result = new ArrayList<String>();
-
-        for (var element : node) {
-            result.add(element.asText());
-        }
-
-        return List.copyOf(result);
-    }
-
-    @Contract
-    private static void appendStringField(StringBuilder sb, String key, String value) {
-        sb.append("  \"").append(escapeJson(key)).append("\": \"").append(escapeJson(value)).append('"');
-    }
-
-    @Contract
-    private static void appendWaves(StringBuilder sb, List<WaveStatus> waves) {
-        sb.append("  \"waves\": [");
-        for (int i = 0; i < waves.size(); i++) {
-            if (i > 0) {
-                sb.append(", ");
-            }
-
-            sb.append('"').append(waves.get(i).name()).append('"');
-        }
-
-        sb.append(']');
-    }
-
-    @Contract
-    private static void appendResources(StringBuilder sb, List<CreatedResource> resources) {
-        sb.append("  \"createdResources\": [");
-        for (int i = 0; i < resources.size(); i++) {
-            if (i > 0) {
-                sb.append(',');
-            }
-
-            sb.append("\n    ");
-            BootstrapStateJson.appendResourceJson(sb, resources.get(i));
-        }
-
-        if (!resources.isEmpty()) {
-            sb.append('\n');
-        }
-
-        sb.append("  ]");
-    }
-
-    @Contract
-    private static void appendStringList(StringBuilder sb, String key, List<String> values) {
-        sb.append("  \"").append(escapeJson(key)).append("\": [");
-        for (int i = 0; i < values.size(); i++) {
-            if (i > 0) {
-                sb.append(", ");
-            }
-
-            sb.append('"').append(escapeJson(values.get(i))).append('"');
-        }
-
-        sb.append(']');
-    }
-
-    // RET-06: defensive null-coalescing when serializing a possibly-absent string field to JSON.
-    @SuppressWarnings("JBCT-RET-06")
-    private static String escapeJson(String value) {
-        if (value == null) {
-            return "";
-        }
-
-        return value.replace("\\", "\\\\")
-                    .replace("\"", "\\\"")
-                    .replace("\n", "\\n")
-                    .replace("\r", "\\r")
-                    .replace("\t", "\\t");
+        return ApplyStateJson.fromJson(json);
     }
 
     record PersistenceError(Throwable cause) implements Cause {
         @Override
         public String message() {
             return "Apply state persistence error: " + cause.getMessage();
+        }
+    }
+
+    /// A ledger file that was read but whose content is refused (other schema, torn, unknown entry). Names the file.
+    record RefusedFile(Path file, Cause origin) implements Cause.Wrapped {
+        @Override
+        public String message() {
+            return "Apply state file " + file + " was refused and left untouched: " + origin.message();
+        }
+    }
+
+    /// A ledger file that could not be read at all (permissions, a directory in its place, an I/O error): nothing is
+    /// known about its content, so it is not called refused.
+    record UnreadableFile(Path file, Throwable cause) implements Cause {
+        @Override
+        public String message() {
+            return "Apply state file " + file + " could not be read: " + cause.getMessage();
         }
     }
 
