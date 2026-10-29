@@ -15,6 +15,7 @@ import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.RetentionDimensions;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamAccess.StreamEvent;
 import org.pragmatica.aether.slice.StreamConfig;
@@ -57,7 +58,7 @@ class RingAgeTickTierTest {
                                          segmentSealer(SealReleaseLag.laggingRelease(storageSegmentSink(storage, index))));
         manager.createStream(StreamConfig.streamConfig(STREAM,
                                                        1,
-                                                       RetentionPolicy.retentionPolicy(100_000, DEFAULT_MAX_BYTES, HOUR_MS),
+                                                       RetentionPolicy.retentionPolicy(100_000, DEFAULT_MAX_BYTES, HOUR_MS).withDeclared(RetentionDimensions.AGE),
                                                        "earliest"))
                .onFailure(cause -> fail(cause.message()));
     }
@@ -97,7 +98,7 @@ class RingAgeTickTierTest {
         });
         manager.createStream(StreamConfig.streamConfig(STREAM,
                                                        1,
-                                                       RetentionPolicy.retentionPolicy(100_000, DEFAULT_MAX_BYTES, HOUR_MS),
+                                                       RetentionPolicy.retentionPolicy(100_000, DEFAULT_MAX_BYTES, HOUR_MS).withDeclared(RetentionDimensions.AGE),
                                                        "earliest"))
                .onFailure(cause -> fail(cause.message()));
 

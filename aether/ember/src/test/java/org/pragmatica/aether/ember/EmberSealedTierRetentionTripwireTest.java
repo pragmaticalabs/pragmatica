@@ -8,10 +8,11 @@ import java.nio.file.Path;
 import java.util.List;
 
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.slice.RetentionDimensions;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.io.TimeSpan;
@@ -22,21 +23,17 @@ import static org.pragmatica.aether.ember.StreamTripwireSupport.awaitUntil;
 import static org.pragmatica.aether.ember.StreamTripwireSupport.engineKey;
 import static org.pragmatica.aether.ember.StreamTripwireSupport.sleepQuietly;
 
-/// Streams overhaul tripwire, step 2 (#2201), retention: E-01/D-08 - per-stream retention never reaches the sealed tier.
+/// Streams overhaul E-01/D-08 (#2201), fixed by spec 3.2 (Q6 = B): the sealed tier honours the stream's own retention.
 ///
-/// The sealed tier is reclaimed by the node's one `RetentionEnforcer`, built with the node-wide
-/// `AetherNode.DEFAULT_STREAM_RETENTION_MS` (24 h) and a policy that never reads the stream's own `RetentionPolicy`.
-/// Waiting 24 h is not an option, so the test runs the CONVERSE direction: the stream declares a max age of
-/// [#MAX_AGE_MS] (3 s), its ring holds 10 events so that 40 published events seal 30 of them, and after the declared age
-/// has passed - twice over - a retention pass is run on every node's real enforcer (`enforceNow`, the same method the
-/// five-minute tick calls, reached by reflection). A stream whose policy was honoured has no sealed segment older than
-/// its max age after that pass; today they are all still there.
+/// The sealed tier is reclaimed by each node's own `RetentionEnforcer`, which reads every stream's committed `RetentionPolicy`
+/// and bounds the dimensions it declares. Waiting for the node default age (24 h) is not an option, so the stream declares a
+/// max age of [#MAX_AGE_MS] (3 s), its ring holds 10 events so that 40 published events seal 30 of them, and after the
+/// declared age has passed - twice over - a retention pass is run on every node's real enforcer (`enforceNow`, the same
+/// method the five-minute tick calls, reached by reflection). Every node holds a copy (RF 3), leader or not, and each
+/// reclaims its own: no sealed segment of the stream survives the pass on any node.
 ///
-/// - The ENABLED tripwire asserts today's behaviour: every sealed segment survives the pass, and the pass dropped none.
-/// - The `@Disabled` assertion is the acceptance criterion: no sealed segment of the stream survives the pass.
-///
-/// The instrument is validated by mutation, not by a control inside the test: with `DEFAULT_STREAM_RETENTION_MS` lowered
-/// to 1 s the same pass reclaims the segments and the tripwire reddens (recorded in the report).
+/// Before the fix this was a tripwire asserting that every segment survived (a node-wide 24 h policy that never read the
+/// stream's own); the instrument was validated by mutation (`DEFAULT_STREAM_RETENTION_MS` lowered to 1 s reclaimed them).
 @PortBudget
 class EmberSealedTierRetentionTripwireTest {
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
@@ -63,26 +60,6 @@ class EmberSealedTierRetentionTripwireTest {
 
     @Test
     @Timeout(600)
-    void sealedSegments_tripwire_surviveTheStreamsDeclaredMaxAge() {
-        fillAndSeal();
-
-        var before = segmentCounts();
-
-        sleepQuietly(2 * MAX_AGE_MS);
-
-        var dropped = cluster.allNodes().stream().mapToInt(StreamTripwireSupport::enforceRetentionPass).sum();
-
-        assertThat(before).as("control: every node sealed the evicted offsets, so there is something to reclaim").allSatisfy(count -> assertThat(count).isPositive());
-        assertThat(dropped).as("E-01 fixed? A retention pass dropped sealed segments older than the stream's %d ms max age. "
-                               + "Delete this tripwire and enable sealedSegments_areReclaimedAtTheStreamsDeclaredMaxAge (#2201)",
-                               MAX_AGE_MS)
-                           .isZero();
-        assertThat(segmentCounts()).as("every sealed segment survived twice the stream's declared max age plus a retention pass").isEqualTo(before);
-    }
-
-    @Test
-    @Disabled("E-01/D-08 (#2201): enable when the sealed tier honours the stream's own retention; RED today: all segments survive the pass (node-wide 24 h policy)")
-    @Timeout(600)
     void sealedSegments_areReclaimedAtTheStreamsDeclaredMaxAge() {
         fillAndSeal();
         sleepQuietly(2 * MAX_AGE_MS);
@@ -90,6 +67,15 @@ class EmberSealedTierRetentionTripwireTest {
 
         assertThat(segmentCounts()).as("no sealed segment of a stream with a %d ms max age survives a retention pass run at twice that age", MAX_AGE_MS)
                                    .allSatisfy(count -> assertThat(count).isZero());
+    }
+
+    /// The stream DECLARES its max age (#2201 Q6 = B): a policy built by a factory declares nothing and keeps the node
+    /// default age, so the age is declared explicitly, as a `retention = "time"` section does.
+    private static StreamConfig declaringItsAge(StreamConfig config) {
+        return StreamConfig.streamConfig(config.name(),
+                                         config.partitions(),
+                                         config.retention().withDeclared(RetentionDimensions.AGE),
+                                         config.autoOffsetReset());
     }
 
     /// Per node, the number of sealed segments this node's index holds for the stream's only partition.
@@ -107,7 +93,7 @@ class EmberSealedTierRetentionTripwireTest {
 
         var creator = cluster.allNodes().getFirst();
 
-        StreamTripwireSupport.createStream(creator, StreamTripwireSupport.smallRingStream(STREAM, 1, RING_EVENTS, MAX_AGE_MS));
+        StreamTripwireSupport.createStream(creator, declaringItsAge(StreamTripwireSupport.smallRingStream(STREAM, 1, RING_EVENTS, MAX_AGE_MS)));
 
         var owner = cluster.getNode(StreamTripwireSupport.awaitFullIsr(cluster, ENGINE_KEY, ISR_BUDGET_MS).owner().id()).unwrap();
 
