@@ -380,7 +380,8 @@ final class NettyHttpServer implements HttpServer {
         /// RFC 6455 4.4: 426 names the supported version and keeps the connection, so the client may retry.
         private static void refuseVersion(ChannelHandlerContext ctx, FullHttpRequest request) {
             request.release();
-            WebSocketServerHandshakerFactory.sendUnsupportedVersionResponse(ctx.channel());
+            inOrder(ctx,
+                    () -> WebSocketServerHandshakerFactory.sendUnsupportedVersionResponse(ctx.channel()));
         }
 
         /// `checkStartsWith` lets a query string (`/ws/events?token=...`) through the handshake handler's own
@@ -400,7 +401,17 @@ final class NettyHttpServer implements HttpServer {
 
             response.headers().set(HttpHeaderNames.CONTENT_LENGTH, 0);
             response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
-            ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
+            inOrder(ctx,
+                    () -> ctx.writeAndFlush(response)
+                             .addListener(ChannelFutureListener.CLOSE));
+        }
+
+        /// A refusal is a response like any other: it waits for the responses of the requests before it (see
+        /// [ResponseSequence]), so closing the connection cannot lose one of them.
+        private static void inOrder(ChannelHandlerContext ctx, Runnable write) {
+            var sequence = ResponseSequence.of(ctx.channel());
+
+            sequence.complete(sequence.reserve(), write);
         }
 
         private static boolean isWebSocketUpgrade(FullHttpRequest request) {
@@ -703,6 +714,8 @@ final class NettyHttpServer implements HttpServer {
         /// The response ends the connection after a short linger (see [RequestGate#lingerClose]): a refusal sent while the
         /// client may still be sending its body. Such a response says `Connection: close`.
         private final boolean lingerClose;
+        private final ResponseSequence sequence;
+        private final ResponseSequence.Slot slot;
         private final io.netty.handler.codec.http.HttpHeaders responseHeaders;
         private final Promise<Unit> flushed = Promise.promise();
 
@@ -723,6 +736,8 @@ final class NettyHttpServer implements HttpServer {
             this.keepAlive = keepAlive;
             this.onWritten = onWritten;
             this.lingerClose = lingerClose;
+            this.sequence = ResponseSequence.of(ctx.channel());
+            this.slot = sequence.reserve();
             this.responseHeaders = new DefaultHttpHeaders();
         }
 
@@ -792,7 +807,15 @@ final class NettyHttpServer implements HttpServer {
                                  EmptyHttpHeaders.INSTANCE));
         }
 
+        /// The response is written when its turn comes (see [ResponseSequence]), not when it is finished: the returned promise
+        /// completes with the write.
         private Promise<Unit> send(FullHttpResponse response) {
+            sequence.complete(slot, () -> write(response));
+
+            return flushed;
+        }
+
+        private void write(FullHttpResponse response) {
             var future = ctx.writeAndFlush(response);
 
             future.addListener(_ -> onWritten.run());
@@ -809,8 +832,6 @@ final class NettyHttpServer implements HttpServer {
                     flushed.fail(Causes.fromThrowable(result.cause()));
                 }
             });
-
-            return flushed;
         }
     }
 

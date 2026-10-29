@@ -1,0 +1,2 @@
+### Fixed
+- On HTTP/1.1, responses of pipelined requests are written in the order of their requests, whichever handler finishes first (#2484), and a response that ends the connection (`Connection: close`, or a refusal that closes it) is written only after every earlier response, so an earlier asynchronous response is no longer lost (#2485). A finished response is held until every earlier one on the connection has been written; the held responses are bounded by the codec's pipeline depth of 128.
