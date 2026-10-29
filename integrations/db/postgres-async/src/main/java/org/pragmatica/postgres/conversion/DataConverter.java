@@ -929,8 +929,9 @@ public class DataConverter {
         if (value == null) {
             return null;
         }
-
-        if (type != null) {
+        // `Object` names no target: the value is converted by its column type, as when no target is given (jOOQ asks for
+        // `Object` on uuid and array columns)
+        if (type != null && type != Object.class) {
             // Try custom converter first
             var converter = (Converter<T>) typeToConverter.get(type);
 

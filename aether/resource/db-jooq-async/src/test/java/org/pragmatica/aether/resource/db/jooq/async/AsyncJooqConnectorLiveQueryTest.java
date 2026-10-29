@@ -22,6 +22,7 @@ import org.pragmatica.postgres.net.netty.NettyConnectibleBuilder;
 import org.pragmatica.postgres.r2dbc.PgAsyncConnectionFactory;
 
 import org.jooq.impl.DSL;
+import org.jooq.impl.SQLDataType;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -212,12 +213,83 @@ class AsyncJooqConnectorLiveQueryTest {
         assertThat(success(connector.fetchOne(connector.dsl().resultQuery("SELECT name FROM live_items WHERE id = ?", 1))).get(0, String.class)).isEqualTo("one");
     }
 
-    @Test
-    void fetchOne_untypedField_failsWithATypedErrorNamingTheField() {
-        var cause = failure(connector.fetchOne(connector.dsl().select(DSL.field("name")).from(DSL.table("live_items")).where(DSL.field("id").eq(1))));
+    private static final java.util.UUID SAMPLE_UUID = java.util.UUID.fromString("123e4567-e89b-12d3-a456-426614174000");
 
-        assertThat(cause).isInstanceOf(DatabaseConnectorError.QueryFailed.class);
-        assertThat(cause.message()).contains("name").contains("untyped").doesNotContain("null");
+    private static void freshUuidTable() {
+        success(connector.execute(connector.dsl().query("DROP TABLE IF EXISTS live_uuids")));
+        success(connector.execute(connector.dsl().query("CREATE TABLE live_uuids(id INT PRIMARY KEY, u UUID, tags TEXT[], nums INT[])")));
+        success(connector.execute(connector.dsl().query("INSERT INTO live_uuids(id, u, tags, nums) VALUES (1, '123e4567-e89b-12d3-a456-426614174000', ARRAY['a','b'], ARRAY[1,2])")));
+    }
+
+    /// #2481: jOOQ asks the driver for a uuid or array column as `Object`; the driver refused that target.
+    @Test
+    void fetchOne_typedUuidAndArrayColumns_areReadTyped() {
+        freshUuidTable();
+
+        var u = DSL.field("u", SQLDataType.UUID);
+        var tags = DSL.field("tags", SQLDataType.VARCHAR.array());
+        var nums = DSL.field("nums", SQLDataType.INTEGER.array());
+        var record = success(connector.fetchOne(connector.dsl().select(u, tags, nums).from(DSL.table("live_uuids")).where(DSL.field("id", Integer.class).eq(1))));
+
+        assertThat(record.get(u)).isEqualTo(SAMPLE_UUID);
+        assertThat(record.get(tags)).containsExactly("a", "b");
+        assertThat(record.get(nums)).containsExactly(1, 2);
+    }
+
+    @Test
+    void fetchOne_untypedUuidAndArrayColumns_returnTheDriversNativeValue() {
+        freshUuidTable();
+
+        var record = success(connector.fetchOne(connector.dsl().select(DSL.field("u"), DSL.field("tags"), DSL.field("nums")).from(DSL.table("live_uuids")).where(DSL.field("id", Integer.class).eq(1))));
+
+        assertThat(record.get(0)).isEqualTo(SAMPLE_UUID);
+        assertThat((Object[]) record.get(1)).containsExactly("a", "b");
+        assertThat((Object[]) record.get(2)).containsExactly(1, 2);
+    }
+
+    @Test
+    void fetchOne_untypedPlainField_returnsTheDriversNativeValue() {
+        var record = success(connector.fetchOne(connector.dsl().select(DSL.field("name")).from(DSL.table("live_items")).where(DSL.field("id").eq(1))));
+
+        assertThat(record.get(0)).isEqualTo("one");
+    }
+
+    @Test
+    void uuidAndArrayValues_roundTripThroughBoundParameters() {
+        freshUuidTable();
+        success(connector.execute(connector.dsl().query("INSERT INTO live_uuids(id, u, tags, nums) VALUES (2, ?, ?, ?)", SAMPLE_UUID, new String[]{"x", "y"}, new Integer[]{3, 4})));
+
+        var u = DSL.field("u", SQLDataType.UUID);
+        var tags = DSL.field("tags", SQLDataType.VARCHAR.array());
+        var nums = DSL.field("nums", SQLDataType.INTEGER.array());
+        var record = success(connector.fetchOne(connector.dsl().select(u, tags, nums).from(DSL.table("live_uuids")).where(DSL.field("id", Integer.class).eq(2))));
+
+        assertThat(record.get(u)).isEqualTo(SAMPLE_UUID);
+        assertThat(record.get(tags)).containsExactly("x", "y");
+        assertThat(record.get(nums)).containsExactly(3, 4);
+    }
+
+    /// v-2475 D-3: jOOQ plain SQL takes `?` for a bind placeholder, so the jsonb "has key" operator is written `??`.
+    @Test
+    void fetchOne_jsonbHasKeyOperator_writtenWithTheEscape_works() {
+        var record = success(connector.fetchOne(connector.dsl().resultQuery("SELECT '{\"a\":1}'::jsonb ?? 'a' AS has_a")));
+
+        assertThat(record.get(0, Boolean.class)).isTrue();
+    }
+
+    @Test
+    void fetchOne_jsonbHasKeyOperator_withABoundKey_works() {
+        var record = success(connector.fetchOne(connector.dsl().resultQuery("SELECT '{\"a\":1}'::jsonb ?? ? AS has_a", "a")));
+
+        assertThat(record.get(0, Boolean.class)).isTrue();
+    }
+
+    /// A lone `?` with no bind is not an escape and is left to the server.
+    @Test
+    void fetchOne_loneQuestionMarkWithoutABind_isLeftToTheServer() {
+        var record = success(connector.fetchOne(connector.dsl().resultQuery("SELECT '{\"a\":1}'::jsonb ? 'a' AS has_a")));
+
+        assertThat(record.get(0, Boolean.class)).isTrue();
     }
 
     @Test
