@@ -47,6 +47,13 @@ final class ApplyReconciler {
 
     /// Looks up every INTENDED row: found becomes CREATED, 12 empty listings become ABSENT, a failed listing refuses.
     static Result<Unit> reconcileIntents(ApplyRecorder recorder, Function<String, Result<ComputeProvider>> computeFor) {
+        return ApplyLabels.requireSafe("apply id",
+                                       recorder.applyId())
+                          .flatMap(_ -> lookupIntended(recorder, computeFor));
+    }
+
+    private static Result<Unit> lookupIntended(ApplyRecorder recorder,
+                                               Function<String, Result<ComputeProvider>> computeFor) {
         var intended = recorder.snapshot()
                                .resources()
                                .stream()
@@ -54,7 +61,10 @@ final class ApplyReconciler {
                                .toList();
 
         for (var row : intended) {
-            var outcome = computeFor.apply(row.provider()).flatMap(compute -> lookupWindow(compute, row, recorder));
+            var outcome = ApplyLabels.requireSafe("node id",
+                                                  row.nodeId())
+                                     .flatMap(_ -> computeFor.apply(row.provider()))
+                                     .flatMap(compute -> lookupWindow(compute, row, recorder));
 
             if (outcome.isFailure()) {
                 return outcome;
@@ -129,6 +139,14 @@ final class ApplyReconciler {
     static Result<AuditReport> audit(ApplyRecorder recorder,
                                      ClusterName cluster,
                                      Function<String, Result<ComputeProvider>> computeFor) {
+        return ApplyLabels.requireSafe(cluster,
+                                       recorder.applyId())
+                          .flatMap(_ -> auditProviders(recorder, cluster, computeFor));
+    }
+
+    private static Result<AuditReport> auditProviders(ApplyRecorder recorder,
+                                                      ClusterName cluster,
+                                                      Function<String, Result<ComputeProvider>> computeFor) {
         var adopted = new ArrayList<String>();
         var gone = new ArrayList<String>();
         var relabelled = new ArrayList<String>();

@@ -51,10 +51,12 @@ final class ApplyRollback {
                                    Function<String, Result<ComputeProvider>> computeFor,
                                    Drain drain,
                                    Consumer<String> out) {
-        return ApplyReconciler.audit(recorder, cluster, computeFor)
-                              .flatMap(audit -> recorder.phase(ApplyPhase.ROLLING_BACK)
-                                                        .map(_ -> audit))
-                              .map(audit -> terminateAll(recorder, cluster, computeFor, drain, out, audit));
+        return ApplyLabels.requireSafe(cluster,
+                                       recorder.applyId())
+                          .flatMap(_ -> ApplyReconciler.audit(recorder, cluster, computeFor))
+                          .flatMap(audit -> recorder.phase(ApplyPhase.ROLLING_BACK)
+                                                    .map(_ -> audit))
+                          .map(audit -> terminateAll(recorder, cluster, computeFor, drain, out, audit));
     }
 
     private static Report terminateAll(ApplyRecorder recorder,
