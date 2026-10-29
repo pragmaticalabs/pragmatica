@@ -136,7 +136,7 @@ public interface DependencyResolver {
         var loadingContext = contextFor.apply(artifact);
 
         return registry.lookup(artifact)
-                       .map(slice -> Promise.success(resolvedSlice(slice, loadingContext)))
+                       .map(slice -> resolvedSlice(artifact, slice, loadingContext))
                        .or(() -> resolveWithSharedLoaderAndContext(artifact,
                                                                    repository,
                                                                    registry,
@@ -174,7 +174,19 @@ public interface DependencyResolver {
     /// through. This is the earliest point the codec CAN be bound — `Slice.codec(parent)` needs the
     /// instance — and it is still well before `start()` and before the slice is invocable, so every
     /// resource that captured the late-bound codec during construction is ready by first use (#526).
-    private static ResolvedSlice resolvedSlice(Slice slice, SliceLoadingContext loadingContext) {
+    ///
+    /// `Slice.codec(parent)` is slice code, and production code never lets a throw out: a slice whose `codec(parent)`
+    /// throws is a FAILED load with a typed cause. This also matters for the already-registered branch, which runs
+    /// inside the caller's `computeIfAbsent` and used to throw straight out of it, past any Promise.
+    private static Promise<ResolvedSlice> resolvedSlice(Artifact artifact,
+                                                        Slice slice,
+                                                        SliceLoadingContext loadingContext) {
+        return Promise.lift(t -> new SliceLoadingFailure.Fatal.CodecBindFailed(artifact.asString(),
+                                                                               Causes.fromThrowable(t)),
+                            () -> boundSlice(slice, loadingContext));
+    }
+
+    private static ResolvedSlice boundSlice(Slice slice, SliceLoadingContext loadingContext) {
         loadingContext.bindSliceCodec(slice);
 
         return new ResolvedSlice(slice, loadingContext);
@@ -424,7 +436,7 @@ public interface DependencyResolver {
                                         List.of(),
                                         List.of()).onFailure(_ -> loadingContext.releaseConfigWatches())
                                        .flatMap(slice -> registerSlice(artifact, slice, registry))
-                                       .map(slice -> resolvedSlice(slice, loadingContext));
+                                       .flatMap(slice -> resolvedSlice(artifact, slice, loadingContext));
         }
 
         return resolveArtifactDependenciesWithContextSequentially(sliceDeps,
@@ -455,7 +467,7 @@ public interface DependencyResolver {
 
         return createSliceFromClass(sliceClass, loadingContext, resolvedSlices, sliceDeps).onFailure(_ -> loadingContext.releaseConfigWatches())
                                    .flatMap(slice -> registerSlice(artifact, slice, registry))
-                                   .map(slice -> resolvedSlice(slice, loadingContext));
+                                   .flatMap(slice -> resolvedSlice(artifact, slice, loadingContext));
     }
 
     static Promise<SliceBridge> resolveBridge(Artifact artifact,

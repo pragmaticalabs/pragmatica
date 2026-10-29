@@ -38,6 +38,7 @@ import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.lang.utils.Causes;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -195,6 +196,38 @@ class SliceStoreConfigWatchLifecycleTest {
 
         assertThat(registry.lookup(D).isPresent()).as("a load that registered the slice unregisters it again").isFalse();
         assertThat(feed.count(D)).as("and releases what it subscribed").isZero();
+    }
+
+    @Test
+    void aThrowingCodecOfAnAlreadyRegisteredSlice_isAFailedLoad_notAThrowOutOfComputeIfAbsent_andALaterLoadWorks() {
+        // Registered and subscribed by an EARLIER resolution, as a dependency would be.
+        DependencyResolver.resolveWithContext(CODEC_THROWS,
+                                              repository,
+                                              registry,
+                                              sharedLoader,
+                                              STUB_INVOKER,
+                                              noResources(),
+                                              Option.some((art, classLoader) -> Option.some(IntrinsicConfigProvider.intrinsicConfigProvider("node", Map.of("watched.key", "v")))),
+                                              Option.some(SliceCodec.sliceCodec(List.of())),
+                                              SliceLoadingContext.noResourceOverlay(),
+                                              Option.some(feed))
+                          .await();
+        assertThat(registry.lookup(CODEC_THROWS).isPresent() && feed.count(CODEC_THROWS) == 1).as("precondition: registered and subscribed by the earlier resolution").isTrue();
+        var withCodec = storeWithNodeCodec();
+
+        var loaded = withCodec.loadSlice(CODEC_THROWS).await();
+
+        assertThat(loaded.isFailure()).as("the throw is a failed load").isTrue();
+        loaded.onSuccess(_ -> Assertions.fail("the load of a slice whose codec throws succeeded"))
+              .onFailure(cause -> assertThat(cause).isInstanceOf(SliceLoadingFailure.Fatal.CodecBindFailed.class));
+        assertThat(withCodec.entries()).as("no half entry is left in the map").doesNotContainKey(CODEC_THROWS);
+        assertThat(registry.lookup(CODEC_THROWS).isPresent()).as("the earlier load still owns the registered instance").isTrue();
+        assertThat(feed.count(CODEC_THROWS)).isEqualTo(1);
+
+        var later = store.loadSlice(CODEC_THROWS).await();
+
+        assertThat(later.isSuccess()).as("a store with no codec scoping loads the same artifact: nothing was poisoned").isTrue();
+        assertThat(store.entries()).containsKey(CODEC_THROWS);
     }
 
     private sliceStore storeWithNodeCodec() {
