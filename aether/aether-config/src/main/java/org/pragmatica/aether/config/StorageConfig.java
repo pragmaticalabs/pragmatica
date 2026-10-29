@@ -32,6 +32,10 @@ import org.pragmatica.lang.Verify;
 /// for every instance but `streams`, whose sealed segments are not capped. The loader refuses a value that is not a
 /// positive integer.
 ///
+/// `anchorRetention` is how many versions of each durable anchor the instance keeps below the newest one it wrote
+/// (`anchor_retention`, default 8, at least 2; the loader refuses less). The default is a guess, to be revisited after
+/// the A3-2 benchmark.
+///
 /// `shared` (#249) is the instance's cluster-shared last tier, from `[storage.<instance>.shared]`: the in-memory
 /// DHT by default, or an S3-compatible bucket ([SharedTierConfig]).
 ///
@@ -60,16 +64,57 @@ public record StorageConfig(long memoryMaxBytes,
                             SharedTierConfig shared,
                             boolean derivesPaths,
                             int maxBlockBytes,
-                            boolean diskPathExplicit) {
+                            boolean diskPathExplicit,
+                            int anchorRetention) {
     /// The default for `prefetchMaxInFlight`; the prefetch manager's own default is pinned to the same number by a test.
     public static final int DEFAULT_PREFETCH_MAX_IN_FLIGHT = 4;
     /// The default for `maxBlockBytes`; the storage instance's own default is pinned to the same number by a test.
     public static final int DEFAULT_MAX_BLOCK_BYTES = 16 * 1024 * 1024;
+    /// The default for `anchorRetention`; the storage instance's own default is pinned to the same number by a test.
+    public static final int DEFAULT_ANCHOR_RETENTION = 8;
+    /// The smallest `anchorRetention` the loader accepts.
+    public static final int MIN_ANCHOR_RETENTION = 2;
     /// #912: names the root the default `disk_path`/`snapshot_path` resolve under, instead of `/data/aether`.
     /// A node whose storage sections omit their paths (the shipped image config sets none) otherwise writes
     /// under that fixed, machine-global root; tests and co-located runs point it at their own directory.
     public static final String DEFAULT_ROOT_PROPERTY = "aether.storage.defaultRoot";
     private static final String DEFAULT_ROOT = "/data/aether";
+
+    /// The shape before `anchorRetention` existed: the retention takes its default.
+    public StorageConfig(long memoryMaxBytes,
+                         long diskMaxBytes,
+                         String diskPath,
+                         String snapshotPath,
+                         int snapshotMutationThreshold,
+                         String snapshotMaxInterval,
+                         int snapshotRetentionCount,
+                         String walPath,
+                         boolean encrypted,
+                         boolean promotion,
+                         boolean prefetch,
+                         int prefetchMaxInFlight,
+                         SharedTierConfig shared,
+                         boolean derivesPaths,
+                         int maxBlockBytes,
+                         boolean diskPathExplicit) {
+        this(memoryMaxBytes,
+             diskMaxBytes,
+             diskPath,
+             snapshotPath,
+             snapshotMutationThreshold,
+             snapshotMaxInterval,
+             snapshotRetentionCount,
+             walPath,
+             encrypted,
+             promotion,
+             prefetch,
+             prefetchMaxInFlight,
+             shared,
+             derivesPaths,
+             maxBlockBytes,
+             diskPathExplicit,
+             DEFAULT_ANCHOR_RETENTION);
+    }
 
     /// The shape before `maxBlockBytes` existed: the limit takes its default.
     public StorageConfig(long memoryMaxBytes,
@@ -453,7 +498,8 @@ public record StorageConfig(long memoryMaxBytes,
                                  shared,
                                  derivesPaths,
                                  maxBlockBytes,
-                                 diskPathExplicit);
+                                 diskPathExplicit,
+                                 anchorRetention);
     }
 
     /// This configuration with its memory tier cut to `memoryMaxBytes` (A0b: the heap-fraction clamp). Every other setting is kept.
@@ -473,7 +519,8 @@ public record StorageConfig(long memoryMaxBytes,
                                  shared,
                                  derivesPaths,
                                  maxBlockBytes,
-                                 diskPathExplicit);
+                                 diskPathExplicit,
+                                 anchorRetention);
     }
 
     /// The configuration of an instance whose `disk_path` an operator wrote: a tier that cannot be opened there fails
@@ -494,7 +541,8 @@ public record StorageConfig(long memoryMaxBytes,
                                  shared,
                                  derivesPaths,
                                  maxBlockBytes,
-                                 true);
+                                 true,
+                                 anchorRetention);
     }
 
     /// #249: an instance configured ONLY through `[storage.<name>.shared]`, with no `[storage.<name>]`
@@ -534,7 +582,9 @@ public record StorageConfig(long memoryMaxBytes,
                                  prefetchMaxInFlight,
                                  shared,
                                  true,
-                                 maxBlockBytes);
+                                 maxBlockBytes,
+                                 false,
+                                 anchorRetention);
     }
 
     /// #249 N3: this configuration placed on `diskPath` and `snapshotPath`, which are its own from now on
@@ -554,7 +604,30 @@ public record StorageConfig(long memoryMaxBytes,
                                  prefetchMaxInFlight,
                                  shared,
                                  false,
-                                 maxBlockBytes);
+                                 maxBlockBytes,
+                                 false,
+                                 anchorRetention);
+    }
+
+    /// This configuration keeping `anchorRetention` versions of each anchor below the newest. Every other setting is kept.
+    public StorageConfig withAnchorRetention(int anchorRetention) {
+        return new StorageConfig(memoryMaxBytes,
+                                 diskMaxBytes,
+                                 diskPath,
+                                 snapshotPath,
+                                 snapshotMutationThreshold,
+                                 snapshotMaxInterval,
+                                 snapshotRetentionCount,
+                                 walPath,
+                                 encrypted,
+                                 promotion,
+                                 prefetch,
+                                 prefetchMaxInFlight,
+                                 shared,
+                                 derivesPaths,
+                                 maxBlockBytes,
+                                 diskPathExplicit,
+                                 anchorRetention);
     }
 
     /// True when an operator explicitly placed the WAL; false means derive the pre-#634-3 default.

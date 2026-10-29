@@ -647,6 +647,27 @@ public interface SystemTags {
         // #2087: the owner's visible position, announced to its replicas. 2140 and 2141 went to #2118, so this takes the
         // next free slot (scanned across every open PR head and every origin branch on 2026-10-11).
         pin(table, 2142, "org.pragmatica.aether.stream.replication.ReplicationMessage.CommitAdvance");
+        // deployment state machine rewrite, phase 1 (spec R-1.5.1): the five KV records, the two value records nested in them and
+        // the types their components need -- scanned free across every origin branch on 2026-10-12, so 2143..2158 are taken
+        pin(table, 2143, "org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey");
+        pin(table, 2144, "org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey");
+        pin(table, 2145, "org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentApplyKey");
+        pin(table, 2146, "org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey");
+        pin(table, 2147, "org.pragmatica.aether.slice.kvstore.AetherKey.NodeDepartureKey");
+        pin(table, 2148, "org.pragmatica.aether.slice.kvstore.AetherValue.SliceDesiredValue");
+        pin(table, 2149, "org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue");
+        pin(table, 2150, "org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentApplyValue");
+        pin(table, 2151, "org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue");
+        pin(table, 2152, "org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue");
+        pin(table, 2153, "org.pragmatica.aether.slice.kvstore.AetherValue.Generation");
+        pin(table, 2154, "org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation");
+        pin(table, 2155, "org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal");
+        pin(table, 2156, "org.pragmatica.aether.slice.kvstore.AetherValue.UnresponsiveEntry");
+        pin(table, 2157, "org.pragmatica.aether.slice.kvstore.AetherValue.DepartureState");
+        pin(table, 2158, "org.pragmatica.aether.slice.kvstore.AetherValue.DepartureCause");
+        // the observed slice state of the deployment rewrite, with the tombstone the live SliceState lacks (spec 1.6.2) -- scanned free on 2026-10-12
+        pin(table, 2159, "org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState");
+        // 2160..2162 are taken by the later phases of the same rewrite (tracer wiring), which are not part of this cut
         // A6, the DHT repair plane: stamp digests and paged migration. 2143..2162 are taken on open branches
         // (scanned across every origin branch on 2026-10-18), so these take the next free slots.
         pin(table, 2163, "org.pragmatica.dht.DHTMessage.StampDigestRequest");

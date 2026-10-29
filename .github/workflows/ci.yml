@@ -47,6 +47,10 @@ jobs:
       - name: Heavy-forge workflow pins
         run: python3 -B -m unittest discover -s tools -p test_heavy_forge_workflow.py
 
+      # Release checksums (#2235): SHA256SUMS covers every published asset by bare name; the check goes red when one is dropped.
+      - name: Release checksums pins
+        run: python3 -B -m unittest discover -s tools -p test_release_checksums.py
+
       - name: Set up Java 25
         uses: actions/setup-java@v5
         with:

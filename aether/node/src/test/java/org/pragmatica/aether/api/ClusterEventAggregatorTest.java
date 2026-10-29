@@ -9,6 +9,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.controller.RollbackEvent;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
+import org.pragmatica.aether.metrics.deployment.ReconciliationAdjustment;
 import org.pragmatica.aether.node.NodeCodecs;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.ConsistencyMode;
@@ -964,6 +965,28 @@ class ClusterEventAggregatorTest {
         h.aggregator().onAutoRollback(autoRollbackExecuted());
 
         assertThat(h.events()).isEmpty();
+    }
+
+    /// H-3: the reconciliation event lives beside `DeploymentEvent`, so either cluster FSM can raise it. Red when the
+    /// aggregator stops mapping it: an increase is SCALE_UP, a decrease SCALE_DOWN, each with its counts and trigger.
+    @Test
+    void reconciliationAdjustment_mapsToScaleUpAndScaleDown_withItsCounts() {
+        var h = Harness.create();
+
+        h.aggregator().onReconciliationAdjustment(ReconciliationAdjustment.reconciliationAdjustment(ROLLBACK_ARTIFACT, 1, 3));
+        h.aggregator().onReconciliationAdjustment(ReconciliationAdjustment.reconciliationAdjustment(ROLLBACK_ARTIFACT, 3, 2));
+
+        var events = h.events();
+
+        assertThat(events).hasSize(2);
+        assertThat(events.get(0)).isInstanceOf(ClusterEvent.ScaleUp.class);
+        assertThat(events.get(0).details()).containsEntry("artifact", ROLLBACK_ARTIFACT.asString())
+                                           .containsEntry("previousInstances", "1")
+                                           .containsEntry("desiredInstances", "3")
+                                           .containsEntry("trigger", "reconciliation");
+        assertThat(events.get(1)).isInstanceOf(ClusterEvent.ScaleDown.class);
+        assertThat(events.get(1).details()).containsEntry("previousInstances", "3")
+                                           .containsEntry("desiredInstances", "2");
     }
 
     private static SliceFailureEvent.AllInstancesFailed allInstancesFailed() {
@@ -2454,7 +2477,7 @@ class ClusterEventAggregatorTest {
     }
 
     /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the oversized-event refusal and the
-    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378); every other code keeps the plain 60 s throttle.
+    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450); every other code keeps the plain 60 s throttle.
     @Test
     void onOperatorWarning_onlyTheDeclaredPairsArePaired_otherCodesUnchanged() {
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).toList())
@@ -2504,6 +2527,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STORAGE_MAINTENANCE_STARTED,
                 OperatorWarningCode.STORAGE_PREFETCH_STARTED,
                 OperatorWarningCode.STORAGE_WRITE_BEHIND_FLUSHED,
+                OperatorWarningCode.STORAGE_ANCHOR_READABLE,
                 OperatorWarningCode.WORKER_ASSIGNED,
                 OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED,
                 OperatorWarningCode.UPLOAD_NODE_CAP_RESTORED,
@@ -2551,6 +2575,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STORAGE_MAINTENANCE_NOT_STARTED,
                 OperatorWarningCode.STORAGE_PREFETCH_NOT_STARTED,
                 OperatorWarningCode.STORAGE_WRITE_BEHIND_FLUSH_FAILED,
+                OperatorWarningCode.STORAGE_ANCHOR_CORRUPT,
                 OperatorWarningCode.WORKER_ASSIGNMENT_OVERDUE,
                 OperatorWarningCode.TOPIC_TIER_MISMATCH,
                 OperatorWarningCode.JSON_CONFIG_REJECTED,
