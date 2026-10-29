@@ -214,7 +214,7 @@ public final class ClusterEventAggregator {
     static final int MAX_OPEN_RECOVERABLE_PER_CODE = 256;
     /// How long an open mark of a spoofable-subject code is held with no recovery (#1200): ten of the observer's report windows. Spoofed subjects
     /// never recover, so without an expiry they would hold their slots for ever and, once the cap was reached, a REAL stranded sender would raise
-    /// nothing. An expired mark also leaves the throttle, so a recurrence is shown again; its recovery, if it comes later, is not published.
+    /// nothing. Its recovery, if it comes later, is not published; its throttle window (60 s, far shorter) is left to the idle eviction.
     static final long SPOOFABLE_OPEN_TTL_MS = 600_000L;
 
     private final java.util.concurrent.atomic.AtomicLong openCapDropped = new java.util.concurrent.atomic.AtomicLong();
@@ -966,7 +966,6 @@ public final class ClusterEventAggregator {
                 iterator.remove();
                 openRecoverable.remove(mark.getKey());
                 awaitingDelivery.remove(mark.getKey());
-                operatorWarningThrottle.remove(mark.getKey());
             }
         }
     }
