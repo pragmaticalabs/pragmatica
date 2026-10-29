@@ -29,6 +29,7 @@ import org.pragmatica.lang.io.TimeSpan;
 
 import io.netty.channel.Channel;
 import io.netty.util.AttributeKey;
+import io.netty.util.concurrent.EventExecutor;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
@@ -110,9 +111,24 @@ final class ResponseSequence {
         }
     }
 
-    /// The loop that is shutting down has nothing left to write: the connection is gone with it.
+    /// A completion on the event loop drains at once: every earlier slot that is ready has been marked ready before this
+    /// call, so the drain writes them first, in order. One from another thread hands the drain to the loop, which is the only
+    /// place a write happens. A loop that is shut down has nothing left to write: the connection is gone with it.
     @Contract
     private void submitDrain() {
+        if (onLoop()) {
+            drain();
+        } else {
+            hopToLoop();
+        }
+    }
+
+    private boolean onLoop() {
+        return loop instanceof EventExecutor executor && executor.inEventLoop();
+    }
+
+    @Contract
+    private void hopToLoop() {
         try {
             loop.execute(this::drain);
         } catch (RejectedExecutionException e) {
