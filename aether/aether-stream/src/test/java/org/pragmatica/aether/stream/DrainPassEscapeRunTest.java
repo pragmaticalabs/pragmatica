@@ -410,8 +410,8 @@ class DrainPassEscapeRunTest {
             }
 
             @Override
-            public List<DeadLetterEntry> read(String streamName, int maxCount) {
-                return List.of();
+            public Promise<List<DeadLetterEntry>> read(String streamName, int maxCount) {
+                return Promise.success(List.of());
             }
         };
         var skipping = StreamConsumerRuntime.streamConsumerRuntime(manager, sink);

@@ -33,7 +33,7 @@ class DeadLetterHandlerTest {
                            3)
                    .await()
                    .onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
-            var entries = handler.read("orders", 10);
+            var entries = handler.read("orders", 10).await().unwrap();
 
             assertThat(entries).hasSize(1);
             assertThat(entries.getFirst().streamName()).isEqualTo("orders");
@@ -75,14 +75,14 @@ class DeadLetterHandlerTest {
                            1)
                    .await()
                    .onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
-            var entries = handler.read("orders", 2);
+            var entries = handler.read("orders", 2).await().unwrap();
 
             assertThat(entries).hasSize(2);
         }
 
         @Test
         void read_returnsEmptyList_whenNoEntries() {
-            var entries = handler.read("nonexistent", 10);
+            var entries = handler.read("nonexistent", 10).await().unwrap();
 
             assertThat(entries).isEmpty();
         }
@@ -107,8 +107,8 @@ class DeadLetterHandlerTest {
                            1)
                    .await()
                    .onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
-            assertThat(handler.read("orders", 10)).hasSize(1);
-            assertThat(handler.read("events", 10)).hasSize(1);
+            assertThat(handler.read("orders", 10).await().unwrap()).hasSize(1);
+            assertThat(handler.read("events", 10).await().unwrap()).hasSize(1);
         }
 
         @Test
@@ -122,7 +122,7 @@ class DeadLetterHandlerTest {
                            1)
                    .await()
                    .onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
-            var entries = handler.read("orders", 100);
+            var entries = handler.read("orders", 100).await().unwrap();
 
             assertThat(entries).hasSize(1);
         }
