@@ -293,6 +293,41 @@ grep -i "slice\|artifact" /var/log/aether/aether.log | tail -100
 2. Restore the DHT; the next run deletes the backlog (up to 10,000 blocks per run), and `stream-segment-delete-recovered` (INFO, same subject) follows.
 3. If disk or heap pressure builds meanwhile, it is these released blocks; nothing else needs to be done for them.
 
+### Stream Segment DHT Near Full (`stream-segment-dht-near-full`)
+
+**Symptoms:** a WARNING `OPERATOR_WARNING` with `details.code` `stream-segment-dht-near-full`, subject `node <nodeId> dht prefix stream-segments`.
+
+**Cause:** this node's DHT engine holds 85% or more of `[streaming] dht_segment_max_bytes` as live plus tombstone bytes of the `stream-segments` prefix. Tombstones are never capped but are heap (about the key length plus 64 bytes each, for `tombstone_retention`), so they count here: this is a heap warning, not a refusal. Until the stream retention work reduces them, every sealed event leaves one tombstone per replica.
+
+**Actions:**
+
+1. Check the gauges `aether.dht.prefix.bytes{prefix="stream-segments"}` and `aether.dht.prefix.tombstone.bytes{prefix="stream-segments"}` to see which part is growing.
+2. Live bytes: shorten stream retention, or raise `[streaming] dht_segment_max_bytes` (and the heap with it). Tombstone bytes: they fall as `tombstone_retention` passes.
+3. `stream-segment-dht-near-full-cleared` (INFO, same subject) follows when live plus tombstone bytes fall below 80% of the cap.
+
+### Stream Segment DHT Full (`stream-segment-dht-full`)
+
+**Symptoms:** a CRITICAL `OPERATOR_WARNING` with `details.code` `stream-segment-dht-full`, subject `node <nodeId> dht prefix stream-segments`; stream seals fail, publishers to partitions without a WAL see `SEALING_BEHIND`, and seal failures log `TierFull` for the `REMOTE` tier.
+
+**Cause:** this node's DHT engine refused a client put because it would take the live bytes of `stream-segments` above `[streaming] dht_segment_max_bytes`. The message names the cap, the usage and the refused size. Raised once per episode, at the first refusal. The cap is per node and binds client writes only: repair writes (catch-up, migration, hand-off, re-homing) are accepted and counted, so a node can hold more than the cap after a re-replication. A put that reached its write quorum while one replica refused is a success with fewer than the full replica count, counted in `aether.dht.prefix.refused.puts`; anti-entropy repairs the copy later. Entity checkpoint blocks count against the cap and are not reclaimed yet, so a node hosting entity partitions can fill it quickly.
+
+**Actions:**
+
+1. Free space: retention passes and the collection run release expired segments; check `stream-segment-delete-failing` and `stream-retention-withheld` for a reason they do not.
+2. Raise `[streaming] dht_segment_max_bytes` together with the node's heap if the working set is legitimate.
+3. `stream-segment-dht-full-cleared` (INFO, same subject) follows when live bytes fall below 85% of the cap; the sealer retries on its own.
+
+### Stream Segment Disk Pressure (`stream-segment-disk-pressure`)
+
+**Symptoms:** a WARNING `OPERATOR_WARNING` with `details.code` `stream-segment-disk-pressure`, subject `node <nodeId> storage streams`.
+
+**Cause:** the durable local-disk tier of the streams instance is at or above its warning ratio on this node. Seals fail when it is full and owner publishes are refused (`SEGMENT_TIER_FULL`) from the refuse ratio. Raised once per episode, on every node.
+
+**Actions:**
+
+1. Raise `[streaming] segment_disk_max_bytes`, add disk, or shorten stream retention.
+2. `stream-segment-disk-pressure-relieved` (INFO, same subject) follows when the tier falls below the warning ratio.
+
 ### Stream Consumer Behind the Ring (`stream-consumer-behind-ring`)
 
 **Symptoms:** a WARNING `OPERATOR_WARNING` with `details.code` `stream-consumer-behind-ring`, subject `stream[partition]/group`.
