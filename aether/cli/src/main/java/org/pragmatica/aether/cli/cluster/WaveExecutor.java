@@ -85,8 +85,13 @@ public final class WaveExecutor {
                                             CreatedNodes created,
                                             java.util.function.Supplier<Result<Integer>> body) {
         var recorder = created.recorder();
+        var key = ApplyAction.actionKey(action);
+        // A resumed apply never redoes an action its ledger marks DONE.
+        if (recorder.statusOf(key) == ApplyAction.Status.DONE) {
+            return success(recorder.recordedFor(key));
+        }
 
-        return recorder.beginAction(ApplyAction.actionKey(action))
+        return recorder.beginAction(key)
                        .flatMap(_ -> body.get())
                        .flatMap(count -> recorder.finishAction()
                                                  .map(_ -> count));
@@ -97,10 +102,25 @@ public final class WaveExecutor {
                                                    CreatedNodes created) {
         return switch (action) {
             case DiffAction.AddSource a -> logNewSource(a.sourceName());
-            case DiffAction.AddRole a -> provisionRole(a.sourceName(), a.role(), a.count(), desired, created);
-            case DiffAction.ScaleUp a -> provisionScaleUp(a.sourceName(), a.role(), a.from(), a.to(), desired, created);
+            case DiffAction.AddRole a -> provisionRole(a.sourceName(),
+                                                       a.role(),
+                                                       Math.max(0, a.count() - recorded(action, created)),
+                                                       desired,
+                                                       created);
+            case DiffAction.ScaleUp a -> provisionScaleUp(a.sourceName(),
+                                                          a.role(),
+                                                          Math.min(a.to(), a.from() + recorded(action, created)),
+                                                          a.to(),
+                                                          desired,
+                                                          created);
             default -> success(0);
         };
+    }
+
+    /// Nodes of this action an earlier run already created and recorded: a resumed action creates only the remainder.
+    private static int recorded(DiffAction action, CreatedNodes created) {
+        return created.recorder()
+                      .recordedFor(ApplyAction.actionKey(action));
     }
 
     private static Result<Integer> logNewSource(SourceName sourceName) {

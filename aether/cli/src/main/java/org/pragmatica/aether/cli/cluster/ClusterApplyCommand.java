@@ -35,8 +35,6 @@ import static org.pragmatica.lang.Result.success;
 class ClusterApplyCommand implements Callable<Integer> {
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
-    private static final Cause ROLLBACK_NOT_IMPLEMENTED = Causes.cause("--rollback is not implemented (#686); nothing was changed");
-
     @Parameters(index = "0", description = "Path to aether-cluster.toml config file")
     private Path configFile;
 
@@ -49,7 +47,7 @@ class ClusterApplyCommand implements Callable<Integer> {
     @CommandLine.Option(names = "--resume", description = "Resume a halted apply from first unfinished wave")
     private boolean resume;
 
-    @CommandLine.Option(names = "--rollback", description = "Not implemented (#686): fails with a non-zero exit")
+    @CommandLine.Option(names = "--rollback", description = "Terminate the VMs a halted apply created (from its ledger), newest first; exits non-zero and keeps the ledger if any is left")
     private boolean rollback;
 
     @CommandLine.Option(names = "--full-check", description = "Run full network pre-flight checks before apply")
@@ -64,7 +62,7 @@ class ClusterApplyCommand implements Callable<Integer> {
     @Override
     public Integer call() {
         return rollback
-               ? refuseRollback()
+               ? rollbackWithTarget()
                : applyWithTarget();
     }
 
@@ -88,12 +86,23 @@ class ClusterApplyCommand implements Callable<Integer> {
                                  .fold(ClusterApplyCommand::onFailure, v -> v);
     }
 
-    /// Owner ruling (#686): `--rollback` fails honestly until the wave rollout is decided. The flag used
-    /// to be accepted and then ran the normal apply path, which looked like a rollback that did nothing.
-    /// Refused first of all, before `--cluster` resolution reads the registry and before the config, the
-    /// apply state or the cluster are touched, so no side effect (and no other error) precedes the refusal.
-    private int refuseRollback() {
-        return onFailure(ROLLBACK_NOT_IMPLEMENTED);
+    private Integer rollbackWithTarget() {
+        return clusterTarget.applyOverrides()
+                            .map(_ -> handleRollback())
+                            .fold(ClusterApplyCommand::onFailure, v -> v);
+    }
+
+    /// Only the cluster's name is needed from the config file: the VMs to terminate are the ledger's, not the plan's.
+    private int handleRollback() {
+        return readAndParseConfig().flatMap(config -> ApplyOrchestrator.rollback(config.cluster().name()))
+                                 .map(_ -> printRollbackComplete())
+                                 .fold(ClusterApplyCommand::onFailure, v -> v);
+    }
+
+    private int printRollbackComplete() {
+        System.out.println("Rollback complete: every VM the apply recorded is gone.");
+
+        return ExitCode.SUCCESS;
     }
 
     private Result<Integer> resumeApply(ClusterBootstrapConfig desired) {

@@ -678,9 +678,9 @@ class WaveExecutorLedgerTest {
                                                  .onFailure(cause -> assertThat(cause.message()).contains("HTTP 504 gateway timeout")
                                                                                                    .contains("may nevertheless exist")
                                                                                                    .contains("aether-node-id=" + nodeIds.getFirst())
-                                                                                                   .contains("check the provider for that label before re-running")
-                                                                                                   .contains("--resume` does not look it up yet")
-                                                                                                   .doesNotContain("decides"));
+                                                                                                   .contains("Run `aether cluster apply --resume`, not a fresh apply")
+                                                                                                   .contains("looks the node up by that label")
+                                                                                                   .doesNotContain("does not look it up yet"));
 
         assertThat(ledger.ledger(CLUSTER).resources()).singleElement().extracting(ApplyResource::state).isEqualTo(ApplyResource.State.INTENDED);
     }
