@@ -22,6 +22,7 @@ import org.pragmatica.postgres.net.netty.NettyConnectibleBuilder;
 import org.pragmatica.postgres.r2dbc.PgAsyncConnectionFactory;
 
 import org.jooq.impl.DSL;
+import org.jooq.impl.SQLDataType;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -212,12 +213,127 @@ class AsyncJooqConnectorLiveQueryTest {
         assertThat(success(connector.fetchOne(connector.dsl().resultQuery("SELECT name FROM live_items WHERE id = ?", 1))).get(0, String.class)).isEqualTo("one");
     }
 
+    private static final java.util.UUID SAMPLE_UUID = java.util.UUID.fromString("123e4567-e89b-12d3-a456-426614174000");
+
+    private static void freshUuidTable() {
+        success(connector.execute(connector.dsl().query("DROP TABLE IF EXISTS live_uuids")));
+        success(connector.execute(connector.dsl().query("CREATE TABLE live_uuids(id INT PRIMARY KEY, u UUID, tags TEXT[], nums INT[], ua UUID[], doc JSONB)")));
+        success(connector.execute(connector.dsl().query("INSERT INTO live_uuids(id, u, tags, nums, ua, doc) VALUES (1, '123e4567-e89b-12d3-a456-426614174000', ARRAY['a','b'], ARRAY[1,2], ARRAY['123e4567-e89b-12d3-a456-426614174000'::uuid, '00000000-0000-0000-0000-000000000001'::uuid], '{}')")));
+    }
+
+    /// #2481: jOOQ asks the driver for a uuid or array column as `Object`; the driver refused that target.
     @Test
-    void fetchOne_untypedField_failsWithATypedErrorNamingTheField() {
-        var cause = failure(connector.fetchOne(connector.dsl().select(DSL.field("name")).from(DSL.table("live_items")).where(DSL.field("id").eq(1))));
+    void fetchOne_typedUuidAndArrayColumns_areReadTyped() {
+        freshUuidTable();
+
+        var u = DSL.field("u", SQLDataType.UUID);
+        var tags = DSL.field("tags", SQLDataType.VARCHAR.array());
+        var nums = DSL.field("nums", SQLDataType.INTEGER.array());
+        var record = success(connector.fetchOne(connector.dsl().select(u, tags, nums).from(DSL.table("live_uuids")).where(DSL.field("id", Integer.class).eq(1))));
+
+        assertThat(record.get(u)).isEqualTo(SAMPLE_UUID);
+        assertThat(record.get(tags)).containsExactly("a", "b");
+        assertThat(record.get(nums)).containsExactly(1, 2);
+    }
+
+    @Test
+    void fetchOne_untypedUuidAndArrayColumns_returnTheDriversNativeValue() {
+        freshUuidTable();
+
+        var record = success(connector.fetchOne(connector.dsl().select(DSL.field("u"), DSL.field("tags"), DSL.field("nums")).from(DSL.table("live_uuids")).where(DSL.field("id", Integer.class).eq(1))));
+
+        assertThat(record.get(0)).isEqualTo(SAMPLE_UUID);
+        assertThat((Object[]) record.get(1)).containsExactly("a", "b");
+        assertThat((Object[]) record.get(2)).containsExactly(1, 2);
+    }
+
+    private static final java.util.UUID OTHER_UUID = java.util.UUID.fromString("00000000-0000-0000-0000-000000000001");
+
+    @Test
+    void fetchOne_typedUuidArray_isReadTyped() {
+        freshUuidTable();
+
+        var ua = DSL.field("ua", SQLDataType.UUID.array());
+        var record = success(connector.fetchOne(connector.dsl().select(ua).from(DSL.table("live_uuids")).where(DSL.field("id", Integer.class).eq(1))));
+
+        assertThat(record.get(ua)).containsExactly(SAMPLE_UUID, OTHER_UUID);
+    }
+
+    @Test
+    void fetchOne_untypedUuidArray_returnsTheDriversNativeValue() {
+        freshUuidTable();
+
+        var record = success(connector.fetchOne(connector.dsl().select(DSL.field("ua")).from(DSL.table("live_uuids")).where(DSL.field("id", Integer.class).eq(1))));
+
+        assertThat((Object[]) record.get(0)).containsExactly(SAMPLE_UUID, OTHER_UUID);
+    }
+
+    @Test
+    void uuidArray_roundTripsThroughABoundParameter_emptyIncluded() {
+        freshUuidTable();
+        success(connector.execute(connector.dsl().query("INSERT INTO live_uuids(id, ua) VALUES (2, ?), (3, ?)", new java.util.UUID[]{OTHER_UUID}, new java.util.UUID[0])));
+
+        var ua = DSL.field("ua", SQLDataType.UUID.array());
+        var two = success(connector.fetchOne(connector.dsl().select(ua).from(DSL.table("live_uuids")).where(DSL.field("id", Integer.class).eq(2))));
+        var three = success(connector.fetchOne(connector.dsl().select(ua).from(DSL.table("live_uuids")).where(DSL.field("id", Integer.class).eq(3))));
+
+        assertThat(two.get(ua)).containsExactly(OTHER_UUID);
+        assertThat(three.get(ua)).isEmpty();
+    }
+
+    @Test
+    void fetchOne_untypedColumnTheDriverCannotConvert_failsWithAMessageNamingTheColumnTypeAndTarget() {
+        freshUuidTable();
+
+        var cause = failure(connector.fetchOne(connector.dsl().select(DSL.field("doc")).from(DSL.table("live_uuids")).where(DSL.field("id", Integer.class).eq(1))));
 
         assertThat(cause).isInstanceOf(DatabaseConnectorError.QueryFailed.class);
-        assertThat(cause.message()).contains("name").contains("untyped").doesNotContain("null");
+        assertThat(cause.message()).contains("'doc'").contains("JSONB").contains("java.lang.Object").doesNotContain("null");
+    }
+
+    @Test
+    void fetchOne_untypedPlainField_returnsTheDriversNativeValue() {
+        var record = success(connector.fetchOne(connector.dsl().select(DSL.field("name")).from(DSL.table("live_items")).where(DSL.field("id").eq(1))));
+
+        assertThat(record.get(0)).isEqualTo("one");
+    }
+
+    @Test
+    void uuidAndArrayValues_roundTripThroughBoundParameters() {
+        freshUuidTable();
+        success(connector.execute(connector.dsl().query("INSERT INTO live_uuids(id, u, tags, nums) VALUES (2, ?, ?, ?)", SAMPLE_UUID, new String[]{"x", "y"}, new Integer[]{3, 4})));
+
+        var u = DSL.field("u", SQLDataType.UUID);
+        var tags = DSL.field("tags", SQLDataType.VARCHAR.array());
+        var nums = DSL.field("nums", SQLDataType.INTEGER.array());
+        var record = success(connector.fetchOne(connector.dsl().select(u, tags, nums).from(DSL.table("live_uuids")).where(DSL.field("id", Integer.class).eq(2))));
+
+        assertThat(record.get(u)).isEqualTo(SAMPLE_UUID);
+        assertThat(record.get(tags)).containsExactly("x", "y");
+        assertThat(record.get(nums)).containsExactly(3, 4);
+    }
+
+    /// v-2475 D-3: jOOQ plain SQL takes `?` for a bind placeholder, so the jsonb "has key" operator is written `??`.
+    @Test
+    void fetchOne_jsonbHasKeyOperator_writtenWithTheEscape_works() {
+        var record = success(connector.fetchOne(connector.dsl().resultQuery("SELECT '{\"a\":1}'::jsonb ?? 'a' AS has_a")));
+
+        assertThat(record.get(0, Boolean.class)).isTrue();
+    }
+
+    @Test
+    void fetchOne_jsonbHasKeyOperator_withABoundKey_works() {
+        var record = success(connector.fetchOne(connector.dsl().resultQuery("SELECT '{\"a\":1}'::jsonb ?? ? AS has_a", "a")));
+
+        assertThat(record.get(0, Boolean.class)).isTrue();
+    }
+
+    /// A lone `?` with no bind is not an escape and is left to the server.
+    @Test
+    void fetchOne_loneQuestionMarkWithoutABind_isLeftToTheServer() {
+        var record = success(connector.fetchOne(connector.dsl().resultQuery("SELECT '{\"a\":1}'::jsonb ? 'a' AS has_a")));
+
+        assertThat(record.get(0, Boolean.class)).isTrue();
     }
 
     @Test

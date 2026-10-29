@@ -16,17 +16,14 @@
  */
 package org.pragmatica.jooq.r2dbc;
 
-import java.util.Arrays;
 import java.util.List;
 
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.r2dbc.R2dbcError;
 import org.pragmatica.r2dbc.ReactiveOperations;
 
 import io.r2dbc.spi.Connection;
 import org.jooq.DSLContext;
-import org.jooq.Field;
 import org.jooq.Param;
 import org.jooq.Query;
 import org.jooq.QueryPart;
@@ -53,8 +50,7 @@ import org.jooq.impl.DSL;
 public interface JooqR2dbcQueries {
     /// Fetches every record of the query on the connection.
     ///
-    /// A query that selects a field declared without a type (`DSL.field("name")`) fails with an [R2dbcError] naming the
-    /// field: the driver cannot convert a value to `Object`.
+    /// A field declared without a type (`DSL.field("name")`) is read as the driver's native value for its column type.
     ///
     /// @param connection R2DBC connection to run on
     /// @param dialect SQL dialect
@@ -65,8 +61,7 @@ public interface JooqR2dbcQueries {
     static <R extends Record> Promise<List<R>> fetchAll(Connection connection,
                                                         SQLDialect dialect,
                                                         ResultQuery<R> query) {
-        return untypedField(query).map(field -> untypedFieldFailure(field).<List<R>> promise())
-                           .or(() -> fetchCopy(connection, dialect, query));
+        return fetchCopy(connection, dialect, query);
     }
 
     /// Executes the query on the connection.
@@ -137,16 +132,6 @@ public interface JooqR2dbcQueries {
                                    ? type.cast(row)
                                    : row.into(type))
                    .toList();
-    }
-
-    private static Option<Field<?>> untypedField(ResultQuery<?> query) {
-        return Option.from(Arrays.stream(query.fields()).filter(field -> field.getType() == Object.class).findFirst());
-    }
-
-    private static R2dbcError untypedFieldFailure(Field<?> field) {
-        return new R2dbcError.QueryFailed("Field '" + field.getName()
-                                         + "' is untyped, so its value cannot be converted: declare it with a type, e.g. DSL.field(\"" + field.getName()
-                                         + "\", String.class)");
     }
 
     private static R2dbcError notRowCount(Query query) {
