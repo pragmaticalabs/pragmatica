@@ -19,6 +19,12 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
+import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
@@ -132,6 +138,25 @@ class ClusterEventAggregatorCommittedGateTest {
         assertThat(raisedBy(nodeA, "second")).containsExactly("node-a");
     }
 
+    /// Every KV handler that raises a fact goes through the committed gate: the other deployment states, a community mint and a roster join.
+    @Test
+    void ClusterEvents_everyKvHandler_straddle_exactlyOneCopy() {
+        bothNodes(() -> true, () -> true);
+
+        both(ownershipPut(NODE_B),
+             artifactPut("completed", SliceState.ACTIVE, Option.none()),
+             artifactPut("failed", SliceState.FAILED, Option.some("boom")));
+        nodeA.onCommunityPut(communityMinted());
+        nodeB.onCommunityPut(communityMinted());
+        nodeA.onGovernorAnnouncementPut(rosterJoin());
+        nodeB.onGovernorAnnouncementPut(rosterJoin());
+
+        assertThat(raisedBy(nodeA, ClusterEvent.DeploymentCompleted.class)).containsExactly("node-b");
+        assertThat(raisedBy(nodeA, ClusterEvent.DeploymentFailed.class)).containsExactly("node-b");
+        assertThat(raisedBy(nodeA, ClusterEvent.CommunityMinted.class)).containsExactly("node-b");
+        assertThat(raisedBy(nodeA, ClusterEvent.CommunityMemberJoined.class)).containsExactly("node-b");
+    }
+
     /// The stated residual: a fact that does not originate in a KV notification (an ISR transition) keeps the node-local gate,
     /// whatever the committed record says.
     @Test
@@ -200,6 +225,10 @@ class ClusterEventAggregatorCommittedGateTest {
         return deploymentStarted(reader).stream().map(event -> event.at().nodeId().id()).toList();
     }
 
+    private List<String> raisedBy(ClusterEventAggregator reader, Class<? extends ClusterEvent> type) {
+        return reader.events().await().unwrap().stream().filter(type::isInstance).map(event -> event.at().nodeId().id()).toList();
+    }
+
     private List<String> raisedBy(ClusterEventAggregator reader, String nodeInSummary) {
         return deploymentStarted(reader).stream()
                                         .filter(event -> event.details().get("nodeId").equals(nodeInSummary))
@@ -226,6 +255,33 @@ class ClusterEventAggregatorCommittedGateTest {
     private static ValuePut<NodeArtifactKey, NodeArtifactValue> loadedPut(String node) {
         return new ValuePut<>(new KVCommand.Put<>(NodeArtifactKey.nodeArtifactKey(new NodeId(node), ARTIFACT),
                                                   new NodeArtifactValue(SliceState.LOAD, Option.none(), false, 0, List.of(), 0L)),
+                              Option.none());
+    }
+
+    private static ValuePut<NodeArtifactKey, NodeArtifactValue> artifactPut(String node, SliceState state, Option<String> reason) {
+        return new ValuePut<>(new KVCommand.Put<>(NodeArtifactKey.nodeArtifactKey(new NodeId(node), ARTIFACT),
+                                                  new NodeArtifactValue(state, reason, false, 0, List.of(), 0L)),
+                              Option.none());
+    }
+
+    private static ValuePut<CommunityKey, CommunityValue> communityMinted() {
+        return new ValuePut<>(new KVCommand.Put<>(CommunityKey.communityKey("default:local:0"),
+                                                  CommunityValue.communityValue("", ActivationDirectiveValue.WORKER, 3, CommunityState.FORMING, 1L, Option.none())),
+                              Option.none());
+    }
+
+    private static ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> rosterJoin() {
+        return new ValuePut<>(new KVCommand.Put<>(new GovernorAnnouncementKey("default:local:0"),
+                                                  new GovernorAnnouncementValue(NODE_A,
+                                                                                1,
+                                                                                List.of(new NodeId("member-1")),
+                                                                                "",
+                                                                                0L,
+                                                                                0L,
+                                                                                Epoch.ZERO,
+                                                                                Epoch.ZERO,
+                                                                                HlcTimestamp.ZERO,
+                                                                                false)),
                               Option.none());
     }
 
