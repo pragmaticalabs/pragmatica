@@ -67,6 +67,9 @@ public interface JooqR2dbcOperations {
 
     /// Executes a query (INSERT, UPDATE, DELETE).
     ///
+    /// Only a row-count query can run; a `ResultQuery` or an `INSERT ... RETURNING` fails with a typed
+    /// [R2dbcError] saying so (use `fetch` for those).
+    ///
     /// @param query JOOQ Query
     ///
     /// @return Promise containing number of affected rows

@@ -3,7 +3,9 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.db.jooq.r2dbc;
 
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.IntStream;
 
 import org.pragmatica.aether.resource.db.DatabaseConnectorError;
 import org.pragmatica.aether.resource.db.DatabaseType;
@@ -19,6 +21,7 @@ import org.pragmatica.postgres.net.Connectible;
 import org.pragmatica.postgres.net.netty.NettyConnectibleBuilder;
 import org.pragmatica.postgres.r2dbc.PgAsyncConnectionFactory;
 
+import org.jooq.impl.DSL;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -55,7 +58,7 @@ class R2dbcJooqConnectorLiveQueryTest {
                                                    .database(postgres.getDatabaseName())
                                                    .username(postgres.getUsername())
                                                    .password(postgres.getPassword())
-                                                   .maxConnections(2)
+                                                   .maxConnections(4)
                                                    .pool();
         var config = databaseConnectorConfigBuilder().withName("db").withHost("localhost").withDatabase("db").withType(DatabaseType.POSTGRESQL).build().unwrap();
 
@@ -173,6 +176,88 @@ class R2dbcJooqConnectorLiveQueryTest {
 
         assertThat(cause).isInstanceOf(DatabaseConnectorError.QueryFailed.class);
         assertThat(((DatabaseConnectorError) cause).sqlState()).isEqualTo(some("42P01"));
+    }
+
+    @Test
+    void transactional_fetchOne_noRowOrManyRows_areTyped() {
+        var none = failure(connector.<Integer> transactional(tx -> tx.fetchOne(tx.dsl().resultQuery("SELECT name FROM live_items WHERE id = 99")).map(_ -> 1)));
+        var many = failure(connector.<Integer> transactional(tx -> tx.fetchOne(tx.dsl().resultQuery("SELECT name FROM live_items")).map(_ -> 1)));
+
+        assertThat(none).isSameAs(DatabaseConnectorError.ResultNotFound.INSTANCE);
+        assertThat(many).isInstanceOf(DatabaseConnectorError.MultipleResults.class);
+    }
+
+    @Test
+    void transactional_fetchOptional_takesTheFirstRow() {
+        var name = success(connector.transactional(tx -> tx.fetchOptional(tx.dsl().resultQuery("SELECT name FROM live_items ORDER BY id"))
+                                                           .map(o -> o.map(r -> r.get(0, String.class)).or("none"))));
+
+        assertThat(name).isEqualTo("one");
+    }
+
+    @Test
+    void fetchOne_manyRows_isMultipleResults() {
+        var cause = failure(connector.fetchOne(connector.dsl().resultQuery("SELECT name FROM live_items")));
+
+        assertThat(cause).isInstanceOf(DatabaseConnectorError.MultipleResults.class);
+    }
+
+    @Test
+    void fetchOne_typedFieldsAndBoundValue_keepTheirTypes() {
+        var id = DSL.field("id", Integer.class);
+        var record = success(connector.fetchOne(connector.dsl().select(DSL.field("name", String.class), id).from(DSL.table("live_items")).where(id.eq(2))));
+
+        assertThat(record.get(0, String.class)).isEqualTo("two");
+        assertThat(record.get(1, Integer.class)).isEqualTo(2);
+        assertThat(success(connector.fetchOne(connector.dsl().resultQuery("SELECT name FROM live_items WHERE id = ?", 1))).get(0, String.class)).isEqualTo("one");
+    }
+
+    @Test
+    void fetchOne_untypedField_failsWithATypedErrorNamingTheField() {
+        var cause = failure(connector.fetchOne(connector.dsl().select(DSL.field("name")).from(DSL.table("live_items")).where(DSL.field("id").eq(1))));
+
+        assertThat(cause).isInstanceOf(DatabaseConnectorError.QueryFailed.class);
+        assertThat(cause.message()).contains("name").contains("untyped").doesNotContain("null");
+    }
+
+    @Test
+    void execute_queryThatIsNotARowCountQuery_failsWithATypedConnectorError() {
+        var cause = failure(connector.execute(connector.dsl().resultQuery("SELECT 1")));
+
+        assertThat(cause).isInstanceOf(DatabaseConnectorError.class);
+        assertThat(cause.message()).contains("row-count");
+    }
+
+    /// F-1: a query object shared by concurrent calls (a `static final` constant is an ordinary pattern) must run on the
+    /// connection of ITS OWN call; attaching the caller's object to a connection made it run on another call's.
+    @Test
+    void sharedQueryObject_runsOnTheConnectionOfItsOwnCall() throws Exception {
+        var shared = connector.dsl().resultQuery("SELECT pg_backend_pid()");
+        var wrong = new AtomicInteger();
+        var executor = Executors.newFixedThreadPool(16);
+
+        try {
+            var futures = IntStream.range(0, 16).mapToObj(_ -> executor.submit(() -> runSharedQuery(shared, wrong))).toList();
+
+            for (var future : futures) {
+                future.get();
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+
+        assertThat(wrong.get()).as("calls whose shared query ran on another call's connection").isZero();
+    }
+
+    private static void runSharedQuery(org.jooq.ResultQuery<org.jooq.Record> shared, AtomicInteger wrong) {
+        for (var i = 0; i < 100; i++) {
+            var sameBackend = success(connector.transactional(tx -> tx.fetchOne(tx.dsl().resultQuery("SELECT pg_backend_pid()"))
+                                                                    .flatMap(own -> tx.fetchOne(shared).map(other -> own.get(0, Integer.class).equals(other.get(0, Integer.class))))));
+
+            if (!sameBackend) {
+                wrong.incrementAndGet();
+            }
+        }
     }
 
     private static RetryMethodInterceptor retrying() {

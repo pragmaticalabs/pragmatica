@@ -92,6 +92,28 @@ class R2dbcJooqConnectorH2QueryTest {
         assertThat(success(connector.fetch(connector.dsl().resultQuery("SELECT name FROM items"))).size()).isEqualTo(2);
     }
 
+    @Test
+    void fetchOne_manyRows_isMultipleResults() {
+        var cause = failure(connector.fetchOne(connector.dsl().resultQuery("SELECT name FROM items")));
+
+        assertThat(cause).isInstanceOf(DatabaseConnectorError.MultipleResults.class);
+    }
+
+    @Test
+    void fetchOptional_manyRows_takesTheFirst() {
+        var name = success(connector.fetchOptional(connector.dsl().resultQuery("SELECT name FROM items ORDER BY id")));
+
+        assertThat(name.map(r -> r.get(0, String.class)).or("none")).isEqualTo("one");
+    }
+
+    @Test
+    void execute_queryThatIsNotARowCountQuery_failsWithATypedConnectorError() {
+        var cause = failure(connector.execute(connector.dsl().resultQuery("SELECT 1")));
+
+        assertThat(cause).isInstanceOf(DatabaseConnectorError.class);
+        assertThat(cause.message()).contains("row-count");
+    }
+
     private static <T> T success(Promise<T> promise) {
         return promise.await().fold(cause -> fail("expected success but got " + cause.message()), value -> value);
     }
