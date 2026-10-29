@@ -130,18 +130,12 @@ public class RabiaEngine<C extends Command> {
         return Result.success(Unit.unit());
     }
 
-    public org.pragmatica.lang.Unit authorizePassiveClient() {
-        passiveClientReady = passiveClient;
-
-        return org.pragmatica.lang.Unit.unit();
-    }
-
     public boolean isPassiveClientReady() {
         return passiveClient && passiveClientReady;
     }
 
     /// The worker-replica readiness seam (W-OBS W3, I-W6): sets AND clears the flag [#isPassiveClientReady] reports, from the single readiness
-    /// computation, so a worker that loses its feed stops reporting ready (unlike [#authorizePassiveClient], a latch). Writes no `engineState`.
+    /// computation, so a worker that loses its feed stops reporting ready. Writes no `engineState`.
     /// Ignored on an engine that is not a passive client.
     public org.pragmatica.lang.Unit setPassiveClientReady(boolean ready) {
         passiveClientReady = passiveClient && ready;

@@ -388,23 +388,15 @@ public interface AetherNode extends ManageableNode {
     /// when the gossip-key divergence gate refuses the boot. An in-JVM host records it and stops the node;
     /// production enters through [#aetherNode(AetherNodeConfig)] instead.
     static Result<AetherNode> aetherNode(AetherNodeConfig config, IntConsumer processExit) {
-        return aetherNode(config, processExit, ReplicaCutover.production());
-    }
+        var delegateRouter = MessageRouter.DelegateRouter.delegate();
+        var nodeCodec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
 
-    /// The same boot with the worker replica cutover supplied (W-OBS W3): the Ember harness passes `LIVE` to run workers on the replica feed;
-    /// everything else passes [ReplicaCutover#production]. W4 deletes this overload with the type.
-    static Result<AetherNode> aetherNode(AetherNodeConfig config,
-                                         IntConsumer processExit,
-                                         ReplicaCutover replicaCutover) {
         return aetherNode(config,
-                          MessageRouter.DelegateRouter.delegate(),
-                          NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs()),
+                          delegateRouter,
+                          nodeCodec,
                           () -> processExit.accept(EXIT_DRAINED),
                           () -> processExit.accept(EXIT_IDENTITY_REFUSED),
-                          () -> processExit.accept(EXIT_GOSSIP_KEY_DIVERGED),
-                          variable -> Option.option(System.getenv(variable)),
-                          BackupPreflight::requireGit,
-                          replicaCutover);
+                          () -> processExit.accept(EXIT_GOSSIP_KEY_DIVERGED));
     }
 
     /// Overload for single-JVM hosting (Forge / Ember). The `jvmExit` hook is invoked by
@@ -488,28 +480,6 @@ public interface AetherNode extends ManageableNode {
                                          Runnable gossipKeyDivergedExit,
                                          Fn1<Option<String>, String> environment,
                                          Supplier<Result<Unit>> gitProbe) {
-        return aetherNode(config,
-                          delegateRouter,
-                          nodeCodec,
-                          jvmExit,
-                          identityRefusedExit,
-                          gossipKeyDivergedExit,
-                          environment,
-                          gitProbe,
-                          ReplicaCutover.production());
-    }
-
-    /// The same boot with the worker replica cutover supplied (W-OBS W3): production passes [ReplicaCutover#production] (`DARK`); the Ember
-    /// test passes `LIVE`. W4 deletes this parameter.
-    static Result<AetherNode> aetherNode(AetherNodeConfig config,
-                                         MessageRouter.DelegateRouter delegateRouter,
-                                         SliceCodec nodeCodec,
-                                         Runnable jvmExit,
-                                         Runnable identityRefusedExit,
-                                         Runnable gossipKeyDivergedExit,
-                                         Fn1<Option<String>, String> environment,
-                                         Supplier<Result<Unit>> gitProbe,
-                                         ReplicaCutover replicaCutover) {
         return config.validate()
                      .flatMap(_ -> createNode(config,
                                               delegateRouter,
@@ -518,8 +488,7 @@ public interface AetherNode extends ManageableNode {
                                               identityRefusedExit,
                                               gossipKeyDivergedExit,
                                               environment,
-                                              gitProbe,
-                                              replicaCutover));
+                                              gitProbe));
     }
 
     /// #1549: the `CLUSTER_EVENTS_MAX_*` overrides are checked before anything is built — an out-of-range
@@ -531,8 +500,7 @@ public interface AetherNode extends ManageableNode {
                                                  Runnable identityRefusedExit,
                                                  Runnable gossipKeyDivergedExit,
                                                  Fn1<Option<String>, String> environment,
-                                                 Supplier<Result<Unit>> gitProbe,
-                                                 ReplicaCutover replicaCutover) {
+                                                 Supplier<Result<Unit>> gitProbe) {
         return requireBackupGit(config, gitProbe).flatMap(_ -> ClusterEventsLimits.clusterEventsLimits(environment))
                                .flatMap(limits -> createNodeWithBootToken(config,
                                                                           delegateRouter,
@@ -541,8 +509,7 @@ public interface AetherNode extends ManageableNode {
                                                                           identityRefusedExit,
                                                                           gossipKeyDivergedExit,
                                                                           BootToken.bootToken(),
-                                                                          limits,
-                                                                          replicaCutover));
+                                                                          limits));
     }
 
     /// #2007: `[backup]` shells out to git, so a node that has it enabled and cannot run git refuses to boot here, naming `[backup]` and
@@ -559,8 +526,7 @@ public interface AetherNode extends ManageableNode {
                                                               Runnable identityRefusedExit,
                                                               Runnable gossipKeyDivergedExit,
                                                               long bootToken,
-                                                              ClusterEventsLimits clusterEventsLimits,
-                                                              ReplicaCutover replicaCutover) {
+                                                              ClusterEventsLimits clusterEventsLimits) {
         return resolveStorageEncryptionKeyring(config).flatMap(keyring -> createNodeWithStorage(config,
                                                                                                 delegateRouter,
                                                                                                 nodeCodec,
@@ -570,8 +536,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                 keyring,
                                                                                                 resolvePersistence(config),
                                                                                                 bootToken,
-                                                                                                clusterEventsLimits,
-                                                                                                replicaCutover));
+                                                                                                clusterEventsLimits));
     }
 
     private static Result<AetherNode> createNodeWithStorage(AetherNodeConfig config,
@@ -583,8 +548,7 @@ public interface AetherNode extends ManageableNode {
                                                             Option<EncryptionKeyring> storageKeyring,
                                                             RabiaPersistence<KVCommand<AetherKey>> persistence,
                                                             long bootToken,
-                                                            ClusterEventsLimits clusterEventsLimits,
-                                                            ReplicaCutover replicaCutover) {
+                                                            ClusterEventsLimits clusterEventsLimits) {
         Serializer serializer = nodeCodec;
         Deserializer deserializer = nodeCodec;
         // W-OBS W2: the commit ring records and serves under the committed cluster incarnation (the production reader), filtered by the
@@ -779,8 +743,7 @@ public interface AetherNode extends ManageableNode {
                                                              gossipKeyDivergedExit,
                                                              storageKeyring,
                                                              bootToken,
-                                                             clusterEventsLimits,
-                                                             replicaCutover));
+                                                             clusterEventsLimits));
     }
 
     /// #253 — resolves the boot-time storage-encryption keyring before any storage tier exists. No
@@ -1428,8 +1391,7 @@ public interface AetherNode extends ManageableNode {
                                                    Runnable gossipKeyDivergedExit,
                                                    Option<EncryptionKeyring> storageKeyring,
                                                    long bootToken,
-                                                   ClusterEventsLimits clusterEventsLimits,
-                                                   ReplicaCutover replicaCutover) {
+                                                   ClusterEventsLimits clusterEventsLimits) {
         // #329: leader-pinned task-group ownership is gated on consensus catch-up. A freshly
         // elected replacement leader whose Rabia log is still draining (isPendingCatchUp) is
         // isActive but not caught up; granting it ownership funnels every leader-pinned op
@@ -2772,8 +2734,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                               aetherEntries,
                                                                                                                               growthLog,
                                                                                                                               selfId,
-                                                                                                                              gossipKeyRotationHandler,
-                                                                                                                              replicaCutover));
+                                                                                                                              gossipKeyRotationHandler));
         var governorAnnouncerHolder = workerActivationOut.governorAnnouncerHolder();
         var communityDirectory = workerActivationOut.communityDirectory();
         var activationKvRouter = workerActivationOut.activationKvRouter();
@@ -2872,8 +2833,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                         allEntries,
                                                                                                                         swimHealthDetector,
                                                                                                                         membershipFsm,
-                                                                                                                        periodicTasks::defer,
-                                                                                                                        replicaCutover));
+                                                                                                                        periodicTasks::defer));
         var routingCoreIds = workerMetadataOut.routingCoreIds();
         var workerMetadataChannel = workerMetadataOut.workerMetadataChannel();
         var replicaClient = workerMetadataOut.replicaClient();

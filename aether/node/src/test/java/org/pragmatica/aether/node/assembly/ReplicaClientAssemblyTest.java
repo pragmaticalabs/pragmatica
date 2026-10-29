@@ -129,18 +129,18 @@ class ReplicaClientAssemblyTest {
         assertThat(ran.get()).isEqualTo(1);
     }
 
-    /// Mutation: drop the `worker` test in `replicaClient` (a LIVE core would build a client).
+    /// Mutation: drop the `worker` test in `replicaClient` (a core would build a client).
     @Test
-    void replicaClient_onALiveNodeThatIsNotAWorker_buildsNothing() {
-        assertThat(ReplicaClientAssembly.replicaClient(org.pragmatica.aether.node.ReplicaCutover.LIVE, false, null).isPresent()).isFalse();
+    void replicaClient_onANodeThatIsNotAWorker_buildsNothing() {
+        assertThat(ReplicaClientAssembly.replicaClient(false, null).isPresent()).isFalse();
     }
 
-    /// LIVE on a worker: the freshness gate is replaced by the readiness (not ready yet), the four messages a worker receives are routed and the two
-    /// ticks (client, directory install) are scheduled. Mutations: drop `workerProjectionFreshRef.set(readiness::ready)`; drop a route; drop either
-    /// `defer.accept`.
+    /// On a worker: the freshness gate is replaced by the readiness (not ready yet), the four messages a worker receives are routed and the two
+    /// ticks (client, directory install) are scheduled, and the serve gate is closed while the node is not a governor. Mutations: drop
+    /// `workerProjectionFreshRef.set(readiness::ready)`; drop a route; drop either `defer.accept`; build the gate over `() -> true`.
     @Test
     @SuppressWarnings("unchecked")
-    void replicaClient_onALiveWorker_replacesTheFreshnessGate_routesFourMessages_andSchedulesTwoTicks() {
+    void replicaClient_onAWorker_replacesTheFreshnessGate_routesFourMessages_andSchedulesTwoTicks() {
         RabiaNode<KVCommand<AetherKey>> cluster = Mockito.mock(RabiaNode.class);
         var network = Mockito.mock(org.pragmatica.consensus.net.ClusterNetwork.class);
 
@@ -157,13 +157,17 @@ class ReplicaClientAssemblyTest {
                                                       cluster,
                                                       Option::none,
                                                       Set::of,
+                                                      new org.pragmatica.cluster.replica.ReplicaFeedClient.GovernorArm(() -> false, Option::none),
                                                       new DirectoryInstall(_ -> Result.success(Unit.unit()), _ -> {}, _ -> {}),
                                                       () -> {},
                                                       freshness,
                                                       routes,
                                                       _ -> deferred.incrementAndGet());
 
-        assertThat(ReplicaClientAssembly.replicaClient(org.pragmatica.aether.node.ReplicaCutover.LIVE, true, inputs).isPresent()).isTrue();
+        var started = ReplicaClientAssembly.replicaClient(true, inputs);
+
+        assertThat(started.isPresent()).isTrue();
+        assertThat(started.unwrap().serveGate().mayServeMembers()).as("not a governor: members are not served").isFalse();
 
         assertThat(freshness.get()).isNotSameAs(original);
         assertThat(freshness.get().getAsBoolean()).as("a fresh replica is not ready").isFalse();

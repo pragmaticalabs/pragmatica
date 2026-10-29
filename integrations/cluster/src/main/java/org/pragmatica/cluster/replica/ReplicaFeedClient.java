@@ -4,6 +4,7 @@
 package org.pragmatica.cluster.replica;
 
 import java.security.MessageDigest;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
@@ -12,6 +13,7 @@ import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
@@ -46,6 +48,11 @@ import org.slf4j.LoggerFactory;
 /// later message carrying that id (a grant acknowledgement or tagged entries that overtook or followed the refusal around an incarnation bump)
 /// is discarded (G-1). Messages from any sender but the session's source are discarded too.
 ///
+/// The governor arm (relay, spec 2.3/2.9/3.3): a member whose community has an announced governor follows it instead of a core, through the same
+/// [UpstreamSelector]. A governor that refuses, goes silent or ends its session is not retried for 10 s (`GOVERNOR_RETRY_MILLIS`), so a governor that cannot
+/// serve costs a member one refused subscribe per interval, not a flap. A node that BECOMES the governor re-points to a core at once (hand-off), and its
+/// [#followsCore] is one of the three conditions of [ReplicaServeGate].
+///
 /// All state is confined to `serial`, a single-thread executor: inbound messages and [#tick] hop onto it, so the network thread never applies
 /// entries or installs a snapshot. Readiness is published by [ReplicaReadiness#refresh] from here and nowhere else.
 public final class ReplicaFeedClient<K extends StructuredKey, V> {
@@ -54,12 +61,17 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
     private static final long RETRY_AFTER_FAILURE_MILLIS = BusyBackoff.MIN_DELAY_MILLIS;
     private static final int LOOP_AFTER_ABANDONS = 3;
     private static final long LOOP_BACKOFF_MILLIS = 30_000L;
+    /// How long a governor that failed a session is left alone `[guess]`.
+    private static final long GOVERNOR_RETRY_MILLIS = 10_000L;
 
     private enum Phase {
         AWAIT_GRANT,
         SNAPSHOT,
         LIVE
     }
+
+    /// What the governor arm needs from the node: whether this node is itself the governor, and the announced governor of its community.
+    public record GovernorArm(BooleanSupplier selfIsGovernor, Supplier<Option<NodeId>> announced) {}
 
     /// The snapshot being assembled from chunks; `bytes` is sized by the first chunk's `total`.
     private static final class Transfer {
@@ -105,7 +117,9 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
     private final LongSupplier nanos;
     private final ReplicaClientLimits limits;
     private final Runnable onSnapshotInstalled;
+    private final GovernorArm governorArm;
     private final Set<NodeId> avoided = new HashSet<>();
+    private final Map<NodeId, Long> governorRetryAt = new HashMap<>();
     private final AtomicLong subscribed = new AtomicLong();
     private final AtomicLong snapshotsInstalled = new AtomicLong();
     private final AtomicLong refusals = new AtomicLong();
@@ -114,8 +128,10 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
     private final AtomicLong bufferOverflows = new AtomicLong();
     private final AtomicLong snapshotLoops = new AtomicLong();
     private final AtomicLong droppedMessages = new AtomicLong();
+    private volatile boolean followsCore;
+    private boolean wasGovernor;
     private Session session;
-    private Option<NodeId> currentSource = Option.none();
+    private volatile Option<NodeId> currentSource = Option.none();
     private long requestCounter;
     private long retryAtNanos;
     private int consecutiveRefusals;
@@ -129,7 +145,8 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
                               Executor serial,
                               LongSupplier nanos,
                               ReplicaClientLimits limits,
-                              Runnable onSnapshotInstalled) {
+                              Runnable onSnapshotInstalled,
+                              GovernorArm governorArm) {
         this.self = self;
         this.applier = applier;
         this.readiness = readiness;
@@ -139,11 +156,13 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
         this.nanos = nanos;
         this.limits = limits;
         this.onSnapshotInstalled = onSnapshotInstalled;
+        this.governorArm = governorArm;
         this.requestCounter = nanos.getAsLong() ^ ((long) self.id().hashCode() << 32);
     }
 
     /// `send` hands a message to the transport (non-blocking); `uplinks` are the node's deterministic core uplinks, in order; `serial` is a
-    /// single-thread executor; `onSnapshotInstalled` is the post-restore seam (`completePassiveRestore`), run after each snapshot install.
+    /// single-thread executor; `onSnapshotInstalled` is the post-restore seam (`completePassiveRestore`), run after each snapshot install;
+    /// `governorArm` is the node's view of the relay (a node that never follows a governor passes `() -> false` and `Option::none`).
     public static <K extends StructuredKey, V> ReplicaFeedClient<K, V> replicaFeedClient(NodeId self,
                                                                                          ReplicaApplier<K, V> applier,
                                                                                          ReplicaReadiness readiness,
@@ -152,7 +171,8 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
                                                                                          Executor serial,
                                                                                          LongSupplier nanos,
                                                                                          ReplicaClientLimits limits,
-                                                                                         Runnable onSnapshotInstalled) {
+                                                                                         Runnable onSnapshotInstalled,
+                                                                                         GovernorArm governorArm) {
         return new ReplicaFeedClient<>(self,
                                        applier,
                                        readiness,
@@ -161,7 +181,8 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
                                        serial,
                                        nanos,
                                        limits,
-                                       onSnapshotInstalled);
+                                       onSnapshotInstalled,
+                                       governorArm);
     }
 
     // ---- inbound (network thread: hop at once) ----
@@ -189,6 +210,18 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
     @Contract
     public void tick() {
         serial.execute(this::tickNow);
+    }
+
+    /// True iff the source this node last chose is a core uplink: one of the three conditions of [ReplicaServeGate]. It holds across a re-parent from
+    /// one core to the other (the replica is still as current as its last counted heartbeat says, and `servable` checks that), so a governor whose core
+    /// died keeps its members; it is false while the node still follows a governor (it has just become one) or has chosen nothing.
+    public boolean followsCore() {
+        return followsCore;
+    }
+
+    /// The source this node last chose (a governor or a core uplink), for diagnostics and tests.
+    public Option<NodeId> source() {
+        return currentSource;
     }
 
     public ReplicaPosition position() {
@@ -220,7 +253,7 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
               .filter(open -> open.id == requestId && open.source.equals(sender))
               .onPresent(open -> touch(open, action))
               .onEmpty(droppedMessages::incrementAndGet);
-        readiness.refresh();
+        publish();
     }
 
     private void touch(Session open, Consumer<Session> action) {
@@ -230,8 +263,57 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
 
     // ---- tick ----
     private void tickNow() {
-        Option.option(session).onPresent(this::checkSilence).onEmpty(this::openIfDue);
+        handOffOnGovernorEdge();
+        Option.option(session).onPresent(this::checkSilence).onPresent(this::rebalance).onEmpty(this::openIfDue);
+        publish();
+    }
+
+    private void publish() {
+        followsCore = currentSource.filter(uplinks.get()::contains).isPresent();
         readiness.refresh();
+    }
+
+    /// The election hand-off (spec 3.3): when this node becomes the governor it stops following a governor (possibly a deposed one) and
+    /// re-points to a core uplink, resuming from its anchor. Becoming a member again needs nothing here: [#rebalance] finds the new governor.
+    private void handOffOnGovernorEdge() {
+        var governor = governorArm.selfIsGovernor().getAsBoolean();
+
+        if (governor && !wasGovernor) {
+            Option.option(session).filter(open -> !uplinks.get()
+                                                          .contains(open.source)).onPresent(this::endDeliberately);
+        }
+
+        wasGovernor = governor;
+    }
+
+    /// A live session re-asks the selector: a governor that appeared (or went) moves the member there (or back to a core) without waiting for a failure.
+    private void rebalance(Session open) {
+        if (session == open && open.phase == Phase.LIVE) {
+            UpstreamSelector.select(uplinks.get(),
+                                    governorCandidate(),
+                                    Option.some(open.source),
+                                    avoided)
+                            .filter(chosen -> !chosen.equals(open.source))
+                            .onPresent(_ -> endDeliberately(open));
+        }
+    }
+
+    /// The announced governor of this community when this node may follow it: not while it is the governor itself, not itself, not within the
+    /// retry delay.
+    private Option<NodeId> governorCandidate() {
+        return governorArm.selfIsGovernor()
+                          .getAsBoolean()
+               ? Option.none()
+               : followableGovernor();
+    }
+
+    private Option<NodeId> followableGovernor() {
+        var now = nanos.getAsLong();
+
+        return governorArm.announced()
+                          .get()
+                          .filter(candidate -> !candidate.equals(self))
+                          .filter(candidate -> now >= governorRetryAt.getOrDefault(candidate, 0L));
     }
 
     private void checkSilence(Session open) {
@@ -245,6 +327,7 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
     private void openIfDue() {
         if (nanos.getAsLong() >= retryAtNanos) {
             UpstreamSelector.select(uplinks.get(),
+                                    governorCandidate(),
                                     currentSource,
                                     avoided)
                             .onPresent(this::subscribeTo)
@@ -268,10 +351,10 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
 
         session = new Session(++requestCounter, source, mode, nanos.getAsLong());
         currentSource = Option.some(source);
-        readiness.sourceChanged();
         if (resume) {
             applier.beginLive();
         } else {
+            readiness.sourceChanged();
             applier.beginBuffering();
         }
 
@@ -485,10 +568,26 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
         }
     }
 
-    /// Retires the session: its request id answers nothing from here on.
+    /// Retires a session that failed: its request id answers nothing from here on, and a governor that failed is left alone for a while.
     private void end(Session open, long retryAfterMillis) {
+        if (!uplinks.get().contains(open.source)) {
+            governorRetryAt.put(open.source, nanos.getAsLong() + GOVERNOR_RETRY_MILLIS * NANOS_PER_MILLI);
+        }
+
+        retire(open, retryAfterMillis);
+    }
+
+    /// Retires a session because the selector (or the hand-off) chose another source: the old one did nothing wrong and is not penalized.
+    private void endDeliberately(Session open) {
+        retire(open, 0L);
+    }
+
+    /// The replica keeps its place across a re-parent: readiness (e) is lost only when the position was discarded and a snapshot must follow.
+    private void retire(Session open, long retryAfterMillis) {
         session = null;
         retryAtNanos = nanos.getAsLong() + retryAfterMillis * NANOS_PER_MILLI;
-        readiness.caughtUp(false);
+        if (!applier.position().isResumable()) {
+            readiness.caughtUp(false);
+        }
     }
 }

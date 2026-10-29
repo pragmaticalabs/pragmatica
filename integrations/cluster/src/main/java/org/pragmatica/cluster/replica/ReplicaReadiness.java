@@ -91,7 +91,9 @@ public final class ReplicaReadiness {
         return Unit.unit();
     }
 
-    /// The source changed or was lost: its heartbeats say nothing about the next one.
+    /// The replica is re-based on a new source (a snapshot is coming): the old heartbeats say nothing about the new state. A resume from the
+    /// replica's own anchor does NOT call this: the heartbeats already counted stay true of the replica and age out under (b), so a re-parent to
+    /// another source does not by itself drop readiness.
     public synchronized Unit sourceChanged() {
         beats.clear();
         beatTag = IncarnationTag.NONE;
@@ -101,15 +103,26 @@ public final class ReplicaReadiness {
     }
 
     public synchronized boolean ready() {
+        return isSynced(nanos.getAsLong())
+               && workerRole.getAsBoolean()
+               && directoryInstalled.getAsBoolean();
+    }
+
+    /// Whether this replica is current enough to be relayed to members (spec 3.3, I-W5): (a), (b), (c), (e) hold and `applied` has reached the
+    /// `nextSlot` of the NEWEST counted heartbeat, not only of the one at least `L` old. The worker role (d) and the directory (f) are not part of it.
+    public synchronized boolean servable() {
         var now = nanos.getAsLong();
 
+        return isSynced(now) && counted().map(newest -> position.get()
+                                                                .applied() >= newest.nextSlot())
+                                       .or(false);
+    }
+
+    private boolean isSynced(long now) {
         return counted().filter(newest -> isFresh(newest, now))
                       .filter(_ -> beatTag.matches(position.get().tag()))
                       .filter(_ -> isCaughtUpToLag(now))
-                      .isPresent()
-               && caughtUp
-               && workerRole.getAsBoolean()
-               && directoryInstalled.getAsBoolean();
+                      .isPresent() && caughtUp;
     }
 
     private Option<Beat> counted() {
