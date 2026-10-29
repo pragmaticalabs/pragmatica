@@ -18,9 +18,9 @@ import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.ReplicationContext;
 import org.pragmatica.aether.slice.ReplicationFactorsError;
 import org.pragmatica.aether.slice.ReplicationWarning;
-import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.blueprint.BlueprintNamespace;
+import org.pragmatica.aether.slice.blueprint.InertKeyRules;
 import org.pragmatica.aether.slice.blueprint.StreamConfigParser;
 import org.pragmatica.aether.slice.blueprint.StreamConfigParser.PartitionedStreamResources;
 import org.pragmatica.aether.slice.blueprint.StreamConfigParser.RefusedSection;
@@ -304,10 +304,7 @@ public sealed interface StreamResourceValidator {
     private static StreamValidationFailure unsupportedConsistency(String section, String key) {
         return StreamValidationFailure.streamValidationFailure("[" + section + "]",
                                                                RULE_UNSUPPORTED_CONSISTENCY,
-                                                               key
-                                                              + " 'strong' cannot be honoured — the consensus publish path is not wired in "
-                                                              + "this release, so every write to the stream would be refused (#1262). Remove the "
-                                                              + "key or set it to 'eventual'.");
+                                                               InertKeyRules.strongConsistencyMessage(key));
     }
 
     private static void guardBlueprintNamespace(Artifact blueprintArtifact, List<StreamValidationFailure> failures) {
@@ -481,34 +478,14 @@ public sealed interface StreamResourceValidator {
         });
     }
 
+    /// The inert stream keys of [InertKeyRules], the table the activation binder refuses by as well (#2201 E-02).
     private static void guardStreamConfig(String alias, StreamConfig config, List<StreamValidationFailure> failures) {
         var field = "[streams." + alias + "]";
 
-        config.encryptionKeyId()
-              .onPresent(keyId -> failures.add(StreamValidationFailure.streamValidationFailure(field,
-                                                                                               RULE_INERT_STREAM_CONFIG,
-                                                                                               "encryption_key_id '" + keyId
-                                                                                              + "' has no runtime effect — every stream is written through a single, shared "
-                                                                                              + "segment sink with no encryptor wired to it (tracked as #253: BlockEncryptor has "
-                                                                                              + "no production key source). Remove the key; it does not protect this stream's "
-                                                                                              + "data at rest.")));
-        if (config.compression() != StreamCompression.NONE) {
-            failures.add(StreamValidationFailure.streamValidationFailure(field,
-                                                                         RULE_INERT_STREAM_CONFIG,
-                                                                         "compression '" + config.compression()
-                                                                        + "' has no runtime effect — segments are always written uncompressed "
-                                                                        + "regardless of this setting. Remove the key or set it to 'none'; stream "
-                                                                        + "compression is not supported in 1.0 (descoped in #677)."));
-        }
-
-        if (!"earliest".equalsIgnoreCase(config.autoOffsetReset())) {
-            failures.add(StreamValidationFailure.streamValidationFailure(field,
-                                                                         RULE_INERT_STREAM_CONFIG,
-                                                                         "auto_offset_reset '" + config.autoOffsetReset()
-                                                                        + "' has no runtime effect — a never-committed consumer always starts at offset 0 "
-                                                                        + "(earliest) per the #478 ruling, permanently, not as a gap to be closed later. "
-                                                                        + "Remove the key or set it to 'earliest', its only honest value."));
-        }
+        InertKeyRules.inertStreamKeys(config)
+                     .forEach(inert -> failures.add(StreamValidationFailure.streamValidationFailure(field,
+                                                                                                    RULE_INERT_STREAM_CONFIG,
+                                                                                                    inert.message())));
     }
 
     /// A consumer key the parser refuses (#1549: `checkpoint_interval` that is not a duration of at least 1 ms)
@@ -532,60 +509,12 @@ public sealed interface StreamResourceValidator {
                                             String group,
                                             ConsumerConfig config,
                                             List<StreamValidationFailure> failures) {
-        var defaults = ConsumerConfig.consumerConfig(config.groupId());
         var field = "[streams." + alias + ".consumers." + group + "]";
 
-        if (config.maxBatchSize() != defaults.maxBatchSize()) {
-            failures.add(inertConsumerFailure(field,
-                                              "batch_size",
-                                              String.valueOf(config.maxBatchSize())));
-        }
-
-        if (config.processingMode() != defaults.processingMode()) {
-            failures.add(inertConsumerFailure(field,
-                                              "processing",
-                                              config.processingMode().toString().toLowerCase()));
-        }
-
-        if (config.errorStrategy() != defaults.errorStrategy()) {
-            failures.add(inertConsumerFailure(field,
-                                              "on_failure",
-                                              config.errorStrategy().toString().toLowerCase()));
-        }
-
-        if (!config.checkpointInterval().equals(defaults.checkpointInterval())) {
-            failures.add(inertConsumerFailure(field,
-                                              "checkpoint_interval",
-                                              config.checkpointInterval().toString()));
-        }
-
-        if (config.maxRetries() != defaults.maxRetries()) {
-            failures.add(inertConsumerFailure(field,
-                                              "max_retries",
-                                              String.valueOf(config.maxRetries())));
-        }
-
-        if (!config.deadLetterStream().equals(defaults.deadLetterStream())) {
-            failures.add(inertConsumerFailure(field, "dead_letter", config.deadLetterStream()));
-        }
-
-        if (config.readPreference() != defaults.readPreference()) {
-            failures.add(inertConsumerFailure(field,
-                                              "read_preference",
-                                              config.readPreference().toString().toLowerCase()));
-        }
-    }
-
-    private static StreamValidationFailure inertConsumerFailure(String field, String key, String value) {
-        return StreamValidationFailure.streamValidationFailure(field,
-                                                               RULE_INERT_CONSUMER_CONFIG,
-                                                               key
-                                                              + " = '" + value
-                                                              + "' has no runtime effect — per-consumer TOML config (`[streams.X.consumers.Y]`) is "
-                                                              + "parsed but never reaches the runtime consumer (StreamConfigParser#parseConsumers has "
-                                                              + "no production caller, per #576); every declarative consumer runs with hardcoded "
-                                                              + "defaults regardless of this key. Remove it: per-consumer tuning is not supported "
-                                                              + "in 1.0 (descoped in #677; post-GA wiring is its own epic).");
+        InertKeyRules.inertConsumerKeys(config)
+                     .forEach(inert -> failures.add(StreamValidationFailure.streamValidationFailure(field,
+                                                                                                    RULE_INERT_CONSUMER_CONFIG,
+                                                                                                    inert.message())));
     }
 
     /// Spec §11.1.3 multi-version warning: when a blueprint declares two or more
