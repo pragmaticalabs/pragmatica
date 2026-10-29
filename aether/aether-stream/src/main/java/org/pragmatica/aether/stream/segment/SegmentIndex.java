@@ -104,6 +104,35 @@ public final class SegmentIndex {
                                                                                                                                                       maxTimestamp)));
     }
 
+    /// As [#recordMaxTimestamp], also recording the segment's size learned in the same block read (#2201 3.2 item 4): a
+    /// rebuilt ref has `originalSize = 0`, and the sealed tier's byte rule counts an unknown size as 0. A known size is
+    /// never overwritten either.
+    @Contract
+    public void recordLearned(String streamName, int partition, long startOffset, Option<Long> maxTimestamp, int size) {
+        option(partitions.get(PartitionKey.partitionKey(streamName, partition))).onPresent(map -> map.computeIfPresent(startOffset,
+                                                                                                                       (_, ref) -> learned(ref,
+                                                                                                                                           maxTimestamp,
+                                                                                                                                           size)));
+    }
+
+    private static SegmentRef learned(SegmentRef ref, Option<Long> maxTimestamp, int size) {
+        var timed = maxTimestamp.map(timestamp -> withKnownTimestamp(ref, timestamp))
+                                .or(ref);
+
+        return withKnownSize(timed, size);
+    }
+
+    private static SegmentRef withKnownSize(SegmentRef ref, int size) {
+        return ref.originalSize() > 0
+               ? ref
+               : SegmentRef.segmentRef(ref.startOffset(),
+                                       ref.endOffset(),
+                                       ref.maxTimestamp(),
+                                       ref.compressionOrdinal(),
+                                       ref.encrypted(),
+                                       size);
+    }
+
     private static SegmentRef withKnownTimestamp(SegmentRef ref, long maxTimestamp) {
         return ref.maxTimestamp() > 0
                ? ref

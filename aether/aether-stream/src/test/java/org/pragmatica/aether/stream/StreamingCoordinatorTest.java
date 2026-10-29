@@ -154,7 +154,6 @@ class StreamingCoordinatorTest {
 
             var unusedHandler = new GovernorFailoverHandler.unused();
             var coordinator = streamingCoordinator(unusedHandler,
-                                                    retentionEnforcer,
                                                     partitionManager,
                                                     watermarkTracker,
                                                     segmentIndex,
@@ -186,7 +185,6 @@ class StreamingCoordinatorTest {
 
     private StreamingCoordinator buildCoordinator() {
         return streamingCoordinator(failoverHandler,
-                                     retentionEnforcer,
                                      partitionManager,
                                      watermarkTracker,
                                      segmentIndex,

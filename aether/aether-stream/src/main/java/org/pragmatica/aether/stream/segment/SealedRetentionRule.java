@@ -7,7 +7,10 @@ package org.pragmatica.aether.stream.segment;
 import java.util.List;
 import java.util.Set;
 
+import org.pragmatica.aether.slice.RetentionDimensions;
+import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.lang.Option;
 
 /// How many of a partition's oldest sealed segments retention may reclaim (#2201 Q6 = B, know 59dfb9e86c; Q13 = A, know
 /// caf701869e: count and bytes are measured over the sealed tier).
@@ -29,12 +32,80 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 public final class SealedRetentionRule {
     private SealedRetentionRule() {}
 
-    /// RED stub (#2201 PR-0b part 1, first commit): reclaims nothing. The rule lands in the next commit.
     public static int reclaimablePrefix(List<SegmentIndex.SegmentRef> segments,
                                         RetentionPolicy policy,
                                         long deletableThrough,
                                         long now,
                                         Set<Long> unreadable) {
-        return 0;
+        if (policy.mode() == RetentionMode.UNKNOWN || !policy.declared().any()) {
+            return 0;
+        }
+
+        var size = segments.size();
+        var newerEvents = new long[size];
+        var newerBytes = new long[size];
+        var ages = new long[size];
+        var events = 0L;
+        var bytes = 0L;
+        var newerKnownAge = Long.MIN_VALUE;
+
+        for (var i = size - 1; i >= 0; i--) {
+            var segment = segments.get(i);
+
+            newerEvents[i] = events;
+            newerBytes[i] = bytes;
+            ages[i] = ageOf(segment, now, unreadable, newerKnownAge);
+            newerKnownAge = knownAge(segment, now).or(newerKnownAge);
+            events = saturatedAdd(events, segment.endOffset() - segment.startOffset() + 1);
+            bytes = saturatedAdd(bytes, Math.max(0, segment.originalSize()));
+        }
+
+        var prefix = 0;
+
+        while (prefix < size
+               && segments.get(prefix).endOffset() <= deletableThrough
+               && reclaimable(policy, newerEvents[prefix], newerBytes[prefix], ages[prefix])) {
+            prefix++;
+        }
+
+        return prefix;
+    }
+
+    private static boolean reclaimable(RetentionPolicy policy, long newerEvents, long newerBytes, long age) {
+        var declared = policy.declared();
+        var countExceeded = newerEvents >= policy.maxCount();
+        var bytesExceeded = newerBytes >= policy.maxBytes();
+        var ageExceeded = age != Long.MIN_VALUE && age > policy.maxAgeMs();
+
+        return policy.mode() == RetentionMode.ALL
+               ? all(declared, countExceeded, bytesExceeded, ageExceeded)
+               : any(declared, countExceeded, bytesExceeded, ageExceeded);
+    }
+
+    private static boolean any(RetentionDimensions declared, boolean count, boolean bytes, boolean age) {
+        return (declared.count() && count) || (declared.bytes() && bytes) || (declared.age() && age);
+    }
+
+    private static boolean all(RetentionDimensions declared, boolean count, boolean bytes, boolean age) {
+        return (!declared.count() || count) && (!declared.bytes() || bytes) && (!declared.age() || age);
+    }
+
+    /// `Long.MIN_VALUE` stands for "not known", which is never old.
+    private static long ageOf(SegmentIndex.SegmentRef segment, long now, Set<Long> unreadable, long newerKnownAge) {
+        return knownAge(segment, now).or(unreadable.contains(segment.startOffset())
+                                         ? newerKnownAge
+                                         : Long.MIN_VALUE);
+    }
+
+    private static Option<Long> knownAge(SegmentIndex.SegmentRef segment, long now) {
+        return segment.maxTimestamp() > 0
+               ? Option.some(now - segment.maxTimestamp())
+               : Option.none();
+    }
+
+    private static long saturatedAdd(long left, long right) {
+        var sum = left + right;
+
+        return sum < left ? Long.MAX_VALUE : sum;
     }
 }

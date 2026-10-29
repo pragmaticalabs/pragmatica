@@ -427,8 +427,11 @@ public sealed interface StreamAssembly {
         var streamSegmentTierPressure = SegmentTierPressure.localDiskOf(streamStorage);
 
         streamPartitionManager.segmentTierPressure(streamSegmentTierPressure);
+        // #2201 Q6 = B: each stream's own committed retention policy rules its sealed tier; a stream this node has not
+        // applied a committed config for is withheld, and one that declares no dimension keeps the node default age.
         var streamRetentionEnforcer = RetentionEnforcer.retentionEnforcer(streamStorage,
                                                                           streamSegmentIndex,
+                                                                          streamPartitionManager::committedRetention,
                                                                           DEFAULT_STREAM_RETENTION_MS,
                                                                           (stream, partition) -> entityRetentionFloor(kvStore,
                                                                                                                       stream,
@@ -437,6 +440,10 @@ public sealed interface StreamAssembly {
                                                                           streamStorageSetup.garbageCollector(),
                                                                           streamSegmentReader,
                                                                           streamSegmentTierPressure);
+        // #2201 3.2 item 6: every node runs its own retention over its own segments, from node start to node stop
+        // (AetherNode's stop path closes it); it is no longer pinned to the leader by StreamingCoordinator.
+        streamRetentionEnforcer.operatorWarnings(operatorWarningSink, config.self().id());
+        streamRetentionEnforcer.start();
         // A6: streamReplicaRegistry is created earlier (above StreamPartitionManager) so it can be
         // shared with the now-active DefaultReplicationManager. The same registry instance is the one
         // the A2 ReplicaSetController populates from HRW placement.
@@ -1221,7 +1228,6 @@ public sealed interface StreamAssembly {
         resourceProviderSetup.spiProvider()
                              .onPresent(spi -> spi.registerExtension(ProjectionNodeSupport.class, projectionNodeSupport));
         var streamingCoordinator = StreamingCoordinator.streamingCoordinator(streamFailoverHandler,
-                                                                             streamRetentionEnforcer,
                                                                              streamPartitionManager,
                                                                              streamWatermarkTracker,
                                                                              streamSegmentIndex,
