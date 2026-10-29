@@ -129,6 +129,65 @@ class KvBackedStreamRegistryHoldersTest {
         assertThat(registrar.lookup(ORDERS).unwrap().refCount()).as("the slice's reference is untouched").isEqualTo(1);
     }
 
+    /// Two acquires by one node are two references: each takes its own attempt, so releasing one leaves the other.
+    @Test
+    void oneNodeAcquiringTwice_holdsTwoReferences() {
+        var first = registryA.acquireReference(ORDERS);
+        nodeA.commitHeld();
+        first.await().unwrap();
+        var second = registryA.acquireReference(ORDERS);
+        nodeA.commitHeld();
+        second.await().unwrap();
+
+        assertThat(registrar.lookup(ORDERS).unwrap().refCount()).as("registrar + two of node-a").isEqualTo(3);
+        assertThat(heldBy("node-a")).hasSize(2);
+    }
+
+    /// A release drops the caller's OWN reference, not another node's.
+    @Test
+    void releaseReference_dropsTheCallersOwnReference_notAnotherNodes() {
+        var acquiredA = registryA.acquireReference(ORDERS);
+        var acquiredB = registryB.acquireReference(ORDERS);
+
+        nodeA.commitHeld();
+        nodeB.commitHeld();
+        acquiredA.await().unwrap();
+        acquiredB.await().unwrap();
+
+        registryB.releaseReference(ORDERS).await().unwrap();
+
+        assertThat(heldBy("node-b")).isEmpty();
+        assertThat(heldBy("node-a")).hasSize(1);
+    }
+
+    /// An operator deleting a stream another node registered drops the registrar's reference: the last reference, so the entry goes.
+    @Test
+    void releaseReference_fromAnotherNode_dropsTheRegistrarsReference() {
+        var outcome = registryA.releaseReference(ORDERS);
+
+        nodeA.commitHeld();
+
+        assertThat(outcome.await().unwrap().removed()).isTrue();
+        assertThat(registrar.lookup(ORDERS).isEmpty()).isTrue();
+        assertThat(heldBy("registrar")).isEmpty();
+    }
+
+    private List<String> heldBy(String node) {
+        var held = new ArrayList<String>();
+
+        kvStore.forEach(AetherKey.StreamRegistryHolderKey.class,
+                        AetherValue.StreamRegistryHolderValue.class,
+                        (key, _) -> addIfHeldBy(held, key, node));
+
+        return held;
+    }
+
+    private static void addIfHeldBy(List<String> sink, AetherKey.StreamRegistryHolderKey key, String node) {
+        if (key.node().id().equals(node)) {
+            sink.add(key.asString());
+        }
+    }
+
     /// A consensus stub that applies at once (the registrar) or, after `hold()`, parks each apply until `commitHeld()`.
     private static final class HeldCluster implements ClusterNode<KVCommand<AetherKey>> {
         private final NodeId self;
