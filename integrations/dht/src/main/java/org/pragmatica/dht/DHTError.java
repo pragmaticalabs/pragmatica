@@ -78,6 +78,20 @@ public sealed interface DHTError extends Cause {
 
     /// One replica's fence refused one write slot: the writer's owner epoch is older than that replica's
     /// high-water (#1818, the owner's fence ruling).
+    static DHTError replicaFull(long usedBytes, long maxBytes) {
+        return new ReplicaFull(usedBytes, maxBytes);
+    }
+
+    /// A client put refused for capacity (#2258, spec 3.2 item 7): by a replica, the put would take its live bytes of the
+    /// prefix above its cap and nothing was stored; at the writer, the put missed its write quorum with at least one such
+    /// refusal, whatever the other answers were. `usedBytes` and `maxBytes` are the refusing replica's live bytes and cap.
+    record ReplicaFull(long usedBytes, long maxBytes) implements DHTError, Cause.Transient {
+        @Override
+        public String message() {
+            return "DHT replica full: " + usedBytes + " of " + maxBytes + " bytes held, the put was refused";
+        }
+    }
+
     static DHTError replicaFenced(NodeId replica) {
         return new ReplicaFenced(replica);
     }

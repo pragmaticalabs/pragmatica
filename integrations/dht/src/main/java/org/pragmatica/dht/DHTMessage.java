@@ -83,6 +83,10 @@ public sealed interface DHTMessage extends ProtocolMessage {
     /// `replicationVersion` (#1777, CTO ruling R1c) is the writer's applied replication change ([DHTNode#replicationFence])
     /// when it started the put: the quorum it waits for was sized under that change's factors. A replica that has applied a
     /// newer change refuses the write ([PutResponse#replicationStale]).
+    ///
+    /// `repair` (#2258, spec 3.2 item 7) is said by the writer, not inferred from the message type: a put that re-homes a
+    /// copy a client already holds (the fallback read's read-repair). A replica accounts it and never refuses it for
+    /// capacity — a refused copy would keep a partition catching up for ever and lose a copy of data a client holds.
     record PutRequest(String requestId,
                       NodeId sender,
                       byte[] key,
@@ -91,10 +95,33 @@ public sealed interface DHTMessage extends ProtocolMessage {
                       long epochIncarnation,
                       long epochTerm,
                       long epochCounter,
-                      long replicationVersion) implements DHTMessage {
+                      long replicationVersion,
+                      boolean repair) implements DHTMessage {
         public PutRequest {
             key = key.clone();
             value = value.clone();
+        }
+
+        /// A client put: not a repair write.
+        public PutRequest(String requestId,
+                          NodeId sender,
+                          byte[] key,
+                          byte[] value,
+                          long version,
+                          long epochIncarnation,
+                          long epochTerm,
+                          long epochCounter,
+                          long replicationVersion) {
+            this(requestId,
+                 sender,
+                 key,
+                 value,
+                 version,
+                 epochIncarnation,
+                 epochTerm,
+                 epochCounter,
+                 replicationVersion,
+                 false);
         }
     }
 
@@ -111,6 +138,10 @@ public sealed interface DHTMessage extends ProtocolMessage {
     /// `writePending` (#1777 v1882 r12) marks a refusal because THIS replica holds its own write to the same key that is applied
     /// locally and not yet resolved: answering "superseded" to another writer would let that writer's quorum count a copy this
     /// replica may roll back. A retriable refusal, and NOT evidence about the writer.
+    ///
+    /// `capacityExceeded` (#2258, spec 3.2 item 7) marks a refusal because the put would take this replica's live bytes of
+    /// its prefix above the node's cap; the replica stored nothing, and `usedBytes` and `maxBytes` are its live bytes and
+    /// its cap at the refusal (both 0 when `capacityExceeded` is false).
     record PutResponse(String requestId,
                        NodeId sender,
                        boolean success,
@@ -118,7 +149,10 @@ public sealed interface DHTMessage extends ProtocolMessage {
                        boolean fenced,
                        boolean replicationStale,
                        boolean fenceUnknown,
-                       boolean writePending) implements DHTMessage {
+                       boolean writePending,
+                       boolean capacityExceeded,
+                       long usedBytes,
+                       long maxBytes) implements DHTMessage {
         /// A response that is not a pending-write refusal.
         public PutResponse(String requestId,
                            NodeId sender,
@@ -128,6 +162,33 @@ public sealed interface DHTMessage extends ProtocolMessage {
                            boolean replicationStale,
                            boolean fenceUnknown) {
             this(requestId, sender, success, superseded, fenced, replicationStale, fenceUnknown, false);
+        }
+
+        /// A response that is not a capacity refusal.
+        public PutResponse(String requestId,
+                           NodeId sender,
+                           boolean success,
+                           boolean superseded,
+                           boolean fenced,
+                           boolean replicationStale,
+                           boolean fenceUnknown,
+                           boolean writePending) {
+            this(requestId,
+                 sender,
+                 success,
+                 superseded,
+                 fenced,
+                 replicationStale,
+                 fenceUnknown,
+                 writePending,
+                 false,
+                 0L,
+                 0L);
+        }
+
+        /// The refusal of a put that would take the replica above its cap.
+        public static PutResponse capacityRefusal(String requestId, NodeId sender, long usedBytes, long maxBytes) {
+            return new PutResponse(requestId, sender, false, false, false, false, false, false, true, usedBytes, maxBytes);
         }
     }
 

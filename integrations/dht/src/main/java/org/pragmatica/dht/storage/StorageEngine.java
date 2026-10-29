@@ -236,11 +236,63 @@ public interface StorageEngine {
                : removeIfExactly(key, version, epochIncarnation, epochTerm, epochCounter);
     }
 
+    /// [#putVersioned(byte[], byte[], long, long, long, long)] with the writer's `repair` mark (#2258, spec 3.2 item 7): a
+    /// client put (`repair == false`) is refused with [org.pragmatica.dht.DHTError.ReplicaFull] when it would take the live
+    /// bytes of a capped prefix above the cap, and stores nothing; a repair write is accounted and never refused. An engine
+    /// without a cap ignores the mark.
+    default Promise<Boolean> putVersioned(byte[] key,
+                                          byte[] value,
+                                          long version,
+                                          long epochIncarnation,
+                                          long epochTerm,
+                                          long epochCounter,
+                                          boolean repair) {
+        return putVersioned(key, value, version, epochIncarnation, epochTerm, epochCounter);
+    }
+
+    /// [#putVersionedDisplacing(byte[], byte[], long, long, long, long)] with the writer's `repair` mark, as above.
+    default Promise<Displaced> putVersionedDisplacing(byte[] key,
+                                                      byte[] value,
+                                                      long version,
+                                                      long epochIncarnation,
+                                                      long epochTerm,
+                                                      long epochCounter,
+                                                      boolean repair) {
+        return putVersionedDisplacing(key, value, version, epochIncarnation, epochTerm, epochCounter);
+    }
+
     /// Whether an entry stamped with this owner epoch is older than this store's high-water — a copy applied
     /// with it is one the fence would have refused as a fresh write (#1818, visibility). An engine without a
     /// fence has no high-water: `false`.
     default boolean belowHighWater(byte[] key, long epochIncarnation, long epochTerm, long epochCounter) {
         return false;
+    }
+
+    /// Live value bytes this engine holds under `prefix` (#2258, spec 3.2 item 7): a registered prefix of the engine's
+    /// accounting, or `other` for every key that matches none. An engine that does not account answers 0.
+    default long usedBytes(String prefix) {
+        return 0L;
+    }
+
+    /// Tombstone bytes this engine holds under `prefix` (a tombstone counts its key length plus 64 bytes, the heap it holds
+    /// for the tombstone retention). An engine that does not account answers 0.
+    default long tombstoneBytes(String prefix) {
+        return 0L;
+    }
+
+    /// The cap on the live bytes of `prefix` that refuses a client put; [Long#MAX_VALUE] for a prefix with none.
+    default long maxBytes(String prefix) {
+        return Long.MAX_VALUE;
+    }
+
+    /// The registered prefixes and `other`: the labels the accounting keeps counters under.
+    default List<String> accountedPrefixes() {
+        return List.of();
+    }
+
+    /// Client puts refused for capacity since start, across the bounded prefixes.
+    default long refusedPuts() {
+        return 0L;
     }
 
     /// Get approximate number of entries.

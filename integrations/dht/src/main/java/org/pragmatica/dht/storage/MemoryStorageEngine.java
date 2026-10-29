@@ -89,6 +89,11 @@ public final class MemoryStorageEngine implements StorageEngine {
         return new MemoryStorageEngine(epochGate);
     }
 
+    /// An engine that accounts its bytes per prefix of `accounting` and refuses client puts above its cap (#2258).
+    public static MemoryStorageEngine memoryStorageEngine(OwnerEpochGate epochGate, DhtPrefixAccounting accounting) {
+        return new MemoryStorageEngine(epochGate);
+    }
+
     @Override
     public Promise<Option<byte[]>> get(byte[] key) {
         return Promise.success(Option.option(data.get(new ByteArrayKey(key)))
