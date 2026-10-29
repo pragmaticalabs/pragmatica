@@ -318,7 +318,7 @@ final class NettyHttpServer implements HttpServer {
     /// Once handed over, the handshake either completes or fails with the connection closed: the endpoint is
     /// matched on the raw path, as Netty's handshake path check is, and a version Netty cannot handshake is
     /// answered with 426 here, before anything is installed, so a client may retry on the same connection.
-    private static class WebSocketUpgradeRouter extends ChannelInboundHandlerAdapter {
+    static class WebSocketUpgradeRouter extends ChannelInboundHandlerAdapter {
         private static final Logger log = LoggerFactory.getLogger(WebSocketUpgradeRouter.class);
 
         private final Map<String, WebSocketEndpoint> wsEndpoints;
@@ -411,7 +411,7 @@ final class NettyHttpServer implements HttpServer {
 
     /// Per-channel HTTP request handler.
     /// NOT @Sharable - each channel gets its own instance to maintain WebSocket state safely.
-    private static class HttpRequestHandler extends SimpleChannelInboundHandler<Object> {
+    static class HttpRequestHandler extends SimpleChannelInboundHandler<Object> {
         private static final Logger log = LoggerFactory.getLogger(HttpRequestHandler.class);
         private static final AttributeKey<Option<WebSocketState>> WS_STATE = AttributeKey.valueOf("wsState");
 
@@ -493,6 +493,10 @@ final class NettyHttpServer implements HttpServer {
         /// `GET /bad-request` for an unreadable request line, the real line with no body for oversized headers)
         /// marked by a failed `decoderResult()`. It must never reach the handler as a real request: it is answered
         /// and the connection is closed, because the decoder's position in the byte stream is no longer trustworthy.
+        ///
+        /// Netty's `HttpObjectDecoder` enters its bad-message state after such a failure and discards the rest of the
+        /// connection's input, so nothing pipelined behind it is decoded; the `refusing` flag that [#refuse] sets is defence
+        /// in depth, pinned by `Http1PipelineDropTest`.
         private void rejectUndecodable(ChannelHandlerContext ctx, String requestId, FullHttpRequest request) {
             var cause = request.decoderResult().cause();
             var status = undecodableStatus(cause, request);
