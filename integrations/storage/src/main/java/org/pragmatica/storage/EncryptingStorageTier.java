@@ -221,26 +221,66 @@ public final class EncryptingStorageTier implements StorageTier {
     }
 
     private Promise<Option<byte[]>> decryptFramed(BlockId id, byte[] framed) {
-        return parseHeader(id, framed).flatMap(header -> keyring.byKeyId(header.keyId())
-                                                                .flatMap(encryptor -> encryptor.decrypt(header.ciphertext(),
-                                                                                                        encryptionParams("AES/GCM/NoPadding",
-                                                                                                                         header.nonce(),
-                                                                                                                         header.keyId()),
-                                                                                                        header.aad())))
-                          .fold(Promise::failure,
-                                plaintext -> Promise.success(Option.some(plaintext)));
+        return decrypt(id.hexString(), framed).fold(Promise::failure,
+                                                    plaintext -> Promise.success(Option.some(plaintext)));
+    }
+
+    /// `subject` is what the frame is bound to in its AAD: a block's hex id, or [#anchorSubject].
+    private Result<byte[]> decrypt(String subject, byte[] framed) {
+        return parseHeader(subject, framed).flatMap(header -> keyring.byKeyId(header.keyId())
+                                                                     .flatMap(encryptor -> encryptor.decrypt(header.ciphertext(),
+                                                                                                             encryptionParams("AES/GCM/NoPadding",
+                                                                                                                              header.nonce(),
+                                                                                                                              header.keyId()),
+                                                                                                             header.aad())));
     }
 
     @Override
     public Promise<Unit> put(BlockId id, byte[] content) {
-        return frame(id, content).fold(Promise::failure, framed -> delegate.put(id, framed));
+        return frame(id.hexString(), content).fold(Promise::failure, framed -> delegate.put(id, framed));
     }
 
-    private Result<byte[]> frame(BlockId id, byte[] content) {
+    /// The value is encrypted as a block's content is, under the active key, and bound in its AAD to the anchor's name
+    /// and version: a stored value copied onto another anchor or another version fails to decrypt. The delegate sees
+    /// only ciphertext; two writes of one version differ in their bytes (fresh nonce) and decrypt to the same value.
+    @Override
+    public Promise<Unit> putAnchor(AnchorName name, long version, byte[] value) {
+        return frame(anchorSubject(name, version), value).fold(Promise::failure,
+                                                               framed -> delegate.putAnchor(name, version, framed));
+    }
+
+    /// Decrypted under the key id its frame names, so an anchor written before a key rotation reads after it, as a
+    /// block does. A value that does not decrypt (damaged, or copied from another anchor or version) is
+    /// [AnchorError.AnchorCorrupt]: it fails closed and reaches the operator like a damaged frame.
+    @Override
+    public Promise<Option<Anchor>> latestAnchor(AnchorName name) {
+        return delegate.latestAnchor(name)
+                       .flatMap(stored -> stored.fold(() -> Promise.success(Option.<Anchor> none()),
+                                                      anchor -> decrypt(anchorSubject(name,
+                                                                                      anchor.version()),
+                                                                        anchor.value()).map(value -> Option.some(Anchor.anchor(anchor.version(),
+                                                                                                                               value)))
+                                                                       .mapError(cause -> AnchorError.AnchorCorrupt.anchorCorrupt(level(),
+                                                                                                                                  name,
+                                                                                                                                  anchor.version(),
+                                                                                                                                  cause.message()))
+                                                                       .async()));
+    }
+
+    @Override
+    public Promise<Unit> pruneAnchors(AnchorName name, long below, int scanLimit) {
+        return delegate.pruneAnchors(name, below, scanLimit);
+    }
+
+    /// Never a block's subject: a block's is 64 hex characters, with no space.
+    private static String anchorSubject(AnchorName name, long version) {
+        return "anchor " + name.value() + " " + version;
+    }
+
+    private Result<byte[]> frame(String subject, byte[] content) {
         var keyIdBytes = keyring.activeKeyId().getBytes(StandardCharsets.UTF_8);
         var header = buildHeaderPrefix(keyIdBytes);
-        var aad = concat(header,
-                         id.hexString().getBytes(StandardCharsets.UTF_8));
+        var aad = concat(header, subject.getBytes(StandardCharsets.UTF_8));
 
         return keyring.active()
                       .encrypt(content, aad)
@@ -287,17 +327,17 @@ public final class EncryptingStorageTier implements StorageTier {
 
     private record ParsedHeader(String keyId, byte[] nonce, byte[] ciphertext, byte[] aad) {}
 
-    private static Result<ParsedHeader> parseHeader(BlockId id, byte[] framed) {
+    private static Result<ParsedHeader> parseHeader(String subject, byte[] framed) {
         if (framed.length < MAGIC.length || !matchesMagic(framed)) {
-            return new EncryptionError.LegacyPlaintextBlock(id.hexString()).result();
+            return new EncryptionError.LegacyPlaintextBlock(subject).result();
         }
 
         if (framed.length < HEADER_FIXED_LEN) {
-            return new EncryptionError.MalformedHeader(id.hexString(), "truncated before version/key-id-length fields").result();
+            return new EncryptionError.MalformedHeader(subject, "truncated before version/key-id-length fields").result();
         }
 
         if (framed[MAGIC.length] != VERSION) {
-            return new EncryptionError.UnsupportedVersion(id.hexString(), framed[MAGIC.length] & 0xFF, VERSION & 0xFF).result();
+            return new EncryptionError.UnsupportedVersion(subject, framed[MAGIC.length] & 0xFF, VERSION & 0xFF).result();
         }
 
         var keyIdLen = ((framed[MAGIC.length + 1] & 0xFF) << 8) | (framed[MAGIC.length + 2] & 0xFF);
@@ -306,14 +346,13 @@ public final class EncryptingStorageTier implements StorageTier {
         var ciphertextStart = nonceStart + NONCE_LEN;
 
         if (framed.length < ciphertextStart) {
-            return new EncryptionError.MalformedHeader(id.hexString(), "truncated before nonce/ciphertext").result();
+            return new EncryptionError.MalformedHeader(subject, "truncated before nonce/ciphertext").result();
         }
 
         var keyId = new String(framed, keyIdStart, keyIdLen, StandardCharsets.UTF_8);
         var nonce = Arrays.copyOfRange(framed, nonceStart, ciphertextStart);
         var ciphertext = Arrays.copyOfRange(framed, ciphertextStart, framed.length);
-        var aad = concat(Arrays.copyOfRange(framed, 0, nonceStart),
-                         id.hexString().getBytes(StandardCharsets.UTF_8));
+        var aad = concat(Arrays.copyOfRange(framed, 0, nonceStart), subject.getBytes(StandardCharsets.UTF_8));
 
         return Result.success(new ParsedHeader(keyId, nonce, ciphertext, aad));
     }

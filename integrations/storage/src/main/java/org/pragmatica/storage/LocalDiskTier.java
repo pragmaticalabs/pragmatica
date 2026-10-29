@@ -5,6 +5,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
 
 import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.io.TimeSpan;
@@ -38,6 +39,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// an entity checkpoint whose id is committed to KV -- returns the existing id without rewriting it,
 /// and whether a block will ever be reachable from a published ref cannot be known when it is written.
 /// Cost: two fsyncs per block written (file, directory), plus one per shard directory created.
+///
+/// **Anchors** ([#putAnchor]) live under `{basePath}/anchors/`, laid out and framed by [AnchorFrame], and are written
+/// with the same partial, rename and directory force as a block. They are not blocks: [#usedBytes] does not count them.
 public final class LocalDiskTier implements StorageTier {
     private static final Logger log = LoggerFactory.getLogger(LocalDiskTier.class);
 
@@ -280,6 +284,86 @@ public final class LocalDiskTier implements StorageTier {
         return maxBytes;
     }
 
+    /// Durable before it resolves, as [#put]: the frame is written to a partial file and forced, renamed over the
+    /// version's key, and the anchor's directory is forced. A failure leaves the previous newest version in place.
+    @Override
+    public Promise<Unit> putAnchor(AnchorName name, long version, byte[] value) {
+        return version < 0
+               ? AnchorError.NegativeVersion.negativeVersion(name, version).promise()
+               : Promise.lift(WRITE_ERROR, () -> writeAnchor(name, version, value)).flatMap(Promise::resolved);
+    }
+
+    @Override
+    public Promise<Option<Anchor>> latestAnchor(AnchorName name) {
+        return Promise.lift(READ_ERROR,
+                            () -> readLatestAnchor(name))
+                      .timeout(readTimeout)
+                      .flatMap(Promise::resolved);
+    }
+
+    /// Lists every version of the anchor, so `scanLimit` does not apply.
+    @Override
+    public Promise<Unit> pruneAnchors(AnchorName name, long below, int scanLimit) {
+        return Promise.lift(WRITE_ERROR, () -> deleteAnchorsBelow(name, below)).flatMap(Promise::resolved);
+    }
+
+    private Result<Unit> writeAnchor(AnchorName name, long version, byte[] value) {
+        var path = anchorDirectory(name).resolve(AnchorFrame.key(version));
+        var partial = partialPath(path);
+
+        return FileOps.createDirectoriesDurable(path.getParent())
+                      .flatMap(_ -> writer.apply(partial,
+                                                 AnchorFrame.encode(version, value)))
+                      .flatMap(_ -> FileOps.moveAtomic(partial, path))
+                      .flatMap(_ -> directoryForcer.apply(path.getParent()))
+                      .onFailure(_ -> discardFailedWrite(partial))
+                      .mapToUnit();
+    }
+
+    private Result<Option<Anchor>> readLatestAnchor(AnchorName name) {
+        var directory = anchorDirectory(name);
+
+        return FileOps.isDirectory(directory)
+               ? FileOps.list(directory).flatMap(entries -> newestVersion(entries).fold(() -> Result.success(none()),
+                                                                                        version -> readAnchor(directory,
+                                                                                                              name,
+                                                                                                              version).map(Option::some)))
+               : Result.success(none());
+    }
+
+    private static Result<Anchor> readAnchor(Path directory, AnchorName name, long version) {
+        return FileOps.readBytes(directory.resolve(AnchorFrame.key(version))).flatMap(frame -> AnchorFrame.decode(TierLevel.LOCAL_DISK,
+                                                                                                                  name,
+                                                                                                                  version,
+                                                                                                                  frame));
+    }
+
+    private Result<Unit> deleteAnchorsBelow(AnchorName name, long below) {
+        var directory = anchorDirectory(name);
+
+        return FileOps.isDirectory(directory)
+               ? FileOps.list(directory)
+                        .flatMap(entries -> Result.allOf(versionsOf(entries).filter(version -> version < below)
+                                                                   .map(version -> FileOps.deleteIfExists(directory.resolve(AnchorFrame.key(version))))))
+                        .mapToUnit()
+               : Result.success(unit());
+    }
+
+    private static Option<Long> newestVersion(List<Path> entries) {
+        return Option.from(versionsOf(entries).max(Long::compare));
+    }
+
+    private static Stream<Long> versionsOf(List<Path> entries) {
+        return entries.stream()
+                      .map(entry -> AnchorFrame.versionOf(entry.getFileName().toString()))
+                      .flatMap(Option::stream);
+    }
+
+    private Path anchorDirectory(AnchorName name) {
+        return basePath.resolve(AnchorFrame.DIRECTORY)
+                       .resolve(name.storageSegment());
+    }
+
     private Result<Option<byte[]>> readBlock(BlockId id) {
         return readerOverride.fold(() -> readBlockDefault(id), reader -> reader.apply(id));
     }
@@ -377,7 +461,8 @@ public final class LocalDiskTier implements StorageTier {
 
     private Unit recount() {
         FileOps.walk(basePath, FileOps::isRegularFile)
-               .map(LocalDiskTier::blockBytes)
+               .map(paths -> blockBytes(paths,
+                                        basePath.resolve(AnchorFrame.DIRECTORY)))
                .onSuccess(this::recordUsedBytes)
                .onFailure(cause -> log.warn("Failed to calculate used bytes at {}: {}",
                                             basePath,
@@ -401,9 +486,11 @@ public final class LocalDiskTier implements StorageTier {
         paths.stream().filter(LocalDiskTier::isPartial).forEach(LocalDiskTier::removeLeftoverPartial);
     }
 
-    private static long blockBytes(List<Path> paths) {
+    private static long blockBytes(List<Path> paths, Path anchors) {
         return paths.stream()
-                    .filter(path -> !isPartial(path) && !isClaim(path))
+                    .filter(path -> !isPartial(path)
+                                    && !isClaim(path)
+                                    && !path.startsWith(anchors))
                     .mapToLong(LocalDiskTier::fileSizeOrZero)
                     .sum();
     }
