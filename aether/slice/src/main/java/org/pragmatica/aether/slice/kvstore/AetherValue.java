@@ -3870,6 +3870,14 @@ public sealed interface AetherValue {
     /// — implementation choice for atomic refcount mutation in the same consensus round as the
     /// SliceNodeValue update (§8.5). The conceptual separation in the spec is preserved at the
     /// reader/writer API but the wire form is one record.
+    /// #1978 / #2160 (I-36): a holder's reference to a stream-registry entry (see `AetherKey.StreamRegistryHolderKey`). Carries only when
+    /// it was taken; its existence is the reference.
+    record StreamRegistryHolderValue(long acquiredAtEpochMillis) implements AetherValue {
+        public static StreamRegistryHolderValue streamRegistryHolderValue(long acquiredAtEpochMillis) {
+            return new StreamRegistryHolderValue(acquiredAtEpochMillis);
+        }
+    }
+
     record StreamRegistryValue(StreamRegistryEntry entry) implements AetherValue {
         public static StreamRegistryValue streamRegistryValue(StreamRegistryEntry entry) {
             return new StreamRegistryValue(entry);

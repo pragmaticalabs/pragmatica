@@ -72,12 +72,71 @@ class KvBackedStreamRegistryHoldersTest {
         assertThat(registrar.lookup(ORDERS).unwrap().refCount()).as("registrar + node-b").isEqualTo(2);
     }
 
+    /// NT-173: the holder's node leaves committed membership without releasing (a crash). Its reference is reaped by the departure
+    /// sweep; the other holders' references stay.
+    @Test
+    void aLeakedReference_isReapedWhenTheHoldersNodeLeaves() {
+        var acquiredA = registryA.acquireReference(ORDERS);
+        var acquiredB = registryB.acquireReference(ORDERS);
+
+        nodeA.commitHeld();
+        nodeB.commitHeld();
+        acquiredA.await().unwrap();
+        acquiredB.await().unwrap();
+        assertThat(registrar.lookup(ORDERS).unwrap().refCount()).as("control: the leaked reference counts").isEqualTo(3);
+
+        registrar.sweepHoldersOf(NodeId.nodeId("node-a").unwrap()).await().unwrap();
+
+        assertThat(registrar.lookup(ORDERS).unwrap().refCount()).as("registrar + node-b").isEqualTo(2);
+    }
+
+    /// The sweep of a node that holds nothing issues no consensus command.
+    @Test
+    void sweepOfANodeHoldingNothing_appliesNothing() {
+        var before = registrar.lookup(ORDERS).unwrap().refCount();
+        var applies = nodeA.applies();
+
+        registryA.sweepHoldersOf(NodeId.nodeId("node-z").unwrap()).await().unwrap();
+
+        assertThat(nodeA.applies()).isEqualTo(applies);
+        assertThat(registrar.lookup(ORDERS).unwrap().refCount()).isEqualTo(before);
+    }
+
+    /// A sweep whose consensus apply fails reports the failure and removes nothing.
+    @Test
+    void aFailedSweep_reportsAndRemovesNothing() {
+        var acquired = registryB.acquireReference(ORDERS);
+
+        nodeB.commitHeld();
+        acquired.await().unwrap();
+        nodeA.failApplies();
+
+        assertThat(registryA.sweepHoldersOf(NodeId.nodeId("node-b").unwrap()).await().isFailure()).isTrue();
+        assertThat(registrar.lookup(ORDERS).unwrap().refCount()).as("registrar + node-b still").isEqualTo(2);
+    }
+
+    /// A stream held only by a slice (no registry reference to drop) is reported as not found by the convenience release.
+    @Test
+    void releaseReference_withNoRegistryHolder_isNotFound() {
+        registrar.releaseReference(ORDERS).await().unwrap();
+        kvStore.process(kvStore.createBatch(registrar.acquireCommands(StreamRegistryEntry.blueprint(ORDERS, RetentionPolicy.retentionPolicy(), Instant.EPOCH),
+                                                                      NodeId.nodeId("node-a").unwrap(),
+                                                                      org.pragmatica.aether.artifact.Artifact.artifact("com.example:orders-slice:1.0.0").unwrap(),
+                                                                      0L,
+                                                                      1_000L)));
+
+        assertThat(registryB.releaseReference(ORDERS).await().isFailure()).isTrue();
+        assertThat(registrar.lookup(ORDERS).unwrap().refCount()).as("the slice's reference is untouched").isEqualTo(1);
+    }
+
     /// A consensus stub that applies at once (the registrar) or, after `hold()`, parks each apply until `commitHeld()`.
     private static final class HeldCluster implements ClusterNode<KVCommand<AetherKey>> {
         private final NodeId self;
         private final KVStore<AetherKey, AetherValue> kvStore;
         private final List<Runnable> held = new ArrayList<>();
         private boolean holding;
+        private boolean failing;
+        private int applies;
 
         HeldCluster(String self, KVStore<AetherKey, AetherValue> kvStore) {
             this.self = NodeId.nodeId(self).unwrap();
@@ -113,9 +172,22 @@ class KvBackedStreamRegistryHoldersTest {
             return Promise.unitPromise();
         }
 
+        int applies() {
+            return applies;
+        }
+
+        void failApplies() {
+            failing = true;
+        }
+
         @SuppressWarnings("unchecked")
         @Override
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
+            applies++;
+            if (failing) {
+                return org.pragmatica.lang.utils.Causes.cause("consensus unavailable").promise();
+            }
+
             if (!holding) {
                 kvStore.process(kvStore.createBatch(commands));
 
