@@ -114,6 +114,21 @@ class ClusterEventAggregatorCommittedGateTest {
         assertThat(raisedBy(nodeA)).containsExactly("node-a");
     }
 
+    /// v-2500 T1: with no record, the roster each node reads is its own installed voter configuration, which a lagging node adopts
+    /// out of step with the KV apply. Two nodes that hold different rosters at the same index must still raise the fact exactly once.
+    @Test
+    void ClusterEvents_noRecord_nodesHoldingDifferentRosters_raiseExactlyOneCopy() {
+        var nodeC = new NodeId("node-c");
+
+        bothNodes(() -> false, () -> false);
+        nodeA.bindCommittedOwnerSources(Option::none, () -> List.of(NODE_A, NODE_B, nodeC));
+        nodeB.bindCommittedOwnerSources(Option::none, () -> List.of(NODE_B, nodeC));
+
+        both(loadedPut("n1"));
+
+        assertThat(raisedBy(nodeA)).as("the same committed state at the index: one copy").hasSize(1);
+    }
+
     /// A node that has not yet seen an ownership notification (it joined after the last one) reads the committed record from the
     /// store; a notification seen later takes over.
     @Test
