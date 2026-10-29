@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.BootTokens;
+import org.pragmatica.consensus.net.IdentityFacts;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -580,7 +581,8 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                                                                     selfAddress,
                                                                     selfLabels,
                                                                     bootTokens.self(),
-                                                                    Option.some(peerId)));
+                                                                    Option.some(peerId),
+                                                                    bootTokens.offer().map(IdentityFacts::toWire)));
 
         streamChannel.writeAndFlush(Unpooled.wrappedBuffer(helloBytes));
         quicMetrics.onBytesSent(helloBytes.length);
@@ -873,8 +875,11 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             // same connect-failure path as an identity mismatch.
             // Write-ahead (#2429): a first binding is answered only once the identity ledger holds it; the answer
             // arrives off this thread, so a stalled ledger writer parks this dial and nothing else.
-            bootTokens.admitDurably(peerId,
-                                    hello.bootToken())
+            // The merge at join (ID-1c) comes first: the acceptor's retirements are durable here before it is judged. A WIPED dialer
+            // keeps the offer and fails this dial (it is redialed); it admits only against the merged ledger.
+            bootTokens.admitOffered(peerId,
+                                    hello.bootToken(),
+                                    hello.offeredFacts())
                       .onSuccess(admission -> onEventLoop(ctx,
                                                           () -> attachAdmitted(ctx, hello, admission)));
         }
