@@ -51,12 +51,12 @@ final class ApplyRollback {
                                    Function<String, Result<ComputeProvider>> computeFor,
                                    Drain drain,
                                    Consumer<String> out) {
-        return ApplyLabels.requireSafe(cluster,
-                                       recorder.applyId())
-                          .flatMap(_ -> ApplyReconciler.audit(recorder, cluster, computeFor))
-                          .flatMap(audit -> recorder.phase(ApplyPhase.ROLLING_BACK)
-                                                    .map(_ -> audit))
-                          .map(audit -> terminateAll(recorder, cluster, computeFor, drain, out, audit));
+        // The audit is the first call and validates the cluster name and the apply id before it lists anything; every
+        // later selector of the rollback is built from the same two values.
+        return ApplyReconciler.audit(recorder, cluster, computeFor)
+                              .flatMap(audit -> recorder.phase(ApplyPhase.ROLLING_BACK)
+                                                        .map(_ -> audit))
+                              .map(audit -> terminateAll(recorder, cluster, computeFor, drain, out, audit));
     }
 
     private static Report terminateAll(ApplyRecorder recorder,
