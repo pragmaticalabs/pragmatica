@@ -206,6 +206,83 @@ class GossipDecryptObserverTest {
         assertThat(published.getLast().subject()).as("the evicted eldest sender is reported again").isEqualTo(subjectOf(spoofed(0)));
     }
 
+    /// The documented numbers, pinned as numbers: the tests above use the constants, so a changed constant would move test and code together.
+    @Test
+    void theBoundsAreTheDocumentedNumbers() {
+        assertThat(GossipDecryptObserver.Reporting.MAX_NEW_SENDERS_PER_WINDOW).isEqualTo(16);
+        assertThat(GossipDecryptObserver.Reporting.WINDOW_MILLIS).isEqualTo(60_000L);
+        assertThat(GossipDecryptObserver.Reporting.MAX_SUPPRESSED_TRACKED).isEqualTo(1024);
+        assertThat(GossipDecryptObserver.Reporting.MAX_REPORTED).isEqualTo(256);
+    }
+
+    /// The window is [start, start + 60 s): 59.999 s in it is still the same window (the 17th new sender is suppressed), exactly 60 s opens the next.
+    @Test
+    void window_rollsExactlyAtSixtySeconds() throws Exception {
+        var clock = new AtomicLong(1_000_000L);
+        var windowed = GossipDecryptObserver.reporting(() -> sink, clock::get);
+
+        for (var i = 0; i < GossipDecryptObserver.Reporting.MAX_NEW_SENDERS_PER_WINDOW; i++) {
+            windowed.unknownKey(spoofed(i), 1);
+        }
+
+        clock.addAndGet(59_999L);
+        windowed.unknownKey(spoofed(100), 1);
+        awaitPublished(16);
+        Thread.sleep(200);
+
+        assertThat(published).as("the 17th sender, 59.999 s in, is suppressed").hasSize(16);
+
+        clock.addAndGet(1L);
+        windowed.unknownKey(spoofed(101), 1);
+        awaitPublished(18);
+
+        assertThat(published).as("at exactly 60 s: the summary of the one suppressed sender, then the new window's first sender")
+                             .extracting(warning -> warning.code().code())
+                             .endsWith("gossip-key-unknown-senders-suppressed", "gossip-key-unknown-from-peer");
+        assertThat(published.get(16).message()).startsWith("1 more sender address(es)");
+    }
+
+    /// A later window's summary counts only that window's suppressed senders, not the ones an earlier summary already reported.
+    @Test
+    void summary_countsOnlyItsOwnWindowsSuppressedSenders() throws Exception {
+        var clock = new AtomicLong(1_000_000L);
+        var windowed = GossipDecryptObserver.reporting(() -> sink, clock::get);
+        var next = 0;
+
+        for (var window = 0; window < 3; window++) {
+            for (var i = 0; i < 20; i++) {
+                windowed.unknownKey(spoofed(next++), 1);
+            }
+
+            clock.addAndGet(GossipDecryptObserver.Reporting.WINDOW_MILLIS);
+        }
+
+        windowed.decrypted(OTHER);
+        Thread.sleep(300);
+
+        var summaries = published.stream().filter(warning -> warning.code() == OperatorWarningCode.GOSSIP_KEY_UNKNOWN_SENDERS_SUPPRESSED).toList();
+
+        assertThat(summaries).hasSize(3).allSatisfy(summary -> assertThat(summary.message()).startsWith("4 more sender address(es)"));
+    }
+
+    /// A node that sees only healthy gossip after a flood still gets the summary: a decryptable datagram closes the window too, no timer needed.
+    @Test
+    void decrypted_closesTheWindow_soTheSummaryNeedsNoFurtherUnknownKeyDatagram() throws Exception {
+        var clock = new AtomicLong(1_000_000L);
+        var windowed = GossipDecryptObserver.reporting(() -> sink, clock::get);
+
+        for (var i = 0; i < 20; i++) {
+            windowed.unknownKey(spoofed(i), 1);
+        }
+
+        awaitPublished(16);
+        clock.addAndGet(GossipDecryptObserver.Reporting.WINDOW_MILLIS + 1);
+        windowed.decrypted(OTHER);
+        awaitPublished(17);
+
+        assertThat(published.getLast().code()).isEqualTo(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_SENDERS_SUPPRESSED);
+    }
+
     private static String subjectOf(InetSocketAddress address) {
         return address.getAddress().getHostAddress() + ":" + address.getPort();
     }

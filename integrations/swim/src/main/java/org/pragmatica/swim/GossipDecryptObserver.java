@@ -107,7 +107,6 @@ public interface GossipDecryptObserver {
 
         private long windowStartMillis;
         private int newSendersInWindow;
-        private volatile boolean windowHasSuppressed;
         private volatile long windowEndMillis;
 
         private Reporting(Supplier<OperatorWarningSink> sink, LongSupplier clockMillis) {
@@ -154,7 +153,6 @@ public interface GossipDecryptObserver {
 
             if (newSendersInWindow >= MAX_NEW_SENDERS_PER_WINDOW) {
                 suppressed.put(subject, Boolean.TRUE);
-                windowHasSuppressed = true;
 
                 return;
             }
@@ -192,7 +190,6 @@ public interface GossipDecryptObserver {
             windowEndMillis = now + WINDOW_MILLIS;
             newSendersInWindow = 0;
             suppressed.clear();
-            windowHasSuppressed = false;
             if (count > 0) {
                 OperatorWarnings.raise(LOG,
                                        sink.get(),

@@ -206,14 +206,21 @@ public final class ClusterEventAggregator {
     /// it raises: dropping a legitimate operator event is the worse failure, and only these subjects can be forged.
     private static final Set<OperatorWarningCode> SPOOFABLE_SUBJECT_CODES = Set.of(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER);
 
-    /// The most open-or-pending recoverable warnings the aggregator holds per spoofable-subject code (#1200). The set above is "bounded by the (code, subject)
+    /// The most open-or-pending marks the aggregator holds for the spoofable-subject codes (#1200). The set above is "bounded by the (code, subject)
     /// pairs the node can raise", an assumption a code whose subject is an UNAUTHENTICATED value (a UDP source address) breaks: spoofed
     /// subjects never send the recovery, so their marks stay open for ever and every one of them is also an event in the retained ring. A
     /// new subject beyond the cap is dropped here (counted in [#openCapDropped]); the condition is already in the node log. Subjects that
     /// are already open keep their recovery.
     static final int MAX_OPEN_RECOVERABLE_PER_CODE = 256;
+    /// How long an open mark of a spoofable-subject code is held with no recovery (#1200): ten of the observer's report windows. Spoofed subjects
+    /// never recover, so without an expiry they would hold their slots for ever and, once the cap was reached, a REAL stranded sender would raise
+    /// nothing. An expired mark also leaves the throttle, so a recurrence is shown again; its recovery, if it comes later, is not published.
+    static final long SPOOFABLE_OPEN_TTL_MS = 600_000L;
 
     private final java.util.concurrent.atomic.AtomicLong openCapDropped = new java.util.concurrent.atomic.AtomicLong();
+
+    /// Open marks of the spoofable codes, oldest first, with the time each was opened. Guarded by itself.
+    private final java.util.LinkedHashMap<String, Long> spoofableOpenSince = new java.util.LinkedHashMap<>();
 
     /// Warnings with a recovery that are admitted but not yet in the log, each holding the recovery that arrived meanwhile.
     /// Recoveries raised during snapshot/resync replay, by the key of the warning they close, released after it (#752).
@@ -882,7 +889,13 @@ public final class ClusterEventAggregator {
     }
 
     private void onCondition(OperatorWarning warning, String key) {
-        if (SPOOFABLE_SUBJECT_CODES.contains(warning.code()) && overOpenCap(warning.code(), key)) {
+        var spoofable = SPOOFABLE_SUBJECT_CODES.contains(warning.code());
+
+        if (spoofable) {
+            expireSpoofableMarks();
+        }
+
+        if (spoofable && overOpenCap(key)) {
             openCapDropped.incrementAndGet();
             LOG.debug("ClusterEventAggregator: dropping OperatorWarning {} for {}: {} recoverable warnings of this code are already open",
                       warning.code().code(),
@@ -919,6 +932,42 @@ public final class ClusterEventAggregator {
             deliverRecoverable(event, key, window);
         } else {
             redelivery.deliver(stampedOrAsIs(event), () -> shortenWindow(key, window));
+        }
+
+        if (spoofable) {
+            noteSpoofableOpen(key);
+        }
+    }
+
+    private void noteSpoofableOpen(String key) {
+        synchronized (spoofableOpenSince) {
+            spoofableOpenSince.putIfAbsent(key,
+                                           hlcClock.now().physicalMillis());
+        }
+    }
+
+    /// Drops the marks that recovered (they left the open sets) and those opened more than [#SPOOFABLE_OPEN_TTL_MS] ago, oldest first, from every
+    /// structure that holds them, freeing their slots.
+    private void expireSpoofableMarks() {
+        var cutoff = hlcClock.now().physicalMillis() - SPOOFABLE_OPEN_TTL_MS;
+
+        synchronized (spoofableOpenSince) {
+            spoofableOpenSince.keySet()
+                              .removeIf(mark -> !openRecoverable.contains(mark) && !awaitingDelivery.containsKey(mark));
+            var iterator = spoofableOpenSince.entrySet().iterator();
+
+            while (iterator.hasNext()) {
+                var mark = iterator.next();
+
+                if (mark.getValue() >= cutoff) {
+                    return;
+                }
+
+                iterator.remove();
+                openRecoverable.remove(mark.getKey());
+                awaitingDelivery.remove(mark.getKey());
+                operatorWarningThrottle.remove(mark.getKey());
+            }
         }
     }
 
@@ -1057,19 +1106,11 @@ public final class ClusterEventAggregator {
         return scheduledOutcomes.size();
     }
 
-    /// Whether `key` is a NEW subject of `code` and `code` already has [#MAX_OPEN_RECOVERABLE_PER_CODE] open or pending recoverable warnings.
-    private boolean overOpenCap(OperatorWarningCode code, String key) {
-        if (openRecoverable.size() + awaitingDelivery.size() < MAX_OPEN_RECOVERABLE_PER_CODE || openRecoverable.contains(key) || awaitingDelivery.containsKey(key)) {
-            return false;
+    /// Whether `key` is a NEW subject of a spoofable code and [#MAX_OPEN_RECOVERABLE_PER_CODE] marks of those codes are already open or pending.
+    private boolean overOpenCap(String key) {
+        synchronized (spoofableOpenSince) {
+            return spoofableOpenSince.size() >= MAX_OPEN_RECOVERABLE_PER_CODE && !spoofableOpenSince.containsKey(key);
         }
-
-        var prefix = code.code() + ":";
-        var held = Stream.concat(openRecoverable.stream(),
-                                 awaitingDelivery.keySet().stream())
-                         .filter(entry -> entry.startsWith(prefix))
-                         .count();
-
-        return held >= MAX_OPEN_RECOVERABLE_PER_CODE;
     }
 
     /// Recoverable warnings dropped because their code already had [#MAX_OPEN_RECOVERABLE_PER_CODE] open ones (observability).

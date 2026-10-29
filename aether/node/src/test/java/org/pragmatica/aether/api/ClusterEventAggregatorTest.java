@@ -1453,6 +1453,40 @@ class ClusterEventAggregatorTest {
             .isTrue();
     }
 
+    /// Spoofed subjects never recover, so their marks expire by age: with the cap full of them, a real sender is dropped until they expire and
+    /// is admitted (and gets its recovery) once they have.
+    @Test
+    void onOperatorWarning_capFullOfSpoofedMarks_aRealSenderIsAdmittedOnceTheyExpire() {
+        var t = new AtomicLong(1_000_000L);
+        var h = clocked(t);
+
+        for (var i = 0; i < ClusterEventAggregator.MAX_OPEN_RECOVERABLE_PER_CODE; i++) {
+            h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER, "10.1." + (i / 256) + "." + (i % 256) + ":7000", "spoofed"));
+        }
+
+        t.addAndGet(ClusterEventAggregator.SPOOFABLE_OPEN_TTL_MS - 1);
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER, "192.168.7.7:7000", "real"));
+
+        assertThat(h.events().stream().noneMatch(event -> "192.168.7.7:7000".equals(event.details().get("subject"))))
+            .as("control: just inside the expiry the cap still holds, so the lockout is bounded by the expiry, not removed")
+            .isTrue();
+        assertThat(h.aggregator().openCapDropped()).isEqualTo(1L);
+
+        t.addAndGet(2L);
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER, "192.168.7.7:7000", "real"));
+
+        assertThat(h.events().stream().anyMatch(event -> "192.168.7.7:7000".equals(event.details().get("subject"))))
+            .as("the spoofed marks expired, so the real stranded sender raises its event")
+            .isTrue();
+        assertThat(h.aggregator().openRecoverableCount()).as("the expired marks left the open set").isLessThanOrEqualTo(1);
+
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.GOSSIP_KEY_PEER_DECRYPTED, "192.168.7.7:7000", "repaired"));
+
+        assertThat(h.events().stream().anyMatch(event -> "gossip-key-peer-decrypted".equals(event.details().get("code")) && "192.168.7.7:7000".equals(event.details().get("subject"))))
+            .as("and gets its recovery")
+            .isTrue();
+    }
+
     /// The cap is for the code whose subject can be forged and for no other: a recoverable code with a trustworthy subject still publishes its 300th
     /// open subject, and each of them still gets its recovery.
     @Test
