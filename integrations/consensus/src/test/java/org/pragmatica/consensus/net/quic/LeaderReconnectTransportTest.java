@@ -87,6 +87,14 @@ class LeaderReconnectTransportTest {
         return manager.fsm().current() instanceof LeaderElectionState.Led led && led.leader().equals(LEADER);
     }
 
+    /// What a timed-out wait needs to be read: the follower's FSM state, its view of the electorate, and both ends of the link.
+    private String linkState(QuicClusterNetwork follower, QuicClusterNetwork leader) {
+        return "follower FSM " + manager.fsm().current()
+               + ", follower topology " + manager.context().currentTopology()
+               + ", follower sees leader connected=" + connected(follower, LEADER)
+               + ", leader sees follower connected=" + connected(leader, FOLLOWER);
+    }
+
     private boolean suspectsTheLeader() {
         return manager.fsm().current() instanceof LeaderElectionState.Led led && led.isLeaderSuspected();
     }
@@ -106,15 +114,15 @@ class LeaderReconnectTransportTest {
         assertThat(followsTheLeader()).as("control: the follower follows the leader").isTrue();
 
         follower.peerStateForTests(LEADER).evict(System.nanoTime()).onPresent(connection -> connection.close().await(AWAIT));
-        awaitTrue(this::suspectsTheLeader, AWAIT, "the eviction removed the leader from the follower's view");
-        awaitTrue(() -> !connected(leader, FOLLOWER), AWAIT, "the leader noticed the closed link");
+        awaitTrue(this::suspectsTheLeader, AWAIT, () -> "the eviction removed the leader from the follower's view; " + linkState(follower, leader));
+        awaitTrue(() -> !connected(leader, FOLLOWER), AWAIT, () -> "the leader noticed the closed link; " + linkState(follower, leader));
         assertThat(followsTheLeader()).as("control: pre-vote holds the follower in Led while it asks").isTrue();
 
         follower.dialForTests(leaderInfo, false);
-        awaitTrue(() -> connected(follower, LEADER), AWAIT, "the link is back");
+        awaitTrue(() -> connected(follower, LEADER), AWAIT, () -> "the link is back; " + linkState(follower, leader));
         awaitTrue(() -> manager.context().currentTopology().contains(LEADER),
                   AWAIT,
-                  "the reconnect restored the leader to the follower's view");
+                  () -> "the reconnect restored the leader to the follower's view; " + linkState(follower, leader));
 
         assertThat(suspectsTheLeader()).as("a follower connected to its leader again does not suspect it").isFalse();
         assertThat(followsTheLeader()).as("the follower still follows the leader").isTrue();

@@ -10,6 +10,7 @@ import org.pragmatica.aether.resource.db.DatabaseType;
 import org.pragmatica.aether.resource.db.DatabaseConnectorError;
 import org.pragmatica.aether.resource.db.jooq.JooqConnector;
 import org.pragmatica.jooq.r2dbc.JooqR2dbcOperations;
+import org.pragmatica.jooq.r2dbc.JooqR2dbcQueries;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -200,35 +201,26 @@ public final class R2dbcJooqConnector implements JooqConnector {
 
         @Override
         public <R extends Record> Promise<R> fetchOne(ResultQuery<R> query) {
-            return Promise.lift(e -> mapException(e,
-                                                  query.getSQL()),
-                                () -> JooqConnector.extractSingleResult(DSL.using(connection, dialect).fetch(query)))
-                          .flatMap(Result::async)
-                          .mapError(R2dbcJooqConnector::toConnectorError);
+            return JooqR2dbcQueries.fetchAll(connection, dialect, query)
+                                   .flatMap(records -> JooqConnector.extractSingleResult(records).async())
+                                   .mapError(R2dbcJooqConnector::toConnectorError);
         }
 
         @Override
         public <R extends Record> Promise<Option<R>> fetchOptional(ResultQuery<R> query) {
-            return Promise.lift(e -> mapException(e,
-                                                  query.getSQL()),
-                                () -> JooqConnector.extractOptionalResult(DSL.using(connection, dialect).fetch(query)))
-                          .mapError(R2dbcJooqConnector::toConnectorError);
+            return JooqR2dbcQueries.fetchAll(connection, dialect, query)
+                                   .map(JooqConnector::extractOptionalResult)
+                                   .mapError(R2dbcJooqConnector::toConnectorError);
         }
 
         @Override
         public <R extends Record> Promise<List<R>> fetch(ResultQuery<R> query) {
-            return Promise.lift(e -> mapException(e,
-                                                  query.getSQL()),
-                                () -> List.copyOf(DSL.using(connection, dialect).fetch(query)))
-                          .mapError(R2dbcJooqConnector::toConnectorError);
+            return JooqR2dbcQueries.fetchAll(connection, dialect, query).mapError(R2dbcJooqConnector::toConnectorError);
         }
 
         @Override
         public Promise<Integer> execute(Query query) {
-            return Promise.lift(e -> mapException(e,
-                                                  query.getSQL()),
-                                () -> DSL.using(connection, dialect).execute(query))
-                          .mapError(R2dbcJooqConnector::toConnectorError);
+            return JooqR2dbcQueries.execute(connection, dialect, query).mapError(R2dbcJooqConnector::toConnectorError);
         }
 
         @Override
@@ -244,10 +236,6 @@ public final class R2dbcJooqConnector implements JooqConnector {
         @Override
         public Promise<Unit> stop() {
             return Promise.success(Unit.unit());
-        }
-
-        private static R2dbcError mapException(Throwable e, String sql) {
-            return R2dbcError.fromException(e, sql);
         }
     }
 }

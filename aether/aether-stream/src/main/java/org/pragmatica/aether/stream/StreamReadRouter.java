@@ -132,13 +132,15 @@ public final class StreamReadRouter {
     ///
     /// Unlike the plain GOVERNOR read, a failed forward is NOT softened to a local read: a refusal that tells the consumer its
     /// lineage was replaced must reach it, and a local read of a ring this node does not hold could only fail again.
+    ///
+    /// A cursor below the ring tail is served from the sealed tier on either path (#2201 C-16): locally by
+    /// [StreamPartitionManager#readServingTiered], forwarded by the owner's handler, which calls the same method.
     public Promise<StreamPartitionManager.EpochRead> readValidated(String streamName,
                                                                    int partition,
                                                                    long fromOffset,
                                                                    int maxEvents,
                                                                    Epoch consumerEpoch) {
-        return partitionManager.readServing(streamName, partition, fromOffset, maxEvents, consumerEpoch)
-                               .async()
+        return partitionManager.readServingTiered(streamName, partition, fromOffset, maxEvents, consumerEpoch)
                                .fold(result -> result.fold(cause -> cause == StreamError.General.PARTITION_NOT_LOCAL
                                                                     ? forwardValidated(streamName,
                                                                                        partition,
@@ -162,10 +164,22 @@ public final class StreamReadRouter {
                                                                                                      fromOffset,
                                                                                                      maxEvents,
                                                                                                      consumerEpoch)))
-                            .map(read -> read.map(result -> new StreamPartitionManager.EpochRead(toRawEvents(result.events(),
-                                                                                                             partition),
-                                                                                                 result.ownerEpoch())))
+                            .map(read -> read.map(result -> StreamPartitionManager.EpochRead.epochRead(toRawEvents(result.events(),
+                                                                                                                   partition),
+                                                                                                       result.ownerEpoch(),
+                                                                                                       readBelowTheRing(result.bounds(),
+                                                                                                                        fromOffset))))
                             .or(() -> StreamError.General.PARTITION_NOT_LOCAL.<StreamPartitionManager.EpochRead> promise());
+    }
+
+    /// Whether a forwarded consumer read began below the owner's ring tail, so the owner served it from its sealed tier
+    /// (#2201 C-16). The response carries no such flag (no wire change); it carries the owner's bounds, read just after the
+    /// read. The ring tail only rises, so every read the owner served from the tier is named here, and a read the ring
+    /// served at its very tail while it evicted can be named too: at most a spurious `stream-consumer-behind-ring` episode
+    /// at the ring's edge, never a missed one. An answer with no bounds (no ring) names nothing.
+    private static boolean readBelowTheRing(Option<VisibleBounds> bounds, long fromOffset) {
+        return bounds.map(owner -> fromOffset < owner.earliestRetained())
+                     .or(false);
     }
 
     ForwardingReadRouter<OffHeapRingBuffer.RawEvent> readRouter(ReadPreference preference) {

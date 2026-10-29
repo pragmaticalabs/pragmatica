@@ -5,6 +5,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -308,24 +311,30 @@ class SwimBootTokenTest {
     /// A refused ANNOUNCE is answered with an explicit IdentityRefused to the announcer's address.
     /// #2429 write-ahead: with the ledger's directory force stalled, the conflicting ANNOUNCE retires the NodeId in memory at
     /// once, but the announcer is told only after the retirement is on disk.
+    ///
+    /// The ledger renames the new file into place BEFORE it forces the directory, so the file holds the retirement while the
+    /// force is stalled; what the stall withholds is the announcement. The test therefore waits until the writer is PARKED in
+    /// the directory force before it asserts that nothing was announced: asserting earlier passes whether or not the write
+    /// was ever started, and a control on the file's content races the writer thread.
     @Test
     void announceConflict_withAStalledLedgerWrite_answersIdentityRefusedOnlyAfterTheRetirementIsDurable(@TempDir Path directory) throws Exception {
-        var gate = new java.util.concurrent.atomic.AtomicReference<>(new java.util.concurrent.CountDownLatch(0));
+        var gate = new AtomicReference<>(new CountDownLatch(0));
+        var parked = new CountDownLatch(1);
         var file = directory.resolve("l").resolve("ledger");
         var tokens = BootTokens.bootTokens(0x5E1FL);
-        var ledger = IdentityLedger.identityLedger(file, stalledDirectoryForce(gate));
+        var ledger = IdentityLedger.identityLedger(file, stalledDirectoryForce(gate, parked));
 
         tokens.attachLedger(ledger);
         tokens.preload(ledger.open(true).facts(), false);
-        gate.set(new java.util.concurrent.CountDownLatch(1));
+        gate.set(new CountDownLatch(1));
         protocol.setBootTokens(tokens);
 
         announce(5, TOKEN);
         announce(6, OTHER_TOKEN);
 
         assertThat(tokens.isRetired(NODE_A)).as("control: the conflict retired the NodeId in memory").isTrue();
+        assertThat(parked.await(10, TimeUnit.SECONDS)).as("control: the retirement's write is parked in the directory force").isTrue();
         assertThat(identityRefusals()).as("no refusal while the write is stalled").isZero();
-        assertThat(Files.readString(file)).as("control: the file does not hold the retirement yet").doesNotContain("node-a");
 
         gate.get().countDown();
         awaitRefusals(1);
@@ -344,7 +353,7 @@ class SwimBootTokenTest {
         assertThat(identityRefusals()).isEqualTo(expected);
     }
 
-    private static IdentityLedger.DurableWriter stalledDirectoryForce(java.util.concurrent.atomic.AtomicReference<java.util.concurrent.CountDownLatch> gate) {
+    private static IdentityLedger.DurableWriter stalledDirectoryForce(AtomicReference<CountDownLatch> gate, CountDownLatch parked) {
         var real = IdentityLedger.DurableWriter.fileOps();
 
         return new IdentityLedger.DurableWriter() {
@@ -360,16 +369,21 @@ class SwimBootTokenTest {
 
             @Override
             public org.pragmatica.lang.Result<org.pragmatica.lang.Unit> forceDirectory(Path directory) {
-                await(gate.get());
+                var held = gate.get();
+
+                if (held.getCount() > 0) {
+                    parked.countDown();
+                }
+                await(held);
 
                 return real.forceDirectory(directory);
             }
         };
     }
 
-    private static void await(java.util.concurrent.CountDownLatch gate) {
+    private static void await(CountDownLatch gate) {
         try {
-            gate.await(30, java.util.concurrent.TimeUnit.SECONDS);
+            gate.await(30, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }

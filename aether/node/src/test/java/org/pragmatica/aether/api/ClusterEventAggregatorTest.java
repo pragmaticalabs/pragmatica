@@ -1443,6 +1443,120 @@ class ClusterEventAggregatorTest {
 
     /// A warning is a per-node fact, so a NON-OWNER still publishes it. The event carries the code
     /// catalogue's severity, the logged message as its summary, and the filterable details.
+    /// #1200 — a code whose subject is an UNAUTHENTICATED value (a UDP source address) must not let a spoofer grow the aggregator's open set or fill
+    /// the retained ring: 10,000 distinct subjects publish at most the per-code cap, count the rest as dropped, and an unrelated event raised
+    /// before the flood is still retained after it. The recovery of an open subject still publishes (control).
+    @Test
+    void onOperatorWarning_tenThousandSpoofedSubjects_areBoundedAtTheAggregator_andUnrelatedEventsSurvive() {
+        var t = new AtomicLong(1_000_000L);
+        var h = clocked(t);
+
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.CORE_ABSENCE_FENCE, "core", "unrelated, raised before the flood"));
+
+        for (var i = 0; i < 10_000; i++) {
+            h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER,
+                                                                             "10." + (i / 65_536) + "." + (i / 256 % 256) + "." + (i % 256) + ":7000",
+                                                                             "spoofed"));
+        }
+
+        var events = h.events();
+        var gossip = events.stream().filter(event -> "gossip-key-unknown-from-peer".equals(event.details().get("code"))).toList();
+
+        assertThat(gossip).as("at most the per-code cap").hasSize(ClusterEventAggregator.MAX_OPEN_RECOVERABLE_PER_CODE);
+        assertThat(h.aggregator().openCapDropped()).isEqualTo(10_000L - ClusterEventAggregator.MAX_OPEN_RECOVERABLE_PER_CODE);
+        assertThat(h.aggregator().openRecoverableCount()).isLessThanOrEqualTo(ClusterEventAggregator.MAX_OPEN_RECOVERABLE_PER_CODE);
+        assertThat(events.stream().anyMatch(event -> "core-absence-fence".equals(event.details().get("code"))))
+            .as("the unrelated event is still in the retained ring")
+            .isTrue();
+
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.GOSSIP_KEY_PEER_DECRYPTED, "10.0.0.0:7000", "repaired"));
+
+        assertThat(h.events().stream().anyMatch(event -> "gossip-key-peer-decrypted".equals(event.details().get("code"))))
+            .as("control: an open subject still gets its recovery")
+            .isTrue();
+    }
+
+    /// Spoofed subjects never recover, so their marks expire by age: with the cap full of them, a real sender is dropped until they expire and
+    /// is admitted (and gets its recovery) once they have.
+    @Test
+    void onOperatorWarning_capFullOfSpoofedMarks_aRealSenderIsAdmittedOnceTheyExpire() {
+        assertThat(ClusterEventAggregator.SPOOFABLE_OPEN_TTL_MS).as("ten observer windows, pinned as a number").isEqualTo(600_000L);
+        assertThat(ClusterEventAggregator.MAX_OPEN_RECOVERABLE_PER_CODE).isEqualTo(256);
+        var t = new AtomicLong(1_000_000L);
+        var h = clocked(t);
+
+        for (var i = 0; i < ClusterEventAggregator.MAX_OPEN_RECOVERABLE_PER_CODE; i++) {
+            h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER, "10.1." + (i / 256) + "." + (i % 256) + ":7000", "spoofed"));
+        }
+
+        t.addAndGet(ClusterEventAggregator.SPOOFABLE_OPEN_TTL_MS - 1);
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER, "192.168.7.7:7000", "real"));
+
+        assertThat(h.events().stream().noneMatch(event -> "192.168.7.7:7000".equals(event.details().get("subject"))))
+            .as("control: just inside the expiry the cap still holds, so the lockout is bounded by the expiry, not removed")
+            .isTrue();
+        assertThat(h.aggregator().openCapDropped()).isEqualTo(1L);
+
+        t.addAndGet(2L);
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER, "192.168.7.7:7000", "real"));
+
+        assertThat(h.events().stream().anyMatch(event -> "192.168.7.7:7000".equals(event.details().get("subject"))))
+            .as("the spoofed marks expired, so the real stranded sender raises its event")
+            .isTrue();
+        assertThat(h.aggregator().openRecoverableCount()).as("the expired marks left the open set").isLessThanOrEqualTo(1);
+
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.GOSSIP_KEY_PEER_DECRYPTED, "192.168.7.7:7000", "repaired"));
+
+        assertThat(h.events().stream().anyMatch(event -> "gossip-key-peer-decrypted".equals(event.details().get("code")) && "192.168.7.7:7000".equals(event.details().get("subject"))))
+            .as("and gets its recovery")
+            .isTrue();
+    }
+
+    /// The cap is for NEW subjects only: with it full, an already-open subject that is raised again is not counted as dropped, and it keeps its recovery.
+    @Test
+    void onOperatorWarning_capFull_anAlreadyOpenSubjectIsNotDropped_andKeepsItsRecovery() {
+        var t = new AtomicLong(1_000_000L);
+        var h = clocked(t);
+        var first = "10.1.0.0:7000";
+
+        for (var i = 0; i < ClusterEventAggregator.MAX_OPEN_RECOVERABLE_PER_CODE; i++) {
+            h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER, "10.1." + (i / 256) + "." + (i % 256) + ":7000", "spoofed"));
+        }
+
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER, first, "raised again"));
+
+        assertThat(h.aggregator().openCapDropped()).as("an open subject is not a new one").isZero();
+
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.GOSSIP_KEY_PEER_DECRYPTED, first, "repaired"));
+
+        assertThat(h.events().stream().anyMatch(event -> "gossip-key-peer-decrypted".equals(event.details().get("code")) && first.equals(event.details().get("subject"))))
+            .as("and its recovery publishes")
+            .isTrue();
+    }
+
+    /// The cap is for the code whose subject can be forged and for no other: a recoverable code with a trustworthy subject still publishes its 300th
+    /// open subject, and each of them still gets its recovery.
+    @Test
+    void onOperatorWarning_aNonSpoofableRecoverableCode_publishesItsThreeHundredthOpenSubject() {
+        var t = new AtomicLong(1_000_000L);
+        var h = clocked(t);
+
+        for (var i = 0; i < 300; i++) {
+            h.aggregator().onOperatorWarning(diverged("g:s[" + i + "]"));
+        }
+
+        var diverged = h.events().stream().filter(event -> "stream-consumer-state-diverged".equals(event.details().get("code"))).toList();
+
+        assertThat(diverged).hasSize(300);
+        assertThat(h.aggregator().openCapDropped()).isZero();
+
+        h.aggregator().onOperatorWarning(repaired("g:s[299]"));
+
+        assertThat(h.events().stream().anyMatch(event -> "stream-consumer-state-repaired".equals(event.details().get("code")) && "g:s[299]".equals(event.details().get("subject"))))
+            .as("the 300th subject gets its recovery")
+            .isTrue();
+    }
+
     @Test
     void onOperatorWarning_notOwner_emitsEventCarryingCodeAndSubject() {
         var h = Harness.create(Harness.defaultRetention(), NOT_OWNER);
@@ -2476,7 +2590,45 @@ class ClusterEventAggregatorTest {
         assertThat(codes(h)).containsExactly("stream-consumer-state-diverged", "stream-consumer-state-repaired");
     }
 
-    /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the oversized-event refusal and the
+    /// #2201 C-16: the consumer codes of a read below the ring tail reach the event log with their severities, the two
+    /// episodes close with their recoveries on the same subject, and a second episode re-raised inside the throttle window
+    /// is shown, because its recovery ended the window. The expiry is CRITICAL (owner ruling Q11) and is closed by
+    /// `stream-consumer-cursor-resumed` on its own subject (owner ruling 2026-10-28 on Q11).
+    @Test
+    void onOperatorWarning_consumerBehindTheRingCodes_pairAndCarryTheirSeverities() {
+        var t = new AtomicLong(1_000_000L);
+        var h = clocked(t);
+        var subject = "orders[0]/g";
+
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_BEHIND_RING, subject, "behind"));
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_BACK_IN_RING, subject, "back"));
+        t.addAndGet(1_000L);
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_BEHIND_RING, subject, "behind again"));
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_SEALED_RANGE_MISSING,
+                                                                         subject + "@5",
+                                                                         "hole"));
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_SEALED_RANGE_RESTORED,
+                                                                         subject + "@5",
+                                                                         "filled"));
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED,
+                                                                         subject + "@10",
+                                                                         "skipped"));
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_CURSOR_RESUMED,
+                                                                         subject + "@10",
+                                                                         "resumed"));
+
+        assertThat(h.events().stream().map(e -> e.details().get("code") + "@" + e.details().get("subject") + ":" + e.severity()).toList())
+            .containsExactly("stream-consumer-behind-ring@orders[0]/g:WARNING",
+                             "stream-consumer-back-in-ring@orders[0]/g:INFO",
+                             "stream-consumer-behind-ring@orders[0]/g:WARNING",
+                             "stream-consumer-sealed-range-missing@orders[0]/g@5:WARNING",
+                             "stream-consumer-sealed-range-restored@orders[0]/g@5:INFO",
+                             "stream-consumer-cursor-expired@orders[0]/g@10:CRITICAL",
+                             "stream-consumer-cursor-resumed@orders[0]/g@10:INFO");
+    }
+
+    /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the three consumer pairs of #2201
+    /// C-16 (behind the ring, the hole, and the cursor expiry), the oversized-event refusal and the
     /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450); every other code keeps the plain 60 s throttle.
     @Test
     void onOperatorWarning_onlyTheDeclaredPairsArePaired_otherCodesUnchanged() {
@@ -2497,6 +2649,9 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
                 OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN,
                 OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED,
+                OperatorWarningCode.STREAM_CONSUMER_BACK_IN_RING,
+                OperatorWarningCode.STREAM_CONSUMER_SEALED_RANGE_RESTORED,
+                OperatorWarningCode.STREAM_CONSUMER_CURSOR_RESUMED,
                 OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED,
                 OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING,
                 OperatorWarningCode.STREAM_OWNER_LINEAGE_COMMITTED,
@@ -2520,6 +2675,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.COMMUNITY_PLACEMENT_CLEARED,
                 OperatorWarningCode.COMMUNITY_ASSIGNMENT_PLACED,
                 OperatorWarningCode.STORAGE_PROMOTION_RESUMED,
+                OperatorWarningCode.GOSSIP_KEY_PEER_DECRYPTED,
                 OperatorWarningCode.STORAGE_DEMOTION_RESUMED,
                 OperatorWarningCode.STORAGE_SNAPSHOT_WRITE_RECOVERED,
                 OperatorWarningCode.STORAGE_TIER_WRITABLE,
@@ -2536,6 +2692,7 @@ class ClusterEventAggregatorTest {
             });
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactlyInAnyOrder(new OperatorWarningCode[]{
+                OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER,
                 OperatorWarningCode.BACKUP_STOP_FLUSH_FAILED,
                 OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED,
                 OperatorWarningCode.NODE_REPLACEMENT_STARTED,
@@ -2550,6 +2707,9 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
                 OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED,
                 OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING,
+                OperatorWarningCode.STREAM_CONSUMER_BEHIND_RING,
+                OperatorWarningCode.STREAM_CONSUMER_SEALED_RANGE_MISSING,
+                OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED,
                 OperatorWarningCode.PROVISION_ADMISSION_DEFERRED,
                 OperatorWarningCode.CORE_CAPACITY_AWAITING_DURABLE,
                 OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,

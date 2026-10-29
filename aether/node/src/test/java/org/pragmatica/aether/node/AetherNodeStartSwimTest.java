@@ -243,6 +243,118 @@ class AetherNodeStartSwimTest {
         }
     }
 
+    /// #1200 — the seed side. A datagram under a key id the node does not hold becomes the operator event `gossip-key-unknown-from-peer`
+    /// naming the sender, through the sink the node bound to its detector; the wiring from the detector to the transport is what is pinned
+    /// here (the observer itself is covered where it lives). A datagram it CAN open then closes it with the recovery.
+    @Test
+    void startSwim_peerGossipsUnderAnUnheldKey_raisesTheOperatorEvent_andTheRecoveryWhenItDecrypts() throws Exception {
+        var swimPort = freeUdpPort();
+        var detector = detectorWithSwimPort(swimPort);
+        var published = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
+
+        detector.setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(published::add));
+
+        try (var sender = new DatagramSocket()) {
+            AetherNode.startSwim(detector,
+                                 network(),
+                                 RotatingGossipEncryptor.rotatingGossipEncryptor(aesGcm(NODE_KEY, NODE_KEY_ID)),
+                                 this::announce,
+                                 this::fail,
+                                 this::diverge,
+                                 Promise.promise());
+            assertThat(announced.await(WAIT_SECONDS, TimeUnit.SECONDS)).as("SWIM started").isTrue();
+
+            send(sender, swimPort, aesGcm(ROTATED_KEY, ROTATED_KEY_ID).encrypt("probe".getBytes(StandardCharsets.UTF_8)).unwrap());
+            awaitWarnings(published, 1);
+
+            assertThat(published).singleElement().satisfies(warning -> {
+                assertThat(warning.code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER);
+                assertThat(warning.subject()).startsWith("127.0.0.1:");
+                assertThat(warning.code().code()).isEqualTo("gossip-key-unknown-from-peer");
+                assertThat(warning.code().level()).isEqualTo(org.pragmatica.utility.warning.WarningLevel.WARNING);
+            });
+
+            send(sender, swimPort, aesGcm(NODE_KEY, NODE_KEY_ID).encrypt("probe".getBytes(StandardCharsets.UTF_8)).unwrap());
+            awaitWarnings(published, 2);
+
+            assertThat(published).extracting(org.pragmatica.utility.warning.OperatorWarning::code)
+                                 .containsExactly(org.pragmatica.utility.warning.OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER,
+                                                  org.pragmatica.utility.warning.OperatorWarningCode.GOSSIP_KEY_PEER_DECRYPTED);
+            assertThat(published.get(1).code().code()).isEqualTo("gossip-key-peer-decrypted");
+            assertThat(published.get(1).code().level()).isEqualTo(org.pragmatica.utility.warning.WarningLevel.INFO);
+            assertThat(published.get(1).subject()).as("the recovery closes the same subject").isEqualTo(published.get(0).subject());
+        } finally {
+            detector.stop();
+        }
+    }
+
+    /// #1200 — feed 2 of a replacement's dial targets (feed 1 is pinned in `ReplacementDialMechanismTest`): SWIM seeding announces every configured
+    /// core as a discovered member the moment the protocol starts, without any datagram having decrypted. Removing it, and the configured-descriptor
+    /// seed, is what turns `EmberGossipKeyRotatedJoinTest` red.
+    @Test
+    void start_configuredCores_areSeededAsDiscoveredMembers_beforeAnyDatagramDecrypts() throws Exception {
+        var detector = detectorWithSwimPort(freeUdpPort());
+        var discovered = new java.util.concurrent.CopyOnWriteArrayList<NodeId>();
+
+        detector.addObservationListener(observation -> {
+            if (observation instanceof org.pragmatica.swim.SwimObservation.MemberDiscovered member) {
+                discovered.add(member.nodeInfo().id());
+            }
+        });
+
+        try {
+            assertThat(detector.start(Option.none(), GossipEncryptor.none()).await().isSuccess()).isTrue();
+            assertThat(discovered).as("the configured peer, announced as discovered, with nothing received").contains(PEER);
+            assertThat(discovered).as("never self").doesNotContain(SELF);
+        } finally {
+            detector.stop();
+        }
+    }
+
+    /// #1200 — feed 2, the peer-directory site (the cores the cluster published, which a node learns beyond its own `--peers`): a directory observed
+    /// BEFORE the start is seeded when the protocol starts, and one observed AFTER it is seeded at once. Neither needs a datagram to decrypt.
+    @Test
+    void peerDirectory_isSeededAsDiscoveredMembers_whetherObservedBeforeOrAfterTheStart() throws Exception {
+        var detector = detectorWithSwimPort(freeUdpPort());
+        var discovered = new java.util.concurrent.CopyOnWriteArrayList<NodeId>();
+        var before = new NodeId("node-3");
+        var after = new NodeId("node-4");
+
+        detector.addObservationListener(observation -> {
+            if (observation instanceof org.pragmatica.swim.SwimObservation.MemberDiscovered member) {
+                discovered.add(member.nodeInfo().id());
+            }
+        });
+        detector.observePeerDirectory(List.of(directoryEntry(before, 9003)));
+
+        try {
+            assertThat(detector.start(Option.none(), GossipEncryptor.none()).await().isSuccess()).isTrue();
+            assertThat(discovered).as("observed before the start").contains(before);
+
+            detector.observePeerDirectory(List.of(directoryEntry(before, 9003), directoryEntry(after, 9004)));
+
+            assertThat(discovered).as("observed after the start, seeded at once").contains(after);
+        } finally {
+            detector.stop();
+        }
+    }
+
+    private static NodeInfo directoryEntry(NodeId id, int port) {
+        return NodeInfo.nodeInfo(id, NodeAddress.nodeAddress("127.0.0.3", port).unwrap());
+    }
+
+    private static void send(DatagramSocket sender, int port, byte[] datagram) throws Exception {
+        sender.send(new DatagramPacket(datagram, datagram.length, InetAddress.getLoopbackAddress(), port));
+    }
+
+    private static void awaitWarnings(java.util.List<?> published, int expected) throws InterruptedException {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+
+        while (published.size() < expected && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+    }
+
     /// #1308 (rev1343 BLOCKING-1) — the node's start outcome is `formationUnlessSwimFails(formation,
     /// outcome)`: formation settles it, and a SWIM failure `startSwim` has already put into it wins
     /// over a later formation success. In a single-JVM host `failNode` only stops this node, whose
