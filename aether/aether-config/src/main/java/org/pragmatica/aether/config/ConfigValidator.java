@@ -238,6 +238,10 @@ public final class ConfigValidator {
         if (streaming.segmentDiskMaxBytes() < 0) {
             errors.add("streaming.segment_disk_max_bytes must be >= 0 (0 derives the cap from the filesystem). Got: " + streaming.segmentDiskMaxBytes());
         }
+        // #2258: 0 means "derive from the heap"; a negative cap has no meaning.
+        if (streaming.dhtSegmentMaxBytes() < 0) {
+            errors.add("streaming.dht_segment_max_bytes must be >= 0 (0 derives the cap from the maximum heap). Got: " + streaming.dhtSegmentMaxBytes());
+        }
     }
 
     /// `promotion_escape_after` (#2080) may not be below the alarm bounds it follows: the owner gate's (two SWIM suspect windows) and the

@@ -709,6 +709,35 @@ public enum OperatorWarningCode {
                                     "storage",
                                     WarningLevel.INFO,
                                     STREAM_SEGMENT_DELETE_FAILING),
+    /// A node's DHT engine holds 85% or more of its `[streaming] dht_segment_max_bytes` as live plus tombstone bytes of the
+    /// `stream-segments` prefix (#2258, spec 3.2 item 8). Tombstones are not capped but are heap, so they count here: this is a
+    /// heap warning, not a refusal. Raised once per episode. The subject is `node <nodeId> dht prefix stream-segments`. Closed by
+    /// [#STREAM_SEGMENT_DHT_NEAR_FULL_CLEARED].
+    STREAM_SEGMENT_DHT_NEAR_FULL("stream-segment-dht-near-full", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STREAM_SEGMENT_DHT_NEAR_FULL], same subject: live plus tombstone bytes fell below 80% of the cap.
+    STREAM_SEGMENT_DHT_NEAR_FULL_CLEARED("stream-segment-dht-near-full-cleared",
+                                         "storage",
+                                         WarningLevel.INFO,
+                                         STREAM_SEGMENT_DHT_NEAR_FULL),
+    /// A node's DHT engine refused a client put because it would take the live bytes of the `stream-segments` prefix above
+    /// `[streaming] dht_segment_max_bytes` (#2258, spec 3.2 item 8). The message names the cap, the usage and the refused size.
+    /// Raised once per episode, at the first refusal; seals that need this replica fail until space is freed. The subject is
+    /// `node <nodeId> dht prefix stream-segments`. Closed by [#STREAM_SEGMENT_DHT_FULL_CLEARED].
+    STREAM_SEGMENT_DHT_FULL("stream-segment-dht-full", "storage", WarningLevel.CRITICAL),
+    /// The recovery of [#STREAM_SEGMENT_DHT_FULL], same subject: live bytes fell below 85% of the cap.
+    STREAM_SEGMENT_DHT_FULL_CLEARED("stream-segment-dht-full-cleared",
+                                    "storage",
+                                    WarningLevel.INFO,
+                                    STREAM_SEGMENT_DHT_FULL),
+    /// The durable local-disk tier of the streams instance is at or above its warning ratio on this node (#2258, spec 3.2 item 8,
+    /// #1574): stream seals fail when it is full and owner publishes are refused from the refuse ratio. Raised once per episode.
+    /// The subject is `node <nodeId> storage streams`. Closed by [#STREAM_SEGMENT_DISK_PRESSURE_RELIEVED].
+    STREAM_SEGMENT_DISK_PRESSURE("stream-segment-disk-pressure", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STREAM_SEGMENT_DISK_PRESSURE], same subject: the tier fell below its warning ratio.
+    STREAM_SEGMENT_DISK_PRESSURE_RELIEVED("stream-segment-disk-pressure-relieved",
+                                          "storage",
+                                          WarningLevel.INFO,
+                                          STREAM_SEGMENT_DISK_PRESSURE),
     /// The recovery of [#JSON_CONFIG_REJECTED], same subject (#2378): a valid `[json]` configuration was adopted after a
     /// refusal. INFO, published only after a published rejection for the subject (#752 mechanism).
     JSON_CONFIG_APPLIED("json-config-applied", "json", WarningLevel.INFO, JSON_CONFIG_REJECTED),

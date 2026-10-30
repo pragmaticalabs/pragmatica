@@ -572,6 +572,12 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `stream-segment-unreadable-reclaimed` (INFO — the recovery, same subject: retention reclaimed the segment)
 - `stream-segment-delete-failing` (WARNING — a node's collection of released stream segments from the cluster-shared tier has failed for three consecutive runs: the DHT write quorum is unreachable or its removes fail. The released segments are already out of the node's index, but their blocks stay on disk and in the DHT, so usage does not fall while this lasts. Subject `node <nodeId> storage streams` (#2258))
 - `stream-segment-delete-recovered` (INFO — the recovery, same subject: a run completed with no failed delete)
+- `stream-segment-dht-near-full` (WARNING — a node's DHT engine holds 85% or more of `[streaming] dht_segment_max_bytes` as live plus tombstone bytes of `stream-segments`; tombstones are not capped but count here as heap. Subject `node <nodeId> dht prefix stream-segments` (#2258))
+- `stream-segment-dht-near-full-cleared` (INFO — the recovery, same subject: live plus tombstone bytes fell below 80% of the cap)
+- `stream-segment-dht-full` (CRITICAL — a node's DHT engine refused a client put for the cap on `stream-segments`; raised once per episode, at the first refusal, naming the cap, the usage and the refused size. Seals that need this replica fail. Subject `node <nodeId> dht prefix stream-segments` (#2258))
+- `stream-segment-dht-full-cleared` (INFO — the recovery, same subject: live bytes fell below 85% of the cap)
+- `stream-segment-disk-pressure` (WARNING — the durable local-disk tier of the streams instance is at or above its warning ratio on this node; once per episode. Subject `node <nodeId> storage streams` (#2258, #1574))
+- `stream-segment-disk-pressure-relieved` (INFO — the recovery, same subject: the tier fell below the warning ratio)
 - `backup-stop-flush-failed` (WARNING — the final KV-backup flush of a graceful stop failed or overran its deadline, so changes inside the backup's debounce window are not in the backup; `subject` is `kv-backup`; the stop itself proceeds; closed by `backup-stop-flush-recovered`)
 - `backup-stop-flush-recovered` (INFO — the recovery: a later flush of this node's backup succeeded after its stop-time flush had failed, in this or a later process; a marker file `<backup path>/kv-backup.stop-flush-failed` carries the open state across the restart, and is removed when this is raised; if that node never leads again the marker stays and no recovery is raised)
 
