@@ -86,6 +86,14 @@ class CheckpointFrameTest {
         assertThat(CheckpointFrame.unframe(7L, snapshot).snapshot()).isEqualTo(snapshot);
     }
 
+    /// A block shorter than the header (an rc5 snapshot of an empty fold is 5 bytes) reads as before.
+    @Test
+    void aShortBlockWithoutTheHeader_readsAsBefore() {
+        var snapshot = new byte[] {1, 0, 0, 0, 0};
+
+        assertThat(CheckpointFrame.unframe(7L, snapshot).snapshot()).isEqualTo(snapshot);
+    }
+
     /// A header whose keyspace length does not fit the block is not stripped: the block is returned whole (and fails to decode later).
     @Test
     void aHeaderThatDoesNotParse_leavesTheBlockWhole() {
