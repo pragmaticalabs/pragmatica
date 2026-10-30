@@ -33,8 +33,15 @@ public record MetadataSnapshot(long epoch,
     /// An optional trailing field of a lifecycle line, written ONLY for a record that carries the flag. A
     /// line without it is byte-for-byte what the encoder wrote before flags existed, so a snapshot from before
     /// them still hashes the same, still validates and still restores; the flag costs ordinary records nothing.
+    ///
+    /// Several flags share the field, joined by `,`. The shared-delete flags (#2258) are written only for a record whose
+    /// last released reference carried that authority, so a snapshot of records without it is unchanged. A build that
+    /// predates a flag refuses the snapshot holding it ([DefaultSnapshotManager] reads an unknown flag as a failure) and
+    /// falls back to an older retained one: a downgrade does not restore a record it cannot read the meaning of.
     enum LineFlag {
-        CACHE_ONLY
+        CACHE_ONLY,
+        SHARED_DELETE_AUTHORISED,
+        SHARED_DELETE_IF_IDENTIFIED
     }
 
     /// Defensive copies. The refs copy keeps iteration order: the file order IS the hashed order, so a
@@ -102,11 +109,29 @@ public record MetadataSnapshot(long epoch,
           .append(lifecycle.accessCount())
           .append('|')
           .append(lifecycle.orphanedAt());
+        var flags = lineFlags(lifecycle);
 
-        return lifecycle.cacheOnly()
-               ? sb.append('|')
-                   .append(LineFlag.CACHE_ONLY.name())
-               : sb;
+        return flags.isEmpty()
+               ? sb
+               : sb.append('|')
+                   .append(String.join(",", flags));
+    }
+
+    /// The flags a lifecycle line carries, in the order the encoder writes them ([SnapshotReadBack] checks them).
+    static List<String> lineFlags(BlockLifecycle lifecycle) {
+        var flags = new java.util.ArrayList<String>(2);
+
+        if (lifecycle.cacheOnly()) {
+            flags.add(LineFlag.CACHE_ONLY.name());
+        }
+
+        switch (lifecycle.sharedDelete()) {
+            case AUTHORISED -> flags.add(LineFlag.SHARED_DELETE_AUTHORISED.name());
+            case IF_IDENTIFIED -> flags.add(LineFlag.SHARED_DELETE_IF_IDENTIFIED.name());
+            case NONE -> {}
+        }
+
+        return flags;
     }
 
     private static StringBuilder appendRefLine(StringBuilder sb, String name, BlockId id) {

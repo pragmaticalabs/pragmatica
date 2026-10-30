@@ -266,7 +266,7 @@ grep -i "slice\|artifact" /var/log/aether/aether.log | tail -100
 **Actions:**
 
 1. Check that the node is in the cluster and has caught up: a node that applies the committed config resumes on the next pass, and `stream-retention-resumed` (INFO, same subject) follows.
-2. If the stream was destroyed while this node was down, its segments stay withheld on this node: the footprint sweep that reclaims them ships later (#2201 PR-0b part 2); until then the disk they hold is not reclaimed.
+2. If the stream was destroyed while this node was down, its segments stay withheld on this node, and so does the disk they hold: a node cannot yet tell a destroyed life from an orphaned one that holds acknowledged data, so it keeps both and announces them (`know:` `d19f755873`; retirement records, PR-8j/#2458, will let it reclaim the destroyed ones).
 3. If the mode is unknown to the build, upgrade the node to the build the rest of the cluster runs.
 
 ### Stream Segment Unreadable (`stream-segment-unreadable`)
@@ -280,6 +280,18 @@ grep -i "slice\|artifact" /var/log/aether/aether.log | tail -100
 1. Read the message: it names the segment and the read failure. Segment encryption is not wired in this release (#253), so the cause is in practice a damaged or missing block.
 2. The range is lost on this node; another holder of the partition may still serve it. Check the node's stream storage directory and disk for errors.
 3. Nothing needs to be done for retention: `stream-segment-unreadable-reclaimed` (INFO, same subject) follows when retention drops the segment.
+
+### Stream Segment Deletes Failing (`stream-segment-delete-failing`)
+
+**Symptoms:** a WARNING `OPERATOR_WARNING` with `details.code` `stream-segment-delete-failing`, subject `node <nodeId> storage streams`; the node's stream disk and the DHT's memory stop shrinking although retention keeps releasing segments.
+
+**Cause:** retention released expired segments, and the node's collection run, which deletes their blocks from every tier with the cluster-shared DHT first, has failed for three consecutive runs (one per minute). The DHT write quorum is unreachable, or its removes fail. Shared first means a failed run leaves the node's private copies too, and retries the whole delete on the next run. Readers are not affected: the released ranges are already out of the index and answer `CursorExpired`.
+
+**Actions:**
+
+1. Check DHT health: quorum, member reachability, and the node's DHT error logs.
+2. Restore the DHT; the next run deletes the backlog (up to 10,000 blocks per run), and `stream-segment-delete-recovered` (INFO, same subject) follows.
+3. If disk or heap pressure builds meanwhile, it is these released blocks; nothing else needs to be done for them.
 
 ### Stream Consumer Behind the Ring (`stream-consumer-behind-ring`)
 

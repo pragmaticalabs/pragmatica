@@ -33,7 +33,9 @@ import org.pragmatica.storage.EncryptionError;
 import org.pragmatica.storage.SnapshotManager;
 import org.pragmatica.storage.StorageError;
 import org.pragmatica.storage.StorageGarbageCollector;
+import org.pragmatica.storage.SharedDelete;
 import org.pragmatica.storage.StorageInstance;
+import org.pragmatica.storage.TierScope;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.utility.warning.OperatorWarnings;
@@ -113,6 +115,8 @@ public final class RetentionEnforcer implements AutoCloseable {
     private final Map<String, Integer> withheldPasses = new ConcurrentHashMap<>();
     private volatile OperatorWarningSink operatorWarnings = OperatorWarningSink.logOnly();
     private volatile String nodeId = "local";
+    /// The run that deletes the segments this enforcer released from every tier (#2258); started and closed with it.
+    private volatile Option<SharedSegmentCollection> sharedCollection = none();
     /// The pass in flight, or [#IDLE] (#1616 R2).
     private final AtomicReference<Promise<Integer>> passInFlight = new AtomicReference<>(IDLE);
     private final AtomicBoolean closed = new AtomicBoolean(false);
@@ -287,6 +291,21 @@ public final class RetentionEnforcer implements AutoCloseable {
     public void operatorWarnings(OperatorWarningSink sink, String nodeId) {
         this.operatorWarnings = sink;
         this.nodeId = nodeId;
+        sharedCollection.onPresent(collection -> collection.operatorWarnings(sink, nodeId));
+    }
+
+    /// The shared-tier collection of the segments this enforcer releases (#2258), started and closed with this enforcer, so
+    /// a node runs both from node start to node stop. Set before [#start].
+    @Contract
+    public void sharedCollection(SharedSegmentCollection collection) {
+        collection.operatorWarnings(operatorWarnings, nodeId);
+        this.sharedCollection = some(collection);
+    }
+
+    /// Whether the shared-tier collection is scheduled alongside this enforcer.
+    public boolean isCollectingShared() {
+        return sharedCollection.filter(SharedSegmentCollection::isScheduled)
+                               .isPresent();
     }
 
     /// As above with the durability and relief steps supplied directly -- for tests that inject a failing or
@@ -322,6 +341,7 @@ public final class RetentionEnforcer implements AutoCloseable {
         }
 
         scheduledFuture = SharedScheduler.scheduleAtFixedRate(this::enforce, interval);
+        sharedCollection.onPresent(SharedSegmentCollection::start);
         log.info("RetentionEnforcer started with interval={}ms, defaultAgeMs={}", interval.millis(), defaultAgeMs);
     }
 
@@ -337,6 +357,7 @@ public final class RetentionEnforcer implements AutoCloseable {
     public void close() {
         if (closed.compareAndSet(false, true)) {
             option(scheduledFuture).onPresent(f -> f.cancel(false));
+            sharedCollection.onPresent(SharedSegmentCollection::close);
             log.info("RetentionEnforcer stopped");
         }
     }
@@ -590,9 +611,10 @@ public final class RetentionEnforcer implements AutoCloseable {
         if (plan.through() <= index.reclaimedThrough(plan.streamName(), plan.partition())) {
             return Promise.success(plan);
         }
-
+        // #2258: a floor is a fact of this node, read back from its ref NAME only, so its block stays on private tiers.
         return storage.putRef(plan.floorRef(plan.through()),
-                              encodeFloor(plan.through()))
+                              encodeFloor(plan.through()),
+                              TierScope.PRIVATE)
                       .map(_ -> plan)
                       .onFailure(cause -> logFloorWriteFailure(plan, cause));
     }
@@ -611,15 +633,28 @@ public final class RetentionEnforcer implements AutoCloseable {
         }
 
         var previous = index.reclaimedThrough(plan.streamName(), plan.partition());
+        var released = 0;
+        var through = previous;
 
-        plan.expired().forEach(ref -> removeSegment(plan.streamName(), plan.partition(), ref));
-        index.recordReclaimed(plan.streamName(), plan.incarnation(), plan.partition(), plan.through());
-        if (previous >= 0 && previous < plan.through()) {
+        for (var ref : plan.expired()) {
+            if (!releaseSegment(plan.streamName(), plan.partition(), ref)) {
+                break;
+            }
+
+            released++;
+            through = ref.endOffset();
+        }
+
+        if (released == 0) {
+            return 0;
+        }
+
+        index.recordReclaimed(plan.streamName(), plan.incarnation(), plan.partition(), through);
+        if (previous >= 0 && previous < through) {
             dropFloor(plan, previous);
         }
 
-        return plan.expired()
-                   .size();
+        return released;
     }
 
     @Contract
@@ -771,7 +806,12 @@ public final class RetentionEnforcer implements AutoCloseable {
     private Unit recordLearned(SegmentIndex.PartitionKey key,
                                SegmentIndex.SegmentRef ref,
                                SegmentReader.SegmentFacts facts) {
-        index.recordLearned(key.streamName(), key.partition(), ref.startOffset(), facts.maxTimestamp(), facts.size());
+        index.recordLearned(key.streamName(),
+                            key.partition(),
+                            ref.startOffset(),
+                            facts.maxTimestamp(),
+                            facts.size(),
+                            facts.identity());
 
         return unit();
     }
@@ -870,16 +910,33 @@ public final class RetentionEnforcer implements AutoCloseable {
                              .collect(java.util.stream.Collectors.toUnmodifiableSet());
     }
 
-    /// Drops the segment's REF, never its block (#1604). Blocks are content-addressed and the segment encoding
-    /// carries no stream or partition, so identical events in two partitions share one block; deleting it by id
-    /// took the other partition's in-retention data with it. The dropped ref gives back its reference, and the
-    /// block goes when none is left, through the storage garbage collector -- the single delete path, which
-    /// never touches a cluster-shared tier.
-    private void removeSegment(String streamName, int partition, SegmentIndex.SegmentRef ref) {
+    /// Releases a reclaimed segment (#2258, spec 3.2 item 6): out of the index first, so a reader that consults the index
+    /// afterwards answers `CursorExpired` instead of meeting a missing block, then its ref, with the shared-delete authority
+    /// its identity mark allows ([#authorityOf]). The block itself goes later, in the collector, once the release is in a
+    /// durable snapshot; this never deletes a block. A release that fails (node-local metadata) puts the segment back and
+    /// ends the partition's pass there, so retention leaves no interior gap.
+    private boolean releaseSegment(String streamName, int partition, SegmentIndex.SegmentRef ref) {
         var refName = index.refNameOf(streamName, partition, ref);
 
-        storage.deleteRef(refName).onFailure(cause -> logDeleteFailure(streamName, partition, ref, cause));
         index.removeSegment(streamName, partition, ref.startOffset());
+        // deleteRef changes node-local metadata only and settles at once on the production instance.
+        var released = storage.deleteRef(refName, authorityOf(ref)).await();
+
+        if (released.isFailure()) {
+            index.addSegment(streamName,
+                             partition,
+                             ref.startOffset(),
+                             ref.endOffset(),
+                             ref.maxTimestamp(),
+                             ref.compressionOrdinal(),
+                             ref.encrypted(),
+                             ref.originalSize(),
+                             ref.identity());
+            released.onFailure(cause -> logDeleteFailure(streamName, partition, ref, cause));
+
+            return false;
+        }
+
         if (unreadableAges.remove(PendingAge.idOf(streamName, partition, ref))) {
             OperatorWarnings.raise(log,
                                    operatorWarnings,
@@ -894,16 +951,31 @@ public final class RetentionEnforcer implements AutoCloseable {
                                    ref.endOffset());
         }
 
-        log.debug("Removed expired segment {}/{}:[{}-{}] maxTimestamp={}",
+        log.debug("Released expired segment {}/{}:[{}-{}] maxTimestamp={} identity={}",
                   streamName,
                   partition,
                   ref.startOffset(),
                   ref.endOffset(),
-                  ref.maxTimestamp());
+                  ref.maxTimestamp(),
+                  ref.identity());
+
+        return true;
+    }
+
+    /// The shared-delete authority a segment's release carries: one this build sealed, or learned to carry the identity
+    /// header, is [SharedDelete#AUTHORISED]; one whose block has not been read since a restart is
+    /// [SharedDelete#IF_IDENTIFIED] (the collector reads it); one learned to predate the header is never deleted from the
+    /// shared tier, because another partition's identical events could share its block.
+    static SharedDelete authorityOf(SegmentIndex.SegmentRef ref) {
+        return switch (ref.identity()) {
+            case IDENTIFIED -> SharedDelete.AUTHORISED;
+            case UNKNOWN -> SharedDelete.IF_IDENTIFIED;
+            case LEGACY -> SharedDelete.NONE;
+        };
     }
 
     private static void logDeleteFailure(String streamName, int partition, SegmentIndex.SegmentRef ref, Cause cause) {
-        log.warn("Failed to drop the ref of expired segment {}/{}:[{}-{}]: {}",
+        log.warn("Failed to release the ref of expired segment {}/{}:[{}-{}]; it stays and the partition's pass stops: {}",
                  streamName,
                  partition,
                  ref.startOffset(),

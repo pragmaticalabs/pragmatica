@@ -109,7 +109,10 @@ public interface MetadataStore {
     @Contract
     void restoreLifecycles(List<BlockLifecycle> entries);
 
-    /// Restore named references from a snapshot (bulk load).
+    /// Restore named references from a snapshot (bulk load), after [#restoreLifecycles]. A record a restored reference names
+    /// loses any shared-delete authority (#2258, review R32D-13): the snapshot captures records before references, so a
+    /// re-credit between the two captures can leave a flagged "orphan" that a reference names, and the collector would
+    /// otherwise delete its shared copy.
     @Contract
     void restoreRefs(Map<String, BlockId> refs);
 
