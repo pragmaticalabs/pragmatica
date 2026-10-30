@@ -24,6 +24,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+
 
 /// The per-prefix byte accounting of a DHT engine (#2258, spec 3.2 item 7): two counters for each prefix of a registered
 /// table, live value bytes and tombstone bytes, the cap of the bounded prefix, and the transitions of that prefix reported to
@@ -80,11 +82,14 @@ public final class DhtPrefixAccounting {
     private final AtomicBoolean nearFull = new AtomicBoolean();
     private final AtomicBoolean full = new AtomicBoolean();
     private final AtomicLong refusedPuts = new AtomicLong();
+
     private final AtomicReference<DhtCapacityListener> listener = new AtomicReference<>(DhtCapacityListener.NONE);
+
+    private final Bucket streamSegments = Bucket.bucket(STREAM_SEGMENTS);
 
     private DhtPrefixAccounting(long streamSegmentsMaxBytes) {
         this.streamSegmentsMaxBytes = streamSegmentsMaxBytes;
-        registered.add(Bucket.bucket(STREAM_SEGMENTS));
+        registered.add(streamSegments);
         registered.add(Bucket.bucket(ARTIFACTS));
     }
 
@@ -101,7 +106,8 @@ public final class DhtPrefixAccounting {
     /// Adds `prefix` to the registered table; a prefix already registered stays as it is.
     @Contract
     public void register(String prefix) {
-        if (registered.stream().noneMatch(bucket -> bucket.name().equals(prefix))) {
+        if (registered.stream().noneMatch(bucket -> bucket.name()
+                                                          .equals(prefix))) {
             registered.add(Bucket.bucket(prefix));
         }
     }
@@ -124,12 +130,16 @@ public final class DhtPrefixAccounting {
 
     /// Live value bytes under `prefix`; 0 for a prefix that is neither registered nor [#OTHER].
     public long usedBytes(String prefix) {
-        return find(prefix).map(bucket -> bucket.live().get()).orElse(0L);
+        return find(prefix).map(bucket -> bucket.live()
+                                                .get())
+                   .or(0L);
     }
 
     /// Tombstone bytes under `prefix`; 0 for a prefix that is neither registered nor [#OTHER].
     public long tombstoneBytes(String prefix) {
-        return find(prefix).map(bucket -> bucket.tombstone().get()).orElse(0L);
+        return find(prefix).map(bucket -> bucket.tombstone()
+                                                .get())
+                   .or(0L);
     }
 
     /// The cap on the live bytes of `prefix`; [#UNBOUNDED] for every prefix but [#STREAM_SEGMENTS].
@@ -144,10 +154,11 @@ public final class DhtPrefixAccounting {
         return refusedPuts.get();
     }
 
-    private java.util.Optional<Bucket> find(String prefix) {
+    private Option<Bucket> find(String prefix) {
         return OTHER.equals(prefix)
-               ? java.util.Optional.of(other)
-               : registered.stream().filter(bucket -> bucket.name().equals(prefix)).findFirst();
+               ? Option.some(other)
+               : Option.from(registered.stream().filter(bucket -> bucket.name()
+                                                                        .equals(prefix)).findFirst());
     }
 
     private Bucket bucketOf(byte[] key) {
@@ -216,14 +227,14 @@ public final class DhtPrefixAccounting {
             return;
         }
 
-        var bucket = find(STREAM_SEGMENTS).orElseThrow();
-        var live = bucket.live().get();
-        var tombstones = bucket.tombstone().get();
+        var live = streamSegments.live().get();
+        var tombstones = streamSegments.tombstone().get();
         var total = live + tombstones;
 
         if (total >= percentOf(streamSegmentsMaxBytes, NEAR_FULL_PERCENT) && nearFull.compareAndSet(false, true)) {
             listener.get().nearFull(STREAM_SEGMENTS, live, tombstones, streamSegmentsMaxBytes);
-        } else if (total < percentOf(streamSegmentsMaxBytes, NEAR_FULL_CLEARED_PERCENT) && nearFull.compareAndSet(true, false)) {
+        } else if (total < percentOf(streamSegmentsMaxBytes, NEAR_FULL_CLEARED_PERCENT) && nearFull.compareAndSet(true,
+                                                                                                                  false)) {
             listener.get().nearFullCleared(STREAM_SEGMENTS, live, tombstones, streamSegmentsMaxBytes);
         }
 

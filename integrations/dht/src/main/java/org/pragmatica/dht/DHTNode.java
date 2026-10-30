@@ -1021,7 +1021,6 @@ public final class DHTNode {
 
             return;
         }
-
         // a client put over the cap is refused by the engine and stores nothing; the writer's `repair` mark lifts the cap for the
         // re-homing of a copy a client already holds (#2258)
         storage.putVersioned(request.key(),

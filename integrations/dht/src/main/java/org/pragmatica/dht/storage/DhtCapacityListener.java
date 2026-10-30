@@ -15,35 +15,46 @@
  */
 package org.pragmatica.dht.storage;
 
+import org.pragmatica.lang.Contract;
+
+
 /// Where a node's DHT engine reports the transitions of its bounded prefix (#2258, spec 3.2 items 7 and 8). The engine reports
 /// each transition once, when it happens, never per put: an episode of near-full or of refusal is one `nearFull` or `full` and
 /// the call that closes it. The listener is the only seam between the engine and the operator-warning types, which this module
 /// does not depend on.
 public interface DhtCapacityListener {
     /// Live plus tombstone bytes of `prefix` first reached the warning ratio of its cap.
+    @Contract
     void nearFull(String prefix, long liveBytes, long tombstoneBytes, long maxBytes);
 
     /// Live plus tombstone bytes of `prefix` fell below the clearing ratio of its cap.
+    @Contract
     void nearFullCleared(String prefix, long liveBytes, long tombstoneBytes, long maxBytes);
 
     /// The first client put of an episode was refused for capacity: `refusedBytes` is its size.
+    @Contract
     void full(String prefix, long usedBytes, long maxBytes, long refusedBytes);
 
     /// Live bytes of `prefix` fell below the warning ratio of its cap, which ends the refusal episode.
+    @Contract
     void fullCleared(String prefix, long usedBytes, long maxBytes);
 
     /// The listener of an engine nobody listens to.
     DhtCapacityListener NONE = new DhtCapacityListener() {
         @Override
+        @Contract
         public void nearFull(String prefix, long liveBytes, long tombstoneBytes, long maxBytes) {}
 
         @Override
+        @Contract
         public void nearFullCleared(String prefix, long liveBytes, long tombstoneBytes, long maxBytes) {}
 
         @Override
+        @Contract
         public void full(String prefix, long usedBytes, long maxBytes, long refusedBytes) {}
 
         @Override
+        @Contract
         public void fullCleared(String prefix, long usedBytes, long maxBytes) {}
     };
 }

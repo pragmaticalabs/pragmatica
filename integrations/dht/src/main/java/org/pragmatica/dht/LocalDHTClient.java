@@ -62,7 +62,8 @@ public final class LocalDHTClient implements DHTClient {
     /// Get the underlying node.
     @Override
     public LocalUsage localUsage(String prefix) {
-        return new LocalUsage(node.storage().usedBytes(prefix), node.storage().maxBytes(prefix));
+        return new LocalUsage(node.storage().usedBytes(prefix),
+                              node.storage().maxBytes(prefix));
     }
 
     public DHTNode node() {

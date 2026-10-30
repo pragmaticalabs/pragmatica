@@ -369,7 +369,8 @@ public final class DistributedDHTClient implements DHTClient {
 
     @Override
     public LocalUsage localUsage(String prefix) {
-        return new LocalUsage(node.storage().usedBytes(prefix), node.storage().maxBytes(prefix));
+        return new LocalUsage(node.storage().usedBytes(prefix),
+                              node.storage().maxBytes(prefix));
     }
 
     @Override
@@ -447,9 +448,7 @@ public final class DistributedDHTClient implements DHTClient {
                       .fold(result -> result.fold(cause -> afterFailedWrite(key,
                                                                             stamp,
                                                                             localPut,
-                                                                            refinedPutFailure(cause,
-                                                                                              quorum,
-                                                                                              collector)),
+                                                                            refinedPutFailure(cause, quorum, collector)),
                                                   Promise::success))
                       .withFailure(cause -> noteIfStale(cause, stamp))
                       .withSuccess(_ -> clearIfNoReplicaRefusedAsStale(collector))
@@ -1450,10 +1449,10 @@ public final class DistributedDHTClient implements DHTClient {
         var _ = network.sendOutcome(target, message)
                        .onSuccess(outcome -> {
                                       if (!outcome.isSent()) {
-                                      failOwnedSlot(correlationId,
-                                                    collector,
-                                                    toCause(outcome));
-                                  }
+                                          failOwnedSlot(correlationId,
+                                                        collector,
+                                                        toCause(outcome));
+                                      }
                                   })
                        .onFailure(cause -> failOwnedSlot(correlationId, collector, cause));
     }

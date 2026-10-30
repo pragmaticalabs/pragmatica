@@ -188,7 +188,17 @@ public sealed interface DHTMessage extends ProtocolMessage {
 
         /// The refusal of a put that would take the replica above its cap.
         public static PutResponse capacityRefusal(String requestId, NodeId sender, long usedBytes, long maxBytes) {
-            return new PutResponse(requestId, sender, false, false, false, false, false, false, true, usedBytes, maxBytes);
+            return new PutResponse(requestId,
+                                   sender,
+                                   false,
+                                   false,
+                                   false,
+                                   false,
+                                   false,
+                                   false,
+                                   true,
+                                   usedBytes,
+                                   maxBytes);
         }
     }
 

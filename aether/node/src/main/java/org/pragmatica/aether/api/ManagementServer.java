@@ -844,9 +844,7 @@ class ManagementServerImpl implements ManagementServer {
     /// count toward the near-full warning; the cap of `stream-segments`; and the client puts refused for it. The labels are
     /// bounded by the engine's registered table.
     private void registerDhtPrefixMetrics() {
-        nodeSupplier.get()
-                    .dhtNode()
-                    .onPresent(this::registerDhtPrefixGauges);
+        nodeSupplier.get().dhtNode().onPresent(this::registerDhtPrefixGauges);
     }
 
     private void registerDhtPrefixGauges(DHTNode dht) {
@@ -854,12 +852,12 @@ class ManagementServerImpl implements ManagementServer {
 
         storage.accountedPrefixes()
                .forEach(prefix -> {
-                   Supplier<Number> live = () -> storage.usedBytes(prefix);
-                   Supplier<Number> tombstones = () -> storage.tombstoneBytes(prefix);
+                            Supplier<Number> live = () -> storage.usedBytes(prefix);
+                            Supplier<Number> tombstones = () -> storage.tombstoneBytes(prefix);
 
-                   observability.gauge("aether.dht.prefix.bytes", live, "prefix", prefix);
-                   observability.gauge("aether.dht.prefix.tombstone.bytes", tombstones, "prefix", prefix);
-               });
+                            observability.gauge("aether.dht.prefix.bytes", live, "prefix", prefix);
+                            observability.gauge("aether.dht.prefix.tombstone.bytes", tombstones, "prefix", prefix);
+                        });
         Supplier<Number> cap = () -> storage.maxBytes(DhtPrefixAccounting.STREAM_SEGMENTS);
         Supplier<Number> refused = storage::refusedPuts;
 

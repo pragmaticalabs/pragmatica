@@ -569,12 +569,9 @@ public interface AetherNode extends ManageableNode {
         // #2258: the engine counts its bytes per prefix and refuses client puts above `[streaming] dht_segment_max_bytes` on
         // `stream-segments`; the `<name>-blocks` of every configured instance join the registered prefixes
         var dhtAccounting = DhtPrefixAccounting.dhtPrefixAccounting(config.streaming()
-                                                                          .effectiveDhtSegmentMaxBytes(Runtime.getRuntime()
-                                                                                                              .maxMemory()));
+                                                                          .effectiveDhtSegmentMaxBytes(Runtime.getRuntime().maxMemory()));
 
-        config.storageConfig()
-              .keySet()
-              .forEach(name -> dhtAccounting.register(name + "-blocks"));
+        config.storageConfig().keySet().forEach(name -> dhtAccounting.register(name + "-blocks"));
         var dhtStorage = MemoryStorageEngine.memoryStorageEngine(HighWaterOwnerEpochGate.highWaterOwnerEpochGate(ownershipEpochHighWater,
                                                                                                                  BootstrapModule.CORE_PARTITION_ID),
                                                                  dhtAccounting);

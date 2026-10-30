@@ -119,11 +119,13 @@ public final class MemoryStorageEngine implements StorageEngine {
         var incoming = versionedEntry(value.clone(), 0L, 0L, 0L, 0L, false);
         var refused = new AtomicLong();
 
-        data.compute(bkey, (_, existing) -> accepted(bkey, existing, incoming, true, refused)
-                                            ? incoming
-                                            : existing);
+        data.compute(bkey,
+                     (_, existing) -> accepted(bkey, existing, incoming, true, refused)
+                                      ? incoming
+                                      : existing);
 
-        return concluded(refused, Promise.success(Unit.unit()));
+        return concluded(refused,
+                         Promise.success(Unit.unit()));
     }
 
     @Override
@@ -150,7 +152,12 @@ public final class MemoryStorageEngine implements StorageEngine {
 
         var refused = new AtomicLong();
         var written = storeVersioned(key,
-                                     versionedEntry(value.clone(), version, epochIncarnation, epochTerm, epochCounter, false),
+                                     versionedEntry(value.clone(),
+                                                    version,
+                                                    epochIncarnation,
+                                                    epochTerm,
+                                                    epochCounter,
+                                                    false),
                                      true,
                                      true,
                                      !repair,
@@ -210,8 +217,8 @@ public final class MemoryStorageEngine implements StorageEngine {
         return concluded(refused,
                          Promise.success(new Displaced(written,
                                                        written
-                                                       ? Option.option(displaced.get())
-                                                               .map(entry -> toKeyValue(new ByteArrayKey(key), entry))
+                                                       ? Option.option(displaced.get()).map(entry -> toKeyValue(new ByteArrayKey(key),
+                                                                                                                entry))
                                                        : Option.none())));
     }
 
@@ -246,7 +253,12 @@ public final class MemoryStorageEngine implements StorageEngine {
                                        long epochTerm,
                                        long epochCounter) {
         return settled(storeVersioned(key,
-                                      versionedEntry(value.clone(), version, epochIncarnation, epochTerm, epochCounter, false),
+                                      versionedEntry(value.clone(),
+                                                     version,
+                                                     epochIncarnation,
+                                                     epochTerm,
+                                                     epochCounter,
+                                                     false),
                                       false,
                                       true,
                                       false,
@@ -282,7 +294,8 @@ public final class MemoryStorageEngine implements StorageEngine {
             .stream()
             .filter(key -> inPartition(ring, key, partition))
             .toList()
-            .forEach(key -> data.computeIfPresent(key, (_, existing) -> dropped(key, existing, dropped)));
+            .forEach(key -> data.computeIfPresent(key,
+                                                  (_, existing) -> dropped(key, existing, dropped)));
 
         return settled(dropped.get());
     }
@@ -344,7 +357,6 @@ public final class MemoryStorageEngine implements StorageEngine {
                                             long epochTerm,
                                             long epochCounter) {
         var removed = new AtomicBoolean(false);
-
         var bkey = new ByteArrayKey(key);
 
         data.computeIfPresent(bkey,
@@ -368,7 +380,6 @@ public final class MemoryStorageEngine implements StorageEngine {
                                              long epochCounter,
                                              Option<DHTMessage.KeyValue> prior) {
         var restored = new AtomicBoolean(false);
-
         var bkey = new ByteArrayKey(key);
 
         data.computeIfPresent(bkey,
@@ -508,8 +519,11 @@ public final class MemoryStorageEngine implements StorageEngine {
                              VersionedEntry after,
                              boolean client,
                              AtomicLong refused) {
-        var liveDelta = liveOf(after) - liveOf(before);
-        var admitted = accounting.apply(key.data(), liveDelta, tombstoneOf(key, after) - tombstoneOf(key, before), client);
+        var liveDelta = liveOf(Option.option(after)) - liveOf(Option.option(before));
+        var admitted = accounting.apply(key.data(),
+                                        liveDelta,
+                                        tombstoneOf(key, Option.option(after)) - tombstoneOf(key, Option.option(before)),
+                                        client);
 
         if (!admitted) {
             refused.set(liveDelta);
@@ -523,24 +537,24 @@ public final class MemoryStorageEngine implements StorageEngine {
     private VersionedEntry changed(ByteArrayKey key, VersionedEntry before, VersionedEntry after) {
         if (after != before) {
             accounting.apply(key.data(),
-                             liveOf(after) - liveOf(before),
-                             tombstoneOf(key, after) - tombstoneOf(key, before),
+                             liveOf(Option.option(after)) - liveOf(Option.option(before)),
+                             tombstoneOf(key, Option.option(after)) - tombstoneOf(key, Option.option(before)),
                              false);
         }
 
         return after;
     }
 
-    private static long liveOf(VersionedEntry entry) {
-        return entry == null || entry.tombstone()
-               ? 0L
-               : entry.value().length;
+    private static long liveOf(Option<VersionedEntry> entry) {
+        return entry.filter(VersionedEntry::live)
+                    .map(live -> (long) live.value().length)
+                    .or(0L);
     }
 
-    private static long tombstoneOf(ByteArrayKey key, VersionedEntry entry) {
-        return entry != null && entry.tombstone()
-               ? (long) key.data().length + DhtPrefixAccounting.TOMBSTONE_OVERHEAD_BYTES
-               : 0L;
+    private static long tombstoneOf(ByteArrayKey key, Option<VersionedEntry> entry) {
+        return entry.filter(VersionedEntry::tombstone)
+                    .map(_ -> (long) key.data().length + DhtPrefixAccounting.TOMBSTONE_OVERHEAD_BYTES)
+                    .or(0L);
     }
 
     /// A write is over: the transitions its change made are reported and, if the cap refused it, so is the refusal.
@@ -550,12 +564,12 @@ public final class MemoryStorageEngine implements StorageEngine {
         if (refusedBytes > 0) {
             accounting.refused(refusedBytes);
         }
+
         accounting.settle();
 
         return refusedBytes > 0
                ? DHTError.replicaFull(usedBytes(DhtPrefixAccounting.STREAM_SEGMENTS),
-                                      maxBytes(DhtPrefixAccounting.STREAM_SEGMENTS))
-                         .promise()
+                                      maxBytes(DhtPrefixAccounting.STREAM_SEGMENTS)).promise()
                : accepted;
     }
 
@@ -675,8 +689,7 @@ public final class MemoryStorageEngine implements StorageEngine {
 
     /// Every entry removed in a per-key step of its own, so the counters leave with the entries.
     private Promise<Unit> emptied() {
-        data.keySet()
-            .forEach(key -> data.computeIfPresent(key, (_, existing) -> changed(key, existing, null)));
+        data.keySet().forEach(key -> data.computeIfPresent(key, (_, existing) -> changed(key, existing, null)));
 
         return settled(Unit.unit());
     }

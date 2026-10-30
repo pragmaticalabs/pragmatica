@@ -437,8 +437,8 @@ public final class RetentionEnforcer implements AutoCloseable {
                                    OperatorWarningCode.STREAM_SEGMENT_DISK_PRESSURE,
                                    pressureSubject(),
                                    "Durable stream segment tier is {}% full on this node (warning at {}%): stream seals fail when it "
-                                   + "is full and owner publishes are refused (SEGMENT_TIER_FULL) from {}%. Raise [streaming] "
-                                   + "segment_disk_max_bytes or add disk, or shorten retention",
+                                  + "is full and owner publishes are refused (SEGMENT_TIER_FULL) from {}%. Raise [streaming] "
+                                  + "segment_disk_max_bytes or add disk, or shorten retention",
                                    Math.round(utilization * 100),
                                    Math.round(SegmentTierPressure.WARN_AT * 100),
                                    Math.round(SegmentTierPressure.REFUSE_AT * 100));

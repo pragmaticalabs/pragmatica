@@ -168,8 +168,9 @@ public final class DhtStorageTier implements StorageTier {
 
     @Override
     public Promise<Unit> put(BlockId id, byte[] content) {
-        return admission().flatMap(_ -> dhtClient.put(buildKey(id), content))
-                          .mapError(DhtStorageTier::tierFullOnCapacity);
+        return admission().flatMap(_ -> dhtClient.put(buildKey(id),
+                                                      content))
+                        .mapError(DhtStorageTier::tierFullOnCapacity);
     }
 
     /// A put the DHT refused for capacity is the tier being full (#2258, spec 3.2 item 7): the instance treats it as it does a
@@ -206,12 +207,14 @@ public final class DhtStorageTier implements StorageTier {
 
     @Override
     public long usedBytes() {
-        return dhtClient.localUsage(keyPrefix).usedBytes();
+        return dhtClient.localUsage(keyPrefix)
+                        .usedBytes();
     }
 
     @Override
     public long maxBytes() {
-        return dhtClient.localUsage(keyPrefix).maxBytes();
+        return dhtClient.localUsage(keyPrefix)
+                        .maxBytes();
     }
 
     /// #250: the DHT is a cluster-wide shared store -- a block orphaned by THIS node's

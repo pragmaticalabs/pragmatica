@@ -249,7 +249,6 @@ public final class QuorumCollector<T> {
 
     private Cause quorumFailure() {
         var full = capacityRefusal.get();
-
         // a refusal for capacity is told to the writer whatever the other answers were (#2258, spec 3.2 item 7)
         if (full != null) {
             return full;
