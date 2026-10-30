@@ -5,6 +5,8 @@
 package org.pragmatica.aether.node;
 
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -42,6 +44,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Retry;
 import org.pragmatica.lang.utils.Retry.BackoffStrategy;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.StorageInstance;
 
@@ -101,6 +104,7 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// Age bound, deliberately far out and deliberately FINITE: entity state has no reason to expire on a
     /// clock, but `evictByAge` computes `now - maxAgeMs`, so `Long.MAX_VALUE` would underflow.
     private static final long ENTITY_RING_MAX_AGE_MS = 365L * 24 * 60 * 60 * 1000;
+    private static final TimeSpan AT_ONCE = TimeSpan.timeSpan(0).millis();
 
     /// How a writer reclaims the checkpoint blocks its pointer swaps displace (PR-3c, spec 6.4 item 1): how long a displaced block outlives
     /// the swap, and the bounded retry of a delete the store refuses.
@@ -112,15 +116,13 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
 
     /// The production reclaim: a 60 s grace, two checkpoint ticks (`[guess]`, spec 6.4), and five delete attempts.
     public static final CheckpointReclaim CHECKPOINT_RECLAIM = CheckpointReclaim.checkpointReclaim(TimeSpan.timeSpan(60).seconds(),
-                                                                                                    Retry.retry()
-                                                                                                         .attempts(5)
-                                                                                                         .strategy(BackoffStrategy.exponential()
-                                                                                                                                  .initialDelay(TimeSpan.timeSpan(5)
-                                                                                                                                                        .seconds())
-                                                                                                                                  .maxDelay(TimeSpan.timeSpan(60)
-                                                                                                                                                    .seconds())
-                                                                                                                                  .factor(2.0)
-                                                                                                                                  .withoutJitter()));
+                                                                                                   Retry.retry()
+                                                                                                        .attempts(5)
+                                                                                                        .strategy(BackoffStrategy.exponential()
+                                                                                                                                 .initialDelay(TimeSpan.timeSpan(5).seconds())
+                                                                                                                                 .maxDelay(TimeSpan.timeSpan(60).seconds())
+                                                                                                                                 .factor(2.0)
+                                                                                                                                 .withoutJitter()));
 
     private final StreamPartitionManager partitionManager;
     private final StreamPartitionManager.ReplicaCatchupSource catchupSource;
@@ -130,6 +132,11 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     private final StorageInstance storage;
     private final KVStore<AetherKey, AetherValue> kvStore;
     private final Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier;
+    private final CheckpointReclaim reclaim;
+    /// Blocks a confirmed swap displaced at a claim EQUAL to the one it committed, per pointer: the fence accepts an equal claim, so such a
+    /// block can still be named again (by a late duplicate publish of the same bytes) and is not deleted yet. Each is deleted once a later
+    /// re-read shows a claim above its own, which the fence never lets fall back. In memory only: a restart leaks them (L-12).
+    private final Map<EntityCheckpointKey, Map<BlockId, Long>> deferred = new ConcurrentHashMap<>();
 
     private StreamEntityLogSubstrate(StreamPartitionManager partitionManager,
                                      StreamPartitionManager.ReplicaCatchupSource catchupSource,
@@ -138,7 +145,8 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                                      EvictionListener evictionListener,
                                      StorageInstance storage,
                                      KVStore<AetherKey, AetherValue> kvStore,
-                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
+                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                     CheckpointReclaim reclaim) {
         this.partitionManager = partitionManager;
         this.catchupSource = catchupSource;
         this.tieredReader = tieredReader;
@@ -147,6 +155,7 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
         this.storage = storage;
         this.kvStore = kvStore;
         this.applier = applier;
+        this.reclaim = reclaim;
     }
 
     public static EntityLogSubstrate streamEntityLogSubstrate(StreamPartitionManager partitionManager,
@@ -164,7 +173,8 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                                             evictionListener,
                                             storage,
                                             kvStore,
-                                            applier);
+                                            applier,
+                                            CHECKPOINT_RECLAIM);
     }
 
     /// The factory above with the checkpoint reclaim given: tests shorten the grace and the retry; production takes [#CHECKPOINT_RECLAIM].
@@ -184,7 +194,8 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                                             evictionListener,
                                             storage,
                                             kvStore,
-                                            applier);
+                                            applier,
+                                            reclaim);
     }
 
     @Override
@@ -675,14 +686,121 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// block — wasted space that the next checkpoint's pointer never names — whereas the reverse order
     /// would leave a committed pointer to a block that does not exist, which a recovering node could not
     /// distinguish from corruption.
+    ///
+    /// Then reclaim (PR-3c, I-15): the pointer read before the put names the block this save may displace, and the pointer re-read after
+    /// the publish decides what may be deleted ([#reclaimDisplaced]). A crash between the put and the publish, or between the publish and a
+    /// scheduled delete, leaks the blocks written since the last confirmed swap; nothing sweeps them (L-12).
     @Override
     public Promise<Unit> saveCheckpoint(String keyspace,
                                         int partition,
                                         long throughOffset,
                                         byte[] snapshot,
                                         Option<byte[]> lineage) {
+        var key = EntityCheckpointKey.entityCheckpointKey(keyspace, partition);
+        var replaced = committedPointer(key);
+
         return storage.put(CheckpointFrame.frame(keyspace, partition, throughOffset, snapshot, lineage))
-                      .flatMap(blockId -> publishCheckpointPointer(keyspace, partition, throughOffset, blockId));
+                      .flatMap(blockId -> publishThenReclaim(key,
+                                                             replaced,
+                                                             ClaimedBlock.claimedBlock(blockId, throughOffset)));
+    }
+
+    private Promise<Unit> publishThenReclaim(EntityCheckpointKey key,
+                                             Option<ClaimedBlock> replaced,
+                                             ClaimedBlock written) {
+        return publishCheckpointPointer(key.keyspace(), key.partition(), written.through(), written.block()).map(_ -> reclaimDisplaced(key,
+                                                                                                                                       replaced,
+                                                                                                                                       written));
+    }
+
+    /// A block and the claim of the pointer that names it.
+    private record ClaimedBlock(BlockId block, long through) {
+        static ClaimedBlock claimedBlock(BlockId block, long through) {
+            return new ClaimedBlock(block, through);
+        }
+    }
+
+    private Option<ClaimedBlock> committedPointer(EntityCheckpointKey key) {
+        return kvStore.getTyped(key, EntityFoldCheckpointValue.class)
+                      .flatMap(StreamEntityLogSubstrate::claimedBlockOf);
+    }
+
+    private static Option<ClaimedBlock> claimedBlockOf(EntityFoldCheckpointValue pointer) {
+        return BlockId.fromHex(pointer.blockIdHex())
+                      .option()
+                      .map(block -> ClaimedBlock.claimedBlock(block,
+                                                              pointer.throughOffset()));
+    }
+
+    /// What the re-read pointer shows decides what this writer deletes (spec 6.4 item 1):
+    ///   - It names the block just written: the swap is confirmed, and the block the replaced pointer named is displaced. It is deleted
+    ///     after the grace, against a loader that read the replaced pointer just before the swap and is still fetching (one that loses
+    ///     the race finds no block: "no usable checkpoint", and it folds from the log, as for a lost block).
+    ///   - It names anything else: the fenced applier refused this put (a higher claim is committed) and nothing names the block just
+    ///     written, so it is deleted at once. The writer deletes nothing else: the block the winner displaced is the winner's to delete.
+    ///
+    /// Either way a block is deleted only when its claim is STRICTLY below the claim the re-read shows. The applier refuses a put that
+    /// lowers the committed claim and the claim never falls back, so no pointer can ever name such a block again, whoever writes it; an
+    /// equal claim is accepted, so a block at the shown claim waits in [#deferred]. A stale re-read can only show a lower claim, so it
+    /// defers instead of deleting.
+    private Unit reclaimDisplaced(EntityCheckpointKey key, Option<ClaimedBlock> replaced, ClaimedBlock written) {
+        var current = committedPointer(key);
+        var claim = current.map(ClaimedBlock::through).or(Long.MIN_VALUE);
+
+        if (current.filter(written::equals).isPresent()) {
+            replaced.filter(old -> !old.block()
+                                       .equals(written.block()))
+                    .onPresent(old -> deleteOrDefer(key,
+                                                    old,
+                                                    claim,
+                                                    reclaim.grace()));
+        } else {
+            deleteOrDefer(key, written, claim, AT_ONCE);
+        }
+
+        releaseDeferred(key, claim);
+
+        return Unit.unit();
+    }
+
+    private void deleteOrDefer(EntityCheckpointKey key, ClaimedBlock displaced, long claim, TimeSpan after) {
+        if (displaced.through() < claim) {
+            scheduleDelete(displaced.block(), after);
+        } else {
+            deferred.computeIfAbsent(key, _ -> new ConcurrentHashMap<>()).put(displaced.block(), displaced.through());
+        }
+    }
+
+    private void releaseDeferred(EntityCheckpointKey key, long claim) {
+        Option.option(deferred.get(key)).onPresent(held -> held.forEach((block, through) -> releaseIfPassed(held,
+                                                                                                            block,
+                                                                                                            through,
+                                                                                                            claim)));
+    }
+
+    /// `remove(block, through)` hands each deferred block to exactly one delete, however many saves release at once.
+    private void releaseIfPassed(Map<BlockId, Long> held, BlockId block, long through, long claim) {
+        if (through < claim && held.remove(block, through)) {
+            scheduleDelete(block, reclaim.grace());
+        }
+    }
+
+    /// Through [StorageInstance#delete], which removes the block from every tier, the shared DHT tier included (a write-quorum remove that
+    /// leaves tombstones; anti-entropy carries them to a replica that missed it). This writer may hold no lifecycle record for the block (a
+    /// previous owner wrote it), so a `release` would reclaim nothing. A delete the store refuses (the DHT quorum unreachable) is retried
+    /// within [CheckpointReclaim#deleteRetry]'s bound; past it the block stays where it is, a leak logged at WARN.
+    private void scheduleDelete(BlockId block, TimeSpan after) {
+        SharedScheduler.schedule(() -> deleteWithRetry(block), after);
+    }
+
+    private void deleteWithRetry(BlockId block) {
+        reclaim.deleteRetry().execute(() -> storage.delete(block)).onFailure(cause -> logUndeleted(block, cause));
+    }
+
+    private static void logUndeleted(BlockId block, Cause cause) {
+        LOG.warn("Checkpoint block {} was displaced but could not be deleted within the retry bound ({}); it stays in storage",
+                 block,
+                 cause.message());
     }
 
     @Override
