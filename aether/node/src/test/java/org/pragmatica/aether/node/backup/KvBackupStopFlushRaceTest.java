@@ -6,6 +6,9 @@ package org.pragmatica.aether.node.backup;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
@@ -272,6 +275,80 @@ class KvBackupStopFlushRaceTest {
         assertThat(count(counter)).isEqualTo(1L);
         assertThat(elapsedMs).isLessThan(2_500L);
         assertThat(node.warnings()).extracting(BackupWarning::code).containsExactly(Code.BACKUP_STOP_FLUSH_FAILED);
+    }
+
+    // ---------------- an interrupted push ----------------
+
+    /// A network remote (a test-local `git daemon`; its receive-pack is not our descendant): `git push` has no client-side child there, so killing the
+    /// parent is the only kill, and our git must be gone half a second after the stop. What the server already received it completes: that is harmless,
+    /// a fast-forward of the node's own decided state, and deliberately not asserted.
+    @Test
+    void anInterruptedPush_onANetworkRemote_leavesNoGitOfOursAlive() throws Exception {
+        var bare = bareRemote(temp.resolve("remote.git"));
+
+        git(Path.of(bare), "config", "daemon.receivepack", "true");
+        int port;
+
+        try (var socket = new ServerSocket(0)) {
+            port = socket.getLocalPort();
+        }
+
+        var daemon = new ProcessBuilder("git", "daemon", "--listen=127.0.0.1", "--port=" + port, "--base-path=" + temp, "--export-all",
+                                        "--enable=receive-pack", "--reuseaddr").redirectErrorStream(true)
+                                                                                 .redirectOutput(temp.resolve("daemon.log").toFile())
+                                                                                 .start();
+
+        try {
+            awaitPort(port);
+            var remote = "git://127.0.0.1:" + port + "/remote.git";
+
+            seedHead(remote);
+            var started = temp.resolve("hook.started");
+
+            write(Path.of(bare).resolve("hooks").resolve("pre-receive"), "#!/bin/sh\ntouch '" + started + "'\nsleep 4\nexit 0\n");
+            var node = node(remote, "node", 3);
+
+            await(node.service().stopFlushed(TimeSpan.timeSpan(2).seconds()));
+            assertThat(Files.exists(started)).as("control: the push was in flight at the stop").isTrue();
+            Thread.sleep(500);
+
+            assertThat(gitProcessesOfOurs(daemon.pid())).as("no git of ours survives the stop").isEmpty();
+        } finally {
+            daemon.descendants().forEach(ProcessHandle::destroyForcibly);
+            daemon.destroyForcibly();
+        }
+    }
+
+    /// The JVM's git descendants, leaving out the daemon and its subtree (the server side).
+    private static List<String> gitProcessesOfOurs(long daemonPid) {
+        var server = new java.util.HashSet<Long>();
+
+        ProcessHandle.of(daemonPid).ifPresent(daemon -> {
+            server.add(daemon.pid());
+            daemon.descendants().forEach(child -> server.add(child.pid()));
+        });
+
+        return ProcessHandle.current()
+                            .descendants()
+                            .filter(handle -> !server.contains(handle.pid()))
+                            .filter(ProcessHandle::isAlive)
+                            .map(handle -> handle.pid() + ":" + handle.info().commandLine().orElse(handle.info().command().orElse("?")))
+                            .filter(line -> line.contains("git"))
+                            .toList();
+    }
+
+    private static void awaitPort(int port) throws InterruptedException {
+        for (var attempt = 0; attempt < 100; attempt++) {
+            try (var socket = new Socket()) {
+                socket.connect(new InetSocketAddress("127.0.0.1", port), 200);
+
+                return;
+            } catch (IOException e) {
+                Thread.sleep(50);
+            }
+        }
+
+        throw new AssertionError("git daemon did not listen on " + port);
     }
 
     // ---------------- real concurrency ----------------

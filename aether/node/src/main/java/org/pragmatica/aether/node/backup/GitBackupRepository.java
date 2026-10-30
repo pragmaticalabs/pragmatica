@@ -355,8 +355,9 @@ public record GitBackupRepository(Path dir,
                                       : timedOut(process));
     }
 
-    /// The wait ended in an interruption (the stop's deadline): kill git and whatever it started, so nothing it was sending reaches the remote after
-    /// its owner has gone, and leave the interrupt visible to the caller.
+    /// The wait ended in an interruption (the stop's deadline): kill git and whatever it started, and leave the interrupt visible to the caller. On a
+    /// local remote the server side is among the children, so nothing in flight lands afterwards. Over a network a push the server has already received
+    /// can still land; that is harmless, a fast-forward of the node's own decided state. What is guaranteed is that no git of ours outlives the stop.
     @Contract
     private static void abandon(Process process) {
         process.descendants().forEach(ProcessHandle::destroyForcibly);
