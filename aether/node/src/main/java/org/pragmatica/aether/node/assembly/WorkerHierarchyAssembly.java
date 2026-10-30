@@ -39,7 +39,6 @@ import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.aether.node.DhtReplicationSettlement;
 import org.pragmatica.aether.node.DhtWriterStaleWatch;
 import org.pragmatica.aether.node.GossipKeyRotationHandler;
-import org.pragmatica.aether.node.ReplicaCutover;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.aether.node.health.WorkerEndpointDirectory;
 import org.pragmatica.aether.slice.*;
@@ -49,6 +48,8 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.worker.governor.CommunityMembershipFilter;
 import org.pragmatica.aether.worker.governor.GovernorAnnouncer;
+import org.pragmatica.cluster.replica.ReplicaFeedClient;
+import org.pragmatica.cluster.replica.ReplicaServeGate;
 import org.pragmatica.aether.worker.governor.GovernorAuthority;
 import org.pragmatica.aether.worker.governor.GovernorAuthorityClient;
 import org.pragmatica.aether.worker.governor.GovernorAuthorityMessage;
@@ -148,8 +149,7 @@ public sealed interface WorkerHierarchyAssembly {
                                   List<MessageRouter.Entry<?>> aetherEntries,
                                   Logger growthLog,
                                   NodeId selfId,
-                                  GossipKeyRotationHandler gossipKeyRotationHandler,
-                                  ReplicaCutover cutover) {}
+                                  GossipKeyRotationHandler gossipKeyRotationHandler) {}
 
     /// What `workerActivation` hands back for the rest of the assembly.
     record WorkerActivationOutputs(AtomicReference<GovernorAnnouncer> governorAnnouncerHolder,
@@ -177,8 +177,6 @@ public sealed interface WorkerHierarchyAssembly {
         var growthLog = in.growthLog();
         var selfId = in.selfId();
         var gossipKeyRotationHandler = in.gossipKeyRotationHandler();
-        // W-OBS W3: the engine's passive-client latch is the DARK path's readiness; LIVE sets and clears the flag from ReplicaReadiness only (I-W6).
-        var passiveLatch = passiveLatch(in.cutover(), clusterNode);
         // Worker-mode activation needs the SWIM detector to feed the governor announcer
         // (GAP 2). The detector is a local declared further down (after the SWIM config is
         // built), but this registration lambda is constructed here — so capture it through a
@@ -219,8 +217,7 @@ public sealed interface WorkerHierarchyAssembly {
                                                                                                                                                                                 governorAuthorityClient,
                                                                                                                                                                                 () -> runtimeReady(clusterNode) && workerProjectionFreshRef.get()
                                                                                                                                                                                                                                            .getAsBoolean(),
-                                                                                                                                                                                growthLog,
-                                                                                                                                                                                passiveLatch))
+                                                                                                                                                                                growthLog))
                                                      .onPut(AetherKey.CommunityPlacementOperationKey.class,
                                                             (ValuePut<AetherKey.CommunityPlacementOperationKey, AetherValue.CommunityPlacementOperationValue> put) -> communityRetirements.put(put.cause()
                                                                                                                                                                                                   .value()))
@@ -281,8 +278,7 @@ public sealed interface WorkerHierarchyAssembly {
                                 ArrayList<MessageRouter.Entry<?>> allEntries,
                                 CoreSwimHealthDetector swimHealthDetector,
                                 MembershipFsm membershipFsm,
-                                Consumer<Supplier<ScheduledFuture<?>>> defer,
-                                ReplicaCutover cutover) {}
+                                Consumer<Supplier<ScheduledFuture<?>>> defer) {}
 
     /// What `workerMetadata` hands back for the rest of the assembly.
     record WorkerMetadataOutputs(Supplier<Set<NodeId>> routingCoreIds,
@@ -325,7 +321,6 @@ public sealed interface WorkerHierarchyAssembly {
         var swimHealthDetector = in.swimHealthDetector();
         var membershipFsm = in.membershipFsm();
         var defer = in.defer();
-        var cutover = in.cutover();
 
         allEntries.add(MessageRouter.Entry.route(CommunityMetricsSnapshot.class,
                                                  snapshot -> receiveSourceMetrics(clusterNode,
@@ -414,8 +409,7 @@ public sealed interface WorkerHierarchyAssembly {
                                                                                                                                                  peers),
                                                                                                                       installPeers,
                                                                                                                       installEndpoints,
-                                                                                                                      () -> projectionReady(clusterNode,
-                                                                                                                                            workerReady),
+                                                                                                                      () -> Unit.unit(),
                                                                                                                       message -> metadataFailureReporter.report(config.self(),
                                                                                                                                                                 message),
                                                                                                                       metadataFailureReporter::report,
@@ -432,24 +426,31 @@ public sealed interface WorkerHierarchyAssembly {
                                                                                                                       // replication into every projection, and the worker
                                                                                                                       // applies it on every install — live changes included
                                                                                                                      );
-
-        workerProjectionFreshRef.set(workerMetadataChannel::hasFreshProjection);
-        // W-OBS W3, DARK: nothing below exists unless the node was built LIVE (production never is); LIVE then replaces the freshness gate set
-        // above with the replica readiness and adds the client's routes and ticks.
-        var replicaClient = ReplicaClientAssembly.replicaClient(cutover,
-                                                                configuredWorker(config),
-                                                                new ReplicaClientAssembly.Inputs(config.self(),
-                                                                                                 kvStore,
-                                                                                                 clusterNode,
-                                                                                                 metricsCollector::heldDirectory,
-                                                                                                 routingCoreIds,
-                                                                                                 new ReplicaClientAssembly.DirectoryInstall(installPeers,
-                                                                                                                                            installEndpoints,
-                                                                                                                                            applyDht),
-                                                                                                 workerReady,
-                                                                                                 workerProjectionFreshRef,
-                                                                                                 allEntries,
-                                                                                                 defer));
+        // W-OBS W4: a worker's freshness gate and engine readiness come from the replica client (ReplicaReadiness, I-W6); the projection channel
+        // above no longer polls or drives either, and goes in W5.
+        var started = ReplicaClientAssembly.replicaClient(configuredWorker(config),
+                                                          new ReplicaClientAssembly.Inputs(config.self(),
+                                                                                           kvStore,
+                                                                                           clusterNode,
+                                                                                           metricsCollector::heldDirectory,
+                                                                                           routingCoreIds,
+                                                                                           new ReplicaFeedClient.GovernorArm(() -> Option.option(governorAnnouncerHolder.get())
+                                                                                                                                         .map(GovernorAnnouncer::isGovernor)
+                                                                                                                                         .or(false),
+                                                                                                                             () -> ReplicaFeedAssembly.announcedGovernor(config.self(),
+                                                                                                                                                                         communityDirectory::assignment,
+                                                                                                                                                                         community -> kvStore.getTyped(AetherKey.GovernorAnnouncementKey.forCommunity(community),
+                                                                                                                                                                                                       AetherValue.GovernorAnnouncementValue.class),
+                                                                                                                                                                         governor -> clusterNode.network()
+                                                                                                                                                                                                .connectedPeers()
+                                                                                                                                                                                                .contains(governor))),
+                                                                                           new ReplicaClientAssembly.DirectoryInstall(installPeers,
+                                                                                                                                      installEndpoints,
+                                                                                                                                      applyDht),
+                                                                                           workerReady,
+                                                                                           workerProjectionFreshRef,
+                                                                                           allEntries,
+                                                                                           defer));
 
         allEntries.add(MessageRouter.Entry.route(org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.ManifestRequest.class,
                                                  workerMetadataChannel::onManifestRequest));
@@ -462,24 +463,30 @@ public sealed interface WorkerHierarchyAssembly {
         allEntries.add(MessageRouter.Entry.route(ValuePut.class, workerMetadataChannel::onValuePut));
         allEntries.add(MessageRouter.Entry.route(ValueRemove.class, workerMetadataChannel::onValueRemove));
         clusterNode.onStateRestored(workerMetadataChannel::onStateRestored);
-        // W-OBS W2: the replica feed server on cores (subscribe and snapshot routes, drain and heartbeat ticks); a worker never serves.
+        // W-OBS W2/W4: the replica feed server (subscribe and snapshot routes, drain and heartbeat ticks). A core serves workers; a worker serves
+        // only as its community's governor, to that community's members, once its serve gate opens (I-W5).
+        var replicaClient = started.map(ReplicaClientAssembly.Started::client);
+
         ReplicaFeedAssembly.replicaFeed(config.self(),
                                         kvStore,
                                         clusterNode.network()::send,
                                         () -> ReplicaFeedAssembly.servesReplicaFeed(configuredWorker(config),
                                                                                     clusterNode.isActive(),
-                                                                                    clusterNode.isPendingCatchUp()),
-                                        membershipFsm::isTrackedAndNotDead,
+                                                                                    clusterNode.isPendingCatchUp(),
+                                                                                    started.map(ReplicaClientAssembly.Started::serveGate)
+                                                                                           .map(ReplicaServeGate::mayServeMembers)
+                                                                                           .or(false)),
+                                        peer -> ReplicaFeedAssembly.mayFeed(configuredWorker(config),
+                                                                            membershipFsm.isTrackedAndNotDead(peer),
+                                                                            communityDirectory.assignment(config.self()),
+                                                                            communityDirectory.assignment(peer)),
                                         peer -> clusterNode.network()
                                                            .connectedPeers()
                                                            .contains(peer),
                                         allEntries,
                                         defer);
-        // #1777 R1b: the same tick retries this node's DHT replication report until it is filed (a no-op once it is)
-        var projectionTick = projectionTick(cutover, workerMetadataChannel);
-
+        // #1777 R1b: this tick retries this node's DHT replication report until it is filed (a no-op once it is)
         defer.accept(() -> SharedScheduler.scheduleAtFixedRate(() -> {
-                                                                   projectionTick.run();
                                                                    dhtSettlement.report();
                                                                    dhtWriterStaleWatch.tick();
                                                                },
@@ -687,29 +694,6 @@ public sealed interface WorkerHierarchyAssembly {
                                          workerAdmission,
                                          communityHealthRuntime,
                                          replicaClient);
-    }
-
-    /// The projection client's first-fresh callback (DARK path): set the engine's passive-client latch, then the worker-ready step.
-    static Unit projectionReady(RabiaNode<KVCommand<AetherKey>> clusterNode, Runnable workerReady) {
-        clusterNode.authorizePassiveClient();
-        workerReady.run();
-
-        return Unit.unit();
-    }
-
-    /// What a WORKER activation directive does to the engine's readiness: DARK sets the passive-client latch (the live setter); LIVE does
-    /// nothing, because readiness is set and cleared from `ReplicaReadiness` only (I-W6).
-    static Runnable passiveLatch(ReplicaCutover cutover, RabiaNode<KVCommand<AetherKey>> clusterNode) {
-        return cutover.isLive()
-               ? () -> {}
-               : clusterNode::authorizePassiveClient;
-    }
-
-    /// The projection client's 100 ms tick: DARK runs it; LIVE does not, the replica client replaces the projection.
-    static Runnable projectionTick(ReplicaCutover cutover, WorkerMetadataChannel channel) {
-        return cutover.isLive()
-               ? () -> {}
-               : channel::tick;
     }
 
     /// A worker that is ready to serve: forward writes to the cores and reconcile what this node should run.
@@ -922,8 +906,7 @@ public sealed interface WorkerHierarchyAssembly {
                                           AtomicReference<GovernorAnnouncer> governorAnnouncerHolder,
                                           GovernorAuthorityClient governorAuthorityClient,
                                           java.util.function.BooleanSupplier ready,
-                                          Logger growthLog,
-                                          Runnable authorizePassiveClient) {
+                                          Logger growthLog) {
         if (!put.cause().key().nodeId().equals(selfId)) {
             return;
         }
@@ -958,8 +941,7 @@ public sealed interface WorkerHierarchyAssembly {
                                governorAnnouncerHolder,
                                governorAuthorityClient,
                                ready,
-                               growthLog,
-                               authorizePassiveClient);
+                               growthLog);
         }
     }
 
@@ -979,8 +961,7 @@ public sealed interface WorkerHierarchyAssembly {
                                            AtomicReference<GovernorAnnouncer> governorAnnouncerHolder,
                                            GovernorAuthorityClient governorAuthorityClient,
                                            java.util.function.BooleanSupplier ready,
-                                           Logger log,
-                                           Runnable authorizePassiveClient) {
+                                           Logger log) {
         synchronized (governorAnnouncerHolder) {
             var previous = Option.option(governorAnnouncerHolder.get());
 
@@ -990,7 +971,6 @@ public sealed interface WorkerHierarchyAssembly {
             }
 
             previous.onPresent(GovernorAnnouncer::stop);
-            authorizePassiveClient.run();
             switchableCluster.switchTo(forwardingClusterNode);
             log.info("Worker {} switched to forwarding mode", selfId.id());
             var workerTcpAddress = resolveSelfTcpAddress(config);

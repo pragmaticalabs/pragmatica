@@ -2654,6 +2654,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STREAM_CONSUMER_CURSOR_RESUMED,
                 OperatorWarningCode.STREAM_RETENTION_RESUMED,
                 OperatorWarningCode.STREAM_SEGMENT_UNREADABLE_RECLAIMED,
+                OperatorWarningCode.STREAM_SEGMENT_DELETE_RECOVERED,
                 OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED,
                 OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING,
                 OperatorWarningCode.STREAM_OWNER_LINEAGE_COMMITTED,
@@ -2691,6 +2692,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.UPLOAD_NODE_CAP_RESTORED,
                 OperatorWarningCode.UPLOAD_BYTE_BUDGET_RESTORED,
                 OperatorWarningCode.JSON_CONFIG_APPLIED,
+                OperatorWarningCode.CONFIG_WATCH_CALLBACK_RECOVERED,
             });
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactlyInAnyOrder(new OperatorWarningCode[]{
@@ -2714,6 +2716,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED,
                 OperatorWarningCode.STREAM_RETENTION_WITHHELD,
                 OperatorWarningCode.STREAM_SEGMENT_UNREADABLE,
+                OperatorWarningCode.STREAM_SEGMENT_DELETE_FAILING,
                 OperatorWarningCode.PROVISION_ADMISSION_DEFERRED,
                 OperatorWarningCode.CORE_CAPACITY_AWAITING_DURABLE,
                 OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
@@ -2745,6 +2748,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.JSON_CONFIG_REJECTED,
                 OperatorWarningCode.UPLOAD_NODE_CAP_SATURATED,
                 OperatorWarningCode.UPLOAD_BYTE_BUDGET_EXHAUSTED,
+                OperatorWarningCode.CONFIG_WATCH_CALLBACK_FAILED,
             });
         var recoveries = java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).count();
         var t = new AtomicLong(1_000_000L);

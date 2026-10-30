@@ -313,13 +313,17 @@ class ReplicaFeedClientTest {
         }
 
         /// NT-O28. A source that stops serving says so in its heartbeat: the worker never counts it toward freshness and moves to the other core.
+        /// The `serving = false` heartbeat arrives 20 s after the last counted one; 11 s later the counted one is 31 s old, so the replica is not
+        /// ready (counting the refused heartbeat would make it 11 s old and ready).
         /// Mutation: count a `serving=false` heartbeat, or do not avoid the source.
         @Test
         void aSourceThatStopsServing_isNeverCounted_andIsLeft() {
             var net = joined();
 
+            net.advance(20_000);
             net.core(0).serving.set(false);
             net.step();
+            net.advance(11_000);
 
             assertThat(net.readiness.ready()).isFalse();
 

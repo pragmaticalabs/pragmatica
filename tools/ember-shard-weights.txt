@@ -11,6 +11,7 @@
 # EmberStoragePrefetchOverSwimTest 18 (#2341): surefire class time 17.83 s, 16.77 s and 17.79 s on cloudbb-3 at 1ab25a734 (1 test, 3-node cluster, BB_DEDUP=0 repeats, host load average 1-3 at the time); maximum rounded up.
 # AssemblyTraceTest 13 (assembly instrument): surefire class time 10.7 s, 10.7 s, 10.8 s and 12.7 s on cloudbb-3 at dc57daa41 (one test, a 3-node boot with one core held back); maximum rounded up.
 # EmberObserverRestartReadmitsRetiredTest 26, EmberAllHoldersRestartKeepRetirementTest 24, EmberLedgerLostTest 111 (#2429): surefire class time on bigboy at 53bddafc38, 3 runs each (24.3/25.5/24.6 s, 23.7/23.8/23.8 s, 110.0/110.0/110.7 s; host load average 1-6 from other tickets); maximum rounded up. LedgerLost is long because its wiped-holder arm watches 60 s for a link that must not form.
+# EmberReplicaRelayTest 90 (W-OBS W4): surefire class time about 88 s on cloudbb-3 (wall 90-93 s per run, 6 green runs) (1 test, 5 cores + 27 workers in 2 communities, a governor killed under load, a core killed mid-snapshot); rounded up.
 # EmberReplicaLiveTest 12 (W-OBS W3): surefire class time 11.87 s on cloudbb-3 at the W3 head (1 test, 3 cores + 1 worker built LIVE); rounded up.
 AssemblyTraceTest 13
 EmberAllHoldersRestartKeepRetirementTest 24
@@ -56,6 +57,7 @@ EmberPartitionedCoreSelfFenceTest 403
 EmberPlannedDepartureAlertsTest 334
 EmberReadCommittedFailoverTest 60
 EmberReplicaLiveTest 12
+EmberReplicaRelayTest 90
 EmberSameIdentityRelaunchTest 478
 EmberSelfDrainSlotReleaseTest 0
 EmberSilentPartitionMinorityOwnerAcksTest 114

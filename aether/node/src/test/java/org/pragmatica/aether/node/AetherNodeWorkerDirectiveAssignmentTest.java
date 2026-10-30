@@ -60,37 +60,18 @@ class AetherNodeWorkerDirectiveAssignmentTest {
         verify(detector).markAssigned();
     }
 
-    /// The DARK readiness latch rides the activation directive: a WORKER directive for this node runs the supplied latch exactly once, one for
-    /// another node or a rejected one does not. Mutation: drop `authorizePassiveClient.run()` in `activateWorkerMode`.
-    @Test
-    void handleActivationDirective_workerDirectiveForThisWorker_runsTheLatchOnce() {
-        var runs = new java.util.concurrent.atomic.AtomicInteger();
-
-        handle(SELF, ActivationDirectiveValue.worker("c-0", ""), runs::incrementAndGet);
-        assertThat(runs.get()).isEqualTo(1);
-    }
-
-    @Test
-    void handleActivationDirective_otherNodeOrRejectedRole_doesNotRunTheLatch() {
-        var runs = new java.util.concurrent.atomic.AtomicInteger();
-
-        handle(OTHER, ActivationDirectiveValue.worker("c-0", ""), runs::incrementAndGet);
-        handle(SELF, ActivationDirectiveValue.core(), runs::incrementAndGet);
-        assertThat(runs.get()).isZero();
-    }
-
-    /// The projection client's fresh callback (DARK): latch first, then the worker-ready step. Mutation: drop `clusterNode.authorizePassiveClient()`
-    /// or `workerReady.run()` in `projectionReady`.
+    /// I-W6 (W4): the activation directive no longer touches the engine's readiness; it is set and cleared from `ReplicaReadiness` only. It still
+    /// switches the node to forwarding mode. Mutation: restore a readiness call (`setPassiveClientReady(true)`) in `activateWorkerMode`.
     @Test
     @SuppressWarnings("unchecked")
-    void projectionReady_setsTheLatch_thenRunsWorkerReady() {
+    void handleActivationDirective_workerDirectiveForThisWorker_leavesTheEngineReadinessAlone() {
         RabiaNode<KVCommand<AetherKey>> cluster = Mockito.mock(RabiaNode.class);
-        var ran = new java.util.concurrent.atomic.AtomicInteger();
+        SwitchableClusterNode<KVCommand<AetherKey>> switchable = Mockito.mock(SwitchableClusterNode.class);
 
-        WorkerHierarchyAssembly.projectionReady(cluster, ran::incrementAndGet);
+        handle(SELF, ActivationDirectiveValue.worker("c-0", ""), cluster, switchable);
 
-        verify(cluster).authorizePassiveClient();
-        assertThat(ran.get()).isEqualTo(1);
+        verify(switchable).switchTo(Mockito.any());
+        Mockito.verifyNoInteractions(cluster);
     }
 
     @Test
@@ -109,11 +90,11 @@ class AetherNodeWorkerDirectiveAssignmentTest {
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     private void handle(NodeId target, ActivationDirectiveValue value) {
-        handle(target, value, () -> {});
+        handle(target, value, Mockito.mock(RabiaNode.class), Mockito.mock(SwitchableClusterNode.class));
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
-    private void handle(NodeId target, ActivationDirectiveValue value, Runnable latch) {
+    private void handle(NodeId target, ActivationDirectiveValue value, RabiaNode cluster, SwitchableClusterNode switchable) {
         var config = Mockito.mock(AetherNodeConfig.class);
 
         when(config.self()).thenReturn(SELF);
@@ -124,8 +105,8 @@ class AetherNodeWorkerDirectiveAssignmentTest {
 
         WorkerHierarchyAssembly.handleActivationDirective(put,
                                              SELF,
-                                             Mockito.mock(RabiaNode.class),
-                                             Mockito.mock(SwitchableClusterNode.class),
+                                             cluster,
+                                             switchable,
                                              Mockito.mock(ForwardingClusterNode.class),
                                              config,
                                              MessageRouter.DelegateRouter.delegate(),
@@ -137,7 +118,6 @@ class AetherNodeWorkerDirectiveAssignmentTest {
                                              announcer,
                                              Mockito.mock(GovernorAuthorityClient.class),
                                              () -> false,
-                                             LoggerFactory.getLogger(AetherNodeWorkerDirectiveAssignmentTest.class),
-                                             latch);
+                                             LoggerFactory.getLogger(AetherNodeWorkerDirectiveAssignmentTest.class));
     }
 }

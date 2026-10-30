@@ -698,9 +698,31 @@ public enum OperatorWarningCode {
     /// of 1024). Subject is `unknown-gossip-key-senders`. INFO: it states a count, closes nothing and opens nothing (a WARNING needs a recovery), and the
     /// per-datagram WARN in the node log carries every datagram.
     GOSSIP_KEY_UNKNOWN_SENDERS_SUPPRESSED("gossip-key-unknown-senders-suppressed", "membership", WarningLevel.INFO),
+    /// A node's collection of released stream segments from the cluster-shared tier has failed for three consecutive runs
+    /// (#2258, spec 3.2 item 8): the DHT write quorum is unreachable or its removes fail. The released segments are already
+    /// out of the node's index (readers are answered `CursorExpired`), but their blocks stay on disk and in the DHT, so usage
+    /// does not fall while this lasts. The subject is `node <nodeId> storage streams`. Closed by
+    /// [#STREAM_SEGMENT_DELETE_RECOVERED].
+    STREAM_SEGMENT_DELETE_FAILING("stream-segment-delete-failing", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STREAM_SEGMENT_DELETE_FAILING], same subject: a run completed with no failed delete.
+    STREAM_SEGMENT_DELETE_RECOVERED("stream-segment-delete-recovered",
+                                    "storage",
+                                    WarningLevel.INFO,
+                                    STREAM_SEGMENT_DELETE_FAILING),
     /// The recovery of [#JSON_CONFIG_REJECTED], same subject (#2378): a valid `[json]` configuration was adopted after a
     /// refusal. INFO, published only after a published rejection for the subject (#752 mechanism).
-    JSON_CONFIG_APPLIED("json-config-applied", "json", WarningLevel.INFO, JSON_CONFIG_REJECTED);
+    JSON_CONFIG_APPLIED("json-config-applied", "json", WarningLevel.INFO, JSON_CONFIG_REJECTED),
+    /// A `Watched`/`Live` configuration subscription could not take a change (#774): its callback threw, failed or timed out, or the
+    /// section's record could not be bound from the new configuration (the message names the phase and carries the `applySeq`). The
+    /// previous record stays in force and the next change is delivered; nothing is retried. Subject `<artifact>/<section>`. Raised on
+    /// the transition into failure only; a repeat failure logs at ERROR without re-raising.
+    CONFIG_WATCH_CALLBACK_FAILED("config-watch-callback-failed", "config", WarningLevel.WARNING),
+    /// The recovery of [#CONFIG_WATCH_CALLBACK_FAILED], same subject (#774): the next delivery bound and (when it called back) succeeded.
+    /// INFO, published only after a published failure for the subject (#752 mechanism).
+    CONFIG_WATCH_CALLBACK_RECOVERED("config-watch-callback-recovered",
+                                    "config",
+                                    WarningLevel.INFO,
+                                    CONFIG_WATCH_CALLBACK_FAILED);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

@@ -13,6 +13,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.storage.MetadataStore;
+import org.pragmatica.storage.SharedDelete;
 import org.pragmatica.storage.StorageInstance;
 
 import org.slf4j.Logger;
@@ -66,6 +67,10 @@ public final class StreamFootprint {
         }
 
         index.adopt(streamName, incarnation);
+        // #2258: the adopted life's OWN refs that its own durable reclaim floor already reclaimed (a crash came between the
+        // floor write and the release) were not installed; they are released now. No other life's ref is touched: other
+        // lives are kept and announced (know 6d0c58fd67, d19f755873).
+        index.drainReclaimedBelowFloor().forEach(refName -> storage.deleteRef(refName, SharedDelete.IF_IDENTIFIED));
 
         return Promise.success(otherLives(streamName, incarnation));
     }
@@ -77,7 +82,10 @@ public final class StreamFootprint {
         }
     }
 
-    /// `streamName` was destroyed: stop serving it and reclaim the refs of the life it was.
+    /// `streamName` was destroyed: stop serving it and reclaim the refs of the life it was. Its sealed segments are released
+    /// [SharedDelete#IF_IDENTIFIED] (#2258, `know:` d19f755873): this reads no block inside the destroy's await, and the
+    /// collector deletes a block from the shared tier only if it carries the identity header. This explicit destroy of the
+    /// applied life is the only path that releases a whole stream; [#adopt] releases nothing.
     public Promise<Unit> forget(String streamName) {
         if (index == null) {
             return Promise.unitPromise();
@@ -131,10 +139,16 @@ public final class StreamFootprint {
     }
 
     private Promise<Unit> dropAll(String streamName, List<String> refNames) {
-        return Promise.allOf(refNames.stream().distinct().map(storage::deleteRef).toList()).map(results -> logFailures(streamName,
-                                                                                                                       results.stream()
-                                                                                                                              .filter(result -> result.isFailure())
-                                                                                                                              .count()));
+        return Promise.allOf(refNames.stream().distinct().map(this::release).toList()).map(results -> logFailures(streamName,
+                                                                                                                  results.stream()
+                                                                                                                         .filter(result -> result.isFailure())
+                                                                                                                         .count()));
+    }
+
+    private Promise<Unit> release(String refName) {
+        return SegmentIndex.isSealedSegmentRef(refName)
+               ? storage.deleteRef(refName, SharedDelete.IF_IDENTIFIED)
+               : storage.deleteRef(refName);
     }
 
     private static Unit logFailures(String streamName, long failed) {

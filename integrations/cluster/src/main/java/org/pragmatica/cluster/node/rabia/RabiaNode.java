@@ -158,10 +158,6 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         return ReconfigurationError.NOT_PASSIVE_CLIENT.result();
     }
 
-    default org.pragmatica.lang.Unit authorizePassiveClient() {
-        return org.pragmatica.lang.Unit.unit();
-    }
-
     default boolean isPassiveClientReady() {
         return false;
     }
@@ -784,13 +780,6 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             @Override
             public Result<Unit> configurePassiveClient() {
                 return consensus().configurePassiveClient();
-            }
-
-            @Override
-            public org.pragmatica.lang.Unit authorizePassiveClient() {
-                consensus().authorizePassiveClient();
-
-                return org.pragmatica.lang.Unit.unit();
             }
 
             @Override

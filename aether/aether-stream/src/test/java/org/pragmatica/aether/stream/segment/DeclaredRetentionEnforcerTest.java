@@ -232,10 +232,11 @@ class DeclaredRetentionEnforcerTest {
     /// per ref), and then the declared bytes rule fires.
     @Test
     void aRebuiltRefsSize_isLearnedInTheAgeRead_andThenTheBytesRuleFires() {
-        sealed(STREAM, 10, System.currentTimeMillis());
-
+        var stored = sealed(STREAM, 10, System.currentTimeMillis()).listSegments(STREAM, 0)
+                                                                     .getFirst()
+                                                                     .originalSize();
         var index = rebuilt(STREAM, 10);
-        var bytes = RetentionPolicy.retentionPolicy(UNBOUNDED, 3L * BLOCK_BYTES, UNBOUNDED).withDeclared(RetentionDimensions.BYTES);
+        var bytes = RetentionPolicy.retentionPolicy(UNBOUNDED, 3L * stored, UNBOUNDED).withDeclared(RetentionDimensions.BYTES);
 
         enforcer(index, StreamRetentionSource.fixed(bytes), Option.none()).enforceNow().await();
         assertThat(remaining(index, STREAM)).as("without a reader nothing is learned: every size counts 0").isEqualTo(10);
@@ -247,8 +248,8 @@ class DeclaredRetentionEnforcerTest {
         learning.enforceNow().await();
 
         assertThat(tier.reads.get()).as("one block read per rebuilt ref learns both the age and the size").isEqualTo(10);
-        assertThat(remaining(index, STREAM)).as("3 x 21 bytes newer than each reclaimed segment").isEqualTo(3);
-        assertThat(index.listSegments(STREAM, 0)).allSatisfy(ref -> assertThat(ref.originalSize()).isEqualTo(BLOCK_BYTES));
+        assertThat(remaining(index, STREAM)).as("3 blocks' bytes newer than each reclaimed segment").isEqualTo(3);
+        assertThat(index.listSegments(STREAM, 0)).allSatisfy(ref -> assertThat(ref.originalSize()).isEqualTo(stored));
     }
 
     /// NT-134: an age-only stream with one deterministically unreadable segment: it takes the next newer segment's age, the
