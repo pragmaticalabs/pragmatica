@@ -11,7 +11,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+import java.util.function.Function;
 
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.AfterEach;
@@ -27,6 +30,7 @@ import org.pragmatica.aether.stream.EvictionListener;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -62,6 +66,9 @@ class EntityCheckpointReclaimTest {
     private static final long ONE_GB = 1024L * 1024 * 1024;
     private static final TimeSpan GRACE = TimeSpan.timeSpan(2).seconds();
     private static final TimeSpan LONG_GRACE = TimeSpan.timeSpan(1).hours();
+    private static final TimeSpan SHORT_GRACE = TimeSpan.timeSpan(200).millis();
+    /// Long enough for a delete scheduled at SHORT_GRACE to have run.
+    private static final long PAST_SHORT_GRACE_MS = 1_000L;
     private static final int DELETE_ATTEMPTS = 3;
     private static final Retry FAST_RETRY = Retry.retry()
                                                  .attempts(DELETE_ATTEMPTS)
@@ -135,6 +142,8 @@ class EntityCheckpointReclaimTest {
         assertThat(List.of(withLineage, withoutLineage)).allSatisfy(id -> {
             var old = rc5Unframe(3L, block(id));
 
+            assertThat(block(id)[0]).as("the first byte is neither snapshot version").isNotIn((byte) 1, (byte) 2);
+
             assertThat(old.lineage().isEmpty()).as("the rc5 frame reader finds no lineage").isTrue();
             assertThat(EntityFoldSnapshot.decode(old.snapshot()).isFailure()).as("the rc5 snapshot decoder refuses the block").isTrue();
         });
@@ -155,6 +164,10 @@ class EntityCheckpointReclaimTest {
         assertThat(save(substrate, 0, 4L, bytes, Option.none())).as("empty lineage, two partitions").isNotEqualTo(save(substrate, 1, 4L, bytes, Option.none()));
         assertThat(save(substrate, 2, 4L, bytes, Option.some(LINEAGE))).as("same lineage, two partitions").isNotEqualTo(save(substrate, 3, 4L, bytes, Option.some(LINEAGE)));
         assertThat(save(substrate, 4, 4L, bytes, Option.none())).as("one partition, two claims").isNotEqualTo(save(substrate, 4, 5L, bytes, Option.none()));
+        assertThat(save(substrate, "orders", 5, 4L, bytes)).as("two keyspaces").isNotEqualTo(save(substrate, "invoices", 5, 4L, bytes));
+        assertThat(substrate.saveCheckpoint(KEYSPACE, 6, 4L, bytes).await().isSuccess()).isTrue();
+        assertThat(substrate.saveCheckpoint(KEYSPACE, 7, 4L, bytes).await().isSuccess()).isTrue();
+        assertThat(pointed(6)).as("the lineage-less save path, two partitions").isNotEqualTo(pointed(7));
     }
 
     /// A delete the shared tier refuses (its quorum unreachable) is retried, and the block leaves once the store accepts.
@@ -184,20 +197,237 @@ class EntityCheckpointReclaimTest {
         assertThat(shared.deletes).as("exactly the bound, then no more").hasSize(DELETE_ATTEMPTS).containsOnly(displaced);
     }
 
+    /// Equal claims (the fence ACCEPTS an equal claim): a block displaced at the claim the swap committed is not deleted, because a late
+    /// duplicate publish could still name it; it is deleted, once, at the first later swap that passes its claim.
+    @Test
+    void anEqualClaimDisplacedBlock_waitsForTheNextSwapThatPassesIt_andIsDeletedOnce() {
+        var substrate = substrate(checkpointReclaim(SHORT_GRACE, FAST_RETRY));
+        var first = save(substrate, 0, 5L, snapshot("x"), Option.none());
+        var second = save(substrate, 0, 5L, snapshot("y"), Option.none());
+
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(readable(first)).as("displaced at an equal claim: kept").isTrue();
+        var third = save(substrate, 0, 6L, snapshot("z"), Option.none());
+
+        eventually("both blocks the claim 6 passed are deleted", 5_000L, () -> !readable(first) && !readable(second));
+        assertThat(readable(third)).isTrue();
+        save(substrate, 0, 7L, snapshot("w"), Option.none());
+        eventually("the claim 7 displaced the claim 6", 5_000L, () -> !readable(third));
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(deletesOf(first)).as("a deferred block is handed to one delete").isEqualTo(1L);
+    }
+
+    /// Hazard: a late duplicate publish of an equal-claim block (an abandoned in-flight save landing after a newer swap) names it again,
+    /// so it must still be there.
+    @Test
+    void aLateDuplicatePublishAtAnEqualClaim_findsItsBlockStillThere() {
+        var substrate = substrate(checkpointReclaim(SHORT_GRACE, FAST_RETRY));
+        var parked = new AtomicReference<Promise<List<Object>>>();
+        var parkedCommands = new AtomicReference<List<KVCommand<AetherKey>>>();
+        var late = substrate(checkpointReclaim(SHORT_GRACE, FAST_RETRY), commands -> {
+            parkedCommands.set(commands);
+            parked.set(Promise.promise());
+
+            return parked.get();
+        });
+        var block = save(substrate, 0, 5L, snapshot("x"), Option.none());
+        var lateSave = late.saveCheckpoint(KEYSPACE, 0, 5L, snapshot("x"), Option.none());
+
+        eventually("the late save's publish is parked", 5_000L, () -> parked.get() != null);
+        save(substrate, 0, 5L, snapshot("y"), Option.none());
+        pause(PAST_SHORT_GRACE_MS);
+        apply(parkedCommands.get());
+        parked.get().succeed(List.of());
+        assertThat(lateSave.await().isSuccess()).isTrue();
+        assertThat(pointed(0)).as("control: the late publish named the equal-claim block again").isEqualTo(block);
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(readable(block)).as("the block the current pointer names is readable").isTrue();
+    }
+
+    /// Hazard: a re-read that lags the publish (the local KV applies the swap after the applier answered) shows a LOWER claim or none.
+    /// The writer deletes nothing on it: its own block may be the committed one. Once a later swap passes them, they go.
+    @Test
+    void aReReadThatLagsThePublish_deletesNothing() {
+        var lagging = new CopyOnWriteArrayList<List<KVCommand<AetherKey>>>();
+        var lag = new AtomicBoolean(true);
+        var substrate = substrate(checkpointReclaim(SHORT_GRACE, FAST_RETRY), commands -> {
+            if (!lag.get()) {
+                return apply(commands);
+            }
+
+            lagging.add(commands);
+
+            return Promise.success(List.of());
+        });
+
+        assertThat(substrate.saveCheckpoint(KEYSPACE, 0, 3L, snapshot("v3"), Option.none()).await().isSuccess()).isTrue();
+        lagging.forEach(this::apply);
+        lagging.clear();
+        var first = pointed(0);
+
+        assertThat(substrate.saveCheckpoint(KEYSPACE, 0, 4L, snapshot("v4"), Option.none()).await().isSuccess()).isTrue();
+        lagging.forEach(this::apply);
+        var second = pointed(0);
+
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(readable(second)).as("the committed block, its swap seen late, is kept").isTrue();
+        assertThat(readable(first)).as("the block a lagging re-read still showed is kept").isTrue();
+        assertThat(shared.deletes).as("nothing deleted on a lagging re-read").isEmpty();
+        lag.set(false);
+        var current = save(substrate, 0, 5L, snapshot("v5"), Option.none());
+
+        eventually("a swap seen at once passes both, and they go", 5_000L, () -> !readable(first) && !readable(second));
+        assertThat(readable(current)).isTrue();
+    }
+
+    /// Hazard: concurrent writers at a handover. The loser's publish lands after the winner's swap: it is refused, and the loser deletes
+    /// its own block at once and nothing else, even with a zero grace; the block the winner displaced waits for the winner's grace.
+    @Test
+    void aHandoverLoser_deletesOnlyItsOwnBlock() {
+        var winner = substrate(checkpointReclaim(LONG_GRACE, FAST_RETRY));
+        var displaced = save(winner, 0, 5L, snapshot("v5"), Option.none());
+        var winnerSwapped = new AtomicBoolean();
+        var loser = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY), commands -> {
+            winnerSwapped.set(winner.saveCheckpoint(KEYSPACE, 0, 9L, snapshot("v9"), Option.none()).await().isSuccess());
+
+            return apply(commands);
+        });
+
+        assertThat(loser.saveCheckpoint(KEYSPACE, 0, 7L, snapshot("v7"), Option.none()).await().isSuccess()).isTrue();
+        var own = shared.puts.stream().distinct().filter(id -> !id.equals(displaced) && !id.equals(pointed(0))).findFirst().orElseThrow();
+
+        assertThat(winnerSwapped.get()).as("control: the winner swapped in between").isTrue();
+        eventually("the loser's own block is deleted at once", 5_000L, () -> !readable(own));
+        assertThat(readable(displaced)).as("the block the winner displaced is the winner's to delete, after its grace").isTrue();
+        assertThat(readable(pointed(0))).as("the winner's block is the current one").isTrue();
+        assertThat(shared.deletes).containsOnly(own);
+    }
+
+    /// Hazard: the reverse interleaving. The loser's swap lands first and the winner's pointer read (taken before it) is stale: the
+    /// winner deletes the block its stale read named, the loser's block leaks (L-12), and the current block is never touched.
+    @Test
+    void aWinnerWithAStalePointerRead_neverTouchesTheCurrentBlock() {
+        var loser = substrate(checkpointReclaim(SHORT_GRACE, FAST_RETRY));
+        var displaced = save(loser, 0, 5L, snapshot("v5"), Option.none());
+        var winner = substrate(checkpointReclaim(SHORT_GRACE, FAST_RETRY), commands -> {
+            assertThat(loser.saveCheckpoint(KEYSPACE, 0, 7L, snapshot("v7"), Option.none()).await().isSuccess()).isTrue();
+
+            return apply(commands);
+        });
+        var current = save(winner, 0, 9L, snapshot("v9"), Option.none());
+        var loserBlock = shared.puts.stream().distinct().filter(id -> !id.equals(displaced) && !id.equals(current)).findFirst().orElseThrow();
+
+        eventually("the block both pre-reads named is deleted", 5_000L, () -> !readable(displaced));
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(readable(current)).as("the current block is never touched").isTrue();
+        assertThat(readable(loserBlock)).as("the loser's displaced block leaks: the winner never saw it (L-12)").isTrue();
+    }
+
+    /// Hazard: identical bytes at one claim from two writers are one block; neither deletes it.
+    @Test
+    void identicalBytesAtOneClaim_fromTwoWriters_areOneBlock_andItIsKept() {
+        var first = save(substrate(checkpointReclaim(SHORT_GRACE, FAST_RETRY)), 0, 5L, snapshot("same"), Option.none());
+        var second = save(substrate(checkpointReclaim(SHORT_GRACE, FAST_RETRY)), 0, 5L, snapshot("same"), Option.none());
+
+        assertThat(second).isEqualTo(first);
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(readable(first)).isTrue();
+        assertThat(shared.deletes).isEmpty();
+    }
+
+    /// Hazard: a loader holding the replaced pointer (its KV copy lags) races the delete and loses: it gets "no usable checkpoint" (the fold
+    /// then rebuilds from the log), never a checkpoint of some other state.
+    @Test
+    void aLoaderHoldingTheReplacedPointer_getsNoUsableCheckpoint() {
+        var stale = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), noopSerializer(), noopDeserializer());
+        var both = new AtomicBoolean(true);
+        var writer = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY), commands -> {
+            if (both.get()) {
+                stale.process(stale.createBatch(commands));
+            }
+
+            return apply(commands);
+        });
+        var loader = substrate(checkpointReclaim(LONG_GRACE, FAST_RETRY), stale, this::apply);
+        var displaced = save(writer, 0, 1L, snapshot("v1"), Option.none());
+
+        both.set(false);
+        save(writer, 0, 2L, snapshot("v2"), Option.none());
+        eventually("the displaced block is deleted", 5_000L, () -> !readable(displaced));
+        assertThat(loader.loadCheckpoint(KEYSPACE, 0).await().unwrap().isEmpty()).as("no usable checkpoint").isTrue();
+    }
+
+    /// Crash between the block put and the swap (the publish fails): the replaced pointer and its block stay; the new block leaks (L-12).
+    @Test
+    void aFailedPublish_deletesNothing() {
+        var fail = new AtomicBoolean();
+        var substrate = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY), commands -> fail.get()
+                                                                                                         ? Causes.cause("consensus unreachable").<List<Object>> promise()
+                                                                                                         : apply(commands));
+        var kept = save(substrate, 0, 1L, snapshot("v1"), Option.none());
+
+        fail.set(true);
+        assertThat(substrate.saveCheckpoint(KEYSPACE, 0, 2L, snapshot("v2"), Option.none()).await().isFailure()).isTrue();
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(pointed(0)).isEqualTo(kept);
+        assertThat(readable(kept)).as("the block the pointer names stays").isTrue();
+        assertThat(shared.puts.getLast()).as("the new block was written").isNotEqualTo(kept);
+        assertThat(readable(shared.puts.getLast())).as("and leaks").isTrue();
+        assertThat(shared.deletes).isEmpty();
+    }
+
+    /// Crash between the swap and the scheduled delete (the grace not yet passed): both blocks are there, the current one readable; a
+    /// crash now leaks the displaced one (L-12), never the current one.
+    @Test
+    void beforeTheGrace_bothBlocksAreThere() {
+        var substrate = substrate(checkpointReclaim(LONG_GRACE, FAST_RETRY));
+        var displaced = save(substrate, 0, 1L, snapshot("v1"), Option.none());
+        var current = save(substrate, 0, 2L, snapshot("v2"), Option.none());
+
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(readable(current)).isTrue();
+        assertThat(readable(displaced)).isTrue();
+    }
+
     private EntityLogSubstrate substrate(CheckpointReclaim reclaim) {
+        return substrate(reclaim, this::apply);
+    }
+
+    private EntityLogSubstrate substrate(CheckpointReclaim reclaim, Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
+        return substrate(reclaim, kv, applier);
+    }
+
+    private EntityLogSubstrate substrate(CheckpointReclaim reclaim,
+                                         KVStore<AetherKey, AetherValue> reads,
+                                         Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
         return StreamEntityLogSubstrate.streamEntityLogSubstrate(manager,
                                                                  (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0, true),
                                                                  null,
                                                                  new SegmentIndex(),
                                                                  EvictionListener.NOOP,
                                                                  storage,
-                                                                 kv,
-                                                                 commands -> {
-                                                                     kv.process(kv.createBatch(commands));
-
-                                                                     return Promise.success(List.of());
-                                                                 },
+                                                                 reads,
+                                                                 applier,
                                                                  reclaim);
+    }
+
+    private Promise<List<Object>> apply(List<KVCommand<AetherKey>> commands) {
+        kv.process(kv.createBatch(commands));
+
+        return Promise.success(List.of());
+    }
+
+    private BlockId save(EntityLogSubstrate substrate, String keyspace, int partition, long through, byte[] snapshot) {
+        assertThat(substrate.saveCheckpoint(keyspace, partition, through, snapshot, Option.none()).await().isSuccess()).isTrue();
+
+        return BlockId.fromHex(kv.getTyped(EntityCheckpointKey.entityCheckpointKey(keyspace, partition), EntityFoldCheckpointValue.class)
+                                 .or(() -> fail("no pointer"))
+                                 .blockIdHex())
+                      .unwrap();
+    }
+
+    private long deletesOf(BlockId id) {
+        return shared.deletes.stream().filter(id::equals).count();
     }
 
     /// Saves, and answers the block the committed pointer names afterwards.
