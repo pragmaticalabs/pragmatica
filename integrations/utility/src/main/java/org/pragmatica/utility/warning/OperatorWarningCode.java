@@ -700,7 +700,18 @@ public enum OperatorWarningCode {
     GOSSIP_KEY_UNKNOWN_SENDERS_SUPPRESSED("gossip-key-unknown-senders-suppressed", "membership", WarningLevel.INFO),
     /// The recovery of [#JSON_CONFIG_REJECTED], same subject (#2378): a valid `[json]` configuration was adopted after a
     /// refusal. INFO, published only after a published rejection for the subject (#752 mechanism).
-    JSON_CONFIG_APPLIED("json-config-applied", "json", WarningLevel.INFO, JSON_CONFIG_REJECTED);
+    JSON_CONFIG_APPLIED("json-config-applied", "json", WarningLevel.INFO, JSON_CONFIG_REJECTED),
+    /// A `Watched`/`Live` configuration subscription could not take a change (#774): its callback threw, failed or timed out, or the
+    /// section's record could not be bound from the new configuration (the message names the phase and carries the `applySeq`). The
+    /// previous record stays in force and the next change is delivered; nothing is retried. Subject `<artifact>/<section>`. Raised on
+    /// the transition into failure only; a repeat failure logs at ERROR without re-raising.
+    CONFIG_WATCH_CALLBACK_FAILED("config-watch-callback-failed", "config", WarningLevel.WARNING),
+    /// The recovery of [#CONFIG_WATCH_CALLBACK_FAILED], same subject (#774): the next delivery bound and (when it called back) succeeded.
+    /// INFO, published only after a published failure for the subject (#752 mechanism).
+    CONFIG_WATCH_CALLBACK_RECOVERED("config-watch-callback-recovered",
+                                    "config",
+                                    WarningLevel.INFO,
+                                    CONFIG_WATCH_CALLBACK_FAILED);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;
