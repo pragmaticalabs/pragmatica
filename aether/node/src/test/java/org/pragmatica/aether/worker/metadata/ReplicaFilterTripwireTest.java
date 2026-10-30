@@ -226,7 +226,7 @@ class ReplicaFilterTripwireTest {
                            .hasSizeGreaterThan(60)
                            .extracting(Class::getSimpleName)
                            .containsAll(unscopedKeys().keySet());
-        assertThat(excluded).as("the EXCLUDE set, over every AetherKey class").containsExactlyInAnyOrder("StreamCursorCheckpointKey", "ClusterConfigKey", "SliceDesiredKey", "SliceObservedKey", "DeploymentApplyKey", "ArtifactJudgmentKey", "NodeDepartureKey");
+        assertThat(excluded).as("the EXCLUDE set, over every AetherKey class").containsExactlyInAnyOrder("StreamCursorCheckpointKey", "ClusterConfigKey", "SliceDesiredKey", "SliceObservedKey", "DeploymentApplyKey", "ArtifactJudgmentKey", "NodeDepartureKey", "NodeIdentityKey");
     }
 
     /// The ring's byte measure sizes a key by `asString()` (R-07). `StructuredKey` gives a default for key families with no canonical text;
