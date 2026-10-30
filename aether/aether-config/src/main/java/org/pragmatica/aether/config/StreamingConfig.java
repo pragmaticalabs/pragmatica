@@ -15,6 +15,7 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                               int reshuffleConcurrency,
                               long caughtUpMaxLagOffsets,
                               long segmentDiskMaxBytes,
+                              long dhtSegmentMaxBytes,
                               TimeSpan isrLagMax,
                               TimeSpan promotionEscapeAfter) {
     public static final long DEFAULT_MAX_READ_RESPONSE_BYTES = 28L * 1024 * 1024;
@@ -56,6 +57,13 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
     /// holding its stream segments at boot. Disk size is a fact about the node, not cluster policy -- the
     /// previous hard-coded 4 GiB wedged long-lived nodes whatever their real disk.
     public static final long DERIVE_SEGMENT_DISK_MAX_BYTES = 0L;
+    /// `dht_segment_max_bytes` unset (#2258): the node caps the live bytes of `stream-segments` its DHT engine holds at
+    /// [#DHT_SEGMENT_MAX_BYTES_FLOOR] or a quarter of its maximum heap, whichever is larger (128 MiB on the shipped
+    /// `-Xmx512m` launchers). THE DEFAULT IS A GUESS (spec 3.2 item 7); what would settle it is the measured heap one block costs
+    /// the engine, beside the heap the node's other DHT prefixes and tombstones hold.
+    public static final long DERIVE_DHT_SEGMENT_MAX_BYTES = 0L;
+    /// The smallest derived `dht_segment_max_bytes`: 64 MiB.
+    public static final long DHT_SEGMENT_MAX_BYTES_FLOOR = 64L * 1024 * 1024;
     /// #1730 `isr_lag_max`: how long an in-sync replica may stay behind the owner's head before the owner asks for it
     /// to leave the partition's ISR (Kafka's `replica.lag.time.max.ms`). A LIVENESS knob only: the ISR changes only
     /// by a committed write, and a confirmation waits for every committed ISR member, so no value of it can make an
@@ -98,6 +106,7 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    DEFAULT_RESHUFFLE_CONCURRENCY,
                                    DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS,
                                    DERIVE_SEGMENT_DISK_MAX_BYTES,
+                                   DERIVE_DHT_SEGMENT_MAX_BYTES,
                                    DEFAULT_ISR_LAG_MAX,
                                    DEFAULT_PROMOTION_ESCAPE_AFTER);
     }
@@ -112,6 +121,7 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    DEFAULT_RESHUFFLE_CONCURRENCY,
                                    DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS,
                                    DERIVE_SEGMENT_DISK_MAX_BYTES,
+                                   DERIVE_DHT_SEGMENT_MAX_BYTES,
                                    DEFAULT_ISR_LAG_MAX,
                                    DEFAULT_PROMOTION_ESCAPE_AFTER);
     }
@@ -127,6 +137,7 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    DEFAULT_RESHUFFLE_CONCURRENCY,
                                    DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS,
                                    DERIVE_SEGMENT_DISK_MAX_BYTES,
+                                   DERIVE_DHT_SEGMENT_MAX_BYTES,
                                    DEFAULT_ISR_LAG_MAX,
                                    DEFAULT_PROMOTION_ESCAPE_AFTER);
     }
@@ -143,6 +154,7 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    reshuffleConcurrency,
                                    DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS,
                                    DERIVE_SEGMENT_DISK_MAX_BYTES,
+                                   DERIVE_DHT_SEGMENT_MAX_BYTES,
                                    DEFAULT_ISR_LAG_MAX,
                                    DEFAULT_PROMOTION_ESCAPE_AFTER);
     }
@@ -160,6 +172,7 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    reshuffleConcurrency,
                                    caughtUpMaxLagOffsets,
                                    DERIVE_SEGMENT_DISK_MAX_BYTES,
+                                   DERIVE_DHT_SEGMENT_MAX_BYTES,
                                    DEFAULT_ISR_LAG_MAX,
                                    DEFAULT_PROMOTION_ESCAPE_AFTER);
     }
@@ -174,8 +187,32 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    reshuffleConcurrency,
                                    caughtUpMaxLagOffsets,
                                    segmentDiskMaxBytes,
+                                   dhtSegmentMaxBytes,
                                    isrLagMax,
                                    promotionEscapeAfter);
+    }
+
+    /// The same streaming config with the cap on this node's DHT bytes of `stream-segments` set (`dht_segment_max_bytes`,
+    /// #2258); [#DERIVE_DHT_SEGMENT_MAX_BYTES] derives it from the heap.
+    public StreamingConfig withDhtSegmentMaxBytes(long dhtSegmentMaxBytes) {
+        return new StreamingConfig(publishForwardTimeout,
+                                   readForwardTimeout,
+                                   maxReadResponseBytes,
+                                   readLinearization,
+                                   reshuffleConcurrency,
+                                   caughtUpMaxLagOffsets,
+                                   segmentDiskMaxBytes,
+                                   dhtSegmentMaxBytes,
+                                   isrLagMax,
+                                   promotionEscapeAfter);
+    }
+
+    /// The cap on the live bytes of `stream-segments` in this node's DHT engine: the configured value, or when it is
+    /// [#DERIVE_DHT_SEGMENT_MAX_BYTES] the larger of [#DHT_SEGMENT_MAX_BYTES_FLOOR] and a quarter of `maxHeapBytes`.
+    public long effectiveDhtSegmentMaxBytes(long maxHeapBytes) {
+        return dhtSegmentMaxBytes == DERIVE_DHT_SEGMENT_MAX_BYTES
+               ? Math.max(DHT_SEGMENT_MAX_BYTES_FLOOR, maxHeapBytes / 4)
+               : dhtSegmentMaxBytes;
     }
 
     /// The same streaming config with the ISR lag bound set (`isr_lag_max`, #1730).
@@ -187,6 +224,7 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    reshuffleConcurrency,
                                    caughtUpMaxLagOffsets,
                                    segmentDiskMaxBytes,
+                                   dhtSegmentMaxBytes,
                                    isrLagMax,
                                    promotionEscapeAfter);
     }
@@ -200,6 +238,7 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    reshuffleConcurrency,
                                    caughtUpMaxLagOffsets,
                                    segmentDiskMaxBytes,
+                                   dhtSegmentMaxBytes,
                                    isrLagMax,
                                    promotionEscapeAfter);
     }
@@ -219,6 +258,7 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    reshuffleConcurrency,
                                    caughtUpMaxLagOffsets,
                                    segmentDiskMaxBytes,
+                                   dhtSegmentMaxBytes,
                                    isrLagMax,
                                    promotionEscapeAfter);
     }
