@@ -83,12 +83,14 @@ class DHTCapacityFenceRollbackTest {
                                           .isFalse();
     }
 
-    /// Fence only, no capacity refusal, EARLY: both replicas fence within the evidence wait, so the writer never applies its own slot
-    /// and the put ends indeterminate at once (the pre-#2258 behaviour, unchanged by the capacity precedence).
+    /// Fence only, no capacity refusal, EARLY: the new owner fences within the evidence wait while the other replica stays silent, so
+    /// the quorum is still reachable and only the evidence verdict keeps the writer from applying its own slot; the put ends
+    /// indeterminate at once (the pre-#2258 behaviour, unchanged by the capacity precedence).
     @Test
     void fenceOnly_anEarlyFence_skipsTheLocalSlot_andFailsIndeterminate() {
-        var cluster = new Cluster(false, true);
+        var cluster = new Cluster(false);
 
+        cluster.silent = REPLICA;
         cluster.holdFences = false;
         var failure = cluster.members.get(DEPOSED).client().put(KEY, VALUE).await().<Cause>fold(cause -> cause, _ -> null);
 
