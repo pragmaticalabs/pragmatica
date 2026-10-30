@@ -41,12 +41,13 @@ class AetherNodeBackupCoordinatorStopWiringTest {
         assertThat(source).containsOnlyOnce("backupFlushed.flatMap(() -> NodeStopSequence.run(");
     }
 
-    /// Know 6ee3dc3f0d (P-C): a worker holds a partial replica and must not stop-flush; the role is read from the node's own worker configuration.
+    /// Know 6ee3dc3f0d (P-C): a worker holds a partial replica and must not stop-flush; the role is the node's own worker role (configuration or label,
+    /// pinned by `AetherNodeBackupReplicaRoleTest`).
     @Test
     void stop_flushesAsAPartialReplica_onlyForAWorker() {
         assertThat(AetherNode.backupReplica(true)).isEqualTo(KvBackupService.Replica.PARTIAL);
         assertThat(AetherNode.backupReplica(false)).isEqualTo(KvBackupService.Replica.FULL);
-        assertThat(AssemblySource.spaced()).containsOnlyOnce("AetherNode.backupReplica(config.workerConfig().isPresent())");
+        assertThat(AssemblySource.spaced()).containsOnlyOnce("AetherNode.backupReplica(configuredWorker(config))");
     }
 
     @Test

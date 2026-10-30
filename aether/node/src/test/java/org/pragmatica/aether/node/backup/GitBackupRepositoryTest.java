@@ -123,6 +123,72 @@ class GitBackupRepositoryTest {
         assertThat(git(Path.of(remote), "show", "backup:" + GitBackupRepository.FILE)).isEqualTo("first\n");
     }
 
+    /// A rejection is git's own status line: `[rejected]` (the client saw the remote move) or `[remote rejected] (failed to update ref)` (the server
+    /// found the ref changed under the push). A hook's message that merely contains the words is a refusal.
+    @Test
+    void push_serverSideRefRace_isARejection_butAHookMessageWithTheWordsIsNot() throws IOException {
+        var remote = bareRemote(temp.resolve("remote.git"));
+        var seed = repository("seed", Option.some(remote));
+
+        seed.prepare();
+        seed.commit("seed\n", "seed").flatMap(_ -> seed.push());
+        var locked = repository("locked", Option.some(remote));
+
+        locked.prepare();
+        locked.fetchRemoteHead();
+        locked.resetToRemoteHead();
+        locked.commit("locked\n", "locked");
+        Files.writeString(Path.of(remote).resolve("refs/heads/backup.lock"), "");
+
+        boolean lockRace = locked.push().fold(cause -> cause instanceof BackupRepositoryError.PushRejected, _ -> false);
+
+        assertThat(lockRace).as("a stale ref lock is a lost race").isTrue();
+
+        Files.delete(Path.of(remote).resolve("refs/heads/backup.lock"));
+        var hook = Path.of(remote).resolve("hooks").resolve("pre-receive");
+
+        Files.writeString(hook, "#!/bin/sh\necho 'policy: failed to update ref [rejected] non-fast-forward fetch first'\nexit 1\n");
+        Files.setPosixFilePermissions(hook, PosixFilePermissions.fromString("rwxr-xr-x"));
+
+        boolean refusal = locked.push().fold(cause -> cause instanceof BackupRepositoryError.GitFailed, _ -> false);
+
+        assertThat(refusal).as("a hook refusal is a failure, not a race").isTrue();
+    }
+
+    /// A git push interrupted by its owner (the stop's deadline) is killed with it: nothing reaches the remote afterwards.
+    @Test
+    @Timeout(60)
+    void push_interrupted_isKilled_soNothingReachesTheRemoteAfterwards() throws Exception {
+        var remote = bareRemote(temp.resolve("remote.git"));
+        var seed = repository("seed", Option.some(remote));
+
+        seed.prepare();
+        seed.commit("seed\n", "seed").flatMap(_ -> seed.push());
+        var before = git(Path.of(remote), "rev-parse", "backup").strip();
+        var slow = repository("slow", Option.some(remote));
+
+        slow.prepare();
+        slow.fetchRemoteHead();
+        slow.resetToRemoteHead();
+        slow.commit("slow\n", "slow");
+        var started = temp.resolve("hook.started");
+        var hook = Path.of(remote).resolve("hooks").resolve("pre-receive");
+
+        Files.writeString(hook, "#!/bin/sh\ntouch '" + started + "'\nsleep 4\nexit 0\n");
+        Files.setPosixFilePermissions(hook, PosixFilePermissions.fromString("rwxr-xr-x"));
+        var pusher = new Thread(slow::push);
+
+        pusher.start();
+        while (!Files.exists(started)) {
+            Thread.sleep(20);
+        }
+        pusher.interrupt();
+        pusher.join(10_000);
+        Thread.sleep(6_000);
+
+        assertThat(git(Path.of(remote), "rev-parse", "backup").strip()).as("the interrupted push did not land").isEqualTo(before);
+    }
+
     @Test
     void resetToRemoteHead_thenCommit_isAFastForward() {
         var remote = bareRemote(temp.resolve("remote.git"));

@@ -1257,6 +1257,27 @@ class KvBackupServiceTest {
             assertThat(node.warnings()).extracting(BackupWarning::code).contains(Code.BACKUP_STOP_FLUSH_FAILED);
         }
 
+        /// The stop's deadline path stops the service while the worker is still running the flush: a repository that fails then is the stop's doing
+        /// (an interrupted git, a torn-down node), not a commit failure the operator must hear about.
+        @Test
+        void stopFlushed_raisesNoCommitFailure_whenTheNodeIsStoppedBeforeTheWorkerRuns() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            writeFile(temp.resolve("blocker"), "a file where the repository directory should be");
+
+            var node = follower(remote, 1, "blocker/repository");
+
+            node.apply(ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+
+            var stopping = node.service().stopFlushed(DEADLINE);
+
+            node.service().stop();
+            settle(stopping);
+
+            assertThat(node.warnings()).extracting(BackupWarning::code).doesNotContain(Code.BACKUP_COMMIT_FAILED);
+            assertThat(node.service().status()).isEqualTo(KvBackupService.Status.CURRENT);
+        }
+
         private void assertFiveNodesLeaveTheHighest(boolean ascending) {
             var remote = bareRemote(temp.resolve("remote.git"));
             var nodes = new ArrayList<OtherCluster>();
