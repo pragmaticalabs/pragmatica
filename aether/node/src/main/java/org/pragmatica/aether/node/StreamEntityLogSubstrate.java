@@ -102,6 +102,26 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// clock, but `evictByAge` computes `now - maxAgeMs`, so `Long.MAX_VALUE` would underflow.
     private static final long ENTITY_RING_MAX_AGE_MS = 365L * 24 * 60 * 60 * 1000;
 
+    /// How a writer reclaims the checkpoint blocks its pointer swaps displace (PR-3c, spec 6.4 item 1): how long a displaced block outlives
+    /// the swap, and the bounded retry of a delete the store refuses.
+    public record CheckpointReclaim(TimeSpan grace, Retry deleteRetry) {
+        public static CheckpointReclaim checkpointReclaim(TimeSpan grace, Retry deleteRetry) {
+            return new CheckpointReclaim(grace, deleteRetry);
+        }
+    }
+
+    /// The production reclaim: a 60 s grace, two checkpoint ticks (`[guess]`, spec 6.4), and five delete attempts.
+    public static final CheckpointReclaim CHECKPOINT_RECLAIM = CheckpointReclaim.checkpointReclaim(TimeSpan.timeSpan(60).seconds(),
+                                                                                                    Retry.retry()
+                                                                                                         .attempts(5)
+                                                                                                         .strategy(BackoffStrategy.exponential()
+                                                                                                                                  .initialDelay(TimeSpan.timeSpan(5)
+                                                                                                                                                        .seconds())
+                                                                                                                                  .maxDelay(TimeSpan.timeSpan(60)
+                                                                                                                                                    .seconds())
+                                                                                                                                  .factor(2.0)
+                                                                                                                                  .withoutJitter()));
+
     private final StreamPartitionManager partitionManager;
     private final StreamPartitionManager.ReplicaCatchupSource catchupSource;
     private final TieredStreamReader tieredReader;
@@ -137,6 +157,26 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                                                               StorageInstance storage,
                                                               KVStore<AetherKey, AetherValue> kvStore,
                                                               Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
+        return new StreamEntityLogSubstrate(partitionManager,
+                                            catchupSource,
+                                            tieredReader,
+                                            segmentIndex,
+                                            evictionListener,
+                                            storage,
+                                            kvStore,
+                                            applier);
+    }
+
+    /// The factory above with the checkpoint reclaim given: tests shorten the grace and the retry; production takes [#CHECKPOINT_RECLAIM].
+    public static EntityLogSubstrate streamEntityLogSubstrate(StreamPartitionManager partitionManager,
+                                                              StreamPartitionManager.ReplicaCatchupSource catchupSource,
+                                                              TieredStreamReader tieredReader,
+                                                              SegmentIndex segmentIndex,
+                                                              EvictionListener evictionListener,
+                                                              StorageInstance storage,
+                                                              KVStore<AetherKey, AetherValue> kvStore,
+                                                              Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                                              CheckpointReclaim reclaim) {
         return new StreamEntityLogSubstrate(partitionManager,
                                             catchupSource,
                                             tieredReader,
