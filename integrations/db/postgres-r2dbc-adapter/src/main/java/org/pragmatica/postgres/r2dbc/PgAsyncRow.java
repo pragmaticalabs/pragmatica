@@ -23,8 +23,10 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.postgres.PgRow;
 
+import io.r2dbc.spi.ColumnMetadata;
 import io.r2dbc.spi.Row;
 import io.r2dbc.spi.RowMetadata;
 
@@ -48,16 +50,39 @@ public final class PgAsyncRow implements Row {
         return metadata;
     }
 
+    /// The R2DBC SPI reports a failed read by throwing, so the conversion failure is thrown as an [R2dbcAdapterException].
+    @Contract
     @Override
     @SuppressWarnings("unchecked")
     public <T> T get(int index, Class<T> type) {
-        return (T) getByIndex(index, type);
+        try {
+            return (T) getByIndex(index, type);
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            throw conversionFailed(metadata.getColumnMetadata(index), type, e);
+        }
     }
 
+    @Contract
     @Override
     @SuppressWarnings("unchecked")
     public <T> T get(String name, Class<T> type) {
-        return (T) getByName(name, type);
+        var column = metadata.getColumnMetadata(name);
+
+        try {
+            return (T) getByName(name, type);
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            throw conversionFailed(column, type, e);
+        }
+    }
+
+    private static R2dbcAdapterException conversionFailed(ColumnMetadata column,
+                                                          Class<?> type,
+                                                          RuntimeException failure) {
+        var pgType = column instanceof PgAsyncColumnMetadata pg
+                     ? pg.pgType().name()
+                     : "unknown";
+
+        return R2dbcAdapterException.conversionFailed(column.getName(), pgType, type, failure);
     }
 
     private Object getByIndex(int index, Class<?> type) {

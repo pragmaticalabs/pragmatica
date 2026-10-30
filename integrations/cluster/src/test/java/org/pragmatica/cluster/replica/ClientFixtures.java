@@ -30,6 +30,7 @@ import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.cluster.state.kvstore.ValueSizeTable;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -164,7 +165,8 @@ final class ClientFixtures {
                                                          queue::add,
                                                          nanos::get,
                                                          limits,
-                                                         installs::incrementAndGet);
+                                                         installs::incrementAndGet,
+                                                         new ReplicaFeedClient.GovernorArm(() -> false, Option::none));
         }
 
         Core core(int index) {

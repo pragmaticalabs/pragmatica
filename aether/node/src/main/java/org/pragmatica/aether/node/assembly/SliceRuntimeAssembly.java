@@ -47,6 +47,7 @@ import org.pragmatica.aether.slice.*;
 import org.pragmatica.aether.slice.DeferredSliceInvokerFacade;
 import org.pragmatica.aether.slice.ReplicationContext;
 import org.pragmatica.aether.slice.SharedLibraryClassLoader;
+import org.pragmatica.aether.slice.ConfigChangeFeed;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.blueprint.OwningBlueprintResolver;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
@@ -128,7 +129,8 @@ public sealed interface SliceRuntimeAssembly {
                             SliceCodec nodeCodec,
                             List<Repository> repositories,
                             SharedLibraryClassLoader sharedLibraryLoader,
-                            AetherNode.ResourceProviderSetup resourceProviderSetup) {}
+                            AetherNode.ResourceProviderSetup resourceProviderSetup,
+                            Option<ConfigChangeFeed> configFeed) {}
 
     /// The slice store over the repositories, the shared library loader and the resource provider.
     static SliceStore sliceStore(SliceStoreInputs in) {
@@ -149,7 +151,8 @@ public sealed interface SliceRuntimeAssembly {
                                                Option.some(nodeCodec),
                                                resourceProviderSetup.secretResolver(),
                                                sliceClassLoader -> SliceScopedResourceProvider.sliceScopedResourceProvider(sliceClassLoader,
-                                                                                                                           resourceProviderSetup.facade())
+                                                                                                                           resourceProviderSetup.facade()),
+                                               in.configFeed()
                                                // #773: the node is the only place that can see BOTH
                                                // the resource SPI and the slice loader, so the
                                                // slice-scoped overlay is built here and injected

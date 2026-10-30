@@ -317,6 +317,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             reconcile();
             startReconcileTimer();
             SharedScheduler.schedule(this::deferredTopologyRecheck, timeSpan(2).seconds());
+            log.info("Cluster deployment manager activation complete on node {}", ctx.self());
         }
 
         @Contract

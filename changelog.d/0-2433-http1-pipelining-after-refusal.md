@@ -1,0 +1,2 @@
+### Fixed
+- On HTTP/1.1, a request pipelined behind a request that ended the connection is no longer dispatched: not after a request with two `Host` lines, a WebSocket upgrade to a path with no route, a request with `Connection: close`, or an HTTP/1.0 request without keep-alive (#2433). Every way the server ends an exchange now drops what follows on that connection, and one test table covers all of them.

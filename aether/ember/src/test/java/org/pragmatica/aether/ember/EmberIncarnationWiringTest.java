@@ -22,7 +22,8 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// different supplier:
 ///   - the leader's current generation epoch: `leaderEpochSupplier`;
 ///   - every follower core's current generation epoch: the leader's authority pings, observed;
-///   - a worker's installed metadata projection: the core metadata server's incarnation supplier.
+///   - a worker's own store (W4: it holds the replica, fed by the core replica feed under the incarnation tag; before the cutover this was its
+///     installed metadata projection).
 /// `generationEpoch` itself (M10) is pinned at its seam by `ClusterIncarnationTest.GenerationEpochSeam`, not
 /// here: its only consumer reachable without a workload is the DHT `core` ownership record, and that record
 /// cannot pin it. Bootstrap commits it just BEFORE the registrar commits the genesis incarnation (observed
@@ -57,7 +58,7 @@ class EmberIncarnationWiringTest {
 
     @Test
     @Timeout(420)
-    void generationEpochs_andWorkerProjection_carryTheCommittedIncarnation_afterGenesis() {
+    void generationEpochs_andWorkerReplica_carryTheCommittedIncarnation_afterGenesis() {
         // Probed through the shared EmberTestPorts: it also probes each node's SWIM UDP port, which this class's own
         // loop did not, and a start that loses a port between the probe and the bind retries on a fresh block.
         cluster = EmberTestPorts.startedCluster(PORTS,
@@ -80,8 +81,8 @@ class EmberIncarnationWiringTest {
         assertThat(added.isSuccess()).as("the worker process starts").isTrue();
         var worker = cluster.getNode(added.unwrap().id()).unwrap();
 
-        awaitCondition("the worker installs a metadata projection of incarnation 1",
-                       () -> worker.metadataResourceMetrics().getOrDefault("clientInstalledIncarnation", 0L) == GENESIS_INCARNATION);
+        awaitCondition("the worker's replica holds incarnation 1",
+                       () -> ClusterIncarnation.current(worker.kvStore()) == GENESIS_INCARNATION);
     }
 
     private AetherNode leader() {

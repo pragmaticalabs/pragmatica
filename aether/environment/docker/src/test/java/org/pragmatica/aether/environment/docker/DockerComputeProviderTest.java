@@ -962,6 +962,16 @@ class DockerComputeProviderTest {
             assertThat(testRunner.lastCommand).doesNotContain("label=aether.cluster");
         }
 
+        /// Server ids are compared exactly by the apply ledger: the list asks for FULL container ids, the form `docker run -d` answers with.
+        @Test
+        void listInstances_asksForFullContainerIds() {
+            testRunner.nextResponse = Promise.success("");
+
+            scoped().listInstances().await().onFailure(cause -> fail(cause.message()));
+
+            assertThat(testRunner.lastCommand).contains("--no-trunc");
+        }
+
         @Test
         void listInstances_excludesContainersOfOtherClusters_evenIfTheDaemonReturnsThem() {
             testRunner.nextResponse = Promise.success("a1\tmine\trunning\tprod\tcore\tn1\nb2\ttheirs\trunning\tother\tcore\tn2\nc3\tstray\trunning\t\t\t");

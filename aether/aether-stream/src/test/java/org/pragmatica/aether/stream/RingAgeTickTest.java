@@ -12,6 +12,7 @@ import java.util.stream.LongStream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.RetentionDimensions;
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
@@ -69,12 +70,13 @@ class RingAgeTickTest {
         return Result.unitResult();
     }
 
+    /// A `time` stream DECLARES its age (#2201 I-12): the tick keys on the declaration, not on a finite value.
     private static RetentionPolicy timeTyped(long maxAgeMs) {
-        return retentionPolicy(DEFAULT_MAX_COUNT, DEFAULT_MAX_BYTES, maxAgeMs);
+        return retentionPolicy(DEFAULT_MAX_COUNT, DEFAULT_MAX_BYTES, maxAgeMs).withDeclared(RetentionDimensions.AGE);
     }
 
     private static RetentionPolicy timeTyped(long maxAgeMs, TierAwareRetention tierAware) {
-        return retentionPolicy(DEFAULT_MAX_COUNT, DEFAULT_MAX_BYTES, maxAgeMs, tierAware);
+        return retentionPolicy(DEFAULT_MAX_COUNT, DEFAULT_MAX_BYTES, maxAgeMs, tierAware).withDeclared(RetentionDimensions.AGE);
     }
 
     private OffHeapRingBuffer ringWithOldAndFreshEvents(String stream, RetentionPolicy retention) {
@@ -115,8 +117,10 @@ class RingAgeTickTest {
                                      .isEqualTo(KEPT_EVENTS);
     }
 
+    /// #2201 I-12 (spec 3.3 items 1 and 3, after PR-0b): an API-created stream carries the default 24 h age without declaring
+    /// it, so the tick leaves it alone; before PR-0b it swept it.
     @Test
-    void evictRingsByAge_appliesTheDefaultTwentyFourHourAge_forAnApiCreatedStream() {
+    void evictRingsByAge_leavesAnApiCreatedStreamUntouched_itsDefaultAgeIsNotADeclaration() {
         manager.createStream(StreamConfig.streamConfig("api-default"))
                .onFailure(cause -> fail(cause.message()));
 
@@ -125,17 +129,17 @@ class RingAgeTickTest {
 
         append(ring, "stale", now - 25 * HOUR_MS);
         append(ring, "recent", now - 23 * HOUR_MS);
-        manager.evictRingsByAge();
 
-        assertThat(handedOver).containsExactly(0L);
-        assertThat(ring.eventCount()).isEqualTo(1L);
+        assertThat(manager.evictRingsByAge()).isZero();
+        assertThat(handedOver).isEmpty();
+        assertThat(ring.eventCount()).isEqualTo(2L);
     }
 
-    /// The `size` arm of the parser fills the count and age dimensions with the defaults (24 h), so a size-typed
-    /// stream carries a finite age and is swept like a time-typed one.
+    /// The `size` arm of the parser fills the count and age dimensions with the defaults (24 h); the age is not declared, so
+    /// the tick leaves a size-typed stream alone (#2201 I-12; before PR-0b it was swept like a time-typed one).
     @Test
-    void evictRingsByAge_evictsByTheDefaultAge_forASizeTypedStream() {
-        var sizeTyped = retentionPolicy(DEFAULT_MAX_COUNT, 4L * 1024 * 1024, 24 * HOUR_MS);
+    void evictRingsByAge_leavesASizeTypedStreamUntouched_itsFilledInAgeIsNotADeclaration() {
+        var sizeTyped = retentionPolicy(DEFAULT_MAX_COUNT, 4L * 1024 * 1024, 24 * HOUR_MS).withDeclared(RetentionDimensions.BYTES);
 
         manager.createStream(StreamConfig.streamConfig("sized", 1, sizeTyped, "earliest"))
                .onFailure(cause -> fail(cause.message()));
@@ -145,15 +149,17 @@ class RingAgeTickTest {
 
         append(ring, "stale", now - 25 * HOUR_MS);
         append(ring, "recent", now - HOUR_MS);
-        manager.evictRingsByAge();
 
-        assertThat(handedOver).containsExactly(0L);
-        assertThat(ring.eventCount()).isEqualTo(1L);
+        assertThat(manager.evictRingsByAge()).isZero();
+        assertThat(handedOver).isEmpty();
+        assertThat(ring.eventCount()).isEqualTo(2L);
     }
 
     @Test
     void evictRingsByAge_evictsByAge_forACompoundStreamWhoseCountAndSizeAreNotExceeded() {
-        var compound = retentionPolicy(1_000, 64L * 1024, HOUR_MS, RetentionMode.ALL);
+        var compound = retentionPolicy(1_000, 64L * 1024, HOUR_MS, RetentionMode.ALL).withDeclared(RetentionDimensions.retentionDimensions(true,
+                                                                                                                                        true,
+                                                                                                                                        true));
         var ring = ringWithOldAndFreshEvents("compound", compound);
 
         manager.evictRingsByAge();
@@ -177,7 +183,7 @@ class RingAgeTickTest {
     /// fail-closed stance as the sealed tier (#964), although a ring eviction hands the event to the sealer.
     @Test
     void evictRingsByAge_leavesAStreamWithAnUnreadableRetentionModeUntouched_andDoesNotSweepIt() {
-        var unreadable = retentionPolicy(DEFAULT_MAX_COUNT, DEFAULT_MAX_BYTES, HOUR_MS, RetentionMode.UNKNOWN);
+        var unreadable = retentionPolicy(DEFAULT_MAX_COUNT, DEFAULT_MAX_BYTES, HOUR_MS, RetentionMode.UNKNOWN).withDeclared(RetentionDimensions.AGE);
         var ring = ringWithOldAndFreshEvents("unreadable", unreadable);
 
         var swept = manager.evictRingsByAge();

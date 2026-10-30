@@ -37,6 +37,7 @@ import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.aether.slice.ReplicationFactorsError;
 import org.pragmatica.aether.slice.RetentionMode;
+import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.fence.OwnershipDomain;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
@@ -1023,15 +1024,38 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// What a validated consumer read returns: the events and the owner epoch they were served under (#1730 phase 2 /
     /// #1873), which the consumer adopts.
-    /// `fromTier` (#2201 C-16) says the read began below the ring tail and was served from the sealed tier: the signal a
-    /// consumer's `stream-consumer-behind-ring` episode opens and closes on.
-    public record EpochRead(List<OffHeapRingBuffer.RawEvent> events, Epoch ownerEpoch, boolean fromTier) {
+    /// `position` (#2201 C-16) says where the read was served from: [Position#TIER] when it began below the ring tail and
+    /// the sealed tier served it, [Position#RING] when the ring did, and [Position#UNKNOWN] when the serving ring's tail was
+    /// not known (#2223: a closing ring answers `-1`, which no offset is below). It is the signal a consumer's
+    /// `stream-consumer-behind-ring` episode opens and closes on: a tier read opens it, a ring read closes it, an unknown one
+    /// does neither.
+    public record EpochRead(List<OffHeapRingBuffer.RawEvent> events, Epoch ownerEpoch, Position position) {
+        public enum Position {
+            RING,
+            TIER,
+            UNKNOWN
+        }
+
         public EpochRead(List<OffHeapRingBuffer.RawEvent> events, Epoch ownerEpoch) {
-            this(events, ownerEpoch, false);
+            this(events, ownerEpoch, Position.RING);
         }
 
         public static EpochRead epochRead(List<OffHeapRingBuffer.RawEvent> events, Epoch ownerEpoch, boolean fromTier) {
-            return new EpochRead(events, ownerEpoch, fromTier);
+            return new EpochRead(events,
+                                 ownerEpoch,
+                                 fromTier
+                                 ? Position.TIER
+                                 : Position.RING);
+        }
+
+        public static EpochRead epochRead(List<OffHeapRingBuffer.RawEvent> events,
+                                          Epoch ownerEpoch,
+                                          Position position) {
+            return new EpochRead(events, ownerEpoch, position);
+        }
+
+        public boolean fromTier() {
+            return position == Position.TIER;
         }
     }
 
@@ -1265,9 +1289,19 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private Option<ReplicationFactors> committedReplication(String streamName) {
+        return committedConfigOf(streamName).map(StreamConfig::replication);
+    }
+
+    /// The retention policy of the committed config this node has applied for `streamName`, else of a locally committed
+    /// entry (#2201 3.2 item 2): the source sealed-tier retention reads. None while this node has neither, and retention
+    /// then withholds the stream.
+    public Option<RetentionPolicy> committedRetention(String streamName) {
+        return committedConfigOf(streamName).map(StreamConfig::retention);
+    }
+
+    private Option<StreamConfig> committedConfigOf(String streamName) {
         return option(appliedConfigs.get(streamName)).orElse(() -> option(streams.get(streamName)).filter(StreamEntry::isCommitted)
-                                                                         .map(StreamEntry::config))
-                     .map(StreamConfig::replication);
+                                                                         .map(StreamEntry::config));
     }
 
     private Result<Unit> createStream(StreamConfig config, CommitMode commitMode) {
@@ -4821,7 +4855,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Takes at most [#RING_AGE_BATCH_EVENTS] events and [#RING_AGE_BATCH_BYTES] bytes from a ring per tick; the rest
     /// of what has aged out waits for the next tick. Calls [OffHeapRingBuffer#evictByAge] and nothing else: `applyRetention` and the tier-aware path stay unwired.
     /// Excluded: an `entity:` ring (it keeps space eviction, its sealed segments are protected by the checkpoint
-    /// floor), a stream whose max age is `Long.MAX_VALUE` (a count-typed stream declares no age) and a stream whose
+    /// floor), a stream that declares no age (a `count`-, `size`- or API-default stream; #2201 I-12) and a stream whose
     /// retention mode is `UNKNOWN` (a rule this node cannot read is not authority to evict, #964). Returns the
     /// number of rings swept.
     public int evictRingsByAge() {
@@ -4850,10 +4884,13 @@ public final class StreamPartitionManager implements AutoCloseable {
                     .startsWith(ENTITY_STREAM_PREFIX);
     }
 
+    /// The stream DECLARES an age (#2201 I-12, spec 3.3 item 1 after PR-0b): a `size`-typed or API-default stream carries a
+    /// filled-in 24 h age it never declared, and that is ring sizing, not a bound.
     private static boolean declaresMaxAge(StreamEntry entry) {
-        return entry.config()
-                    .retention()
-                    .maxAgeMs() != Long.MAX_VALUE;
+        var retention = entry.config().retention();
+
+        return retention.declared()
+                        .age() && retention.maxAgeMs() != Long.MAX_VALUE;
     }
 
     private static int evictEntryByAge(StreamEntry entry) {

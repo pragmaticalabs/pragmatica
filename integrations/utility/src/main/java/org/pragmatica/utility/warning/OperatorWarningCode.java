@@ -664,6 +664,26 @@ public enum OperatorWarningCode {
     /// only after the warning for the subject. Detected at the next adoption of the same stream in this process; a life released while the
     /// process was down is announced afresh, or not at all, by the next boot.
     STORAGE_STREAM_WAL_RELEASED("storage-stream-wal-released", "storage", WarningLevel.INFO, STORAGE_STREAM_WAL_ORPHANED),
+    /// A node's stream retention has withheld a stream's sealed history for two consecutive passes (#2201 3.2 item 2): the node has
+    /// no retention policy it can read for the stream (its committed config is not applied there yet, or its retention mode is
+    /// unknown to the build), and a rule it cannot read is not authority to delete. Nothing of the stream is reclaimed on that
+    /// node meanwhile, so its disk use grows. The subject is `node <nodeId> stream <name>`. Closed by
+    /// [#STREAM_RETENTION_RESUMED].
+    STREAM_RETENTION_WITHHELD("stream-retention-withheld", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STREAM_RETENTION_WITHHELD], same subject: a pass judged the stream again, or the node no longer holds its
+    /// sealed segments (the message says which).
+    STREAM_RETENTION_RESUMED("stream-retention-resumed", "storage", WarningLevel.INFO, STREAM_RETENTION_WITHHELD),
+    /// The block of a sealed stream segment cannot be read for its age for a reason no retry changes (#2201 3.2 item 8): a missing
+    /// or wrong encryption key, a damaged or missing block. The segment is not read again until the node restarts, and retention
+    /// judges it by the age of the next newer segment, so it neither holds the stream's history for ever nor goes before a newer
+    /// segment. The subject is `node <nodeId> stream <name>[<partition>] <start>-<end>`. Closed by
+    /// [#STREAM_SEGMENT_UNREADABLE_RECLAIMED].
+    STREAM_SEGMENT_UNREADABLE("stream-segment-unreadable", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STREAM_SEGMENT_UNREADABLE], same subject: retention reclaimed the segment.
+    STREAM_SEGMENT_UNREADABLE_RECLAIMED("stream-segment-unreadable-reclaimed",
+                                        "storage",
+                                        WarningLevel.INFO,
+                                        STREAM_SEGMENT_UNREADABLE),
     /// A peer's SWIM datagram was encrypted under a gossip key id this node does not hold (#1200), and was dropped. The usual cause is a node that
     /// booted with only its `cluster_secret`-derived key after the cluster rotated its gossip key: its gossip and the cluster's cannot be read by
     /// either side until the node joins consensus and replays the rotation record, which normally takes seconds. Subject is the sender's address
@@ -680,7 +700,18 @@ public enum OperatorWarningCode {
     GOSSIP_KEY_UNKNOWN_SENDERS_SUPPRESSED("gossip-key-unknown-senders-suppressed", "membership", WarningLevel.INFO),
     /// The recovery of [#JSON_CONFIG_REJECTED], same subject (#2378): a valid `[json]` configuration was adopted after a
     /// refusal. INFO, published only after a published rejection for the subject (#752 mechanism).
-    JSON_CONFIG_APPLIED("json-config-applied", "json", WarningLevel.INFO, JSON_CONFIG_REJECTED);
+    JSON_CONFIG_APPLIED("json-config-applied", "json", WarningLevel.INFO, JSON_CONFIG_REJECTED),
+    /// A `Watched`/`Live` configuration subscription could not take a change (#774): its callback threw, failed or timed out, or the
+    /// section's record could not be bound from the new configuration (the message names the phase and carries the `applySeq`). The
+    /// previous record stays in force and the next change is delivered; nothing is retried. Subject `<artifact>/<section>`. Raised on
+    /// the transition into failure only; a repeat failure logs at ERROR without re-raising.
+    CONFIG_WATCH_CALLBACK_FAILED("config-watch-callback-failed", "config", WarningLevel.WARNING),
+    /// The recovery of [#CONFIG_WATCH_CALLBACK_FAILED], same subject (#774): the next delivery bound and (when it called back) succeeded.
+    /// INFO, published only after a published failure for the subject (#752 mechanism).
+    CONFIG_WATCH_CALLBACK_RECOVERED("config-watch-callback-recovered",
+                                    "config",
+                                    WarningLevel.INFO,
+                                    CONFIG_WATCH_CALLBACK_FAILED);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

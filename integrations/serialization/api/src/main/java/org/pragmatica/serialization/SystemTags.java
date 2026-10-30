@@ -335,6 +335,7 @@ public interface SystemTags {
         pin(table, 709, "org.pragmatica.aether.slice.StreamCompression");
         pin(table, 710, "org.pragmatica.aether.slice.StreamConfig");
         pin(table, 711, "org.pragmatica.aether.slice.TierAwareRetention");
+        pin(table, 712, "org.pragmatica.aether.slice.RetentionDimensions");
         // generation and community topology  [base 832]
         pin(table, 832, "org.pragmatica.aether.slice.generation.ClusterMode");
         pin(table, 833, "org.pragmatica.aether.slice.generation.ClusterQuiescence");

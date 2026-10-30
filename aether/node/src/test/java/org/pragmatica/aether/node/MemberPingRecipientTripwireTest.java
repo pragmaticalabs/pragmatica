@@ -12,7 +12,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.metrics.DrainCommandRegistry;
@@ -32,8 +31,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// admission), so the test reads it from an ASSEMBLED, unstarted node: the node's scheduler, its context, the predicate, and the registry the
 /// predicate captured. The `aether-metrics` half (dispatch is leader-only, no directory slot on the messages) is `ClusterDirectoryTripwireTest`.
 ///
-/// Today a plain member is not a recipient: it is reached only while a drain is requested for it (or, on a core, while it is pending
-/// admission). The design needs leader-authored content to reach a member through a responder's pong, not through a leader ping.
+/// A plain member is not a recipient: it is reached only while a drain is requested for it (or, on a core, while it is pending admission). The
+/// design reaches a member with leader-authored content through a responder's pong, not through a leader ping; that end to end (NT-O44, over a
+/// governor, in Ember) is `EmberReplicaRelayTest`.
 class MemberPingRecipientTripwireTest {
     private static final NodeId MEMBER = new NodeId("plain-member");
 
@@ -86,12 +86,6 @@ class MemberPingRecipientTripwireTest {
         assertThat(predicate.test(MEMBER)).as("TW-O17: a plain member is not a ping recipient of a worker").isFalse();
         capturedDrainRegistry(predicate).requestDrain(MEMBER);
         assertThat(predicate.test(MEMBER)).as("control: a drain request makes it one").isTrue();
-    }
-
-    @Disabled("W4 (cutover and relay): enable when leader-authored directory content reaches a member through a responder's pong; replace the body with NT-O44 over a governor in Ember")
-    @Test
-    void aMember_receivesLeaderContent_throughAGovernorsPong_notThroughALeaderPing() {
-        throw new AssertionError("NT-O44 end to end is not written yet; the property to check once it is: in an Ember cluster with a governor, a plain member that is not a leader ping recipient installs the leader's ClusterDirectory from its governor's pong");
     }
 
     private AetherNodeConfig config(NodeId self, String role) {

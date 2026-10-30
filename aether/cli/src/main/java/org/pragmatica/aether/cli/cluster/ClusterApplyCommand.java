@@ -35,8 +35,6 @@ import static org.pragmatica.lang.Result.success;
 class ClusterApplyCommand implements Callable<Integer> {
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
-    private static final Cause ROLLBACK_NOT_IMPLEMENTED = Causes.cause("--rollback is not implemented (#686); nothing was changed");
-
     @Parameters(index = "0", description = "Path to aether-cluster.toml config file")
     private Path configFile;
 
@@ -49,7 +47,7 @@ class ClusterApplyCommand implements Callable<Integer> {
     @CommandLine.Option(names = "--resume", description = "Resume a halted apply from first unfinished wave")
     private boolean resume;
 
-    @CommandLine.Option(names = "--rollback", description = "Not implemented (#686): fails with a non-zero exit")
+    @CommandLine.Option(names = "--rollback", description = "Terminate the VMs a halted apply created (from its ledger), newest first; exits non-zero and keeps the ledger if any is left")
     private boolean rollback;
 
     @CommandLine.Option(names = "--full-check", description = "Run full network pre-flight checks before apply")
@@ -64,7 +62,7 @@ class ClusterApplyCommand implements Callable<Integer> {
     @Override
     public Integer call() {
         return rollback
-               ? refuseRollback()
+               ? rollbackWithTarget()
                : applyWithTarget();
     }
 
@@ -84,16 +82,27 @@ class ClusterApplyCommand implements Callable<Integer> {
     }
 
     private int handleResume() {
-        return readAndParseConfig().flatMap(this::resumeApply)
+        return readAndResolveConfig().flatMap(this::resumeApply)
+                                   .fold(ClusterApplyCommand::onFailure, v -> v);
+    }
+
+    private Integer rollbackWithTarget() {
+        return clusterTarget.applyOverrides()
+                            .map(_ -> handleRollback())
+                            .fold(ClusterApplyCommand::onFailure, v -> v);
+    }
+
+    /// Only the cluster's name is needed from the config file: the VMs to terminate are the ledger's, not the plan's.
+    private int handleRollback() {
+        return readAndParseConfig().flatMap(config -> ApplyOrchestrator.rollback(config.cluster().name()))
+                                 .map(_ -> printRollbackComplete())
                                  .fold(ClusterApplyCommand::onFailure, v -> v);
     }
 
-    /// Owner ruling (#686): `--rollback` fails honestly until the wave rollout is decided. The flag used
-    /// to be accepted and then ran the normal apply path, which looked like a rollback that did nothing.
-    /// Refused first of all, before `--cluster` resolution reads the registry and before the config, the
-    /// apply state or the cluster are touched, so no side effect (and no other error) precedes the refusal.
-    private int refuseRollback() {
-        return onFailure(ROLLBACK_NOT_IMPLEMENTED);
+    private int printRollbackComplete() {
+        System.out.println("Rollback complete: every VM the apply recorded is gone.");
+
+        return ExitCode.SUCCESS;
     }
 
     private Result<Integer> resumeApply(ClusterBootstrapConfig desired) {
@@ -110,15 +119,31 @@ class ClusterApplyCommand implements Callable<Integer> {
         return ExitCode.SUCCESS;
     }
 
+    /// As written, `${env:...}` / `${secrets:...}` references left in place. Enough where only structure is read (`--rollback`
+    /// needs the cluster's name and nothing else, so it must not fail on a reference it does not use).
     private Result<ClusterBootstrapConfig> readAndParseConfig() {
         return readConfigFile().flatMap(ClusterBootstrapConfigParser::parse);
     }
 
+    /// The config the wave ACTS on: references resolved from the operator's environment, exactly as `aether cluster bootstrap`
+    /// resolves them. The scalar `credentials` is the provider's `api_token` verbatim, so an unresolved reference would be sent
+    /// to the provider as the token (a 401 at the first call of `--resume`).
+    private Result<ClusterBootstrapConfig> readAndResolveConfig() {
+        return readConfigFile().flatMap(ClusterApplyCommand::parseResolved);
+    }
+
+    static Result<ClusterBootstrapConfig> parseResolved(String rawToml) {
+        return ConfigReferenceResolver.resolveAll(rawToml).flatMap(ClusterBootstrapConfigParser::parse);
+    }
+
+    /// The cluster stores the TOML as the operator sent it, references unresolved (resolved values are never sent to or kept by the
+    /// cluster), so the stored config is resolved the same way as the desired one: the diff must compare like with like, and a
+    /// stored source the wave removes is reached with its own credentials.
     private Result<ClusterBootstrapConfig> fetchAndParseStoredConfig() {
         return ClusterHttpClient.fetch(CLUSTER_CONFIG_GET)
                                 .flatMap(MAPPER::readTree)
                                 .flatMap(ClusterApplyCommand::extractStoredToml)
-                                .flatMap(ClusterBootstrapConfigParser::parse);
+                                .flatMap(ClusterApplyCommand::parseResolved);
     }
 
     private static Result<String> extractStoredToml(JsonNode node) {

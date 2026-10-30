@@ -8,6 +8,7 @@ package org.pragmatica.aether.stream.segment;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.RetentionDimensions;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
@@ -147,8 +148,10 @@ class RetentionEnforcerTest {
             var enforcer = retentionEnforcer(storage, index, ONE_HOUR_MS);
             enforcer.enforceNow().await();
 
-            // Zero-timestamp segment (from rebuild) is preserved — age-only limit, unknown age never fires it.
-            assertThat(index.listSegments(STREAM, PARTITION)).hasSize(1);
+            // Zero-timestamp segment (from rebuild) is preserved — age-only limit, unknown age never fires it — and, as the
+            // oldest, it stops the prefix (#2201 3.2 item 3): the expired segment above it is not reclaimed out of order,
+            // which would open a hole below the reclaimed range.
+            assertThat(index.listSegments(STREAM, PARTITION)).hasSize(2);
             assertThat(index.listSegments(STREAM, PARTITION).getFirst().startOffset()).isEqualTo(0);
         }
 
@@ -161,7 +164,8 @@ class RetentionEnforcerTest {
 
             var enforcer = retentionEnforcer(storage,
                                              index,
-                                             RetentionPolicy.retentionPolicy(0, Long.MAX_VALUE, Long.MAX_VALUE));
+                                             RetentionPolicy.retentionPolicy(0, Long.MAX_VALUE, Long.MAX_VALUE)
+                                                            .withDeclared(RetentionDimensions.COUNT));
             enforcer.enforceNow().await();
 
             assertThat(index.listSegments(STREAM, PARTITION)).isEmpty();
@@ -172,13 +176,17 @@ class RetentionEnforcerTest {
         @Test
         void enforce_evictsZeroTimestampSegment_whenSizeLimitExceeded() {
             index.addSegment(STREAM, PARTITION, 0, 9, 0L, 0, false, 1024);
+            index.addSegment(STREAM, PARTITION, 10, 19, 0L, 0, false, 1024);
 
             var enforcer = retentionEnforcer(storage,
                                              index,
-                                             RetentionPolicy.retentionPolicy(Long.MAX_VALUE, 100, Long.MAX_VALUE));
+                                             RetentionPolicy.retentionPolicy(Long.MAX_VALUE, 100, Long.MAX_VALUE)
+                                                            .withDeclared(RetentionDimensions.BYTES));
             enforcer.enforceNow().await();
 
-            assertThat(index.listSegments(STREAM, PARTITION)).isEmpty();
+            // Bytes are measured on the segments NEWER than each (#2201 3.2 item 3): the oldest goes, 1,024 newer bytes
+            // over the 100-byte bound; the newest stays, since at least the bound must remain.
+            assertThat(index.listSegments(STREAM, PARTITION)).extracting(SegmentIndex.SegmentRef::startOffset).containsExactly(10L);
         }
     }
 
@@ -280,17 +288,19 @@ class RetentionEnforcerTest {
         void enforce_appliesFloorPerPartition() {
             var now = System.currentTimeMillis();
 
-            // A recent 0-9 on each partition: segments are sealed in offset order from 0, and retention never
-            // reclaims past the contiguous sealed watermark (#1278).
-            sink.seal(sealedSegment(STREAM, 0, 0, 9, 10, now, now, new byte[] {1})).await();
-            sink.seal(sealedSegment(STREAM, 1, 0, 9, 10, now, now, new byte[] {2})).await();
+            // Two expired segments then a recent one on each partition: retention reclaims a prefix only (#2201 3.2 item 3)
+            // and never past the contiguous sealed watermark (#1278).
+            sealExpired(STREAM, 0, 0, 9);
+            sealExpired(STREAM, 1, 0, 9);
             sealExpired(STREAM, 0, 10, 19);
             sealExpired(STREAM, 1, 10, 19);
+            sink.seal(sealedSegment(STREAM, 0, 20, 29, 10, now, now, new byte[] {1})).await();
+            sink.seal(sealedSegment(STREAM, 1, 20, 29, 10, now, now, new byte[] {2})).await();
 
             enforceWithFloor((_, partition) -> partition == 0 ? 9 : Long.MAX_VALUE);
 
-            assertThat(index.listSegments(STREAM, 0)).hasSize(2);
-            assertThat(index.listSegments(STREAM, 1)).hasSize(1);
+            assertThat(index.listSegments(STREAM, 0)).as("the floor at 9 holds 10-19 on partition 0").hasSize(2);
+            assertThat(index.listSegments(STREAM, 1)).as("partition 1 has no floor: both expired segments go").hasSize(1);
         }
 
         /// The floor may only ever WITHHOLD a deletion, never cause one: a segment inside the age policy

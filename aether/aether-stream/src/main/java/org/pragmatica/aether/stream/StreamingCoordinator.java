@@ -12,7 +12,6 @@ import java.util.stream.Stream;
 import org.pragmatica.aether.stream.StreamPartitionManager.StreamInfo;
 import org.pragmatica.aether.stream.replication.GovernorFailoverHandler;
 import org.pragmatica.aether.stream.replication.WatermarkTracker;
-import org.pragmatica.aether.stream.segment.RetentionEnforcer;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.SegmentReader;
 import org.pragmatica.lang.Promise;
@@ -25,11 +24,13 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Unit.unit;
 
 
+/// The leader's streaming duties: governor failover recovery on activation. Retention is not one of them (#2201 3.2 item 6):
+/// every node runs its own enforcer over its own segments from node start to node stop, because each node is the authority
+/// for its own refs and a leader-pinned enforcer left every other node's disk unreclaimed.
 public final class StreamingCoordinator {
     private static final Logger log = LoggerFactory.getLogger(StreamingCoordinator.class);
 
     private final GovernorFailoverHandler failoverHandler;
-    private final RetentionEnforcer retentionEnforcer;
     private final StreamPartitionManager partitionManager;
     private final WatermarkTracker watermarkTracker;
     private final SegmentIndex segmentIndex;
@@ -37,13 +38,11 @@ public final class StreamingCoordinator {
     private final AtomicBoolean active = new AtomicBoolean(false);
 
     private StreamingCoordinator(GovernorFailoverHandler failoverHandler,
-                                 RetentionEnforcer retentionEnforcer,
                                  StreamPartitionManager partitionManager,
                                  WatermarkTracker watermarkTracker,
                                  SegmentIndex segmentIndex,
                                  SegmentReader segmentReader) {
         this.failoverHandler = failoverHandler;
-        this.retentionEnforcer = retentionEnforcer;
         this.partitionManager = partitionManager;
         this.watermarkTracker = watermarkTracker;
         this.segmentIndex = segmentIndex;
@@ -51,17 +50,11 @@ public final class StreamingCoordinator {
     }
 
     public static StreamingCoordinator streamingCoordinator(GovernorFailoverHandler failoverHandler,
-                                                            RetentionEnforcer retentionEnforcer,
                                                             StreamPartitionManager partitionManager,
                                                             WatermarkTracker watermarkTracker,
                                                             SegmentIndex segmentIndex,
                                                             SegmentReader segmentReader) {
-        return new StreamingCoordinator(failoverHandler,
-                                        retentionEnforcer,
-                                        partitionManager,
-                                        watermarkTracker,
-                                        segmentIndex,
-                                        segmentReader);
+        return new StreamingCoordinator(failoverHandler, partitionManager, watermarkTracker, segmentIndex, segmentReader);
     }
 
     public static NoOpStreamingComponent noOp() {
@@ -73,7 +66,6 @@ public final class StreamingCoordinator {
             return Promise.success(unit());
         }
 
-        retentionEnforcer.start();
         log.info("STREAMING delegation group activated");
 
         return runFailoverRecovery();
@@ -81,7 +73,6 @@ public final class StreamingCoordinator {
 
     public Promise<Unit> deactivate() {
         if (active.compareAndSet(true, false)) {
-            retentionEnforcer.close();
             log.info("STREAMING delegation group deactivated");
         }
 
