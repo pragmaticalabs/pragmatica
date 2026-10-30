@@ -292,7 +292,7 @@ public record GitBackupRepository(Path dir,
     /// client already knows, and `[remote rejected] (failed to update ref)` when the server finds the ref changed under the push (concurrent writers,
     /// the whole-cluster stop). Only that line counts: the same words in a hook's `remote:` message, or a different `[remote rejected]` reason, are a
     /// refusal and stay a failure. A rejection that repeats against a head that did not move (a stale ref lock) is told apart by the caller.
-    private static boolean isRejection(String output) {
+    static boolean isRejection(String output) {
         return REJECTION_STATUS.matcher(output).find();
     }
 

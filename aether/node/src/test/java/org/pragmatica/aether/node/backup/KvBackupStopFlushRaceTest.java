@@ -7,7 +7,6 @@ package org.pragmatica.aether.node.backup;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.InetSocketAddress;
-import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -21,6 +20,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 
+import org.pragmatica.aether.node.ClusterTestPorts;
 import org.pragmatica.aether.node.NodeCodecs;
 import org.pragmatica.aether.node.backup.BackupWarning.Code;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -40,6 +40,7 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -61,6 +62,11 @@ class KvBackupStopFlushRaceTest {
 
     @TempDir
     Path temp;
+
+    @BeforeAll
+    static void reportTheGitUnderTest() {
+        System.out.println("GIT-UNDER-TEST " + GitFixtures.gitUnderTest());
+    }
 
     record Node(KVStore<AetherKey, AetherValue> store, KvBackupService service, List<BackupWarning> warnings, GitBackupRepository repository) {
         void apply(AetherKey key, AetherValue value) {
@@ -237,7 +243,7 @@ class KvBackupStopFlushRaceTest {
         assertThat(count(counter)).isLessThanOrEqualTo(2L);
         assertThat(node.warnings()).singleElement().satisfies(warning -> {
             assertThat(warning.code()).isEqualTo(Code.BACKUP_STOP_FLUSH_FAILED);
-            assertThat(warning.detail()).contains("failed to update ref").doesNotContain("timed out");
+            assertThat(warning.detail()).as("git's own words, whichever its version: the lock").contains("backup.lock").doesNotContain("timed out");
         });
     }
 
@@ -287,11 +293,7 @@ class KvBackupStopFlushRaceTest {
         var bare = bareRemote(temp.resolve("remote.git"));
 
         git(Path.of(bare), "config", "daemon.receivepack", "true");
-        int port;
-
-        try (var socket = new ServerSocket(0)) {
-            port = socket.getLocalPort();
-        }
+        var port = ClusterTestPorts.freeClusterPort();
 
         var daemon = new ProcessBuilder("git", "daemon", "--listen=127.0.0.1", "--port=" + port, "--base-path=" + temp, "--export-all",
                                         "--enable=receive-pack", "--reuseaddr").redirectErrorStream(true)

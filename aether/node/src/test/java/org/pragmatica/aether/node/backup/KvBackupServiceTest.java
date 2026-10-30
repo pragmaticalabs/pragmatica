@@ -49,6 +49,7 @@ import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.testlogging.LogCapture;
 
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -69,6 +70,11 @@ class KvBackupServiceTest {
 
     @TempDir
     Path temp;
+
+    @BeforeAll
+    static void reportTheGitUnderTest() {
+        System.out.println("GIT-UNDER-TEST " + GitFixtures.gitUnderTest());
+    }
 
     private KVStore<AetherKey, AetherValue> kvStore;
     private final ManualScheduler scheduler = new ManualScheduler();
