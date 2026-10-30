@@ -67,7 +67,7 @@ public record GitBackupRepository(Path dir,
     private static final String REMOTE_NAME = "origin";
     private static final String REMOTE_REF = "refs/remotes/" + REMOTE_NAME + "/";
 
-    private static final Pattern REJECTION_STATUS = Pattern.compile("^!\\t[^\\t]*\\t(\\[rejected\\]|\\[remote rejected\\] \\(failed to update ref\\))",
+    private static final Pattern REJECTION_STATUS = Pattern.compile("^!\\t[^\\t]*\\t(\\[rejected\\]|\\[remote rejected\\] \\((failed to update ref|reference already exists|incorrect old value provided|reference does not exist)\\))",
                                                                     Pattern.MULTILINE);
 
     public static GitBackupRepository gitBackupRepository(Path dir,
@@ -288,10 +288,21 @@ public record GitBackupRepository(Path dir,
                                                         .result();
     }
 
-    /// A remote that moved between our read of its head and our push answers with git's porcelain status line `!<TAB>ref<TAB>[rejected] (…)` when the
-    /// client already knows, and `[remote rejected] (failed to update ref)` when the server finds the ref changed under the push (concurrent writers,
-    /// the whole-cluster stop). Only that line counts: the same words in a hook's `remote:` message, or a different `[remote rejected]` reason, are a
-    /// refusal and stay a failure. A rejection that repeats against a head that did not move (a stale ref lock) is told apart by the caller.
+    /// A remote that moved between our read of its head and our push answers with git's porcelain status line `!<TAB>ref<TAB>…`. Only that line
+    /// counts: the same words in a hook's `remote:` message, or a `[remote rejected]` for another reason, are a refusal and stay a failure. A
+    /// rejection that repeats against a head that did not move (a stale ref lock) is told apart by the caller.
+    ///
+    /// The lost-race reasons, by git's own sources (receive-pack runs on the SERVER, so the client's version does not matter; the server's does):
+    /// - `[rejected]` (any reason): the client's own check against the advertised refs (`remote.c`, `send-pack.c`), e.g. `(fetch first)`, `(non-fast-forward)`.
+    /// - `(failed to update ref)`: `builtin/receive-pack.c` `execute_commands_non_atomic`, git 2.43 to 2.50 (v2.43.0 line 1862), for ANY failure of the ref
+    ///   transaction's commit, a lost race and a held ref lock included.
+    /// - git 2.51 and later (commit 9d2962a7c, "receive-pack: use batched reference updates") report the per-ref reason `ref_transaction_error_msg()`
+    ///   (`refs.c`, v2.56.0 line 3542), of which a concurrent ref update produces three: `(reference already exists)` (`REF_TRANSACTION_ERROR_CREATE_EXISTS`:
+    ///   the ref was created meanwhile, or its lock file is held; `refs/files-backend.c` `lock_raw_ref` and `check_old_oid`), `(incorrect old value provided)`
+    ///   (`REF_TRANSACTION_ERROR_INCORRECT_OLD_VALUE`: the ref moved) and `(reference does not exist)` (`REF_TRANSACTION_ERROR_NONEXISTENT_REF`: it was deleted).
+    /// - Not races, so refusals: `refname conflict`, `invalid new value provided`, `expected symref but found regular ref`,
+    ///   `reference conflict due to case-insensitive filesystem`, `unknown failure`, `failed to update refs` (the whole commit failed, git 2.51+),
+    ///   `atomic transaction failed` (`--atomic`, not used), and every hook or policy reason (`pre-receive hook declined`, `hook declined`, `deny …`).
     static boolean isRejection(String output) {
         return REJECTION_STATUS.matcher(output).find();
     }
