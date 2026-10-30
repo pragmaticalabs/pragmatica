@@ -45,6 +45,7 @@ import org.pragmatica.aether.controller.AllInstancesFailedDetector;
 import org.pragmatica.aether.controller.RollbackEvent;
 import org.pragmatica.aether.controller.RollbackManager;
 import org.pragmatica.aether.controller.ScalingEvent;
+import org.pragmatica.aether.deployment.config.DefaultConfigChangeFeed;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.cluster.ClusterReplication;
 import org.pragmatica.aether.deployment.cluster.BlueprintService;
@@ -1487,13 +1488,19 @@ public interface AetherNode extends ManageableNode {
         }
 
         var resourceProviderSetup = resourceProviderSetupResult.fold(_ -> null, setup -> setup);
+        // #774: committed config changes reach `Watched`/`Live` subscriptions through this feed; the slice store
+        // releases a slice's subscriptions when the slice is unloaded.
+        var configChangeFeed = DefaultConfigChangeFeed.defaultConfigChangeFeed(kvStore::committedRevision,
+                                                                               DefaultConfigChangeFeed.readProtocolOver(resourceProviderSetup.dynamicProvider()),
+                                                                               DefaultConfigChangeFeed.callbackTimeoutFrom(resourceProviderSetup.nodeComposite()));
         var sliceStore = SliceRuntimeAssembly.sliceStore(new SliceRuntimeAssembly.SliceStoreInputs(config,
                                                                                                    sliceRegistry,
                                                                                                    deferredInvoker,
                                                                                                    nodeCodec,
                                                                                                    repositories,
                                                                                                    sharedLibraryLoader,
-                                                                                                   resourceProviderSetup));
+                                                                                                   resourceProviderSetup,
+                                                                                                   Option.some(configChangeFeed)));
         var dhtRebalancingOut = DhtAssembly.dhtRebalancing(new DhtAssembly.DhtRebalancingInputs(dhtNode, dhtNetwork));
         var dhtRebalancer = dhtRebalancingOut.dhtRebalancer();
         var departingSendersRef = dhtRebalancingOut.departingSendersRef();
@@ -1528,6 +1535,7 @@ public interface AetherNode extends ManageableNode {
                           OwnershipEpochHighWater ownershipEpochHighWaterInstance,
                           SliceRegistry sliceRegistry,
                           SliceStore sliceStore,
+                          DefaultConfigChangeFeed configChangeFeed,
                           RabiaNode<KVCommand<AetherKey>> clusterNode,
                           Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver,
                           SwitchableClusterNode<KVCommand<AetherKey>> switchableCluster,
@@ -1819,7 +1827,7 @@ public interface AetherNode extends ManageableNode {
                 //
                 // #1612: the chain lives in NodeStopSequence, where a failed HTTP listener stop is logged and
                 // skipped past rather than ending the shutdown.
-                return backupFlushed.flatMap(() -> NodeStopSequence.run(NodeStopSequence.Steps.steps(clusterDeploymentManager::deactivate,
+                return backupFlushed.flatMap(() -> NodeStopSequence.run(NodeStopSequence.Steps.steps(this::releaseWatchesThenDeactivate,
                                                                                                      () -> managementServer.map(ManagementServer::stop)
                                                                                                                            .or(Promise.unitPromise()),
                                                                                                      appHttpServer::stop,
@@ -1829,6 +1837,14 @@ public interface AetherNode extends ManageableNode {
                                                                                                      clusterNode::stop)))
                                     .onSuccess(_ -> log.info("Aether node {} stopped",
                                                              self()));
+            }
+
+            /// #774: `Watched` subscriptions are released first of all: they read configuration and call slice code, and
+            /// nothing below this step may be torn down under a delivery that is still running. Shutting the feed down
+            /// cannot fail (it only releases), so the deactivation behind it always runs.
+            private Promise<Unit> releaseWatchesThenDeactivate() {
+                return configChangeFeed.shutdown()
+                                       .flatMap(() -> clusterDeploymentManager.deactivate());
             }
 
             /// #903: the shared (unattributed) resource scope is released by no slice's unload, because a
@@ -2500,6 +2516,9 @@ public interface AetherNode extends ManageableNode {
                                                                                                              kvStore,
                                                                                                              dp,
                                                                                                              config.self()));
+        // #774: the config change feed is registered BEFORE the FSM listener (`nodeDeploymentManager::onConfigChanged`,
+        // registered with the KV routes), so a Watched subscription is triggered ahead of the legacy push path.
+        dynamicConfigManager.onPresent(dcm -> dcm.onApplied(configChangeFeed::publish));
         var minuteAggregator = MinuteAggregator.minuteAggregator();
         var gcMetricsCollector = GCMetricsCollector.gcMetricsCollector();
         var eventLoopMetricsCollector = EventLoopMetricsCollector.eventLoopMetricsCollector(config.timeouts()
@@ -2662,6 +2681,7 @@ public interface AetherNode extends ManageableNode {
                                                                                             currentGenerationEpochSupplier);
         // #1935: a declared stream consumer that cannot be registered reaches THIS node's event log.
         nodeDeploymentManager.setOperatorWarningSink(operatorWarningSink);
+        configChangeFeed.setOperatorWarningSink(operatorWarningSink);
         var appHttpServerOut = SliceRuntimeAssembly.appHttpServer(new SliceRuntimeAssembly.AppHttpServerInputs(config,
                                                                                                                clusterNode,
                                                                                                                serializer,
@@ -2793,14 +2813,27 @@ public interface AetherNode extends ManageableNode {
         // EARLIER in boot than the replay, which is reached only via restore → activate → replay
         // inside the consensus engine.
         //
-        // The consequence is a cycle, not merely a window: a node booting into a cluster that has
-        // already rotated encrypts SWIM under its cluster_secret-derived key, which the rotated
-        // accept set no longer contains, so peers drop its datagrams and it drops theirs. SWIM
-        // discovers nothing; the QUIC dial set is self-only and SWIM is its sole writer besides
-        // self (TopologyObserverTest.SwimOnlyDialSet); without peers there is no quorum, and
-        // without quorum there is no sync/activate/replay — so the record that would install the
-        // cluster key never arrives. GossipKeyRotationBootDivergenceTest pins both directions of
-        // the key divergence this rests on.
+        // The consequence is a window, not a cycle (corrected under #1200; an earlier version of this
+        // comment called it a deadlock). A node booting into a cluster that has already rotated encrypts
+        // SWIM under its cluster_secret-derived key, which the rotated accept set no longer contains, so
+        // peers drop its datagrams and it drops theirs. But it does not wait for SWIM to find the
+        // cluster: a genesis-pending core with no connection to any configured core after
+        // PENDING_CORE_ISOLATION_GRACE (2 s) initiates the dial itself, regardless of the single-dialer
+        // order (MembershipAssembly#bootstrapInitiator -> isolatedPendingCore), toward the cores it was
+        // configured with (--peers, set from AETHER_PEERS for every node the leader mints). Its dial
+        // targets come from two redundant feeds that need no decrypt: the FSM descriptors seeded from
+        // the configured topology (MembershipAssembly, "Item 1 (activation)") and SWIM seeding
+        // (CoreSwimHealthDetector#seedMembers/#seedPeerDirectory). So the joiner forms quorum, syncs, and
+        // the replay of the rotation record installs the cluster key, after which SWIM works. Measured
+        // on an in-JVM cluster (EmberGossipKeyRotatedJoinTest): the replacement's gossip is rejected for
+        // about a second and it is SWIM-present within seconds; the pin goes red when both feeds, or
+        // the initiator rule, are removed. TopologyObserverTest.SwimOnlyDialSet pins only that the
+        // observer itself starts self-only.
+        // The seeds log the rejected datagrams and raise `gossip-key-unknown-from-peer` (and
+        // `gossip-key-peer-decrypted` when the sender recovers). GossipKeyRotationBootDivergenceTest
+        // pins the encryptor-level divergence only. Admission is a different matter: it is
+        // cluster_secret-derived mutual TLS, so a holder of cluster_secret receives the key by replay
+        // (#2474).
         var allEntries = new ArrayList<>(clusterNode.routeEntries());
 
         allEntries.addAll(epochSources.incarnation().routeEntries());
@@ -3255,6 +3288,7 @@ public interface AetherNode extends ManageableNode {
                                   ownershipEpochHighWater,
                                   sliceRegistry,
                                   sliceStore,
+                                  configChangeFeed,
                                   clusterNode,
                                   taskGroupOwnerResolver,
                                   switchableCluster,
@@ -3413,6 +3447,7 @@ public interface AetherNode extends ManageableNode {
                                                                             ownershipEpochHighWater,
                                                                             sliceRegistry,
                                                                             sliceStore,
+                                                                            configChangeFeed,
                                                                             clusterNode,
                                                                             taskGroupOwnerResolver,
                                                                             switchableCluster,

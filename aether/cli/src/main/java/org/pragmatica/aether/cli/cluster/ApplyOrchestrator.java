@@ -5,13 +5,20 @@ package org.pragmatica.aether.cli.cluster;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.function.Consumer;
+import java.util.function.Function;
+import java.util.function.Supplier;
 
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigDiff;
 import org.pragmatica.aether.config.cluster.ClusterConfigError;
 import org.pragmatica.aether.config.cluster.DiffAction;
 import org.pragmatica.aether.config.cluster.DiffPlan;
 import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.json.JsonMapper;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn4;
@@ -19,6 +26,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import static org.pragmatica.aether.cli.cluster.ApplyResult.applyResult;
+import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CONFIG_GET;
 import static org.pragmatica.lang.Result.success;
 
 
@@ -44,12 +52,150 @@ public final class ApplyOrchestrator {
                                                                                                           desired));
     }
 
+    /// Continues a halted apply from its ledger (spec 4.3): the cluster's commit state decides whether `--resume` may run,
+    /// every INTENDED row is looked up at its provider (adopted when found, created never twice), DONE actions are skipped,
+    /// a partly done action creates only the remainder, and the apply-label audit runs before the ledger is closed.
     public static Result<ApplyResult> resume(ClusterBootstrapConfig desired, ClusterBootstrapConfig currentStored) {
+        return resume(desired,
+                      currentStored,
+                      productionComputes(desired.cluster().name()),
+                      WaveExecutor::execute,
+                      ApplyOrchestrator::clusterView);
+    }
+
+    static Result<ApplyResult> resume(ClusterBootstrapConfig desired,
+                                      ClusterBootstrapConfig currentStored,
+                                      Function<String, Result<ComputeProvider>> computeFor,
+                                      Fn4<Result<ApplyResult>, DiffPlan, ClusterBootstrapConfig, ClusterBootstrapConfig, ApplyRecorder> executor,
+                                      Supplier<Result<Option<ApplyCommitRecovery.ClusterConfigView>>> view) {
         var clusterName = desired.cluster().name();
 
         return loadRequiredState(clusterName).flatMap(state -> validateResumeState(state, desired))
-                                .flatMap(_ -> computeValidPlan(desired, currentStored))
-                                .flatMap(plan -> executeWithState(plan, currentStored, desired));
+                                .flatMap(state -> gate(state, ApplyCommitRecovery.Verb.RESUME, view))
+                                .flatMap(state -> continueApply(state, desired, currentStored, computeFor, executor));
+    }
+
+    private static Result<ApplyResult> continueApply(ApplyState state,
+                                                     ClusterBootstrapConfig desired,
+                                                     ClusterBootstrapConfig currentStored,
+                                                     Function<String, Result<ComputeProvider>> computeFor,
+                                                     Fn4<Result<ApplyResult>, DiffPlan, ClusterBootstrapConfig, ClusterBootstrapConfig, ApplyRecorder> executor) {
+        var clusterName = desired.cluster().name();
+        var recorder = ApplyRecorder.applyRecorder(state);
+
+        if (state.phase() == ApplyPhase.COMMITTED) {
+            return ApplyState.delete(clusterName).map(_ -> applyResult(DiffPlan.diffPlan(List.of(),
+                                                                                         List.of(),
+                                                                                         List.of(),
+                                                                                         List.of()),
+                                                                       0,
+                                                                       0,
+                                                                       0));
+        }
+
+        return ApplyReconciler.reconcileIntents(recorder, computeFor)
+                              .flatMap(_ -> computeValidPlan(desired, currentStored))
+                              .flatMap(plan -> executor.apply(plan, currentStored, desired, recorder))
+                              .flatMap(result -> ApplyReconciler.audit(recorder, clusterName, computeFor).map(audit -> reported(audit,
+                                                                                                                                result)))
+                              .onSuccess(_ -> clearFinishedState(clusterName));
+    }
+
+    private static ApplyResult reported(ApplyReconciler.AuditReport audit, ApplyResult result) {
+        reportAudit(audit);
+
+        return result;
+    }
+
+    @Contract
+    private static void reportAudit(ApplyReconciler.AuditReport audit) {
+        audit.adopted()
+             .forEach(item -> System.out.println("Adopted a VM found under the apply label that the ledger did not list: " + item));
+        audit.gone().forEach(item -> System.out.println("Recorded as gone (no longer at the provider): " + item));
+        audit.relabelled()
+             .forEach(item -> System.out.println("WARNING: exists at the provider but no longer carries the apply label (relabelled or foreign), left in the ledger: " + item));
+    }
+
+    /// `--rollback`: terminates what the ledger recorded (spec 4.5). The ledger is kept, and the result is a failure, when
+    /// any VM is still standing.
+    public static Result<ApplyRollback.Report> rollback(ClusterName cluster) {
+        return rollback(cluster,
+                        productionComputes(cluster),
+                        ApplyDrain::drainThroughTheCluster,
+                        ApplyOrchestrator::clusterView,
+                        System.out::println);
+    }
+
+    static Result<ApplyRollback.Report> rollback(ClusterName cluster,
+                                                 Function<String, Result<ComputeProvider>> computeFor,
+                                                 ApplyRollback.Drain drain,
+                                                 Supplier<Result<Option<ApplyCommitRecovery.ClusterConfigView>>> view,
+                                                 Consumer<String> out) {
+        return ApplyState.read(cluster)
+                         .mapError(cause -> unreadableState(cluster, cause))
+                         .flatMap(state -> state.toResult(new ApplyAborted("No apply state found for cluster '" + cluster
+                                                                          + "'. Nothing to roll back.")))
+                         .flatMap(state -> gate(state, ApplyCommitRecovery.Verb.ROLLBACK, view))
+                         .flatMap(state -> ApplyRollback.orIncomplete(ApplyRollback.rollback(ApplyRecorder.applyRecorder(state),
+                                                                                             cluster,
+                                                                                             computeFor,
+                                                                                             drain,
+                                                                                             out)))
+                         .flatMap(report -> ApplyState.delete(cluster).map(_ -> report));
+    }
+
+    /// Which verb the ledger allows (4.6). A phase the decision moves the ledger to (COMMITTED, ABORTED) is written BEFORE
+    /// anything runs or is refused, so the next call starts from the proven state.
+    private static Result<ApplyState> gate(ApplyState state,
+                                           ApplyCommitRecovery.Verb verb,
+                                           Supplier<Result<Option<ApplyCommitRecovery.ClusterConfigView>>> view) {
+        // The cluster is consulted only when the ledger is COMMITTING; a view that cannot be built refuses before any verb runs.
+        return (state.phase() == ApplyPhase.COMMITTING
+                ? view.get()
+                : success(Option.<ApplyCommitRecovery.ClusterConfigView> none())).flatMap(seen -> gateOn(state,
+                                                                                                         verb,
+                                                                                                         ApplyCommitRecovery.decide(state,
+                                                                                                                                    seen)));
+    }
+
+    private static Result<ApplyState> gateOn(ApplyState state,
+                                             ApplyCommitRecovery.Verb verb,
+                                             ApplyCommitRecovery.Decision decision) {
+        var moved = decision.phase() == state.phase()
+                    ? success(state)
+                    : ApplyState.save(state.withPhase(decision.phase())).map(_ -> state.withPhase(decision.phase()));
+
+        return moved.flatMap(current -> decision.allows(verb)
+                                        ? success(current)
+                                        : new ApplyAborted("Refused: " + decision.explanation()).result());
+    }
+
+    /// The providers the apply's own lookups, audit and rollback use (credentials from the environment): package-visible so the
+    /// paid run builds its lookup provider through this very function.
+    static Function<String, Result<ComputeProvider>> productionComputes(ClusterName cluster) {
+        return provider -> "docker".equals(provider)
+                           ? ProviderResolver.resolveDockerComputeWithoutBackup(cluster)
+                           : ProviderResolver.resolveCloudComputeForCleanup(provider);
+    }
+
+    /// What the cluster holds: empty when it cannot be reached (retry later), a typed failure when what it holds cannot be compared
+    /// with this apply's config. The cluster stores the TOML as the operator sent it, references unresolved, while the ledger
+    /// hashes the RESOLVED config, so the stored TOML is parsed through [ClusterApplyCommand#parseResolved] too: both sides then hash
+    /// the same thing, and a landed commit whose config holds a `${env:...}` reference is recognised as landed. A reference that
+    /// does not resolve is a refusal naming it, never a "not landed".
+    static Result<Option<ApplyCommitRecovery.ClusterConfigView>> clusterView() {
+        return ClusterHttpClient.fetch(CLUSTER_CONFIG_GET).fold(_ -> success(Option.none()), ApplyOrchestrator::viewOf);
+    }
+
+    private static Result<Option<ApplyCommitRecovery.ClusterConfigView>> viewOf(String body) {
+        return JsonMapper.defaultJsonMapper()
+                         .readTree(body)
+                         .flatMap(node -> ClusterApplyCommand.parseResolved(node.path("tomlContent").asText("")).map(config -> new ApplyCommitRecovery.ClusterConfigView(ClusterBootstrapOrchestrator.computeConfigHash(config),
+                                                                                                                                                                         node.path("configVersion")
+                                                                                                                                                                             .asLong(0))))
+                         .map(Option::some)
+                         .mapError(cause -> new ApplyAborted("Refused: cannot determine the commit state, the cluster's stored config cannot be compared with this apply's: " + cause.message()
+                                                            + ". Nothing was changed."));
     }
 
     /// Absent state is "nothing to resume"; a state that is present but refused (see
@@ -190,13 +336,15 @@ public final class ApplyOrchestrator {
                                                                 Fn4<Result<ApplyResult>, DiffPlan, ClusterBootstrapConfig, ClusterBootstrapConfig, ApplyRecorder> executor) {
         var clusterName = desired.cluster().name();
         var started = startedState(plan, desired);
-
-        return ApplyState.save(started)
-                         .flatMap(_ -> executor.apply(plan,
-                                                      stored,
-                                                      desired,
-                                                      ApplyRecorder.applyRecorder(started)))
-                         .onSuccess(_ -> clearFinishedState(clusterName));
+        // Plan time: a cluster name whose minted node ids cannot be provider labels refuses the whole apply before the ledger exists.
+        return ApplyLabels.requireMintable(clusterName,
+                                           started.applyId())
+                          .flatMap(_ -> ApplyState.save(started))
+                          .flatMap(_ -> executor.apply(plan,
+                                                       stored,
+                                                       desired,
+                                                       ApplyRecorder.applyRecorder(started)))
+                          .onSuccess(_ -> clearFinishedState(clusterName));
     }
 
     private static ApplyState startedState(DiffPlan plan, ClusterBootstrapConfig desired) {

@@ -19,7 +19,8 @@ import org.pragmatica.storage.MetadataStore;
 import static org.pragmatica.lang.Option.option;
 
 
-public final class SegmentIndex {
+// test seam: not for subclassing -- opened only so a test can spy on the lookups; no production subclass may exist.
+public class SegmentIndex {
     private static final long NOTHING_SEALED = -1L;
 
     private final ConcurrentHashMap<PartitionKey, ConcurrentSkipListMap<Long, SegmentRef>> partitions = new ConcurrentHashMap<>();
@@ -102,6 +103,34 @@ public final class SegmentIndex {
         option(partitions.get(PartitionKey.partitionKey(streamName, partition))).onPresent(map -> map.computeIfPresent(startOffset,
                                                                                                                        (_, ref) -> withKnownTimestamp(ref,
                                                                                                                                                       maxTimestamp)));
+    }
+
+    /// As [#recordMaxTimestamp], also recording the segment's size learned in the same block read (#2201 3.2 item 4): a
+    /// rebuilt ref has `originalSize = 0`, and the sealed tier's byte rule counts an unknown size as 0. A known size is
+    /// never overwritten either.
+    @Contract
+    public void recordLearned(String streamName, int partition, long startOffset, Option<Long> maxTimestamp, int size) {
+        option(partitions.get(PartitionKey.partitionKey(streamName, partition))).onPresent(map -> map.computeIfPresent(startOffset,
+                                                                                                                       (_, ref) -> learned(ref,
+                                                                                                                                           maxTimestamp,
+                                                                                                                                           size)));
+    }
+
+    private static SegmentRef learned(SegmentRef ref, Option<Long> maxTimestamp, int size) {
+        var timed = maxTimestamp.map(timestamp -> withKnownTimestamp(ref, timestamp)).or(ref);
+
+        return withKnownSize(timed, size);
+    }
+
+    private static SegmentRef withKnownSize(SegmentRef ref, int size) {
+        return ref.originalSize() > 0
+               ? ref
+               : SegmentRef.segmentRef(ref.startOffset(),
+                                       ref.endOffset(),
+                                       ref.maxTimestamp(),
+                                       ref.compressionOrdinal(),
+                                       ref.encrypted(),
+                                       size);
     }
 
     private static SegmentRef withKnownTimestamp(SegmentRef ref, long maxTimestamp) {
@@ -297,15 +326,23 @@ public final class SegmentIndex {
                      .or(List.of());
     }
 
+    /// The refs overlapping `[fromOffset, toOffset]`. Retention removes segments while a read runs, so the lookups never assume the
+    /// map still holds what an earlier call saw: when the cursor's segment is gone the start is the first remaining key, and a
+    /// start above `toOffset` means nothing overlaps (an empty answer, not an inconsistent `subMap` range).
     private List<SegmentRef> collectOverlapping(ConcurrentSkipListMap<Long, SegmentRef> map,
                                                 long fromOffset,
                                                 long toOffset) {
-        if (map.isEmpty()) {
-            return List.of();
-        }
+        return Option.any(option(map.floorKey(fromOffset)),
+                          () -> option(map.firstEntry()).map(Map.Entry::getKey))
+                     .filter(startKey -> startKey <= toOffset)
+                     .map(startKey -> overlapping(map, startKey, fromOffset, toOffset))
+                     .or(List.of());
+    }
 
-        var startKey = option(map.floorKey(fromOffset)).or(map.firstKey());
-
+    private static List<SegmentRef> overlapping(ConcurrentSkipListMap<Long, SegmentRef> map,
+                                                long startKey,
+                                                long fromOffset,
+                                                long toOffset) {
         return map.subMap(startKey, true, toOffset, true)
                   .values()
                   .stream()

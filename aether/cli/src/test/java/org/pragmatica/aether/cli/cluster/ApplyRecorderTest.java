@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -95,6 +96,25 @@ class ApplyRecorderTest {
 
         assertThat(recorder.snapshot().resources()).singleElement().extracting(ApplyResource::state).isEqualTo(ApplyResource.State.INTENDED);
         assertThat(hookFired.get()).as("a step that was not written did not happen").isZero();
+    }
+
+    @Test
+    void recordedFor_countsTheNodesThatExist_notTheOnesThatDoNot() {
+        started();
+
+        var rows = ledger.ledger(CLUSTER);
+
+        for (var state : ApplyResource.State.values()) {
+            rows = rows.withNode(ApplyResource.applyResource(ACTION, "n-" + state, "hetzner", Option.some("srv-" + state), state));
+        }
+
+        ApplyState.save(rows).unwrap();
+
+        var fresh = ApplyRecorder.applyRecorder(ledger.ledger(CLUSTER));
+
+        assertThat(fresh.recordedFor(ACTION)).as("CREATED, JOINED and ADOPTED count; INTENDED, TERMINATING, TERMINATE_FAILED, TERMINATED, ABSENT and GONE do not").isEqualTo(3);
+        assertThat(fresh.recordedFor("another action")).isZero();
+        assertThat(fresh.statusOf("unknown")).isEqualTo(ApplyAction.Status.PENDING);
     }
 
     @Test

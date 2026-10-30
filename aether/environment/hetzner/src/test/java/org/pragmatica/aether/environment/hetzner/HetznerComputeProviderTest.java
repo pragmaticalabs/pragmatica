@@ -683,6 +683,57 @@ class HetznerComputeProviderTest {
         }
     }
 
+    /// Selector injection and the empty selector (v-2496 G1): nothing odd reaches Hetzner's query.
+    @Nested
+    class LabelSelectorTests {
+
+        @Test
+        void listInstances_emptyFilter_isTheUnfilteredList_andSendsNoLabelSelector() {
+            testClient.listServersResponse = Promise.success(List.of(serverWithLabels(1, "server-1", Map.of("env", "prod"))));
+            testClient.lastLabelSelector = "untouched";
+
+            provider.listInstances(Map.of())
+                    .await()
+                    .onFailure(cause -> assertThat(cause).isNull())
+                    .onSuccess(instances -> assertThat(instances).hasSize(1));
+
+            assertThat(testClient.lastLabelSelector).as("the selector-less call was used").isEqualTo("untouched");
+        }
+
+        @Test
+        void listInstances_refusesAnEntryThatRewritesTheQuery_beforeAnyRequest() {
+            testClient.listServersResponse = Promise.success(List.of(serverWithLabels(1, "server-1", Map.of())));
+
+            for (var hostile : List.of(Map.entry("aether-node-id", "x,aether-cluster!=zzz"),
+                                       Map.entry("aether-node-id", "x,!aether-apply"),
+                                       Map.entry("aether-node-id", "x in (a,b)"),
+                                       Map.entry("aether-node-id", ""),
+                                       Map.entry("aether-node-id", "has space"),
+                                       Map.entry("aether-node-id", "a".repeat(64)),
+                                       Map.entry("key,injected", "v"),
+                                       Map.entry("key=1", "v"),
+                                       Map.entry("", "v"))) {
+                testClient.lastLabelSelector = null;
+
+                provider.listInstances(Map.of(hostile.getKey(), hostile.getValue()))
+                        .await()
+                        .onSuccess(list -> org.junit.jupiter.api.Assertions.fail("must refuse " + hostile))
+                        .onFailure(HetznerComputeProviderTest::assertListInstancesFailedError);
+
+                assertThat(testClient.lastLabelSelector).as("no request for " + hostile).isNull();
+            }
+        }
+
+        @Test
+        void listInstances_validEntries_areJoinedAsBefore() {
+            testClient.listServersResponse = Promise.success(List.of());
+
+            provider.listInstances(Map.of("aether-cluster", "prod-cluster", "aether-apply", "0123456789abcdefghijklmnop")).await();
+
+            assertThat(testClient.lastLabelSelector).contains("aether-cluster=prod-cluster").contains("aether-apply=0123456789abcdefghijklmnop").contains(",");
+        }
+    }
+
     @Nested
     class ApplyTagsTests {
 

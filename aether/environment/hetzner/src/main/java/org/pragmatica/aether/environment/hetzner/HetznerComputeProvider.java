@@ -204,9 +204,44 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
 
     @Override
     public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
-        return client.listServers(toLabelSelector(translateKeys(tagFilter)))
-                     .map(HetznerComputeProvider::toInstanceInfoList)
-                     .mapError(HetznerComputeProvider::toListInstancesError);
+        return validLabelSelector(translateKeys(tagFilter)).async()
+                                 .flatMap(this::listBySelector);
+    }
+
+    /// An EMPTY filter is the unfiltered list and says so by sending no `label_selector` at all (never `label_selector=`).
+    private Promise<List<InstanceInfo>> listBySelector(String selector) {
+        return (selector.isEmpty()
+                ? client.listServers()
+                : client.listServers(selector)).map(HetznerComputeProvider::toInstanceInfoList)
+                                               .mapError(HetznerComputeProvider::toListInstancesError);
+    }
+
+    private static final java.util.regex.Pattern SELECTOR_VALUE_RX = java.util.regex.Pattern.compile("^[a-zA-Z0-9_.-]{1,63}$");
+
+    /// The selector is joined by `,` and split by `=`, `!`, `(`, `)`, `<`, `>` and spaces on Hetzner's side, so a key or value
+    /// carrying any of them rewrites the query (`x,aether-cluster!=y`, `x in (a,b)`). Keys and values are therefore checked
+    /// against Hetzner's own label grammar, a value must be non-empty, and anything else is refused typed BEFORE a request.
+    static Result<String> validLabelSelector(Map<String, String> tagFilter) {
+        var entries = tagFilter.entrySet().stream().map(HetznerComputeProvider::validLabelEntry).toList();
+        // The first refused entry is the failure, as itself (not wrapped in a composite).
+        return entries.stream()
+                      .filter(Result::isFailure)
+                      .findFirst()
+                      .map(refused -> refused.map(entry -> ""))
+                      .orElseGet(() -> Result.success(entries.stream()
+                                                             .map(entry -> entry.or(""))
+                                                             .collect(Collectors.joining(","))));
+    }
+
+    private static Result<String> validLabelEntry(Map.Entry<String, String> entry) {
+        var key = entry.getKey();
+        var value = entry.getValue();
+
+        return key != null && HETZNER_LABEL_KEY_RX.matcher(key).matches() && value != null && SELECTOR_VALUE_RX.matcher(value).matches()
+               ? Result.success(key + "=" + value)
+               : EnvironmentError.listInstancesFailed(new IllegalArgumentException("refusing a label selector entry '" + key
+                                                                                  + "=" + value
+                                                                                  + "': the key must match Hetzner's label key grammar and the value must be 1-63 characters of [a-zA-Z0-9_.-]")).result();
     }
 
     @Override
