@@ -115,7 +115,39 @@ class DHTCapacityFenceRollbackTest {
                                                            .isEqualTo(PRIOR);
     }
 
+    /// Fence only, LATE, on the remove path: the writer's own tombstone lands over a prior value, then both fence refusals sink the
+    /// quorum. The remove fails indeterminate and the writer's slot is put back to the prior value: the remove path keeps its rollback
+    /// on [DHTError.WriteIndeterminate] alone, since a remove is never refused for capacity.
+    @Test
+    void fenceOnly_aLateFencedRemove_failsIndeterminate_andRestoresTheWritersPriorValue() {
+        var cluster = new Cluster(false, true);
+
+        cluster.members.get(DEPOSED).node().putLocal(KEY, PRIOR).await();
+        var remove = cluster.members.get(DEPOSED).client().remove(KEY);
+        var deadline = System.currentTimeMillis() + 1500;
+
+        while (cluster.holds(DEPOSED) && System.currentTimeMillis() < deadline) {
+            Thread.onSpinWait();
+        }
+        assertThat(cluster.holds(DEPOSED)).as("precondition: the lagging fence applied the remove locally before the late refusals")
+                                          .isFalse();
+        cluster.releaseHeldFences();
+        var failure = remove.await().<Cause>fold(cause -> cause, _ -> null);
+
+        assertThat(failure).isInstanceOf(DHTError.WriteIndeterminate.class);
+        assertThat(cluster.stored(DEPOSED).or(new byte[0])).as("the writer's slot is back to the value the fenced remove displaced")
+                                                           .isEqualTo(PRIOR);
+    }
+
     private record Outcome(Cause failure) {}
+
+    private static boolean fenced(ProtocolMessage message) {
+        return switch (message) {
+            case DHTMessage.PutResponse response -> response.fenced();
+            case DHTMessage.RemoveResponse response -> response.fenced();
+            default -> false;
+        };
+    }
 
     private record Member(NodeId id, DHTNode node, DistributedDHTClient client) {}
 
@@ -161,7 +193,7 @@ class DHTCapacityFenceRollbackTest {
 
     private static final class Cluster {
         private final Map<NodeId, Member> members = new LinkedHashMap<>();
-        private final List<DHTMessage.PutResponse> heldFence = new CopyOnWriteArrayList<>();
+        private final List<ProtocolMessage> heldFence = new CopyOnWriteArrayList<>();
         volatile NodeId silent;
         volatile boolean holdFences = true;
         private final Gate deposedGate = new Gate(OLD_EPOCH);
@@ -223,18 +255,22 @@ class DHTCapacityFenceRollbackTest {
             }
             assertThat(holdsTheWrite(DEPOSED)).as("precondition: the lagging fence accepted the write locally before the late refusal")
                                       .isTrue();
-            heldFence.forEach(response -> members.get(DEPOSED).client().onPutResponse(response));
-            heldFence.clear();
+            releaseHeldFences();
 
             return new Outcome(put.await().<Cause>fold(cause -> cause, _ -> null));
+        }
+
+        void releaseHeldFences() {
+            heldFence.forEach(response -> route(members.get(DEPOSED), response));
+            heldFence.clear();
         }
 
         private void deliver(NodeId target, ProtocolMessage message) {
             if (target.equals(silent)) {
                 return;
             }
-            if (message instanceof DHTMessage.PutResponse response && holdFences && target.equals(DEPOSED) && response.fenced()) {
-                heldFence.add(response);
+            if (holdFences && target.equals(DEPOSED) && fenced(message)) {
+                heldFence.add(message);
                 return;
             }
             Option.option(members.get(target)).onPresent(member -> route(member, message));
@@ -245,6 +281,9 @@ class DHTCapacityFenceRollbackTest {
                 case DHTMessage.PutRequest request ->
                     member.node().handlePutRequest(request, response -> deliver(request.sender(), response));
                 case DHTMessage.PutResponse response -> member.client().onPutResponse(response);
+                case DHTMessage.RemoveRequest request ->
+                    member.node().handleRemoveRequest(request, response -> deliver(request.sender(), response));
+                case DHTMessage.RemoveResponse response -> member.client().onRemoveResponse(response);
                 default -> {}
             }
         }
