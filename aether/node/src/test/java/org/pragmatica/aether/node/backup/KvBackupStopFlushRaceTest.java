@@ -105,43 +105,86 @@ class KvBackupStopFlushRaceTest {
               + " && git -C \"$D/c\" push --quiet origin backup\nrm -rf \"$D\"\nexit 0\n");
     }
 
-    /// With a worker that is never interrupted the loop must still end: at the deadline, not by exhausting the stack.
-    @Test
-    void reDecide_endsAtTheDeadline_withoutExhaustingTheStack_whenTheWorkerIsNeverInterrupted() throws Exception {
-        var remote = bareRemote(temp.resolve("remote.git"));
+    /// A service whose worker is never interrupted (a scheduler without `shutdownNow`) on a real executor, with a racing hook that loses every push.
+    private record Uninterrupted(KvBackupService service, CountDownLatch done, AtomicReference<Throwable> thrown, java.util.concurrent.ScheduledExecutorService executor) {}
+
+    private Uninterrupted uninterrupted(String remote, java.util.function.LongSupplier clock) {
         var stamps = temp.resolve("push.stamps");
         var thrown = new AtomicReference<Throwable>();
         var done = new CountDownLatch(1);
         var executor = Executors.newSingleThreadScheduledExecutor();
-        KvBackupService.Scheduler scheduler = (task, delay) -> executor.schedule(() -> {
-            try {
-                task.run();
-            } catch (Throwable t) {
-                thrown.set(t);
-            } finally {
-                done.countDown();
-            }
-        }, delay, TimeUnit.MILLISECONDS);
+        KvBackupService.Scheduler scheduler = (task, delay) -> executor.schedule(() -> runRecording(task, thrown, done), delay, TimeUnit.MILLISECONDS);
         var store = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), NODE_CODEC, NODE_CODEC);
         var warnings = new CopyOnWriteArrayList<BackupWarning>();
         var repository = GitBackupRepository.gitBackupRepository(temp.resolve("node"), Option.some(remote), "backup", TimeSpan.timeSpan(30).seconds());
-        var service = KvBackupService.kvBackupService(store, CODEC, repository, scheduler, System::currentTimeMillis, warnings::add, KvBackupService.Timing.DEFAULT);
+        var service = KvBackupService.kvBackupService(store, CODEC, repository, scheduler, clock, warnings::add, KvBackupService.Timing.DEFAULT);
         var node = new Node(store, service, warnings, repository);
 
         node.apply(ClusterIncarnationKey.clusterIncarnationKey(), ClusterIncarnationValue.clusterIncarnationValue(LINEAGE, 1, OURS));
         node.apply(ConfigKey.forKey("a"), ConfigValue.configValue("a", "v"));
         seedHead(remote);
         installRacingHook(node, remote, stamps);
+
+        return new Uninterrupted(service, done, thrown, executor);
+    }
+
+    private static void runRecording(Runnable task, AtomicReference<Throwable> thrown, CountDownLatch done) {
+        try {
+            task.run();
+        } catch (Throwable t) {
+            thrown.set(t);
+        } finally {
+            done.countDown();
+        }
+    }
+
+    /// With a worker that is never interrupted the loop must still end: at the deadline, not by exhausting the stack.
+    @Test
+    void reDecide_endsAtTheDeadline_withoutExhaustingTheStack_whenTheWorkerIsNeverInterrupted() throws Exception {
+        var remote = bareRemote(temp.resolve("remote.git"));
+        var harness = uninterrupted(remote, System::currentTimeMillis);
         var started = System.nanoTime();
 
-        service.stopFlushed(TimeSpan.timeSpan(3).seconds());
-        var ended = done.await(20, TimeUnit.SECONDS);
+        harness.service().stopFlushed(TimeSpan.timeSpan(3).seconds());
+        var ended = harness.done().await(20, TimeUnit.SECONDS);
         var elapsedMs = (System.nanoTime() - started) / 1_000_000;
 
-        executor.shutdownNow();
+        harness.executor().shutdownNow();
         assertThat(ended).as("the task ended on its own, at the deadline").isTrue();
-        assertThat(thrown.get()).as("and not by an error such as StackOverflowError").isNull();
+        assertThat(harness.thrown().get()).as("and not by an error such as StackOverflowError").isNull();
         assertThat(elapsedMs).isBetween(2_900L, 8_000L);
+    }
+
+    /// The stop alone ends the loop too, whatever the deadline says: `stop()` is what the caller's timeout does.
+    @Test
+    void reDecide_endsAtTheStop_whenTheDeadlineIsStillFar() throws Exception {
+        var remote = bareRemote(temp.resolve("remote.git"));
+        var harness = uninterrupted(remote, System::currentTimeMillis);
+
+        harness.service().stopFlushed(TimeSpan.timeSpan(120).seconds());
+        Thread.sleep(1_500);
+        assertThat(harness.done().getCount()).as("control: still deciding again").isEqualTo(1L);
+        harness.service().stop();
+        var ended = harness.done().await(10, TimeUnit.SECONDS);
+
+        harness.executor().shutdownNow();
+        assertThat(ended).as("the stop ended the loop").isTrue();
+        assertThat(harness.thrown().get()).isNull();
+    }
+
+    /// The deadline alone ends the loop too, with the caller's timeout and the stop still far away: the clock passes it.
+    @Test
+    void reDecide_endsAtTheDeadline_whenNothingStopsTheService() throws Exception {
+        var remote = bareRemote(temp.resolve("remote.git"));
+        var reads = new java.util.concurrent.atomic.AtomicInteger();
+        var harness = uninterrupted(remote, () -> System.currentTimeMillis() + (reads.incrementAndGet() > 3 ? 10_000_000L : 0L));
+
+        harness.service().stopFlushed(TimeSpan.timeSpan(120).seconds());
+        var ended = harness.done().await(15, TimeUnit.SECONDS);
+
+        harness.executor().shutdownNow();
+        assertThat(ended).as("the clock passed the deadline and the loop ended, unstopped and uninterrupted").isTrue();
+        assertThat(harness.thrown().get()).isNull();
     }
 
     /// At the production bound the loop keeps deciding again until the end of the 10 s, the last push lands near it, and nothing is pushed once

@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
+import org.apache.logging.log4j.Level;
 import org.pragmatica.aether.node.ClusterIncarnation;
 import org.pragmatica.aether.node.NodeCodecs;
 import org.pragmatica.aether.node.backup.BackupWarning.Code;
@@ -45,6 +46,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
+import org.pragmatica.testlogging.LogCapture;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -1278,6 +1280,65 @@ class KvBackupServiceTest {
             assertThat(node.service().status()).isEqualTo(KvBackupService.Status.CURRENT);
         }
 
+        /// A role exclusion is not a skipped flush (the partial replica never had authority over the backup): one INFO line names the reason, and
+        /// no operator warning is raised.
+        @Test
+        void stopFlushed_logsOneInfoLine_forAPartialReplica() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var node = follower(remote, 1, "worker");
+
+            node.apply(ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+
+            try (var capture = LogCapture.capture(KvBackupService.class, Level.INFO, true)) {
+                settle(node.service().stopFlushed(DEADLINE, KvBackupService.Replica.PARTIAL));
+
+                assertThat(capture.entries()).filteredOn(entry -> entry.level() == Level.INFO)
+                                             .singleElement()
+                                             .satisfies(entry -> assertThat(entry.message()).contains("partial replica", "no authority"));
+            }
+            assertThat(node.warnings()).isEmpty();
+        }
+
+        /// A worker interrupted by the stop's deadline fails its git calls with the interruption: that is the stop's doing, not a commit failure.
+        @Test
+        void stopFlushed_raisesNoCommitFailure_whenTheWorkerIsInterruptedMidFlush() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var node = follower(remote, 1, "interrupted");
+
+            node.apply(ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+
+            var stopping = node.service().stopFlushed(DEADLINE);
+
+            Thread.currentThread().interrupt();
+            scheduler.advance(0);
+            Thread.interrupted();
+            settle(stopping);
+
+            assertThat(node.warnings()).extracting(BackupWarning::code).doesNotContain(Code.BACKUP_COMMIT_FAILED);
+        }
+
+        /// Two nodes creating the backup branch at once: the loser's tracking ref is still absent when it is rejected, and it must decide again, not give up.
+        @Test
+        void stopFlushed_landsTheWrite_whenAnotherNodeCreatesTheBranchFirst() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var peerRemote = bareRemote(temp.resolve("peer-remote.git"));
+            var peer = follower(peerRemote, 1, "peer");
+
+            settle(peer.service().stopFlushed(DEADLINE));
+
+            var node = follower(remote, 1, "second");
+            var key = ConfigKey.forKey("second-node");
+
+            node.apply(key, ConfigValue.configValue("second-node", "v"));
+            installBranchCreatingHook(node.service(), remote, temp.resolve("peer"));
+
+            var stopped = settle(node.service().stopFlushed(DEADLINE));
+
+            assertThat(stopped.isSuccess()).isTrue();
+            assertThat(remoteDocument(remote).entries()).containsKey(key);
+            assertThat(node.warnings()).isEmpty();
+        }
+
         private void assertFiveNodesLeaveTheHighest(boolean ascending) {
             var remote = bareRemote(temp.resolve("remote.git"));
             var nodes = new ArrayList<OtherCluster>();
@@ -1373,6 +1434,23 @@ class KvBackupServiceTest {
                       ClusterIncarnationValue.clusterIncarnationValue(LINEAGE, incarnation, incarnationId));
 
         return cluster;
+    }
+
+    /// A client-side pre-push hook that, once, pushes `peerDir`'s branch to the (still empty) remote just before git sends the push: another node got
+    /// there first and created the backup branch.
+    private void installBranchCreatingHook(KvBackupService service, String remote, Path peerDir) {
+        service.repository().prepare().onFailure(cause -> Assertions.fail(cause.message()));
+        var hook = service.repository().dir().resolve(".git").resolve("hooks").resolve("pre-push");
+        var done = temp.resolve("branch-created");
+
+        writeFile(hook,
+                  "#!/bin/sh\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE\n[ -f '" + done + "' ] && exit 0\ntouch '" + done + "'\n"
+                  + "git -C '" + peerDir + "' push --quiet '" + remote + "' HEAD:refs/heads/backup\nexit 0\n");
+        try {
+            Files.setPosixFilePermissions(hook, PosixFilePermissions.fromString("rwxr-xr-x"));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     /// A client-side pre-push hook that, for the first `times` pushes of `service`'s repository, advances the remote from a scratch clone

@@ -1736,7 +1736,7 @@ public interface AetherNode extends ManageableNode {
             }
 
             private KvBackupService.Replica backupReplica() {
-                return AetherNode.backupReplica(config.workerConfig().isPresent());
+                return AetherNode.backupReplica(configuredWorker(config));
             }
 
             /// The #644 arming stage of [#start]'s chain — a named identity so the arm rides the
@@ -4003,7 +4003,8 @@ public interface AetherNode extends ManageableNode {
                       .collect(Collectors.toSet());
     }
 
-    /// Know 6ee3dc3f0d: a worker is fed a replica without part of the backed-up state, so its stop flush must not write; every other node holds the full state.
+    /// Know 6ee3dc3f0d: a worker ([#configuredWorker]: a `[worker]` configuration or a topology label `role=worker|spot`) holds a replica without part of
+    /// the backed-up state, so its stop flush must not write; every other node holds the full state.
     static KvBackupService.Replica backupReplica(boolean worker) {
         return worker
                ? KvBackupService.Replica.PARTIAL
