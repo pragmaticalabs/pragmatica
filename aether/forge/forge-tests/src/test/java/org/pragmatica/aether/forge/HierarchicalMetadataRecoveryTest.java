@@ -19,7 +19,7 @@ import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.aether.worker.metadata.WorkerMetadataMessage;
+import org.pragmatica.cluster.replica.ReplicaFeedMessage;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Option;
@@ -27,7 +27,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
-/// Four clients recover scoped projections together after metadata-only response loss. This is
+/// Four workers recover their replicas together after replica-feed-only response loss (W4: the feed replaced the metadata projection). This is
 /// bounded local runtime evidence, not a physical socket reconnect or a 10K throughput benchmark.
 @Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
@@ -66,7 +66,8 @@ class HierarchicalMetadataRecoveryTest {
         await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS).until(() -> sampleReadiness(workers, org.pragmatica.aether.metrics.NodeReportedState.READY));
         var dropped = new AtomicInteger();
         nodes.forEach(node -> node.setInboundFaultFilter((_, message) -> {
-            if (message instanceof WorkerMetadataMessage.Manifest || message instanceof WorkerMetadataMessage.Chunk) {
+            if (message instanceof ReplicaFeedMessage.ReplicaEntries || message instanceof ReplicaFeedMessage.ReplicaHeartbeat
+                || message instanceof ReplicaFeedMessage.ReplicaSnapshotChunk) {
                 dropped.incrementAndGet();
                 return false;
             }

@@ -38,6 +38,7 @@ public final class ReplicaReadiness {
     private final ArrayDeque<Beat> beats = new ArrayDeque<>();
     private IncarnationTag beatTag = IncarnationTag.NONE;
     private boolean caughtUp;
+    private long carriedUntilNanos;
     private boolean published;
     private boolean lastPublished;
 
@@ -69,6 +70,7 @@ public final class ReplicaReadiness {
     public synchronized Unit onHeartbeat(IncarnationTag tag, long nextSlot, boolean serving) {
         if (serving && !isAhead(tag, nextSlot)) {
             beatTag = tag;
+            carriedUntilNanos = 0L;
             beats.addLast(new Beat(nanos.getAsLong(), nextSlot));
         }
 
@@ -91,7 +93,9 @@ public final class ReplicaReadiness {
         return Unit.unit();
     }
 
-    /// The source changed or was lost: its heartbeats say nothing about the next one.
+    /// The replica is re-based on a new source (a snapshot is coming): the old heartbeats say nothing about the new state. A resume from the
+    /// replica's own anchor does NOT call this: the heartbeats already counted stay true of the replica and age out under (b), so a re-parent to
+    /// another source does not by itself drop readiness.
     public synchronized Unit sourceChanged() {
         beats.clear();
         beatTag = IncarnationTag.NONE;
@@ -100,20 +104,42 @@ public final class ReplicaReadiness {
         return Unit.unit();
     }
 
-    public synchronized boolean ready() {
-        var now = nanos.getAsLong();
+    /// A resume onto another source keeps the counted heartbeats only until `graceNanos` from now, or until the new source counts its own.
+    public synchronized Unit carryBeatsFor(long graceNanos) {
+        if (carriedUntilNanos == 0L) {
+            carriedUntilNanos = nanos.getAsLong() + graceNanos;
+        }
 
-        return counted().filter(newest -> isFresh(newest, now))
-                      .filter(_ -> beatTag.matches(position.get().tag()))
-                      .filter(_ -> isCaughtUpToLag(now))
-                      .isPresent()
-               && caughtUp
+        return Unit.unit();
+    }
+
+    public synchronized boolean ready() {
+        return isSynced(nanos.getAsLong())
                && workerRole.getAsBoolean()
                && directoryInstalled.getAsBoolean();
     }
 
+    /// Whether this replica is current enough to be relayed to members (spec 3.3, I-W5): (a), (b), (c), (e) hold and `applied` has reached the
+    /// `nextSlot` of the NEWEST counted heartbeat, not only of the one at least `L` old. The worker role (d) and the directory (f) are not part of it.
+    public synchronized boolean servable() {
+        var now = nanos.getAsLong();
+
+        return isSynced(now) && counted().map(newest -> position.get()
+                                                                .applied() >= newest.nextSlot())
+                                       .or(false);
+    }
+
+    private boolean isSynced(long now) {
+        return counted().filter(newest -> isFresh(newest, now))
+                      .filter(_ -> beatTag.matches(position.get().tag()))
+                      .filter(_ -> isCaughtUpToLag(now))
+                      .isPresent() && caughtUp;
+    }
+
     private Option<Beat> counted() {
-        return Option.option(beats.peekLast());
+        return carriedUntilNanos != 0L && nanos.getAsLong() > carriedUntilNanos
+               ? Option.none()
+               : Option.option(beats.peekLast());
     }
 
     private boolean isFresh(Beat newest, long now) {

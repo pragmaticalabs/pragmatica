@@ -172,4 +172,38 @@ class ReplicaReadinessTest {
 
         assertThat(published).containsExactly(true, false, true);
     }
+
+    /// I-W5 input: `servable()` is (a)-(c), (e) plus `applied >= nextSlot` of the NEWEST counted heartbeat; the worker role (d) and the directory (f)
+    /// are not part of it. Mutation: compare against the oldest heartbeat only (the 5 s lag one), or require (d) or (f).
+    @Test
+    void servable_isTrue_whenCaughtUpToTheNewestHeartbeat_whateverTheRoleAndDirectory() {
+        worker.set(false);
+        directory.set(false);
+
+        assertThat(readiness.ready()).as("control: (d) and (f) fail").isFalse();
+        assertThat(readiness.servable()).isTrue();
+    }
+
+    @Test
+    void servable_isFalse_whenTheSourceIsAheadOfTheReplicaByAFreshHeartbeat() {
+        readiness.onHeartbeat(TAG, 12, true);
+
+        assertThat(readiness.ready()).as("control: the 5 s lag rule has not looked at the new heartbeat yet").isTrue();
+        assertThat(readiness.servable()).as("a governor behind its core's newest frontier must not serve members").isFalse();
+
+        position.set(ReplicaPosition.replicaPosition(TAG, 12, List.of(new AnchorPair(11, "y"))));
+
+        assertThat(readiness.servable()).isTrue();
+    }
+
+    /// Mutation: drop (e) or (b) from the shared computation.
+    @Test
+    void servable_isFalse_beforeTheInitialCatchUp_andWhenTheHeartbeatsAreStale() {
+        readiness.caughtUp(false);
+        assertThat(readiness.servable()).isFalse();
+
+        readiness.caughtUp(true);
+        advance(30_500);
+        assertThat(readiness.servable()).isFalse();
+    }
 }

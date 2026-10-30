@@ -12,7 +12,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.metrics.NodeReportedState;
@@ -31,12 +30,13 @@ import org.pragmatica.net.tcp.TlsConfig;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/// TW-O9 of the worker-replica-feed design (W-OBS), at the level that reaches the real wiring: an ASSEMBLED worker node, not started.
+/// TW-O9 of the worker-replica-feed design (W-OBS), flipped by the W4 cutover, at the level that reaches the real wiring: an ASSEMBLED worker node,
+/// not started.
 ///
-/// Today a worker reports `READY` only when its engine's passive-client latch is set AND the projection client says its
-/// metadata projection is fresh (`AetherNode`: `runtimeReady(clusterNode) && workerProjectionFreshRef.get()` feeding the
-/// node-reported-state holder). The two inputs are independent: the latch is set by `authorizePassiveClient()` (TW-O3), freshness by the
-/// projection client. The design replaces the freshness input with `ReplicaReadiness.ready()` and flips this in W4 (the cutover), not W3.
+/// A worker reports `READY` only when its engine's passive-client flag is set AND its replica readiness holds (`AetherNode`:
+/// `runtimeReady(clusterNode) && workerProjectionFreshRef.get()` feeding the node-reported-state holder). The flag is set and cleared by the
+/// replica readiness alone (I-W6; the latch `authorizePassiveClient` is gone), and the freshness input IS `ReplicaReadiness.ready()`, no longer
+/// the metadata projection. The positive half (a worker whose replica is ready reports READY) is `EmberReplicaTripwireTest`.
 ///
 /// The holder is not reachable through any accessor, so the test takes it from the supplier the node registers on its collector.
 class ReplicaReadinessWiringTripwireTest {
@@ -52,32 +52,26 @@ class ReplicaReadinessWiringTripwireTest {
         ResourceProvider.clear();
     }
 
+    /// Mutation: restore the projection's freshness (`workerProjectionFreshRef.set(workerMetadataChannel::hasFreshProjection)`) or leave the
+    /// default `!configuredWorker`; or let anything but `ReplicaReadiness.publish` set the engine flag.
     @Test
     @SuppressWarnings("unchecked")
-    void workerWithTheLatchSetAndSubsystemsUp_isStillNotReady_whileItsProjectionIsNotFresh_today() throws ReflectiveOperationException {
+    void aWorker_isReadyOnlyWhenItsReplicaReadinessHolds() throws ReflectiveOperationException {
         node = AetherNode.aetherNode(workerConfig(new NodeId("worker-readiness-" + UUID.randomUUID())), () -> {}).unwrap();
-        var channel = (org.pragmatica.aether.worker.metadata.WorkerMetadataChannel) component(node, "workerMetadataChannel");
+        var client = ((Option<org.pragmatica.cluster.replica.ReplicaFeedClient<?, ?>>) component(node, "replicaClient")).unwrap();
+        var readiness = (org.pragmatica.cluster.replica.ReplicaReadiness) field(client, "readiness");
         var cluster = (RabiaNode<KVCommand<AetherKey>>) component(node, "clusterNode");
         var holder = registeredHolder(node);
 
-        assertThat(channel.hasFreshProjection()).as("precondition: an assembled worker has received no projection").isFalse();
-        assertThat(cluster.isPassiveClientReady()).as("precondition: the passive-client latch is not set").isFalse();
+        assertThat(readiness.ready()).as("precondition: a worker that received nothing has no ready replica").isFalse();
+        assertThat(cluster.isPassiveClientReady()).as("precondition: nothing has set the engine flag").isFalse();
 
         holder.onSubsystemsReady();
-        cluster.authorizePassiveClient();
+        assertThat(AetherNode.runtimeReady(cluster)).as("the engine side of readiness is not satisfied by subsystems alone").isFalse();
 
-        assertThat(AetherNode.runtimeReady(cluster)).as("the engine side of readiness is satisfied: the latch is set").isTrue();
-        assertThat(node.isReady()).as("and the node's own runtime-ready accessor agrees").isTrue();
-        assertThat(holder.current()).as("TW-O9: yet the node still reports SYNCING, because the projection is not fresh; readiness is the AND of the two").isEqualTo(NodeReportedState.SYNCING);
-    }
-
-    @Disabled("W4 (cutover): enable when readiness is computed by ReplicaReadiness.ready() and set through setPassiveClientReady; assert a worker is ready iff ready() holds")
-    @Test
-    void workerIsReady_iffReplicaReadinessHolds() {
-        // ReplicaReadiness lands in W3 but the flip is W4, so the type's presence must not make this pass: it always fails until the body is real.
-        throw ReplicaSeam.failClosed(ReplicaSeam.typeExists("ReplicaReadiness"),
-                                     "W3 ReplicaReadiness, flipped by W4",
-                                     "on an assembled worker, isPassiveClientReady() and the node-reported state are READY exactly when ReplicaReadiness.ready() holds, and nothing else sets them");
+        cluster.setPassiveClientReady(true);
+        assertThat(AetherNode.runtimeReady(cluster)).as("the engine side is satisfied once the readiness publisher sets the flag").isTrue();
+        assertThat(holder.current()).as("TW-O9: yet the node still reports SYNCING, because ReplicaReadiness.ready() does not hold").isEqualTo(NodeReportedState.SYNCING);
     }
 
     @SuppressWarnings("unchecked")

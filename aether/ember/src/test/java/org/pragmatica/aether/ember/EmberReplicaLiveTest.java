@@ -11,7 +11,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.ClusterIncarnation;
-import org.pragmatica.aether.node.ReplicaCutover;
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -45,12 +44,12 @@ class EmberReplicaLiveTest {
         }
     }
 
-    /// Mutation: leave the worker DARK (`withReplicaCutover` not honoured by `createNode`), or drop the client's routes.
+    /// Mutation: drop the client's routes or its start (`ReplicaClientAssembly.replicaClient`).
     @Test
     @Timeout(420)
     void aLiveWorker_holdsTheCoresIncarnation_andReportsReadyFromTheReplica() {
         cluster = EmberTestPorts.startedCluster(PORTS,
-                                                base -> startedWithLiveWorkers(emberCluster(CORES, base, base + MGMT_OFFSET, base + APP_OFFSET, "rlw")),
+                                                base -> emberCluster(CORES, base, base + MGMT_OFFSET, base + APP_OFFSET, "rlw"),
                                                 START_BOUND);
         awaitCondition("a leader is elected", () -> cluster.currentLeader().isPresent());
         awaitCondition("genesis commits incarnation 1", () -> ClusterIncarnation.current(leader().kvStore()) >= 1L);
@@ -66,12 +65,6 @@ class EmberReplicaLiveTest {
         assertThat(worker.metadataResourceMetrics().getOrDefault("clientInstalledIncarnation", 0L))
             .as("the projection client never ran: it installed nothing")
             .isZero();
-    }
-
-    private static EmberCluster startedWithLiveWorkers(EmberCluster created) {
-        created.withReplicaCutover(ReplicaCutover.LIVE);
-
-        return created;
     }
 
     private AetherNode leader() {
