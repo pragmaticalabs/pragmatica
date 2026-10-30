@@ -22,6 +22,11 @@ import org.pragmatica.lang.Result;
 /// How an entity checkpoint block carries the lineage identity of the record it was taken at (#2087 B4-cut). A block is the encoded fold
 /// alone, or -- when a lineage is recorded -- an 8-byte marker, the lineage's length, the lineage, and then the encoded fold. A block without
 /// the marker is a fold with no lineage recorded and is read as before.
+///
+/// Since PR-3c every block written opens with an identity header ([#IDENTITY_MARKER], the keyspace, the partition and the claim) ahead of
+/// that layout, so no two checkpoint pointers can name one block: content addressing gives byte-identical folds one id, and a writer that
+/// deletes the block its pointer swap displaced would otherwise delete another pointer's block with it. A block without the header (written
+/// before PR-3c) is read as before.
 final class CheckpointFrame {
     /// Records the lineage digest covers: up to this many, ending at the checkpoint's claim.
     static final int LINEAGE_WINDOW = 8;
@@ -29,10 +34,28 @@ final class CheckpointFrame {
     private static final int HASH_BYTES = 16;
     private static final int EPOCH_BYTES = 3 * Long.BYTES;
     private static final byte[] MARKER = "LNGCKPT1".getBytes(StandardCharsets.US_ASCII);
+    /// Opens the identity header. Its first byte, `'C'`, is neither snapshot version (1, 2) nor the first byte of [#MARKER], so a build
+    /// that predates the header reads the block as a fold with no lineage that does not decode: "no usable checkpoint", and the partition
+    /// is rebuilt from its log (the block-layout flag day of PR-3c).
+    private static final byte[] IDENTITY_MARKER = "CKPTID01".getBytes(StandardCharsets.US_ASCII);
 
     private CheckpointFrame() {}
 
-    static byte[] frame(byte[] snapshot, Option<byte[]> lineage) {
+    static byte[] frame(String keyspace, int partition, long throughOffset, byte[] snapshot, Option<byte[]> lineage) {
+        var name = keyspace.getBytes(StandardCharsets.UTF_8);
+        var body = withLineage(snapshot, lineage);
+
+        return ByteBuffer.allocate(IDENTITY_MARKER.length + Integer.BYTES + name.length + Integer.BYTES + Long.BYTES + body.length)
+                         .put(IDENTITY_MARKER)
+                         .putInt(name.length)
+                         .put(name)
+                         .putInt(partition)
+                         .putLong(throughOffset)
+                         .put(body)
+                         .array();
+    }
+
+    private static byte[] withLineage(byte[] snapshot, Option<byte[]> lineage) {
         return lineage.map(identity -> ByteBuffer.allocate(MARKER.length + Integer.BYTES + identity.length + snapshot.length)
                                                  .put(MARKER)
                                                  .putInt(identity.length)
@@ -43,6 +66,29 @@ final class CheckpointFrame {
     }
 
     static EntityCheckpoint unframe(long throughOffset, byte[] block) {
+        return unframeLineage(throughOffset, withoutIdentity(block));
+    }
+
+    /// `block` without its identity header; a block that has none (written before PR-3c), or whose header does not parse, whole.
+    private static byte[] withoutIdentity(byte[] block) {
+        if (block.length < IDENTITY_MARKER.length + Integer.BYTES || !Arrays.equals(block,
+                                                                                    0,
+                                                                                    IDENTITY_MARKER.length,
+                                                                                    IDENTITY_MARKER,
+                                                                                    0,
+                                                                                    IDENTITY_MARKER.length)) {
+            return block;
+        }
+
+        var nameLength = ByteBuffer.wrap(block, IDENTITY_MARKER.length, Integer.BYTES).getInt();
+        var bodyStart = (long) IDENTITY_MARKER.length + Integer.BYTES + nameLength + Integer.BYTES + Long.BYTES;
+
+        return nameLength < 0 || bodyStart > block.length
+               ? block
+               : Arrays.copyOfRange(block, (int) bodyStart, block.length);
+    }
+
+    private static EntityCheckpoint unframeLineage(long throughOffset, byte[] block) {
         if (block.length < MARKER.length + Integer.BYTES || !Arrays.equals(block,
                                                                            0,
                                                                            MARKER.length,

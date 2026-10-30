@@ -681,7 +681,7 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                                         long throughOffset,
                                         byte[] snapshot,
                                         Option<byte[]> lineage) {
-        return storage.put(CheckpointFrame.frame(snapshot, lineage))
+        return storage.put(CheckpointFrame.frame(keyspace, partition, throughOffset, snapshot, lineage))
                       .flatMap(blockId -> publishCheckpointPointer(keyspace, partition, throughOffset, blockId));
     }
 
@@ -752,8 +752,7 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     }
 
     public Promise<Unit> saveCheckpoint(String keyspace, int partition, long throughOffset, byte[] snapshot) {
-        return storage.put(snapshot)
-                      .flatMap(blockId -> publishCheckpointPointer(keyspace, partition, throughOffset, blockId));
+        return saveCheckpoint(keyspace, partition, throughOffset, snapshot, Option.none());
     }
 
     /// **This pointer is what the retention floor trusts** when reclaiming entity-log segments
