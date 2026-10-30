@@ -97,6 +97,34 @@ public interface SliceStore {
                                  Option<SliceCodec> nodeCodec,
                                  Option<Fn1<Promise<String>, String>> secretResolver,
                                  Fn1<Option<ResourceProviderFacade>, ClassLoader> resourceOverlayBuilder) {
+        return sliceStore(registry,
+                          repositories,
+                          sharedLibraryLoader,
+                          invokerFacade,
+                          resourceFacade,
+                          config,
+                          nodeComposite,
+                          nodeCodec,
+                          secretResolver,
+                          resourceOverlayBuilder,
+                          Option.none());
+    }
+
+    /// @param configFeed the node's config change feed: slices that declare `Watched`/`Live` subscribe to it at
+    ///                   load and are released from it when the slice is unloaded (#774). Absent on stores that
+    ///                   deliver no configuration changes (tests, non-Aether runtimes): a `Watched` then binds
+    ///                   once and never changes.
+    static SliceStore sliceStore(SliceRegistry registry,
+                                 List<Repository> repositories,
+                                 SharedLibraryClassLoader sharedLibraryLoader,
+                                 SliceInvokerFacade invokerFacade,
+                                 ResourceProviderFacade resourceFacade,
+                                 SliceActionConfig config,
+                                 Option<ConfigurationProvider> nodeComposite,
+                                 Option<SliceCodec> nodeCodec,
+                                 Option<Fn1<Promise<String>, String>> secretResolver,
+                                 Fn1<Option<ResourceProviderFacade>, ClassLoader> resourceOverlayBuilder,
+                                 Option<ConfigChangeFeed> configFeed) {
         return new sliceStore(registry,
                               repositories,
                               sharedLibraryLoader,
@@ -107,6 +135,7 @@ public interface SliceStore {
                               nodeCodec,
                               secretResolver,
                               resourceOverlayBuilder,
+                              configFeed,
                               new ConcurrentHashMap<>());
     }
 
@@ -241,6 +270,7 @@ public interface SliceStore {
                       Option<SliceCodec> nodeCodec,
                       Option<Fn1<Promise<String>, String>> secretResolver,
                       Fn1<Option<ResourceProviderFacade>, ClassLoader> resourceOverlayBuilder,
+                      Option<ConfigChangeFeed> configFeed,
                       ConcurrentHashMap<Artifact, Promise<LoadedSliceEntry>> entries) implements SliceStore {
         private static final Logger log = LoggerFactory.getLogger(sliceStore.class);
         private static final String SLICE_RESOURCES_TOML = "META-INF/resources.toml";
@@ -257,8 +287,31 @@ public interface SliceStore {
 
         private Promise<LoadedSliceEntry> startLoading(Artifact artifact) {
             log.debug("Loading slice {}", artifact);
+            var alreadyRegistered = registry.lookup(artifact).isPresent();
 
-            return loadFromLocation(artifact);
+            return loadFromLocation(artifact).onFailure(_ -> unwindFailedLoad(artifact, alreadyRegistered));
+        }
+
+        /// A load can fail AFTER the slice was created, subscribed and registered (its codec cannot be bound, say): no
+        /// entry is ever created, so no unload will ever come for it. Take back what THIS load did - unregister the
+        /// slice and release its subscriptions, together; releasing a slice that stays registered is wrong, and so is
+        /// unregistering one it did not register (an earlier load, as a dependency, owns that instance).
+        Promise<Unit> unwindFailedLoad(Artifact artifact, boolean alreadyRegistered) {
+            if (alreadyRegistered) {
+                return Promise.unitPromise();
+            }
+
+            return Promise.success(unregisterQuietly(artifact)).flatMap(_ -> releaseConfigWatches(artifact));
+        }
+
+        /// A failure that happened before registration leaves nothing to unregister; the release must happen regardless.
+        private Unit unregisterQuietly(Artifact artifact) {
+            registry.unregister(artifact)
+                    .onFailure(cause -> log.debug("Nothing to unregister for {}: {}",
+                                                  artifact,
+                                                  cause.message()));
+
+            return Unit.unit();
         }
 
         private Promise<LoadedSliceEntry> loadFromLocation(Artifact artifact) {
@@ -270,7 +323,8 @@ public interface SliceStore {
                                                          resourceFacade,
                                                          Option.some(this::buildSliceCompositeFromClassLoader),
                                                          nodeCodec,
-                                                         resourceOverlayBuilder)
+                                                         resourceOverlayBuilder,
+                                                         configFeed)
                                      .map(resolved -> {
                                               var sliceClassLoader = resolved.slice()
                                                                              .getClass()
@@ -633,14 +687,28 @@ public interface SliceStore {
 
         private Promise<Unit> unloadEntry(Artifact artifact, LoadedSliceEntry entry) {
             log.debug("Unloading slice {}", artifact);
-            Promise<Unit> deactivatePromise = entry.state() == EntryState.ACTIVE
-                                              ? entry.sliceInstance().stop().timeout(config.startStopTimeout())
-                                              : Promise.unitPromise();
 
-            return deactivatePromise.map(_ -> cleanup(artifact, entry))
-                                    .onFailure(cause -> log.warn("Failed to unload slice {}: {}",
-                                                                 artifact,
-                                                                 cause.message()));
+            return releaseConfigWatches(artifact).flatMap(_ -> stopForUnload(entry))
+                                       .map(_ -> cleanup(artifact, entry))
+                                       .onFailure(cause -> log.warn("Failed to unload slice {}: {}",
+                                                                    artifact,
+                                                                    cause.message()));
+        }
+
+        /// Release BEFORE `stop()`: a failing or timing-out `stop()` skips `cleanup`, and a release placed there
+        /// would be skipped with it. Once this returns no delivery starts; a delivery in flight is awaited
+        /// (bounded by the feed's callback timeout), so a callback never runs against a closed resource.
+        private Promise<Unit> releaseConfigWatches(Artifact artifact) {
+            return configFeed.map(feed -> feed.releaseAll(artifact.asString()))
+                             .or(Promise::unitPromise);
+        }
+
+        private Promise<Unit> stopForUnload(LoadedSliceEntry entry) {
+            return entry.state() == EntryState.ACTIVE
+                   ? entry.sliceInstance()
+                          .stop()
+                          .timeout(config.startStopTimeout())
+                   : Promise.unitPromise();
         }
 
         private Unit cleanup(Artifact artifact, LoadedSliceEntry entry) {

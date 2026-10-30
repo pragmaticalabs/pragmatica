@@ -2692,8 +2692,8 @@ aether cluster apply <config-file> [--cluster <name>] [--dry-run] [--yes] [--res
 | `--cluster <name>` | Target the named cluster instead of the active-context one, and rewrite the file's `[cluster].name` to `<name>` before applying — the same rewrite as `aether cluster bootstrap --cluster`, so a cluster bootstrapped under an override accepts its own TOML (`cluster.name` is immutable) |
 | `--dry-run` | Show planned changes without executing |
 | `--yes` | Skip confirmation prompt |
-| `--resume` | Resume a halted wave rollout. **Dormant in rc4, see #686**: aborts with "No apply state found" (below) |
-| `--rollback` | **Not implemented, see #686**: prints that `--rollback` is not implemented and exits non-zero (1) before reading the file or contacting the cluster; takes precedence over `--resume` |
+| `--resume` | Continue a halted wave rollout from its ledger (`apply-state.json`): each node the ledger intended is looked up at its provider by label (adopted if it exists, created only if 12 listings spaced a sixth of the provisioning timeout find nothing), finished actions are skipped, a partly done action creates only the remainder, and an apply-label audit runs before the ledger is closed. A ledger the cluster's commit state or a lost fence has aborted refuses `--resume` (use `--rollback`). With no ledger: "No apply state found" |
+| `--rollback` | Terminate the VMs the halted apply recorded, newest first. Each VM must carry both `aether-cluster=<cluster>` and `aether-apply=<apply id>` (one that does not is refused and named); a node that joined is drained first (bounded 120 s; if the cluster cannot be reached it says so and terminates anyway); absence is decided by listing the provider, never by a terminate error. Exits non-zero and keeps the ledger when any VM is left (each is named `STILL RUNNING AND BILLED` with its removal command); a second `--rollback` retries only those. Removals the apply made are listed as `NOT restored`. Refused once the config is committed. Takes precedence over `--resume` |
 | `--full-check` | Run full network pre-flight checks |
 
 **Plain `apply` (no `--resume`) actuates scale changes only.** It diffs the config
@@ -2717,11 +2717,9 @@ deliberately not wired to plain `apply` — a client-side rollout would be a sec
 authority over the same fleet next to the leader's reconciler (#686; the server-side wave design
 is a separate ticket).
 
-**In rc4 `--resume` has nothing to act on, and `--rollback` is refused outright.** `--resume` begins by loading the apply
-state for the cluster and aborts without it (`No apply state found for cluster '<name>'. Nothing to
-resume.`). That state is written only by the unwired client-side
-rollout itself, so no rc4 command creates it: unless a pre-rc4 CLI left a state file behind, `--resume`
-reports that message and the wave executor is unreachable end to end.
+**`--resume` and `--rollback` act on the apply ledger.** Both begin by loading the apply state for the cluster and abort without it
+(`No apply state found for cluster '<name>'. Nothing to resume.` / `... Nothing to roll back.`). The ledger is written by the client-side
+wave rollout, which the default `cluster apply` does not yet start (#686), so unless a pre-rc5 CLI left a ledger behind (a schema other than 2 is refused, by file name, and left untouched) both report that message.
 
 **Dormant in rc4 (#686): applies only if a wave rollout runs through `--resume`.** **If a wave rollout fails part-way,** it destroys the VMs of the failing step, best-effort. Its error then lists
 each VM the rollout created (node id, provider, server id, IP), because the apply records none of them:

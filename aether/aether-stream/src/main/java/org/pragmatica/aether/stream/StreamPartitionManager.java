@@ -1024,15 +1024,38 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// What a validated consumer read returns: the events and the owner epoch they were served under (#1730 phase 2 /
     /// #1873), which the consumer adopts.
-    /// `fromTier` (#2201 C-16) says the read began below the ring tail and was served from the sealed tier: the signal a
-    /// consumer's `stream-consumer-behind-ring` episode opens and closes on.
-    public record EpochRead(List<OffHeapRingBuffer.RawEvent> events, Epoch ownerEpoch, boolean fromTier) {
+    /// `position` (#2201 C-16) says where the read was served from: [Position#TIER] when it began below the ring tail and
+    /// the sealed tier served it, [Position#RING] when the ring did, and [Position#UNKNOWN] when the serving ring's tail was
+    /// not known (#2223: a closing ring answers `-1`, which no offset is below). It is the signal a consumer's
+    /// `stream-consumer-behind-ring` episode opens and closes on: a tier read opens it, a ring read closes it, an unknown one
+    /// does neither.
+    public record EpochRead(List<OffHeapRingBuffer.RawEvent> events, Epoch ownerEpoch, Position position) {
+        public enum Position {
+            RING,
+            TIER,
+            UNKNOWN
+        }
+
         public EpochRead(List<OffHeapRingBuffer.RawEvent> events, Epoch ownerEpoch) {
-            this(events, ownerEpoch, false);
+            this(events, ownerEpoch, Position.RING);
         }
 
         public static EpochRead epochRead(List<OffHeapRingBuffer.RawEvent> events, Epoch ownerEpoch, boolean fromTier) {
-            return new EpochRead(events, ownerEpoch, fromTier);
+            return new EpochRead(events,
+                                 ownerEpoch,
+                                 fromTier
+                                 ? Position.TIER
+                                 : Position.RING);
+        }
+
+        public static EpochRead epochRead(List<OffHeapRingBuffer.RawEvent> events,
+                                          Epoch ownerEpoch,
+                                          Position position) {
+            return new EpochRead(events, ownerEpoch, position);
+        }
+
+        public boolean fromTier() {
+            return position == Position.TIER;
         }
     }
 

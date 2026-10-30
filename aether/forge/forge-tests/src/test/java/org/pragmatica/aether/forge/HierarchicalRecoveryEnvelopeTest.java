@@ -21,8 +21,7 @@ import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.metrics.NodeReportedState;
-import org.pragmatica.aether.worker.metadata.WorkerMetadataMessage;
-import org.pragmatica.aether.worker.metadata.WorkerMetadataLimits;
+import org.pragmatica.cluster.replica.ReplicaFeedMessage;
 import org.pragmatica.aether.worker.health.CommunityHealthMessage;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.io.TimeSpan;
@@ -45,7 +44,6 @@ class HierarchicalRecoveryEnvelopeTest {
     private final AtomicInteger droppedMetadata = new AtomicInteger();
     private final AtomicInteger droppedRegional = new AtomicInteger();
     private final AtomicInteger droppedReports = new AtomicInteger();
-    private final AtomicInteger oversized = new AtomicInteger();
 
     @AfterEach void stop() {
         cluster.allNodes().forEach(node -> node.setInboundFaultFilter((_, _) -> true));
@@ -88,7 +86,6 @@ class HierarchicalRecoveryEnvelopeTest {
         await().atMost(BUDGET.duration()).until(() -> readiness(NodeReportedState.READY));
         during.addAll(controlRequests(10));
         assertBounds();
-        assertThat(oversized.get()).isZero();
         assertThat(leader().coreNodeIds()).hasSize(3).doesNotContainAnyElementsOf(workers);
         emit("correlated-worker-recovery", workers.size(), released - started, System.nanoTime() - released,
              cpuTime() - cpu, before, transport(), during);
@@ -97,13 +94,6 @@ class HierarchicalRecoveryEnvelopeTest {
     private void installFilters() {
         var region = Set.copyOf(workers.subList(0, Math.min(2, workers.size())));
         cluster.allNodes().forEach(node -> node.setInboundFaultFilter((sender, message) -> {
-            if (message instanceof WorkerMetadataMessage.Chunk chunk && chunk.bytes().length > WorkerMetadataLimits.DEFAULT.chunkBytes()) {
-                oversized.incrementAndGet();
-            }
-            if (message instanceof WorkerMetadataMessage.Manifest manifest && (manifest.scopes().size() > WorkerMetadataLimits.DEFAULT.scopesPerWorker()
-                || manifest.scopes().stream().anyMatch(scope -> scope.length() > WorkerMetadataLimits.DEFAULT.scopeBytes()))) {
-                oversized.incrementAndGet();
-            }
             if (regionBlackout.get() && (region.contains(sender) || region.contains(node.self()))) {
                 droppedRegional.incrementAndGet();
                 return false;
@@ -113,7 +103,8 @@ class HierarchicalRecoveryEnvelopeTest {
                 return false;
             }
             if (metadataBlackout.get() && workers.contains(node.self())
-                && (message instanceof WorkerMetadataMessage.Manifest || message instanceof WorkerMetadataMessage.Chunk)) {
+                && (message instanceof ReplicaFeedMessage.ReplicaEntries || message instanceof ReplicaFeedMessage.ReplicaHeartbeat
+                    || message instanceof ReplicaFeedMessage.ReplicaSnapshotChunk)) {
                 droppedMetadata.incrementAndGet();
                 return false;
             }

@@ -413,13 +413,14 @@ class WaveExecutorLedgerTest {
         harness.assertNoLeak(onDisk.applyId(), onDisk);
     }
 
+    /// Ids are compared exactly: the Docker provider lists FULL container ids (`docker ps --no-trunc`), the same canonical form
+    /// `docker run -d` answers with, so no prefix rule is needed and none exists (a prefix rule made `srv-1` match `srv-10`).
     @Test
-    void filteredListing_matchesTheShortContainerIdDockerPsPrints_andNothingElse() {
+    void filteredListing_matchesTheExactContainerIdOnly() {
         var fullId = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         var info = new InstanceInfo(new InstanceId(fullId), org.pragmatica.aether.environment.InstanceStatus.RUNNING, List.of(),
                                     org.pragmatica.aether.environment.InstanceType.ON_DEMAND, Map.of(),
                                     org.pragmatica.lang.Option.some("n-1"), org.pragmatica.lang.Option.none());
-
         var listing = new ArrayList<String>();
         ComputeProvider lister = new Hooked() {
             @Override
@@ -429,30 +430,19 @@ class WaveExecutorLedgerTest {
             }
         };
 
-        var shortInfo = new InstanceInfo(new InstanceId("0123456789ab"), org.pragmatica.aether.environment.InstanceStatus.RUNNING, List.of(),
-                                         org.pragmatica.aether.environment.InstanceType.ON_DEMAND, Map.of(),
-                                         org.pragmatica.lang.Option.some("n-1"), org.pragmatica.lang.Option.none());
-
-        listing.add("0123456789ab");
-        assertThat(WaveNodeProvisioning.filteredListing(lister, info, "n-1", "applyid").isSuccess()).as("short id of the same container").isTrue();
-
-        listing.clear();
         listing.add(fullId);
-        assertThat(WaveNodeProvisioning.filteredListing(lister, shortInfo, "n-1", "applyid").isSuccess()).as("full id listed, short id created").isTrue();
-        assertThat(WaveNodeProvisioning.filteredListing(lister, info, "n-1", "applyid").isSuccess()).as("full id").isTrue();
+        assertThat(WaveNodeProvisioning.filteredListing(lister, info, "n-1", "applyid").isSuccess()).as("the exact id").isTrue();
 
-        listing.clear();
-        listing.add("ffffffffffff");
-        assertThat(WaveNodeProvisioning.filteredListing(lister, info, "n-1", "applyid").isSuccess()).as("another container").isFalse();
-
-        listing.clear();
-        listing.add("");
-        assertThat(WaveNodeProvisioning.filteredListing(lister, info, "n-1", "applyid").isSuccess()).as("a blank listed id matches nothing").isFalse();
+        for (var other : List.of("0123456789ab", fullId + "0", fullId.substring(0, 63), "ffffffffffff", "")) {
+            listing.clear();
+            listing.add(other);
+            assertThat(WaveNodeProvisioning.filteredListing(lister, info, "n-1", "applyid").isSuccess()).as("'%s' is another server", other).isFalse();
+        }
 
         listing.clear();
         assertThat(WaveNodeProvisioning.filteredListing(lister, info, "n-1", "applyid").isSuccess()).as("nothing listed").isFalse();
 
-        listing.add("0123456789ab");
+        listing.add(fullId);
         assertThat(WaveNodeProvisioning.filteredListing(lister, info, "another-node", "applyid").isSuccess()).as("identity differs").isFalse();
     }
 
@@ -678,9 +668,9 @@ class WaveExecutorLedgerTest {
                                                  .onFailure(cause -> assertThat(cause.message()).contains("HTTP 504 gateway timeout")
                                                                                                    .contains("may nevertheless exist")
                                                                                                    .contains("aether-node-id=" + nodeIds.getFirst())
-                                                                                                   .contains("check the provider for that label before re-running")
-                                                                                                   .contains("--resume` does not look it up yet")
-                                                                                                   .doesNotContain("decides"));
+                                                                                                   .contains("Run `aether cluster apply --resume`, not a fresh apply")
+                                                                                                   .contains("looks the node up by that label")
+                                                                                                   .doesNotContain("does not look it up yet"));
 
         assertThat(ledger.ledger(CLUSTER).resources()).singleElement().extracting(ApplyResource::state).isEqualTo(ApplyResource.State.INTENDED);
     }
@@ -689,7 +679,7 @@ class WaveExecutorLedgerTest {
     @Test
     void dockerPerNodeSpec_isTheGroupPathsSpecForTheSameNodeId_plusOnlyTheLabels() {
         var group = NodeGroupConfig.nodeGroupConfig(sourceNameOrDefault("local"), "core", 1, "default", "default", Map.of("aether-cluster", "prod-cluster"));
-        var labels = WaveExecutor.provisionTags(CLUSTER, sourceNameOrDefault("local"), NodeRole.CORE, "0123456789abcdefghijklmnop");
+        var labels = WaveExecutor.provisionTags(CLUSTER, sourceNameOrDefault("local"), NodeRole.CORE, "0123456789abcdefghjkmnpqrs");
         var groupPath = CloudProviderSupport.provisionSpecFor(group, "aether-prod-cluster-node-x", Map.of()).unwrap();
         var perNode = CloudProviderSupport.provisionSpecFor(group, "aether-prod-cluster-node-x", labels).unwrap();
 

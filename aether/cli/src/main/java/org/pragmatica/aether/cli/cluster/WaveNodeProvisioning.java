@@ -150,16 +150,22 @@ sealed interface WaveNodeProvisioning {
         return compute.listInstances(Map.of(APPLY_LABEL, applyId))
                       .await()
                       .flatMap(listed -> listed.stream()
-                                               .anyMatch(item -> sameContainer(item.id().value(),
-                                                                               serverId)) && info.nodeId()
-                                                                                                 .equals(Option.some(nodeId))
+                                               .anyMatch(item -> item.id()
+                                                                     .value()
+                                                                     .equals(serverId)) && info.nodeId()
+                                                                                               .equals(Option.some(nodeId))
                                          ? Result.unitResult()
                                          : new LabelsMissing(nodeId, serverId).result());
     }
 
-    /// `docker run -d` answers with the full container id, `docker ps` lists the short one.
-    private static boolean sameContainer(String listed, String created) {
-        return ! listed.isEmpty() && (created.startsWith(listed) || listed.startsWith(created));
+    /// Whether `info`, as a provider LISTED it, carries this cluster's label and this apply's label. Cloud providers report
+    /// custom labels on the instance; the Docker provider reports `aether.cluster` and never custom labels, so for Docker the
+    /// apply label is what the daemon's own label filter already proved. A listing the server-side selector got wrong (or
+    /// ignored) therefore never makes a server "ours" by itself.
+    static boolean ownedBy(String provider, InstanceInfo info, String cluster, String applyId) {
+        return "docker".equals(provider)
+               ? cluster.equals(info.tags().get("aether.cluster"))
+               : cluster.equals(info.tags().get("aether-cluster")) && applyId.equals(info.tags().get(APPLY_LABEL));
     }
 
     private static Result<InstanceInfo> answered(Result<InstanceInfo> answer, String nodeId, ApplyRecorder recorder) {
@@ -169,8 +175,7 @@ sealed interface WaveNodeProvisioning {
     }
 
     /// A create that failed or whose reply was lost (timeout, 5xx) may nevertheless have created the VM. The row stays
-    /// INTENDED. The text says what is true today: `--resume` does not yet look the node up (P3 adds the lookup by label
-    /// and changes this text with it).
+    /// INTENDED. `--resume` looks the node up by label (ApplyReconciler), adopts it if it exists, and never creates an id twice.
     record CreateUnconfirmed(String nodeId, Cause origin) implements Cause.Wrapped {
         @Override
         public String message() {
@@ -179,8 +184,8 @@ sealed interface WaveNodeProvisioning {
                  + ". The node may nevertheless exist at the provider"
                  + " (look for the label " + NODE_LABEL
                  + "=" + nodeId
-                 + "); check the provider for that label before re-running."
-                 + " `aether cluster apply --resume` does not look it up yet and would create the node again.";
+                 + "); the ledger keeps it as INTENDED. Run `aether cluster apply --resume`, not a fresh apply:"
+                 + " it looks the node up by that label, adopts it if it exists and creates a node only for an id that is absent.";
         }
     }
 

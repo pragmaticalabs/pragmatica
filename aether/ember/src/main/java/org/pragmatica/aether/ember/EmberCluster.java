@@ -35,7 +35,6 @@ import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.invoke.ObservabilityConfig;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
-import org.pragmatica.aether.node.ReplicaCutover;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
@@ -211,9 +210,6 @@ public final class EmberCluster {
     /// writable base dir (e.g. a JUnit `@TempDir`) via [#withDataBaseDir] BEFORE [#start] to turn the
     /// disk tier and the per-partition stream WAL on; see [#perNodeStorageConfig].
     private final AtomicReference<Option<Path>> dataBaseDir = new AtomicReference<>(Option.none());
-    /// W-OBS W3: whether workers follow the replica feed (`LIVE`) or still read the metadata projection (`DARK`, the production value). Set BEFORE
-    /// [#start] / [#addWorkerNode] via [#withReplicaCutover]; W4 deletes it with the cutover.
-    private final AtomicReference<ReplicaCutover> replicaCutover = new AtomicReference<>(ReplicaCutover.DARK);
     /// Opt-in restart-stable consensus state for recovery tests; retained across stop/start.
     private final AtomicReference<Option<KvBackup>> kvBackup = new AtomicReference<>(Option.none());
     /// #1212 — where this instance's nodes keep their durable first-boot markers when the test did
@@ -474,13 +470,6 @@ public final class EmberCluster {
         dataBaseDir.set(Option.option(baseDir));
     }
 
-    /// TEST SEAM (W-OBS W3) — run the workers of this cluster on the replica feed (`LIVE`) instead of the metadata projection. MUST be called
-    /// before [#start] / [#addWorkerNode]. Production never calls this; W4 deletes it with the cutover.
-    @Contract
-    public void withReplicaCutover(ReplicaCutover cutover) {
-        replicaCutover.set(cutover);
-    }
-
     /// TEST SEAM (#1532/#1533) — enable the change-triggered KV backup on every node created from now on:
     /// node N backs up into `<baseDir>/<nodeId>` and pushes to `remote`, which every node shares (a bare
     /// repository path or URL), and a cold restart applies `restore`. Consensus itself runs in memory
@@ -691,8 +680,8 @@ public final class EmberCluster {
 
     /// Forge-only capacity for mixed-role acceptance fixtures; configure before starting nodes.
     public Result<Unit> withAdditionalNodeSlots(int additionalSlots) {
-        if (additionalSlots < 0 || additionalSlots > 32 || !nodes.isEmpty() || !heldBackNodes.isEmpty()) {
-            return org.pragmatica.lang.utils.Causes.cause("Additional node slots must be 0..32 and configured before start")
+        if (additionalSlots < 0 || additionalSlots > 64 || !nodes.isEmpty() || !heldBackNodes.isEmpty()) {
+            return org.pragmatica.lang.utils.Causes.cause("Additional node slots must be 0..64 and configured before start")
                                                    .result();
         }
 
@@ -1638,8 +1627,7 @@ public final class EmberCluster {
         // cluster's registry instead.
         return AetherNode.aetherNode(config,
                                      code -> onNodeExit(nodeId.id(),
-                                                        code),
-                                     replicaCutover.get())
+                                                        code))
                          .unwrap();
     }
 
