@@ -565,7 +565,10 @@ public final class MemoryStorageEngine implements StorageEngine {
             accounting.refused(refusedBytes);
         }
 
-        accounting.settle();
+        // a refusal moved no counter: only a write that did can end an episode, so a refusal never closes the one it opens
+        if (refusedBytes <= 0) {
+            accounting.settle();
+        }
 
         return refusedBytes > 0
                ? DHTError.replicaFull(usedBytes(DhtPrefixAccounting.STREAM_SEGMENTS),
