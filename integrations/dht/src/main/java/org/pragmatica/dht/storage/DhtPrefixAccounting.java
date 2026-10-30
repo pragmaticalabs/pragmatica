@@ -103,7 +103,8 @@ public final class DhtPrefixAccounting {
         return new DhtPrefixAccounting(streamSegmentsMaxBytes);
     }
 
-    /// Adds `prefix` to the registered table; a prefix already registered stays as it is.
+    /// Adds `prefix` to the registered table; a prefix already registered stays as it is. Call it before the engine's first write
+    /// of that prefix: entries counted under `other` before it stay there, and their later removal would be taken from the new bucket.
     @Contract
     public void register(String prefix) {
         if (registered.stream().noneMatch(bucket -> bucket.name()
