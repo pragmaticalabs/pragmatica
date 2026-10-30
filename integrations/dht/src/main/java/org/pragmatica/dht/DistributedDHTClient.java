@@ -448,7 +448,8 @@ public final class DistributedDHTClient implements DHTClient {
                       .fold(result -> result.fold(cause -> afterFailedWrite(key,
                                                                             stamp,
                                                                             localPut,
-                                                                            refinedPutFailure(cause, quorum, collector)),
+                                                                            refinedPutFailure(cause, quorum, collector),
+                                                                            collector.fencedCount() > 0),
                                                   Promise::success))
                       .withFailure(cause -> noteIfStale(cause, stamp))
                       .withSuccess(_ -> clearIfNoReplicaRefusedAsStale(collector))
@@ -639,7 +640,20 @@ public final class DistributedDHTClient implements DHTClient {
                                             WriteStamp stamp,
                                             Option<Promise<StorageEngine.Displaced>> localWrite,
                                             Cause cause) {
-        return cause instanceof DHTError.WriteIndeterminate
+        return afterFailedWrite(key, stamp, localWrite, cause, false);
+    }
+
+    /// `fenced`: a replica refused the write for its owner-epoch fence, so the local accept may spread whatever error the caller is
+    /// handed (a capacity refusal is reported ahead of the fence, but the rollback still follows the fence verdict). This is the
+    /// pre-#2258 decision: [DHTError.WriteIndeterminate] is built only when `fencedCount() > 0` (`quorumFailure`,
+    /// [#indeterminateIfFenced]), which before #2258 turned every failure into it whenever `fencedCount() > 0`, so the rollback
+    /// then ran exactly when a replica had fenced, and `fenced` restores that condition beside a capacity refusal.
+    private <T> Promise<T> afterFailedWrite(byte[] key,
+                                            WriteStamp stamp,
+                                            Option<Promise<StorageEngine.Displaced>> localWrite,
+                                            Cause cause,
+                                            boolean fenced) {
+        return cause instanceof DHTError.WriteIndeterminate || fenced
                ? localWrite.map(local -> rollBackLocalAccept(key, stamp, local))
                            .or(Promise.success(false))
                            .fold(_ -> cause.<T> promise())
