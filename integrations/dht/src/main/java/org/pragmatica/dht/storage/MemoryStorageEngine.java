@@ -564,7 +564,6 @@ public final class MemoryStorageEngine implements StorageEngine {
         if (refusedBytes > 0) {
             accounting.refused(refusedBytes);
         }
-
         // a refusal moved no counter: only a write that did can end an episode, so a refusal never closes the one it opens
         if (refusedBytes <= 0) {
             accounting.settle();
