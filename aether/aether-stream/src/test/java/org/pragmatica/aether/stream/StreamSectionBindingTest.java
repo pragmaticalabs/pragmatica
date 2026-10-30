@@ -9,11 +9,10 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.aether.resource.SpiResourceProvider;
-import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.ProvisioningContext;
+import org.pragmatica.aether.slice.RetentionDimensions;
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
-import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.ReplicationContext;
 import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.aether.slice.ReplicationFactorsError;
@@ -74,13 +73,9 @@ class StreamSectionBindingTest {
             max_age = "2h"
             max_count = "5000"
             max_bytes = "8MB"
-            auto_offset_reset = "latest"
             max_event_size = "64KB"
-            consistency = "strong"
             replication_factor = 3
             confirmation_factor = 2
-            compression = "lz4"
-            encryption_key_id = "orders-key"
             """;
 
     private static ConfigurationProvider providerOf(String toml) {
@@ -109,7 +104,8 @@ class StreamSectionBindingTest {
                     retention_value = "4321"
                     """);
 
-            assertThat(config.retention()).isEqualTo(RetentionPolicy.retentionPolicy(4321, Long.MAX_VALUE, Long.MAX_VALUE, RetentionMode.ANY));
+            assertThat(config.retention()).isEqualTo(RetentionPolicy.retentionPolicy(4321, Long.MAX_VALUE, Long.MAX_VALUE, RetentionMode.ANY)
+                                                                    .withDeclared(RetentionDimensions.COUNT));
         }
 
         @Test
@@ -120,7 +116,8 @@ class StreamSectionBindingTest {
                     retention_value = "5m"
                     """);
 
-            assertThat(config.retention()).isEqualTo(RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(), DEFAULTS.maxBytes(), 300_000L, RetentionMode.ANY));
+            assertThat(config.retention()).isEqualTo(RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(), DEFAULTS.maxBytes(), 300_000L, RetentionMode.ANY)
+                                                                    .withDeclared(RetentionDimensions.AGE));
         }
 
         @Test
@@ -131,20 +128,71 @@ class StreamSectionBindingTest {
                     retention_value = "2MB"
                     """);
 
-            assertThat(config.retention()).isEqualTo(RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(), 2L * 1024 * 1024, DEFAULTS.maxAgeMs(), RetentionMode.ANY));
+            assertThat(config.retention()).isEqualTo(RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(), 2L * 1024 * 1024, DEFAULTS.maxAgeMs(), RetentionMode.ANY)
+                                                                    .withDeclared(RetentionDimensions.BYTES));
         }
 
         private static void assertEveryKeyBound(StreamConfig config) {
             assertThat(config.name()).isEqualTo(ALIAS);
             assertThat(config.partitions()).isEqualTo(3);
-            assertThat(config.retention()).isEqualTo(RetentionPolicy.retentionPolicy(5000, 8L * 1024 * 1024, 7_200_000L, RetentionMode.ALL));
-            assertThat(config.autoOffsetReset()).isEqualTo("latest");
+            assertThat(config.retention()).isEqualTo(RetentionPolicy.retentionPolicy(5000, 8L * 1024 * 1024, 7_200_000L, RetentionMode.ALL)
+                                                                    .withDeclared(RetentionDimensions.retentionDimensions(true, true, true)));
             assertThat(config.maxEventSizeBytes()).isEqualTo(64L * 1024);
-            assertThat(config.consistencyMode()).isEqualTo(ConsistencyMode.STRONG);
             assertThat(config.replicationFactor()).isEqualTo(3);
             assertThat(config.confirmationFactor()).isEqualTo(2);
-            assertThat(config.compression()).isEqualTo(StreamCompression.LZ4);
-            assertThat(config.encryptionKeyId()).isEqualTo(Option.some("orders-key"));
+        }
+    }
+
+    /// #2201 E-02 (spec 3.2 item 9, NT-13): the keys that parse but have no runtime effect are refused here as the deploy
+    /// validator refuses them, through the one `InertKeyRules` table, naming the key. Before, the binder took every one.
+    @Nested
+    class InertKeysAreRefused {
+        @Test
+        void eachInertStreamKey_isRefused_namingIt() {
+            for (var line : List.of("auto_offset_reset = \"latest\"",
+                                    "consistency = \"strong\"",
+                                    "compression = \"lz4\"",
+                                    "encryption_key_id = \"orders-key\"")) {
+                assertRefused("[streams.orders]\n" + line + "\n", line.substring(0, line.indexOf(' ')));
+            }
+        }
+
+        @Test
+        void eachInertConsumerKey_isRefused_namingIt() {
+            for (var line : List.of("batch_size = 50",
+                                    "processing = \"parallel\"",
+                                    "on_failure = \"skip\"",
+                                    "checkpoint_interval = \"5s\"",
+                                    "max_retries = 9",
+                                    "dead_letter = \"orders-dlq\"",
+                                    "read_preference = \"replica\"")) {
+                assertRefused("[streams.orders]\n\n[streams.orders.consumers.billing]\n" + line + "\n", line.substring(0, line.indexOf(' ')));
+            }
+        }
+
+        /// The consumer defaults are not inert values: a section that spells them out binds.
+        @Test
+        void consumerKeysAtTheirDefaults_bind() {
+            var toml = """
+                    [streams.orders]
+
+                    [streams.orders.consumers.billing]
+                    batch_size = 1
+                    processing = "ordered"
+                    on_failure = "retry"
+                    checkpoint_interval = "1s"
+                    max_retries = 3
+                    read_preference = "governor"
+                    """;
+
+            assertThat(StreamSectionBinding.bindStreamSection(providerOf(toml), SECTION, BINDING_CONTEXT).isSuccess()).isTrue();
+        }
+
+        private static void assertRefused(String toml, String key) {
+            StreamSectionBinding.bindStreamSection(providerOf(toml), SECTION, BINDING_CONTEXT)
+                                .onSuccess(config -> fail("`" + key + "` has no runtime effect and must be refused, yet bound: " + config))
+                                .onFailure(cause -> assertThat(cause).isInstanceOf(StreamDeclarationError.InertKeysRefused.class))
+                                .onFailure(cause -> assertThat(cause.message()).contains(key));
         }
     }
 
@@ -187,7 +235,8 @@ class StreamSectionBindingTest {
         @Test
         void notificationHubExample_streamsResolveAndCreate() throws IOException {
             var service = Files.readString(Path.of("../../examples/notification-hub/notification-service/src/main/resources/resources.toml"));
-            var expected = RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(), DEFAULTS.maxBytes(), 300_000L, RetentionMode.ANY);
+            var expected = RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(), DEFAULTS.maxBytes(), 300_000L, RetentionMode.ANY)
+                                          .withDeclared(RetentionDimensions.AGE);
             var config = bindWith(new StreamPublisherFactory(), service, "streams.notifications");
 
             System.out.println("#1549 notification-hub resolved retention: " + config.retention() + " maxEventSizeBytes=" + config.maxEventSizeBytes());
@@ -243,19 +292,22 @@ class StreamSectionBindingTest {
         @Test
         void compoundDeclaringOnlyCount_defaultsBytesAndAge() {
             assertThat(retentionOf("retention = \"compound\"\nmax_count = \"500\""))
-                .isEqualTo(RetentionPolicy.retentionPolicy(500, DEFAULTS.maxBytes(), DEFAULTS.maxAgeMs(), RetentionMode.ANY));
+                .isEqualTo(RetentionPolicy.retentionPolicy(500, DEFAULTS.maxBytes(), DEFAULTS.maxAgeMs(), RetentionMode.ANY)
+                                          .withDeclared(RetentionDimensions.COUNT));
         }
 
         @Test
         void compoundDeclaringOnlyBytes_defaultsCountAndAge() {
             assertThat(retentionOf("retention = \"compound\"\nmax_bytes = \"8MB\""))
-                .isEqualTo(RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(), 8L * 1024 * 1024, DEFAULTS.maxAgeMs(), RetentionMode.ANY));
+                .isEqualTo(RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(), 8L * 1024 * 1024, DEFAULTS.maxAgeMs(), RetentionMode.ANY)
+                                          .withDeclared(RetentionDimensions.BYTES));
         }
 
         @Test
         void compoundDeclaringOnlyAge_defaultsCountAndBytes() {
             assertThat(retentionOf("retention = \"compound\"\nmax_age = \"2h\""))
-                .isEqualTo(RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(), DEFAULTS.maxBytes(), 7_200_000L, RetentionMode.ANY));
+                .isEqualTo(RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(), DEFAULTS.maxBytes(), 7_200_000L, RetentionMode.ANY)
+                                          .withDeclared(RetentionDimensions.AGE));
         }
 
         /// The parser refuses these first (StreamConfigParserTest); the engine backstop refuses the same bounds
@@ -526,9 +578,10 @@ class StreamSectionBindingTest {
                     partitions = 2
 
                     [streams.orders.consumers.billing]
-                    batch_size = 50
+                    batch_size = 1
                     """);
 
+            // At its default: a non-default consumer key is refused as inert (#2201 E-02, InertKeysAreRefused).
             assertThat(config.partitions()).isEqualTo(2);
         }
     }

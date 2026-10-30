@@ -7,11 +7,14 @@ package org.pragmatica.aether.node;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.IdentityLedger;
+import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -100,7 +103,20 @@ public sealed interface IdentityLedgerWiring {
 
     /// Attach the ledger to the registry and load it, before the node starts: admission answers UNAVAILABLE in between.
     static Unit wire(AetherNodeConfig config, BootTokens tokens, OperatorWarningSink sink) {
+        tokens.seats(config.self(), configuredCoreSeats(config));
+
         return wire(location(config), config.self(), tokens, sink);
+    }
+
+    /// The configured core seats a WIPED node counts its majority over (#2429, ID-1c): the core-role entries of `topology.coreNodes`,
+    /// which is the roster `cluster.genesis_voters` names when that is set.
+    static Set<NodeId> configuredCoreSeats(AetherNodeConfig config) {
+        return config.topology()
+                     .coreNodes()
+                     .stream()
+                     .filter(peer -> "core".equalsIgnoreCase(peer.labels().getOrDefault(NodeInfo.LABEL_ROLE, "core")))
+                     .map(NodeInfo::id)
+                     .collect(Collectors.toUnmodifiableSet());
     }
 
     static Unit wire(Location location, NodeId self, BootTokens tokens, OperatorWarningSink sink) {
@@ -109,9 +125,9 @@ public sealed interface IdentityLedgerWiring {
 
         tokens.attachLedger(ledger);
         var loading = ledger.open(isNewDirectory(location));
-
-        tokens.preload(loading.facts(), loading.origin() == IdentityLedger.Origin.WIPED);
+        // The listener goes in BEFORE the preload: loading the offers journal of a wiped node can already report an unusable file.
         ledger.onDurabilityChange(change -> raiseTransition(sink, subject, change));
+        tokens.preload(loading.facts(), loading.origin() == IdentityLedger.Origin.WIPED);
         raiseAtBoot(sink, subject, location, loading);
 
         return Unit.unit();
@@ -131,9 +147,9 @@ public sealed interface IdentityLedgerWiring {
                                           OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE,
                                           subject,
                                           "The identity ledger {} is missing on a node that is not new, so this node cannot tell which"
-                                         + " NodeIds it retired before. Until the merge of ledgers at join exists (a follow-up of #2429) it admits no peer at all,"
-                                         + " so it is ISOLATED from the cluster and restart protection is off on it."
-                                         + " The safe remedy is to stop it and rejoin it under a NEW node id."
+                                         + " NodeIds it retired before. It admits no new peer until the offers of a majority of the configured core seats have reached it"
+                                         + " (the Hello exchange carries them), so it stays ISOLATED from the cluster while too few seats are reachable and restart protection is off on it until then."
+                                         + " The safe remedy, when none is reachable, is to stop it and rejoin it under a NEW node id."
                                          + " Deleting the directory {} starts it as a new node and joins the cluster, but turns the protection off for this node.",
                                           location.file(),
                                           location.file().getParent());
@@ -162,7 +178,7 @@ public sealed interface IdentityLedgerWiring {
                                                            sink,
                                                            OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE,
                                                            subject,
-                                                           "The identity ledger write failed ({}): retirements from now on will not survive a restart until a write succeeds.",
+                                                           "The identity ledger or its offers journal failed ({}): retirements from now on will not survive a restart until a write succeeds.",
                                                            cause.message()));
     }
 

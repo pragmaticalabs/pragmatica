@@ -19,10 +19,12 @@ import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
 import org.pragmatica.aether.stream.replication.ReplicaDescriptor;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicationState;
+import org.pragmatica.aether.stream.StreamPartitionManager.EpochRead.Position;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Verify;
 
 
 /// Raw-event read router for the generic stream-read API (StreamRoutes). The forward-read ALGORITHM
@@ -167,8 +169,8 @@ public final class StreamReadRouter {
                             .map(read -> read.map(result -> StreamPartitionManager.EpochRead.epochRead(toRawEvents(result.events(),
                                                                                                                    partition),
                                                                                                        result.ownerEpoch(),
-                                                                                                       readBelowTheRing(result.bounds(),
-                                                                                                                        fromOffset))))
+                                                                                                       positionOf(result.bounds(),
+                                                                                                                  fromOffset))))
                             .or(() -> StreamError.General.PARTITION_NOT_LOCAL.<StreamPartitionManager.EpochRead> promise());
     }
 
@@ -177,9 +179,27 @@ public final class StreamReadRouter {
     /// read. The ring tail only rises, so every read the owner served from the tier is named here, and a read the ring
     /// served at its very tail while it evicted can be named too: at most a spurious `stream-consumer-behind-ring` episode
     /// at the ring's edge, never a missed one. An answer with no bounds (no ring) names nothing.
-    private static boolean readBelowTheRing(Option<VisibleBounds> bounds, long fromOffset) {
-        return bounds.map(owner -> fromOffset < owner.earliestRetained())
-                     .or(false);
+    ///
+    /// #2223: a ring that is closing answers its tail as `-1` (`OffHeapRingBuffer#tailOffset`) while its head is still
+    /// reported, and a live ring's tail is never negative. No offset is below `-1`, so that answer used to read as "not below
+    /// the ring" and a tier read was labelled a ring read, closing the consumer's behind-the-ring episode. A tail that is not
+    /// known names neither: [StreamPartitionManager.EpochRead.Position#UNKNOWN].
+    private static Position positionOf(Option<VisibleBounds> bounds, long fromOffset) {
+        return bounds.map(owner -> positionBelow(owner.earliestRetained(),
+                                                 fromOffset))
+                     .or(Position.RING);
+    }
+
+    private static Position positionBelow(long ringTail, long fromOffset) {
+        return Verify.Is.negative(ringTail)
+               ? Position.UNKNOWN
+               : tierOrRing(ringTail, fromOffset);
+    }
+
+    private static Position tierOrRing(long ringTail, long fromOffset) {
+        return fromOffset < ringTail
+               ? Position.TIER
+               : Position.RING;
     }
 
     ForwardingReadRouter<OffHeapRingBuffer.RawEvent> readRouter(ReadPreference preference) {

@@ -30,6 +30,7 @@ import org.pragmatica.postgres.message.backend.LogResponse;
 public abstract class LogResponseDecoder<M extends LogResponse> implements Decoder<M> {
     @Override
     public M read(ByteBuffer buffer, int contentLength, Charset encoding) {
+        String localizedLevel = null;
         String level = null;
         String code = null;
         String message = null;
@@ -38,6 +39,8 @@ public abstract class LogResponseDecoder<M extends LogResponse> implements Decod
             var value = IO.getCString(buffer, encoding);
 
             if (type == (byte)'S') {
+                localizedLevel = value;
+            } else if (type == (byte)'V') {
                 level = value;
             } else if (type == (byte)'C') {
                 code = value;
@@ -45,8 +48,12 @@ public abstract class LogResponseDecoder<M extends LogResponse> implements Decod
                 message = value;
             }
         }
-
-        return asMessage(level, code, message);
+        // `S` is localized by the server's lc_messages; `V` (9.6+) is not, so it wins and `S` is the fallback.
+        return asMessage(level != null
+                         ? level
+                         : localizedLevel,
+                         code,
+                         message);
     }
 
     protected abstract M asMessage(String level, String code, String message);

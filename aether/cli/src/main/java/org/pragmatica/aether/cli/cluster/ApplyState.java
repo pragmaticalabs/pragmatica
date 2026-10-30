@@ -113,14 +113,44 @@ public record ApplyState(String applyId,
                           destroyedNodeIds);
     }
 
-    /// Records a VM row: replaces the row of the same node id (a state change), or appends (a new node).
-    public ApplyState withNode(ApplyResource row) {
-        var updated = new ArrayList<>(resources.stream()
-                                               .filter(existing -> !existing.nodeId()
-                                                                            .equals(row.nodeId()))
-                                               .toList());
+    public ApplyState withActionStatus(String key, ApplyAction.Status status) {
+        return applyState(applyId,
+                          clusterName,
+                          configHash,
+                          storedVersion,
+                          startedAt,
+                          phase,
+                          actions.stream()
+                                 .map(action -> action.key()
+                                                      .equals(key)
+                                                ? ApplyAction.applyAction(key,
+                                                                          action.planned(),
+                                                                          status)
+                                                : action)
+                                 .toList(),
+                          resources,
+                          reservations,
+                          createdResources,
+                          destroyedNodeIds);
+    }
 
-        updated.add(row);
+    /// Records a VM row: replaces the row of the same node id IN PLACE (a state change keeps the node's position, so
+    /// the list stays in creation order, which rollback walks backwards), or appends (a new node).
+    public ApplyState withNode(ApplyResource row) {
+        var known = resources.stream().anyMatch(existing -> existing.nodeId()
+                                                                    .equals(row.nodeId()));
+        var updated = new ArrayList<>(known
+                                      ? resources.stream()
+                                                 .map(existing -> existing.nodeId()
+                                                                          .equals(row.nodeId())
+                                                                  ? row
+                                                                  : existing)
+                                                 .toList()
+                                      : resources);
+
+        if (!known) {
+            updated.add(row);
+        }
 
         return applyState(applyId,
                           clusterName,

@@ -294,6 +294,35 @@ class ApplyStateTest {
         }
 
         @Test
+        void withActionStatus_changesOnlyTheNamedAction_andIgnoresAnUnknownKey() {
+            var state = ApplyState.applyState(ApplyStateFixtures.APPLY_ID,
+                                              CLUSTER,
+                                              "h",
+                                              0L,
+                                              "t",
+                                              ApplyPhase.RUNNING,
+                                              List.of(ApplyAction.applyAction("a", 1, ApplyAction.Status.PENDING), ApplyAction.applyAction("b", 2, ApplyAction.Status.PENDING)),
+                                              List.of(),
+                                              List.of(),
+                                              List.of(),
+                                              List.of());
+
+            assertThat(state.withActionStatus("b", ApplyAction.Status.DONE).actions()).containsExactly(ApplyAction.applyAction("a", 1, ApplyAction.Status.PENDING),
+                                                                                                         ApplyAction.applyAction("b", 2, ApplyAction.Status.DONE));
+            assertThat(state.withActionStatus("zzz", ApplyAction.Status.DONE)).isEqualTo(state);
+        }
+
+        @Test
+        void withNode_keepsCreationOrder_whenARowChangesState() {
+            var first = ApplyResource.applyResource("k", "n-1", "fake", Option.none(), ApplyResource.State.INTENDED);
+            var second = ApplyResource.applyResource("k", "n-2", "fake", Option.none(), ApplyResource.State.INTENDED);
+            var state = ApplyStateFixtures.state(CLUSTER).withNode(first).withNode(second).withNode(ApplyResource.applyResource("k", "n-1", "fake", Option.some("srv"), ApplyResource.State.CREATED));
+
+            assertThat(state.resources()).extracting(ApplyResource::nodeId).containsExactly("n-1", "n-2");
+            assertThat(state.resources().getFirst().state()).isEqualTo(ApplyResource.State.CREATED);
+        }
+
+        @Test
         void withDestroyedNode_appendsInOrder() {
             var state = ApplyStateFixtures.state(CLUSTER).withDestroyedNode("a").withDestroyedNode("b");
 

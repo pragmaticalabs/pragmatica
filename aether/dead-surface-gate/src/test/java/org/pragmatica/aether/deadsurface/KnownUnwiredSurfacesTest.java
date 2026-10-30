@@ -10,6 +10,7 @@ import java.util.Set;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.cli.cluster.ApplyOrchestrator;
+import org.pragmatica.aether.cli.cluster.ApplyRecorder;
 import org.pragmatica.aether.cli.cluster.WaveExecutor;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.DiffPlan;
@@ -38,7 +39,7 @@ class KnownUnwiredSurfacesTest {
     /// #686 (CTO ruling 2026-09-14, option (b)): plain `aether cluster apply` is scale-only, actuated by
     /// the LEADER from KV desired counts. `ApplyOrchestrator.apply` / `WaveExecutor.execute` are a
     /// complete client-side wave rollout that actuates through the CLI's `ComputeProvider` — a second
-    /// actuation authority over the same fleet — entered only via `--resume` (`--rollback` is refused as not implemented), and
+    /// actuation authority over the same fleet — entered only via `--resume` (and `--rollback`, which terminates what the ledger recorded), and
     /// evidenced only by their own unit tests. They stay unwired until the server-side wave design
     /// (the ticket drafted in the #686 fix report) lands; wiring plain `apply` to them is the change
     /// that ruling refused.
@@ -63,7 +64,8 @@ class KnownUnwiredSurfacesTest {
         var waves = MethodRef.of(WaveExecutor.class.getDeclaredMethod("execute",
                                                                       DiffPlan.class,
                                                                       ClusterBootstrapConfig.class,
-                                                                      ClusterBootstrapConfig.class));
+                                                                      ClusterBootstrapConfig.class,
+                                                                      ApplyRecorder.class));
 
         assertEquals(Set.of(freshApply, defaultedApply),
                      declaredApplyOverloads(),

@@ -497,6 +497,9 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `replica-fsync-failed` (WARNING — a replica withheld its ack because fsync failed; the owner does not count that copy)
 - `node-never-joined` (WARNING — a configured core member died on this node's view without this node ever observing it reachable; it never joined, so no `NODE_FAILED` event or CRITICAL node-health alert is raised for it, issue #1835)
 - `swim-member-address-conflict` (WARNING — an ANNOUNCE for a member arrived from an address other than the one that member is pinned to and was refused, or gossip carried another address for a pinned member and its address was ignored; `subject` is the member, the message names both addresses; replace the member under a fresh NodeId or restore its address)
+- `gossip-key-unknown-from-peer` (WARNING — a SWIM datagram arrived under a gossip key id this node does not hold, usually from a node that booted with only its `cluster_secret`-derived key after the cluster rotated its gossip key; it catches up once it joins consensus and replays the rotation record; once per sender address until it recovers, at most 16 new senders per minute; `subject` is the sender's address, never a key; a warning never followed by its recovery means the sender did not catch up, issue #1200)
+- `gossip-key-peer-decrypted` (INFO — the recovery of `gossip-key-unknown-from-peer`: a datagram from that sender decrypted; same `subject`)
+- `gossip-key-unknown-senders-suppressed` (INFO — more than 16 new sender addresses sent gossip under an unheld key id within a minute, almost certainly spoofed, and were not reported one by one; the message gives the count, a lower bound at 1024; `subject` is `unknown-gossip-key-senders`; a point event with no recovery, issue #1200)
 - `swim-member-identity-conflict` (WARNING — an ANNOUNCE presented a process token that the member's live process did not answer with; ignored, nothing retired; `subject` is the member)
 - `stream-event-exceeds-read-cap` (CRITICAL — a partition's owner promotion is refused because a peer answered its watermark probe with a page cut before its first event, which alone exceeds that peer's `maxReadResponseBytes`; raise the cap on that peer; `subject` is `stream[partition]`, issue #1431)
 - `stream-consumer-state-diverged` (WARNING — a declarative stream consumer this node held as attached had no subscription in its consumer runtime, so that partition was not consumed while reported attached; a reconcile pass forgets and re-attaches it, issue #752; `subject` is `group:stream[partition]`)
@@ -563,6 +566,10 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `storage-write-behind-flushed` (INFO — the recovery: a later flush succeeded; raised only after `storage-write-behind-flush-failed` was offered to the event feed for the same `subject`)
 - `storage-stream-wal-orphaned` (WARNING — at startup a stream has a life (WAL directory `<stream>@<incarnation>` and/or sealed segments) of an incarnation the committed config does not name, typically because the restored KV backup predates the stream's config; the stream runs under another incarnation and the life's acknowledged records are not read; `subject` is `<stream>@<incarnation>`, the message names the stream, the orphaned incarnation, the adopted one and the life's sealed-segment count; the WAL directory and the sealed segments are never deleted by adoption (the cluster state records no retirement of a life), and no CLI or API verb releases them; keeping the life is the safe default, deleting `<walPath of the streams storage instance>/<stream>@<orphan incarnation>` permanently destroys its unsealed acknowledged records (never the committed incarnation's directory), the sealed segments stay, and the warning repeats on every boot while they exist, until #1569, raised once per life per process, closed by `storage-stream-wal-released`; see the [backup-recovery runbook](../operators/runbooks/backup-recovery.md))
 - `storage-stream-wal-released` (INFO — the recovery: a later adoption of the same stream in this process found the orphaned life gone from the node (an operator removed it) or adopted as the committed life (#1569); same `subject`; published only after `storage-stream-wal-orphaned`; a life released while the process was down is announced afresh, or not at all, by the next boot)
+- `stream-retention-withheld` (WARNING — a node's stream retention has withheld a stream's sealed history for two consecutive passes: the node has no retention policy it can read for the stream (its committed config is not applied there yet, or its retention mode is unknown to the build), and a rule it cannot read is not authority to delete; nothing of the stream is reclaimed on that node meanwhile, so its disk use grows. Subject `node <nodeId> stream <name>` (#2201 3.2 item 2))
+- `stream-retention-resumed` (INFO — the recovery, same subject: a pass judged the stream again, or the node no longer holds its sealed segments; the message says which)
+- `stream-segment-unreadable` (WARNING — the block of a sealed stream segment cannot be read for its age for a reason no retry changes: a missing or wrong encryption key, a damaged or missing block; it is not read again until the node restarts, and retention judges it by the age of the next newer segment. Subject `node <nodeId> stream <name>[<partition>] <start>-<end>` (#2201 3.2 item 8))
+- `stream-segment-unreadable-reclaimed` (INFO — the recovery, same subject: retention reclaimed the segment)
 - `backup-stop-flush-failed` (WARNING — the final KV-backup flush of a graceful stop failed or overran its deadline, so changes inside the backup's debounce window are not in the backup; `subject` is `kv-backup`; the stop itself proceeds; closed by `backup-stop-flush-recovered`)
 - `backup-stop-flush-recovered` (INFO — the recovery: a later flush of this node's backup succeeded after its stop-time flush had failed, in this or a later process; a marker file `<backup path>/kv-backup.stop-flush-failed` carries the open state across the restart, and is removed when this is raised; if that node never leads again the marker stays and no recovery is raised)
 
@@ -3912,26 +3919,26 @@ running node applies it through its existing `GossipKeyRotationHandler`. The res
 a race against a concurrent one is reported as a failure, never as a success for a write that did not
 land.
 
-**Three consequences an operator must accept before invoking this — see SECURITY.md:**
+**Consequences an operator must accept before invoking this — see SECURITY.md:**
 
 1. The key material is stored in the consensus log and its snapshots, readable by any KV reader.
 2. **The first rotation has no decrypt overlap.** With no prior record there is no previous key to
    carry, so the emergency rotation — the one that runs during an actual leak response — replaces the
    boot key outright. Only rotations from the second onward are seamless.
-3. **A rotated cluster cannot grow until you act, and that includes auto-heal.**
+3. **A node that boots after a rotation is out of step with the cluster's gossip until it replays the
+   rotation record.** It holds only the `cluster_secret`-derived key, which the cluster no longer
+   accepts, so its gossip is rejected in both directions. It dials the cores it was configured with itself, forms quorum
+   and receives the record by consensus replay, so this normally takes seconds (about one second on an
+   in-JVM cluster; not measured on a multi-host cluster, #1200). Auto-heal replacements and scale-up
+   nodes are included.
 
-   **If a node will not join after a rotation, check the SEED nodes' logs, not the new node's** —
-   look for `Failed to decrypt gossip from <id>` on the seeds. A node the cluster has never heard of
-   logs nothing about the cause: it prints `Aether node <id> started, cluster forming...` and then
-   stays quiet, because an unreachable quorum is retried and never exits. The evidence is on the
-   healthy machines.
-
-   A node booting after a rotation holds only the `cluster_secret`-derived key, which the cluster no
-   longer accepts; it cannot complete SWIM in either direction, so no quorum forms and the consensus
-   replay that would deliver the cluster key never runs. Auto-heal replacements, scale-up and
-   re-provisioned nodes all fail to join until given the rotated key material out of band. Existing
-   running nodes are unaffected. A **restarted existing member** does say so for itself — it refuses
-   to boot with a `FATAL` line naming gossip-key divergence — because its peers still probe it.
+   **If a node does not catch up, check the SEED nodes, not the new node.** The seeds raise the
+   operator event `gossip-key-unknown-from-peer` (subject: the sender's address) and log
+   `Failed to decrypt gossip from <address>`; `gossip-key-peer-decrypted` closes the event when that
+   sender's gossip decrypts. A **restarted existing member** that never catches up refuses to boot
+   with a `FATAL` line naming gossip-key divergence.
+4. **Rotation protects only against a leaked gossip key.** Admission is `cluster_secret`-derived
+   mutual TLS: a holder of `cluster_secret` still joins and replays the record (#2474).
 
 **RBAC:** ADMIN (exact route; an appended path segment is 404, never a weaker permission) · **Routing:** LEADER
 

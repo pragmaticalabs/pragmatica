@@ -270,6 +270,14 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 - **Operator action:** usually self-heals; if `connectedPeerCount` stays low past ~60 s, restart the isolated node.
 - **Proof anchor:** 12-network `connectedPeerCount` contracts; incident ledger #131.
 
+### Node out of step with a rotated gossip key
+
+- **Symptom:** a node booted after `aether cluster rotate-gossip-key` (an auto-heal replacement, a scale-up node) is rejected by SWIM for a short window: the seeds drop its datagrams as undecryptable and it drops theirs. Measured on an in-JVM cluster: about a second, after which it joined and was SWIM-present within seconds. Not measured on a multi-host cluster.
+- **Detection surface:** on the SEED nodes the `OPERATOR_WARNING` event with `details.code` = `gossip-key-unknown-from-peer` (subject: the sender's `ip:port`; the message names the key id, never a key) and the node-log WARN `Failed to decrypt gossip from <address>`. The recovery is `gossip-key-peer-decrypted`, same subject, when that sender's gossip next decrypts.
+- **Automatic response:** none needed. The node dials the cores it was configured with (its `--peers`) itself, after a 2 s isolation grace (`MembershipAssembly.bootstrapInitiator`), without needing a gossip datagram to decrypt; it forms quorum and the replay of the rotation record gives it the cluster key. A warning that is never followed by its recovery means the sender did not catch up: check that its peer list names reachable cores.
+- **Budget:** one event per sender address until it recovers; at most 16 new senders per 60 s window, and one `gossip-key-unknown-senders-suppressed` summary (a count, a lower bound at 1024) for the rest. The subject is the sender's `ip:port`, stable because a node sends from its one bound SWIM socket. A recurrence of a closed warning is throttled by the event layer to one per 60 s.
+- **Degraded / at risk:** a restarted existing member still refuses to boot with the #683 FATAL when it sees gossip under an unheld key id. Rotation protects only against a leaked gossip key: a holder of `cluster_secret` is admitted by mutual TLS and replays the rotation record (#2474).
+
 ### SWIM member address change refused
 
 - **Symptom:** a live member's SWIM address differs from the one its identity is pinned to on a peer, for example after its IP changed (a container reconnected to a network with a new address). The peer refuses its ANNOUNCE and keeps probing the pinned address, so the member goes SUSPECT and is declared dead on that peer.

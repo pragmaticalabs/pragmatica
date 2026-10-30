@@ -29,6 +29,17 @@ public sealed interface RemoteTierError extends Cause {
     record Rejected(String operation, String key, Cause origin, String message) implements RemoteTierError, Cause.Wrapped, Cause.Terminal {
         static final Fn3<Rejected, String, String, Cause> FACTORY = Causes.forThreeValues("S3 %s of %s was rejected by the object store (check credentials, bucket and permissions)",
                                                                                           Rejected::new);
+
+        /// Terminal wins over the origin's classification: a verdict is never also "worth retrying".
+        @Override
+        public boolean isTerminal() {
+            return true;
+        }
+
+        @Override
+        public boolean isTransient() {
+            return false;
+        }
     }
 
     /// The boot probe read back something other than what it wrote: the endpoint does not provide

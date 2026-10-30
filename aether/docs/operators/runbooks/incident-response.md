@@ -257,6 +257,30 @@ grep -i "slice\|artifact" /var/log/aether/aether.log | tail -100
 3. If it persists, treat it as a defect report (#1234) and escalate. There is no operator command to repair a hole in place. The partition's WAL still holds the range, since WAL truncation never passes a hole `[design intent — unverified: no run has exercised a hole on a cluster]`. If nothing fills it, the group does not resume on its own: retention never reclaims at or above a hole (its bound stops at the contiguous sealed watermark, which stops below the hole), so the hole is never turned into a skip.
 4. `stream-consumer-sealed-range-restored` (INFO, same subject) confirms the end: a read from that offset succeeded, the cursor moved off it (a rewind), or the consumer was cancelled.
 
+### Stream Retention Withheld (`stream-retention-withheld`)
+
+**Symptoms:** a WARNING `OPERATOR_WARNING` with `details.code` `stream-retention-withheld`, subject `node <nodeId> stream <name>`; the node's stream disk use grows and the stream's sealed history on that node is not reclaimed.
+
+**Cause:** sealed-tier retention runs on every node over its own segments, and judges each stream by the retention policy of the committed config the node has applied. For two consecutive passes (about 10 minutes) this node had no policy it could read for the stream: it has not applied the stream's committed config (a node that has just restarted and has not yet restored its consensus state, or one lagging behind), or the stream's retention mode is unknown to this node's build (written by a newer node). A rule the node cannot read is not authority to delete, so nothing of the stream is reclaimed there.
+
+**Actions:**
+
+1. Check that the node is in the cluster and has caught up: a node that applies the committed config resumes on the next pass, and `stream-retention-resumed` (INFO, same subject) follows.
+2. If the stream was destroyed while this node was down, its segments stay withheld on this node: the footprint sweep that reclaims them ships later (#2201 PR-0b part 2); until then the disk they hold is not reclaimed.
+3. If the mode is unknown to the build, upgrade the node to the build the rest of the cluster runs.
+
+### Stream Segment Unreadable (`stream-segment-unreadable`)
+
+**Symptoms:** a WARNING `OPERATOR_WARNING` with `details.code` `stream-segment-unreadable`, subject `node <nodeId> stream <name>[<partition>] <start>-<end>`.
+
+**Cause:** retention read the block of a sealed segment rebuilt after a restart to learn its age, and the read failed in a way a retry does not change: a missing or wrong encryption key, or a damaged or missing block. The node does not read it again until it restarts. Retention judges the segment by the age of the next newer segment, so it neither holds the stream's sealed history for ever nor goes before a newer segment; reads of its range fail as storage failures until then.
+
+**Actions:**
+
+1. Read the message: it names the segment and the read failure. Segment encryption is not wired in this release (#253), so the cause is in practice a damaged or missing block.
+2. The range is lost on this node; another holder of the partition may still serve it. Check the node's stream storage directory and disk for errors.
+3. Nothing needs to be done for retention: `stream-segment-unreadable-reclaimed` (INFO, same subject) follows when retention drops the segment.
+
 ### Stream Consumer Behind the Ring (`stream-consumer-behind-ring`)
 
 **Symptoms:** a WARNING `OPERATOR_WARNING` with `details.code` `stream-consumer-behind-ring`, subject `stream[partition]/group`.

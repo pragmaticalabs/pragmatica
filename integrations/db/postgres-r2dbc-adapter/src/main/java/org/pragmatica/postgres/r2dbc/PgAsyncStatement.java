@@ -39,7 +39,7 @@ public final class PgAsyncStatement implements Statement {
 
     PgAsyncStatement(PgAsyncConnection connection, String sql) {
         this.connection = connection;
-        this.sql = sql;
+        this.sql = QuestionMarkEscape.unescape(sql);
     }
 
     @Override
