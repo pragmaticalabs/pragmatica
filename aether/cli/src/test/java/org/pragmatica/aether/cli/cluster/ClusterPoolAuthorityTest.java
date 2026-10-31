@@ -54,6 +54,14 @@ class ClusterPoolAuthorityTest {
     }
 
     @Test
+    void autoHealAnswerWithoutTheFlag_isReadAsEnabled_theSafeDirection() {
+        answer(ManagementRoute.CLUSTER_AUTO_HEAL_STATUS, "{}");
+        answer(ManagementRoute.CLUSTER_CONFIG_GET, CONFIG);
+
+        assertThat(authority().actorFor("eu-1", NodeRole.CORE, 5).unwrap()).isEqualTo(PoolAuthority.Actor.LEADER);
+    }
+
+    @Test
     void coreWithAutoHealOff_isApplys_withoutReadingTheConfig() {
         answer(ManagementRoute.CLUSTER_AUTO_HEAL_STATUS, OFF);
 
