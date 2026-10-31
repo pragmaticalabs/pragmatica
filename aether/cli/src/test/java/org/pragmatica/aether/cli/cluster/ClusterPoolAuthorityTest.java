@@ -120,8 +120,14 @@ class ClusterPoolAuthorityTest {
     @Test
     void awaitLeader_pollsUntilTheRoleIsLive_andReportsEachPoll() {
         var polls = new ArrayList<String>(List.of(live(1), live(2), live(3)));
-        var counting = ClusterPoolAuthority.clusterPoolAuthority(route -> Result.success(polls.removeFirst()),
-                                                                 pauses::add,
+        // the last answer repeats and time passes, so a wait that never stops on 3 of 3 ends at the timeout as an assertion failure
+        var counting = ClusterPoolAuthority.clusterPoolAuthority(route -> Result.success(polls.size() > 1
+                                                                                         ? polls.removeFirst()
+                                                                                         : polls.getFirst()),
+                                                                 duration -> {
+                                                                     pauses.add(duration);
+                                                                     clock.addAndGet(duration.toMillis());
+                                                                 },
                                                                  clock::get,
                                                                  Duration.ofSeconds(100),
                                                                  Duration.ofSeconds(10));
