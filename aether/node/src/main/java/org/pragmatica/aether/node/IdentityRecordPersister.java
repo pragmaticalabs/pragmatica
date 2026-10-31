@@ -39,10 +39,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// and this class must not change BootTokens behaviour.
 public interface IdentityRecordPersister {
     Logger log = LoggerFactory.getLogger(IdentityRecordPersister.class);
-
     /// A bound for the apply thread: one small fsync, so a healthy disk is far inside it; a stalled one must not stall the apply path.
     int WRITE_BOUND_SECONDS = 5;
-
     /// The record under `key` was applied with `value`.
     Unit onPut(NodeIdentityKey key, NodeIdentityValue value);
     /// Ledger writes that did not complete (failed or timed out).
@@ -53,16 +51,20 @@ public interface IdentityRecordPersister {
             @Override
             public Unit onPut(NodeIdentityKey key, NodeIdentityValue value) {
                 return retirement(key, value).map(this::writeAhead)
-                                             .or(Unit.unit());
+                                 .or(Unit.unit());
             }
 
             private Option<IdentityFacts> retirement(NodeIdentityKey key, NodeIdentityValue value) {
                 return Option.option(value)
                              .filter(found -> found.state() == IdentityState.TERMINATED)
-                             .filter(found -> found.process().isPresent())
-                             .filter(_ -> tokens.offer().isPresent())
+                             .filter(found -> found.process()
+                                                   .isPresent())
+                             .filter(_ -> tokens.offer()
+                                                .isPresent())
                              .map(found -> IdentityFacts.terminated(key.nodeId(),
-                                                                    found.cause().map(Enum::name).or(IdentityState.TERMINATED.name())));
+                                                                    found.cause()
+                                                                         .map(Enum::name)
+                                                                         .or(IdentityState.TERMINATED.name())));
             }
 
             // The apply callback is the point where this core starts to act on the fact, so the write must be durable before it returns.

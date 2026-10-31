@@ -54,7 +54,6 @@ public sealed interface IdentityMutations {
     Cause BLANK_ROLE = Causes.cause("The identity record needs a role");
     Cause BLANK_SERVER_ID = Causes.cause("The provider server id must not be blank");
     Cause UNKNOWN_PROCESS = Causes.cause("A process with no boot token cannot be bound to a node id");
-
     Set<IdentityState> INTENT_STATES = Set.of(IdentityState.INTENDED, IdentityState.PROVISIONING);
     Set<IdentityState> ADMITTED_STATES = Set.of(IdentityState.ADMITTED, IdentityState.DEPARTED);
 
@@ -66,7 +65,14 @@ public sealed interface IdentityMutations {
                                                            long now) {
         return Verify.ensure(role, Verify.Is::present, BLANK_ROLE)
                      .flatMap(_ -> absent(node, current, "intend"))
-                     .map(_ -> new NodeIdentityValue(IdentityState.INTENDED, 0L, none(), role, none(), none(), now, some(intent)))
+                     .map(_ -> new NodeIdentityValue(IdentityState.INTENDED,
+                                                     0L,
+                                                     none(),
+                                                     role,
+                                                     none(),
+                                                     none(),
+                                                     now,
+                                                     some(intent)))
                      .map(next -> mutation(node, current, next));
     }
 
@@ -77,7 +83,10 @@ public sealed interface IdentityMutations {
                                                                 String serverId,
                                                                 long now) {
         return Verify.ensure(serverId, Verify.Is::present, BLANK_SERVER_ID)
-                     .flatMap(_ -> inState(node, current, "provisioned", Set.of(IdentityState.INTENDED)))
+                     .flatMap(_ -> inState(node,
+                                           current,
+                                           "provisioned",
+                                           Set.of(IdentityState.INTENDED)))
                      .flatMap(found -> sameOperation(node, found, operation))
                      .map(found -> found.provisioned(serverId, now))
                      .map(next -> mutation(node, current, next));
@@ -103,9 +112,13 @@ public sealed interface IdentityMutations {
                                                             Option<NodeIdentityValue> current,
                                                             IdentityCause cause,
                                                             long now) {
-        return Verify.ensure(cause, IdentityCause::isAbandonment, WrongCause.FACTORY.apply(node, cause, "abandon"))
+        return Verify.ensure(cause,
+                             IdentityCause::isAbandonment,
+                             WrongCause.FACTORY.apply(node, cause, "abandon"))
                      .flatMap(_ -> inState(node, current, "abandon", INTENT_STATES))
-                     .map(found -> found.terminated(cause, none(), now))
+                     .map(found -> found.terminated(cause,
+                                                    none(),
+                                                    now))
                      .map(next -> mutation(node, current, next));
     }
 
@@ -114,17 +127,21 @@ public sealed interface IdentityMutations {
                                                             Option<NodeIdentityValue> current,
                                                             ProcessIncarnation process,
                                                             long now) {
-        return inState(node, current, "readmit", Set.of(IdentityState.DEPARTED))
-                .flatMap(found -> sameProcess(node, found, process))
-                .map(found -> found.admitted(process, now))
-                .map(next -> mutation(node, current, next));
+        return inState(node,
+                       current,
+                       "readmit",
+                       Set.of(IdentityState.DEPARTED)).flatMap(found -> sameProcess(node, found, process))
+                      .map(found -> found.admitted(process, now))
+                      .map(next -> mutation(node, current, next));
     }
 
     /// `depart(X)`: the admitted process is gone for now. Expects `ADMITTED`; epoch and process stay.
     static Result<Mutation<AetherKey, AetherValue>> depart(NodeId node, Option<NodeIdentityValue> current, long now) {
-        return inState(node, current, "depart", Set.of(IdentityState.ADMITTED))
-                .map(found -> found.departed(now))
-                .map(next -> mutation(node, current, next));
+        return inState(node,
+                       current,
+                       "depart",
+                       Set.of(IdentityState.ADMITTED)).map(found -> found.departed(now))
+                      .map(next -> mutation(node, current, next));
     }
 
     /// `terminate(X, cause, successor)`: the node id ends for good. Expects `ADMITTED` or `DEPARTED`; the cause is one of the six writer
@@ -134,7 +151,9 @@ public sealed interface IdentityMutations {
                                                               IdentityCause cause,
                                                               Option<NodeId> supersededBy,
                                                               long now) {
-        return Verify.ensure(cause, IdentityCause::isWriterRank, WrongCause.FACTORY.apply(node, cause, "terminate"))
+        return Verify.ensure(cause,
+                             IdentityCause::isWriterRank,
+                             WrongCause.FACTORY.apply(node, cause, "terminate"))
                      .flatMap(_ -> inState(node, current, "terminate", ADMITTED_STATES))
                      .map(found -> found.terminated(cause, supersededBy, now))
                      .map(next -> mutation(node, current, next));
@@ -144,19 +163,30 @@ public sealed interface IdentityMutations {
         return process.bootToken() != 0L;
     }
 
-    private static Result<NodeIdentityValue> admissionBase(NodeId node, Option<NodeIdentityValue> current, String role, long now) {
+    private static Result<NodeIdentityValue> admissionBase(NodeId node,
+                                                           Option<NodeIdentityValue> current,
+                                                           String role,
+                                                           long now) {
         return current.fold(() -> Result.success(NodeIdentityValue.blank(role, now)),
                             _ -> inState(node, current, "admit", INTENT_STATES));
     }
 
     private static Result<Unit> absent(NodeId node, Option<NodeIdentityValue> current, String operation) {
         return current.fold(Result::unitResult,
-                            found -> WrongState.FACTORY.apply(node, operation, found.state().name()).result());
+                            found -> WrongState.FACTORY.apply(node,
+                                                              operation,
+                                                              found.state().name())
+                                                       .result());
     }
 
-    private static Result<NodeIdentityValue> inState(NodeId node, Option<NodeIdentityValue> current, String operation, Set<IdentityState> allowed) {
+    private static Result<NodeIdentityValue> inState(NodeId node,
+                                                     Option<NodeIdentityValue> current,
+                                                     String operation,
+                                                     Set<IdentityState> allowed) {
         return current.toResult(WrongState.FACTORY.apply(node, operation, "absent"))
-                      .filter(found -> WrongState.FACTORY.apply(node, operation, found.state().name()),
+                      .filter(found -> WrongState.FACTORY.apply(node,
+                                                                operation,
+                                                                found.state().name()),
                               found -> allowed.contains(found.state()));
     }
 
@@ -164,18 +194,26 @@ public sealed interface IdentityMutations {
         return found.intent()
                     .map(ProvisionIntent::operationId)
                     .filter(offered::equals)
-                    .toResult(OperationMismatch.FACTORY.apply(node, offered, found.intent().map(ProvisionIntent::operationId).or(offered)))
+                    .toResult(OperationMismatch.FACTORY.apply(node,
+                                                              offered,
+                                                              found.intent()
+                                                                   .map(ProvisionIntent::operationId)
+                                                                   .or(offered)))
                     .map(_ -> found);
     }
 
-    private static Result<NodeIdentityValue> sameProcess(NodeId node, NodeIdentityValue found, ProcessIncarnation offered) {
+    private static Result<NodeIdentityValue> sameProcess(NodeId node,
+                                                         NodeIdentityValue found,
+                                                         ProcessIncarnation offered) {
         return found.process()
                     .filter(bound -> bound.bootToken() == offered.bootToken())
                     .toResult(ProcessMismatch.FACTORY.apply(node))
                     .map(_ -> found);
     }
 
-    private static Mutation<AetherKey, AetherValue> mutation(NodeId node, Option<NodeIdentityValue> current, NodeIdentityValue next) {
+    private static Mutation<AetherKey, AetherValue> mutation(NodeId node,
+                                                             Option<NodeIdentityValue> current,
+                                                             NodeIdentityValue next) {
         return new Mutation<>(NodeIdentityKey.nodeIdentityKey(node), current.map(AetherValue.class::cast), some(next));
     }
 

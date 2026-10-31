@@ -41,10 +41,8 @@ import static org.pragmatica.lang.Option.some;
 /// completed by the next signal for the node or by the leader re-seed from the ledgers (ID-1c).
 public interface IdentityRegistrar {
     Logger log = LoggerFactory.getLogger(IdentityRegistrar.class);
-
     /// The role of a node whose admission this registrar records: the admission signal is the core channel.
     String CORE_ROLE = "core";
-
     /// The admission signal for `node` (leader side). Completes once the decision is made and, if a commit was needed, once it is decided;
     /// never fails: a failure is counted and logged (see [#absorbed]).
     Promise<Unit> onAdmitted(NodeId node);
@@ -57,7 +55,9 @@ public interface IdentityRegistrar {
     /// The counters under the names the operator sees.
     Map<String, Number> metrics();
 
-    static IdentityRegistrar identityRegistrar(HierarchyStateWriter writer, ToLongFunction<NodeId> tokenOf, LongSupplier clock) {
+    static IdentityRegistrar identityRegistrar(HierarchyStateWriter writer,
+                                               ToLongFunction<NodeId> tokenOf,
+                                               LongSupplier clock) {
         record registrar(HierarchyStateWriter writer,
                          ToLongFunction<NodeId> tokenOf,
                          LongSupplier clock,
@@ -77,7 +77,9 @@ public interface IdentityRegistrar {
                 return writer.read()
                              .apply(NodeIdentityKey.nodeIdentityKey(node))
                              .map(NodeIdentityValue.class::cast)
-                             .fold(() -> grant(node, Option.none(), token),
+                             .fold(() -> grant(node,
+                                               Option.none(),
+                                               token),
                                    found -> judge(node, found, token));
             }
 
@@ -100,15 +102,22 @@ public interface IdentityRegistrar {
 
             private Promise<Unit> diverged(NodeId node, NodeIdentityValue found) {
                 divergenceCount.incrementAndGet();
-                log.warn("Identity record for {} is {} and does not match the process BootTokens admitted; BootTokens decides", node.id(), found.state());
+                log.warn("Identity record for {} is {} and does not match the process BootTokens admitted; BootTokens decides",
+                         node.id(),
+                         found.state());
 
                 return Promise.unitPromise();
             }
 
             private Promise<Unit> grant(NodeId node, Option<NodeIdentityValue> current, long token) {
-                return IdentityMutations.admit(node, current, new ProcessIncarnation(0L, token), CORE_ROLE, clock.getAsLong())
+                return IdentityMutations.admit(node,
+                                               current,
+                                               new ProcessIncarnation(0L, token),
+                                               CORE_ROLE,
+                                               clock.getAsLong())
                                         .async()
-                                        .flatMap(mutation -> writer.commit(List.of(mutation), List.of()))
+                                        .flatMap(mutation -> writer.commit(List.of(mutation),
+                                                                           List.of()))
                                         .onSuccess(_ -> grantCount.incrementAndGet())
                                         // FER (degrade forward): the shadow write is not what admits the node (BootTokens decided already), so a
                                         // refused or lost commit must not fail the admission path. Guarantee earned: admission is unaffected and the
@@ -141,7 +150,10 @@ public interface IdentityRegistrar {
 
             @Override
             public Map<String, Number> metrics() {
-                return Map.of("identity_grants_total", grantCount.get(), "identity_record_divergence_total", divergenceCount.get());
+                return Map.of("identity_grants_total",
+                              grantCount.get(),
+                              "identity_record_divergence_total",
+                              divergenceCount.get());
             }
         }
 

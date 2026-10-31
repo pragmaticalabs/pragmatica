@@ -461,7 +461,6 @@ public sealed interface MembershipAssembly {
         var communityDirectory = in.communityDirectory();
         var allEntries = in.allEntries();
         var swimHealthDetector = in.swimHealthDetector();
-
         var identityPersister = attachIdentityLedger(config, swimHealthDetector, operatorWarningSink);
 
         wireIdentityRecord(config, kvStore, clusterNode, swimHealthDetector, identityPersister, allEntries);
@@ -831,7 +830,9 @@ public sealed interface MembershipAssembly {
         return configuredWorker(config)
                ? Option.none()
                : swimHealthDetector.bootTokens()
-                                   .map(tokens -> IdentityLedgerWiring.wirePersisting(config, tokens, operatorWarningSink));
+                                   .map(tokens -> IdentityLedgerWiring.wirePersisting(config,
+                                                                                      tokens,
+                                                                                      operatorWarningSink));
     }
 
     /// ID-1b: the identity record's two edges. Every core's apply of a committed retirement reaches its own ledger before the callback returns
@@ -845,13 +846,16 @@ public sealed interface MembershipAssembly {
                                    List<MessageRouter.Entry<?>> allEntries) {
         var registrar = swimHealthDetector.bootTokens()
                                           .filter(_ -> !configuredWorker(config))
-                                          .map(tokens -> IdentityRegistrar.identityRegistrar(identityWriter(config, kvStore, clusterNode),
+                                          .map(tokens -> IdentityRegistrar.identityRegistrar(identityWriter(config,
+                                                                                                            kvStore,
+                                                                                                            clusterNode),
                                                                                              tokens::tokenOf,
                                                                                              System::currentTimeMillis));
 
         allEntries.addAll(identityRecordEntries(persister,
                                                 registrar,
-                                                () -> clusterNode.leaderManager().isLeader() && clusterNode.isActive()));
+                                                () -> clusterNode.leaderManager()
+                                                                 .isLeader() && clusterNode.isActive()));
 
         return Unit.unit();
     }
@@ -866,7 +870,7 @@ public sealed interface MembershipAssembly {
         persister.onPresent(applied -> entries.addAll(KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
                                                                           .onPut(AetherKey.NodeIdentityKey.class,
                                                                                  (KVStoreNotification.ValuePut<AetherKey.NodeIdentityKey, AetherValue.NodeIdentityValue> put) -> applied.onPut(put.cause()
-                                                                                                                                                                                                   .key(),
+                                                                                                                                                                                                  .key(),
                                                                                                                                                                                                put.cause()
                                                                                                                                                                                                   .value()))
                                                                           .build()
@@ -883,8 +887,10 @@ public sealed interface MembershipAssembly {
                                                        KVStore<AetherKey, AetherValue> kvStore,
                                                        RabiaNode<KVCommand<AetherKey>> clusterNode) {
         return HierarchyStateWriter.hierarchyStateWriter(() -> kvStore.getTyped(LeaderKey.INSTANCE, LeaderValue.class)
-                                                                      .filter(value -> value.leader().equals(config.self())
-                                                                                       && clusterNode.leaderManager().isLeader()
+                                                                      .filter(value -> value.leader()
+                                                                                            .equals(config.self())
+                                                                                       && clusterNode.leaderManager()
+                                                                                                     .isLeader()
                                                                                        && clusterNode.isActive()),
                                                          kvStore::get,
                                                          commands -> clusterNode.apply(commands));

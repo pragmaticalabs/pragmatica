@@ -18,13 +18,13 @@ public sealed interface IdentityRefusal extends Cause {
     /// The record is absent, or in a state the operation does not expect. `found` is the state's name, or `absent`.
     record WrongState(NodeId node, String operation, String found, String message) implements IdentityRefusal {
         static final Fn3<WrongState, NodeId, String, String> FACTORY = Causes.forThreeValues("Node %s: %s is refused, the record is %s",
-                                                                                              WrongState::new);
+                                                                                             WrongState::new);
     }
 
     /// `provisioned` named an operation id other than the one the committed intent carries.
     record OperationMismatch(NodeId node, OperationId offered, OperationId intended, String message) implements IdentityRefusal {
         static final Fn3<OperationMismatch, NodeId, OperationId, OperationId> FACTORY = Causes.forThreeValues("Node %s: operation id %s does not match the committed intent %s",
-                                                                                                                OperationMismatch::new);
+                                                                                                              OperationMismatch::new);
     }
 
     /// `readmit` named a process other than the one the record binds: a different process is never re-admitted under the same node id.

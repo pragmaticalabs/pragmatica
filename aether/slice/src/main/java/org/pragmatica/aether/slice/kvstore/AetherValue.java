@@ -4209,12 +4209,10 @@ public sealed interface AetherValue {
         VANISHED,
         /// Wire sentinel required of every `@Codec` enum; not a cause the leader records.
         UNKNOWN;
-
         /// One of the four ways an intent ends before admission.
         public boolean isAbandonment() {
             return this == PROVISION_FAILED || this == PROVISION_TIMEOUT || this == CANCELLED || this == VANISHED;
         }
-
         /// One of the six ranks the terminator writes for an admitted or departed node.
         public boolean isWriterRank() {
             return this != UNKNOWN && !isAbandonment();
@@ -4229,11 +4227,13 @@ public sealed interface AetherValue {
     @Codec
     record OperationId(String value) {
         private static final Pattern GRAMMAR = Pattern.compile("[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?");
+
         private static final Fn1<Cause, String> INVALID = Causes.forOneValue("Invalid operation id (lower case a-z, 0-9 and '-', at most 63 characters): %s");
 
         public static Result<OperationId> operationId(String raw) {
             return Verify.ensure(raw, Verify.Is::present)
-                         .filter(INVALID, GRAMMAR.asMatchPredicate())
+                         .filter(INVALID,
+                                 GRAMMAR.asMatchPredicate())
                          .map(OperationId::new);
         }
 
@@ -4276,11 +4276,25 @@ public sealed interface AetherValue {
         }
 
         public NodeIdentityValue provisioned(String serverId, long now) {
-            return new NodeIdentityValue(IdentityState.PROVISIONING, epoch, process, role, supersededBy, cause, now, intent.map(found -> found.withServer(serverId)));
+            return new NodeIdentityValue(IdentityState.PROVISIONING,
+                                         epoch,
+                                         process,
+                                         role,
+                                         supersededBy,
+                                         cause,
+                                         now,
+                                         intent.map(found -> found.withServer(serverId)));
         }
 
         public NodeIdentityValue admitted(ProcessIncarnation bound, long now) {
-            return new NodeIdentityValue(IdentityState.ADMITTED, epoch + 1, some(bound), role, supersededBy, none(), now, intent);
+            return new NodeIdentityValue(IdentityState.ADMITTED,
+                                         epoch + 1,
+                                         some(bound),
+                                         role,
+                                         supersededBy,
+                                         none(),
+                                         now,
+                                         intent);
         }
 
         public NodeIdentityValue departed(long now) {
@@ -4288,7 +4302,14 @@ public sealed interface AetherValue {
         }
 
         public NodeIdentityValue terminated(IdentityCause why, Option<NodeId> successor, long now) {
-            return new NodeIdentityValue(IdentityState.TERMINATED, epoch, process, role, successor, some(why), now, intent);
+            return new NodeIdentityValue(IdentityState.TERMINATED,
+                                         epoch,
+                                         process,
+                                         role,
+                                         successor,
+                                         some(why),
+                                         now,
+                                         intent);
         }
     }
 }
