@@ -1,6 +1,5 @@
 package org.pragmatica.storage;
 
-import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -391,10 +390,11 @@ public final class AppendLog implements AutoCloseable {
     /// truncate), invoking `consumer` for each remaining VALID record. Stops cleanly at a torn
     /// final record or a CRC mismatch, returning the valid prefix consumed so far.
     ///
-    /// The file is scanned in a fixed [#REPLAY_BUFFER_BYTES] buffer, never held whole (#2201 C-02): a skipped record is
-    /// CRC-checked chunk by chunk and never materialized, so a replay allocates the buffer and the records it delivers. A
-    /// spilled seal replays its range this way; the whole-file read cost the file's size per seal and failed past 2 GiB.
-    /// Time stays O(file).
+    /// The file is scanned in a fixed [#REPLAY_BUFFER_BYTES] buffer, never held whole (#2201 C-02): every record is
+    /// CRC-checked chunk by chunk before any of it is materialized, and only a delivered record is, so a replay allocates
+    /// the buffer and the records it delivers, and a corrupt length that fits the file ends the valid prefix without
+    /// allocating what it claims (v-2520). A spilled seal replays its range this way; the whole-file read cost the file's
+    /// size per seal and failed past 2 GiB. Time stays O(file); a delivered payload is read twice.
     public Result<Unit> replay(long afterOffset, Consumer<WalRecord> consumer) {
         return closed
                ? WalError.General.WAL_CLOSED.result()
@@ -793,16 +793,21 @@ public final class AppendLog implements AutoCloseable {
     }
 
     /// The streaming form of [#scan]: the same validity rules (length frame, then CRC-32 over `offset || timestamp ||
-    /// payload`), the same stop at the first torn or corrupt record. Imperative I/O leaf, as [#scanExtent].
+    /// payload`), the same stop at the first torn or corrupt record. Positional reads through one fixed buffer: a record is
+    /// CRC-checked chunk by chunk FIRST, and only a record that passes and is delivered is materialized, so a length that
+    /// fits the file but whose CRC is wrong (a flipped bit in a header) never allocates its payload. Imperative I/O leaf, as
+    /// [#scanExtent].
     @SuppressWarnings("JBCT-EX-01")
     private Unit replayScan(long afterOffset, Consumer<WalRecord> consumer) throws IOException {
-        var size = Files.size(file);
         var chunk = new byte[REPLAY_BUFFER_BYTES];
+        var window = ByteBuffer.wrap(chunk);
         var header = ByteBuffer.wrap(chunk, 0, HEADER_BYTES).order(ByteOrder.BIG_ENDIAN);
         var position = 0L;
 
-        try (var in = new BufferedInputStream(Files.newInputStream(file), REPLAY_BUFFER_BYTES)) {
-            while (size - position >= HEADER_BYTES && in.readNBytes(chunk, 0, HEADER_BYTES) == HEADER_BYTES) {
+        try (var channel = FileChannel.open(file, StandardOpenOption.READ)) {
+            var size = channel.size();
+
+            while (size - position >= HEADER_BYTES && readAt(channel, window, HEADER_BYTES, position) == HEADER_BYTES) {
                 header.clear();
                 var payloadLen = header.getInt();
                 var offset = header.getLong();
@@ -816,17 +821,18 @@ public final class AppendLog implements AutoCloseable {
                 var crc = new CRC32();
 
                 crc.update(chunk, 4, CRC_HEADER_BYTES);
-                if (offset > afterOffset) {
-                    var payload = in.readNBytes(payloadLen);
+                if (!crcOfPayloadAt(channel, window, position + HEADER_BYTES, payloadLen, crc) || (int) crc.getValue() != storedCrc) {
+                    break;
+                }
 
-                    crc.update(payload);
-                    if (payload.length != payloadLen || (int) crc.getValue() != storedCrc) {
+                if (offset > afterOffset) {
+                    var payload = new byte[payloadLen];
+
+                    if (readAt(channel, ByteBuffer.wrap(payload), payloadLen, position + HEADER_BYTES) != payloadLen) {
                         break;
                     }
 
                     consumer.accept(new WalRecord(offset, timestampMillis, payload));
-                } else if (!crcOfPayload(in, payloadLen, chunk, crc) || (int) crc.getValue() != storedCrc) {
-                    break;
                 }
 
                 position += HEADER_BYTES + payloadLen;
@@ -834,6 +840,41 @@ public final class AppendLog implements AutoCloseable {
         }
 
         return unit();
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static boolean crcOfPayloadAt(FileChannel channel,
+                                          ByteBuffer window,
+                                          long from,
+                                          int payloadLen,
+                                          CRC32 crc) throws IOException {
+        var done = 0;
+
+        while (done < payloadLen) {
+            var want = Math.min(payloadLen - done, window.capacity());
+
+            if (readAt(channel, window, want, from + done) != want) {
+                return false;
+            }
+
+            crc.update(window.array(), 0, want);
+            done += want;
+        }
+
+        return true;
+    }
+
+    /// Reads `length` bytes into the start of `window` from `position`; fewer only at the end of the file.
+    @SuppressWarnings("JBCT-EX-01")
+    private static int readAt(FileChannel channel, ByteBuffer window, int length, long position) throws IOException {
+        var read = 0;
+
+        window.clear().limit(length);
+        while (window.hasRemaining() && read >= 0) {
+            read = channel.read(window, position + window.position());
+        }
+
+        return window.position();
     }
 
     // === truncate / compaction path ===
