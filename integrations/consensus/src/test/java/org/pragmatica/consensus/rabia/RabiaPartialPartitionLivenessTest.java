@@ -44,6 +44,11 @@ class RabiaPartialPartitionLivenessTest {
     private static final int SEEDS = 12;
     private static final int FLIPS = 20;
     private static final int HARD_CAP = 20 * BOUND;
+    /// Engine timers (phase-stall check 500 ms, decision-gap timeout 2 s) run on wall-clock time, so a quiet cluster
+    /// is rescued by a timer after a number of steps that depends on host speed (Q4 needed 11k and 14.5k steps in one
+    /// run). A stall therefore also needs this much wall time without a commit [guess: 5 s covers several timer
+    /// periods; the largest `wallMs` of a committed run is printed to check it].
+    private static final long MIN_STALL_WALL_MS = 5_000L;
     private static final int PENTAGON_CUT_STEPS = 3_000;
 
     private static final ConcurrentLinkedQueue<Run> RESULTS = new ConcurrentLinkedQueue<>();
@@ -213,6 +218,7 @@ class RabiaPartialPartitionLivenessTest {
         var required = union(probe.majorities());
         BooleanSupplier done = () -> required.stream().allMatch(index -> probe.processed(index) >= expected);
         var lastProgress = 0;
+        var lastProgressNanos = System.nanoTime();
         var lastTotal = probe.total(required);
         var steps = -1;
         for (int step = 1; step <= HARD_CAP && steps < 0; step++) {
@@ -221,7 +227,8 @@ class RabiaPartialPartitionLivenessTest {
             } else if (probe.total(required) != lastTotal) {
                 lastTotal = probe.total(required);
                 lastProgress = step;
-            } else if (step - lastProgress >= BOUND) {
+                lastProgressNanos = System.nanoTime();
+            } else if (step - lastProgress >= BOUND && System.nanoTime() - lastProgressNanos >= MIN_STALL_WALL_MS * 1_000_000L) {
                 break;
             }
         }
@@ -369,6 +376,7 @@ class RabiaPartialPartitionLivenessTest {
         int newBatchBlocked;
         int submitted;
         Run run;
+        final long createdNanos = System.nanoTime();
 
         Probe(String cell, int n, int seed, Links links) {
             this.cell = cell;
@@ -427,8 +435,8 @@ class RabiaPartialPartitionLivenessTest {
             var minBlocked = links.downEdges().stream().mapToInt(edge -> cutBlocked[edge[0]][edge[1]]).min().orElse(0);
             run = new Run(cell, n, seed, steps, !committed, v0, minBlocked);
             RESULTS.add(run);
-            System.out.printf("QSYNC-RUN cell=%s n=%d seed=%d committed=%s steps=%d v0Slots=%d newBatchBlocked=%d minCutEdgeBlocked=%d%n",
-                              cell, n, seed, committed, steps, v0, newBatchBlocked, minBlocked);
+            System.out.printf("QSYNC-RUN cell=%s n=%d seed=%d committed=%s steps=%d wallMs=%d v0Slots=%d newBatchBlocked=%d minCutEdgeBlocked=%d%n",
+                              cell, n, seed, committed, steps, (System.nanoTime() - createdNanos) / 1_000_000L, v0, newBatchBlocked, minBlocked);
         }
 
         /// C1: every cut edge saw (and lost) traffic, no delivery passed on a cut edge, every up edge carried traffic.
@@ -462,8 +470,8 @@ class RabiaPartialPartitionLivenessTest {
             }
             var tail = new ArrayList<>(cluster.sent);
             var last = tail.subList(Math.max(0, tail.size() - 12), tail.size());
-            return "STALL cell=%s n=%d seed=%d: no command committed on majority members %s for %d steps (expected %d on each); %s; deliveriesPending=%d; last protocol messages=%s"
-                .formatted(cell, n, seed, required, BOUND, expected, counts, cluster.pending.size(), last);
+            return "STALL cell=%s n=%d seed=%d: no command committed on majority members %s for %d steps and %d ms (expected %d on each); %s; deliveriesPending=%d; last protocol messages=%s"
+                .formatted(cell, n, seed, required, BOUND, MIN_STALL_WALL_MS, expected, counts, cluster.pending.size(), last);
         }
     }
 }
