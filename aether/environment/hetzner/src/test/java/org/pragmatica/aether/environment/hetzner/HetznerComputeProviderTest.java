@@ -16,6 +16,7 @@ import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.MarketOptions;
 import org.pragmatica.aether.environment.NodeGroupConfig;
+import org.pragmatica.aether.environment.OperationId;
 import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionRequest;
@@ -555,6 +556,35 @@ class HetznerComputeProviderTest {
         }
 
         @Test
+        void honoursOperationId_isDeclared_soTheBoundaryHandsOneOver() {
+            assertThat(provider.honoursOperationId()).isTrue();
+        }
+
+        @Test
+        void createFrom_requestOperationId_namesTheServerOverTheContextNodeId() {
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+
+            provider.createFrom(withOperation(requestFor("eu-1-core-0"), "op-1")).await()
+                    .onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.name()).isEqualTo("op-1");
+            assertThat(testClient.lastCreateServerRequest.labels())
+                    .containsEntry(OPERATION_LABEL, "op-1")
+                    .containsEntry(HetznerComputeProvider.NODE_ID_LABEL, "op-1");
+        }
+
+        @Test
+        void createFrom_uniquenessError_serverOfOurClusterButAnotherNodeId_isNameHeldByOther() {
+            testClient.createServerResponse = nameTaken();
+            testClient.listServersResponse = Promise.success(List.of(serverNamed(79, "eu-1-core-0", "prod", "someone-else")));
+
+            provider.createFrom(requestFor("eu-1-core-0"))
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(cause -> assertThat(cause).isInstanceOf(EnvironmentError.NameHeldByOther.class));
+        }
+
+        @Test
         void createFrom_nodeIdWithUpperCase_isRefusedBeforeAnyCreate() {
             // Names are case-sensitive (P-G1 A4): an upper-case twin of a lower-case name is a different server, so it must not be created.
             provider.createFrom(requestFor("Node-1"))
@@ -638,6 +668,12 @@ class HetznerComputeProviderTest {
                     .onFailure(HetznerComputeProviderTest::assertProvisionFailedError);
 
             assertThat(testClient.createServerCalls).isEqualTo(1);
+        }
+
+        private static ProvisionRequest withOperation(ProvisionRequest request, String operation) {
+            return new ProvisionRequest(request.market(), request.instanceSize(), request.image(), request.zone(), request.userData(),
+                                        request.marketOptions(), request.context(),
+                                        Option.some(OperationId.operationId(operation).unwrap()));
         }
 
         private static Promise<Server> nameTaken() {
