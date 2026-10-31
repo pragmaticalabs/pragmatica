@@ -106,7 +106,9 @@ final class ApplyReconciler {
     /// and so survives a custom label being dropped. A cloud server found by that label is the node only if it is OURS (G1-f): node
     /// ids are unique per cluster, but a label is not unique, so a server of another cluster or apply that carries the same
     /// `aether-node-id` is never adopted as the node's VM.
-    private static Result<Option<InstanceInfo>> findNode(ComputeProvider compute, ApplyResource row, ApplyRecorder recorder) {
+    private static Result<Option<InstanceInfo>> findNode(ComputeProvider compute,
+                                                         ApplyResource row,
+                                                         ApplyRecorder recorder) {
         var applyId = recorder.applyId();
         var filter = "docker".equals(row.provider())
                      ? Map.of(WaveNodeProvisioning.APPLY_LABEL, applyId)
@@ -117,7 +119,9 @@ final class ApplyReconciler {
                       .map(listed -> listed.stream()
                                            .filter(info -> isNode(info,
                                                                   row.nodeId()))
-                                           .filter(info -> isOurs(row.provider(), info, recorder))
+                                           .filter(info -> isOurs(row.provider(),
+                                                                  info,
+                                                                  recorder))
                                            .findFirst()
                                            .map(Option::some)
                                            .orElse(Option.none()));

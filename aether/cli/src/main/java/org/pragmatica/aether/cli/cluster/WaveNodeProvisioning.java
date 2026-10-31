@@ -184,21 +184,29 @@ sealed interface WaveNodeProvisioning {
     /// after the node id and refuses a second server with that name, so `AlreadyExists` means the earlier attempt (a lost reply, a racing
     /// resume) made the server, and it is the answer, but only if it is OURS: the cluster and apply labels are checked here, whatever the
     /// provider checked. A name held by anything else is refused, typed, and never adopted. Every other failure keeps the row INTENDED.
-    private static Result<InstanceInfo> unanswered(Cause cause, String nodeId, String provider, ApplyRecorder recorder) {
+    private static Result<InstanceInfo> unanswered(Cause cause,
+                                                   String nodeId,
+                                                   String provider,
+                                                   ApplyRecorder recorder) {
         return switch (cause) {
             case EnvironmentError.AlreadyExists existing -> adoptIfOwned(existing.existing(), nodeId, provider, recorder);
-            case EnvironmentError.NameHeldByOther held -> new NameHeld(nodeId, held.holder().value()).result();
+            case EnvironmentError.NameHeldByOther held -> new NameHeld(nodeId,
+                                                                       held.holder().value()).result();
             default -> new CreateUnconfirmed(nodeId, cause).result();
         };
     }
 
-    private static Result<InstanceInfo> adoptIfOwned(InstanceInfo existing, String nodeId, String provider, ApplyRecorder recorder) {
+    private static Result<InstanceInfo> adoptIfOwned(InstanceInfo existing,
+                                                     String nodeId,
+                                                     String provider,
+                                                     ApplyRecorder recorder) {
         return ownedBy(provider,
                        existing,
                        recorder.snapshot().clusterName().value(),
                        recorder.applyId())
                ? success(existing)
-               : new NameHeld(nodeId, existing.id().value()).result();
+               : new NameHeld(nodeId,
+                              existing.id().value()).result();
     }
 
     /// The server name of a node's create is held by a server that is not this apply's (another cluster's, another apply's, or one
