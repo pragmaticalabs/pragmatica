@@ -145,12 +145,12 @@ public final class WaveExecutor {
                                                  ClusterBootstrapConfig desired,
                                                  CreatedNodes created) {
         return lookupSource(sourceName,
-                            desired.sources()).flatMap(source -> dispatchProvision(sourceName,
-                                                                                   source,
-                                                                                   role,
-                                                                                   count,
-                                                                                   desired,
-                                                                                   created))
+                            desired.sources()).flatMap(source -> gatedProvision(sourceName,
+                                                                                source,
+                                                                                role,
+                                                                                count,
+                                                                                desired,
+                                                                                created))
                            .map(nodes -> logAndCount("+",
                                                      sourceName
                                                     + "." + role.value()
@@ -169,7 +169,7 @@ public final class WaveExecutor {
 
         return lookupSource(sourceName,
                             desired.sources()).flatMap(source -> rejectSshScaleUp(source, sourceName))
-                           .flatMap(source -> dispatchProvision(sourceName, source, role, delta, desired, created))
+                           .flatMap(source -> gatedProvision(sourceName, source, role, delta, desired, created))
                            .map(nodes -> logAndCount("~",
                                                      sourceName
                                                     + "." + role.value()
@@ -182,6 +182,42 @@ public final class WaveExecutor {
         return source.type() == SourceType.SSH
                ? new ApplyError.SshScaleNotSupported(sourceName).result()
                : success(source);
+    }
+
+    /// The pool authority [PoolGate] asks; a test replaces it. Reprovisioning (replace-before-retire) is NOT gated: it must create the
+    /// replacement before it drains the old node, and a deferral would drain without one.
+    static volatile PoolAuthority poolAuthority = ClusterPoolAuthority.production();
+
+    /// G1-g: scale-up and add-role create nodes only when apply is the pool's decider; with the leader's auto-heal filling the pool
+    /// they create nothing and wait for the leader to converge.
+    private static Result<List<ProvisionedNode>> gatedProvision(SourceName sourceName,
+                                                                SourceProfile source,
+                                                                NodeRole role,
+                                                                int count,
+                                                                ClusterBootstrapConfig desired,
+                                                                CreatedNodes created) {
+        return PoolGate.through(poolAuthority,
+                                new PoolGate.Pool(sourceName.value(),
+                                                  source.type(),
+                                                  role,
+                                                  count,
+                                                  wantedIn(source, role),
+                                                  wantedInRole(desired, role)),
+                                message -> logAction("~", message),
+                                () -> dispatchProvision(sourceName, source, role, count, desired, created));
+    }
+
+    private static int wantedIn(SourceProfile source, NodeRole role) {
+        return option(source.roles().get(role)).flatMap(RoleSubTable::count)
+                     .or(0);
+    }
+
+    private static int wantedInRole(ClusterBootstrapConfig desired, NodeRole role) {
+        return desired.sources()
+                      .values()
+                      .stream()
+                      .mapToInt(source -> wantedIn(source, role))
+                      .sum();
     }
 
     private static Result<List<ProvisionedNode>> dispatchProvision(SourceName sourceName,
