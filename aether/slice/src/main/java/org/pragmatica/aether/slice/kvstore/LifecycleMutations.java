@@ -60,6 +60,9 @@ public sealed interface LifecycleMutations {
     Cause BLANK_SOURCE = Causes.cause("A capacity facet needs a source name");
     Cause BLANK_ROLE = Causes.cause("The identity facet needs a role");
     Cause UNKNOWN_PROCESS = Causes.cause("A process with no boot token cannot be bound to a node id");
+    /// The binding of a hold no ledger could count (an EXTERNAL admission). It touches no count, so `free` writes its tombstone and no ledger change,
+    /// as today's `releaseExternal` drops it. Equal to `CapacityControlledLifecycle.UNCOUNTED_BINDING`, pinned by `UncountedBindingPinTest`.
+    String UNCOUNTED_BINDING = "external-uncounted";
 
     /// `reserve`: a create is about to be dispatched for this node id. Expects no capacity facet; needs a complete inventory and room under
     /// `limit`. Writes `DISPATCHED` and counts one more.
@@ -72,6 +75,7 @@ public sealed interface LifecycleMutations {
                                                                   String intendedRole) {
         return Verify.ensure(source, Verify.Is::present, BLANK_SOURCE)
                      .flatMap(_ -> noCapacity(node, current, "reserve"))
+                     .flatMap(_ -> notTerminated(node, current, "reserve"))
                      .flatMap(_ -> roomInLedger(node, ledger, limit))
                      .map(before -> List.of(record(node,
                                                    current,
@@ -118,7 +122,7 @@ public sealed interface LifecycleMutations {
     }
 
     /// `free`: the capacity of this node id ends. From any phase but `FREED`; writes the `FREED` tombstone with its cause and time and counts
-    /// one fewer. The record stays (I-O1).
+    /// one fewer, unless the hold is [#UNCOUNTED_BINDING], which touches no count. The record stays (I-O1).
     static Result<List<Mutation<AetherKey, AetherValue>>> free(NodeId node,
                                                                Option<NodeLifecycleValue> current,
                                                                Option<CapacityLedgerValue> ledger,
@@ -130,15 +134,13 @@ public sealed interface LifecycleMutations {
                                                       cause.name(),
                                                       "free"))
                      .flatMap(_ -> liveCapacity(node, current))
-                     .flatMap(found -> countedDown(node, ledger).map(before -> List.of(record(node,
-                                                                                              current,
-                                                                                              withCapacity(current,
-                                                                                                           found.freed(cause,
-                                                                                                                       now))),
-                                                                                       ledgerChange(ledger,
-                                                                                                    new CapacityLedgerValue(before.allocated() - 1,
-                                                                                                                            before.version() + 1,
-                                                                                                                            before.inventoryComplete())))));
+                     .flatMap(found -> isUncounted(found)
+                                       ? Result.<List<Mutation<AetherKey, AetherValue>>> success(List.of(record(node,
+                                                                                                                current,
+                                                                                                                withCapacity(current,
+                                                                                                                             found.freed(cause,
+                                                                                                                                         now)))))
+                                       : countedFree(node, current, ledger, found, cause, now));
     }
 
     /// `admit(X, process)`: the node's first admission. Expects no identity facet (a capacity-only record is the normal case of a provisioned
@@ -197,10 +199,30 @@ public sealed interface LifecycleMutations {
                                                       cause.name(),
                                                       "terminate"))
                      .flatMap(_ -> identityIn(node, current, "terminate", IdentityState.ADMITTED, IdentityState.DEPARTED))
+                     .flatMap(found -> noLiveCapacity(node, current).map(_ -> found))
                      .map(found -> List.of(record(node,
                                                   current,
                                                   withIdentity(current,
                                                                found.terminated(cause, now)))));
+    }
+
+    private static Result<List<Mutation<AetherKey, AetherValue>>> countedFree(NodeId node,
+                                                                              Option<NodeLifecycleValue> current,
+                                                                              Option<CapacityLedgerValue> ledger,
+                                                                              CapacityFacet found,
+                                                                              FreedCause cause,
+                                                                              long now) {
+        return countedDown(node, ledger).map(before -> List.of(record(node,
+                                                                      current,
+                                                                      withCapacity(current, found.freed(cause, now))),
+                                                               ledgerChange(ledger,
+                                                                            new CapacityLedgerValue(before.allocated() - 1,
+                                                                                                    before.version() + 1,
+                                                                                                    before.inventoryComplete()))));
+    }
+
+    private static boolean isUncounted(CapacityFacet found) {
+        return UNCOUNTED_BINDING.equals(found.sourceBinding());
     }
 
     private static Result<List<Mutation<AetherKey, AetherValue>>> observeFound(NodeId node,
@@ -240,19 +262,21 @@ public sealed interface LifecycleMutations {
                                                                         String intendedRole) {
         var before = ledger.or(EMPTY_LEDGER);
 
-        return Verify.ensure(source, Verify.Is::present, BLANK_SOURCE).map(_ -> List.of(record(node,
-                                                                                               current,
-                                                                                               withCapacity(current,
-                                                                                                            new CapacityFacet(source,
-                                                                                                                              binding,
-                                                                                                                              intendedRole,
-                                                                                                                              CapacityPhase.OBSERVED,
-                                                                                                                              none(),
-                                                                                                                              none()))),
-                                                                                        ledgerChange(ledger,
-                                                                                                     new CapacityLedgerValue(before.allocated() + 1,
-                                                                                                                             before.version() + 1,
-                                                                                                                             before.inventoryComplete()))));
+        return Verify.ensure(source, Verify.Is::present, BLANK_SOURCE)
+                     .flatMap(_ -> notTerminated(node, current, "observe"))
+                     .map(_ -> List.of(record(node,
+                                              current,
+                                              withCapacity(current,
+                                                           new CapacityFacet(source,
+                                                                             binding,
+                                                                             intendedRole,
+                                                                             CapacityPhase.OBSERVED,
+                                                                             none(),
+                                                                             none()))),
+                                       ledgerChange(ledger,
+                                                    new CapacityLedgerValue(before.allocated() + 1,
+                                                                            before.version() + 1,
+                                                                            before.inventoryComplete()))));
     }
 
     private static boolean isKnown(ProcessIncarnation process) {
@@ -264,6 +288,28 @@ public sealed interface LifecycleMutations {
                       .fold(Result::unitResult,
                             found -> WrongState.FACTORY.apply(node,
                                                               operation,
+                                                              "capacity " + found.phase().name())
+                                                       .result());
+    }
+
+    /// A `TERMINATED` node id holds no live capacity (q4 7.1.2: its capacity is `FREED` or absent), so a hold is never put on one.
+    private static Result<Unit> notTerminated(NodeId node, Option<NodeLifecycleValue> current, String operation) {
+        return current.flatMap(NodeLifecycleValue::identity)
+                      .filter(found -> found.state() == IdentityState.TERMINATED)
+                      .fold(Result::unitResult,
+                            found -> WrongState.FACTORY.apply(node,
+                                                              operation,
+                                                              "identity " + found.state().name())
+                                                       .result());
+    }
+
+    /// The other half of the same rule: a node id is terminated only after its capacity is freed (or when it never had one).
+    private static Result<Unit> noLiveCapacity(NodeId node, Option<NodeLifecycleValue> current) {
+        return current.flatMap(NodeLifecycleValue::capacity)
+                      .filter(found -> found.phase() != CapacityPhase.FREED)
+                      .fold(Result::unitResult,
+                            found -> WrongState.FACTORY.apply(node,
+                                                              "terminate",
                                                               "capacity " + found.phase().name())
                                                        .result());
     }

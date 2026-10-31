@@ -578,7 +578,7 @@ class LifecycleMutationsTest {
         }
 
         @Test
-        void aHoldWithTheUncountedBinding_isRepresentable_andFreesWithoutBecomingAbsent() {
+        void aHoldWithTheUncountedBinding_isRepresentable() {
             var uncounted = new CapacityFacet(SOURCE, "external-uncounted", "core", CapacityPhase.DISPATCHED, Option.none(), Option.none());
             var seed = new KVCommand.Mutation<AetherKey, AetherValue>(KEY, Option.none(), Option.some(new NodeLifecycleValue(Option.none(), Option.some(uncounted))));
 
@@ -600,6 +600,7 @@ class LifecycleMutationsTest {
             built.add(LifecycleMutations.refuse(NODE, record(), SOURCE, BINDING));
             built.add(LifecycleMutations.observe(NODE, record(), ledger(), SOURCE, BINDING));
             built.add(LifecycleMutations.free(NODE, record(), ledger(), FreedCause.TERMINATED, 1L));
+            assertThat(free(FreedCause.TERMINATED)).as("a node id is terminated after its capacity is freed").isTrue();
             assertThat(admit()).isTrue();
             built.add(LifecycleMutations.depart(NODE, record(), 2L));
             built.add(LifecycleMutations.terminate(NODE, record(), IdentityCause.GONE, 3L));
