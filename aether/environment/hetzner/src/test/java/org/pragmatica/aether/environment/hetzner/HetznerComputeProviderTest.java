@@ -619,6 +619,18 @@ class HetznerComputeProviderTest {
         }
 
         @Test
+        void createFrom_uniquenessError_looksTheHolderUpByExactName() {
+            testClient.createServerResponse = nameTaken();
+            testClient.listServersResponse = Promise.success(List.of(serverNamed(80, "eu-1-core-1", "prod", "eu-1-core-1"),
+                                                                     serverNamed(77, "eu-1-core-0", "prod", "eu-1-core-0")));
+
+            provider.createFrom(requestFor("eu-1-core-0"))
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(cause -> assertAlreadyExists(cause, "77"));
+        }
+
+        @Test
         void createFrom_uniquenessError_serverOfAnotherCluster_isNameHeldByOtherAndNeverAdopted() {
             testClient.createServerResponse = nameTaken();
             testClient.listServersResponse = Promise.success(List.of(serverNamed(78, "eu-1-core-0", "other-cluster", "eu-1-core-0")));

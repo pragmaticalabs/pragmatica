@@ -178,7 +178,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                                  .onFailure(HetznerComputeProvider::logProvisionFailureRollbackGap);
     }
 
-    /// The create, with a refused NAME answered by who holds it. A `409 uniqueness_error` means the name is taken: the server
+    /// The create, with a refused NAME answered by who holds it. A `uniqueness_error` (HTTP 409, P-G1 A2) means the name is taken: the server
     /// that holds it is looked up by exact name, and it is `AlreadyExists` when it carries this create's cluster and node-id
     /// labels (the create already happened), `NameHeldByOther` when it does not. Neither is ever followed by another create. A
     /// name nobody lists yet (the visibility lag, P-G1 A6) stays the provider's own refusal, which is a failed create, not a retry.
@@ -195,7 +195,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     }
 
     private static boolean isNameTaken(Cause cause) {
-        return cause instanceof HetznerError.ApiError apiError && apiError.statusCode() == NAME_TAKEN_STATUS && NAME_TAKEN_CODE.equals(apiError.code());
+        return cause instanceof HetznerError.ApiError apiError && NAME_TAKEN_CODE.equals(apiError.code());
     }
 
     private static Promise<Server> holderOf(List<Server> servers, CreateServerRequest create, OperationId operation, Cause refusal) {
@@ -219,7 +219,6 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         return create.labels().get(CLUSTER_LABEL).equals(labels.get(CLUSTER_LABEL)) && create.labels().get(NODE_ID_LABEL).equals(labels.get(NODE_ID_LABEL));
     }
 
-    private static final int NAME_TAKEN_STATUS = 409;
     private static final String NAME_TAKEN_CODE = "uniqueness_error";
 
     /// #442 v2b — operator-visible record of the EXACT labels sent to Hetzner at create time. The
