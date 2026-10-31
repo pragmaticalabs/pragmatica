@@ -805,7 +805,14 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// snapshot restore bypasses the fence; a pointer removed and rewritten at the same claim names the same block again). A block with an
     /// identity header can be named only by the pointer of the keyspace and partition in it, so that one pointer is read. A block without
     /// one (written before PR-3c, content-addressed with no identity) can be named by pointers of any partition of any keyspace, so every
-    /// pointer is read: one scan of the local KV, needed only for such a block, which the upgrade window displaces at most once per pointer.
+    /// pointer is read: one full scan of the local KV, a copy of the whole map under the store's monitor, which the commit applier takes too.
+    ///
+    /// The cost, per attempt. The header is found by reading the whole block through [StorageInstance#get]: the tier waterfall, a SHA-256
+    /// over the block and `recordAccess`, and a DHT read of the whole block when no tier of this node holds it. The streams instance is built
+    /// with no block cap (`Integer.MAX_VALUE`, not the 16 MiB default), so the read is as large as the checkpoint. The full scan runs for a
+    /// block written before PR-3c, for one whose header does not parse, and for one that is absent when the delete runs (a second delete of
+    /// it: a stale pre-read at a handover, or a retry after a delete that removed the block but reported a failure), once per attempt, not
+    /// once per pointer; the attempts are bounded by [CheckpointReclaim#deleteRetry] (five in production), then the delete gives up at WARN.
     ///
     /// The check only withholds deletes, from this node's committed view: a pointer this node has not applied yet, or one committed
     /// between the read and the quorum remove, is not seen.
