@@ -165,7 +165,9 @@ class LifecycleMutationsTest {
 
         @Test
         void reserve_isRefused_withoutRoomInTheLedger() {
-            assertThat(LifecycleMutations.reserve(NODE, record(), ledger(), LIMIT, SOURCE, BINDING, "core").isFailure()).as("no ledger").isTrue();
+            LifecycleMutations.reserve(NODE, record(), ledger(), LIMIT, SOURCE, BINDING, "core")
+                              .onSuccess(mutations -> org.junit.jupiter.api.Assertions.fail("reserved without a ledger"))
+                              .onFailure(cause -> assertThat(cause.message()).as("no ledger").contains("no ledger"));
 
             seedLedger(0, 1L, false);
             assertThat(LifecycleMutations.reserve(NODE, record(), ledger(), LIMIT, SOURCE, BINDING, "core").isFailure()).as("inventory incomplete").isTrue();
@@ -356,7 +358,9 @@ class LifecycleMutationsTest {
             seedLedger(0, 1L, true);
             assertThat(reserve()).isTrue();
 
-            assertThat(LifecycleMutations.free(NODE, record(), Option.none(), FreedCause.REFUSED, 1L).isFailure()).isTrue();
+            LifecycleMutations.free(NODE, record(), Option.none(), FreedCause.REFUSED, 1L)
+                              .onSuccess(mutations -> org.junit.jupiter.api.Assertions.fail("freed without a ledger"))
+                              .onFailure(cause -> assertThat(cause.message()).contains("no ledger"));
         }
     }
 
@@ -464,6 +468,17 @@ class LifecycleMutationsTest {
             assertThat(identity().cause().or((IdentityCause) null)).isEqualTo(IdentityCause.REPLACED);
             assertThat(identity().process()).as("the terminated process stays named").isEqualTo(PROCESS);
             assertThat(identity().epoch()).isEqualTo(1L);
+        }
+
+        @Test
+        void terminate_endsADepartedNode_too() {
+            assertThat(admit()).isTrue();
+            assertThat(commit(LifecycleMutations.depart(NODE, record(), 130L))).isTrue();
+
+            assertThat(commit(LifecycleMutations.terminate(NODE, record(), IdentityCause.GONE, 300L))).isTrue();
+
+            assertThat(identity().state()).isEqualTo(IdentityState.TERMINATED);
+            assertThat(identity().cause().or((IdentityCause) null)).isEqualTo(IdentityCause.GONE);
         }
 
         @Test
