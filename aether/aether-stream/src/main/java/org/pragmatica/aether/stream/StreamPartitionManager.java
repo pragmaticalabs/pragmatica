@@ -4937,9 +4937,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     /// Whether `offset` of `(streamName, partition)` has been evicted and handed to the eviction listener but
-    /// is not yet durably sealed (#1234) — a read of it is IN FLIGHT and succeeds once the seal lands.
+    /// is not yet durably sealed (#1234) — a read of it is IN FLIGHT and succeeds once the seal lands. Every caller is
+    /// a read, so the question also asks the sealer to seal the run holding `offset` now (demand flush, #2201 C-02):
+    /// the read waits for the seals ahead of it, not for `seal_run_age`.
     public boolean sealInFlight(String streamName, int partition, long offset) {
-        return evictionListener.holdsUnsealed(streamName, partition, offset);
+        return evictionListener.holdsUnsealedForRead(streamName, partition, offset);
     }
 
     /// Periodically reclaim WAL disk by truncating each partition's write-ahead log up to its DURABLE

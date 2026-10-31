@@ -424,13 +424,14 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     }
 
     /// The in-flight check runs before the segment read: the sink indexes a segment before the sealer
-    /// releases it, so no evicted offset is in neither place.
+    /// releases it, so no evicted offset is in neither place. It is the READ form, which also asks the sealer to seal
+    /// the offset's run now (#2201 C-02), so the wait above is for one seal, not for `seal_run_age`.
     private Promise<List<byte[]>> readSealedOnce(String keyspace,
                                                  String stream,
                                                  int partition,
                                                  long fromOffset,
                                                  int count) {
-        if (evictionListener.holdsUnsealed(stream, partition, fromOffset)) {
+        if (evictionListener.holdsUnsealedForRead(stream, partition, fromOffset)) {
             return new SegmentError.SealInFlight(stream, partition, fromOffset).promise();
         }
 
