@@ -224,4 +224,10 @@ class ClusterPoolAuthorityTest {
             Thread.interrupted();
         }
     }
+
+    /// An uninterrupted sleep is a success: if every sleep failed, every production wait would end "interrupted" at its first poll.
+    @Test
+    void sleep_uninterrupted_succeeds() {
+        assertThat(ClusterPoolAuthority.sleep(Duration.ofMillis(1)).isSuccess()).isTrue();
+    }
 }
