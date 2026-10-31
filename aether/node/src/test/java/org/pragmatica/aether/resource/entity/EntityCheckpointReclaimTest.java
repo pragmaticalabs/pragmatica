@@ -20,6 +20,7 @@ import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.StreamEntityLogSubstrate;
 import org.pragmatica.aether.node.StreamEntityLogSubstrate.CheckpointReclaim;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -387,6 +388,27 @@ class EntityCheckpointReclaimTest {
         pause(PAST_SHORT_GRACE_MS);
         assertThat(readable(current)).isTrue();
         assertThat(readable(displaced)).isTrue();
+    }
+
+    /// The production reclaim, through the factory production calls: its grace covers two checkpoint ticks (the reason it was chosen), so
+    /// right after a swap the displaced block is still there.
+    @Test
+    void theProductionReclaim_keepsTheDisplacedBlockForTwoCheckpointTicks() {
+        assertThat(StreamEntityLogSubstrate.CHECKPOINT_RECLAIM.grace().millis()).as("two checkpoint ticks")
+                                                                                .isGreaterThanOrEqualTo(2 * AetherNode.ENTITY_CHECKPOINT_INTERVAL.millis());
+        var substrate = StreamEntityLogSubstrate.streamEntityLogSubstrate(manager,
+                                                                          (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0, true),
+                                                                          null,
+                                                                          new SegmentIndex(),
+                                                                          EvictionListener.NOOP,
+                                                                          storage,
+                                                                          kv,
+                                                                          this::apply);
+        var displaced = save(substrate, 0, 1L, snapshot("v1"), Option.none());
+
+        save(substrate, 0, 2L, snapshot("v2"), Option.none());
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(readable(displaced)).as("inside the production grace").isTrue();
     }
 
     private EntityLogSubstrate substrate(CheckpointReclaim reclaim) {
