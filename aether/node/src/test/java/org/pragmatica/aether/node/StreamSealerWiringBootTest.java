@@ -104,13 +104,14 @@ class StreamSealerWiringBootTest {
     }
 
     /// Know 73fd8d9759, a SOURCE tripwire for what the boot test cannot force (a sink slow enough to outlast the rest of the
-    /// stop): the stop sequence runs only after the stop seal, and the partition manager closes the WALs only after it.
+    /// stop): the stop sequence runs only after the stop seal, and the partition manager closes the WALs, followed by the
+    /// replication shutdown (#932), only after it.
     @Test
     void stop_closesTheWalsAndRunsTheStopSequence_onlyAfterTheStopSeal() {
         var source = AssemblySource.spaced();
 
         assertThat(source).containsOnlyOnce("streamSegmentSealer.stopSealed(SEALER_STOP_FLUSH_BOUND) .map(this::closeStreamPartitions);")
-                          .containsOnlyOnce("private Unit closeStreamPartitions(Unit sealed) { streamPartitionManager.close();")
+                          .containsOnlyOnce("private Unit closeStreamPartitions(Unit sealed) { streamPartitionManager.close(); streamReplicationShutdown.run();")
                           .containsOnlyOnce("streamPartitionManager.close();")
                           .containsOnlyOnce("backupFlushed.flatMap(() -> streamsStopped) .flatMap(() -> NodeStopSequence.run(");
     }

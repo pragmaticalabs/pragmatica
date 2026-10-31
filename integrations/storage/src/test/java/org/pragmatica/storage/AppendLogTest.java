@@ -217,6 +217,25 @@ class AppendLogTest {
             wal.close();
         }
 
+        /// A record larger than the scan buffer is CRC-checked in several chunks and delivered whole, and so is the record
+        /// after it. Red under "the CRC covers only the first chunk" and under "a chunk is not capped at the buffer".
+        @Test
+        void replay_aRecordLargerThanTheScanBuffer_isDeliveredWhole() {
+            var wal = open("large-record.wal");
+            var big = new byte[3 * AppendLog.REPLAY_BUFFER_BYTES + 17];
+
+            new java.util.Random(7).nextBytes(big);
+            wal.write(0L, big, 1L).unwrap();
+            wal.write(1L, new byte[PAYLOAD], 2L).unwrap();
+            wal.commit(0).await();
+
+            var records = replayAll(wal, -1L);
+
+            assertThat(offsetsOf(records)).containsExactly(0L, 1L);
+            assertThat(records.getFirst().payload()).isEqualTo(big);
+            wal.close();
+        }
+
         private AppendLog logOf(String name, int records) {
             var wal = open(name);
 

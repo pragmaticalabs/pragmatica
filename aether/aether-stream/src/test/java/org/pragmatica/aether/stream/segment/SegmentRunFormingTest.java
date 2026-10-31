@@ -689,9 +689,11 @@ class SegmentRunFormingTest {
     @Nested
     class GracefulStop {
         /// Without a WAL the heap copy is the only holder, so the stop must wait for the seal in flight AND seal the backlog
-        /// behind it, on every partition, before it resolves; nothing is reported. Red under "the stop does not wait for
-        /// the seals" (`flushAll` answers at once), under "each partition seals at most the run it starts" (the backlog
-        /// behind the in-flight seal stays unsealed) and under "a landed seal does not settle the stop".
+        /// behind it, on every partition, before it resolves; nothing is reported. A run that landed BEFORE the stop emptied
+        /// every queue once, which must not count as the stop's flush. Red under "the stop does not wait for the seals"
+        /// (`flushAll` answers at once), under "each partition seals at most the run it starts" (the backlog behind the
+        /// in-flight seal stays unsealed), under "one partition's empty queue settles the stop", under "an empty sealer
+        /// settles the flush before the stop asks" and under "a landed seal does not settle the stop".
         @Test
         void stopSealed_withASealInFlightAndABacklogBehindIt_withoutAWal_sealsEverythingBeforeItResolves() {
             var sink = RecordingSink.holding();
@@ -701,20 +703,24 @@ class SegmentRunFormingTest {
             sealer.operatorWarnings(OperatorWarningSink.handingOffTo(raised::add), "node-a");
             LongStream.rangeClosed(0, 2).forEach(offset -> evict(sealer, offset, offset));
             awaitCondition(() -> sink.calls() == 1);
-            LongStream.rangeClosed(3, 4).forEach(offset -> evict(sealer, offset, offset));
+            sink.succeed(0);
+            awaitCondition(() -> sealer.lowestUnsealed(STREAM, PARTITION).isEmpty());
+            LongStream.rangeClosed(3, 5).forEach(offset -> evict(sealer, offset, offset));
+            awaitCondition(() -> sink.calls() == 2);
+            LongStream.rangeClosed(6, 7).forEach(offset -> evict(sealer, offset, offset));
             sealer.onEviction(STREAM, 1, events(0, 1));
 
             var stopped = sealer.stopSealed(timeSpan(10).seconds());
 
-            awaitCondition(() -> sink.calls() == 2);
-            sink.succeed(sink.callFor(1));
-            assertNoSealFor(sink, 2, "partition 0's backlog waits behind its seal in flight");
-            assertThat(stopped.isResolved()).as("the stop waits for the seal in flight").isFalse();
-            sink.succeed(0);
             awaitCondition(() -> sink.calls() == 3);
-            assertThat(range(sink.segment(2))).as("the backlog behind it, sealed by the stop").isEqualTo(List.of(3L, 4L));
+            sink.succeed(sink.callFor(1));
+            assertNoSealFor(sink, 3, "partition 0's backlog waits behind its seal in flight");
+            assertThat(stopped.isResolved()).as("the stop waits for the seal in flight").isFalse();
+            sink.succeed(1);
+            awaitCondition(() -> sink.calls() == 4);
+            assertThat(range(sink.segment(3))).as("the backlog behind it, sealed by the stop").isEqualTo(List.of(6L, 7L));
             assertThat(stopped.isResolved()).as("and for the backlog").isFalse();
-            sink.succeed(2);
+            sink.succeed(3);
             stopped.await(timeSpan(2).seconds()).onFailure(cause -> fail(cause.message()));
 
             assertThat(List.of(0, 1)).as("nothing left unsealed when the stop resolved")
@@ -724,9 +730,47 @@ class SegmentRunFormingTest {
             assertThat(raised).as("nothing to report").isEmpty();
         }
 
+        /// A sealer that holds nothing (one partition sealed everything it had) stops at once and reports nothing. Red under
+        /// "`flushAll` does not settle the flush itself" (the stop waits for its bound and reports an empty overrun).
+        @Test
+        void stopSealed_withNothingPending_resolvesAtOnce_andReportsNothing() {
+            var sink = RecordingSink.succeeding();
+            var sealer = sealerWith(sink, sealerThresholds(NEVER_BYTES, 1, HOUR, MERGE));
+            var raised = new CopyOnWriteArrayList<OperatorWarning>();
+
+            sealer.operatorWarnings(OperatorWarningSink.handingOffTo(raised::add), "node-a");
+            evict(sealer, 0, 0);
+            awaitCondition(() -> sealer.lowestUnsealed(STREAM, PARTITION).isEmpty());
+
+            sealer.stopSealed(timeSpan(10).seconds())
+                  .await(timeSpan(1).seconds())
+                  .onFailure(cause -> fail(cause.message()));
+            LockSupport.parkNanos(QUIET_MS * 1_000_000L);
+            assertThat(raised).as("nothing to report").isEmpty();
+        }
+
+        /// A stream deleted during the stop takes its pending runs with it; when they were the last thing held, the stop
+        /// resolves then, not at its bound. Red under "a deletion does not settle the stop".
+        @Test
+        void stopSealed_whenTheStreamHoldingTheLastPendingRunIsDeleted_resolvesWithoutWaitingForTheBound() {
+            var sink = RecordingSink.holding();
+            var sealer = sealerWith(sink, sealerThresholds(NEVER_BYTES, NEVER_EVENTS, HOUR, MERGE));
+
+            evict(sealer, 0, 1);
+
+            var stopped = sealer.stopSealed(timeSpan(10).seconds());
+
+            awaitCondition(() -> sink.calls() == 1);
+            sealer.onStreamDeleted(STREAM);
+            stopped.await(timeSpan(2).seconds()).onFailure(cause -> fail(cause.message()));
+            sink.open();
+        }
+
         /// A sink that stalls past the bound: the stop resolves at the deadline, the sealer is closed, and the operator
-        /// warning names each partition with its unsealed range and whether its WAL holds it. Red under "no bound" (the stop
-        /// waits for the sink), under "an overrun is not reported" and under "the report names no range".
+        /// warning names each partition still holding something, with its range from its lowest pending offset to its
+        /// highest and whether its WAL holds it; a partition that sealed everything is not named. Red under "no bound" (the
+        /// stop waits for the sink), under "an overrun is not reported", under "the report names no range", under "the range
+        /// ends at the first entry" and under "an empty queue is reported" (the report fails on it).
         @Test
         void stopSealed_whenTheSinkStallsPastTheDeadline_resolvesAtIt_andRaisesTheUnsealedRanges(@TempDir Path walDir) {
             var sink = RecordingSink.holding();
@@ -734,8 +778,14 @@ class SegmentRunFormingTest {
             var raised = new CopyOnWriteArrayList<OperatorWarning>();
 
             sealer.operatorWarnings(OperatorWarningSink.handingOffTo(raised::add), "node-a");
+            sealer.onEviction(STREAM, 2, events(20, 21));
+            assertThat(sealer.holdsUnsealedForRead(STREAM, 2, 20)).isTrue();
+            awaitCondition(() -> sink.calls() == 1);
+            sink.succeed(0);
+            awaitCondition(() -> sealer.lowestUnsealed(STREAM, 2).isEmpty());
             sealer.walAttached(STREAM, 1, walWith(walDir, 10, 12));
-            evict(sealer, 0, 4);
+            evict(sealer, 0, 2);
+            evict(sealer, 3, 4);
             sealer.onEviction(STREAM, 1, events(10, 12));
 
             var started = System.nanoTime();
@@ -751,7 +801,8 @@ class SegmentRunFormingTest {
             awaitCondition(() -> raised.size() == 1);
             assertThat(raised.getFirst().code()).isEqualTo(OperatorWarningCode.STREAM_SEAL_STOP_INCOMPLETE);
             assertThat(raised.getFirst().subject()).isEqualTo("node node-a stream sealer");
-            assertThat(raised.getFirst().message()).contains("300 ms", "runs/0 [0-4] (no WAL)", "runs/1 [10-12] (held by its WAL)");
+            assertThat(raised.getFirst().message()).contains("300 ms", "runs/0 [0-4] (no WAL)", "runs/1 [10-12] (held by its WAL)")
+                                                   .doesNotContain("runs/2");
             sink.open();
         }
     }
