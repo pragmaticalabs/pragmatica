@@ -234,8 +234,8 @@ public final class WaveExecutor {
     /// with that name ([ComputeProvider#honoursOperationId], Hetzner today); on any other provider a late-landing original plus a re-issue
     /// would be two live servers for one node id, so there the remainder mints fresh ids as before (v-g1 F2).
     private static Supplier<String> idsFor(ComputeProvider compute,
-                                                              ApplyRecorder recorder,
-                                                              ClusterBootstrapConfig desired) {
+                                           ApplyRecorder recorder,
+                                           ClusterBootstrapConfig desired) {
         var minted = WaveNodeProvisioning.mintedIds(desired.cluster().name());
 
         return compute.honoursOperationId()
