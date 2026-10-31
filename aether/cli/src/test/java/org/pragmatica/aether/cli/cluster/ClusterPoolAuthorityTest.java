@@ -38,7 +38,10 @@ class ClusterPoolAuthorityTest {
             asked.add(route);
 
             return cluster.getOrDefault(route, Causes.cause("no answer for " + route).result());
-        }, pauses::add, clock::get, Duration.ofSeconds(100), Duration.ofSeconds(10));
+        }, duration -> {
+            pauses.add(duration);
+            clock.addAndGet(duration.toMillis());
+        }, clock::get, Duration.ofSeconds(100), Duration.ofSeconds(10));
     }
 
     private void answer(ManagementRoute route, String json) {
