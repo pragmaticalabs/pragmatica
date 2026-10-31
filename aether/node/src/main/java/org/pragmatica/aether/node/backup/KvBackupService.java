@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
+import java.util.stream.Stream;
 import java.util.regex.Pattern;
 
 import org.pragmatica.aether.node.ClusterIncarnation;
@@ -31,6 +32,7 @@ import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -56,8 +58,9 @@ import static org.pragmatica.lang.Result.success;
 /// burst of changes is one commit and a continuous stream still lands. A flush whose entry section equals
 /// the last one written commits nothing: a revision that moved only through runtime keys is not a backup.
 ///
-/// **Leadership.** Only the leader flushes. Gaining leadership always runs one flush, so a new leader
-/// closes any gap its predecessor left; losing it stops the worker.
+/// **Leadership.** Only the leader flushes on the debounce. Gaining leadership always runs one flush, so a new
+/// leader closes any gap its predecessor left; losing it stops the worker. A graceful stop is the exception: every
+/// node that holds the full state flushes, leader or not.
 ///
 /// **Ordering and the lineage gate.** Each document carries `(lineage, incarnation, revision)` from the
 /// committed cluster incarnation and the KV committed revision; [BackupDecision] decides against the head
@@ -68,14 +71,27 @@ import static org.pragmatica.lang.Result.success;
 /// successful push carries every pending commit.
 ///
 /// **Graceful stop.** [#stopFlushed] runs one final flush on the worker before the worker is released, so
-/// changes still inside the debounce window reach the backup before the stop completes. The flush is bounded
-/// by a deadline; one that fails or times out is reported ([Code#BACKUP_STOP_FLUSH_FAILED]) and the stop
-/// proceeds. A crash gets no such flush: the backup then trails by up to `maxDelay + quiet` (#1569).
+/// changes still inside the debounce window reach the backup before the stop completes. EVERY node that holds
+/// the full state runs it, leader or not (#2506): a whole-cluster stop demotes the leader as its peers go, and the
+/// node that acked a write need not be the leader. Each node decides its own state against the head and pushes
+/// fast-forward only, so the head never moves backwards within an incarnation id; a head strictly ahead in the
+/// same incarnation already contains this node's state and COVERS it, and a rejected push is decided again until
+/// the deadline or the stop, whichever comes first (a second rejection against a head that did not move is permanent: a real
+/// race always moves it). A flush that fails, times out or finds the head at a higher incarnation is reported
+/// ([Code#BACKUP_STOP_FLUSH_FAILED]) and the stop proceeds. A crash gets no such flush: the backup then trails by
+/// up to `maxDelay + quiet` (#1569).
+///
+/// Guarantee: a write acked at revision `r` is in the head after every member has stopped, gracefully or not, if at
+/// least one node that applied `r` completed its stop flush as written, unchanged or covered (a node that crashed
+/// contributes nothing and does not stand in the way) [unverified: no crash primitive in Ember]. It rests on a
+/// revision being a function of the applied log, so two full-state nodes at one revision hold the same backed-up entries.
 ///
 /// **Warnings** are transition-only ([BackupWarning]).
 public final class KvBackupService {
     private static final Logger LOG = LoggerFactory.getLogger(KvBackupService.class);
     private static final String SUBJECT_PREFIX = "kv backup";
+    // The identity of a remote with no backup branch yet: two pushers creating it at once is a race like any other.
+    private static final String NO_REMOTE_HEAD = "no remote head";
     private static final Cause NO_STOP_FLUSH_MARKER = Causes.cause("no stop-time flush failure is open");
 
     /// The subject every backup commit carries ([#commitMessage]): `kv backup lineage=… incarnation=… revision=…`.
@@ -245,39 +261,117 @@ public final class KvBackupService {
         onStop.run();
     }
 
-    /// A graceful stop: flush what the debounce is still holding, then [#stop]. The leader commits the current
-    /// state and pushes it, bounded by `deadline`; a non-leader has nothing to flush. A flush that fails or
-    /// overruns is reported as [Code#BACKUP_STOP_FLUSH_FAILED] and logged, and the stop proceeds all the same:
-    /// a backup that cannot be reached must not hold a node's shutdown.
+    /// Whether a node holds the full backed-up state. A worker holds the metadata projection or, under the live replica feed, a replica
+    /// without the cluster configuration (`ReplicaFilter`), so its snapshot at a given revision is a strict subset of a core's: it must never write.
+    public enum Replica {
+        FULL,
+        PARTIAL
+    }
+
+    /// A graceful stop of a full-state node ([#stopFlushed(TimeSpan, Replica)]).
+    public Promise<Unit> stopFlushed(TimeSpan deadline) {
+        return stopFlushed(deadline, Replica.FULL);
+    }
+
+    /// A graceful stop: flush what the debounce is still holding, then [#stop]. Every node with the full state runs one
+    /// bounded flush of its own state, whether or not it leads (see the class comment); a [Replica#PARTIAL] node has no
+    /// authority over the backup and only stops. A flush that fails or overruns is reported as
+    /// [Code#BACKUP_STOP_FLUSH_FAILED] and logged, and the stop proceeds all the same: a backup that cannot be reached must
+    /// not hold a node's shutdown.
     ///
     /// FER: the stop is not undone by a lost flush — the node is going down either way. Guarantee earned: stop
     /// always completes within `deadline` plus the stop itself; the backup then trails by the unflushed window,
-    /// which the warning says. Mechanism: a single attempt on the worker, no retry (the node is stopping).
-    public Promise<Unit> stopFlushed(TimeSpan deadline) {
+    /// which the warning says. Mechanism: a single bounded attempt on the worker, no retry beyond the re-decide after a
+    /// rejected push (the node is stopping).
+    public Promise<Unit> stopFlushed(TimeSpan deadline, Replica replica) {
         return stopped.get()
                ? Promise.unitPromise()
-               : flushBounded(deadline).onResultRun(this::stop);
+               : flushBounded(deadline, replica).onResultRun(this::stop);
     }
 
-    private Promise<Unit> flushBounded(TimeSpan deadline) {
-        return onWorker(this::flushForStop).timeout(deadline)
+    private Promise<Unit> flushBounded(TimeSpan deadline, Replica replica) {
+        return replica == Replica.FULL
+               ? boundedFlush(deadline,
+                              clock.getAsLong() + deadline.millis())
+               : skipPartialReplica();
+    }
+
+    /// `deadlineAt` is fixed when the stop is requested, not when the worker gets to it: the worker's re-deciding and the caller's timeout end together.
+    private Promise<Unit> boundedFlush(TimeSpan deadline, long deadlineAt) {
+        return onWorker(() -> flushForStop(deadlineAt)).timeout(deadline)
                        .recover(this::absorbStopFlushFailure);
     }
 
-    /// One pass as the leader, whether or not the debounce had fired; a clean backup (nothing changed since
-    /// the last write, nothing queued for push) ends in `UNCHANGED`. Worker thread only.
-    private Result<Unit> flushForStop() {
-        return leader.get()
-               ? attemptFlush(2).onSuccess(this::settle)
-                             .onFailure(this::onCommitFailure)
-                             .flatMap(KvBackupService::landed)
-               : Result.unitResult();
+    /// A role exclusion, not a skipped flush: a partial replica never had authority over the backup, so this is a log line, not a warning.
+    private Promise<Unit> skipPartialReplica() {
+        return Promise.unitPromise().onSuccessRun(() -> LOG.info("KV backup stop flush not run: this node holds a partial replica (a worker), which has no authority over the backup"));
+    }
+
+    /// One pass of this node's own state, whether or not it leads and whether or not the debounce had fired; a clean backup
+    /// (nothing changed since the last write, nothing queued for push) ends in `UNCHANGED`. Worker thread only.
+    private Result<Unit> flushForStop(long deadlineAt) {
+        return stopPasses(deadlineAt).onFailure(this::onCommitFailure)
+                         .flatMap(this::settleUnlessCovered);
+    }
+
+    /// Deciding again after a rejected push is a loop, not a recursion: each pass is one attempt, and the loop ends on a landed or failed push, on the
+    /// deadline and on the stop (the worker is also interrupted by it). A rejection against the same remote head as the one before is permanent, since
+    /// a real race always moves the head; its outcome is the push failure with git's own words.
+    private Result<Outcome> stopPasses(long deadlineAt) {
+        return Stream.iterate(Pass.pass(attemptFlush(1),
+                                        Option.none()),
+                              previous -> Pass.pass(attemptFlush(1),
+                                                    previous.rejectedAgainst()))
+                     .dropWhile(pass -> redecides(pass, deadlineAt))
+                     .findFirst()
+                     .map(Pass::attempt)
+                     .orElseGet(() -> success(Outcome.PUSH_FAILED));
+    }
+
+    private boolean redecides(Pass pass, long deadlineAt) {
+        return pass.rejectedAgainst()
+                   .isPresent()
+               && !stopped.get()
+               && clock.getAsLong() < deadlineAt;
+    }
+
+    /// One attempt of the stop path, and the remote head it was rejected against, when it was.
+    private record Pass(Result<Outcome> attempt, Option<String> rejectedAgainst) {
+        static Pass pass(Result<Outcome> attempt, Option<String> previous) {
+            var rejectedAt = attempt.option().flatMap(Outcome::rejectedAt);
+
+            return rejectedAt.isPresent() && rejectedAt.equals(previous)
+                   ? new Pass(attempt.map(Outcome::permanent), Option.none())
+                   : new Pass(attempt, rejectedAt);
+        }
+    }
+
+    private Result<Unit> settleUnlessCovered(Outcome outcome) {
+        return isCovered(outcome)
+               ? Result.unitResult()
+               : Result.success(outcome)
+                       .onSuccess(this::settle)
+                       .flatMap(KvBackupService::landed);
+    }
+
+    /// A head strictly ahead within this node's own incarnation (same lineage, and not a fork, so the same incarnation id)
+    /// contains this node's state; a head at a higher incarnation is another life of the lineage and does not.
+    private static boolean isCovered(Outcome outcome) {
+        return outcome.kind() == OutcomeKind.STALE && Option.all(outcome.head(),
+                                                                 outcome.ours())
+                                                            .map(KvBackupService::sameIncarnation)
+                                                            .or(false);
+    }
+
+    private static boolean sameIncarnation(BackupHeader head, BackupHeader ours) {
+        return head.incarnation() == ours.incarnation();
     }
 
     private static Result<Unit> landed(Outcome outcome) {
         return switch (outcome.kind()) {
             case WRITTEN, UNCHANGED, AWAITING_GENESIS -> Result.unitResult();
-            default -> StopFlushIncomplete.FACTORY.apply(outcome.kind()).result();
+            default -> StopFlushIncomplete.FACTORY.apply(outcome.kind(),
+                                                         outcome.detail().map(text -> ": " + text).or("")).result();
         };
     }
 
@@ -315,9 +409,9 @@ public final class KvBackupService {
     }
 
     /// The flush ran but its state did not reach the backup (head ahead, gated, forked, unreadable, push failed).
-    record StopFlushIncomplete(OutcomeKind outcome, String message) implements Cause {
-        static final Fn1<StopFlushIncomplete, OutcomeKind> FACTORY = Causes.forOneValue("the final flush ended as %s",
-                                                                                        StopFlushIncomplete::new);
+    record StopFlushIncomplete(OutcomeKind outcome, String detail, String message) implements Cause {
+        static final Fn2<StopFlushIncomplete, OutcomeKind, String> FACTORY = Causes.forTwoValues("the final flush ended as %s%s",
+                                                                                                 StopFlushIncomplete::new);
     }
 
     public Status status() {
@@ -753,7 +847,21 @@ public final class KvBackupService {
 
         LOG.debug("KV backup push failed: {}", cause.message());
 
-        return success(Outcome.PUSH_FAILED);
+        return success(pushNotLanded(cause));
+    }
+
+    /// A rejection remembers the remote head it was rejected against (the fetched tracking ref is still the one this attempt decided on), so a caller
+    /// that decides again can tell a race, which moves the head, from a refusal that repeats against the same one.
+    private String rejectedHeadId() {
+        return repository.remoteHeadCommit()
+                         .or(Option.none())
+                         .or(NO_REMOTE_HEAD);
+    }
+
+    private Outcome pushNotLanded(Cause cause) {
+        return cause instanceof BackupRepositoryError.PushRejected
+               ? Outcome.pushRejected(rejectedHeadId(), cause.message())
+               : Outcome.pushFailed(cause.message());
     }
 
     // --- outcome handling ---
@@ -869,6 +977,11 @@ public final class KvBackupService {
 
     @Contract
     private void onCommitFailure(Cause cause) {
+        if (stopped.get() || Thread.currentThread().isInterrupted()) {
+            // the stop's own doing (a torn-down node, an interrupted git): nothing is wrong with the repository
+            return;
+        }
+
         enter(Status.COMMIT_FAILED,
               "the local backup repository could not take a commit: " + cause.message()
              + "; check the [backup] path's disk and permissions and that git is installed");
@@ -959,7 +1072,11 @@ public final class KvBackupService {
         PUSH_FAILED
     }
 
-    record Outcome(OutcomeKind kind, Option<BackupHeader> head, Option<BackupHeader> ours) {
+    record Outcome(OutcomeKind kind,
+                   Option<BackupHeader> head,
+                   Option<BackupHeader> ours,
+                   Option<String> detail,
+                   Option<String> rejectedAt) {
         static final Outcome WRITTEN = simple(OutcomeKind.WRITTEN);
         static final Outcome UNCHANGED = simple(OutcomeKind.UNCHANGED);
         static final Outcome AWAITING_GENESIS = simple(OutcomeKind.AWAITING_GENESIS);
@@ -967,19 +1084,36 @@ public final class KvBackupService {
         static final Outcome PUSH_FAILED = simple(OutcomeKind.PUSH_FAILED);
 
         private static Outcome simple(OutcomeKind kind) {
-            return new Outcome(kind, Option.none(), Option.none());
+            return new Outcome(kind, Option.none(), Option.none(), Option.none(), Option.none());
+        }
+
+        static Outcome pushFailed(String detail) {
+            return new Outcome(OutcomeKind.PUSH_FAILED, Option.none(), Option.none(), Option.some(detail), Option.none());
+        }
+
+        /// A push that lost to a moved remote: still a failed push to every consumer, plus the remote head it lost against.
+        static Outcome pushRejected(String rejectedAt, String detail) {
+            return new Outcome(OutcomeKind.PUSH_FAILED,
+                               Option.none(),
+                               Option.none(),
+                               Option.some(detail),
+                               Option.some(rejectedAt));
+        }
+
+        Outcome permanent() {
+            return new Outcome(kind, head, ours, detail, Option.none());
         }
 
         static Outcome stale(BackupHeader head, BackupHeader ours) {
-            return new Outcome(OutcomeKind.STALE, Option.some(head), Option.some(ours));
+            return new Outcome(OutcomeKind.STALE, Option.some(head), Option.some(ours), Option.none(), Option.none());
         }
 
         static Outcome gated(BackupHeader head, BackupHeader ours) {
-            return new Outcome(OutcomeKind.GATED, Option.some(head), Option.some(ours));
+            return new Outcome(OutcomeKind.GATED, Option.some(head), Option.some(ours), Option.none(), Option.none());
         }
 
         static Outcome forked(BackupHeader head, BackupHeader ours) {
-            return new Outcome(OutcomeKind.FORKED, Option.some(head), Option.some(ours));
+            return new Outcome(OutcomeKind.FORKED, Option.some(head), Option.some(ours), Option.none(), Option.none());
         }
     }
 }
