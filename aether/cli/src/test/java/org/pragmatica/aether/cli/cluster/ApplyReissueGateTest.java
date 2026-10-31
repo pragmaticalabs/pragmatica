@@ -96,7 +96,7 @@ class ApplyReissueGateTest {
         assertThat(project.accepted).as("the provider DID create it").containsExactly(OP);
         assertThat(rowOf(recorder, NODE).state()).isEqualTo(ApplyResource.State.INTENDED);
 
-        project.delete(NODE);   // somebody (operator, a sweep, a cost script) deletes the server before the resume looks
+        project.delete(OP);   // somebody (operator, a sweep, a cost script) deletes the server before the resume looks
 
         ApplyReconciler.reconcileIntents(recorder, name -> Result.success(hetzner)).unwrap();
         assertThat(rowOf(recorder, NODE).state()).isEqualTo(ApplyResource.State.ABSENT);
@@ -113,13 +113,13 @@ class ApplyReissueGateTest {
         ApplyReconciler.pause = _ -> {};
         var made = WaveNodeProvisioning.provisionCloud(hetzner, parse(), source(), NodeRole.WORKER, 1, INPUTS, () -> NODE, recorder);
         assertThat(made.isSuccess()).isTrue();
-        project.delete(NODE);
+        project.delete(OP);
         project.accepted.clear();
         // what WaveExecutor.executeAddition does on a resume of this action: remainder = count - recordedFor(key)   [private; simulated, stated]
         int remainder = Math.max(0, 1 - recorder.recordedFor(LedgerDirExtension.TEST_ACTION));
         assertThat(remainder).as("CREATED counts as recorded: nothing to create").isZero();
         var report = ApplyReconciler.audit(recorder, CLUSTER, name -> Result.success(hetzner)).unwrap();
-        assertThat(report.gone()).containsExactly(OP);
+        assertThat(report.gone()).containsExactly(NODE);
         assertThat(project.accepted).isEmpty();
         // a SECOND resume of the same (still IN_PROGRESS) action: GONE no longer counts -> remainder 1 -> a NEW id (never NODE)
         int remainder2 = Math.max(0, 1 - recorder.recordedFor(LedgerDirExtension.TEST_ACTION));
