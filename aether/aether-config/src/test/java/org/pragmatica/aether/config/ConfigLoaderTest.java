@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -813,6 +814,48 @@ class ConfigLoaderTest {
         ConfigLoader.loadFromString(withoutBound)
             .onFailure(cause -> Assertions.fail(cause.message()))
             .onSuccess(config -> assertThat(config.streaming().isrLagMax()).isEqualTo(StreamingConfig.DEFAULT_ISR_LAG_MAX));
+    }
+
+    /// #2201 C-02 (spec 4.2): the four run-forming sealer thresholds are `[streaming]` keys; unset, each keeps its default (all four
+    /// are guesses, see the constants); a malformed value is refused by name, never defaulted (#1455).
+    @Test
+    void loadFromString_sealRunThresholds_parsed_defaultToTheGuesses_andAMalformedValueIsRefused() {
+        var header = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [streaming]
+            """;
+
+        ConfigLoader.loadFromString(header + """
+                                             seal_run_bytes = "2MB"
+                                             seal_run_events = 100
+                                             seal_run_age = "2s"
+                                             seal_merge_bytes = "8MB"
+                                             """)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.streaming().sealRunBytes()).isEqualTo(2L << 20);
+                assertThat(config.streaming().sealRunEvents()).isEqualTo(100);
+                assertThat(config.streaming().sealRunAge().millis()).isEqualTo(2_000L);
+                assertThat(config.streaming().sealMergeBytes()).isEqualTo(8L << 20);
+            });
+        ConfigLoader.loadFromString(header + "reshuffle_concurrency = 2\n")
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.streaming().sealRunBytes()).isEqualTo(StreamingConfig.DEFAULT_SEAL_RUN_BYTES);
+                assertThat(config.streaming().sealRunEvents()).isEqualTo(StreamingConfig.DEFAULT_SEAL_RUN_EVENTS);
+                assertThat(config.streaming().sealRunAge()).isEqualTo(StreamingConfig.DEFAULT_SEAL_RUN_AGE);
+                assertThat(config.streaming().sealMergeBytes()).isEqualTo(StreamingConfig.DEFAULT_SEAL_MERGE_BYTES);
+            });
+        assertThat(StreamingConfig.DEFAULT_SEAL_RUN_BYTES).isEqualTo(1L << 20);
+        assertThat(StreamingConfig.DEFAULT_SEAL_RUN_EVENTS).isEqualTo(4096);
+        assertThat(StreamingConfig.DEFAULT_SEAL_RUN_AGE.millis()).isEqualTo(5_000L);
+        assertThat(StreamingConfig.DEFAULT_SEAL_MERGE_BYTES).isEqualTo(4L << 20);
+        for (var bad : List.of("seal_run_bytes = \"lots\"", "seal_run_events = \"many\"", "seal_run_age = \"soon\"", "seal_merge_bytes = \"big\"")) {
+            assertThat(ConfigLoader.loadFromString(header + bad + "\n").isFailure()).as("%s is refused, never defaulted (#1455)", bad).isTrue();
+        }
     }
 
     /// #2080: the promotion escape bound is configurable, defaults to 120 s (a guess, see the default's doc) and may not be below the

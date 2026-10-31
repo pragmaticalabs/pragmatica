@@ -90,6 +90,40 @@ class AppendLogTest {
             assertThat(wal.lastOffset()).isEqualTo(99L);
             wal.close();
         }
+
+        /// NT-21 (#2201 C-02): a spilled seal reads its range through `replay`, which used to read the whole file into one
+        /// array (O(file) memory, and a 2 GiB limit). On a ~32 MiB log a replay of its last record allocates a small
+        /// constant -- a bounded scan buffer and the one delivered payload -- not the file; and a full replay still
+        /// delivers every record in order with its fields.
+        @Test
+        void replay_ofALargeLog_allocatesABoundedBuffer_notTheFile() throws Exception {
+            var file = dir.resolve("large.wal");
+            var wal = AppendLog.open(file).unwrap();
+            var big = new byte[4096];
+
+            for (var offset = 0L; offset < 8_192; offset++) {
+                wal.write(offset, big, 1L + offset).unwrap();
+            }
+            wal.commit(0).await();
+
+            var threads = (com.sun.management.ThreadMXBean) java.lang.management.ManagementFactory.getThreadMXBean();
+            var thread = Thread.currentThread().threadId();
+            var before = threads.getThreadAllocatedBytes(thread);
+            var tail = replayAll(wal, 8_190L);
+            var allocated = threads.getThreadAllocatedBytes(thread) - before;
+
+            assertThat(Files.size(file)).isGreaterThan(32L * 1024 * 1024);
+            assertThat(offsetsOf(tail)).containsExactly(8_191L);
+            assertThat(allocated).as("bytes allocated by a replay of the last record of a %d byte log", Files.size(file))
+                                 .isLessThan(1024L * 1024);
+
+            var all = replayAll(wal, -1L);
+
+            assertThat(offsetsOf(all)).containsExactlyElementsOf(LongStream.range(0, 8_192).boxed().toList());
+            assertThat(all.get(4_000).timestampMillis()).isEqualTo(4_001L);
+            assertThat(all.get(4_000).payload()).hasSize(4096);
+            wal.close();
+        }
     }
 
     @Nested

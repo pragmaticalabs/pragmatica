@@ -14,7 +14,6 @@ import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
 
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
@@ -27,14 +26,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.stream.segment.SegmentSealer.segmentSealer;
 
-/// Streams audit C-02 (#2201): with a full ring, every append evicts about one event, and every eviction becomes its own sealed segment: one
-/// `SegmentSink.seal` (in production two fsyncs and a DHT quorum put) per event, and no merge anywhere in `SegmentSealer`, not even of the backlog
-/// that piles up while one seal is in flight. This counts the segments the real ring and the real sealer produce per `APPENDS` appends.
+/// Streams audit C-02 (#2201): with a full ring, every append evicts about one event. Until the run-forming sealer (spec 4.2, PR-1a) every
+/// eviction became its own sealed segment: one `SegmentSink.seal` (in production two fsyncs and a DHT quorum put) per event, and no merge, not
+/// even of the backlog that piled up while one seal was in flight. This counts the segments the real ring and the real sealer, built with the
+/// DEFAULT thresholds, produce per `APPENDS` appends.
 ///
-/// The REAL assertion states a floor, not the overhaul's design: at least [MIN_EVENTS_PER_SEGMENT] evicted events per sealed segment on average.
-/// The overhaul (1b-perf: drain-time merge plus a size or age accumulation threshold of 1-16 MiB or 1-5 s) coalesces far more than that for
-/// 8-byte events; the figure is a deliberately low bar, a guess marked as one, so the test does not pin the threshold. TRIPWIRE (enabled, GREEN)
-/// beside the REAL assertion (`@Disabled`, RED today), once for a sink that answers at once and once for a slow sink, where a backlog exists.
+/// The assertion states a floor, not the design: at least [MIN_EVENTS_PER_SEGMENT] evicted events per sealed segment on average (the design
+/// coalesces far more; `SegmentRunFormingTest` pins the thresholds). Once for a sink that answers at once, once for a slow sink, where a
+/// backlog exists, and once through the WAL-backed admission. The final partial run waits for `seal_run_age` (5 s) inside the 30 s bound.
 class SegmentSealingGranularityTripwireTest {
     private static final String STREAM = "granular";
     private static final int PARTITION = 0;
@@ -43,7 +42,6 @@ class SegmentSealingGranularityTripwireTest {
     private static final int EVICTED = APPENDS - RING_EVENTS;
     private static final int MIN_EVENTS_PER_SEGMENT = 4;
     private static final long AWAIT_MS = 30_000;
-    private static final String ENABLE = "C-02 tripwire: eviction no longer seals one segment per event; delete this tripwire and enable the real assertion beside it (#2201)";
 
     @TempDir
     Path walDir;
@@ -57,53 +55,29 @@ class SegmentSealingGranularityTripwireTest {
     }
 
     @Test
-    void fullRing_sealsOneSegmentPerEvictedEvent_tripwire() {
-        sealAfterAppends(0);
-
-        assertThat(segments.stream().mapToInt(SealedSegment::eventCount).sum()).as("control: every evicted event was sealed exactly once").isEqualTo(EVICTED);
-        assertThat(segments).as(ENABLE).hasSize(EVICTED);
-    }
-
-    @Disabled("C-02 real assertion, RED today: evicted events must be sealed in coalesced segments, at least 4 per segment on average (#2201)")
-    @Test
     void fullRing_coalescesEvictedEventsIntoFewerSegments() {
         sealAfterAppends(0);
 
-        assertThat(segments.size() * MIN_EVENTS_PER_SEGMENT).isLessThanOrEqualTo(EVICTED);
+        assertThat(segments.size() * MIN_EVENTS_PER_SEGMENT).as("%d segments x %d events for %d evicted", segments.size(), MIN_EVENTS_PER_SEGMENT, EVICTED)
+                                                         .isLessThanOrEqualTo(EVICTED);
     }
 
-    @Test
-    void fullRing_withASlowSink_stillSealsOneSegmentPerEvictedEvent_tripwire() {
-        sealAfterAppends(2);
-
-        assertThat(segments.stream().mapToInt(SealedSegment::eventCount).sum()).as("control: every evicted event was sealed exactly once").isEqualTo(EVICTED);
-        assertThat(segments).as(ENABLE + " (the backlog behind a slow seal is not merged either)").hasSize(EVICTED);
-    }
-
-    @Disabled("C-02 real assertion, RED today: the backlog accumulated behind one slow seal must become the next, larger segment (#2201)")
     @Test
     void fullRing_withASlowSink_mergesTheBacklogBehindASeal() {
         sealAfterAppends(2);
 
-        assertThat(segments.size() * MIN_EVENTS_PER_SEGMENT).isLessThanOrEqualTo(EVICTED);
+        assertThat(segments.size() * MIN_EVENTS_PER_SEGMENT).as("%d segments x %d events for %d evicted", segments.size(), MIN_EVENTS_PER_SEGMENT, EVICTED)
+                                                         .isLessThanOrEqualTo(EVICTED);
     }
 
     /// The WAL-backed entry (`admitSpilling`, what a durable partition takes in production): the same granularity, a different admission path from
-    /// `enqueue`, so a fix confined to the no-WAL path leaves this pair as it is.
-    @Test
-    void fullRingWithAWal_sealsOneSegmentPerEvictedEvent_tripwire() {
-        sealAfterAppends(0, true);
-
-        assertThat(segments.stream().mapToInt(SealedSegment::eventCount).sum()).as("control: every evicted event was sealed exactly once").isEqualTo(EVICTED);
-        assertThat(segments).as(ENABLE + " (WAL-backed admission)").hasSize(EVICTED);
-    }
-
-    @Disabled("C-02 real assertion, RED today: WAL-backed partitions must coalesce evicted events too, at least 4 per segment on average (#2201)")
+    /// `enqueue`, so a fix confined to the no-WAL path would leave this one red.
     @Test
     void fullRingWithAWal_coalescesEvictedEventsIntoFewerSegments() {
         sealAfterAppends(0, true);
 
-        assertThat(segments.size() * MIN_EVENTS_PER_SEGMENT).isLessThanOrEqualTo(EVICTED);
+        assertThat(segments.size() * MIN_EVENTS_PER_SEGMENT).as("%d segments x %d events for %d evicted", segments.size(), MIN_EVENTS_PER_SEGMENT, EVICTED)
+                                                         .isLessThanOrEqualTo(EVICTED);
     }
 
     private void sealAfterAppends(long sealMillis) {

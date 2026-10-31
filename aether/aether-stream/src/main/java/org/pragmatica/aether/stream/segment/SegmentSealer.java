@@ -88,16 +88,14 @@ public final class SegmentSealer implements EvictionListener {
     static final int ERROR_AFTER_FAILURES = 10;
     private static final TimeSpan CYCLE_PAUSE = timeSpan(30).seconds();
 
-    private static final Retry SEAL_RETRY = Retry.retry()
-                                                 .attempts(ERROR_AFTER_FAILURES)
-                                                 .strategy(BackoffStrategy.exponential()
-                                                                          .initialDelay(timeSpan(100).millis())
-                                                                          .maxDelay(CYCLE_PAUSE)
-                                                                          .factor(2.0)
-                                                                          .withJitter());
+    private static final TimeSpan FIRST_RETRY_DELAY = timeSpan(100).millis();
 
     private final SegmentSink sink;
     private final long pendingCapBytes;
+    private final SealerThresholds thresholds;
+    private final Retry sealRetry;
+    private final int cycleAttempts;
+    private final TimeSpan cyclePause;
     private final ConcurrentHashMap<PartitionKey, PendingSeals> pending = new ConcurrentHashMap<>();
     private final AtomicLong pendingBytes = new AtomicLong(0);
     private final AtomicLong sealFailures = new AtomicLong(0);
@@ -112,17 +110,46 @@ public final class SegmentSealer implements EvictionListener {
     private final AtomicBoolean spilling = new AtomicBoolean(false);
     private final ConcurrentHashMap<PartitionKey, AppendLog> wals = new ConcurrentHashMap<>();
 
-    private SegmentSealer(SegmentSink sink, long pendingCapBytes) {
+    private SegmentSealer(SegmentSink sink,
+                          long pendingCapBytes,
+                          SealerThresholds thresholds,
+                          int cycleAttempts,
+                          TimeSpan firstRetryDelay,
+                          TimeSpan cyclePause) {
         this.sink = sink;
         this.pendingCapBytes = pendingCapBytes;
+        this.thresholds = thresholds;
+        this.cycleAttempts = cycleAttempts;
+        this.cyclePause = cyclePause;
+        this.sealRetry = Retry.retry()
+                              .attempts(cycleAttempts)
+                              .strategy(BackoffStrategy.exponential()
+                                                       .initialDelay(firstRetryDelay)
+                                                       .maxDelay(cyclePause)
+                                                       .factor(2.0)
+                                                       .withJitter());
     }
 
     public static SegmentSealer segmentSealer(SegmentSink sink) {
-        return new SegmentSealer(sink, DEFAULT_PENDING_CAP_BYTES);
+        return segmentSealer(sink, DEFAULT_PENDING_CAP_BYTES);
     }
 
     public static SegmentSealer segmentSealer(SegmentSink sink, long pendingCapBytes) {
-        return new SegmentSealer(sink, pendingCapBytes);
+        return segmentSealer(sink, pendingCapBytes, SealerThresholds.defaults());
+    }
+
+    public static SegmentSealer segmentSealer(SegmentSink sink, long pendingCapBytes, SealerThresholds thresholds) {
+        return segmentSealer(sink, pendingCapBytes, thresholds, ERROR_AFTER_FAILURES, FIRST_RETRY_DELAY, CYCLE_PAUSE);
+    }
+
+    /// The retry cycle shortened, for tests that must reach a cycle's end and its pause.
+    static SegmentSealer segmentSealer(SegmentSink sink,
+                                       long pendingCapBytes,
+                                       SealerThresholds thresholds,
+                                       int cycleAttempts,
+                                       TimeSpan firstRetryDelay,
+                                       TimeSpan cyclePause) {
+        return new SegmentSealer(sink, pendingCapBytes, thresholds, cycleAttempts, firstRetryDelay, cyclePause);
     }
 
     /// Take ownership of `events` as one segment and seal it in the background. A partition with a WAL is
@@ -180,6 +207,21 @@ public final class SegmentSealer implements EvictionListener {
                                          .equals(streamName));
 
         return unit();
+    }
+
+    /// Seal every partition's queued run now, whatever its thresholds (node stop). Not yet implemented.
+    public Unit flushAll() {
+        return unit();
+    }
+
+    /// Stop the sealer. Not yet implemented.
+    public Unit close() {
+        return unit();
+    }
+
+    /// Scheduled timers of this sealer that have neither run nor been cancelled.
+    int armedTimers() {
+        return 0;
     }
 
     /// Drain steps that threw — never expected; each is an ERROR and the drain resumes after a pause.
@@ -365,10 +407,10 @@ public final class SegmentSealer implements EvictionListener {
         log.error("Seal drain step failed unexpectedly (drain crash {} on this node); the in-flight flag is released "
                  + "and the partition's pending seals resume in {}: {}",
                   crashes,
-                  CYCLE_PAUSE,
+                  cyclePause,
                   cause.message());
         seals.inFlight().set(false);
-        SharedScheduler.schedule(() -> drain(seals), CYCLE_PAUSE);
+        SharedScheduler.schedule(() -> drain(seals), cyclePause);
     }
 
     /// The re-check after clearing the flag closes the window where a segment was queued after [#sealHead]
@@ -385,7 +427,7 @@ public final class SegmentSealer implements EvictionListener {
     /// index update). The order index-then-release is therefore a data dependency of this chain, not a matter
     /// of which callback happens to be scheduled first.
     private void sealWithRetry(PendingSeals seals, PendingSegment segment) {
-        SEAL_RETRY.execute(() -> attempt(seals, segment))
+        sealRetry.execute(() -> attempt(seals, segment))
                   .map(_ -> released(seals, segment))
                   .onResult(outcome -> hop(seals,
                                            () -> afterAttempt(seals, segment, outcome)));
@@ -502,10 +544,10 @@ public final class SegmentSealer implements EvictionListener {
                   segment.partition(),
                   segment.startOffset(),
                   segment.endOffset(),
-                  ERROR_AFTER_FAILURES,
-                  CYCLE_PAUSE,
+                  cycleAttempts,
+                  cyclePause,
                   cause.message());
-        SharedScheduler.schedule(() -> hop(seals, () -> sealHead(seals)), CYCLE_PAUSE);
+        SharedScheduler.schedule(() -> hop(seals, () -> sealHead(seals)), cyclePause);
 
         return unit();
     }
