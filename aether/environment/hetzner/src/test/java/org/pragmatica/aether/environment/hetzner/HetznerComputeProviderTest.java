@@ -744,18 +744,19 @@ class HetznerComputeProviderTest {
 
         @Test
         void waveNodeGroupWithClusterTag_stampsRealCluster() {
+            // 11 characters: the longest cluster name whose minted ids still name a Hetzner server (<cluster>-<nodeId>, 63 characters)
             // #442 v2b — WaveExecutor now threads the real cluster name into the group tags; this
             // proves that input reaches the VM label via CloudProviderSupport.toContext → provider.
             testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
             var group = NodeGroupConfig.nodeGroupConfig(sourceNameOrDefault("eu-1"), "core", 1, "cx22", "fsn1",
-                                                        Map.of("aether-cluster", "prod-cluster",
+                                                        Map.of("aether-cluster", "prodcluster",
                                                                "aether-source", "eu-1",
                                                                "aether-role", "core"));
 
             CloudProviderSupport.provisionVia(provider, group).await().onFailure(cause -> assertThat(cause).isNull());
 
             assertThat(testClient.lastCreateServerRequest.labels())
-                    .containsEntry("aether-cluster", "prod-cluster")
+                    .containsEntry("aether-cluster", "prodcluster")
                     .containsEntry("aether-role", "core");
         }
 
