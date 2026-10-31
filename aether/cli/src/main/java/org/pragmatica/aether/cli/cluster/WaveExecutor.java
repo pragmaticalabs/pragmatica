@@ -242,7 +242,8 @@ public final class WaveExecutor {
                                                    role,
                                                    count,
                                                    inputs,
-                                                   WaveNodeProvisioning.mintedIds(desired.cluster().name()),
+                                                   WaveNodeProvisioning.reissuedThenMinted(recorder,
+                                                                                           WaveNodeProvisioning.mintedIds(desired.cluster().name())),
                                                    recorder);
     }
 

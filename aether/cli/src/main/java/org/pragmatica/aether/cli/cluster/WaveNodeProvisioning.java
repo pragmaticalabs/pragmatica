@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -20,6 +21,7 @@ import org.pragmatica.aether.environment.CloudProviderSupport;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ClusterSecretSource;
 import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceType;
@@ -128,6 +130,7 @@ sealed interface WaveNodeProvisioning {
         return recorder.intend(nodeId, provider)
                        .flatMap(_ -> answered(compute.provision(spec).await(),
                                               nodeId,
+                                              provider,
                                               recorder))
                        .flatMap(info -> recordCreated(compute, info, nodeId, provider, recorder, labelCheck));
     }
@@ -168,10 +171,46 @@ sealed interface WaveNodeProvisioning {
                : cluster.equals(info.tags().get("aether-cluster")) && applyId.equals(info.tags().get(APPLY_LABEL));
     }
 
-    private static Result<InstanceInfo> answered(Result<InstanceInfo> answer, String nodeId, ApplyRecorder recorder) {
+    private static Result<InstanceInfo> answered(Result<InstanceInfo> answer,
+                                                 String nodeId,
+                                                 String provider,
+                                                 ApplyRecorder recorder) {
         recorder.providerAnswered();
 
-        return answer.mapError(cause -> new CreateUnconfirmed(nodeId, cause));
+        return answer.fold(cause -> unanswered(cause, nodeId, provider, recorder), Result::success);
+    }
+
+    /// G1-f: a create the provider refused, read by what it says. A refused NAME is not a failed create: the provider names the server
+    /// after the node id and refuses a second server with that name, so `AlreadyExists` means the earlier attempt (a lost reply, a racing
+    /// resume) made the server, and it is the answer, but only if it is OURS: the cluster and apply labels are checked here, whatever the
+    /// provider checked. A name held by anything else is refused, typed, and never adopted. Every other failure keeps the row INTENDED.
+    private static Result<InstanceInfo> unanswered(Cause cause, String nodeId, String provider, ApplyRecorder recorder) {
+        return switch (cause) {
+            case EnvironmentError.AlreadyExists existing -> adoptIfOwned(existing.existing(), nodeId, provider, recorder);
+            case EnvironmentError.NameHeldByOther held -> new NameHeld(nodeId, held.holder().value()).result();
+            default -> new CreateUnconfirmed(nodeId, cause).result();
+        };
+    }
+
+    private static Result<InstanceInfo> adoptIfOwned(InstanceInfo existing, String nodeId, String provider, ApplyRecorder recorder) {
+        return ownedBy(provider,
+                       existing,
+                       recorder.snapshot().clusterName().value(),
+                       recorder.applyId())
+               ? success(existing)
+               : new NameHeld(nodeId, existing.id().value()).result();
+    }
+
+    /// The server name of a node's create is held by a server that is not this apply's (another cluster's, another apply's, or one
+    /// without the labels). Nothing was adopted and nothing was created; the row stays INTENDED. Resolve the holder, then `--resume`.
+    record NameHeld(String nodeId, String holder) implements Cause {
+        @Override
+        public String message() {
+            return "The provider refused the create for node " + nodeId
+                 + ": its server name is held by instance " + holder
+                 + ", which does not carry this cluster's and this apply's labels. It was not adopted and no second server was created;"
+                 + " the ledger keeps the node INTENDED. Remove or relabel the holder, then run `aether cluster apply --resume`.";
+        }
     }
 
     /// A create that failed or whose reply was lost (timeout, 5xx) may nevertheless have created the VM. The row stays
@@ -251,6 +290,17 @@ sealed interface WaveNodeProvisioning {
                  + "' labels (a provider may drop a label it does not accept); a VM without them is"
                  + " invisible to every audit, so it was terminated.";
         }
+    }
+
+    /// The ids a resumed action asks for: first the ids of its rows the resume lookup found NEVER created (ABSENT), re-issued under the
+    /// same name, then freshly minted ones. A re-issue is safe because the provider refuses a second server with that name, so a create
+    /// that landed after the lookup window answers `AlreadyExists` and is adopted, not duplicated. Only ABSENT rows qualify: a CREATED
+    /// row whose VM vanished ends GONE and is never re-created (P-G1 A5: a name is free again once its server is deleted, so a re-create
+    /// would bring back a server somebody deleted).
+    static Supplier<String> reissuedThenMinted(ApplyRecorder recorder, Supplier<String> minted) {
+        var pending = new ArrayDeque<>(recorder.absentNodeIds());
+
+        return () -> option(pending.poll()).or(minted);
     }
 
     /// A fresh node id in the CTM scheme, unique per call.

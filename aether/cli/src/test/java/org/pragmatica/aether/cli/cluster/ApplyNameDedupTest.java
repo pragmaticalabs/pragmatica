@@ -158,6 +158,23 @@ class ApplyNameDedupTest {
         assertThat(rowOf(recorder, NODE).serverId().or("")).isEqualTo(String.valueOf(project.servers().getFirst().id()));
     }
 
+    @Test
+    void ap2_absentRowOfAnotherAction_isNotReissuedByThisOne() {
+        var other = "AddRole|other||->n";
+        var recorder = ledger.recorder(CLUSTER, List.of(LedgerDirExtension.TEST_ACTION, other));
+
+        recorder.intend(NODE, "hetzner").unwrap();
+        noPauses();
+        ApplyReconciler.reconcileIntents(recorder, computes()).unwrap();
+        recorder.beginAction(other).unwrap();
+
+        provision(recorder, 1);
+
+        assertThat(project.createRequests).hasSize(1);
+        assertThat(project.createRequests.getFirst().name()).as("the other action's id is its own to re-issue").isNotEqualTo(NODE);
+        assertThat(rowOf(recorder, NODE).state()).isEqualTo(ApplyResource.State.ABSENT);
+    }
+
     // ---- AP-3: a confirmed server that vanished is never created again
 
     @Test
