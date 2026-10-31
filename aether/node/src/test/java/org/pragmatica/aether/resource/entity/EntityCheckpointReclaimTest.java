@@ -164,7 +164,7 @@ class EntityCheckpointReclaimTest {
         assertThat(save(substrate, 0, 4L, bytes, Option.none())).as("empty lineage, two partitions").isNotEqualTo(save(substrate, 1, 4L, bytes, Option.none()));
         assertThat(save(substrate, 2, 4L, bytes, Option.some(LINEAGE))).as("same lineage, two partitions").isNotEqualTo(save(substrate, 3, 4L, bytes, Option.some(LINEAGE)));
         assertThat(save(substrate, 4, 4L, bytes, Option.none())).as("one partition, two claims").isNotEqualTo(save(substrate, 4, 5L, bytes, Option.none()));
-        assertThat(save(substrate, "orders", 5, 4L, bytes)).as("two keyspaces").isNotEqualTo(save(substrate, "invoices", 5, 4L, bytes));
+        assertThat(save(substrate, "orders", 5, 4L, bytes)).as("two keyspaces of one length").isNotEqualTo(save(substrate, "events", 5, 4L, bytes));
         assertThat(substrate.saveCheckpoint(KEYSPACE, 6, 4L, bytes).await().isSuccess()).isTrue();
         assertThat(substrate.saveCheckpoint(KEYSPACE, 7, 4L, bytes).await().isSuccess()).isTrue();
         assertThat(pointed(6)).as("the lineage-less save path, two partitions").isNotEqualTo(pointed(7));
