@@ -196,6 +196,7 @@ class IdentityRegistrarTest {
 
         assertThat(store.get(KEY).isEmpty()).isTrue();
         assertThat(registrar.grants()).isZero();
+        assertThat(registrar.failures()).as("the refused commit is counted").isEqualTo(1L);
     }
 
     @Test
