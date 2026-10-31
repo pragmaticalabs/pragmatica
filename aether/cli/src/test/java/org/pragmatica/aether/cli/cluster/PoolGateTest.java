@@ -208,6 +208,30 @@ class PoolGateTest {
         assertThat(waited).containsExactly("worker>=5");
     }
 
+    /// The gate answers BEFORE the action is bracketed: a refused pool leaves the ledger exactly as it was (the action still PENDING), so
+    /// "the ledger is unchanged" in the refusal text is true.
+    @Test
+    void scaleUp_refusedPool_leavesTheLedgerExactlyAsItWas() {
+        WaveExecutor.poolAuthority = refusing();
+        var stored = ClusterBootstrapConfigParser.parse(TOML.formatted(3)).unwrap();
+        var desired = ClusterBootstrapConfigParser.parse(TOML.formatted(5)).unwrap();
+        var plan = ClusterBootstrapConfigDiff.diff(stored, desired);
+        var keys = ApplyAction.fromPlan(plan).stream().map(ApplyAction::key).toList();
+        var base = ApplyStateFixtures.state(CLUSTER);
+        var state = ApplyState.applyState(base.applyId(), CLUSTER, base.configHash(), base.storedVersion(), base.startedAt(), base.phase(),
+                                          keys.stream().map(key -> ApplyAction.applyAction(key, 0, ApplyAction.Status.PENDING)).toList(),
+                                          List.of(), List.of(), List.of(), List.of());
+
+        ApplyState.save(state).unwrap();
+
+        var result = WaveExecutor.execute(plan, stored, desired, ApplyRecorder.applyRecorder(state));
+
+        assertThat(result.isFailure()).isTrue();
+        assertThat(ApplyState.read(CLUSTER).unwrap().unwrap().actions().stream().map(ApplyAction::status))
+                .containsOnly(ApplyAction.Status.PENDING);
+        assertThat(ApplyState.read(CLUSTER).unwrap().unwrap().resources()).isEmpty();
+    }
+
     @Test
     void scaleUp_refusedPool_failsNamingThePool_andCreatesNothing() {
         WaveExecutor.poolAuthority = refusing();

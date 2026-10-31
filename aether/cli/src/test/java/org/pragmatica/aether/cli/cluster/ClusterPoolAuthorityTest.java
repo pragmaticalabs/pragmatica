@@ -15,6 +15,7 @@ import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -38,10 +39,15 @@ class ClusterPoolAuthorityTest {
             asked.add(route);
 
             return cluster.getOrDefault(route, Causes.cause("no answer for " + route).result());
-        }, duration -> {
-            pauses.add(duration);
-            clock.addAndGet(duration.toMillis());
-        }, clock::get, Duration.ofSeconds(100), Duration.ofSeconds(10));
+        }, this::tick, clock::get, Duration.ofSeconds(100), Duration.ofSeconds(10));
+    }
+
+    /// Time passes and the pause is recorded; the wait carries on.
+    private Result<Unit> tick(Duration duration) {
+        pauses.add(duration);
+        clock.addAndGet(duration.toMillis());
+
+        return Result.unitResult();
     }
 
     private void answer(ManagementRoute route, String json) {
@@ -127,10 +133,7 @@ class ClusterPoolAuthorityTest {
         var counting = ClusterPoolAuthority.clusterPoolAuthority(route -> Result.success(polls.size() > 1
                                                                                          ? polls.removeFirst()
                                                                                          : polls.getFirst()),
-                                                                 duration -> {
-                                                                     pauses.add(duration);
-                                                                     clock.addAndGet(duration.toMillis());
-                                                                 },
+                                                                 this::tick,
                                                                  clock::get,
                                                                  Duration.ofSeconds(100),
                                                                  Duration.ofSeconds(10));
@@ -157,7 +160,7 @@ class ClusterPoolAuthorityTest {
     void awaitLeader_givesUpAtTheTimeout_namingWhatIsLiveAndWhatWasWanted() {
         answer(ManagementRoute.NODES_LIVE, live(1));
         var ticking = ClusterPoolAuthority.clusterPoolAuthority(route -> cluster.get(route),
-                                                                duration -> clock.addAndGet(duration.toMillis()),
+                                                                this::tick,
                                                                 clock::get,
                                                                 Duration.ofSeconds(100),
                                                                 Duration.ofSeconds(10));
@@ -178,5 +181,47 @@ class ClusterPoolAuthorityTest {
         }
 
         return nodes.append("]}").toString();
+    }
+
+    /// The real `/nodes/live` emits the role UPPER-case (`StatusRoutes.toLiveNodeEntry`); canned answers in lower case would let a case-sensitive
+    /// compare pass every test and make the production wait never converge.
+    @Test
+    void awaitLeader_countsTheUpperCaseRolesTheRealEndpointEmits() {
+        answer(ManagementRoute.NODES_LIVE, "{\"nodes\":[" + "{\"role\":\"CORE\",\"swimAlive\":true},".repeat(4) + "{\"role\":\"CORE\",\"swimAlive\":true}]}");
+
+        assertThat(authority().awaitLeader(NodeRole.CORE, 5, progress::add).isSuccess()).isTrue();
+    }
+
+    @Test
+    void awaitLeader_aNodeWithoutTheSwimAliveFlag_isNotLive() {
+        answer(ManagementRoute.NODES_LIVE, "{\"nodes\":[{\"role\":\"CORE\"}]}");
+
+        assertThat(authority().awaitLeader(NodeRole.CORE, 1, progress::add).isFailure()).isTrue();
+    }
+
+    /// A library interrupt used to turn the wait into an unpaced loop of management-API calls (the sleep re-set the flag, so every later sleep threw
+    /// at once). The wait stops, typed, and the flag stays set for whoever interrupted.
+    @Test
+    void awaitLeader_onAnInterruptedThread_stopsWithATypedFailure_insteadOfPollingWithoutPause() {
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        answer(ManagementRoute.NODES_LIVE, "{\"nodes\":[]}");
+        var interrupted = ClusterPoolAuthority.clusterPoolAuthority(route -> {
+            calls.incrementAndGet();
+
+            return cluster.get(route);
+        }, ClusterPoolAuthority::sleep, System::currentTimeMillis, Duration.ofSeconds(60), Duration.ofSeconds(10));
+
+        Thread.currentThread().interrupt();
+
+        try {
+            var result = interrupted.awaitLeader(NodeRole.CORE, 5, progress::add);
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> assertThat(cause).isInstanceOf(PoolAuthority.WaitInterrupted.class));
+            assertThat(calls.get()).as("one poll, then the interrupted pause ends the wait").isEqualTo(1);
+            assertThat(Thread.currentThread().isInterrupted()).as("the flag is kept for the caller").isTrue();
+        } finally {
+            Thread.interrupted();
+        }
     }
 }
