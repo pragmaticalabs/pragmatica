@@ -1720,6 +1720,10 @@ public interface AetherNode extends ManageableNode {
                                 .or(Promise.UNIT);
             }
 
+            private KvBackupService.Replica backupReplica() {
+                return AetherNode.backupReplica(configuredWorker(config));
+            }
+
             /// The #644 arming stage of [#start]'s chain — a named identity so the arm rides the
             /// promise PIPELINE (resolution of the returned stage happens-after the arm) instead of
             /// an observer that races awaiters.
@@ -1741,8 +1745,10 @@ public interface AetherNode extends ManageableNode {
                 periodicTasks.cancel();
                 // #1968: first, while the cluster-event layer can still carry the recovery of a backup-config-missing alert.
                 backupCoordinatorStop.run();
-                // Know 3b01e624f1: a GRACEFUL stop flushes the KV backup first (bounded); the stop below waits for it.
-                var backupFlushed = kvBackupService.map(service -> service.stopFlushed(BACKUP_STOP_FLUSH_BOUND))
+                // Know 3b01e624f1: a GRACEFUL stop flushes the KV backup first (bounded); the stop below waits for it. Know 6ee3dc3f0d: every
+                // full-state node flushes, leader or not; a worker (partial replica) only stops.
+                var backupFlushed = kvBackupService.map(service -> service.stopFlushed(BACKUP_STOP_FLUSH_BOUND,
+                                                                                       backupReplica()))
                                                    .or(Promise.unitPromise());
 
                 router.route(ClusterStateNotification.passive());
@@ -4016,6 +4022,14 @@ public interface AetherNode extends ManageableNode {
         return counted.stream()
                       .filter(installed::contains)
                       .collect(Collectors.toSet());
+    }
+
+    /// Know 6ee3dc3f0d: a worker ([#configuredWorker]: a `[worker]` configuration or a topology label `role=worker|spot`) holds a replica without part of
+    /// the backed-up state, so its stop flush must not write; every other node holds the full state.
+    static KvBackupService.Replica backupReplica(boolean worker) {
+        return worker
+               ? KvBackupService.Replica.PARTIAL
+               : KvBackupService.Replica.FULL;
     }
 
     static boolean isCoreMember(MembershipFsm membershipFsm, NodeId nodeId) {
