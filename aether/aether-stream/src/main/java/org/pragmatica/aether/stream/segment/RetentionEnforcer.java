@@ -733,7 +733,7 @@ public final class RetentionEnforcer implements AutoCloseable {
     /// A LOOP over batches of [#AGE_READ_CONCURRENCY], not a `flatMap` per batch (the #1392 / #1395 shape). A batch
     /// whose reads are already settled (a memory tier answers synchronously) used to run the next batch inline, so a
     /// pass over k batches nested k frame groups, measured at 6 frames per batch: after a restart every segment is
-    /// unknown-aged and the sealer makes one segment per evicted record, so 25,000 pending segments is about 3,100
+    /// unknown-aged and the sealer made one segment per evicted record before it sealed runs (#2201 C-02), so 25,000 pending segments is about 3,100
     /// batches and about 19,000 frames, past a 1 MB stack. A settled batch is consumed in place; only a pending one
     /// suspends the loop, which resumes on the thread that settles it.
     private Promise<Unit> learnInBatches(SegmentReader reader, List<PendingAge> pending, int from) {

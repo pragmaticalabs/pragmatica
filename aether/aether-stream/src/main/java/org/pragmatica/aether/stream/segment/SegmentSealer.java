@@ -6,10 +6,12 @@ package org.pragmatica.aether.stream.segment;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -50,12 +52,22 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// whose truncation is gated by the CONTIGUOUS sealed watermark ([SegmentIndex#lastSealedOffset]) — is the
 /// durable copy while a seal is pending, so a restart replays whatever was still pending here.
 ///
-///   - **Ordered per partition.** One seal is in flight per `(stream, partition)`; the next segment is sent
+///   - **Runs (spec 4.2, #2201 C-02).** A partition's queued hand-overs are its RUN. It is sealed once it is ready
+///     ([SealerThresholds]: its queued bytes, its queued events or the age of its oldest entry reach their
+///     threshold; or a read asked for one of its offsets, [#holdsUnsealedForRead]; or the node is stopping,
+///     [#flushAll]; or the heap copies of the whole sealer reach half the pending cap); until then one timer per
+///     partition waits for the oldest entry's age. A seal takes the head and every CONTIGUOUS follower up to
+///     `seal_merge_bytes` into one segment, so a backlog that queued behind a slow seal becomes the next, larger
+///     block. Segment boundaries are an implementation detail, not a contract.
+///   - **Ordered per partition.** One seal is in flight per `(stream, partition)`; the next run is sent
 ///     only after the previous one succeeded, so a later segment can never be sealed past an earlier one
 ///     that is still failing and the sealed range grows without holes.
-///   - **Retried.** A failed seal is retried with exponential backoff; every failure is a WARN and a counted
-///     failure ([#sealFailureCount]), and every [#ERROR_AFTER_FAILURES] consecutive failures of one segment an
+///   - **Retried as the same run.** A failed seal is retried with exponential backoff, always with the entries it
+///     first took (I-07: what queued meanwhile waits for the next run); every failure is a WARN and a counted
+///     failure ([#sealFailureCount]), and every [#ERROR_AFTER_FAILURES] consecutive failures of one run an
 ///     ERROR. A pending segment is never dropped (only a deleted stream's are cancelled, [#onStreamDeleted]).
+///   - **Closed at node stop (#1875).** [#close] cancels the age timers and the retry pauses and retries nothing,
+///     so no seal of a stopped node outlives it; a seal already on its first attempt finishes or fails quietly.
 ///   - **Heap copies are bounded by `pendingCapBytes`; the WAL is the holder.** Each pending segment starts
 ///     with a heap copy. For a partition WITH a WAL (attached by its ring at construction, [#walAttached]),
 ///     going past the cap drops heap copies, oldest first, and keeps only the pending RANGE — but only for a
@@ -83,11 +95,10 @@ public final class SegmentSealer implements EvictionListener {
     /// `StreamPartitionManager`'s `DEFAULT_MAX_TOTAL_BYTES`), so a stalled storage tier can at most double the
     /// memory the node's streams hold. A node passes its configured budget instead (`STREAM_MAX_MEMORY_BYTES`).
     public static final long DEFAULT_PENDING_CAP_BYTES = 128 * 1024 * 1024L;
-    /// Consecutive failures of one segment per retry cycle; each exhausted cycle logs an ERROR and a new
+    /// Consecutive failures of one run per retry cycle; each exhausted cycle logs an ERROR and a new
     /// cycle starts after [#CYCLE_PAUSE].
     static final int ERROR_AFTER_FAILURES = 10;
     private static final TimeSpan CYCLE_PAUSE = timeSpan(30).seconds();
-
     private static final TimeSpan FIRST_RETRY_DELAY = timeSpan(100).millis();
 
     private final SegmentSink sink;
@@ -109,6 +120,11 @@ public final class SegmentSealer implements EvictionListener {
     /// spill episode logs one WARN while [#spillCount] counts every dropped heap copy.
     private final AtomicBoolean spilling = new AtomicBoolean(false);
     private final ConcurrentHashMap<PartitionKey, AppendLog> wals = new ConcurrentHashMap<>();
+    /// Set by [#flushAll]: from then on every run is ready at once.
+    private final AtomicBoolean closing = new AtomicBoolean(false);
+    /// Set by [#close]: nothing new starts, nothing failed is retried.
+    private final AtomicBoolean closed = new AtomicBoolean(false);
+    private final AtomicLong ageTimersScheduled = new AtomicLong(0);
 
     private SegmentSealer(SegmentSink sink,
                           long pendingCapBytes,
@@ -196,6 +212,23 @@ public final class SegmentSealer implements EvictionListener {
                      .or(false);
     }
 
+    /// [#holdsUnsealed], and a pending `offset` makes every run up to the one holding it ready at once (demand flush):
+    /// a reader waits for the seals ahead of its offset, never for `seal_run_age`. Repeated reads cost nothing more, as
+    /// one seal per partition is in flight at a time.
+    @Override
+    public boolean holdsUnsealedForRead(String streamName, int partition, long offset) {
+        return option(pending.get(PartitionKey.partitionKey(streamName, partition))).filter(seals -> seals.covers(offset))
+                     .map(seals -> requestFlush(seals, offset))
+                     .or(false);
+    }
+
+    private boolean requestFlush(PendingSeals seals, long offset) {
+        seals.flushThrough().accumulateAndGet(offset, Math::max);
+        maybeDrain(seals);
+
+        return true;
+    }
+
     /// Cancel every pending seal of the deleted `streamName` and release the bytes they held against the cap.
     /// A seal already in flight may still land; it then releases nothing twice (see [#released]), and a
     /// scheduled retry of a cancelled segment stops at its next attempt without calling the sink.
@@ -209,19 +242,38 @@ public final class SegmentSealer implements EvictionListener {
         return unit();
     }
 
-    /// Seal every partition's queued run now, whatever its thresholds (node stop). Not yet implemented.
+    /// Node stop, best effort (spec 4.2 item 6): every partition's queued run is ready at once, and so is any later one.
+    /// A WAL-backed range needs none of it (the WAL replays it at restart); for a partition without a WAL it narrows the
+    /// window of acknowledged events a crash loses. Followed by [#close], so each partition seals at most the run it
+    /// starts here.
     public Unit flushAll() {
+        closing.set(true);
+        pending.values().forEach(this::maybeDrain);
+
         return unit();
     }
 
-    /// Stop the sealer. Not yet implemented.
+    /// Node stop (#1875): cancels every age timer and retry pause, starts nothing new and retries nothing, so the
+    /// sealer of a stopped node does not keep sealing against its closed WALs. A failure after this is counted but not
+    /// a WARN. What stays pending is held by the WAL, or lost with the heap on a partition without one (as a crash).
     public Unit close() {
+        closed.set(true);
+        pending.values().forEach(PendingSeals::cancelTimers);
+
         return unit();
     }
 
-    /// Scheduled timers of this sealer that have neither run nor been cancelled.
-    int armedTimers() {
-        return 0;
+    /// Scheduled timers of this sealer (age timers, retry pauses) that have neither run nor been cancelled.
+    public int armedTimers() {
+        return pending.values()
+                      .stream()
+                      .mapToInt(PendingSeals::armedTimers)
+                      .sum();
+    }
+
+    /// Age timers scheduled since construction.
+    long ageTimersScheduled() {
+        return ageTimersScheduled.get();
     }
 
     /// Drain steps that threw — never expected; each is an ERROR and the drain resumes after a pause.
@@ -273,9 +325,9 @@ public final class SegmentSealer implements EvictionListener {
         var seals = sealsFor(segment);
 
         pendingBytes.addAndGet(segment.bytes());
-        seals.queue().add(segment);
+        seals.join(segment);
         spillOverCap(seals, segment);
-        drain(seals);
+        maybeDrain(seals);
 
         return unit();
     }
@@ -364,8 +416,8 @@ public final class SegmentSealer implements EvictionListener {
     private Unit enqueue(PendingSegment segment) {
         var seals = sealsFor(segment);
 
-        seals.queue().add(segment);
-        drain(seals);
+        seals.join(segment);
+        maybeDrain(seals);
 
         return unit();
     }
@@ -373,6 +425,72 @@ public final class SegmentSealer implements EvictionListener {
     private PendingSeals sealsFor(PendingSegment segment) {
         return pending.computeIfAbsent(PartitionKey.partitionKey(segment.streamName(), segment.partition()),
                                        _ -> PendingSeals.pendingSeals());
+    }
+
+    /// Starts a seal when the run is ready, otherwise makes sure the partition's age timer is armed. After [#close],
+    /// nothing.
+    private void maybeDrain(PendingSeals seals) {
+        if (closed.get()) {
+            return;
+        }
+
+        option(seals.queue().peek()).onPresent(oldest -> drainOrWait(seals, oldest));
+    }
+
+    private void drainOrWait(PendingSeals seals, PendingSegment oldest) {
+        if (ready(seals, oldest)) {
+            drain(seals);
+        } else {
+            armAgeTimer(seals, oldest);
+        }
+    }
+
+    private boolean ready(PendingSeals seals, PendingSegment oldest) {
+        return asked(seals, oldest) || underPressure() || full(seals) || aged(oldest);
+    }
+
+    /// A reader asked for an offset of the run or one behind it, or the node is stopping.
+    private boolean asked(PendingSeals seals, PendingSegment oldest) {
+        return closing.get() || oldest.startOffset() <= seals.flushThrough()
+                                                             .get();
+    }
+
+    /// The heap copies of the whole sealer hold half the pending cap.
+    private boolean underPressure() {
+        return pendingBytes.get() >= pendingCapBytes / 2;
+    }
+
+    private boolean full(PendingSeals seals) {
+        return seals.queuedBytes()
+                    .get() >= thresholds.runBytes() || seals.queuedEvents()
+                                                            .get() >= thresholds.runEvents();
+    }
+
+    private boolean aged(PendingSegment oldest) {
+        return System.nanoTime() - oldest.enqueuedAt() >= thresholds.runAge()
+                                                                    .nanos();
+    }
+
+    /// One timer per partition, at the oldest entry's `enqueuedAt + seal_run_age` (monotonic nanoseconds). A timer armed
+    /// for an older entry fires no later than the current oldest's deadline, and its [#maybeDrain] re-arms for that one.
+    private void armAgeTimer(PendingSeals seals, PendingSegment oldest) {
+        if (!seals.ageTimerArmed().compareAndSet(false, true)) {
+            return;
+        }
+
+        var delay = Math.max(0,
+                             oldest.enqueuedAt() + thresholds.runAge().nanos() - System.nanoTime());
+
+        ageTimersScheduled.incrementAndGet();
+        seals.ageTimer().set(some(SharedScheduler.schedule(() -> ageReached(seals), timeSpan(delay).nanos())));
+        if (closed.get()) {
+            seals.cancelTimers();
+        }
+    }
+
+    private void ageReached(PendingSeals seals) {
+        seals.ageTimerArmed().set(false);
+        maybeDrain(seals);
     }
 
     private void drain(PendingSeals seals) {
@@ -393,9 +511,33 @@ public final class SegmentSealer implements EvictionListener {
 
     /// Runs holding the partition's in-flight flag.
     private Unit sealHead(PendingSeals seals) {
-        option(seals.queue().peek()).onPresent(segment -> sealWithRetry(seals, segment)).onEmpty(() -> release(seals));
+        var run = runAtHead(seals);
+
+        if (run.isEmpty()) {
+            release(seals);
+        } else {
+            sealWithRetry(seals, run, false);
+        }
 
         return unit();
+    }
+
+    /// The head and every entry that continues it (`next.start == last.end + 1`) while the block stays within
+    /// `seal_merge_bytes`; a head larger than that seals alone. A gap ends the run.
+    private List<PendingSegment> runAtHead(PendingSeals seals) {
+        var run = new ArrayList<PendingSegment>();
+        var bytes = 0L;
+
+        for (var entry : seals.queue()) {
+            if (!run.isEmpty() && (entry.startOffset() != run.getLast().endOffset() + 1 || bytes + entry.bytes() > thresholds.mergeBytes())) {
+                break;
+            }
+
+            run.add(entry);
+            bytes += entry.bytes();
+        }
+
+        return List.copyOf(run);
     }
 
     /// Absorbing the crash is design-out, not loss: the segment that was being sealed is still queued (it
@@ -410,7 +552,15 @@ public final class SegmentSealer implements EvictionListener {
                   cyclePause,
                   cause.message());
         seals.inFlight().set(false);
-        SharedScheduler.schedule(() -> drain(seals), cyclePause);
+        scheduleRetry(seals, () -> maybeDrain(seals));
+    }
+
+    /// The handle is kept so [#close] can cancel it (#1875).
+    private void scheduleRetry(PendingSeals seals, Runnable retry) {
+        seals.retryTimer().set(some(SharedScheduler.schedule(retry, cyclePause)));
+        if (closed.get()) {
+            seals.cancelTimers();
+        }
     }
 
     /// The re-check after clearing the flag closes the window where a segment was queued after [#sealHead]
@@ -418,7 +568,7 @@ public final class SegmentSealer implements EvictionListener {
     private void release(PendingSeals seals) {
         seals.inFlight().set(false);
         if (!seals.queue().isEmpty()) {
-            drain(seals);
+            maybeDrain(seals);
         }
     }
 
@@ -426,24 +576,39 @@ public final class SegmentSealer implements EvictionListener {
     /// [SegmentSink] contract resolves only once the segment is readable (for [StorageSegmentSink]: after its
     /// index update). The order index-then-release is therefore a data dependency of this chain, not a matter
     /// of which callback happens to be scheduled first.
-    private void sealWithRetry(PendingSeals seals, PendingSegment segment) {
-        sealRetry.execute(() -> attempt(seals, segment))
-                  .map(_ -> released(seals, segment))
-                  .onResult(outcome -> hop(seals,
-                                           () -> afterAttempt(seals, segment, outcome)));
+    ///
+    /// Every attempt but the first of a run is a retry, refused once the sealer is closed: the first attempt of a run
+    /// that started before [#close] still runs (the [#flushAll] seal), nothing failed is tried again.
+    private Unit sealWithRetry(PendingSeals seals, List<PendingSegment> run, boolean retry) {
+        var first = new AtomicBoolean(!retry);
+
+        sealRetry.execute(() -> attempt(seals,
+                                        run,
+                                        first.getAndSet(false)),
+                          _ -> !closed.get())
+                 .map(_ -> released(seals, run))
+                 .onResult(outcome -> hop(seals,
+                                          () -> afterAttempt(seals, run, outcome)));
+
+        return unit();
     }
 
-    private Unit afterAttempt(PendingSeals seals, PendingSegment segment, Result<Unit> outcome) {
-        return outcome.fold(cause -> retryCycleExhausted(seals, segment, cause), _ -> sealHead(seals));
+    private Unit afterAttempt(PendingSeals seals, List<PendingSegment> run, Result<Unit> outcome) {
+        outcome.onFailure(cause -> retryCycleExhausted(seals, run, cause)).onSuccess(_ -> release(seals));
+
+        return unit();
     }
 
-    private Promise<Unit> attempt(PendingSeals seals, PendingSegment segment) {
-        return seals.cancelled()
-                    .get()
-               ? SegmentError.General.SEAL_CANCELLED.promise()
-               : segmentToSeal(segment).async()
-                              .flatMap(this::sealGuarded)
-                              .onFailure(cause -> recordFailure(segment, cause));
+    private Promise<Unit> attempt(PendingSeals seals, List<PendingSegment> run, boolean first) {
+        if (seals.cancelled().get()) {
+            return SegmentError.General.SEAL_CANCELLED.promise();
+        }
+
+        return closed.get() && !first
+               ? SegmentError.General.SEALER_CLOSED.promise()
+               : runToSeal(run).async()
+                          .flatMap(this::sealGuarded)
+                          .onFailure(cause -> recordFailure(run, cause));
     }
 
     /// A sink that THROWS instead of failing its promise must still fail this attempt: retries run on the
@@ -454,6 +619,35 @@ public final class SegmentSealer implements EvictionListener {
                                            walOf(segment.streamName(),
                                                  segment.partition())))
                      .fold(Cause::<Unit> promise, promise -> promise);
+    }
+
+    /// One segment from the run's entries in offset order, each from its own source (F-26): an entry spilled past the
+    /// cap is durable in the WAL and is read from exactly ITS range, while a later entry of the same run may not be
+    /// written there yet, so the merged span is never read from the WAL in one piece.
+    private Result<SealedSegment> runToSeal(List<PendingSegment> run) {
+        return Result.allOf(run.stream().map(this::segmentToSeal).toList()).map(SegmentSealer::merged);
+    }
+
+    private static SealedSegment merged(List<SealedSegment> parts) {
+        var first = parts.getFirst();
+        var buffer = ByteBuffer.allocate(parts.stream().mapToInt(part -> part.serializedEvents().length).sum());
+
+        parts.forEach(part -> buffer.put(part.serializedEvents()));
+
+        return SealedSegment.sealedSegment(first.streamName(),
+                                           first.partition(),
+                                           first.startOffset(),
+                                           parts.getLast().endOffset(),
+                                           parts.stream().mapToInt(SealedSegment::eventCount).sum(),
+                                           parts.stream()
+                                                .mapToLong(SealedSegment::minTimestamp)
+                                                .reduce(first.minTimestamp(),
+                                                        Math::min),
+                                           parts.stream()
+                                                .mapToLong(SealedSegment::maxTimestamp)
+                                                .reduce(first.maxTimestamp(),
+                                                        Math::max),
+                                           buffer.array());
     }
 
     /// The heap copy while it is retained; after a spill, the segment rebuilt from exactly its WAL range.
@@ -480,26 +674,42 @@ public final class SegmentSealer implements EvictionListener {
                                                 events));
     }
 
-    private void recordFailure(PendingSegment segment, Cause cause) {
+    private void recordFailure(List<PendingSegment> run, Cause cause) {
         var failures = sealFailures.incrementAndGet();
+        var segment = run.getFirst();
+
+        if (closed.get()) {
+            log.debug("Sealing {}/{} from offset {} failed after the sealer closed (seal failure {}): {}",
+                      segment.streamName(),
+                      segment.partition(),
+                      segment.startOffset(),
+                      failures,
+                      cause.message());
+
+            return;
+        }
 
         log.warn("Sealing {}/{} offsets [{}-{}] failed (seal failure {} on this node); the segment stays pending and "
                 + "is retried, and the WAL keeps its offsets meanwhile: {}",
                  segment.streamName(),
                  segment.partition(),
                  segment.startOffset(),
-                 segment.endOffset(),
+                 run.getLast().endOffset(),
                  failures,
                  cause.message());
     }
 
-    /// Dequeue the sealed segment and release its heap bytes, if it still holds any: a spill or a stream
-    /// deletion may already have released them, and [#releaseCopy] releases each copy exactly once.
-    private Unit released(PendingSeals seals, PendingSegment segment) {
-        seals.queue().remove(segment);
-        releaseCopy(segment);
+    /// Dequeue the sealed run's entries together and release their heap bytes, if they still hold any: a spill or a
+    /// stream deletion may already have released them, and [#releaseCopy] releases each copy exactly once.
+    private Unit released(PendingSeals seals, List<PendingSegment> run) {
+        run.forEach(entry -> released(seals, entry));
 
         return unit();
+    }
+
+    private void released(PendingSeals seals, PendingSegment entry) {
+        seals.leave(entry);
+        releaseCopy(entry);
     }
 
     private boolean releaseCopy(PendingSegment segment) {
@@ -518,6 +728,7 @@ public final class SegmentSealer implements EvictionListener {
 
     private void cancelSeals(PartitionKey key, PendingSeals seals) {
         seals.cancelled().set(true);
+        seals.cancelTimers();
         var dropped = Stream.generate(seals.queue()::poll).takeWhile(Objects::nonNull).toList();
         var bytes = dropped.stream().filter(this::releaseCopy).mapToLong(PendingSegment::bytes).sum();
 
@@ -531,23 +742,26 @@ public final class SegmentSealer implements EvictionListener {
     /// Absorbing the exhausted cycle is design-out, not loss: the segment stays at the head of its queue (so
     /// nothing later in the partition is sealed past it), its retained copy and the WAL both still hold its
     /// offsets, and a fresh retry cycle starts after [#CYCLE_PAUSE].
-    private Unit retryCycleExhausted(PendingSeals seals, PendingSegment segment, Cause cause) {
-        if (seals.cancelled().get()) {
+    private Unit retryCycleExhausted(PendingSeals seals, List<PendingSegment> run, Cause cause) {
+        if (seals.cancelled().get() || closed.get()) {
             release(seals);
 
             return unit();
         }
 
-        log.error("Sealing {}/{} offsets [{}-{}] failed through a retry cycle of up to {} attempts; the segment stays "
+        var segment = run.getFirst();
+
+        log.error("Sealing {}/{} offsets [{}-{}] failed through a retry cycle of up to {} attempts; the run stays "
                  + "pending, the partition's later segments wait behind it, and a new cycle starts in {}: {}",
                   segment.streamName(),
                   segment.partition(),
                   segment.startOffset(),
-                  segment.endOffset(),
+                  run.getLast().endOffset(),
                   cycleAttempts,
                   cyclePause,
                   cause.message());
-        SharedScheduler.schedule(() -> hop(seals, () -> sealHead(seals)), cyclePause);
+        // A new cycle takes the same run again (I-07), never one re-formed from the queue.
+        scheduleRetry(seals, () -> hop(seals, () -> sealWithRetry(seals, run, true)));
 
         return unit();
     }
@@ -598,36 +812,89 @@ public final class SegmentSealer implements EvictionListener {
         buffer.put(data);
     }
 
-    /// One partition's segments awaiting their seal, in offset order, and the flag that keeps a single seal in
-    /// flight for the partition.
+    /// One partition's segments awaiting their seal, in offset order (the run), the flag that keeps a single seal in
+    /// flight for the partition, the run's totals, the highest offset a reader asked for, and the two timer handles.
     private record PendingSeals(ConcurrentLinkedQueue<PendingSegment> queue,
                                 AtomicBoolean inFlight,
-                                AtomicBoolean cancelled) {
+                                AtomicBoolean cancelled,
+                                AtomicLong queuedBytes,
+                                AtomicLong queuedEvents,
+                                AtomicLong flushThrough,
+                                AtomicBoolean ageTimerArmed,
+                                AtomicReference<Option<ScheduledFuture<?>>> ageTimer,
+                                AtomicReference<Option<ScheduledFuture<?>>> retryTimer) {
         static PendingSeals pendingSeals() {
-            return new PendingSeals(new ConcurrentLinkedQueue<>(), new AtomicBoolean(false), new AtomicBoolean(false));
+            return new PendingSeals(new ConcurrentLinkedQueue<>(),
+                                    new AtomicBoolean(false),
+                                    new AtomicBoolean(false),
+                                    new AtomicLong(0),
+                                    new AtomicLong(0),
+                                    new AtomicLong(-1),
+                                    new AtomicBoolean(false),
+                                    new AtomicReference<>(none()),
+                                    new AtomicReference<>(none()));
         }
 
         boolean covers(long offset) {
             return queue.stream()
                         .anyMatch(pendingSegment -> pendingSegment.covers(offset));
         }
+
+        Unit join(PendingSegment segment) {
+            queue.add(segment);
+            queuedBytes.addAndGet(segment.bytes());
+            queuedEvents.addAndGet(segment.events());
+
+            return unit();
+        }
+
+        Unit leave(PendingSegment segment) {
+            if (queue.remove(segment)) {
+                queuedBytes.addAndGet(-segment.bytes());
+                queuedEvents.addAndGet(-segment.events());
+            }
+
+            return unit();
+        }
+
+        Unit cancelTimers() {
+            ageTimer.get().onPresent(timer -> timer.cancel(false));
+            retryTimer.get().onPresent(timer -> timer.cancel(false));
+
+            return unit();
+        }
+
+        int armedTimers() {
+            return (int) Stream.of(ageTimer.get(),
+                                   retryTimer.get())
+                               .filter(timer -> timer.filter(scheduled -> !scheduled.isDone())
+                                                     .isPresent())
+                               .count();
+        }
     }
 
     /// A pending range and, until it is spilled or released, its heap copy. `bytes` is the copy's size,
     /// measured once ([SealedSegment#serializedEvents] copies on every call).
+    /// `enqueuedAt` is the hand-over's monotonic time, the start of its age.
     private record PendingSegment(String streamName,
                                   int partition,
                                   long startOffset,
                                   long endOffset,
                                   AtomicReference<Option<SealedSegment>> heapCopy,
-                                  int bytes) {
+                                  int bytes,
+                                  long enqueuedAt) {
         static PendingSegment retained(SealedSegment segment) {
             return new PendingSegment(segment.streamName(),
                                       segment.partition(),
                                       segment.startOffset(),
                                       segment.endOffset(),
                                       new AtomicReference<>(some(segment)),
-                                      segment.serializedEvents().length);
+                                      segment.serializedEvents().length,
+                                      System.nanoTime());
+        }
+
+        long events() {
+            return endOffset - startOffset + 1;
         }
 
         /// True only for the one call that actually dropped the copy.
