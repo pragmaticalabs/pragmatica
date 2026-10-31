@@ -78,10 +78,10 @@ public record ProvisionRequest(InstanceType market,
                                                                                                            instanceSize));
     }
 
-    /// This request with its operation id taken from the context's node id (DG-1: the operation id IS the node id the intent
-    /// minted). A node id outside the [OperationId] grammar, or none, leaves it empty; a provider that names servers by the
-    /// operation id then derives it from the context itself and refuses what does not fit, instead of falling back to a name
-    /// the provider cannot deduplicate.
+    /// This request with its operation id derived from the context: `<cluster>-<nodeId>` ([OperationId#forNode]). An id outside the
+    /// [OperationId] grammar, or no cluster or node id in the context, leaves it empty; a provider that names servers by the
+    /// operation id then derives it from the context it resolves itself (cluster included) and refuses what does not fit, instead
+    /// of falling back to a name the provider cannot deduplicate.
     public ProvisionRequest named() {
         return new ProvisionRequest(market,
                                     instanceSize,
@@ -90,7 +90,10 @@ public record ProvisionRequest(InstanceType market,
                                     userData,
                                     marketOptions,
                                     context,
-                                    context.nodeId().flatMap(raw -> OperationId.operationId(raw).option()));
+                                    context.clusterName()
+                                           .flatMap(cluster -> context.nodeId()
+                                                                      .flatMap(raw -> OperationId.forNode(cluster, raw)
+                                                                                                 .option())));
     }
 
     /// The refusal a provider that cannot honour an operation id answers a request that carries one with (G1-a), empty when the

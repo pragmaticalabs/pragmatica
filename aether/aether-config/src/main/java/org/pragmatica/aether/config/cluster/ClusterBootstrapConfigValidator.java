@@ -16,6 +16,7 @@ import org.pragmatica.aether.config.ConsensusTierBounds;
 import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.aether.config.JwksUrl;
 import org.pragmatica.aether.config.SecurityMode;
+import org.pragmatica.aether.environment.OperationId;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -50,6 +51,7 @@ public final class ClusterBootstrapConfigValidator {
         validateClusterLevel(config, errors);
         validateCoreTopology(config, errors);
         validateSources(config, errors);
+        validateClusterNameFitsServerNames(config, errors);
         validateSshHostsUniqueAcrossSources(config, errors);
         validatePortDistinctness(config, errors);
         validateAutoHealDisableHonesty(config, errors);
@@ -278,6 +280,26 @@ public final class ClusterBootstrapConfigValidator {
         if (maxUnavailable > limit) {
             errors.add("REQ-3.3.7: maxUnavailable " + maxUnavailable
                       + " must be <= (derivedCoreCount - 1) / 2 = " + limit);
+        }
+    }
+
+    /// PF-36 (G1-a): a Hetzner server is named `<cluster>-<nodeId>` (the operation id), at most 63 characters. The node ids the cluster
+    /// mints are `aether-<cluster>-node-<ulid>`, so a cluster name over [OperationId#longestClusterNameForMintedIds] cannot name a
+    /// server there. Refused here, before any node, never truncated: a shortened name would no longer be the one a later lookup searches.
+    private static void validateClusterNameFitsServerNames(ClusterBootstrapConfig config, List<String> errors) {
+        var longest = OperationId.longestClusterNameForMintedIds();
+        var hetzner = config.sources()
+                            .values()
+                            .stream()
+                            .anyMatch(source -> source.provider()
+                                                      .filter(provider -> provider == CloudProviderName.HETZNER)
+                                                      .isPresent());
+
+        if (hetzner && config.cluster().name().value().length() > longest) {
+            errors.add("PF-36: Cluster name '" + config.cluster().name().value()
+                      + "' is too long for a Hetzner source: servers are named '<cluster>-<node id>' (at most "
+                      + OperationId.MAX_LENGTH + " characters), so the cluster name may have at most " + longest
+                      + " characters. Use a shorter cluster name.");
         }
     }
 

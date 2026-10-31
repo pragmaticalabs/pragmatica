@@ -98,31 +98,35 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     }
 
     private Promise<InstanceInfo> createLabelled(ProvisionRequest request, ClusterName clusterName) {
-        return operationIdOf(request).async()
-                            .flatMap(operation -> createAndConfirm(request,
-                                                                   operation,
-                                                                   labelsFor(request.context(),
-                                                                             clusterName,
-                                                                             operation)))
-                            .mapError(cause -> toProvisionError(request.instanceSize(),
-                                                                request.zone(),
-                                                                cause));
+        var nodeId = request.context().resolveNodeId();
+
+        return operationIdOf(request, clusterName, nodeId).async()
+                                                          .flatMap(operation -> createAndConfirm(request,
+                                                                                                 operation,
+                                                                                                 labelsFor(request.context(),
+                                                                                                           clusterName,
+                                                                                                           nodeId,
+                                                                                                           operation)))
+                                                          .mapError(cause -> toProvisionError(request.instanceSize(),
+                                                                                              request.zone(),
+                                                                                              cause));
     }
 
-    /// The identity of this create: the request's operation id, else the context's node id (self-minted when the caller
-    /// supplied none). Resolved ONCE, because the server name, the `aether-node-id` label and the `aether.op` label must be the
-    /// same value, and a second [ProvisionContext#resolveNodeId] would mint another. An id outside the [OperationId] grammar is
-    /// refused: a name the provider cannot deduplicate on is not a fallback to take silently.
-    private static Result<OperationId> operationIdOf(ProvisionRequest request) {
+    /// The identity of this create: the request's operation id, else `<cluster>-<nodeId>` ([OperationId#forNode]) for the cluster this
+    /// create resolved. The node id is resolved ONCE by the caller (a self-minted one differs per resolution), because the server name,
+    /// the `aether-node-id` label and the `aether.op` label must describe one create. An id outside the [OperationId] grammar (a cluster
+    /// name too long for it included) is refused: a name the provider cannot deduplicate on is not a fallback to take silently.
+    private static Result<OperationId> operationIdOf(ProvisionRequest request, ClusterName clusterName, String nodeId) {
         return request.operationId()
-                      .fold(() -> requireOperationId(request.context().resolveNodeId()),
+                      .fold(() -> requireOperationId(clusterName, nodeId),
                             Result::success);
     }
 
-    private static Result<OperationId> requireOperationId(String nodeId) {
-        return OperationId.operationId(nodeId).mapError(cause -> Causes.cause("Refusing to provision: node id '" + nodeId
-                                                                             + "' cannot name a Hetzner server",
-                                                                              Option.some(cause)));
+    private static Result<OperationId> requireOperationId(ClusterName clusterName, String nodeId) {
+        return OperationId.forNode(clusterName, nodeId).mapError(cause -> Causes.cause("Refusing to provision: node id '" + nodeId
+                                                                                      + "' of cluster '" + clusterName.value()
+                                                                                      + "' cannot name a Hetzner server",
+                                                                                       Option.some(cause)));
     }
 
     /// RFC-0017 C2 — a VM whose cluster cannot be identified MUST NOT be created.
@@ -678,7 +682,10 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         }
     }
 
-    private Map<String, String> labelsFor(ProvisionContext ctx, ClusterName clusterLabel, OperationId operation) {
+    private Map<String, String> labelsFor(ProvisionContext ctx,
+                                          ClusterName clusterLabel,
+                                          String nodeId,
+                                          OperationId operation) {
         var role = ctx.role().isEmpty()
                    ? "core"
                    : ctx.role();
@@ -691,9 +698,9 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         // NODE_ID_TAG = "aether.node-id") stays provider-agnostic. The provider OWNS the
         // identity: resolveNodeId() honors a caller-supplied id (bootstrap) or self-mints
         // one (CTM auto-heal), then echoes it back into InstanceInfo.nodeId via the label.
-        base.put(NODE_ID_LABEL, operation.value());
-        // G1-a: the operation id is the node id (DG-1), so the two labels carry one value. `aether.op` is the key the
-        // rulings name; `aether-node-id` is the key every lookup already uses.
+        base.put(NODE_ID_LABEL, nodeId);
+        // G1-a: `aether.op` carries the cluster-scoped operation id (also the server name); `aether-node-id` keeps the bare node
+        // id, the key every lookup already uses.
         base.put(OPERATION_LABEL, operation.value());
 
         return appendCompatible(base, ctx.extraTags());
