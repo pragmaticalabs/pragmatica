@@ -343,13 +343,13 @@ class ProvisioningModelTest {
         void i1_noNodeIdentityIntentExists_theReservationIsTheOnlyRecordBeforeACreate() {
             var world = killedAt(KillPoint.NONE);
 
-            assertThat(keyKindNames())
-                .as("TRIPWIRE: no NodeIdentityKey kind exists. Under O1 delete this tripwire; under O2 enable i1_everyCreateFollowsACommittedNodeIdentityIntent")
-                .doesNotContain("NodeIdentityKey");
+            // O3-1 (owner ruling c37a7c11e2) declares the NodeIdentityKey kind as the per-node lifecycle record, so "no such kind" can no longer hold.
+            // What this tripwire pins is today's behaviour: nothing WRITES the record before a create (no writer is wired until O3-5), checked below.
+            assertThat(keyKindNames()).as("O3-1: the lifecycle record kind exists").contains("NodeIdentityKey");
             Map<?, ?> committed = world.store.snapshot();
 
             assertThat(committed.keySet().stream().map(key -> key.getClass().getSimpleName()).toList())
-                .as("and no such record was committed").doesNotContain("NodeIdentityKey");
+                .as("TRIPWIRE: no lifecycle record is committed before a create until the O3-5 writer lands (then enable i1_everyCreateFollowsACommittedNodeIdentityIntent)").doesNotContain("NodeIdentityKey");
         }
 
         @Test
