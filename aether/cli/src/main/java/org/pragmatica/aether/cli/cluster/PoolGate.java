@@ -35,9 +35,7 @@ final class PoolGate {
     /// no node is apply's (nothing to decide).
     static Result<PoolAuthority.Actor> decide(PoolAuthority authority, Pool pool) {
         return pool.createsNodes()
-               ? authority.actorFor(pool.source(),
-                                    pool.role(),
-                                    pool.wanted())
+               ? authority.actorFor(pool.source(), pool.role(), pool.wanted())
                : success(PoolAuthority.Actor.APPLY);
     }
 

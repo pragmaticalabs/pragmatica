@@ -79,11 +79,11 @@ public final class WaveExecutor {
 
         for (var action : additions) {
             var result = decideActor(action, desired, created).flatMap(actor -> asAction(action,
-                                                                                           created,
-                                                                                           () -> executeAddition(action,
-                                                                                                                 desired,
-                                                                                                                 created,
-                                                                                                                 actor)));
+                                                                                         created,
+                                                                                         () -> executeAddition(action,
+                                                                                                               desired,
+                                                                                                               created,
+                                                                                                               actor)));
 
             if (result.isFailure()) {
                 return result;
@@ -202,16 +202,24 @@ public final class WaveExecutor {
 
     /// G1-g: who decides for the pool of a scale-up or add-role, asked BEFORE the action is bracketed in the ledger, so a refusal leaves the
     /// ledger exactly as it was. A DONE action (a resumed one) is not asked again, and an action that is no scale-up or add-role has no pool.
-    private static Result<PoolAuthority.Actor> decideActor(DiffAction action, ClusterBootstrapConfig desired, CreatedNodes created) {
-        return created.recorder().statusOf(ApplyAction.actionKey(action)) == ApplyAction.Status.DONE
+    private static Result<PoolAuthority.Actor> decideActor(DiffAction action,
+                                                           ClusterBootstrapConfig desired,
+                                                           CreatedNodes created) {
+        return created.recorder()
+                      .statusOf(ApplyAction.actionKey(action)) == ApplyAction.Status.DONE
                ? success(PoolAuthority.Actor.APPLY)
                : poolOf(action, desired, created).fold(() -> success(PoolAuthority.Actor.APPLY),
                                                        pool -> PoolGate.decide(poolAuthority, pool));
     }
 
-    private static Option<PoolGate.Pool> poolOf(DiffAction action, ClusterBootstrapConfig desired, CreatedNodes created) {
+    private static Option<PoolGate.Pool> poolOf(DiffAction action,
+                                                ClusterBootstrapConfig desired,
+                                                CreatedNodes created) {
         return switch (action) {
-            case DiffAction.AddRole a -> poolIn(a.sourceName(), a.role(), Math.max(0, a.count() - recorded(action, created)), desired);
+            case DiffAction.AddRole a -> poolIn(a.sourceName(),
+                                                a.role(),
+                                                Math.max(0, a.count() - recorded(action, created)),
+                                                desired);
             case DiffAction.ScaleUp a -> poolIn(a.sourceName(),
                                                 a.role(),
                                                 a.to() - Math.min(a.to(), a.from() + recorded(action, created)),
@@ -220,13 +228,26 @@ public final class WaveExecutor {
         };
     }
 
-    private static Option<PoolGate.Pool> poolIn(SourceName sourceName, NodeRole role, int missing, ClusterBootstrapConfig desired) {
-        return lookupSource(sourceName, desired.sources()).option()
-                                                          .map(source -> poolFor(sourceName, source, role, missing, desired));
+    private static Option<PoolGate.Pool> poolIn(SourceName sourceName,
+                                                NodeRole role,
+                                                int missing,
+                                                ClusterBootstrapConfig desired) {
+        return lookupSource(sourceName,
+                            desired.sources()).option()
+                           .map(source -> poolFor(sourceName, source, role, missing, desired));
     }
 
-    private static PoolGate.Pool poolFor(SourceName sourceName, SourceProfile source, NodeRole role, int missing, ClusterBootstrapConfig desired) {
-        return new PoolGate.Pool(sourceName.value(), source.type(), role, missing, wantedIn(source, role), wantedInRole(desired, role));
+    private static PoolGate.Pool poolFor(SourceName sourceName,
+                                         SourceProfile source,
+                                         NodeRole role,
+                                         int missing,
+                                         ClusterBootstrapConfig desired) {
+        return new PoolGate.Pool(sourceName.value(),
+                                 source.type(),
+                                 role,
+                                 missing,
+                                 wantedIn(source, role),
+                                 wantedInRole(desired, role));
     }
 
     /// Scale-up and add-role create nodes only when apply is the pool's decider; with the leader's auto-heal filling the pool they create nothing
