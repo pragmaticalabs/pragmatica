@@ -1645,8 +1645,9 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
-    /// The identity record of one node id (ID-1b, membership overhaul spec 2.1): the intent, the admitted process and the end of the node id.
-    /// A [RuntimeKey]: never in a backup, since the identity LEDGER on each core's disk, not the KV, is what survives the loss of every holder.
+    /// The lifecycle record of one node id (O3, owner ruling c37a7c11e2): its identity facet (the admitted process) and its capacity facet (the
+    /// reservation) under one key, never deleted. A [RuntimeKey], classified as [CapacityReservationKey] is, which this record replaces at the O3-4 flip;
+    /// the identity LEDGER on each core's disk, not the KV, is what survives the loss of every holder.
     record NodeIdentityKey(NodeId nodeId) implements RuntimeKey {
         private static final String PREFIX = "node-identity/";
 

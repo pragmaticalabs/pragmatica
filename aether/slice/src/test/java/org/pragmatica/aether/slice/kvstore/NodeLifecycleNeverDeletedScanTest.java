@@ -24,8 +24,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// keeps the scan honest: positive controls (the patterns match a delete and a Remove, and miss a legitimate write) and a coverage check
 /// (the scan reaches `LifecycleMutations.java` and more than that file).
 class NodeLifecycleNeverDeletedScanTest {
-    private static final Pattern ABSENT_REPLACEMENT = Pattern.compile("Mutation\\s*<[^;]*?,\\s*(?:Option\\.)?none\\(\\)\\s*\\)");
-    private static final Pattern REMOVE = Pattern.compile("\\bnew\\s+(?:KVCommand\\.)?Remove\\b|\\bKVCommand\\.Remove\\b");
+    private static final Pattern ABSENT_REPLACEMENT = Pattern.compile("\\bnew\\s+(?:KVCommand\\.)?Mutation\\s*<[^;]*?,\\s*(?:Option\\.)?none\\(\\)\\s*\\)");
+    private static final Pattern REMOVE = Pattern.compile("\\bnew\\s+(?:KVCommand\\.)?Remove\\s*[<(]");
 
     private static Path root() {
         return Path.of("..", "..").toAbsolutePath().normalize();
@@ -80,8 +80,10 @@ class NodeLifecycleNeverDeletedScanTest {
         assertThat(ABSENT_REPLACEMENT.matcher("new Mutation<AetherKey, AetherValue>(\n  key,\n  expected,\n  none())").find()).isTrue();
         assertThat(ABSENT_REPLACEMENT.matcher("new KVCommand.Mutation<>(key, Option.none(), Option.some(next))").find()).as("an expected-absent write").isFalse();
         assertThat(ABSENT_REPLACEMENT.matcher("new Mutation<>(key, current.map(AetherValue.class::cast), some(next))").find()).isFalse();
+        assertThat(ABSENT_REPLACEMENT.matcher("Result<List<Mutation<AetherKey, AetherValue>>> f(Option<X> a) { return g(none()); }").find()).as("a signature is not a construction").isFalse();
         assertThat(REMOVE.matcher("store.process(new KVCommand.Remove<>(key))").find()).isTrue();
         assertThat(REMOVE.matcher("var removal = new Remove<>(key);").find()).isTrue();
         assertThat(REMOVE.matcher("publish(new ValueRemove<>(key))").find()).as("a notification is not a command").isFalse();
+        assertThat(REMOVE.matcher("pin(table, 9, \"org.pragmatica.cluster.state.kvstore.KVCommand.Remove\");").find()).as("a wire-tag pin names the type, builds nothing").isFalse();
     }
 }
