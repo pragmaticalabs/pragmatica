@@ -67,6 +67,24 @@ class NodeLifecycleNeverDeletedScanTest {
         assertThat(offenders).as("sources naming NodeIdentityKey that build a delete").isEmpty();
     }
 
+    private static final Pattern UNKNOWN_WRITE = Pattern.compile("\\b(?:CapacityPhase|FreedCause|IdentityState|IdentityCause)\\.UNKNOWN\\b");
+
+    /// F2 (q4 7.1.7): `UNKNOWN` is what the wire decoder falls back to for an unrecognised value, never a value any code writes. The enums declare it
+    /// (`AetherValue.java`); no other main source that handles the lifecycle facets may name it.
+    @Test
+    void noMainSourceHandlingTheFacets_namesAnUnknownConstant() {
+        var offenders = mainSources().stream()
+                                     .filter(path -> !path.getFileName().toString().equals("AetherValue.java"))
+                                     .filter(path -> read(path).contains("CapacityFacet") || read(path).contains("IdentityFacet") || read(path).contains("LifecycleMutations"))
+                                     .filter(path -> UNKNOWN_WRITE.matcher(read(path)).find())
+                                     .map(path -> root().relativize(path).toString())
+                                     .toList();
+
+        assertThat(offenders).isEmpty();
+        assertThat(UNKNOWN_WRITE.matcher("new CapacityFacet(a, b, c, CapacityPhase.UNKNOWN, none(), none())").find()).as("positive control").isTrue();
+        assertThat(UNKNOWN_WRITE.matcher("case DISPATCHED, RELEASED, UNKNOWN -> x;").find()).as("a case label of the enum is a read").isFalse();
+    }
+
     @Test
     void theScan_reachesTheLibraryAndTheKeyDeclaration() {
         var named = mainSources().stream().filter(path -> read(path).contains("NodeIdentityKey")).map(path -> path.getFileName().toString()).toList();

@@ -119,6 +119,11 @@ class NodeIdentityCodecTest {
         }
 
         @Test
+        void anUncountedExternalHold_roundTrips() {
+            roundTrip(new NodeLifecycleValue(Option.none(), Option.some(new CapacityFacet("hetzner-fsn", "external-uncounted", "worker", CapacityPhase.DISPATCHED, Option.none(), Option.none()))));
+        }
+
+        @Test
         void emptyRecord_roundTrips() {
             roundTrip(new NodeLifecycleValue(Option.none(), Option.none()));
         }

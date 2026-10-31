@@ -507,6 +507,118 @@ class LifecycleMutationsTest {
         }
     }
 
+    /// The (identity, capacity) pairs that exist today (golden table #2519 and the code), each reached by the builders and pinned: the two
+    /// facets are independent, and `admit` must NOT move the hold, because that would change behaviour. An EXTERNAL replacement is admitted
+    /// while its reservation is still `DISPATCHED` (NodeReplacementWiring settles it at DONE), and a rollback after the join leaves `RELEASED`.
+    @Nested
+    class TodaysPairs {
+        private String pair() {
+            var value = stored();
+
+            return value.identity().map(facet -> facet.state().name()).or("no identity")
+                   + "+"
+                   + value.capacity().map(facet -> facet.phase().name()).or("no capacity");
+        }
+
+        @Test
+        void admit_keepsADispatchedHold_ofAnExternalReplacement_andDoesNotTouchTheLedger() {
+            seedLedger(0, 1L, true);
+            assertThat(reserve()).isTrue();
+            var counted = ledger();
+
+            assertThat(admit()).isTrue();
+
+            assertThat(pair()).isEqualTo("ADMITTED+DISPATCHED");
+            assertThat(ledger()).as("admit moves no count").isEqualTo(counted);
+            assertThat(observe()).as("the settle at DONE").isTrue();
+            assertThat(pair()).isEqualTo("ADMITTED+OBSERVED");
+        }
+
+        @Test
+        void everyPairThatExistsToday_isReachedByTheBuilders() {
+            var reached = new java.util.TreeSet<String>();
+
+            setUp();
+            reached.add("no identity+no capacity");
+            assertThat(admit()).isTrue();
+            reached.add(pair());
+
+            setUp();
+            seedLedger(0, 1L, true);
+            assertThat(reserve()).isTrue();
+            reached.add(pair());
+            assertThat(refuse()).isTrue();
+            reached.add(pair());
+            assertThat(observe()).isTrue();
+            reached.add(pair());
+            assertThat(admit()).isTrue();
+            reached.add(pair());
+            assertThat(commit(LifecycleMutations.depart(NODE, record(), 140L))).isTrue();
+            reached.add(pair());
+            assertThat(free(FreedCause.OPERATOR_CLEAR)).isTrue();
+            reached.add(pair());
+            assertThat(commit(LifecycleMutations.terminate(NODE, record(), IdentityCause.GONE, 150L))).isTrue();
+            reached.add(pair());
+
+            setUp();
+            seedLedger(0, 1L, true);
+            assertThat(reserve() && admit() && refuse()).isTrue();
+            reached.add(pair());
+
+            assertThat(reached).containsExactlyInAnyOrder("no identity+no capacity",
+                                                          "ADMITTED+no capacity",
+                                                          "no identity+DISPATCHED",
+                                                          "no identity+RELEASED",
+                                                          "no identity+OBSERVED",
+                                                          "ADMITTED+OBSERVED",
+                                                          "DEPARTED+OBSERVED",
+                                                          "DEPARTED+FREED",
+                                                          "TERMINATED+FREED",
+                                                          "ADMITTED+RELEASED");
+        }
+
+        @Test
+        void aHoldWithTheUncountedBinding_isRepresentable_andFreesWithoutBecomingAbsent() {
+            var uncounted = new CapacityFacet(SOURCE, "external-uncounted", "core", CapacityPhase.DISPATCHED, Option.none(), Option.none());
+            var seed = new KVCommand.Mutation<AetherKey, AetherValue>(KEY, Option.none(), Option.some(new NodeLifecycleValue(Option.none(), Option.some(uncounted))));
+
+            assertThat(commit(Result.success(List.of(seed)))).isTrue();
+
+            assertThat(capacity().sourceBinding()).isEqualTo("external-uncounted");
+            assertThat(capacity().phase()).isEqualTo(CapacityPhase.DISPATCHED);
+        }
+
+        @Test
+        void noBuilder_writesAnUnknownPhaseOrCause() {
+            seedLedger(0, 1L, true);
+            var built = new ArrayList<Result<List<KVCommand.Mutation<AetherKey, AetherValue>>>>();
+
+            built.add(LifecycleMutations.reserve(NODE, Option.none(), ledger(), LIMIT, SOURCE, BINDING, "core"));
+            built.add(LifecycleMutations.observe(NODE, Option.none(), ledger(), SOURCE, BINDING));
+            built.add(LifecycleMutations.admit(NODE, Option.none(), PROCESS, "core", 1L));
+            assertThat(reserve()).isTrue();
+            built.add(LifecycleMutations.refuse(NODE, record(), SOURCE, BINDING));
+            built.add(LifecycleMutations.observe(NODE, record(), ledger(), SOURCE, BINDING));
+            built.add(LifecycleMutations.free(NODE, record(), ledger(), FreedCause.TERMINATED, 1L));
+            assertThat(admit()).isTrue();
+            built.add(LifecycleMutations.depart(NODE, record(), 2L));
+            built.add(LifecycleMutations.terminate(NODE, record(), IdentityCause.GONE, 3L));
+
+            assertThat(built).hasSize(8);
+            built.forEach(result -> result.onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()))
+                                          .onSuccess(mutations -> mutations.stream()
+                                                                           .map(m -> m.replacement().or((AetherValue) null))
+                                                                           .filter(NodeLifecycleValue.class::isInstance)
+                                                                           .map(NodeLifecycleValue.class::cast)
+                                                                           .forEach(value -> {
+                                                                               assertThat(value.capacity().map(CapacityFacet::phase).or(CapacityPhase.DISPATCHED)).isNotEqualTo(CapacityPhase.UNKNOWN);
+                                                                               assertThat(value.capacity().flatMap(CapacityFacet::freedCause).or(FreedCause.REFUSED)).isNotEqualTo(FreedCause.UNKNOWN);
+                                                                               assertThat(value.identity().map(IdentityFacet::state).or(IdentityState.ADMITTED)).isNotEqualTo(IdentityState.UNKNOWN);
+                                                                               assertThat(value.identity().flatMap(IdentityFacet::cause).or(IdentityCause.GONE)).isNotEqualTo(IdentityCause.UNKNOWN);
+                                                                           })));
+        }
+    }
+
     @Nested
     class OneRecord {
         @Test
