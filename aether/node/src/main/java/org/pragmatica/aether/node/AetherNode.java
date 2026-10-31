@@ -142,6 +142,7 @@ import org.pragmatica.aether.stream.replication.StreamPartitionOwnershipWriter;
 import org.pragmatica.aether.stream.replication.ReplicationState;
 import org.pragmatica.aether.stream.segment.RetentionEnforcer;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
+import org.pragmatica.aether.stream.segment.SegmentSealer;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
@@ -307,6 +308,7 @@ public interface AetherNode extends ManageableNode {
     DeploymentMap deploymentMap();
     ClusterEventAggregator eventAggregator();
     StreamPartitionManager streamPartitionManager();
+    SegmentSealer streamSegmentSealer();
     StreamReadRouter streamReadRouter();
     ConsumerGroupCoordinator consumerGroupCoordinator();
     ConsumerGroupRegistry consumerGroupRegistry();
@@ -1579,6 +1581,7 @@ public interface AetherNode extends ManageableNode {
                           SpokesmanPingLoop spokesmanPingLoop,
                           AtomicReference<GovernorAnnouncer> governorAnnouncerHolder,
                           RetentionEnforcer streamRetentionEnforcer,
+                          SegmentSealer streamSegmentSealer,
                           StreamConsumerRuntime streamConsumerRuntime,
                           long startTimeMs,
                           AtomicLong swimBootAt,
@@ -1757,6 +1760,11 @@ public interface AetherNode extends ManageableNode {
                 // those lookups resolve empty — the listener removal is silently inert — and the cursor
                 // write races clusterNode.stop() at the tail of this method.
                 streamConsumerRuntime.close();
+                // #2201 C-02 / #1875: seal what is queued now, best effort (a WAL-backed range is replayed at restart
+                // anyway; without a WAL this narrows the acknowledged-but-unsealed window a stop would lose), then close
+                // the sealer so no age timer or retry outlives the node; before the partition manager closes the WALs.
+                streamSegmentSealer.flushAll();
+                streamSegmentSealer.close();
                 streamPartitionManager.close();
                 // #932: after the partition manager, whose close can still be answered by a backfill
                 // already in flight; before the cluster node, which the controller's reconcile reads.
@@ -3332,6 +3340,7 @@ public interface AetherNode extends ManageableNode {
                                   spokesmanPingLoop,
                                   governorAnnouncerHolder,
                                   streamRetentionEnforcer,
+                                  streamSegmentSealer,
                                   streamConsumerRuntime,
                                   startTimeMs,
                                   swimBootAtMs,
@@ -3491,6 +3500,7 @@ public interface AetherNode extends ManageableNode {
                                                                             spokesmanPingLoop,
                                                                             governorAnnouncerHolder,
                                                                             streamRetentionEnforcer,
+                                                                            streamSegmentSealer,
                                                                             streamConsumerRuntime,
                                                                             startTimeMs,
                                                                             swimBootAtMs,
