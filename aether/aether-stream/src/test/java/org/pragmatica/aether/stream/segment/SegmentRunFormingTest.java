@@ -317,6 +317,382 @@ class SegmentRunFormingTest {
         assertThat(sealer.armedTimers()).as("close cancelled it").isZero();
     }
 
+    /// Adversarial hazards of the run former (the PR-1a self-pass). Each names the mutation that reddens it.
+    @Nested
+    class Hazards {
+        /// A gap ends the run: offsets 0-2 and 5-7 never share a block. Red under "a run takes every queued entry".
+        @Test
+        void aGap_endsTheRun() {
+            var sink = RecordingSink.succeeding();
+            var sealer = sealerWith(sink, sealerThresholds(NEVER_BYTES, 6, HOUR, MERGE));
+
+            evict(sealer, 0, 2);
+            evict(sealer, 5, 7);
+            awaitCondition(() -> sink.calls() == 1 && sealer.lowestUnsealed(STREAM, PARTITION).equals(Option.some(5L)));
+            assertThat(range(sink.segment(0))).isEqualTo(List.of(0L, 2L));
+            assertNoSealFor(sink, 1, "3 events after the gap are below seal_run_events");
+        }
+
+        /// `seal_merge_bytes` caps a block; a head larger than the cap still seals, alone. Red under "the cap applies to
+        /// the head" (an empty run: nothing ever seals) and under "no cap".
+        @Test
+        void mergeBytes_capsTheBlock_andAHeadLargerThanTheCapSealsAlone() {
+            var sink = RecordingSink.succeeding();
+            var sealer = sealerWith(sink, sealerThresholds(NEVER_BYTES, 1, HOUR, 2 * EVENT_BYTES));
+            var held = RecordingSink.holding();
+            var gated = sealerWith(held, sealerThresholds(NEVER_BYTES, 1, HOUR, 2 * EVENT_BYTES));
+
+            evict(sealer, 0, 4);
+            awaitCondition(() -> sink.calls() == 1);
+            assertThat(range(sink.segment(0))).as("five events, more than the cap, seal alone").isEqualTo(List.of(0L, 4L));
+
+            evict(gated, 0, 0);
+            awaitCondition(() -> held.calls() == 1);
+            LongStream.rangeClosed(1, 5).forEach(offset -> evict(gated, offset, offset));
+            held.open();
+            awaitCondition(() -> gated.lowestUnsealed(STREAM, PARTITION).isEmpty());
+            assertThat(held.segments().stream().map(SegmentRunFormingTest::range).toList())
+                .as("the backlog 1-5 in blocks of at most two events").containsExactly(List.of(0L, 0L), List.of(1L, 2L), List.of(3L, 4L), List.of(5L, 5L));
+        }
+
+        /// I-07 across retry cycles: when a cycle is exhausted, the next cycle retries the SAME run, not one re-formed
+        /// from a queue that grew meanwhile. Red under "a new cycle re-forms the run at the head".
+        @Test
+        void aNewRetryCycle_retriesTheSameRun_notOneGrownByWhatQueuedMeanwhile() {
+            var sink = RecordingSink.holding();
+            var sealer = SegmentSealer.segmentSealer(sink,
+                                                     DEFAULT_PENDING_CAP_BYTES,
+                                                     sealerThresholds(NEVER_BYTES, 3, HOUR, MERGE),
+                                                     1,
+                                                     timeSpan(10).millis(),
+                                                     timeSpan(100).millis());
+
+            LongStream.rangeClosed(0, 2).forEach(offset -> evict(sealer, offset, offset));
+            awaitCondition(() -> sink.calls() == 1);
+            LongStream.rangeClosed(3, 5).forEach(offset -> evict(sealer, offset, offset));
+            sink.fail(0);
+            awaitCondition(() -> sink.calls() == 2);
+            assertThat(range(sink.segment(1))).as("the next cycle's run").isEqualTo(List.of(0L, 2L));
+            sink.succeed(1);
+            awaitCondition(() -> sink.calls() == 3);
+            assertThat(range(sink.segment(2))).isEqualTo(List.of(3L, 5L));
+            sink.succeed(2);
+            sealer.close();
+        }
+
+        /// #1875: close with three things pending: a failed seal backing off (partition 0), an age timer (partition 1) and a
+        /// first attempt still at the sink (partition 2, which fails after close). After close nothing reaches the sink,
+        /// nothing is a WARN or ERROR (the sealer's or the retry's), nothing is retried, no timer stays armed, and nothing
+        /// pending is dropped. Red under "a retry already scheduled runs after close", "close leaves the age timer", "a
+        /// failure after close WARNs", "a failed seal is retried after close", "an exhausted cycle after close logs and
+        /// re-arms", "`maybeDrain` runs after close" and "`SEALER_CLOSED` is terminal" (the retry WARNs on it).
+        @Test
+        void close_withARetryBackingOff_anAgeTimer_andASealAtTheSink_sealsNothing_andWarnsNothing_afterIt() {
+            var sink = RecordingSink.holding();
+            var sealer = sealerWith(sink, sealerThresholds(NEVER_BYTES, 2, timeSpan(400).millis(), MERGE));
+
+            sealer.onEviction(STREAM, 0, events(0, 1));
+            awaitCondition(() -> sink.calls() == 1);
+            sealer.onEviction(STREAM, 2, events(0, 1));
+            awaitCondition(() -> sink.calls() == 2);
+            sealer.onEviction(STREAM, 1, events(0, 0));
+            assertThat(sealer.armedTimers()).as("control: partition 1 waits on its age timer").isEqualTo(1);
+            sink.fail(sink.callFor(0));
+            LockSupport.parkNanos(20_000_000L);
+
+            try (var sealerLog = org.pragmatica.testlogging.LogCapture.capture(SegmentSealer.class, org.apache.logging.log4j.Level.WARN, true);
+                 var retryLog = org.pragmatica.testlogging.LogCapture.capture(org.pragmatica.lang.utils.Retry.class.getName(),
+                                                                             org.apache.logging.log4j.Level.DEBUG,
+                                                                             true)) {
+                sealer.close();
+                sink.fail(sink.callFor(2));
+                LockSupport.parkNanos(1_200_000_000L);
+
+                assertThat(sink.calls()).as("no seal after close: no retry of partition 0 or 2, no age seal of partition 1").isEqualTo(2);
+                assertThat(sealerLog.messages()).as("sealer WARN/ERROR after close").isEmpty();
+                assertThat(retryLog.entries()).as("the retry after close: no WARN, no further attempt")
+                                              .noneMatch(entry -> entry.level().isMoreSpecificThan(org.apache.logging.log4j.Level.WARN)
+                                                                  || entry.message().contains("retrying after"));
+            }
+
+            assertThat(sealer.armedTimers()).isZero();
+            assertThat(sealer.sealFailureCount()).as("both failures are still counted").isEqualTo(2L);
+            assertThat(List.of(0, 1, 2)).as("nothing pending is dropped by close")
+                                        .allMatch(partition -> sealer.holdsUnsealed(STREAM, partition, 0));
+        }
+
+        /// After a run seals, the next one counts from zero and waits for its own threshold; it is not sealed because the
+        /// previous seal landed. Red under "a landed seal drains the next head at once" and under "a sealed run's events
+        /// stay counted".
+        @Test
+        void afterASeal_theNextRunCountsFromZero_andWaitsForItsThreshold() {
+            var sink = RecordingSink.holding();
+            var sealer = sealerWith(sink, sealerThresholds(NEVER_BYTES, 3, HOUR, MERGE));
+
+            LongStream.rangeClosed(0, 2).forEach(offset -> evict(sealer, offset, offset));
+            awaitCondition(() -> sink.calls() == 1);
+            evict(sealer, 3, 3);
+            sink.succeed(0);
+            assertNoSealFor(sink, 1, "one event behind the landed seal");
+            evict(sealer, 4, 4);
+            assertNoSealFor(sink, 1, "two events since the seal");
+            evict(sealer, 5, 5);
+            awaitCondition(() -> sink.calls() == 2);
+            assertThat(range(sink.segment(1))).isEqualTo(List.of(3L, 5L));
+        }
+
+        /// The byte counter of a run also starts from zero after its seal. Red under "a sealed run's bytes stay counted".
+        @Test
+        void afterASeal_theNextRunsBytesCountFromZero() {
+            var sink = RecordingSink.succeeding();
+            var sealer = sealerWith(sink, sealerThresholds(3 * EVENT_BYTES, NEVER_EVENTS, HOUR, MERGE));
+
+            evict(sealer, 0, 2);
+            awaitCondition(() -> sink.calls() == 1);
+            evict(sealer, 3, 4);
+            assertNoSealFor(sink, 1, "two events' bytes since the seal");
+            evict(sealer, 5, 5);
+            awaitCondition(() -> sink.calls() == 2);
+            assertThat(range(sink.segment(1))).isEqualTo(List.of(3L, 5L));
+        }
+
+        /// A timer that fired for one run re-arms for the next: the second run is aged by its own deadline. Red under "a
+        /// fired timer stays marked armed" (the second run never seals).
+        @Test
+        void aSecondRun_isAgedByItsOwnTimer() {
+            var sink = RecordingSink.succeeding();
+            var sealer = sealerWith(sink, sealerThresholds(NEVER_BYTES, NEVER_EVENTS, timeSpan(200).millis(), MERGE));
+
+            evict(sealer, 0, 0);
+            awaitCondition(() -> sink.calls() == 1);
+            LockSupport.parkNanos(100_000_000L);
+            evict(sealer, 1, 1);
+            awaitCondition(() -> sink.calls() == 2, 2_000);
+            assertThat(range(sink.segment(1))).isEqualTo(List.of(1L, 1L));
+            assertThat(sealer.ageTimersScheduled()).isEqualTo(2L);
+        }
+
+        /// A seal whose first attempt was started before close still runs (the node-stop flush), but its retry does not.
+        /// Red under "close refuses a first attempt" (flushAll then close seals nothing).
+        @Test
+        void flushAllThenClose_sealsTheQueuedRun_once() {
+            var sink = RecordingSink.succeeding();
+            var sealer = sealerWith(sink, sealerThresholds(NEVER_BYTES, NEVER_EVENTS, HOUR, MERGE));
+
+            LongStream.rangeClosed(0, 4).forEach(offset -> evict(sealer, offset, offset));
+            assertNoSealFor(sink, "below every threshold");
+            sealer.flushAll();
+            sealer.close();
+            awaitCondition(() -> sink.calls() == 1);
+            assertThat(range(sink.segment(0))).isEqualTo(List.of(0L, 4L));
+            awaitCondition(() -> sealer.lowestUnsealed(STREAM, PARTITION).isEmpty());
+            assertThat(sealer.armedTimers()).isZero();
+        }
+
+        /// A deleted stream's age timer is cancelled with its pending seals. Red under "deletion leaves the timer".
+        @Test
+        void onStreamDeleted_cancelsThePartitionsAgeTimer() {
+            var sink = RecordingSink.succeeding();
+            var sealer = sealerWith(sink, sealerThresholds(NEVER_BYTES, NEVER_EVENTS, timeSpan(300).millis(), MERGE));
+
+            evict(sealer, 0, 1);
+            assertThat(sealer.armedTimers()).as("control").isEqualTo(1);
+            sealer.onStreamDeleted(STREAM);
+
+            assertThat(sealer.armedTimers()).isZero();
+            LockSupport.parkNanos(600_000_000L);
+            assertThat(sink.calls()).isZero();
+            assertThat(sealer.pendingBytes()).isZero();
+        }
+
+        /// One CAS-guarded age timer per partition, however many hand-overs race to arm it. Red under "every admission
+        /// arms a timer".
+        @Test
+        void concurrentAdmissions_armExactlyOneAgeTimerPerPartition() throws InterruptedException {
+            var sink = RecordingSink.succeeding();
+            var sealer = sealerWith(sink, sealerThresholds(NEVER_BYTES, NEVER_EVENTS, HOUR, MERGE));
+            var threads = new ArrayList<Thread>();
+
+            for (var t = 0; t < 4; t++) {
+                var lane = t;
+
+                threads.add(Thread.ofPlatform().start(() -> LongStream.range(0, 50)
+                                                                     .forEach(i -> evict(sealer, i * 4 + lane, i * 4 + lane))));
+            }
+            for (var thread : threads) {
+                thread.join();
+            }
+
+            assertThat(sealer.ageTimersScheduled()).isEqualTo(1L);
+            assertThat(sealer.armedTimers()).isEqualTo(1);
+            assertThat(sink.calls()).isZero();
+            sealer.close();
+        }
+
+        /// Demand flush for an offset whose run is NOT the head: every run up to the one holding it is sealed at once, and a
+        /// read of a lower offset afterwards does not lower that. Red under "the flush readies only the run whose head
+        /// holds the offset" and under "a later read replaces the flush offset".
+        @Test
+        void aReadOfAnOffsetBehindOtherRuns_sealsEveryRunUpToIt() {
+            var sink = RecordingSink.succeeding();
+            var sealer = sealerWith(sink, sealerThresholds(NEVER_BYTES, NEVER_EVENTS, HOUR, 3 * EVENT_BYTES));
+
+            LongStream.rangeClosed(0, 11).forEach(offset -> evict(sealer, offset, offset));
+            assertThat(sealer.holdsUnsealedForRead(STREAM, PARTITION, 7)).isTrue();
+            assertThat(sealer.holdsUnsealedForRead(STREAM, PARTITION, 2)).as("a lower offset read later keeps the flush through 7").isTrue();
+            awaitCondition(() -> !sealer.holdsUnsealed(STREAM, PARTITION, 7), 2_000);
+            assertThat(sink.segments().stream().map(SegmentRunFormingTest::range).toList()).containsExactly(List.of(0L, 2L),
+                                                                                                           List.of(3L, 5L),
+                                                                                                           List.of(6L, 8L));
+            assertNoSealFor(sink, 3, "9-11 lie past the offset read");
+        }
+
+        /// Heap copies at half the pending cap make every run ready at once. Red under "no half-cap trigger".
+        @Test
+        void heapCopiesAtHalfThePendingCap_sealAtOnce() {
+            var sink = RecordingSink.succeeding();
+            var sealer = segmentSealer(sink, 4 * EVENT_BYTES, sealerThresholds(NEVER_BYTES, NEVER_EVENTS, HOUR, MERGE));
+
+            evict(sealer, 0, 0);
+            assertNoSealFor(sink, "a quarter of the cap");
+            evict(sealer, 1, 1);
+            awaitCondition(() -> sink.calls() == 1, 2_000);
+            assertThat(range(sink.segment(0))).isEqualTo(List.of(0L, 1L));
+        }
+
+        /// Without a WAL the cap still refuses a hand-over with `SEALING_BEHIND` (the one refusal), runs or not. Red under
+        /// "`reserve` admits past the cap".
+        @Test
+        void withoutAWal_aHandOverPastTheCap_isStillRefusedSealingBehind() {
+            var sink = RecordingSink.holding();
+            var sealer = segmentSealer(sink, 2 * EVENT_BYTES, sealerThresholds(NEVER_BYTES, NEVER_EVENTS, HOUR, MERGE));
+
+            evict(sealer, 0, 0);
+            evict(sealer, 1, 1);
+            var refused = sealer.onEviction(STREAM, PARTITION, events(2, 2));
+
+            assertThat(refused.isFailure()).isTrue();
+            refused.onFailure(cause -> assertThat(cause).isEqualTo(org.pragmatica.aether.stream.StreamError.General.SEALING_BEHIND));
+            assertThat(sealer.refusalCount()).isEqualTo(1L);
+            assertThat(sealer.holdsUnsealed(STREAM, PARTITION, 2)).isFalse();
+            sink.open();
+        }
+
+        /// "Segment format unchanged": a merged block reads back through the real sink and reader in offset order with
+        /// each event's own offset, timestamp and bytes, from its start and from inside it; a block sealed one event at a
+        /// time (as before runs) reads beside it. Red under "a merged block concatenates its parts out of order" and under
+        /// "a merged block takes its first part's end".
+        @Test
+        void aMergedBlock_readsBackInOffsetOrder_besideABlockOfOneEvent(@TempDir Path tierDir) {
+            var storage = StorageInstance.storageInstance("tier", List.of(LocalDiskTier.localDiskTier(tierDir, ONE_GB).unwrap()));
+            var index = new SegmentIndex();
+            var sink = storageSegmentSink(storage, index);
+            var sealer = segmentSealer(sink, DEFAULT_PENDING_CAP_BYTES, sealerThresholds(NEVER_BYTES, 9, HOUR, MERGE));
+            var single = segmentSealer(sink, DEFAULT_PENDING_CAP_BYTES, SealerThresholds.immediate());
+            var reader = segmentReader(storage, index);
+
+            single.onEviction(STREAM, PARTITION, events(0, 0));
+            awaitCondition(() -> single.lowestUnsealed(STREAM, PARTITION).isEmpty());
+            LongStream.rangeClosed(1, 9).forEach(offset -> evict(sealer, offset, offset));
+            awaitCondition(() -> sealer.lowestUnsealed(STREAM, PARTITION).isEmpty());
+
+            assertThat(index.listSegments(STREAM, PARTITION)).extracting(SegmentIndex.SegmentRef::startOffset, SegmentIndex.SegmentRef::endOffset)
+                                                              .containsExactly(org.assertj.core.groups.Tuple.tuple(0L, 0L),
+                                                                               org.assertj.core.groups.Tuple.tuple(1L, 9L));
+            assertThat(readBack(reader, 0, 10)).containsExactlyElementsOf(expectedEvents(0, 9));
+            assertThat(readBack(reader, 4, 3)).as("from inside the merged block").containsExactlyElementsOf(expectedEvents(4, 6));
+            storage.shutdown();
+        }
+
+        private static List<Decoded> readBack(SegmentReader reader, long from, int count) {
+            return reader.readEvents(STREAM, PARTITION, from, count)
+                         .await()
+                         .unwrap()
+                         .stream()
+                         .map(event -> new Decoded(event.offset(), event.timestamp(), new String(event.data())))
+                         .toList();
+        }
+    }
+
+    /// The reader seam: `StreamPartitionManager.sealInFlight`, which every tier-fallback and catch-up read asks, is the READ
+    /// form, so asking it seals the offset's run. Red under "`sealInFlight` asks `holdsUnsealed`".
+    @Test
+    void theManagersSealInFlight_isAReadThatSealsTheRun() {
+        var sink = RecordingSink.succeeding();
+        var sealer = sealerWith(sink, sealerThresholds(NEVER_BYTES, NEVER_EVENTS, HOUR, MERGE));
+        var manager = org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE, sealer);
+
+        manager.createStream(org.pragmatica.aether.slice.StreamConfig.streamConfig(STREAM,
+                                                                                  1,
+                                                                                  org.pragmatica.aether.slice.RetentionPolicy.retentionPolicy(4, 1_048_576L, 600_000L),
+                                                                                  "earliest"))
+               .onFailure(cause -> fail(cause.message()));
+        for (long offset = 0; offset < 10; offset++) {
+            manager.publishLocal(STREAM, PARTITION, payload(offset), 1000L + offset).onFailure(cause -> fail("publish: " + cause.message()));
+        }
+        assertNoSealFor(sink, "below every threshold");
+
+        assertThat(manager.sealInFlight(STREAM, PARTITION, 0)).isTrue();
+        awaitCondition(() -> sink.calls() == 1, 2_000);
+        assertThat(range(sink.segment(0))).isEqualTo(List.of(0L, 5L));
+        manager.close();
+    }
+
+    /// A listener that persists but knows nothing of runs answers the read form as `holdsUnsealed`. Red under "the
+    /// default answers false".
+    @Test
+    void theListenersReadForm_defaultsToHoldsUnsealed() {
+        org.pragmatica.aether.stream.EvictionListener listener = new org.pragmatica.aether.stream.EvictionListener() {
+            @Override
+            public org.pragmatica.lang.Result<Unit> onEviction(String streamName, int partition, List<RawEvent> events) {
+                return org.pragmatica.lang.Result.unitResult();
+            }
+
+            @Override
+            public boolean holdsUnsealed(String streamName, int partition, long offset) {
+                return offset == 7;
+            }
+        };
+
+        assertThat(listener.holdsUnsealedForRead(STREAM, PARTITION, 7)).isTrue();
+        assertThat(listener.holdsUnsealedForRead(STREAM, PARTITION, 8)).isFalse();
+    }
+
+    /// The defaults are the spec's four guesses (4.2), and the node config's defaults are checked against these in
+    /// `StreamAssemblySealerThresholdsTest`.
+    @Test
+    void theDefaults_areTheSpecsGuesses() {
+        assertThat(SealerThresholds.defaults()).isEqualTo(sealerThresholds(1024 * 1024L, 4096, timeSpan(5).seconds(), 4 * 1024 * 1024L));
+    }
+
+    /// A drain step that throws (never expected; here the failure's own message throws while the exhausted cycle is
+    /// logged) is counted, and the partition's run is sealed after the pause, through `maybeDrain`. Red under "a drain
+    /// crash does not resume".
+    @Test
+    void aDrainStepThatThrows_isCounted_andTheRunIsSealedAfterThePause() {
+        var calls = new AtomicInteger();
+        var sealer = SegmentSealer.segmentSealer((_, _) -> calls.incrementAndGet() == 1
+                                                           ? new MessageThrows().<Unit> promise()
+                                                           : Promise.success(unit()),
+                                                 DEFAULT_PENDING_CAP_BYTES,
+                                                 sealerThresholds(NEVER_BYTES, 1, HOUR, MERGE),
+                                                 1,
+                                                 timeSpan(10).millis(),
+                                                 timeSpan(100).millis());
+
+        evict(sealer, 0, 1);
+        awaitCondition(() -> sealer.lowestUnsealed(STREAM, PARTITION).isEmpty());
+        assertThat(sealer.drainCrashCount()).isGreaterThanOrEqualTo(1L);
+        assertThat(calls.get()).isEqualTo(2);
+    }
+
+    record MessageThrows() implements org.pragmatica.lang.Cause {
+        @Override
+        public String message() {
+            throw new IllegalStateException("message unavailable");
+        }
+    }
+
     private static SegmentSealer sealerWith(SegmentSink sink, SealerThresholds thresholds) {
         return segmentSealer(sink, DEFAULT_PENDING_CAP_BYTES, thresholds);
     }
@@ -489,6 +865,17 @@ class SegmentRunFormingTest {
 
         int calls() {
             return segments.size();
+        }
+
+        /// The call that sealed partition `partition` (each partition is sealed once in the tests that use it).
+        int callFor(int partition) {
+            for (var call = 0; call < segments.size(); call++) {
+                if (segments.get(call).partition() == partition) {
+                    return call;
+                }
+            }
+
+            throw new AssertionError("no seal of partition " + partition);
         }
 
         SealedSegment segment(int call) {
