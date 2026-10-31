@@ -7,6 +7,7 @@ package org.pragmatica.aether.ember;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.function.BooleanSupplier;
@@ -84,6 +85,9 @@ class EmberCheckpointReclaimTest {
     private static final long DEAD_MARGIN_MS = 20_000L;
     /// The returned replica was a member again 40 s after it returned in the v-2516 probe; the budget is generous.
     private static final long REJOIN_BUDGET_MS = 240_000L;
+    /// How long the returned replica must stay a member with no replacement core joining: past the leader's deficit debounce (15 s after
+    /// the Dead verdict), by which a replacement would have been provisioned, and the excess scale-down that would follow.
+    private static final long STAY_MS = 30_000L;
     private static final String DEAD = "Dead";
     private static final String MEMBER = "Member";
     private static final String KEYSPACE = "reclaim";
@@ -186,6 +190,8 @@ class EmberCheckpointReclaimTest {
         startAFreshCluster();
         var leader = cluster().currentLeader().or("none");
         var nodes = cluster().allNodes();
+
+        disableAutoHeal(nodes, leader);
         var cutOff = nodes.stream().filter(node -> !node.self().id().equals(leader)).findFirst().orElseThrow();
         var writers = nodes.stream().filter(node -> node != cutOff).toList();
         var nodeA = writers.get(0);
@@ -215,14 +221,18 @@ class EmberCheckpointReclaimTest {
         }
 
         var resurrected = new ArrayList<String>();
+        var replacements = new LinkedHashSet<String>();
         var seen = new ArrayList<String>();
 
         awaitCondition("the returned replica is a member again and no engine holds a live B0", REJOIN_BUDGET_MS, () -> {
             writers.stream().filter(node -> holdsLive(node, key)).forEach(node -> resurrected.add(node.self().id()));
+            replacements.addAll(newcomers(nodes));
             noteChange(seen, stateOf(nodeA, cutOff) + ", live B0 on " + nodes.stream().filter(node -> holdsLive(node, key)).map(node -> node.self().id()).toList(), cutAt);
 
             return stateOf(nodeA, cutOff).equals(MEMBER) && nodes.stream().noneMatch(node -> holdsLive(node, key));
         });
+        assertThat(replacements).as("control: no replacement core was provisioned while the replica returned").isEmpty();
+        holdsFor("the returned replica stays a member and no replacement core joins", STAY_MS, () -> stateOf(nodeA, cutOff).equals(MEMBER) && newcomers(nodes).isEmpty());
         System.out.printf("NT-63 arm b: replica %s a member again %d ms after the cut; its engine entry for B0: %s%n",
                           cutOff.self().id(),
                           System.currentTimeMillis() - cutAt,
@@ -242,6 +252,33 @@ class EmberCheckpointReclaimTest {
         stopCluster();
         cluster = null;
         generation++;
+    }
+
+    /// With auto-heal on, the leader provisions a replacement core once the Dead replica's absence outlasts its deficit debounce, and then
+    /// scales the returned replica away as the excess, so it is never a member again (CI ember-shard-2 at 3f6814b5d3, and run 1 on the
+    /// shared cluster: a race between that debounce and the return). Arm b is about the DHT tombstone, not auto-heal: its cluster runs
+    /// with auto-heal off, through the consensus-backed switch, and every node must read it off before the cut.
+    private static void disableAutoHeal(List<AetherNode> nodes, String leader) {
+        var leaderNode = nodes.stream().filter(node -> node.self().id().equals(leader)).findFirst().orElseThrow();
+
+        assertThat(leaderNode.clusterTopologyManager()
+                             .map(ctm -> ctm.setAutoHealEnabled(false, "NT-63 arm b").await(SAVE_BOUND).isSuccess())
+                             .or(false)).as("auto-heal is disabled for arm b's cluster")
+                                        .isTrue();
+        awaitCondition("every node reads auto-heal disabled", REPLICATION_BUDGET_MS, () -> nodes.stream().allMatch(EmberCheckpointReclaimTest::autoHealDisabled));
+    }
+
+    /// Nodes in the cluster now that are not among `original`: a replacement core the leader provisioned.
+    private List<String> newcomers(List<AetherNode> original) {
+        var ids = original.stream().map(node -> node.self().id()).toList();
+
+        return cluster().allNodes().stream().map(node -> node.self().id()).filter(id -> !ids.contains(id)).toList();
+    }
+
+    private static boolean autoHealDisabled(AetherNode node) {
+        return node.clusterTopologyManager()
+                   .map(ctm -> !ctm.isAutoHealEnabled())
+                   .or(false);
     }
 
     /// Prints the returning replica's state each time it changes, so a red run shows where the return stopped.
@@ -345,6 +382,19 @@ class EmberCheckpointReclaimTest {
         }
 
         throw new AssertionError("not within " + budgetMs + "ms: " + what);
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static void holdsFor(String what, long budgetMs, BooleanSupplier condition) {
+        var deadline = System.currentTimeMillis() + budgetMs;
+
+        while (System.currentTimeMillis() < deadline) {
+            if (!condition.getAsBoolean()) {
+                throw new AssertionError("did not hold for " + budgetMs + "ms: " + what);
+            }
+
+            pause(250L);
+        }
     }
 
     @SuppressWarnings("JBCT-EX-01")
