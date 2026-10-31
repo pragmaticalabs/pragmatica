@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.environment;
 
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
@@ -31,13 +32,17 @@ import static org.pragmatica.lang.Result.success;
 ///  - [#marketOptions] — spot placement parameters (price cap, interruption behavior); only
 ///    the AWS spot arm consumes them today (RFC-0016 §2.5-ii).
 ///  - [#context] — the unchanged provisioning intent (role/cluster/source/nodeId/peers/tags).
+///  - [#operationId] — the identity of THIS create, which a provider that can honour it gives the server as its name so a
+///    repeated create is refused by the provider (G1-a). Filled by [ComputeProvider#provision] only for such a provider
+///    ([ComputeProvider#honoursOperationId]); empty otherwise. A provider that cannot honour a present one refuses it.
 public record ProvisionRequest(InstanceType market,
                                String instanceSize,
                                String image,
                                String zone,
                                Option<String> userData,
                                MarketOptions marketOptions,
-                               ProvisionContext context) {
+                               ProvisionContext context,
+                               Option<OperationId> operationId) {
     private static final Logger log = LoggerFactory.getLogger(ProvisionRequest.class);
     /// Sentinel the producers pass in [ProvisionSpec#instanceSize] when they carry no concrete
     /// type (CTM auto-heal always; bootstrap for roles without an `instance_type`). Treated as
@@ -52,6 +57,17 @@ public record ProvisionRequest(InstanceType market,
                                                          + "Set instance_type on the source's role (bootstrap) or the provider's instance-type config so auto-heal "
                                                          + "replacements inherit the cluster's type.";
 
+    /// A request that names no operation: what [#resolve] builds, and what a provider that cannot honour an operation id receives.
+    public ProvisionRequest(InstanceType market,
+                            String instanceSize,
+                            String image,
+                            String zone,
+                            Option<String> userData,
+                            MarketOptions marketOptions,
+                            ProvisionContext context) {
+        this(market, instanceSize, image, zone, userData, marketOptions, context, Option.empty());
+    }
+
     /// Resolve a producer-built [ProvisionSpec] into a total create request using
     /// [ProviderDefaults] for the config-level fallbacks. Fails loud (#442) when no instance
     /// size resolves; every other field falls back silently to the provider default, with a
@@ -60,6 +76,27 @@ public record ProvisionRequest(InstanceType market,
         return resolveInstanceSize(spec.instanceSize(), defaults.instanceSize()).map(instanceSize -> build(spec,
                                                                                                            defaults,
                                                                                                            instanceSize));
+    }
+
+    /// This request with its operation id taken from the context's node id (DG-1: the operation id IS the node id the intent
+    /// minted). A node id outside the [OperationId] grammar, or none, leaves it empty; a provider that names servers by the
+    /// operation id then derives it from the context itself and refuses what does not fit, instead of falling back to a name
+    /// the provider cannot deduplicate.
+    public ProvisionRequest named() {
+        return new ProvisionRequest(market,
+                                    instanceSize,
+                                    image,
+                                    zone,
+                                    userData,
+                                    marketOptions,
+                                    context,
+                                    context.nodeId().flatMap(raw -> OperationId.operationId(raw).option()));
+    }
+
+    /// The refusal a provider that cannot honour an operation id answers a request that carries one with (G1-a), empty when the
+    /// request names none. A provider checks this first: ignoring a present id would let the caller believe a repeated create is harmless.
+    public Option<Cause> refuseOperationId(String provider) {
+        return operationId.map(name -> EnvironmentError.operationIdUnsupported(provider, name));
     }
 
     private static ProvisionRequest build(ProvisionSpec spec, ProviderDefaults defaults, String instanceSize) {

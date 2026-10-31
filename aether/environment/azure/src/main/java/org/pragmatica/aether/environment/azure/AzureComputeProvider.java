@@ -82,6 +82,12 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
     /// surface eliminates.
     @Override
     public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
+        var unsupported = request.refuseOperationId("azure");
+
+        if (unsupported.isPresent()) {
+            return unsupported.unwrap().promise();
+        }
+
         if (request.market() instanceof InstanceType.Spot) {
             return SPOT_UNSUPPORTED.promise();
         }

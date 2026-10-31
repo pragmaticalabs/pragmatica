@@ -79,6 +79,12 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     /// `InstanceMarketOptions` (RFC-0016 §2.5-ii).
     @Override
     public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
+        var unsupported = request.refuseOperationId("aws");
+
+        if (unsupported.isPresent()) {
+            return unsupported.unwrap().promise();
+        }
+
         var tags = tagsFor(request.context());
 
         return resolveSecurityGroupIds(request.context()).flatMap(groupIds -> client.runInstances(buildRunRequest(request,

@@ -554,6 +554,106 @@ class HetznerComputeProviderTest {
                     .matches("[a-z0-9-]{1,63}");
         }
 
+        @Test
+        void createFrom_nodeIdWithUpperCase_isRefusedBeforeAnyCreate() {
+            // Names are case-sensitive (P-G1 A4): an upper-case twin of a lower-case name is a different server, so it must not be created.
+            provider.createFrom(requestFor("Node-1"))
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(HetznerComputeProviderTest::assertProvisionFailedError);
+
+            assertThat(testClient.createServerCalls).isZero();
+        }
+
+        @Test
+        void createFrom_nodeIdLongerThanAServerName_isRefusedBeforeAnyCreate() {
+            provider.createFrom(requestFor("a".repeat(64)))
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(HetznerComputeProviderTest::assertProvisionFailedError);
+
+            assertThat(testClient.createServerCalls).isZero();
+        }
+
+        @Test
+        void createFrom_uniquenessError_serverCarryingOurLabels_isAlreadyExistsAndNothingIsCreatedAgain() {
+            testClient.createServerResponse = nameTaken();
+            testClient.listServersResponse = Promise.success(List.of(serverNamed(77, "eu-1-core-0", "prod", "eu-1-core-0")));
+
+            provider.createFrom(requestFor("eu-1-core-0"))
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(cause -> assertAlreadyExists(cause, "77"));
+
+            assertThat(testClient.createServerCalls).isEqualTo(1);
+        }
+
+        @Test
+        void createFrom_uniquenessError_serverOfAnotherCluster_isNameHeldByOtherAndNeverAdopted() {
+            testClient.createServerResponse = nameTaken();
+            testClient.listServersResponse = Promise.success(List.of(serverNamed(78, "eu-1-core-0", "other-cluster", "eu-1-core-0")));
+
+            provider.createFrom(requestFor("eu-1-core-0"))
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(EnvironmentError.NameHeldByOther.class,
+                                                                                 held -> assertThat(held.holder().value()).isEqualTo("78")));
+
+            assertThat(testClient.createServerCalls).isEqualTo(1);
+        }
+
+        @Test
+        void createFrom_uniquenessError_nameNotListed_isAFailedCreateNotAnAdoption() {
+            // The visibility lag (P-G1 A6): the name is taken but the listing does not show it yet. Nothing is adopted and nothing is created again.
+            testClient.createServerResponse = nameTaken();
+            testClient.listServersResponse = Promise.success(List.of());
+
+            provider.createFrom(requestFor("eu-1-core-0"))
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(HetznerComputeProviderTest::assertProvisionFailedError);
+
+            assertThat(testClient.createServerCalls).isEqualTo(1);
+        }
+
+        @Test
+        void createFrom_otherConflict_isNotTakenForAnExistingServer() {
+            testClient.createServerResponse = new HetznerError.ApiError(409, "conflict", "resource is locked").promise();
+            testClient.listServersResponse = Promise.success(List.of(serverNamed(77, "eu-1-core-0", "prod", "eu-1-core-0")));
+
+            provider.createFrom(requestFor("eu-1-core-0"))
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(HetznerComputeProviderTest::assertProvisionFailedError);
+        }
+
+        @Test
+        void createFrom_serverError_isAFailedCreate_neverAnExistingServer() {
+            testClient.createServerResponse = new HetznerError.ApiError(500, "server_error", "boom").promise();
+            testClient.listServersResponse = Promise.success(List.of(serverNamed(77, "eu-1-core-0", "prod", "eu-1-core-0")));
+
+            provider.createFrom(requestFor("eu-1-core-0"))
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(HetznerComputeProviderTest::assertProvisionFailedError);
+
+            assertThat(testClient.createServerCalls).isEqualTo(1);
+        }
+
+        private static Promise<Server> nameTaken() {
+            return new HetznerError.ApiError(409, "uniqueness_error", "server name is already used").promise();
+        }
+
+        private static Server serverNamed(long id, String name, String cluster, String nodeId) {
+            return new Server(id, name, "initializing", serverType(), image(), publicNet("5.6.7.8"), List.of(),
+                              Map.of("aether-cluster", cluster, HetznerComputeProvider.NODE_ID_LABEL, nodeId), null);
+        }
+
+        private static void assertAlreadyExists(Cause cause, String serverId) {
+            assertThat(cause).isInstanceOfSatisfying(EnvironmentError.AlreadyExists.class,
+                                                     existing -> assertThat(existing.existing().id().value()).isEqualTo(serverId));
+        }
+
         private ProvisionRequest requestFor(String nodeId) {
             var context = ProvisionContext.forBootstrap(clusterName("prod").unwrap(), "core", sourceNameOrDefault("eu-1"), nodeId);
 
@@ -1126,11 +1226,13 @@ class HetznerComputeProviderTest {
         Map<String, String> lastUpdateLabels;
         String lastLabelSelector;
         CreateServerRequest lastCreateServerRequest;
+        int createServerCalls;
         boolean listSshKeysCalled;
 
         @Override
         public Promise<Server> createServer(CreateServerRequest request) {
             lastCreateServerRequest = request;
+            createServerCalls++;
             return createServerResponse;
         }
 
