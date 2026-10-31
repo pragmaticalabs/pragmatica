@@ -783,6 +783,13 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// committed Put — bounded by consensus latency, not zero; a node behind on apply answers the
     /// previous value until then.
     @Override
+    public boolean coresAreCloudBacked() {
+        return committedToml().flatMap(ClusterTopologyManagerRecord::parseConfig)
+                              .flatMap(config -> cloudSourceFor(config, NodeRole.CORE))
+                              .isPresent();
+    }
+
+    @Override
     public boolean isAutoHealEnabled() {
         return autoHealStateReader.get()
                                   .map(AutoHealStateValue::enabled)

@@ -77,8 +77,7 @@ public final class CloudProviderSupport {
     }
 
     private static Promise<ProvisionedNode> provisionSingle(ComputeProvider compute, NodeGroupConfig group) {
-        var clusterName = ClusterName.maybeClusterName(group.tags().get("aether-cluster"));
-        var nodeId = ProvisionContext.mintNodeId(clusterName);
+        var nodeId = ProvisionContext.mintCloudNodeId();
 
         return buildProvisionSpec(group, nodeId).async()
                                  .flatMap(compute::provision)

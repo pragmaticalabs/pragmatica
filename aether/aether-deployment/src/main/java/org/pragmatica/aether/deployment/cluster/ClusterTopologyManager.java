@@ -106,6 +106,12 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// Put — bounded by consensus latency, not zero; a node behind on apply answers the previous
     /// value until then. Absent key means enabled (the pre-#685 default).
     boolean isAutoHealEnabled();
+
+    /// Whether the committed configuration backs the CORE role with a CLOUD source. Cloud node ids carry no cluster (the server name
+    /// `<cluster>-<nodeId>` does), Docker ids do; the id prefix of replacements is chosen by this. False without a parsed configuration.
+    default boolean coresAreCloudBacked() {
+        return false;
+    }
     /// #685 — writes the durable KV record via the existing `commandApplier` channel and returns the
     /// PRIOR state once the write is applied. Same visibility caveat as [#isAutoHealEnabled]: other
     /// nodes (including a newly-elected leader) observe the change only after they apply the

@@ -51,7 +51,7 @@ import static org.pragmatica.lang.Result.success;
 ///
 /// #1695: this path used to hand the provider a spec with NO user-data, so an apply-minted cloud node booted with no
 /// identity and no runtime and could never join; and it asked for a location literally named `default` when the source
-/// declared no zone. #1027: the node id is minted HERE, in the CTM scheme (`aether-<cluster>-node-<ulid>`, unique per
+/// declared no zone. #1027: the node id is minted HERE, in the CTM scheme (`aether-node-<ulid>` for a cloud source, `aether-<cluster>-node-<ulid>` for Docker; unique per
 /// call), and the same id goes into the provisioning context and the rendered user-data. The old per-call
 /// `<source>-<role>-<i>` index restarted at 0 on every wave, so threading it would have handed a scale-up node the id of a
 /// live member. Known limitation: a minted id does not parse as `<source>-<role>-<i>`, exactly as a CTM replacement's
@@ -253,13 +253,15 @@ sealed interface WaveNodeProvisioning {
         }
     }
 
-    /// A fresh node id in the CTM scheme, unique per call.
+    /// A fresh DOCKER node id (`aether-<cluster>-node-<ulid>`, cluster-scoped: a container name is unique per daemon and several clusters
+    /// share one), unique per call.
     static Supplier<String> mintedIds(ClusterName clusterName) {
-        return () -> ProvisionContext.provisionContext(Option.some(clusterName),
-                                                       "",
-                                                       SourceName.DEFAULT,
-                                                       ProvisionContext.PROVISIONED_BY_BOOTSTRAP)
-                                     .resolveNodeId();
+        return () -> ProvisionContext.mintNodeId(Option.some(clusterName));
+    }
+
+    /// A fresh CLOUD node id (`aether-node-<ulid>`, no cluster: the server name `<cluster>-<nodeId>` carries it), unique per call.
+    static Supplier<String> cloudMintedIds() {
+        return ProvisionContext::mintCloudNodeId;
     }
 
     /// The node's spec: its id and live peers in the context, rendered user-data, its role image, and a zone
