@@ -785,8 +785,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Override
     public boolean coresAreCloudBacked() {
         return committedToml().flatMap(ClusterTopologyManagerRecord::parseConfig)
-                              .flatMap(config -> cloudSourceFor(config, NodeRole.CORE))
-                              .isPresent();
+                            .flatMap(config -> cloudSourceFor(config, NodeRole.CORE))
+                            .isPresent();
     }
 
     @Override

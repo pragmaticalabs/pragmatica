@@ -112,6 +112,7 @@ public interface ClusterTopologyManager extends TopologyManager {
     default boolean coresAreCloudBacked() {
         return false;
     }
+
     /// #685 — writes the durable KV record via the existing `commandApplier` channel and returns the
     /// PRIOR state once the write is applied. Same visibility caveat as [#isAutoHealEnabled]: other
     /// nodes (including a newly-elected leader) observe the change only after they apply the

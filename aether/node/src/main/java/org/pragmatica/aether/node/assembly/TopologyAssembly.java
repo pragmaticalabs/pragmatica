@@ -636,7 +636,8 @@ public sealed interface TopologyAssembly {
                                                                                             id -> managementServerRef.get()
                                                                                                                      .map(server -> server.replacementDrainUnderWay(id))
                                                                                                                      .or(false),
-                                                                                            () -> ProvisionContext.coreNodeNamePrefix(idScope(clusterTopologyManager, clusterNameSupplier).get()),
+                                                                                            () -> ProvisionContext.coreNodeNamePrefix(idScope(clusterTopologyManager,
+                                                                                                                                              clusterNameSupplier).get()),
                                                                                             id -> dhtNode.ring()
                                                                                                          .nodes()
                                                                                                          .contains(id),
@@ -996,7 +997,8 @@ public sealed interface TopologyAssembly {
     /// The cluster that scopes the node ids a replacement is minted with. Empty when the committed configuration backs the core with a
     /// CLOUD source: cloud ids carry no cluster (`aether-node-<ulid>`), the server name `<cluster>-<nodeId>` does. Docker keeps it
     /// (`aether-<cluster>-node-<ulid>`), because a container name is unique per daemon and several clusters share one.
-    static Supplier<Option<ClusterName>> idScope(ClusterTopologyManager manager, Supplier<Option<ClusterName>> clusterName) {
+    static Supplier<Option<ClusterName>> idScope(ClusterTopologyManager manager,
+                                                 Supplier<Option<ClusterName>> clusterName) {
         return () -> manager.coresAreCloudBacked()
                      ? Option.none()
                      : clusterName.get();
