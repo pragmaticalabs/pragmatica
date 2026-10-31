@@ -12,6 +12,8 @@ import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.aether.environment.ProvisionedNode;
 import org.pragmatica.lang.Result;
 
+import static org.pragmatica.lang.Result.success;
+
 
 /// G1-g: the one place an apply action that would CREATE nodes asks who the pool's decider is ([PoolAuthority]) before it creates.
 /// The leader's pool: create nothing, wait for the leader, report the wait. Apply's pool: create. A refusal creates nothing.
@@ -29,18 +31,32 @@ final class PoolGate {
         }
     }
 
-    static Result<List<ProvisionedNode>> through(PoolAuthority authority,
-                                                 Pool pool,
-                                                 Consumer<String> progress,
-                                                 Supplier<Result<List<ProvisionedNode>>> create) {
+    /// Who decides for the pool, asked BEFORE the action is bracketed in the ledger: a refusal then leaves the ledger as it was. A pool that creates
+    /// no node is apply's (nothing to decide).
+    static Result<PoolAuthority.Actor> decide(PoolAuthority authority, Pool pool) {
         return pool.createsNodes()
                ? authority.actorFor(pool.source(),
                                     pool.role(),
                                     pool.wanted())
-                          .flatMap(actor -> actor == PoolAuthority.Actor.APPLY
-                                            ? create.get()
-                                            : waitForLeader(authority, pool, progress))
-               : create.get();
+               : success(PoolAuthority.Actor.APPLY);
+    }
+
+    /// Acts on the decision: apply creates, the leader's pool is waited for.
+    static Result<List<ProvisionedNode>> carryOut(PoolAuthority.Actor actor,
+                                                  PoolAuthority authority,
+                                                  Pool pool,
+                                                  Consumer<String> progress,
+                                                  Supplier<Result<List<ProvisionedNode>>> create) {
+        return actor == PoolAuthority.Actor.APPLY
+               ? create.get()
+               : waitForLeader(authority, pool, progress);
+    }
+
+    static Result<List<ProvisionedNode>> through(PoolAuthority authority,
+                                                 Pool pool,
+                                                 Consumer<String> progress,
+                                                 Supplier<Result<List<ProvisionedNode>>> create) {
+        return decide(authority, pool).flatMap(actor -> carryOut(actor, authority, pool, progress, create));
     }
 
     private static Result<List<ProvisionedNode>> waitForLeader(PoolAuthority authority,

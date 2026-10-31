@@ -14,6 +14,7 @@ import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
 import tools.jackson.databind.JsonNode;
 
@@ -39,13 +40,13 @@ final class ClusterPoolAuthority implements PoolAuthority {
     private static final Duration DEFAULT_INTERVAL = Duration.ofSeconds(10);
 
     private final Function<ManagementRoute, Result<String>> fetch;
-    private final Consumer<Duration> pause;
+    private final Function<Duration, Result<Unit>> pause;
     private final LongSupplier clockMillis;
     private final Duration timeout;
     private final Duration interval;
 
     private ClusterPoolAuthority(Function<ManagementRoute, Result<String>> fetch,
-                                 Consumer<Duration> pause,
+                                 Function<Duration, Result<Unit>> pause,
                                  LongSupplier clockMillis,
                                  Duration timeout,
                                  Duration interval) {
@@ -65,7 +66,7 @@ final class ClusterPoolAuthority implements PoolAuthority {
     }
 
     static ClusterPoolAuthority clusterPoolAuthority(Function<ManagementRoute, Result<String>> fetch,
-                                                     Consumer<Duration> pause,
+                                                     Function<Duration, Result<Unit>> pause,
                                                      LongSupplier clockMillis,
                                                      Duration timeout,
                                                      Duration interval) {
@@ -138,7 +139,11 @@ final class ClusterPoolAuthority implements PoolAuthority {
                 return new LeaderDidNotConverge(role, count, wantedInRole, waited / 1000).result();
             }
 
-            pause.accept(interval);
+            var paused = pause.apply(interval);
+
+            if (paused.isFailure()) {
+                return paused.mapError(_ -> new WaitInterrupted(role));
+            }
         }
     }
 
@@ -164,12 +169,18 @@ final class ClusterPoolAuthority implements PoolAuthority {
                     .mapError(cause -> new PoolStateUnreadable(what, cause));
     }
 
+    /// Sleeps `duration`. An interrupt ends the wait ([WaitInterrupted]) and keeps the flag set; swallowing it made every later sleep return at
+    /// once, so the wait became a tight loop of management-API calls until the timeout.
     @Contract
-    private static void sleep(Duration duration) {
+    static Result<Unit> sleep(Duration duration) {
         try {
             Thread.sleep(duration);
+
+            return Result.unitResult();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+
+            return Causes.cause("interrupted").result();
         }
     }
 }

@@ -42,13 +42,23 @@ interface PoolAuthority {
         }
     }
 
+    /// The wait for the leader was interrupted (a library interrupt of the apply thread). It stops instead of polling without a pause; the
+    /// interrupt flag stays set for whoever interrupted. Nothing apply did can be wrong here: it created nothing.
+    record WaitInterrupted(NodeRole role) implements Cause {
+        @Override
+        public String message() {
+            return "The wait for the leader's auto-heal to provision the " + role.value()
+                 + " nodes was interrupted. Apply created nothing. Run `aether cluster apply --resume` to wait again.";
+        }
+    }
+
     /// The cluster could not say who fills the pool (unreachable, or an answer apply cannot read): nothing is created on a guess.
     record PoolStateUnreadable(String what, Cause origin) implements Cause.Wrapped {
         @Override
         public String message() {
             return "Apply cannot tell who creates the nodes: it could not read " + what
                  + " (" + origin.message()
-                 + "). Nothing was created; the ledger is unchanged. Retry when the cluster is reachable.";
+                 + "). Nothing was created. Retry when the cluster is reachable.";
         }
     }
 
