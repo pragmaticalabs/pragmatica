@@ -72,6 +72,7 @@ EmberVoterHealTest 116
 TransportWiringTripwireEmberTest 10
 EmberStoragePrefetchOverSwimTest 18
 # EmberGossipKeyRotatedJoinTest 74 (#1200): surefire class time 72.3, 73.8, 72.5 and 72.5 s on cloudbb-3 at 038fe26d18 (1 test, 3 nodes, a crashed core replaced by auto-heal, 20 s settle; BB_DEDUP=0 repeats); maximum rounded up.
+# EmberCheckpointReclaimTest 160 (#2201 PR-3c): surefire class time 158.863 s and 158.776 s on bigboy at f7f4f5cb3a and 159.372 s at 32282be3b8 (3 tests: the 3-node checkpoint reclaim with one replica cut off and healed, the block identity arm, and arm b, a replica declared Dead that returns, on a second cluster of its own with auto-heal off and a 30 s stay check; host load average 1-2); maximum rounded up. Was 105 (103.999 s and 99.354 s at 3d8e6b66ec, before the stay check), and 40 before arm b.
 EmberGossipKeyRotatedJoinTest 74
 EmberColdRestartAckedLossTripwireTest 134
 EmberConsumerPathTripwireTest 15
@@ -85,3 +86,4 @@ EmberSealedTierRetentionTripwireTest 17
 EmberWalFailStopNodeTripwireTest 70
 EmberConfigForgePortTest 0
 EmberReplicaTripwireTest 22
+EmberCheckpointReclaimTest 160

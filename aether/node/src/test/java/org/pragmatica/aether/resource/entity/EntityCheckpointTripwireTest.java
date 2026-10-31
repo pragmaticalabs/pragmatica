@@ -29,6 +29,8 @@ import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.aether.node.StreamEntityLogSubstrate;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -52,9 +54,9 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 /// from the checkpoint (its claim is still within the log, over an untouched lineage) and keeps the ghost key.
 ///
 /// A-12: a checkpoint block is written with `StorageInstance#put` (refCount 1) and named only by a blind KV pointer put, so superseding the
-/// pointer never debits the previous block; `release` is called from nowhere and the collector takes only refCount 0.
+/// pointer used to leave the previous block for good. PR-3c deletes it once the reclaim grace has passed; the real assertion is enabled.
 ///
-/// Each finding holds a TRIPWIRE (enabled, GREEN, asserts today's behaviour) and the REAL assertion beside it (`@Disabled`, RED today).
+/// A-11 holds a TRIPWIRE (enabled, GREEN, asserts today's behaviour) and the REAL assertion beside it (`@Disabled`, RED today).
 class EntityCheckpointTripwireTest {
     private static final String KEYSPACE = "orders";
     private static final int PARTITION = 0;
@@ -73,7 +75,6 @@ class EntityCheckpointTripwireTest {
     private MetadataStore metadata;
     private volatile long sealedFloor = -1L;
     private static final String ENABLE_11 = "A-11 tripwire: a checkpoint no longer carries state above its claim; delete this tripwire and enable the real assertion beside it (#2201)";
-    private static final String ENABLE_12 = "A-12 tripwire: a superseded checkpoint block is now released; delete this tripwire and enable the real assertion beside it (#2201)";
 
     @BeforeEach
     void setUp() {
@@ -105,7 +106,9 @@ class EntityCheckpointTripwireTest {
                                                  kv.process(kv.createBatch(commands));
 
                                                  return Promise.success(List.of());
-                                             });
+                                             },
+                                             StreamEntityLogSubstrate.CheckpointReclaim.checkpointReclaim(TimeSpan.timeSpan(0).millis(),
+                                                                                                         StreamEntityLogSubstrate.CHECKPOINT_RECLAIM.deleteRetry()));
         substrate.ensureLog(KEYSPACE, 1, new ReplicationFactors(1, 1)).unwrap();
     }
 
@@ -156,22 +159,26 @@ class EntityCheckpointTripwireTest {
         return fold;
     }
 
-    /// Two checkpoints; the second supersedes the first. The first block keeps its credit.
-    @Test
-    void supersededCheckpointBlock_isNeverReleased_tripwire() {
-        var first = saveTwoCheckpoints();
-
-        assertThat(refCountOf(first.superseded())).as(ENABLE_12).isEqualTo(1);
-        assertThat(first.current()).as("control: the pointer moved to a different block").isNotEqualTo(first.superseded());
-    }
-
-    @Disabled("A-12 real assertion, RED today: the block a new pointer supersedes must be released (#2201)")
+    /// Two checkpoints; the second supersedes the first, and once the reclaim grace has passed the first block holds no credit (PR-3c:
+    /// it is deleted, which removes its lifecycle record). This reads a node-local record only, so it cannot tell a delete from a `release`
+    /// (MT-39): the DHT-tier reclaim is NT-63's (`EmberCheckpointReclaimTest`).
     @Test
     void supersededCheckpointBlock_isReleased() {
         var blocks = saveTwoCheckpoints();
 
-        assertThat(refCountOf(blocks.superseded())).as("the superseded block must hold no credit").isLessThanOrEqualTo(0);
+        assertThat(blocks.current()).as("control: the pointer moved to a different block").isNotEqualTo(blocks.superseded());
+        awaitNoCredit(blocks.superseded());
         assertThat(refCountOf(blocks.current())).as("control: the live block keeps its credit").isEqualTo(1);
+    }
+
+    private void awaitNoCredit(BlockId block) {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+
+        while (refCountOf(block) > 0 && System.nanoTime() < deadline) {
+            LockSupport.parkNanos(10_000_000L);
+        }
+
+        assertThat(refCountOf(block)).as("the superseded block must hold no credit").isLessThanOrEqualTo(0);
     }
 
     private record Blocks(BlockId superseded, BlockId current) {}
