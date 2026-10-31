@@ -76,15 +76,23 @@ class OperationIdTest {
             assertThat(OperationId.operationId(id).isSuccess()).isTrue();
         }
 
-        /// `aether-<cluster>-node-<26-character ulid>` is 39 characters plus the cluster name: a cluster name of 24 characters is
-        /// the longest whose minted id still names a server. A longer one is refused at the provider, never truncated.
+        /// The operation id is `<cluster>-aether-<cluster>-node-<26-character ulid>`: 40 characters plus twice the cluster name, so the
+        /// longest cluster name whose minted ids still name a server is 11. A longer one is refused, never truncated.
         @Test
-        void mintNodeId_fitsTheServerNameGrammar_forClusterNamesUpTo24Characters() {
-            var fits = ProvisionContext.mintNodeId(maybeClusterName("a".repeat(24)));
-            var tooLong = ProvisionContext.mintNodeId(maybeClusterName("a".repeat(25)));
+        void mintNodeId_fitsTheScopedServerNameGrammar_forClusterNamesUpToTheLongest() {
+            var longest = OperationId.longestClusterNameForMintedIds();
+            var fits = clusterName("a".repeat(longest)).unwrap();
+            var tooLong = clusterName("a".repeat(longest + 1)).unwrap();
 
-            assertThat(OperationId.operationId(fits).isSuccess()).isTrue();
-            assertThat(OperationId.operationId(tooLong).isFailure()).isTrue();
+            assertThat(longest).isEqualTo(11);
+            assertThat(OperationId.forNode(fits, ProvisionContext.mintNodeId(Option.some(fits))).isSuccess()).isTrue();
+            assertThat(OperationId.forNode(tooLong, ProvisionContext.mintNodeId(Option.some(tooLong))).isFailure()).isTrue();
+        }
+
+        @Test
+        void forNode_scopesTheNodeIdByTheCluster() {
+            assertThat(OperationId.forNode(clusterName("prod").unwrap(), "eu-1-core-0").unwrap().value()).isEqualTo("prod-eu-1-core-0");
+            assertThat(OperationId.forNode(clusterName("staging").unwrap(), "eu-1-core-0").unwrap().value()).isEqualTo("staging-eu-1-core-0");
         }
     }
 
@@ -94,7 +102,7 @@ class OperationIdTest {
         void named_takesTheOperationIdFromTheContextNodeId() {
             var request = request("eu-1-core-0").named();
 
-            assertThat(request.operationId().map(OperationId::value)).isEqualTo(Option.some("eu-1-core-0"));
+            assertThat(request.operationId().map(OperationId::value)).isEqualTo(Option.some("prod-eu-1-core-0"));
         }
 
         @Test
@@ -136,7 +144,7 @@ class OperationIdTest {
             provider.provision(spec("eu-1-core-0")).await();
 
             assertThat(provider.requests).hasSize(1);
-            assertThat(provider.requests.getFirst().operationId().map(OperationId::value)).isEqualTo(Option.some("eu-1-core-0"));
+            assertThat(provider.requests.getFirst().operationId().map(OperationId::value)).isEqualTo(Option.some("prod-eu-1-core-0"));
         }
 
         @Test

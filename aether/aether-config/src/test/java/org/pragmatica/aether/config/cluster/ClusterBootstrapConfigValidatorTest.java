@@ -157,6 +157,44 @@ class ClusterBootstrapConfigValidatorTest {
                                       infrastructureConfig(), defaultOperationsConfig(), java.util.Map.of());
     }
 
+    private static ClusterBootstrapConfig cloudConfigNamed(CloudProviderName provider, String cluster) {
+        var runtime = runtimeProfile(RuntimeType.CONTAINER, some("aether:latest"), none());
+        var coreRole = roleSubTable(some(3), none(), some("cx41"), "prod");
+        var source = sourceProfile(sourceNameOrDefault("cloud-src"), SourceType.CLOUD, some(provider),
+                                   some("key"), some("eu-central"), none(), none(), none(), none(),
+                                   LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
+                                   Map.of(NodeRole.CORE, coreRole), List.of(), awsCredentials(provider));
+
+        return clusterBootstrapConfig(clusterIdentity(cluster, "1.0.0").unwrap(),
+                                      defaultCoreTopology(), Map.of("cloud-src", source),
+                                      Map.of("prod", runtime),
+                                      infrastructureConfig(), defaultOperationsConfig(), java.util.Map.of());
+    }
+
+    /// G1-a: a Hetzner server is named `<cluster>-<node id>`, at most 63 characters, so a cluster name over 11 characters cannot name
+    /// the servers of its own minted ids. Refused at validation, never truncated.
+    @Nested
+    class ServerNameFit {
+        @Test
+        void validate_hetznerClusterNameOverTheLongestFit_returnsPf36NamingTheLimit() {
+            validate(cloudConfigNamed(CloudProviderName.HETZNER, "a".repeat(12)))
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-36").contains("at most 11 characters"));
+        }
+
+        @Test
+        void validate_hetznerClusterNameAtTheLongestFit_succeeds() {
+            validate(cloudConfigNamed(CloudProviderName.HETZNER, "a".repeat(11)))
+                .onFailure(cause -> Assertions.fail(cause.message()));
+        }
+
+        @Test
+        void validate_longClusterNameOnAnotherProvider_isNotLimited() {
+            validate(cloudConfigNamed(CloudProviderName.AWS, "a".repeat(24)))
+                .onFailure(cause -> Assertions.fail(cause.message()));
+        }
+    }
+
     @Nested
     class HappyPath {
 
