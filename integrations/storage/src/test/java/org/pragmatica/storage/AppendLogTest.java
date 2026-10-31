@@ -171,15 +171,15 @@ class AppendLogTest {
         }
 
         /// A delivered record whose length runs past the end of the file stops the scan without buffering what remains:
-        /// a replay of the second half of a ~4 MiB log, whose first delivered record claims nearly the whole file,
-        /// allocates far less than the 2 MiB after it. Red under "no length bound" and under "the bound does not advance
-        /// with the scan".
+        /// a replay of the second half of a ~4 MiB log, whose first delivered record claims one byte more than the file
+        /// holds after its header, allocates far less than the 2 MiB after it. Red under "no length bound" and under "the
+        /// bound does not advance with the scan".
         @Test
         void replay_aLengthPastTheEnd_stopsWithoutBufferingTheRest() throws IOException {
             var wal = logOf("past-end.wal", 4_096);
             var size = Files.size(dir.resolve("past-end.wal"));
 
-            writeLength("past-end.wal", 2_048L * FRAME, (int) (size - 2L * FRAME));
+            writeLength("past-end.wal", 2_048L * FRAME, (int) (size - 2_048L * FRAME - 24 + 1));
 
             var threads = (com.sun.management.ThreadMXBean) java.lang.management.ManagementFactory.getThreadMXBean();
             var thread = Thread.currentThread().threadId();
@@ -189,6 +189,31 @@ class AppendLogTest {
 
             assertThat(records).isEmpty();
             assertThat(allocated).as("bytes allocated by a replay stopped at a length past the end").isLessThan(1024L * 1024);
+            wal.close();
+        }
+
+        /// A length that FITS the file but is corrupt (a flipped header: record 0 of a ~34 MiB log claims the rest of the
+        /// file, so its CRC is wrong) ends the valid prefix as recovery's rules do, without buffering what it claims: the
+        /// replay succeeds with nothing delivered and allocates far less than the file (v-2520 H3, know 73fd8d9759). Red
+        /// under "a delivered record is read whole before its CRC is checked", which allocates the claimed length and on a
+        /// small heap dies with `OutOfMemoryError`.
+        @Test
+        void replay_aCorruptLengthThatFitsTheFile_stopsWithoutBufferingIt() throws IOException {
+            var wal = logOf("in-bounds.wal", 32_768);
+            var size = Files.size(dir.resolve("in-bounds.wal"));
+
+            writeLength("in-bounds.wal", 0L, (int) (size - 24));
+
+            var threads = (com.sun.management.ThreadMXBean) java.lang.management.ManagementFactory.getThreadMXBean();
+            var thread = Thread.currentThread().threadId();
+            var before = threads.getThreadAllocatedBytes(thread);
+            var records = replayAll(wal, -1L);
+            var allocated = threads.getThreadAllocatedBytes(thread) - before;
+
+            assertThat(size).isGreaterThan(32L * 1024 * 1024);
+            assertThat(records).isEmpty();
+            assertThat(allocated).as("bytes allocated by a replay stopped at a corrupt length inside a %d byte log", size)
+                                 .isLessThan(1024L * 1024);
             wal.close();
         }
 

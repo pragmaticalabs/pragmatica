@@ -665,6 +665,22 @@ class SegmentRunFormingTest {
         manager.close();
     }
 
+    /// A read INSIDE a multi-event head entry (an eviction hand-over of several events) asks for that entry's run: the flush
+    /// mark is the offset read, and the head is asked when it STARTS at or before it. Red under "the head is asked only
+    /// when it ENDS at or before the offset" (v-2520 V-H2b: every other test hands over one event at a time).
+    @Test
+    void aReadInsideAMultiEventHeadEntry_sealsItsRun_withinOneSealLatency() {
+        var sink = RecordingSink.succeeding();
+        var sealer = sealerWith(sink, sealerThresholds(NEVER_BYTES, NEVER_EVENTS, HOUR, MERGE));
+
+        evict(sealer, 0, 9);
+        assertNoSealFor(sink, "below every threshold");
+
+        assertThat(sealer.holdsUnsealedForRead(STREAM, PARTITION, 5)).isTrue();
+        awaitCondition(() -> sink.calls() == 1, 2_000);
+        assertThat(range(sink.segment(0))).isEqualTo(List.of(0L, 9L));
+    }
+
     /// A listener that persists but knows nothing of runs answers the read form as `holdsUnsealed`. Red under "the
     /// default answers false".
     @Test
