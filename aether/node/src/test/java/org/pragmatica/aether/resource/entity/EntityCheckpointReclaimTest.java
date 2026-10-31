@@ -13,6 +13,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 
@@ -81,6 +82,8 @@ class EntityCheckpointReclaimTest {
     private RecordingTier shared;
     private StorageInstance storage;
     private KVStore<AetherKey, AetherValue> kv;
+    /// Full scans of `kv` (`forEach`), which the delete-time check runs for a block without a readable identity header.
+    private final AtomicInteger scans = new AtomicInteger();
 
     @BeforeEach
     void setUp() {
@@ -89,7 +92,13 @@ class EntityCheckpointReclaimTest {
         storage = StorageInstance.storageInstance("entity-ckpt",
                                                   List.of(MemoryTier.memoryTier(ONE_GB), shared),
                                                   MetadataStore.inMemoryMetadataStore("entity-ckpt"));
-        kv = new KVStore<>(MessageRouter.mutable(), noopSerializer(), noopDeserializer());
+        kv = new KVStore<>(MessageRouter.mutable(), noopSerializer(), noopDeserializer()) {
+            @Override
+            public <KK, VV> void forEach(Class<KK> keyClass, Class<VV> valueClass, BiConsumer<KK, VV> consumer) {
+                scans.incrementAndGet();
+                super.forEach(keyClass, valueClass, consumer);
+            }
+        };
     }
 
     @AfterEach
@@ -428,6 +437,46 @@ class EntityCheckpointReclaimTest {
         assertThat(again).as("control: identical bytes at the same claim name the same block").isEqualTo(first);
         pause(3_000L);
         assertThat(readable(pointed(0))).as("the block the current pointer names is readable").isTrue();
+    }
+
+    /// The same hazard on a partition other than 0 (v-2516 delta): the check reads the pointer of the partition in the block's header, so
+    /// a lookup of any other key (no pointer of partition 0 exists here) would delete the block the pointer names.
+    @Test
+    void aPointerRemovedAndRewrittenAtTheSameClaim_onPartition3_keepsTheBlockItNames() {
+        var substrate = substrate(checkpointReclaim(TimeSpan.timeSpan(1).seconds(), FAST_RETRY));
+        var first = save(substrate, 3, 1L, snapshot("same"), Option.none());
+
+        save(substrate, 3, 2L, snapshot("two"), Option.none());
+        apply(List.of(new KVCommand.Remove<AetherKey>(EntityCheckpointKey.entityCheckpointKey(KEYSPACE, 3))));
+        var again = save(substrate, 3, 1L, snapshot("same"), Option.none());
+
+        assertThat(again).as("control: identical bytes at the same claim name the same block").isEqualTo(first);
+        assertThat(kv.getTyped(EntityCheckpointKey.entityCheckpointKey(KEYSPACE, 0), EntityFoldCheckpointValue.class).isPresent()).as("control: no pointer of partition 0")
+                                                                                                                         .isFalse();
+        pause(3_000L);
+        assertThat(readable(pointed(3))).as("the block the current pointer names is readable").isTrue();
+    }
+
+    /// Cost (v-2516 delta): a present block with an identity header is checked by reading its own pointer, so its delete scans nothing; a
+    /// block without the header costs one full scan of the KV per delete attempt (the control, which shows the count sees a scan).
+    @Test
+    void aDisplacedHeaderBlock_isCheckedWithoutAScan_andAPreHeaderBlockWithOne() {
+        var substrate = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY));
+
+        for (long claim = 1; claim <= 6; claim++) {
+            save(substrate, 0, claim, snapshot("v" + claim), Option.none());
+        }
+
+        eventually("the five displaced blocks are deleted", 5_000L, () -> shared.deletes.size() >= 5);
+        assertThat(shared.deletes.stream().distinct().count()).as("control: five displaced blocks deleted").isEqualTo(5L);
+        assertThat(scans.get()).as("full KV scans for five present header blocks").isZero();
+        var legacy = storage.put(snapshot("legacy")).await().unwrap();
+
+        apply(List.of(new KVCommand.Put<AetherKey, AetherValue>(EntityCheckpointKey.entityCheckpointKey(KEYSPACE, 1),
+                                                                EntityFoldCheckpointValue.entityFoldCheckpointValue(1L, legacy.hexString()))));
+        save(substrate, 1, 2L, snapshot("partition 1, later"), Option.none());
+        eventually("control: the pre-header block is deleted", 5_000L, () -> !readable(legacy));
+        assertThat(scans.get()).as("control: the pre-header block's one delete attempt scanned the KV once").isEqualTo(1);
     }
 
     /// Upgrade window (v-2516 F1): a block written before the identity header is content-addressed with no identity, so pointers of two
