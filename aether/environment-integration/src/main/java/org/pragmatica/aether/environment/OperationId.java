@@ -46,12 +46,44 @@ public record OperationId(String value) {
         return operationId(cluster.value() + "-" + nodeId);
     }
 
-    /// The longest cluster name whose MINTED node ids ([ProvisionContext#mintNodeId], `aether-<cluster>-node-<ulid>`) still yield a
-    /// fitting operation id (`<cluster>-<nodeId>`): the config-time limit for a provider that names servers by it.
-    public static int longestClusterNameForMintedIds() {
-        var overheadOfOneCharacterCluster = ProvisionContext.mintNodeId(ClusterName.maybeClusterName("a")).length();
+    /// Characters a base-36 millisecond clock needs (CTM worker ids, `mintWorkerNodeId`): 8 today, bounded at 9 for the next centuries.
+    static final int CLOCK_DIGITS = 9;
+    /// Digits of the per-pass ordinal of a CTM worker id, and of the index of a bootstrap id `<source>-<role>-<i>`. [guess] at most 999.
+    static final int ORDINAL_DIGITS = 3;
 
-        return (MAX_LENGTH - 1 - (overheadOfOneCharacterCluster - 1)) / 2;
+    /// The length of the longest node id a `(source, role)` pool of a cluster named with `clusterLength` characters can be given, by the
+    /// shapes the code mints:
+    /// - `aether-<cluster>-node-<ulid>`: core replacements ([ProvisionContext#mintNodeId], `LeaderReconciler`), and every node apply mints;
+    /// - `<source>-<role>-r<clock36>-<ordinal>`: CTM worker and spot nodes (`mintWorkerNodeId`), no cluster in it;
+    /// - `<source>-<role>-<i>`: bootstrap cloud nodes, no cluster in it.
+    public static int longestMintedIdLength(int clusterLength, String source, String role) {
+        var minted = ProvisionContext.mintNodeId(ClusterName.maybeClusterName("a")).length() - 1 + clusterLength;
+        var worker = source.length() + 1 + role.length() + 2 + CLOCK_DIGITS + 1 + ORDINAL_DIGITS;
+        var bootstrap = source.length() + 1 + role.length() + 1 + ORDINAL_DIGITS;
+
+        return Math.max(minted, Math.max(worker, bootstrap));
+    }
+
+    /// The length of the operation id `<cluster>-<nodeId>` of the longest node id the pool can be given.
+    public static int operationIdLength(int clusterLength, String source, String role) {
+        return clusterLength + 1 + longestMintedIdLength(clusterLength, source, role);
+    }
+
+    /// The longest cluster name (0 if none fits) for which every id the pool can be given yields an operation id within [#MAX_LENGTH].
+    public static int longestClusterNameFor(String source, String role) {
+        var longest = 0;
+
+        for (int length = 1; length <= MAX_LENGTH && operationIdLength(length, source, role) <= MAX_LENGTH; length++) {
+            longest = length;
+        }
+
+        return longest;
+    }
+
+    /// The longest cluster name whose MINTED core node ids (`aether-<cluster>-node-<ulid>`) still yield a fitting operation id: the
+    /// bound when no configured source or role makes a longer id.
+    public static int longestClusterNameForMintedIds() {
+        return longestClusterNameFor("", "");
     }
 
     /// Hetzner's server-name limit, and the label-value limit the same value also travels under.

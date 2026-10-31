@@ -158,15 +158,19 @@ class ClusterBootstrapConfigValidatorTest {
     }
 
     private static ClusterBootstrapConfig cloudConfigNamed(CloudProviderName provider, String cluster) {
+        return cloudConfigNamed(provider, cluster, "cloud-src");
+    }
+
+    private static ClusterBootstrapConfig cloudConfigNamed(CloudProviderName provider, String cluster, String sourceName) {
         var runtime = runtimeProfile(RuntimeType.CONTAINER, some("aether:latest"), none());
         var coreRole = roleSubTable(some(3), none(), some("cx41"), "prod");
-        var source = sourceProfile(sourceNameOrDefault("cloud-src"), SourceType.CLOUD, some(provider),
+        var source = sourceProfile(sourceNameOrDefault(sourceName), SourceType.CLOUD, some(provider),
                                    some("key"), some("eu-central"), none(), none(), none(), none(),
                                    LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
                                    Map.of(NodeRole.CORE, coreRole), List.of(), awsCredentials(provider));
 
         return clusterBootstrapConfig(clusterIdentity(cluster, "1.0.0").unwrap(),
-                                      defaultCoreTopology(), Map.of("cloud-src", source),
+                                      defaultCoreTopology(), Map.of(sourceName, source),
                                       Map.of("prod", runtime),
                                       infrastructureConfig(), defaultOperationsConfig(), java.util.Map.of());
     }
@@ -179,13 +183,32 @@ class ClusterBootstrapConfigValidatorTest {
         void validate_hetznerClusterNameOverTheLongestFit_returnsPf36NamingTheLimit() {
             validate(cloudConfigNamed(CloudProviderName.HETZNER, "a".repeat(12)))
                 .onSuccess(v -> Assertions.fail("Expected failure"))
-                .onFailure(cause -> assertThat(cause.message()).contains("PF-36").contains("at most 11 characters"));
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-36").contains("(12 characters)").contains("is 64 characters, over the limit of 63")
+                                                              .contains("allows is 11 characters"));
         }
 
         @Test
         void validate_hetznerClusterNameAtTheLongestFit_succeeds() {
             validate(cloudConfigNamed(CloudProviderName.HETZNER, "a".repeat(11)))
                 .onFailure(cause -> Assertions.fail(cause.message()));
+        }
+
+        /// The budget is computed from the configuration: cluster + 1 + the longest id the pool can be given. With a 3-character cluster the
+        /// minted core id is 42 characters, and a 39-character source name makes the bootstrap/CTM id 59 (`<source>-core-r<9>-<3>`): 3+1+59 = 63.
+        @Test
+        void validate_theComputedNameIsExactly63Characters_succeeds() {
+            validate(cloudConfigNamed(CloudProviderName.HETZNER, "abc", "s".repeat(39)))
+                .onFailure(cause -> Assertions.fail(cause.message()));
+        }
+
+        @Test
+        void validate_theComputedNameIs64Characters_returnsPf36WithTheNumbers() {
+            validate(cloudConfigNamed(CloudProviderName.HETZNER, "abc", "s".repeat(40)))
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-36")
+                                                              .contains("(3 characters)")
+                                                              .contains("is 60 characters")
+                                                              .contains("is 64 characters, over the limit of 63"));
         }
 
         @Test
