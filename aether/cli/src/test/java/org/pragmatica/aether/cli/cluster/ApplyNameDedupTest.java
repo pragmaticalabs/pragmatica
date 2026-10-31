@@ -47,12 +47,12 @@ import static org.pragmatica.cloud.hetzner.HetznerConfig.hetznerConfig;
 /// Driven through the real [HetznerComputeProvider] over a project fake that REFUSES a duplicate name with the `409 uniqueness_error` the
 /// live probe measured, so the assertions read what a Hetzner project would do. No cloud provider is called.
 class ApplyNameDedupTest {
-    private static final ClusterName CLUSTER = ClusterName.clusterName("prod-cluster").unwrap();
+    private static final ClusterName CLUSTER = ClusterName.clusterName("prodcluster").unwrap();
     private static final String TOML = """
             config_version = "1.0.0"
 
             [cluster]
-            name = "prod-cluster"
+            name = "prodcluster"
             version = "1.0.0"
 
             [source.eu-1]
@@ -68,9 +68,11 @@ class ApplyNameDedupTest {
             [source.eu-1.worker]
             count = 2
             """;
-    private static final String PEER = "aether-prod-cluster-node-01k0peer000000000000000000:10.0.0.1:8090";
+    private static final String PEER = "aether-prodcluster-node-01k0peer000000000000000000:10.0.0.1:8090";
     private static final WaveNodeProvisioning.JoinInputs INPUTS = new WaveNodeProvisioning.JoinInputs("wave-secret", List.of(PEER));
-    private static final String NODE = "aether-prod-cluster-node-01k0aaaaaaaaaaaaaaaaaaaaaa";
+    private static final String NODE = "aether-prodcluster-node-01k0aaaaaaaaaaaaaaaaaaaaaa";
+    /// The server name of NODE's create: the cluster-scoped operation id, `<cluster>-<nodeId>`.
+    private static final String OP = CLUSTER.value() + "-" + NODE;
 
     @RegisterExtension
     final LedgerDirExtension ledger = new LedgerDirExtension();
@@ -95,8 +97,8 @@ class ApplyNameDedupTest {
         var nodeId = onlyRow(recorder).nodeId();
         var sent = project.createRequests.getFirst();
 
-        assertThat(sent.name()).isEqualTo(nodeId).isEqualTo(nodeId.toLowerCase()).matches("[a-z0-9-]{1,63}");
-        assertThat(sent.labels()).containsEntry("aether.op", nodeId)
+        assertThat(sent.name()).isEqualTo(CLUSTER.value() + "-" + nodeId).isEqualTo(sent.name().toLowerCase()).matches("[a-z0-9-]{1,63}");
+        assertThat(sent.labels()).containsEntry("aether.op", CLUSTER.value() + "-" + nodeId)
                                  .containsEntry("aether-node-id", nodeId)
                                  .containsEntry("aether-cluster", CLUSTER.value())
                                  .containsEntry(WaveNodeProvisioning.APPLY_LABEL, recorder.applyId());
@@ -109,7 +111,7 @@ class ApplyNameDedupTest {
         var recorder = ledger.recorder(CLUSTER);
 
         recorder.intend(NODE, "hetzner").unwrap();
-        project.preload(NODE, ours(recorder));
+        project.preload(OP, ours(recorder));
         noPauses();
 
         ApplyReconciler.reconcileIntents(recorder, computes()).unwrap();
@@ -132,7 +134,7 @@ class ApplyNameDedupTest {
         provision(recorder, 1);
 
         assertThat(project.createRequests).hasSize(1);
-        assertThat(project.createRequests.getFirst().name()).as("the same name, not a new id").isEqualTo(NODE);
+        assertThat(project.createRequests.getFirst().name()).as("the same name, not a new id").isEqualTo(OP);
         assertThat(rowOf(recorder, NODE).state()).isEqualTo(ApplyResource.State.CREATED);
         assertThat(recorder.snapshot().resources()).as("no second row: the node is the same node").hasSize(1);
     }
@@ -142,7 +144,7 @@ class ApplyNameDedupTest {
         var recorder = ledger.recorder(CLUSTER);
 
         recorder.intend(NODE, "hetzner").unwrap();
-        project.preload(NODE, ours(recorder));
+        project.preload(OP, ours(recorder));
         project.hideFromLabelListings = true;
         noPauses();
 
@@ -171,7 +173,7 @@ class ApplyNameDedupTest {
         provision(recorder, 1);
 
         assertThat(project.createRequests).hasSize(1);
-        assertThat(project.createRequests.getFirst().name()).as("the other action's id is its own to re-issue").isNotEqualTo(NODE);
+        assertThat(project.createRequests.getFirst().name()).as("the other action's id is its own to re-issue").doesNotContain(NODE);
         assertThat(rowOf(recorder, NODE).state()).isEqualTo(ApplyResource.State.ABSENT);
     }
 
@@ -192,7 +194,7 @@ class ApplyNameDedupTest {
         provision(recorder, 1);
 
         assertThat(project.createRequests).hasSize(1);
-        assertThat(project.createRequests.getFirst().name()).as("a new node with a new id, never the vanished one").isNotEqualTo(NODE);
+        assertThat(project.createRequests.getFirst().name()).as("a new node with a new id, never the vanished one").doesNotContain(NODE);
     }
 
     // ---- AP-4: a name held by something that is not ours is refused, typed, never adopted
@@ -202,7 +204,7 @@ class ApplyNameDedupTest {
         var recorder = ledger.recorder(CLUSTER);
 
         recorder.intend(NODE, "hetzner").unwrap();
-        project.preload(NODE, Map.of("aether-cluster", "other-cluster", "aether-node-id", NODE));
+        project.preload(OP, Map.of("aether-cluster", "other-cluster", "aether-node-id", NODE));
         noPauses();
         ApplyReconciler.reconcileIntents(recorder, computes()).unwrap();
 
@@ -222,7 +224,7 @@ class ApplyNameDedupTest {
         var recorder = ledger.recorder(CLUSTER);
 
         recorder.intend(NODE, "hetzner").unwrap();
-        project.preload(NODE,
+        project.preload(OP,
                         Map.of("aether-cluster", CLUSTER.value(), "aether-node-id", NODE, WaveNodeProvisioning.APPLY_LABEL, "another-apply"));
         noPauses();
         ApplyReconciler.reconcileIntents(recorder, computes()).unwrap();
@@ -264,7 +266,7 @@ class ApplyNameDedupTest {
         }
 
         assertThat(project.createRequests).as("both resumes asked, under one name").hasSize(2)
-                                          .allSatisfy(request -> assertThat(request.name()).isEqualTo(NODE));
+                                          .allSatisfy(request -> assertThat(request.name()).isEqualTo(OP));
         assertThat(project.servers()).as("the name refused the second").hasSize(1);
         assertThat(rowOf(first, NODE).state()).isEqualTo(ApplyResource.State.CREATED);
         assertThat(rowOf(second, NODE).state()).isEqualTo(ApplyResource.State.CREATED);
