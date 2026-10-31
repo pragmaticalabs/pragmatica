@@ -446,6 +446,9 @@ class SegmentSealerTest {
             assertThat(spillingSealer.pendingBytes()).isZero();
             assertThat(spillingSealer.holdsUnsealed(STREAM, PARTITION, 5L)).isTrue();
             assertThat(spillingSealer.lowestUnsealed(STREAM, PARTITION)).isEqualTo(Option.some(5L));
+            // #1875: the seal keeps failing by design; an open sealer would go on retrying it, against the closed WAL,
+            // through every later test in this JVM.
+            spillingSealer.close();
             wal.close();
         }
     }
