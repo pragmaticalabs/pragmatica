@@ -858,6 +858,37 @@ class ConfigLoaderTest {
         }
     }
 
+    /// Know 73fd8d9759: `seal_merge_bytes` is bounded below 2 GiB (a merged block is one array), at 256 MiB; `seal_run_age` at one
+    /// day, far below the overflow of the age timer's deadline. Each bound itself loads, and a value past it is refused at load by
+    /// name. Red under "no bound" and under "the bound itself is refused".
+    @Test
+    void loadFromString_sealMergeBytesAndSealRunAge_areBounded_theBoundLoads_andAValuePastItIsRefused() {
+        var header = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [streaming]
+            """;
+
+        ConfigLoader.loadFromString(header + "seal_merge_bytes = \"256MB\"\nseal_run_age = \"1d\"\n")
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.streaming().sealMergeBytes()).isEqualTo(256L << 20);
+                assertThat(config.streaming().sealRunAge().millis()).isEqualTo(86_400_000L);
+            });
+        for (var past : List.of("seal_merge_bytes = \"100GB\"", "seal_merge_bytes = \"257MB\"")) {
+            ConfigLoader.loadFromString(header + past + "\n")
+                .onSuccess(_ -> Assertions.fail(past + " must be refused"))
+                .onFailure(cause -> assertThat(cause.message()).as(past).contains("streaming.seal_merge_bytes"));
+        }
+        for (var past : List.of("seal_run_age = \"2d\"", "seal_run_age = \"25h\"")) {
+            ConfigLoader.loadFromString(header + past + "\n")
+                .onSuccess(_ -> Assertions.fail(past + " must be refused"))
+                .onFailure(cause -> assertThat(cause.message()).as(past).contains("streaming.seal_run_age"));
+        }
+    }
+
     /// #2080: the promotion escape bound is configurable, defaults to 120 s (a guess, see the default's doc) and may not be below the
     /// alarm bounds (two SWIM suspect windows, 20 s; the replica contest's 20 s source wait).
     @Test
