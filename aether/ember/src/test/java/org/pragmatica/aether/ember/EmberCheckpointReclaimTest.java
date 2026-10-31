@@ -6,6 +6,9 @@ package org.pragmatica.aether.ember;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.function.BooleanSupplier;
 
 import org.pragmatica.aether.node.AetherNode;
@@ -49,6 +52,10 @@ import static org.pragmatica.aether.node.StreamEntityLogSubstrate.CheckpointRecl
 /// anti-entropy round, and after C reconnects and anti-entropy has run no engine holds a live `B0` and neither B's nor C's storage reads it
 /// (no resurrection). A's own memory and disk copy is node-private, which B's delete cannot reach (the measured leak, L-12): it is printed,
 /// not asserted away. The identity clause: byte-identical snapshots in two partitions, with and without a lineage, are different blocks.
+///
+/// Arm b: C stays cut off until the survivors declare it Dead, then returns and becomes a member again, its process and its DHT engine
+/// (the stale `B0` in it) intact. Its stale copy gives way to the tombstone and nothing brings `B0` back. Not covered: a return after
+/// `tombstone_retention` (1 h by default), when the tombstone is gone (a DHT-level limit); `FULL` replication; node-private copies.
 @PortBudget
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
@@ -71,6 +78,14 @@ class EmberCheckpointReclaimTest {
     private static final long DELETE_BUDGET_MS = 30_000L;
     /// Three anti-entropy intervals (30 s each) and margin.
     private static final long ANTI_ENTROPY_BUDGET_MS = 150_000L;
+    /// The survivors declared a silenced replica Dead after about 26 s in the v-2516 probe; the budget is generous.
+    private static final long DEAD_BUDGET_MS = 300_000L;
+    /// Silence kept past the Dead verdict, so the survivors act on it before the replica returns (the v-2516 probe's margin).
+    private static final long DEAD_MARGIN_MS = 20_000L;
+    /// The returned replica was a member again 40 s after it returned in the v-2516 probe; the budget is generous.
+    private static final long REJOIN_BUDGET_MS = 240_000L;
+    private static final String DEAD = "Dead";
+    private static final String MEMBER = "Member";
     private static final String KEYSPACE = "reclaim";
     private static final String DHT_PREFIX = "stream-segments/";
     private static final StreamEntityLogSubstrate.CheckpointReclaim RECLAIM = checkpointReclaim(TimeSpan.timeSpan(1).seconds(),
@@ -84,6 +99,7 @@ class EmberCheckpointReclaimTest {
     Path dataDir;
 
     private EmberCluster cluster;
+    private int generation;
 
     /// One cluster for both tests, started inside the first test that runs: the port budget is per test ([PortBudget]).
     private EmberCluster cluster() {
@@ -163,10 +179,83 @@ class EmberCheckpointReclaimTest {
         assertThat(nodes).as("control: the block the pointer names is readable through every node").allSatisfy(node -> assertThat(readable(node, pointed(nodeB, 0))).isTrue());
     }
 
+    @Test
+    @Order(3)
+    @Timeout(900)
+    void aReplicaDeclaredDead_thatReturns_takesTheTombstone_andNothingResurrectsTheDeletedBlock() {
+        startAFreshCluster();
+        var leader = cluster().currentLeader().or("none");
+        var nodes = cluster().allNodes();
+        var cutOff = nodes.stream().filter(node -> !node.self().id().equals(leader)).findFirst().orElseThrow();
+        var writers = nodes.stream().filter(node -> node != cutOff).toList();
+        var nodeA = writers.get(0);
+        var nodeB = writers.get(1);
+
+        save(substrateOf(nodeA), 1, 10L, bytes("written by A at 10"), Option.none());
+        var b0 = pointed(nodeA, 1);
+        var key = dhtKey(b0);
+
+        awaitCondition("B's KV names B0", REPLICATION_BUDGET_MS, () -> pointedIfAny(nodeB, 1).filter(b0::equals).isPresent());
+        awaitCondition("control: B0 is live on every replica's DHT engine", REPLICATION_BUDGET_MS, () -> nodes.stream().allMatch(node -> holdsLive(node, key)));
+
+        var cutAt = System.currentTimeMillis();
+
+        cutOff.blackhole(true);
+        try {
+            save(substrateOf(nodeB), 1, 20L, bytes("written by B at 20"), Option.none());
+
+            assertThat(pointed(nodeB, 1)).as("control: B's pointer names a new block").isNotEqualTo(b0);
+            awaitCondition("B0 leaves the DHT engines B's remove reached (A and B)", DELETE_BUDGET_MS, () -> writers.stream().noneMatch(node -> holdsLive(node, key)));
+            awaitCondition("the survivors declare the cut-off replica Dead", DEAD_BUDGET_MS, () -> stateOf(nodeA, cutOff).equals(DEAD));
+            System.out.printf("NT-63 arm b: replica %s declared Dead after %d ms%n", cutOff.self().id(), System.currentTimeMillis() - cutAt);
+            assertThat(holdsLive(cutOff, key)).as("control: the replica declared Dead still holds the stale B0").isTrue();
+            pause(DEAD_MARGIN_MS);
+        } finally {
+            cutOff.blackhole(false);
+        }
+
+        var resurrected = new ArrayList<String>();
+        var seen = new ArrayList<String>();
+
+        awaitCondition("the returned replica is a member again and no engine holds a live B0", REJOIN_BUDGET_MS, () -> {
+            writers.stream().filter(node -> holdsLive(node, key)).forEach(node -> resurrected.add(node.self().id()));
+            noteChange(seen, stateOf(nodeA, cutOff) + ", live B0 on " + nodes.stream().filter(node -> holdsLive(node, key)).map(node -> node.self().id()).toList(), cutAt);
+
+            return stateOf(nodeA, cutOff).equals(MEMBER) && nodes.stream().noneMatch(node -> holdsLive(node, key));
+        });
+        System.out.printf("NT-63 arm b: replica %s a member again %d ms after the cut; its engine entry for B0: %s%n",
+                          cutOff.self().id(),
+                          System.currentTimeMillis() - cutAt,
+                          entry(cutOff, key).map(found -> found.tombstone() ? "tombstone" : "live").or("absent"));
+
+        assertThat(resurrected).as("no writer's engine held a live B0 again while the replica returned").isEmpty();
+        assertThat(readable(nodeB, b0)).as("B's storage does not read B0").isFalse();
+        assertThat(readable(cutOff, b0)).as("the returned replica's storage does not read B0 (no resurrection)").isFalse();
+        System.out.printf("NT-63 arm b L-12: A's node-private copy of B0 readable through A's storage: %s%n", readable(nodeA, b0));
+        assertThat(nodes).as("control: the block the pointer names is readable through every node").allSatisfy(node -> assertThat(readable(node, pointed(nodeB, 1))).isTrue());
+    }
+
+    /// Arm b declares a replica Dead (the survivors then provision a replacement), which the arms before it would leave behind: it starts
+    /// on a cluster of its own, as its v-2516 probe did. Run 1 on the shared cluster saw the replica declared Dead in 6 s and never a member
+    /// again.
+    private void startAFreshCluster() {
+        stopCluster();
+        cluster = null;
+        generation++;
+    }
+
+    /// Prints the returning replica's state each time it changes, so a red run shows where the return stopped.
+    private static void noteChange(List<String> seen, String state, long cutAt) {
+        if (seen.isEmpty() || !seen.getLast().equals(state)) {
+            seen.add(state);
+            System.out.printf("NT-63 arm b: +%d ms replica %s%n", System.currentTimeMillis() - cutAt, state);
+        }
+    }
+
     private EmberCluster threeNodes(int basePort) {
         var built = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "ckptreclaim");
 
-        built.withDataBaseDir(dataDir);
+        built.withDataBaseDir(dataDir.resolve("cluster-" + generation));
         built.withDhtReplication(DHTConfig.DEFAULT);
 
         return built;
@@ -223,6 +312,17 @@ class EmberCheckpointReclaimTest {
         return entry(node, key).filter(found -> !found.tombstone()).isPresent();
     }
 
+    private static String stateOf(AetherNode viewer, AetherNode node) {
+        return viewer.membershipFsm()
+                     .memberStates()
+                     .entrySet()
+                     .stream()
+                     .filter(entry -> entry.getKey().id().equals(node.self().id()))
+                     .map(Map.Entry::getValue)
+                     .findFirst()
+                     .orElse("absent");
+    }
+
     private static byte[] bytes(String text) {
         return text.getBytes(StandardCharsets.UTF_8);
     }
@@ -245,5 +345,15 @@ class EmberCheckpointReclaimTest {
         }
 
         throw new AssertionError("not within " + budgetMs + "ms: " + what);
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static void pause(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("interrupted", e);
+        }
     }
 }
