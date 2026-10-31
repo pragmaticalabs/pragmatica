@@ -192,6 +192,35 @@ class ClusterTopologyManagerZoneRotationTest {
         manager.deactivate();
     }
 
+    /// Node ids: cloud ids carry no cluster, Docker ids do. Which a replacement gets follows the source that backs the core.
+    @Nested
+    class CoreBackingForNodeIds {
+        private static final String DOCKER_TOML = TOML.replace("type = \"cloud\"\n            provider = \"hetzner\"\n            credentials = \"hcloud-token\"\n            region = \"eu-central\"\n            zones = [\"fsn1\", \"nbg1\", \"hel1\"]",
+                                                                 "type = \"docker\"");
+
+        @Test
+        void coresAreCloudBacked_whenACloudSourceDeclaresTheCore() {
+            clusterStore.seedToml(TOML);
+
+            assertThat(ctm.coresAreCloudBacked()).isTrue();
+        }
+
+        @Test
+        void coresAreCloudBacked_isFalseForADockerCore() {
+            clusterStore.seedToml(DOCKER_TOML);
+
+            assertThat(DOCKER_TOML).contains("type = \"docker\"").doesNotContain("hetzner");
+            assertThat(ctm.coresAreCloudBacked()).isFalse();
+        }
+
+        @Test
+        void coresAreCloudBacked_isFalseWithoutAParsedConfiguration() {
+            clusterStore.seedBootstrapSeed();
+
+            assertThat(ctm.coresAreCloudBacked()).isFalse();
+        }
+    }
+
     @Nested
     class ZoneRotation {
 

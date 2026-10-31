@@ -175,21 +175,21 @@ class ClusterBootstrapConfigValidatorTest {
                                       infrastructureConfig(), defaultOperationsConfig(), java.util.Map.of());
     }
 
-    /// G1-a: a Hetzner server is named `<cluster>-<node id>`, at most 63 characters, so a cluster name over 11 characters cannot name
+    /// G1-a: a Hetzner server is named `<cluster>-<node id>`, at most 63 characters, so a cluster name over 24 characters cannot name
     /// the servers of its own minted ids. Refused at validation, never truncated.
     @Nested
     class ServerNameFit {
         @Test
         void validate_hetznerClusterNameOverTheLongestFit_returnsPf36NamingTheLimit() {
-            validate(cloudConfigNamed(CloudProviderName.HETZNER, "a".repeat(12)))
+            validate(cloudConfigNamed(CloudProviderName.HETZNER, "a".repeat(25)))
                 .onSuccess(v -> Assertions.fail("Expected failure"))
-                .onFailure(cause -> assertThat(cause.message()).contains("PF-36").contains("(12 characters)").contains("is 64 characters, over the limit of 63")
-                                                              .contains("allows is 11 characters"));
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-36").contains("(25 characters)").contains("is 64 characters, over the limit of 63")
+                                                              .contains("allows is 24 characters"));
         }
 
         @Test
         void validate_hetznerClusterNameAtTheLongestFit_succeeds() {
-            validate(cloudConfigNamed(CloudProviderName.HETZNER, "a".repeat(11)))
+            validate(cloudConfigNamed(CloudProviderName.HETZNER, "a".repeat(24)))
                 .onFailure(cause -> Assertions.fail(cause.message()));
         }
 
@@ -209,6 +209,12 @@ class ClusterBootstrapConfigValidatorTest {
                                                               .contains("(3 characters)")
                                                               .contains("is 60 characters")
                                                               .contains("is 64 characters, over the limit of 63"));
+        }
+
+        @Test
+        void validate_productionEu_passes_atAComputedTotalOf52() {
+            validate(cloudConfigNamed(CloudProviderName.HETZNER, "production-eu"))
+                .onFailure(cause -> Assertions.fail(cause.message()));
         }
 
         @Test

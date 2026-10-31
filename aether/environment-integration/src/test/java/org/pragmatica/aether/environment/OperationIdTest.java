@@ -76,26 +76,51 @@ class OperationIdTest {
             assertThat(OperationId.operationId(id).isSuccess()).isTrue();
         }
 
-        /// The operation id is `<cluster>-aether-<cluster>-node-<26-character ulid>`: 40 characters plus twice the cluster name, so the
-        /// longest cluster name whose minted ids still name a server is 11. A longer one is refused, never truncated.
+        /// Cloud node ids carry no cluster (`aether-node-<26-character ulid>`, 38 characters), the server name `<cluster>-<nodeId>` does, so the
+        /// longest cluster name is 24 (24 + 1 + 38 = 63). A longer one is refused, never truncated.
         @Test
-        void mintNodeId_fitsTheScopedServerNameGrammar_forClusterNamesUpToTheLongest() {
+        void mintCloudNodeId_isClusterFree_andFitsTheScopedServerNameGrammar_forClusterNamesUpToTheLongest() {
+            var id = ProvisionContext.mintCloudNodeId();
             var longest = OperationId.longestClusterNameForMintedIds();
             var fits = clusterName("a".repeat(longest)).unwrap();
             var tooLong = clusterName("a".repeat(longest + 1)).unwrap();
 
-            assertThat(longest).isEqualTo(11);
-            assertThat(OperationId.forNode(fits, ProvisionContext.mintNodeId(Option.some(fits))).isSuccess()).isTrue();
-            assertThat(OperationId.forNode(tooLong, ProvisionContext.mintNodeId(Option.some(tooLong))).isFailure()).isTrue();
+            assertThat(id).matches("aether-node-[0-9a-hjkmnp-tv-z]{26}").hasSize(38);
+            assertThat(longest).isEqualTo(24);
+            assertThat(OperationId.forNode(fits, id).unwrap().value()).hasSize(63);
+            assertThat(OperationId.forNode(tooLong, id).isFailure()).isTrue();
+        }
+
+        @Test
+        void resolveNodeId_withoutACallersId_isACloudId() {
+            var context = ProvisionContext.provisionContext(maybeClusterName("prod"), "core", sourceNameOrDefault("eu-1"), ProvisionContext.PROVISIONED_BY_CTM);
+
+            assertThat(context.resolveNodeId()).matches("aether-node-[0-9a-hjkmnp-tv-z]{26}");
+        }
+
+        @Test
+        void dockerIds_keepTheCluster() {
+            assertThat(ProvisionContext.mintNodeId(maybeClusterName("prod"))).startsWith("aether-prod-node-");
+            assertThat(ProvisionContext.coreNodeNamePrefix(maybeClusterName("prod"))).isEqualTo("aether-prod-node");
+        }
+
+        @Test
+        void aProductionEuClusterFitsWithRoomToSpare() {
+            var cluster = clusterName("production-eu").unwrap();
+
+            assertThat(OperationId.forNode(cluster, ProvisionContext.mintCloudNodeId()).unwrap().value()).hasSize(13 + 1 + 38);
         }
 
         @Test
         void operationIdLength_isTheClusterPlusOnePlusTheLongestIdThePoolCanBeGiven() {
-            assertThat(OperationId.longestMintedIdLength(3, "s", "core")).as("minted core id: 39 + cluster").isEqualTo(42);
+            assertThat(OperationId.longestMintedIdLength("s", "core")).as("minted cloud id, no cluster in it").isEqualTo(38);
             assertThat(OperationId.operationIdLength(3, "s".repeat(39), "core")).as("worker id 59: 3 + 1 + 59").isEqualTo(63);
             assertThat(OperationId.operationIdLength(3, "s".repeat(40), "core")).isEqualTo(64);
             assertThat(OperationId.longestClusterNameFor("s".repeat(39), "core")).isEqualTo(3);
-            assertThat(OperationId.longestClusterNameFor("hetzner-eu", "worker")).as("the minted core id dominates a short pool").isEqualTo(11);
+            assertThat(OperationId.longestClusterNameFor("hetzner-eu", "worker")).as("the minted cloud id dominates a short pool").isEqualTo(24);
+            assertThat(OperationId.operationIdLength(24, "hetzner-eu", "worker")).as("exactly 63").isEqualTo(63);
+            assertThat(OperationId.operationIdLength(25, "hetzner-eu", "worker")).isEqualTo(64);
+            assertThat(OperationId.operationIdLength(13, "hetzner-eu", "worker")).as("production-eu").isEqualTo(52);
         }
 
         @Test
