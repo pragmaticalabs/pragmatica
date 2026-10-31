@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 
 import org.pragmatica.aether.resource.entity.EntityLogSubstrate.EntityCheckpoint;
+import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.lang.Option;
@@ -71,21 +72,46 @@ final class CheckpointFrame {
 
     /// `block` without its identity header; a block that has none (written before PR-3c), or whose header does not parse, whole.
     private static byte[] withoutIdentity(byte[] block) {
+        return hasIdentity(block)
+               ? Arrays.copyOfRange(block, (int) bodyStart(block), block.length)
+               : block;
+    }
+
+    private static boolean hasIdentity(byte[] block) {
         if (block.length < IDENTITY_MARKER.length + Integer.BYTES || !Arrays.equals(block,
                                                                                     0,
                                                                                     IDENTITY_MARKER.length,
                                                                                     IDENTITY_MARKER,
                                                                                     0,
                                                                                     IDENTITY_MARKER.length)) {
-            return block;
+            return false;
         }
 
-        var nameLength = ByteBuffer.wrap(block, IDENTITY_MARKER.length, Integer.BYTES).getInt();
-        var bodyStart = (long) IDENTITY_MARKER.length + Integer.BYTES + nameLength + Integer.BYTES + Long.BYTES;
+        return nameLength(block) >= 0 && bodyStart(block) <= block.length;
+    }
 
-        return nameLength < 0 || bodyStart > block.length
-               ? block
-               : Arrays.copyOfRange(block, (int) bodyStart, block.length);
+    private static int nameLength(byte[] block) {
+        return ByteBuffer.wrap(block, IDENTITY_MARKER.length, Integer.BYTES).getInt();
+    }
+
+    private static long bodyStart(byte[] block) {
+        return (long) IDENTITY_MARKER.length + Integer.BYTES + nameLength(block) + Integer.BYTES + Long.BYTES;
+    }
+
+    /// The pointer the identity header of `block` names it for (its keyspace and partition); none for a block that has no header (written
+    /// before PR-3c), or whose header does not parse.
+    static Option<EntityCheckpointKey> pointerOf(byte[] block) {
+        if (!hasIdentity(block)) {
+            return Option.none();
+        }
+
+        var keyspace = new String(block,
+                                  IDENTITY_MARKER.length + Integer.BYTES,
+                                  nameLength(block),
+                                  StandardCharsets.UTF_8);
+        var partition = ByteBuffer.wrap(block, IDENTITY_MARKER.length + Integer.BYTES + nameLength(block), Integer.BYTES).getInt();
+
+        return Option.some(EntityCheckpointKey.entityCheckpointKey(keyspace, partition));
     }
 
     private static EntityCheckpoint unframeLineage(long throughOffset, byte[] block) {

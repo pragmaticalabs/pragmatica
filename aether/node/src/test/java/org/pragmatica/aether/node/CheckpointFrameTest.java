@@ -12,6 +12,7 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Option;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -102,6 +103,21 @@ class CheckpointFrameTest {
 
         assertThat(CheckpointFrame.unframe(7L, tooLong).snapshot()).isEqualTo(tooLong);
         assertThat(CheckpointFrame.unframe(7L, negative).snapshot()).isEqualTo(negative);
+    }
+
+    /// The header names the pointer a block was written for, so the delete-time check reads only that pointer (PR-3c); a block without
+    /// the header, or whose header does not parse, names none, and every pointer is read.
+    @Test
+    void aFramedBlock_namesThePointerItWasWrittenFor_andABlockWithoutTheHeaderNamesNone() {
+        assertThat(pointerOf(CheckpointFrame.frame("orders", 3, 7L, bytes("the fold"), Option.none()))).isEqualTo("entity-checkpoint/orders/3");
+        assertThat(pointerOf(CheckpointFrame.frame("events", 12, 7L, bytes("the fold"), Option.some(bytes("the lineage"))))).isEqualTo("entity-checkpoint/events/12");
+        assertThat(pointerOf(bytes("an rc5 fold"))).isEqualTo("none");
+        assertThat(pointerOf(header(Integer.MAX_VALUE - 64))).isEqualTo("none");
+        assertThat(pointerOf(header(-5))).isEqualTo("none");
+    }
+
+    private static String pointerOf(byte[] block) {
+        return CheckpointFrame.pointerOf(block).map(EntityCheckpointKey::asString).or("none");
     }
 
     private static byte[] header(int nameLength) {

@@ -7,6 +7,7 @@ package org.pragmatica.aether.node;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -688,8 +689,9 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// distinguish from corruption.
     ///
     /// Then reclaim (PR-3c, I-15): the pointer read before the put names the block this save may displace, and the pointer re-read after
-    /// the publish decides what may be deleted ([#reclaimDisplaced]). A crash between the put and the publish, or between the publish and a
-    /// scheduled delete, leaks the blocks written since the last confirmed swap; nothing sweeps them (L-12).
+    /// the publish decides what may be deleted ([#reclaimDisplaced]). A block a pointer in this node's view names is not deleted: checked again
+    /// when the delete runs ([#deleteUnlessNamed]). A crash between the put and the publish, or between the publish and a scheduled delete,
+    /// leaks the blocks written since the last confirmed swap; nothing sweeps them (L-12).
     @Override
     public Promise<Unit> saveCheckpoint(String keyspace,
                                         int partition,
@@ -740,9 +742,10 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     ///     written, so it is deleted at once. The writer deletes nothing else: the block the winner displaced is the winner's to delete.
     ///
     /// Either way a block is deleted only when its claim is STRICTLY below the claim the re-read shows. The applier refuses a put that
-    /// lowers the committed claim and the claim never falls back, so no pointer can ever name such a block again, whoever writes it; an
-    /// equal claim is accepted, so a block at the shown claim waits in [#deferred]. A stale re-read can only show a lower claim, so it
-    /// defers instead of deleting.
+    /// lowers the committed claim, so while the fenced applier is the only writer of the pointer the claim never falls back and no pointer
+    /// names such a block again, whoever writes it. That condition does not always hold (a snapshot restore bypasses the fence; a removal
+    /// resets the claim), so the delete checks the pointers again when it runs ([#deleteUnlessNamed]). An equal claim is accepted, so a block
+    /// at the shown claim waits in [#deferred]. A stale re-read can only show a lower claim, so it defers instead of deleting.
     private Unit reclaimDisplaced(EntityCheckpointKey key, Option<ClaimedBlock> replaced, ClaimedBlock written) {
         var current = committedPointer(key);
         var claim = current.map(ClaimedBlock::through).or(Long.MIN_VALUE);
@@ -794,7 +797,55 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     }
 
     private void deleteWithRetry(BlockId block) {
-        reclaim.deleteRetry().execute(() -> storage.delete(block)).onFailure(cause -> logUndeleted(block, cause));
+        reclaim.deleteRetry().execute(() -> deleteUnlessNamed(block)).onFailure(cause -> logUndeleted(block, cause));
+    }
+
+    /// The pointers are read again when the delete runs, on every attempt, and a block one of them names is not deleted: the decision made
+    /// at the swap rests on the claim never falling back, which holds only while the fenced applier is the only writer of the pointer (a
+    /// snapshot restore bypasses the fence; a pointer removed and rewritten at the same claim names the same block again). A block with an
+    /// identity header can be named only by the pointer of the keyspace and partition in it, so that one pointer is read. A block without
+    /// one (written before PR-3c, content-addressed with no identity) can be named by pointers of any partition of any keyspace, so every
+    /// pointer is read: one scan of the local KV, needed only for such a block, which the upgrade window displaces at most once per pointer.
+    ///
+    /// The check only withholds deletes, from this node's committed view: a pointer this node has not applied yet, or one committed
+    /// between the read and the quorum remove, is not seen.
+    private Promise<Unit> deleteUnlessNamed(BlockId block) {
+        return storage.get(block)
+                      .map(StreamEntityLogSubstrate::pointerOf)
+                      .flatMap(pointer -> deleteUnlessNamed(block, pointer));
+    }
+
+    private static Option<EntityCheckpointKey> pointerOf(Option<byte[]> content) {
+        return content.flatMap(CheckpointFrame::pointerOf);
+    }
+
+    private Promise<Unit> deleteUnlessNamed(BlockId block, Option<EntityCheckpointKey> pointer) {
+        return namedByAPointer(block.hexString(), pointer)
+               ? Promise.unitPromise()
+               : storage.delete(block);
+    }
+
+    private boolean namedByAPointer(String hex, Option<EntityCheckpointKey> pointer) {
+        return pointer.map(key -> names(key, hex))
+                      .or(() -> namedByAnyPointer(hex));
+    }
+
+    private boolean names(EntityCheckpointKey key, String hex) {
+        return kvStore.getTyped(key, EntityFoldCheckpointValue.class)
+                      .filter(named -> named.blockIdHex()
+                                            .equals(hex))
+                      .isPresent();
+    }
+
+    private boolean namedByAnyPointer(String hex) {
+        var named = new AtomicBoolean();
+
+        kvStore.forEach(EntityCheckpointKey.class,
+                        EntityFoldCheckpointValue.class,
+                        (_, pointer) -> named.compareAndSet(false,
+                                                            pointer.blockIdHex().equals(hex)));
+
+        return named.get();
     }
 
     private static void logUndeleted(BlockId block, Cause cause) {

@@ -411,6 +411,51 @@ class EntityCheckpointReclaimTest {
         assertThat(readable(displaced)).as("inside the production grace").isTrue();
     }
 
+    /// Hazard (v-2516 F1): the claim falls back outside the fence (the pointer removed, then rewritten at the same claim with identical
+    /// bytes, which name the same block) while the delete of that block is pending. The delete checks the pointer when it runs and keeps
+    /// the block the pointer names again.
+    @Test
+    void aPointerRemovedAndRewrittenAtTheSameClaim_duringTheGrace_keepsTheBlockItNames() {
+        var substrate = substrate(checkpointReclaim(TimeSpan.timeSpan(1).seconds(), FAST_RETRY));
+        var first = save(substrate, 0, 1L, snapshot("same"), Option.none());
+
+        save(substrate, 0, 2L, snapshot("two"), Option.none());
+        apply(List.of(new KVCommand.Remove<AetherKey>(EntityCheckpointKey.entityCheckpointKey(KEYSPACE, 0))));
+        assertThat(kv.getTyped(EntityCheckpointKey.entityCheckpointKey(KEYSPACE, 0), EntityFoldCheckpointValue.class).isPresent()).as("control: the pointer is removed")
+                                                                                                                         .isFalse();
+        var again = save(substrate, 0, 1L, snapshot("same"), Option.none());
+
+        assertThat(again).as("control: identical bytes at the same claim name the same block").isEqualTo(first);
+        pause(3_000L);
+        assertThat(readable(pointed(0))).as("the block the current pointer names is readable").isTrue();
+    }
+
+    /// Upgrade window (v-2516 F1): a block written before the identity header is content-addressed with no identity, so pointers of two
+    /// partitions, or of two keyspaces, with byte-identical folds name one block. The first new save of one partition displaces it; the
+    /// delete finds the other pointers still naming it and keeps it.
+    @Test
+    void aPreHeaderBlockNamedByOtherPointers_survivesTheFirstNewSaveOfOnePartition() {
+        var substrate = substrate(checkpointReclaim(SHORT_GRACE, FAST_RETRY));
+        var legacy = storage.put(snapshot("shared")).await().unwrap();
+        var otherKeyspace = EntityCheckpointKey.entityCheckpointKey("events", 0);
+
+        for (var key : List.of(EntityCheckpointKey.entityCheckpointKey(KEYSPACE, 0), EntityCheckpointKey.entityCheckpointKey(KEYSPACE, 1), otherKeyspace)) {
+            apply(List.of(new KVCommand.Put<AetherKey, AetherValue>(key, EntityFoldCheckpointValue.entityFoldCheckpointValue(1L, legacy.hexString()))));
+        }
+
+        assertThat(pointed(0)).as("control: the pointers name the pre-header block").isEqualTo(legacy);
+        assertThat(pointed(1)).isEqualTo(legacy);
+        save(substrate, 0, 2L, snapshot("partition 0, later"), Option.none());
+        assertThat(pointed(0)).as("control: partition 0 moved off it").isNotEqualTo(legacy);
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(pointed(1)).isEqualTo(legacy);
+        assertThat(readable(legacy)).as("the block the other pointers name").isTrue();
+        save(substrate, 1, 2L, snapshot("partition 1, later"), Option.none());
+        assertThat(pointed(1)).as("control: partition 1 moved off it too").isNotEqualTo(legacy);
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(readable(legacy)).as("the block only another keyspace's pointer names").isTrue();
+    }
+
     private EntityLogSubstrate substrate(CheckpointReclaim reclaim) {
         return substrate(reclaim, this::apply);
     }
