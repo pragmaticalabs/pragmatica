@@ -80,7 +80,8 @@ final class ClusterPoolAuthority implements PoolAuthority {
     }
 
     private Result<Boolean> autoHealEnabled() {
-        return fetchJson(CLUSTER_AUTO_HEAL_STATUS, "the auto-heal setting").map(json -> json.path("enabled").asBoolean(true));
+        return fetchJson(CLUSTER_AUTO_HEAL_STATUS, "the auto-heal setting").map(json -> json.path("enabled")
+                                                                                            .asBoolean(true));
     }
 
     private Result<Actor> leaderIfCommitted(String source, NodeRole role, int wanted) {
@@ -95,15 +96,16 @@ final class ClusterPoolAuthority implements PoolAuthority {
                : new PoolRefused(source,
                                  role,
                                  "the leader's committed target is " + committed
-                                 + " and this apply needs " + wanted
-                                 + "; a pool the leader was not given is never filled by it, so apply would wait for nothing."
-                                 + " Commit the config first (a plain `aether cluster apply <file>`), then `--resume`").result();
+                                + " and this apply needs " + wanted
+                                + "; a pool the leader was not given is never filled by it, so apply would wait for nothing."
+                                + " Commit the config first (a plain `aether cluster apply <file>`), then `--resume`").result();
     }
 
     private static int committedCount(JsonNode config, String source, NodeRole role) {
         for (var entry : config.path("desiredTopology")) {
             if (source.equals(entry.path("sourceName").asText()) && role.value().equals(entry.path("role").asText())) {
-                return entry.path("count").asInt(0);
+                return entry.path("count")
+                            .asInt(0);
             }
         }
 
@@ -123,8 +125,9 @@ final class ClusterPoolAuthority implements PoolAuthority {
 
             var count = live.or(0);
 
-            progress.accept("waiting for the leader to provision " + role.value() + ": " + count + " live of " + wantedInRole);
-
+            progress.accept("waiting for the leader to provision " + role.value()
+                           + ": " + count
+                           + " live of " + wantedInRole);
             if (count >= wantedInRole) {
                 return Result.unitResult();
             }

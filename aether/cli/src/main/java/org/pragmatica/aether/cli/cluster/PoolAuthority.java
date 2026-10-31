@@ -28,7 +28,6 @@ interface PoolAuthority {
 
     /// Who creates the nodes of `(source, role)` when the config asks for `wanted` of them there.
     Result<Actor> actorFor(String source, NodeRole role, int wanted);
-
     /// Blocks until the cluster reports `wantedInRole` live nodes of `role`, reporting each poll to `progress`.
     Result<Unit> awaitLeader(NodeRole role, int wantedInRole, Consumer<String> progress);
 
@@ -36,7 +35,8 @@ interface PoolAuthority {
     record PoolRefused(String sourceName, NodeRole role, String reason) implements Cause {
         @Override
         public String message() {
-            return "Apply refused to create nodes for " + sourceName + "." + role.value()
+            return "Apply refused to create nodes for " + sourceName
+                 + "." + role.value()
                  + ": " + reason
                  + ". Nothing was created; the ledger is unchanged.";
         }
@@ -58,7 +58,8 @@ interface PoolAuthority {
         public String message() {
             return "The leader's auto-heal has not provisioned the " + role.value()
                  + " nodes yet after " + waitedSeconds
-                 + " s: " + live + " live of " + wanted
+                 + " s: " + live
+                 + " live of " + wanted
                  + ". Apply created nothing. Check `aether cluster topology` and the provisioning diagnostics, then run `aether cluster apply --resume`.";
         }
     }

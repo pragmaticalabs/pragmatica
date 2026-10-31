@@ -43,10 +43,16 @@ final class PoolGate {
                : create.get();
     }
 
-    private static Result<List<ProvisionedNode>> waitForLeader(PoolAuthority authority, Pool pool, Consumer<String> progress) {
-        progress.accept(pool.source() + "." + pool.role().value()
-                        + ": the leader's auto-heal fills this pool; apply creates nothing here");
+    private static Result<List<ProvisionedNode>> waitForLeader(PoolAuthority authority,
+                                                               Pool pool,
+                                                               Consumer<String> progress) {
+        progress.accept(pool.source()
+                       + "." + pool.role().value()
+                       + ": the leader's auto-heal fills this pool; apply creates nothing here");
 
-        return authority.awaitLeader(pool.role(), pool.wantedInRole(), progress).map(_ -> List.<ProvisionedNode> of());
+        return authority.awaitLeader(pool.role(),
+                                     pool.wantedInRole(),
+                                     progress)
+                        .map(_ -> List.<ProvisionedNode> of());
     }
 }
