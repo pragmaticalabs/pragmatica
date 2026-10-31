@@ -578,6 +578,7 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `stream-segment-dht-full-cleared` (INFO — the recovery, same subject: live bytes fell below 85% of the cap)
 - `stream-segment-disk-pressure` (WARNING — the durable local-disk tier of the streams instance is at or above its warning ratio on this node; once per episode. Subject `node <nodeId> storage streams` (#2258, #1574))
 - `stream-segment-disk-pressure-relieved` (INFO — the recovery, same subject: the tier fell below the warning ratio)
+- `stream-seal-stop-incomplete` (WARNING — a graceful stop did not seal everything the node's segment sealer held within 5 s; names each partition, its unsealed range and whether a WAL holds it. Raised once, while the node stops. Subject `node <nodeId> stream sealer` (know 73fd8d9759))
 - `backup-stop-flush-failed` (WARNING — the final KV-backup flush of a graceful stop failed or overran its deadline, so changes inside the backup's debounce window are not in the backup; `subject` is `kv-backup`; the stop itself proceeds; closed by `backup-stop-flush-recovered`)
 - `backup-stop-flush-recovered` (INFO — the recovery: a later flush of this node's backup succeeded after its stop-time flush had failed, in this or a later process; a marker file `<backup path>/kv-backup.stop-flush-failed` carries the open state across the restart, and is removed when this is raised; if that node never leads again the marker stays and no recovery is raised)
 
