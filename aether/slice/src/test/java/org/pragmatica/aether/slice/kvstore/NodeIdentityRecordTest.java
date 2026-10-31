@@ -11,8 +11,9 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterStateKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeIdentityKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.RuntimeKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.IdentityFacet;
 import org.pragmatica.aether.slice.kvstore.AetherValue.IdentityState;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeIdentityValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -28,7 +29,7 @@ import org.pragmatica.serialization.Serializer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// ID-1b: the shape of the identity record's key and value. The key is a [RuntimeKey] (never in a backup; the identity LEDGER, not the
+/// O3-1: the shape of the lifecycle record's key and value. The key is a [RuntimeKey] (never in a backup; the identity LEDGER, not the
 /// KV, is what survives the loss of every holder's memory), the value is [LeaderAuthorized] (the applier drops a bare Put and a bare
 /// Remove, so only the committed leader writes or removes it).
 class NodeIdentityRecordTest {
@@ -52,8 +53,8 @@ class NodeIdentityRecordTest {
         store.process(store.createBatch(List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, LEADER))));
     }
 
-    private static NodeIdentityValue admitted() {
-        return new NodeIdentityValue(IdentityState.ADMITTED, 1L, Option.some(PROCESS), "core", Option.none(), Option.none(), 10L, Option.none());
+    private static NodeLifecycleValue admitted() {
+        return new NodeLifecycleValue(Option.some(new IdentityFacet(IdentityState.ADMITTED, 1L, PROCESS, "core", Option.none(), 10L)), Option.none());
     }
 
     @Test

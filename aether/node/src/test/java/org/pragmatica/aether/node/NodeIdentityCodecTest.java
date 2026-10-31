@@ -17,10 +17,12 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.NodeIdentityKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.IdentityCause;
 import org.pragmatica.aether.slice.kvstore.AetherValue.IdentityState;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeIdentityValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.OperationId;
+import org.pragmatica.aether.slice.kvstore.AetherValue.CapacityFacet;
+import org.pragmatica.aether.slice.kvstore.AetherValue.CapacityPhase;
+import org.pragmatica.aether.slice.kvstore.AetherValue.FreedCause;
+import org.pragmatica.aether.slice.kvstore.AetherValue.IdentityFacet;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation;
-import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisionIntent;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
@@ -29,7 +31,7 @@ import org.pragmatica.serialization.SystemTags;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// ID-1b wire tags (memory `new-kv-record-needs-a-wire-tag`): the identity record's types cross consensus, so each needs a pinned system
+/// O3-1 wire tags (memory `new-kv-record-needs-a-wire-tag`): the identity record's types cross consensus, so each needs a pinned system
 /// tag, disjoint from every tag taken on rc5 and on any open branch (2191 and 2192 are `StreamRegistryHolder*`, #2505, scanned 2026-10-31).
 /// The value shape changed before its first merge, so there is no migration, and a round trip of every state pins the layout.
 class NodeIdentityCodecTest {
@@ -38,19 +40,19 @@ class NodeIdentityCodecTest {
     private static final Map<String, Integer> PINS = pins();
 
     private static final NodeId NODE = NodeId.nodeId("heal-7").unwrap();
-    private static final NodeId SUCCESSOR = NodeId.nodeId("heal-9").unwrap();
     private static final ProcessIncarnation PROCESS = new ProcessIncarnation(1_760_000_000_123L, 0x5EEDFACE0BADL);
-    private static final OperationId OPERATION = OperationId.operationId("heal-7").unwrap();
 
     private static Map<String, Integer> pins() {
         var pins = new LinkedHashMap<String, Integer>();
 
         pins.put(KEY + "NodeIdentityKey", 2193);
-        pins.put(VALUE + "NodeIdentityValue", 2194);
+        pins.put(VALUE + "NodeLifecycleValue", 2194);
         pins.put(VALUE + "IdentityState", 2195);
         pins.put(VALUE + "IdentityCause", 2196);
-        pins.put(VALUE + "ProvisionIntent", 2197);
-        pins.put(VALUE + "OperationId", 2198);
+        pins.put(VALUE + "IdentityFacet", 2197);
+        pins.put(VALUE + "CapacityFacet", 2198);
+        pins.put(VALUE + "CapacityPhase", 2199);
+        pins.put(VALUE + "FreedCause", 2200);
 
         return Map.copyOf(pins);
     }
@@ -86,37 +88,47 @@ class NodeIdentityCodecTest {
     @Nested
     class RoundTrips {
         @Test
-        void intended_roundTripsTheIntentAndNoProcess() {
-            roundTrip(new NodeIdentityValue(IdentityState.INTENDED, 0L, Option.none(), "core", Option.none(), Option.none(), 100L, Option.some(intent(Option.none()))));
+        void identityOnly_roundTrips() {
+            roundTrip(new NodeLifecycleValue(Option.some(identity(IdentityState.ADMITTED, Option.none())), Option.none()));
         }
 
         @Test
-        void provisioning_roundTripsTheServerId() {
-            roundTrip(new NodeIdentityValue(IdentityState.PROVISIONING, 0L, Option.none(), "core", Option.none(), Option.none(), 110L, Option.some(intent(Option.some("srv-42")))));
-        }
-
-        @Test
-        void admitted_roundTripsTheProcessWithAndWithoutAnIntent() {
-            roundTrip(new NodeIdentityValue(IdentityState.ADMITTED, 3L, Option.some(PROCESS), "worker", Option.none(), Option.none(), 120L, Option.some(intent(Option.some("srv-42")))));
-            roundTrip(new NodeIdentityValue(IdentityState.ADMITTED, 1L, Option.some(PROCESS), "core", Option.none(), Option.none(), 120L, Option.none()));
-        }
-
-        @Test
-        void terminated_roundTripsEveryCauseWithTheSuccessor() {
-            for (var cause : IdentityCause.values()) {
-                roundTrip(new NodeIdentityValue(IdentityState.TERMINATED, 2L, Option.some(PROCESS), "core", Option.some(SUCCESSOR), Option.some(cause), 130L, Option.none()));
+        void capacityOnly_roundTripsEveryPhase() {
+            for (var phase : CapacityPhase.values()) {
+                roundTrip(new NodeLifecycleValue(Option.none(), Option.some(capacity(phase, Option.none(), Option.none()))));
             }
         }
 
         @Test
-        void everyState_roundTrips() {
+        void bothFacets_roundTripWithTheTombstoneFieldsAndTheCause() {
+            for (var cause : FreedCause.values()) {
+                roundTrip(new NodeLifecycleValue(Option.some(identity(IdentityState.TERMINATED, Option.some(IdentityCause.REPLACED))),
+                                                 Option.some(capacity(CapacityPhase.FREED, Option.some(cause), Option.some(1_760_000_555_000L)))));
+            }
+        }
+
+        @Test
+        void everyIdentityStateAndCause_roundTrips() {
             for (var state : IdentityState.values()) {
-                roundTrip(new NodeIdentityValue(state, 4L, Option.some(PROCESS), "core", Option.none(), Option.none(), 140L, Option.none()));
+                roundTrip(new NodeLifecycleValue(Option.some(identity(state, Option.none())), Option.none()));
+            }
+
+            for (var cause : IdentityCause.values()) {
+                roundTrip(new NodeLifecycleValue(Option.some(identity(IdentityState.TERMINATED, Option.some(cause))), Option.none()));
             }
         }
 
-        private ProvisionIntent intent(Option<String> serverId) {
-            return new ProvisionIntent(OPERATION, "cpx31", "fsn1", "dc-1", serverId, 99L);
+        @Test
+        void emptyRecord_roundTrips() {
+            roundTrip(new NodeLifecycleValue(Option.none(), Option.none()));
+        }
+
+        private IdentityFacet identity(IdentityState state, Option<IdentityCause> cause) {
+            return new IdentityFacet(state, 4L, PROCESS, "worker", cause, 140L);
+        }
+
+        private CapacityFacet capacity(CapacityPhase phase, Option<FreedCause> freedCause, Option<Long> freedAt) {
+            return new CapacityFacet("hetzner-fsn", "project-1", "core", phase, freedCause, freedAt);
         }
 
         private void roundTrip(AetherValue value) {
@@ -142,24 +154,24 @@ class NodeIdentityCodecTest {
     class Enums {
         @Test
         void identityState_keepsTheLifecycleOrder_unknownLast() {
-            assertThat(IdentityState.values()).extracting(Enum::name)
-                                              .containsExactly("INTENDED", "PROVISIONING", "ADMITTED", "DEPARTED", "TERMINATED", "UNKNOWN");
+            assertThat(IdentityState.values()).extracting(Enum::name).containsExactly("ADMITTED", "DEPARTED", "TERMINATED", "UNKNOWN");
         }
 
         @Test
-        void identityCause_listsTheSixWriterRanksThenTheFourAbandonments_unknownLast() {
+        void identityCause_listsTheSixWriterRanks_unknownLast() {
             assertThat(IdentityCause.values()).extracting(Enum::name)
-                                              .containsExactly("OPERATOR",
-                                                               "OPERATOR_FORCE",
-                                                               "REPLACED",
-                                                               "RETIRED",
-                                                               "DRAINED",
-                                                               "GONE",
-                                                               "PROVISION_FAILED",
-                                                               "PROVISION_TIMEOUT",
-                                                               "CANCELLED",
-                                                               "VANISHED",
-                                                               "UNKNOWN");
+                                              .containsExactly("OPERATOR", "OPERATOR_FORCE", "REPLACED", "RETIRED", "DRAINED", "GONE", "UNKNOWN");
+        }
+
+        @Test
+        void capacityPhase_keepsTodaysOrdinals_freedBeforeUnknown() {
+            assertThat(CapacityPhase.values()).extracting(Enum::name).containsExactly("DISPATCHED", "OBSERVED", "RELEASED", "FREED", "UNKNOWN");
+        }
+
+        @Test
+        void freedCause_listsTheFiveCauses_unknownLast() {
+            assertThat(FreedCause.values()).extracting(Enum::name)
+                                           .containsExactly("REFUSED", "ABSENT_CONFIRMED", "OPERATOR_CLEAR", "TERMINATED", "EXTERNAL_RELEASED", "UNKNOWN");
         }
     }
 }
