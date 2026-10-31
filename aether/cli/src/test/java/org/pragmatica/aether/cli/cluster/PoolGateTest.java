@@ -94,7 +94,7 @@ class PoolGateTest {
 
     private Result<List<ProvisionedNode>> through(PoolAuthority authority, SourceType type, int missing) {
         return PoolGate.through(authority,
-                                new PoolGate.Pool("eu-1", type, NodeRole.CORE, missing, 5, 5),
+                                new PoolGate.Pool("eu-1", type, NodeRole.CORE, missing, 5, 7),
                                 _ -> {},
                                 () -> {
                                     creates.incrementAndGet();
@@ -116,7 +116,7 @@ class PoolGateTest {
         through(authority(PoolAuthority.Actor.LEADER), SourceType.CLOUD, 2).unwrap();
 
         assertThat(creates.get()).isZero();
-        assertThat(waited).containsExactly("core>=5");
+        assertThat(waited).containsExactly("core>=7");
     }
 
     @Test
@@ -163,6 +163,49 @@ class PoolGateTest {
         assertThat(result.unwrap().nodesAdded()).isZero();
         assertThat(asked).containsExactly("eu-1.core=5");
         assertThat(waited).containsExactly("core>=5");
+    }
+
+    private static final String TWO_SOURCES = """
+            config_version = "1.0.0"
+
+            [cluster]
+            name = "prod-cluster"
+            version = "1.0.0"
+
+            [source.eu-1]
+            type = "cloud"
+            provider = "hetzner"
+            region = "eu-central"
+            credentials = "hcloud-token"
+            zone = "fsn1"
+
+            [source.eu-1.core]
+            count = 3
+            %s
+            [source.eu-2]
+            type = "cloud"
+            provider = "hetzner"
+            region = "eu-central"
+            credentials = "hcloud-token"
+            zone = "fsn1"
+
+            [source.eu-2.worker]
+            count = 3
+            """;
+
+    @Test
+    void addRole_leadersPool_createsNothing_andWaitsForTheRolesCountAcrossSources() {
+        WaveExecutor.poolAuthority = authority(PoolAuthority.Actor.LEADER);
+        var stored = ClusterBootstrapConfigParser.parse(TWO_SOURCES.formatted("")).unwrap();
+        var desired = ClusterBootstrapConfigParser.parse(TWO_SOURCES.formatted("\n[source.eu-1.worker]\ncount = 2\n")).unwrap();
+        var plan = ClusterBootstrapConfigDiff.diff(stored, desired);
+        var recorder = ledger.recorder(CLUSTER, ApplyAction.fromPlan(plan).stream().map(ApplyAction::key).toList());
+
+        var result = WaveExecutor.execute(plan, stored, desired, recorder);
+
+        assertThat(result.isSuccess()).as("%s", result).isTrue();
+        assertThat(asked).containsExactly("eu-1.worker=2");
+        assertThat(waited).containsExactly("worker>=5");
     }
 
     @Test
