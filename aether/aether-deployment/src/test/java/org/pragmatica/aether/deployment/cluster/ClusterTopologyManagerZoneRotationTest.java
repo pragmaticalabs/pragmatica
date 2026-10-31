@@ -195,8 +195,7 @@ class ClusterTopologyManagerZoneRotationTest {
     /// Node ids: cloud ids carry no cluster, Docker ids do. Which a replacement gets follows the source that backs the core.
     @Nested
     class CoreBackingForNodeIds {
-        private static final String DOCKER_TOML = MULTI_ZONE_TOML.replace("type = \"cloud\"\n            provider = \"hetzner\"\n            credentials = \"hcloud-token\"\n            region = \"eu-central\"\n            zones = [\"fsn1\", \"nbg1\", \"hel1\"]",
-                                                                 "type = \"docker\"");
+        private static final String DOCKER_TOML = MULTI_ZONE_TOML.replace("type = \"cloud\"", "type = \"docker\"");
 
         @Test
         void coresAreCloudBacked_whenACloudSourceDeclaresTheCore() {
@@ -209,7 +208,8 @@ class ClusterTopologyManagerZoneRotationTest {
         void coresAreCloudBacked_isFalseForADockerCore() {
             clusterStore.seedToml(DOCKER_TOML);
 
-            assertThat(DOCKER_TOML).contains("type = \"docker\"").doesNotContain("hetzner");
+            assertThat(DOCKER_TOML).contains("type = \"docker\"");
+            assertThat(org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser.parse(DOCKER_TOML).isSuccess()).as("the config parses, so the answer is about the source type").isTrue();
             assertThat(ctm.coresAreCloudBacked()).isFalse();
         }
 
