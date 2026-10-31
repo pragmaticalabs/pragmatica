@@ -297,8 +297,8 @@ public final class ClusterBootstrapConfigValidator {
 
         if (hetzner && config.cluster().name().value().length() > longest) {
             errors.add("PF-36: Cluster name '" + config.cluster().name().value()
-                      + "' is too long for a Hetzner source: servers are named '<cluster>-<node id>' (at most "
-                      + OperationId.MAX_LENGTH + " characters), so the cluster name may have at most " + longest
+                      + "' is too long for a Hetzner source: servers are named '<cluster>-<node id>' (at most " + OperationId.MAX_LENGTH
+                      + " characters), so the cluster name may have at most " + longest
                       + " characters. Use a shorter cluster name.");
         }
     }

@@ -92,8 +92,7 @@ public record ProvisionRequest(InstanceType market,
                                     context,
                                     context.clusterName()
                                            .flatMap(cluster -> context.nodeId()
-                                                                      .flatMap(raw -> OperationId.forNode(cluster, raw)
-                                                                                                 .option())));
+                                                                      .flatMap(raw -> OperationId.forNode(cluster, raw).option())));
     }
 
     /// The refusal a provider that cannot honour an operation id answers a request that carries one with (G1-a), empty when the

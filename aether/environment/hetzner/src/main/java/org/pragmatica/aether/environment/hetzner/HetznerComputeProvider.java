@@ -101,15 +101,15 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         var nodeId = request.context().resolveNodeId();
 
         return operationIdOf(request, clusterName, nodeId).async()
-                                                          .flatMap(operation -> createAndConfirm(request,
-                                                                                                 operation,
-                                                                                                 labelsFor(request.context(),
-                                                                                                           clusterName,
-                                                                                                           nodeId,
-                                                                                                           operation)))
-                                                          .mapError(cause -> toProvisionError(request.instanceSize(),
-                                                                                              request.zone(),
-                                                                                              cause));
+                            .flatMap(operation -> createAndConfirm(request,
+                                                                   operation,
+                                                                   labelsFor(request.context(),
+                                                                             clusterName,
+                                                                             nodeId,
+                                                                             operation)))
+                            .mapError(cause -> toProvisionError(request.instanceSize(),
+                                                                request.zone(),
+                                                                cause));
     }
 
     /// The identity of this create: the request's operation id, else `<cluster>-<nodeId>` ([OperationId#forNode]) for the cluster this
