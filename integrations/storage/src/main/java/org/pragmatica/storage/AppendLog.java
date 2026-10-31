@@ -1,5 +1,6 @@
 package org.pragmatica.storage;
 
+import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -26,6 +27,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
+import org.pragmatica.lang.io.FileError;
 import org.pragmatica.lang.io.FileOps;
 
 import org.slf4j.Logger;
@@ -248,6 +250,8 @@ public final class AppendLog implements AutoCloseable {
     }
 
     static final int INSPECT_BUFFER_BYTES = 64 * 1024;
+    /// The [#replay] scan buffer. [guess: the size of the inspect buffer; nothing measured it]
+    static final int REPLAY_BUFFER_BYTES = 64 * 1024;
 
     /// Streaming scan: one reusable buffer, CRC updated chunk by chunk. Imperative I/O leaf, as [#writeSynced].
     @SuppressWarnings("JBCT-EX-01")
@@ -386,10 +390,17 @@ public final class AppendLog implements AutoCloseable {
     /// Replay records in file order, skipping `offset <= afterOffset` (and any discarded by a lazy
     /// truncate), invoking `consumer` for each remaining VALID record. Stops cleanly at a torn
     /// final record or a CRC mismatch, returning the valid prefix consumed so far.
+    ///
+    /// The file is scanned in a fixed [#REPLAY_BUFFER_BYTES] buffer, never held whole (#2201 C-02): a skipped record is
+    /// CRC-checked chunk by chunk and never materialized, so a replay allocates the buffer and the records it delivers. A
+    /// spilled seal replays its range this way; the whole-file read cost the file's size per seal and failed past 2 GiB.
+    /// Time stays O(file).
     public Result<Unit> replay(long afterOffset, Consumer<WalRecord> consumer) {
         return closed
                ? WalError.General.WAL_CLOSED.result()
-               : readRegion().map(buf -> replayScan(buf, afterOffset, consumer));
+               : Result.lift(t -> new FileError.ReadFailed(file,
+                                                           String.valueOf(t.getMessage())),
+                             () -> replayScan(Math.max(afterOffset, truncatedUpto), consumer));
     }
 
     /// Discard all records with `offset <= min(uptoOffset, sealedThrough())`; later records remain
@@ -781,8 +792,46 @@ public final class AppendLog implements AutoCloseable {
         return FileOps.readBytes(file).map(AppendLog::wrapBigEndian);
     }
 
-    private Unit replayScan(ByteBuffer buf, long afterOffset, Consumer<WalRecord> consumer) {
-        scan(buf, Math.max(afterOffset, truncatedUpto), consumer);
+    /// The streaming form of [#scan]: the same validity rules (length frame, then CRC-32 over `offset || timestamp ||
+    /// payload`), the same stop at the first torn or corrupt record. Imperative I/O leaf, as [#scanExtent].
+    @SuppressWarnings("JBCT-EX-01")
+    private Unit replayScan(long afterOffset, Consumer<WalRecord> consumer) throws IOException {
+        var size = Files.size(file);
+        var chunk = new byte[REPLAY_BUFFER_BYTES];
+        var header = ByteBuffer.wrap(chunk, 0, HEADER_BYTES).order(ByteOrder.BIG_ENDIAN);
+        var position = 0L;
+
+        try (var in = new BufferedInputStream(Files.newInputStream(file), REPLAY_BUFFER_BYTES)) {
+            while (size - position >= HEADER_BYTES && in.readNBytes(chunk, 0, HEADER_BYTES) == HEADER_BYTES) {
+                header.clear();
+                var payloadLen = header.getInt();
+                var offset = header.getLong();
+                var timestampMillis = header.getLong();
+                var storedCrc = header.getInt();
+
+                if (payloadLen < 0 || payloadLen > size - position - HEADER_BYTES) {
+                    break;
+                }
+
+                var crc = new CRC32();
+
+                crc.update(chunk, 4, CRC_HEADER_BYTES);
+                if (offset > afterOffset) {
+                    var payload = in.readNBytes(payloadLen);
+
+                    crc.update(payload);
+                    if (payload.length != payloadLen || (int) crc.getValue() != storedCrc) {
+                        break;
+                    }
+
+                    consumer.accept(new WalRecord(offset, timestampMillis, payload));
+                } else if (!crcOfPayload(in, payloadLen, chunk, crc) || (int) crc.getValue() != storedCrc) {
+                    break;
+                }
+
+                position += HEADER_BYTES + payloadLen;
+            }
+        }
 
         return unit();
     }
