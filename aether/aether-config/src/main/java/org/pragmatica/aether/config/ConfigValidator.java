@@ -242,6 +242,10 @@ public final class ConfigValidator {
         if (streaming.segmentDiskMaxBytes() < 0) {
             errors.add("streaming.segment_disk_max_bytes must be >= 0 (0 derives the cap from the filesystem). Got: " + streaming.segmentDiskMaxBytes());
         }
+        // #2258: 0 means "derive from the heap"; a negative cap has no meaning.
+        if (streaming.dhtSegmentMaxBytes() < 0) {
+            errors.add("streaming.dht_segment_max_bytes must be >= 0 (0 derives the cap from the maximum heap). Got: " + streaming.dhtSegmentMaxBytes());
+        }
         // #2201 C-02 (spec 4.2), know 73fd8d9759: a merged block is ONE array whose length the sealer sums as an int, so its cap
         // stays far below 2 GiB. The other three thresholds size nothing: `seal_run_bytes` and `seal_run_events` are only compared
         // against the run's long counters, and a zero or negative value only makes every run ready at once.
