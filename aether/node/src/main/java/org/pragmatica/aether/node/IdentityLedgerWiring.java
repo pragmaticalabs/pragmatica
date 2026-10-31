@@ -119,7 +119,20 @@ public sealed interface IdentityLedgerWiring {
                      .collect(Collectors.toUnmodifiableSet());
     }
 
+    /// [#wire], and the apply listener that writes each retirement the cluster commits to this node's own ledger (ID-1b).
+    static IdentityRecordPersister wirePersisting(AetherNodeConfig config, BootTokens tokens, OperatorWarningSink sink) {
+        tokens.seats(config.self(), configuredCoreSeats(config));
+
+        return IdentityRecordPersister.identityRecordPersister(wireLedger(location(config), config.self(), tokens, sink), tokens);
+    }
+
     static Unit wire(Location location, NodeId self, BootTokens tokens, OperatorWarningSink sink) {
+        wireLedger(location, self, tokens, sink);
+
+        return Unit.unit();
+    }
+
+    private static IdentityLedger wireLedger(Location location, NodeId self, BootTokens tokens, OperatorWarningSink sink) {
         var ledger = IdentityLedger.identityLedger(location.file(), IdentityLedger.DurableWriter.fileOps());
         var subject = self.id();
 
@@ -130,7 +143,7 @@ public sealed interface IdentityLedgerWiring {
         tokens.preload(loading.facts(), loading.origin() == IdentityLedger.Origin.WIPED);
         raiseAtBoot(sink, subject, location, loading);
 
-        return Unit.unit();
+        return ledger;
     }
 
     private static boolean isNewDirectory(Location location) {

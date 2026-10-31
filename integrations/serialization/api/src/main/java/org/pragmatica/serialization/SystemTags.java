@@ -698,7 +698,7 @@ public interface SystemTags {
         // takes 2176 (scanned against the rc5 tip and every open PR head on 2026-10-20).
         pin(table, 2176, "org.pragmatica.dht.DHTMessage.VerifiedReadRequest");
         // W-OBS W2: the replica feed messages and the directory carried on the ClusterSync ping and pong. 2177..2190 were free on every
-        // origin branch (203 refs) and every open PR head (3), scanned 2026-10-25; the next free slot is 2191.
+        // origin branch (203 refs) and every open PR head (3), scanned 2026-10-25; the next free slot is 2191 (before ID-1b).
         pin(table, 2177, "org.pragmatica.cluster.metrics.DirectoryVersion");
         pin(table, 2178, "org.pragmatica.cluster.metrics.ClusterDirectory");
         pin(table, 2179, "org.pragmatica.cluster.metrics.ClusterDirectory.DhtReplication");
@@ -713,7 +713,15 @@ public interface SystemTags {
         pin(table, 2188, "org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaSnapshotRequest");
         pin(table, 2189, "org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaSnapshotChunk");
         pin(table, 2190, "org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaHeartbeat");
-        // ---- 2191..16383 RESERVED ----
+        // ID-1b (membership overhaul): the identity record, its states, causes and the provisioning intent. 2191 and 2192 are taken by an open PR
+        // (#2505, StreamRegistryHolder*), found by the 2026-10-31 scan of every origin branch and every open PR head, so these take 2193..2198.
+        pin(table, 2193, "org.pragmatica.aether.slice.kvstore.AetherKey.NodeIdentityKey");
+        pin(table, 2194, "org.pragmatica.aether.slice.kvstore.AetherValue.NodeIdentityValue");
+        pin(table, 2195, "org.pragmatica.aether.slice.kvstore.AetherValue.IdentityState");
+        pin(table, 2196, "org.pragmatica.aether.slice.kvstore.AetherValue.IdentityCause");
+        pin(table, 2197, "org.pragmatica.aether.slice.kvstore.AetherValue.ProvisionIntent");
+        pin(table, 2198, "org.pragmatica.aether.slice.kvstore.AetherValue.OperationId");
+        // ---- 2199..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);

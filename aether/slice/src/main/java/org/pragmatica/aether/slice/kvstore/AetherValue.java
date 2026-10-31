@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.regex.Pattern;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -39,11 +40,16 @@ import org.pragmatica.cluster.state.kvstore.VersionFenced;
 import org.pragmatica.cluster.state.kvstore.WitnessedRemoval;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Codec;
 import org.pragmatica.serialization.CodecFor;
 
 import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
 
 
 @Codec
@@ -4168,4 +4174,121 @@ public sealed interface AetherValue {
                               ProcessIncarnation process,
                               Option<DepartureCause> cause,
                               long decidedAt) implements AetherValue, LeaderAuthorized {}
+
+    /// Where a node id stands in its life (ID-1b, membership overhaul spec 2.1 and q4 7.1): a provisioning intent (`INTENDED`, then
+    /// `PROVISIONING` once the provider confirmed a server), the admitted process (`ADMITTED`, `DEPARTED` while it is gone), and the end
+    /// (`TERMINATED`, never removed: I-J8).
+    @Codec
+    enum IdentityState {
+        INTENDED,
+        PROVISIONING,
+        ADMITTED,
+        DEPARTED,
+        TERMINATED,
+        /// Wire sentinel required of every `@Codec` enum; not a state the leader records.
+        UNKNOWN
+    }
+
+    /// Why a node id ended (ID-1b): the six writer ranks of the terminator (spec 2.1) and, after them, the four ways an intent ends before any
+    /// admission (q4 7.1). `UNKNOWN` is last and is the codec sentinel.
+    @Codec
+    enum IdentityCause {
+        OPERATOR,
+        OPERATOR_FORCE,
+        REPLACED,
+        RETIRED,
+        DRAINED,
+        GONE,
+        /// The provider refused or failed the create.
+        PROVISION_FAILED,
+        /// No admission arrived within the bound.
+        PROVISION_TIMEOUT,
+        /// The target dropped before the node was admitted.
+        CANCELLED,
+        /// A server the provider had confirmed is gone before admission (it was deleted after creation).
+        VANISHED,
+        /// Wire sentinel required of every `@Codec` enum; not a cause the leader records.
+        UNKNOWN;
+
+        /// One of the four ways an intent ends before admission.
+        public boolean isAbandonment() {
+            return this == PROVISION_FAILED || this == PROVISION_TIMEOUT || this == CANCELLED || this == VANISHED;
+        }
+
+        /// One of the six ranks the terminator writes for an admitted or departed node.
+        public boolean isWriterRank() {
+            return this != UNKNOWN && !isAbandonment();
+        }
+    }
+
+    /// The operation id of a provisioning intent: the lower-case server name at the provider and the value of its `aether.op` label. The
+    /// provider's names are case-sensitive and unique per project, so the grammar is lower case only and the factory PARSES: it refuses what
+    /// does not fit and lower-cases nothing. Hostname-shaped (`[a-z0-9-]`, not starting or ending with a hyphen, at most 63 characters)
+    /// `[guess: Hetzner's server-name grammar; settled by the G1 lane's check of auto-heal mints]`. The canonical constructor is public
+    /// only because the wire codec decodes through it; every in-process value comes from [#operationId].
+    @Codec
+    record OperationId(String value) {
+        private static final Pattern GRAMMAR = Pattern.compile("[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?");
+        private static final Fn1<Cause, String> INVALID = Causes.forOneValue("Invalid operation id (lower case a-z, 0-9 and '-', at most 63 characters): %s");
+
+        public static Result<OperationId> operationId(String raw) {
+            return Verify.ensure(raw, Verify.Is::present)
+                         .filter(INVALID, GRAMMAR.asMatchPredicate())
+                         .map(OperationId::new);
+        }
+
+        @Override
+        public String toString() {
+            return value;
+        }
+    }
+
+    /// The provisioning intent a node id was minted with (q4 7.1, ruling f2d51c1322): what to create, where, and for which community.
+    /// `providerServerId` is present once the provider confirmed the server (`PROVISIONING`). `role` of the node is on the record itself.
+    @Codec
+    record ProvisionIntent(OperationId operationId,
+                           String instanceSize,
+                           String zone,
+                           String communityId,
+                           Option<String> providerServerId,
+                           long intendedAt) {
+        public ProvisionIntent withServer(String serverId) {
+            return new ProvisionIntent(operationId, instanceSize, zone, communityId, some(serverId), intendedAt);
+        }
+    }
+
+    /// The identity record of one node id, under [AetherKey.NodeIdentityKey] (ID-1b, membership overhaul spec 2.1 and q4 7.1): the
+    /// agreement layer of "one NodeId, one process". `epoch` is leader-assigned, 0 for an intent and +1 per admission. `process` is absent
+    /// until a process is admitted. `intent` is present for a node that was minted by a provisioning intent and stays on the record. `cause` is
+    /// present for `TERMINATED` only; `supersededBy` is carried for the replaced-node case. [LeaderAuthorized]: every write is a
+    /// `LeaderTransaction` mutation expecting the value the leader read (see `IdentityMutations`).
+    record NodeIdentityValue(IdentityState state,
+                             long epoch,
+                             Option<ProcessIncarnation> process,
+                             String role,
+                             Option<NodeId> supersededBy,
+                             Option<IdentityCause> cause,
+                             long decidedAt,
+                             Option<ProvisionIntent> intent) implements AetherValue, LeaderAuthorized {
+        /// The base an admission from an absent record builds on: nothing bound, epoch 0.
+        public static NodeIdentityValue blank(String role, long now) {
+            return new NodeIdentityValue(IdentityState.UNKNOWN, 0L, none(), role, none(), none(), now, none());
+        }
+
+        public NodeIdentityValue provisioned(String serverId, long now) {
+            return new NodeIdentityValue(IdentityState.PROVISIONING, epoch, process, role, supersededBy, cause, now, intent.map(found -> found.withServer(serverId)));
+        }
+
+        public NodeIdentityValue admitted(ProcessIncarnation bound, long now) {
+            return new NodeIdentityValue(IdentityState.ADMITTED, epoch + 1, some(bound), role, supersededBy, none(), now, intent);
+        }
+
+        public NodeIdentityValue departed(long now) {
+            return new NodeIdentityValue(IdentityState.DEPARTED, epoch, process, role, supersededBy, cause, now, intent);
+        }
+
+        public NodeIdentityValue terminated(IdentityCause why, Option<NodeId> successor, long now) {
+            return new NodeIdentityValue(IdentityState.TERMINATED, epoch, process, role, successor, some(why), now, intent);
+        }
+    }
 }

@@ -26,6 +26,8 @@ import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.api.NodeDepartureNotifier;
 import org.pragmatica.aether.controller.ControlLoop;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
+import org.pragmatica.aether.deployment.cluster.HierarchyStateWriter;
+import org.pragmatica.aether.deployment.cluster.IdentityRegistrar;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipDeltaProjector;
@@ -50,6 +52,7 @@ import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.aether.node.CoreAdmission;
 import org.pragmatica.aether.node.DhtReplicationSettlement;
 import org.pragmatica.aether.node.IdentityLedgerWiring;
+import org.pragmatica.aether.node.IdentityRecordPersister;
 import org.pragmatica.aether.node.ObservedIncarnation;
 import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
@@ -458,7 +461,9 @@ public sealed interface MembershipAssembly {
         var allEntries = in.allEntries();
         var swimHealthDetector = in.swimHealthDetector();
 
-        attachIdentityLedger(config, swimHealthDetector, operatorWarningSink);
+        var identityPersister = attachIdentityLedger(config, swimHealthDetector, operatorWarningSink);
+
+        wireIdentityRecord(config, kvStore, clusterNode, swimHealthDetector, identityPersister, allEntries);
         var presenceSampler = in.presenceSampler();
         var membershipFsm = in.membershipFsm();
         var routingCoreIds = in.routingCoreIds();
@@ -819,14 +824,64 @@ public sealed interface MembershipAssembly {
 
     /// #2429: the node's identity ledger is attached to the shared boot-token registry and loaded here, at assembly, before the
     /// transport starts and admission can consult it. A worker holds no ledger (it keeps per-observer admission).
-    static Unit attachIdentityLedger(AetherNodeConfig config,
-                                     CoreSwimHealthDetector swimHealthDetector,
-                                     OperatorWarningSink operatorWarningSink) {
+    static Option<IdentityRecordPersister> attachIdentityLedger(AetherNodeConfig config,
+                                                                CoreSwimHealthDetector swimHealthDetector,
+                                                                OperatorWarningSink operatorWarningSink) {
         return configuredWorker(config)
-               ? Unit.unit()
+               ? Option.none()
                : swimHealthDetector.bootTokens()
-                                   .map(tokens -> IdentityLedgerWiring.wire(config, tokens, operatorWarningSink))
-                                   .or(Unit.unit());
+                                   .map(tokens -> IdentityLedgerWiring.wirePersisting(config, tokens, operatorWarningSink));
+    }
+
+    /// ID-1b: the identity record's two edges. Every core's apply of a committed retirement reaches its own ledger before the callback returns
+    /// (`persister`), and the leader's admission signal feeds the shadow writer (`registrar`; BootTokens stays the decider). A worker holds
+    /// neither: it keeps the per-observer path.
+    static Unit wireIdentityRecord(AetherNodeConfig config,
+                                   KVStore<AetherKey, AetherValue> kvStore,
+                                   RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                   CoreSwimHealthDetector swimHealthDetector,
+                                   Option<IdentityRecordPersister> persister,
+                                   List<MessageRouter.Entry<?>> allEntries) {
+        persister.onPresent(applied -> allEntries.addAll(KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                                                             .onPut(AetherKey.NodeIdentityKey.class,
+                                                                                    (KVStoreNotification.ValuePut<AetherKey.NodeIdentityKey, AetherValue.NodeIdentityValue> put) -> applied.onPut(put.cause()
+                                                                                                                                                                                                      .key(),
+                                                                                                                                                                                                  put.cause()
+                                                                                                                                                                                                     .value()))
+                                                                             .build()
+                                                                             .asRouteEntries()));
+        swimHealthDetector.bootTokens()
+                          .filter(_ -> !configuredWorker(config))
+                          .map(tokens -> IdentityRegistrar.identityRegistrar(identityWriter(config, kvStore, clusterNode),
+                                                                             tokens::tokenOf,
+                                                                             System::currentTimeMillis))
+                          .onPresent(registrar -> allEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class,
+                                                                                           joined -> admitIfLeader(clusterNode,
+                                                                                                                   registrar,
+                                                                                                                   joined))));
+
+        return Unit.unit();
+    }
+
+    private static HierarchyStateWriter identityWriter(AetherNodeConfig config,
+                                                       KVStore<AetherKey, AetherValue> kvStore,
+                                                       RabiaNode<KVCommand<AetherKey>> clusterNode) {
+        return HierarchyStateWriter.hierarchyStateWriter(() -> kvStore.getTyped(LeaderKey.INSTANCE, LeaderValue.class)
+                                                                      .filter(value -> value.leader().equals(config.self())
+                                                                                       && clusterNode.leaderManager().isLeader()
+                                                                                       && clusterNode.isActive()),
+                                                         kvStore::get,
+                                                         commands -> clusterNode.apply(commands));
+    }
+
+    /// The admission signal is delivered on every core; only the leader records it.
+    @Contract
+    private static void admitIfLeader(RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                      IdentityRegistrar registrar,
+                                      MembershipDecision.NodeJoined joined) {
+        if (clusterNode.leaderManager().isLeader() && clusterNode.isActive()) {
+            registrar.onAdmitted(joined.nodeId());
+        }
     }
 
     /// The quorum-loss detector's member count, DERIVED FROM CURRENT STATE each time the detector evaluates it

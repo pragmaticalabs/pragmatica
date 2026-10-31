@@ -1645,6 +1645,34 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
+    /// The identity record of one node id (ID-1b, membership overhaul spec 2.1): the intent, the admitted process and the end of the node id.
+    /// A [RuntimeKey]: never in a backup, since the identity LEDGER on each core's disk, not the KV, is what survives the loss of every holder.
+    record NodeIdentityKey(NodeId nodeId) implements RuntimeKey {
+        private static final String PREFIX = "node-identity/";
+
+        @Override
+        public String asString() {
+            return PREFIX + nodeId.id();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static NodeIdentityKey nodeIdentityKey(NodeId nodeId) {
+            return new NodeIdentityKey(nodeId);
+        }
+
+        public static Result<NodeIdentityKey> nodeIdentityKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return NODE_IDENTITY_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return NodeId.nodeId(key.substring(PREFIX.length())).map(NodeIdentityKey::new);
+        }
+    }
+
     Fn1<Cause, String> SLICE_DESIRED_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice-desired key format: %s");
 
     Fn1<Cause, String> SLICE_OBSERVED_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice-observed key format: %s");
@@ -1654,6 +1682,8 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     Fn1<Cause, String> ARTIFACT_JUDGMENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid artifact-judgment key format: %s");
 
     Fn1<Cause, String> NODE_DEPARTURE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-departure key format: %s");
+
+    Fn1<Cause, String> NODE_IDENTITY_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-identity key format: %s");
 
     Fn1<Cause, String> NODE_ARTIFACT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-artifact key format: %s");
 
