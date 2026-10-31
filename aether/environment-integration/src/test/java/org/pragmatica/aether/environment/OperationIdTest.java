@@ -90,6 +90,15 @@ class OperationIdTest {
         }
 
         @Test
+        void operationIdLength_isTheClusterPlusOnePlusTheLongestIdThePoolCanBeGiven() {
+            assertThat(OperationId.longestMintedIdLength(3, "s", "core")).as("minted core id: 39 + cluster").isEqualTo(42);
+            assertThat(OperationId.operationIdLength(3, "s".repeat(39), "core")).as("worker id 59: 3 + 1 + 59").isEqualTo(63);
+            assertThat(OperationId.operationIdLength(3, "s".repeat(40), "core")).isEqualTo(64);
+            assertThat(OperationId.longestClusterNameFor("s".repeat(39), "core")).isEqualTo(3);
+            assertThat(OperationId.longestClusterNameFor("hetzner-eu", "worker")).as("the minted core id dominates a short pool").isEqualTo(11);
+        }
+
+        @Test
         void forNode_scopesTheNodeIdByTheCluster() {
             assertThat(OperationId.forNode(clusterName("prod").unwrap(), "eu-1-core-0").unwrap().value()).isEqualTo("prod-eu-1-core-0");
             assertThat(OperationId.forNode(clusterName("staging").unwrap(), "eu-1-core-0").unwrap().value()).isEqualTo("staging-eu-1-core-0");
