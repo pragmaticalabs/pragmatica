@@ -186,6 +186,7 @@ class IdentityRegistrarTest {
         assertThat(store.get(KEY).isEmpty()).isTrue();
         assertThat(submitted).isEmpty();
         assertThat(registrar.grants()).isZero();
+        assertThat(registrar.failures()).as("decided before any commit is built, not refused by the builder").isZero();
     }
 
     @Test

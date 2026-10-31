@@ -896,7 +896,8 @@ public sealed interface MembershipAssembly {
                                                          commands -> clusterNode.apply(commands));
     }
 
-    /// The admission signal is delivered on every core; only the leader records it.
+    /// The admission signal is delivered on every core; only the leader records it. The registrar's promise is not awaited or kept: it never
+    /// fails (a refused commit is absorbed and counted there, FER), and BootTokens has already decided the admission.
     @Contract
     private static void admitIfLeader(BooleanSupplier activeLeader,
                                       IdentityRegistrar registrar,
