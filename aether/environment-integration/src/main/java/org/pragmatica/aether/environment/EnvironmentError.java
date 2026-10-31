@@ -249,7 +249,8 @@ public sealed interface EnvironmentError extends Cause {
         @Override
         public String message() {
             return "A server named '" + name.value()
-                 + "' already exists (instance " + existing.id().value()
+                 + "' already exists (instance " + existing.id()
+                                                           .value()
                  + "); the create was not repeated and the existing server is the answer.";
         }
     }

@@ -82,7 +82,8 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
         var unsupported = request.refuseOperationId("aws");
 
         if (unsupported.isPresent()) {
-            return unsupported.unwrap().promise();
+            return unsupported.unwrap()
+                              .promise();
         }
 
         var tags = tagsFor(request.context());

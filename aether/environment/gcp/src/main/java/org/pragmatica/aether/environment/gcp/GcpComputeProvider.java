@@ -79,7 +79,8 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
         var unsupported = request.refuseOperationId("gcp");
 
         if (unsupported.isPresent()) {
-            return unsupported.unwrap().promise();
+            return unsupported.unwrap()
+                              .promise();
         }
 
         if (request.market() instanceof InstanceType.Spot) {

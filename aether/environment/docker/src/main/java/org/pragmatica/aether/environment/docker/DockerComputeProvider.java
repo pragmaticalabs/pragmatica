@@ -94,7 +94,8 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         var unsupported = request.refuseOperationId("docker");
 
         if (unsupported.isPresent()) {
-            return unsupported.unwrap().promise();
+            return unsupported.unwrap()
+                              .promise();
         }
 
         var preflight = preflightCheck(request);

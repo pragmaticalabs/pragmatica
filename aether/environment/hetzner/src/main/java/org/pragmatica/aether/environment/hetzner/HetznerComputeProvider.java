@@ -99,14 +99,14 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
 
     private Promise<InstanceInfo> createLabelled(ProvisionRequest request, ClusterName clusterName) {
         return operationIdOf(request).async()
-                                     .flatMap(operation -> createAndConfirm(request,
-                                                                            operation,
-                                                                            labelsFor(request.context(),
-                                                                                      clusterName,
-                                                                                      operation)))
-                                     .mapError(cause -> toProvisionError(request.instanceSize(),
-                                                                         request.zone(),
-                                                                         cause));
+                            .flatMap(operation -> createAndConfirm(request,
+                                                                   operation,
+                                                                   labelsFor(request.context(),
+                                                                             clusterName,
+                                                                             operation)))
+                            .mapError(cause -> toProvisionError(request.instanceSize(),
+                                                                request.zone(),
+                                                                cause));
     }
 
     /// The identity of this create: the request's operation id, else the context's node id (self-minted when the caller
@@ -115,14 +115,14 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     /// refused: a name the provider cannot deduplicate on is not a fallback to take silently.
     private static Result<OperationId> operationIdOf(ProvisionRequest request) {
         return request.operationId()
-                      .fold(() -> requireOperationId(request.context().resolveNodeId()), Result::success);
+                      .fold(() -> requireOperationId(request.context().resolveNodeId()),
+                            Result::success);
     }
 
     private static Result<OperationId> requireOperationId(String nodeId) {
-        return OperationId.operationId(nodeId)
-                          .mapError(cause -> Causes.cause("Refusing to provision: node id '" + nodeId
-                                                         + "' cannot name a Hetzner server",
-                                                          Option.some(cause)));
+        return OperationId.operationId(nodeId).mapError(cause -> Causes.cause("Refusing to provision: node id '" + nodeId
+                                                                             + "' cannot name a Hetzner server",
+                                                                              Option.some(cause)));
     }
 
     /// RFC-0017 C2 — a VM whose cluster cannot be identified MUST NOT be created.
@@ -184,7 +184,8 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     /// name nobody lists yet (the visibility lag, P-G1 A6) stays the provider's own refusal, which is a failed create, not a retry.
     private Promise<Server> createNamed(CreateServerRequest create, OperationId operation) {
         return client.createServer(create)
-                     .fold(result -> result.fold(cause -> nameRefused(create, operation, cause), Promise::success));
+                     .fold(result -> result.fold(cause -> nameRefused(create, operation, cause),
+                                                 Promise::success));
     }
 
     private Promise<Server> nameRefused(CreateServerRequest create, OperationId operation, Cause cause) {
@@ -198,9 +199,13 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         return cause instanceof HetznerError.ApiError apiError && NAME_TAKEN_CODE.equals(apiError.code());
     }
 
-    private static Promise<Server> holderOf(List<Server> servers, CreateServerRequest create, OperationId operation, Cause refusal) {
+    private static Promise<Server> holderOf(List<Server> servers,
+                                            CreateServerRequest create,
+                                            OperationId operation,
+                                            Cause refusal) {
         return servers.stream()
-                      .filter(server -> create.name().equals(server.name()))
+                      .filter(server -> create.name()
+                                              .equals(server.name()))
                       .findFirst()
                       .map(holder -> holderCause(holder, create, operation))
                       .orElse(refusal)
@@ -210,13 +215,18 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     private static Cause holderCause(Server holder, CreateServerRequest create, OperationId operation) {
         return carriesLabelsOf(holder, create)
                ? EnvironmentError.alreadyExists(operation, toInstanceInfo(holder))
-               : EnvironmentError.nameHeldByOther(operation, new InstanceId(String.valueOf(holder.id())));
+               : EnvironmentError.nameHeldByOther(operation,
+                                                  new InstanceId(String.valueOf(holder.id())));
     }
 
     private static boolean carriesLabelsOf(Server holder, CreateServerRequest create) {
         var labels = safeLabels(holder);
 
-        return create.labels().get(CLUSTER_LABEL).equals(labels.get(CLUSTER_LABEL)) && create.labels().get(NODE_ID_LABEL).equals(labels.get(NODE_ID_LABEL));
+        return create.labels()
+                     .get(CLUSTER_LABEL)
+                     .equals(labels.get(CLUSTER_LABEL)) && create.labels()
+                                                                 .get(NODE_ID_LABEL)
+                                                                 .equals(labels.get(NODE_ID_LABEL));
     }
 
     private static final String NAME_TAKEN_CODE = "uniqueness_error";

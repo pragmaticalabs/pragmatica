@@ -85,7 +85,8 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
         var unsupported = request.refuseOperationId("azure");
 
         if (unsupported.isPresent()) {
-            return unsupported.unwrap().promise();
+            return unsupported.unwrap()
+                              .promise();
         }
 
         if (request.market() instanceof InstanceType.Spot) {
