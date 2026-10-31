@@ -509,6 +509,59 @@ class HetznerComputeProviderTest {
         }
     }
 
+    /// G1-a (P-G1 A2/A3): Hetzner refuses a second server with an existing name, atomically, so the name is the
+    /// provider-side deduplication key. It is the node id, lower case (names are case-sensitive, A4), and the
+    /// `aether.op` label carries the same value for lookup.
+    @Nested
+    class OperationNamingTests {
+        private static final String OPERATION_LABEL = "aether.op";
+
+
+        @Test
+        void createFrom_namesTheServerWithTheNodeId() {
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+
+            provider.createFrom(requestFor("aether-prod-node-01jabcdefghjkmnpqrstvwxyz0")).await()
+                    .onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.name()).isEqualTo("aether-prod-node-01jabcdefghjkmnpqrstvwxyz0");
+        }
+
+        @Test
+        void createFrom_stampsTheOperationLabelBesideTheNodeIdLabel() {
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+
+            provider.createFrom(requestFor("eu-1-core-0")).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.labels())
+                    .containsEntry(OPERATION_LABEL, "eu-1-core-0")
+                    .containsEntry(HetznerComputeProvider.NODE_ID_LABEL, "eu-1-core-0");
+        }
+
+        @Test
+        void provision_withoutANodeId_namesTheServerWithTheIdItLabelsTheNode() {
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+            var context = ProvisionContext.provisionContext(maybeClusterName("prod"), "core", sourceNameOrDefault("eu-1"),
+                                                            ProvisionContext.PROVISIONED_BY_CTM);
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "cx22", "core", context).unwrap();
+
+            provider.provision(spec).await().onFailure(cause -> assertThat(cause).isNull());
+
+            var sent = testClient.lastCreateServerRequest;
+            assertThat(sent.name())
+                    .isEqualTo(sent.labels().get(HetznerComputeProvider.NODE_ID_LABEL))
+                    .isEqualTo(sent.labels().get(OPERATION_LABEL))
+                    .matches("[a-z0-9-]{1,63}");
+        }
+
+        private ProvisionRequest requestFor(String nodeId) {
+            var context = ProvisionContext.forBootstrap(clusterName("prod").unwrap(), "core", sourceNameOrDefault("eu-1"), nodeId);
+
+            return new ProvisionRequest(InstanceType.ON_DEMAND, "cx22", "ubuntu-24.04", "fsn1",
+                                        Option.empty(), MarketOptions.ON_DEMAND, context);
+        }
+    }
+
     @Nested
     class LabelWiringTests {
 
