@@ -16,7 +16,7 @@ public sealed interface LifecycleRefusal extends Cause {
     /// The record, or one facet of it, is absent or in a state the operation does not expect. `found` names what was there.
     record WrongState(NodeId node, String operation, String found, String message) implements LifecycleRefusal {
         static final Fn3<WrongState, NodeId, String, String> FACTORY = Causes.forThreeValues("Node %s: %s is refused, the record has %s",
-                                                                                              WrongState::new);
+                                                                                             WrongState::new);
     }
 
     /// `readmit` named a process other than the one the identity facet binds: a different process is never re-admitted under the same node id.
@@ -28,7 +28,7 @@ public sealed interface LifecycleRefusal extends Cause {
     /// The cause does not belong to the operation (`UNKNOWN` is a wire sentinel, never a cause).
     record WrongCause(NodeId node, String cause, String operation, String message) implements LifecycleRefusal {
         static final Fn3<WrongCause, NodeId, String, String> FACTORY = Causes.forThreeValues("Node %s: cause %s does not belong to %s",
-                                                                                              WrongCause::new);
+                                                                                             WrongCause::new);
     }
 
     /// The capacity ledger cannot take the change: absent, inventory incomplete, at its limit, or inconsistent with the record.

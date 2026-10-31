@@ -4191,7 +4191,6 @@ public sealed interface AetherValue {
         GONE,
         /// Wire sentinel required of every `@Codec` enum; not a cause the leader records.
         UNKNOWN;
-
         /// One of the six ranks the terminator writes.
         public boolean isWriterRank() {
             return this != UNKNOWN;
@@ -4219,7 +4218,6 @@ public sealed interface AetherValue {
         EXTERNAL_RELEASED,
         /// Wire sentinel required of every `@Codec` enum; not a cause the leader records.
         UNKNOWN;
-
         /// A cause the leader records.
         public boolean isCause() {
             return this != UNKNOWN;
@@ -4229,7 +4227,12 @@ public sealed interface AetherValue {
     /// The identity facet of a node's lifecycle record: the process admitted for the node id, its epoch (+1 per admission, leader-assigned),
     /// and, once ended, the cause. `supersededBy` stays on `CapacityAdmissionValue` in rc5.
     @Codec
-    record IdentityFacet(IdentityState state, long epoch, ProcessIncarnation process, String role, Option<IdentityCause> cause, long decidedAt) {
+    record IdentityFacet(IdentityState state,
+                         long epoch,
+                         ProcessIncarnation process,
+                         String role,
+                         Option<IdentityCause> cause,
+                         long decidedAt) {
         public IdentityFacet admitted(ProcessIncarnation bound, long now) {
             return new IdentityFacet(IdentityState.ADMITTED, epoch + 1, bound, role, none(), now);
         }

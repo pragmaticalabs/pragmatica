@@ -57,7 +57,6 @@ import static org.pragmatica.lang.Option.some;
 public sealed interface LifecycleMutations {
     /// What the fleet counter is before anything was ever counted (an absent counter reads as this, as `observeBound` reads it today).
     CapacityLedgerValue EMPTY_LEDGER = new CapacityLedgerValue(0, 0L, false);
-
     Cause BLANK_SOURCE = Causes.cause("A capacity facet needs a source name");
     Cause BLANK_ROLE = Causes.cause("The identity facet needs a role");
     Cause UNKNOWN_PROCESS = Causes.cause("A process with no boot token cannot be bound to a node id");
@@ -83,7 +82,10 @@ public sealed interface LifecycleMutations {
                                                                                   CapacityPhase.DISPATCHED,
                                                                                   none(),
                                                                                   none()))),
-                                            ledgerChange(ledger, new CapacityLedgerValue(before.allocated() + 1, before.version() + 1, true))));
+                                            ledgerChange(ledger,
+                                                         new CapacityLedgerValue(before.allocated() + 1,
+                                                                                 before.version() + 1,
+                                                                                 true))));
     }
 
     /// `observe`: the provider reports an instance for this node id. From no capacity facet (or a `FREED` one) it adopts the instance and counts
@@ -104,9 +106,15 @@ public sealed interface LifecycleMutations {
                                                                  Option<NodeLifecycleValue> current,
                                                                  String source,
                                                                  String binding) {
-        return capacityIn(node, current, "refuse", CapacityPhase.DISPATCHED)
-                .flatMap(found -> sameSource(node, found, source, binding, "refuse"))
-                .map(found -> List.of(record(node, current, withCapacity(current, found.withPhase(CapacityPhase.RELEASED)))));
+        return capacityIn(node, current, "refuse", CapacityPhase.DISPATCHED).flatMap(found -> sameSource(node,
+                                                                                                         found,
+                                                                                                         source,
+                                                                                                         binding,
+                                                                                                         "refuse"))
+                         .map(found -> List.of(record(node,
+                                                      current,
+                                                      withCapacity(current,
+                                                                   found.withPhase(CapacityPhase.RELEASED)))));
     }
 
     /// `free`: the capacity of this node id ends. From any phase but `FREED`; writes the `FREED` tombstone with its cause and time and counts
@@ -116,9 +124,17 @@ public sealed interface LifecycleMutations {
                                                                Option<CapacityLedgerValue> ledger,
                                                                FreedCause cause,
                                                                long now) {
-        return Verify.ensure(cause, FreedCause::isCause, WrongCause.FACTORY.apply(node, cause.name(), "free"))
+        return Verify.ensure(cause,
+                             FreedCause::isCause,
+                             WrongCause.FACTORY.apply(node,
+                                                      cause.name(),
+                                                      "free"))
                      .flatMap(_ -> liveCapacity(node, current))
-                     .flatMap(found -> countedDown(node, ledger).map(before -> List.of(record(node, current, withCapacity(current, found.freed(cause, now))),
+                     .flatMap(found -> countedDown(node, ledger).map(before -> List.of(record(node,
+                                                                                              current,
+                                                                                              withCapacity(current,
+                                                                                                           found.freed(cause,
+                                                                                                                       now))),
                                                                                        ledgerChange(ledger,
                                                                                                     new CapacityLedgerValue(before.allocated() - 1,
                                                                                                                             before.version() + 1,
@@ -135,7 +151,15 @@ public sealed interface LifecycleMutations {
         return Verify.ensure(role, Verify.Is::present, BLANK_ROLE)
                      .flatMap(_ -> Verify.ensure(process, LifecycleMutations::isKnown, UNKNOWN_PROCESS))
                      .flatMap(_ -> noIdentity(node, current, "admit"))
-                     .map(_ -> List.of(record(node, current, withIdentity(current, new IdentityFacet(IdentityState.ADMITTED, 1L, process, role, none(), now)))));
+                     .map(_ -> List.of(record(node,
+                                              current,
+                                              withIdentity(current,
+                                                           new IdentityFacet(IdentityState.ADMITTED,
+                                                                             1L,
+                                                                             process,
+                                                                             role,
+                                                                             none(),
+                                                                             now)))));
     }
 
     /// `readmit(X, process)`: the same process comes back. Expects `DEPARTED` with the same boot token; the epoch grows by one.
@@ -143,15 +167,23 @@ public sealed interface LifecycleMutations {
                                                                   Option<NodeLifecycleValue> current,
                                                                   ProcessIncarnation process,
                                                                   long now) {
-        return identityIn(node, current, "readmit", IdentityState.DEPARTED)
-                .flatMap(found -> sameProcess(node, found, process))
-                .map(found -> List.of(record(node, current, withIdentity(current, found.admitted(process, now)))));
+        return identityIn(node, current, "readmit", IdentityState.DEPARTED).flatMap(found -> sameProcess(node,
+                                                                                                         found,
+                                                                                                         process))
+                         .map(found -> List.of(record(node,
+                                                      current,
+                                                      withIdentity(current,
+                                                                   found.admitted(process, now)))));
     }
 
     /// `depart(X)`: the admitted process is gone for now. Expects `ADMITTED`; epoch and process stay.
-    static Result<List<Mutation<AetherKey, AetherValue>>> depart(NodeId node, Option<NodeLifecycleValue> current, long now) {
-        return identityIn(node, current, "depart", IdentityState.ADMITTED)
-                .map(found -> List.of(record(node, current, withIdentity(current, found.departed(now)))));
+    static Result<List<Mutation<AetherKey, AetherValue>>> depart(NodeId node,
+                                                                 Option<NodeLifecycleValue> current,
+                                                                 long now) {
+        return identityIn(node, current, "depart", IdentityState.ADMITTED).map(found -> List.of(record(node,
+                                                                                                       current,
+                                                                                                       withIdentity(current,
+                                                                                                                    found.departed(now)))));
     }
 
     /// `terminate(X, cause)`: the node id ends for good. Expects `ADMITTED` or `DEPARTED`; the cause is one of the six writer ranks.
@@ -159,21 +191,31 @@ public sealed interface LifecycleMutations {
                                                                     Option<NodeLifecycleValue> current,
                                                                     IdentityCause cause,
                                                                     long now) {
-        return Verify.ensure(cause, IdentityCause::isWriterRank, WrongCause.FACTORY.apply(node, cause.name(), "terminate"))
+        return Verify.ensure(cause,
+                             IdentityCause::isWriterRank,
+                             WrongCause.FACTORY.apply(node,
+                                                      cause.name(),
+                                                      "terminate"))
                      .flatMap(_ -> identityIn(node, current, "terminate", IdentityState.ADMITTED, IdentityState.DEPARTED))
-                     .map(found -> List.of(record(node, current, withIdentity(current, found.terminated(cause, now)))));
+                     .map(found -> List.of(record(node,
+                                                  current,
+                                                  withIdentity(current,
+                                                               found.terminated(cause, now)))));
     }
 
     private static Result<List<Mutation<AetherKey, AetherValue>>> observeFound(NodeId node,
-                                                                              Option<NodeLifecycleValue> current,
-                                                                              Option<CapacityLedgerValue> ledger,
-                                                                              String source,
-                                                                              String binding,
-                                                                              CapacityFacet found) {
+                                                                               Option<NodeLifecycleValue> current,
+                                                                               Option<CapacityLedgerValue> ledger,
+                                                                               String source,
+                                                                               String binding,
+                                                                               CapacityFacet found) {
         return switch (found.phase()) {
             case OBSERVED -> Result.success(List.of());
             case FREED -> adopt(node, current, ledger, source, binding, "");
-            case DISPATCHED, RELEASED, UNKNOWN -> sameSource(node, found, source, binding, "observe").map(same -> confirmed(node, current, ledger, same));
+            case DISPATCHED, RELEASED, UNKNOWN -> sameSource(node, found, source, binding, "observe").map(same -> confirmed(node,
+                                                                                                                            current,
+                                                                                                                            ledger,
+                                                                                                                            same));
         };
     }
 
@@ -184,22 +226,33 @@ public sealed interface LifecycleMutations {
         var before = ledger.or(EMPTY_LEDGER);
 
         return List.of(record(node, current, withCapacity(current, found.withPhase(CapacityPhase.OBSERVED))),
-                       ledgerChange(ledger, new CapacityLedgerValue(before.allocated(), before.version() + 1, before.inventoryComplete())));
+                       ledgerChange(ledger,
+                                    new CapacityLedgerValue(before.allocated(),
+                                                            before.version() + 1,
+                                                            before.inventoryComplete())));
     }
 
     private static Result<List<Mutation<AetherKey, AetherValue>>> adopt(NodeId node,
-                                                                       Option<NodeLifecycleValue> current,
-                                                                       Option<CapacityLedgerValue> ledger,
-                                                                       String source,
-                                                                       String binding,
-                                                                       String intendedRole) {
+                                                                        Option<NodeLifecycleValue> current,
+                                                                        Option<CapacityLedgerValue> ledger,
+                                                                        String source,
+                                                                        String binding,
+                                                                        String intendedRole) {
         var before = ledger.or(EMPTY_LEDGER);
 
-        return Verify.ensure(source, Verify.Is::present, BLANK_SOURCE)
-                     .map(_ -> List.of(record(node,
-                                              current,
-                                              withCapacity(current, new CapacityFacet(source, binding, intendedRole, CapacityPhase.OBSERVED, none(), none()))),
-                                       ledgerChange(ledger, new CapacityLedgerValue(before.allocated() + 1, before.version() + 1, before.inventoryComplete()))));
+        return Verify.ensure(source, Verify.Is::present, BLANK_SOURCE).map(_ -> List.of(record(node,
+                                                                                               current,
+                                                                                               withCapacity(current,
+                                                                                                            new CapacityFacet(source,
+                                                                                                                              binding,
+                                                                                                                              intendedRole,
+                                                                                                                              CapacityPhase.OBSERVED,
+                                                                                                                              none(),
+                                                                                                                              none()))),
+                                                                                        ledgerChange(ledger,
+                                                                                                     new CapacityLedgerValue(before.allocated() + 1,
+                                                                                                                             before.version() + 1,
+                                                                                                                             before.inventoryComplete()))));
     }
 
     private static boolean isKnown(ProcessIncarnation process) {
@@ -209,57 +262,89 @@ public sealed interface LifecycleMutations {
     private static Result<Unit> noCapacity(NodeId node, Option<NodeLifecycleValue> current, String operation) {
         return current.flatMap(NodeLifecycleValue::capacity)
                       .fold(Result::unitResult,
-                            found -> WrongState.FACTORY.apply(node, operation, "capacity " + found.phase().name()).result());
+                            found -> WrongState.FACTORY.apply(node,
+                                                              operation,
+                                                              "capacity " + found.phase().name())
+                                                       .result());
     }
 
     private static Result<Unit> noIdentity(NodeId node, Option<NodeLifecycleValue> current, String operation) {
         return current.flatMap(NodeLifecycleValue::identity)
                       .fold(Result::unitResult,
-                            found -> WrongState.FACTORY.apply(node, operation, "identity " + found.state().name()).result());
+                            found -> WrongState.FACTORY.apply(node,
+                                                              operation,
+                                                              "identity " + found.state().name())
+                                                       .result());
     }
 
     private static Result<CapacityFacet> liveCapacity(NodeId node, Option<NodeLifecycleValue> current) {
         return current.flatMap(NodeLifecycleValue::capacity)
                       .toResult(WrongState.FACTORY.apply(node, "free", "no capacity"))
-                      .filter(found -> WrongState.FACTORY.apply(node, "free", "capacity " + found.phase().name()),
+                      .filter(found -> WrongState.FACTORY.apply(node,
+                                                                "free",
+                                                                "capacity " + found.phase().name()),
                               found -> found.phase() != CapacityPhase.FREED);
     }
 
-    private static Result<CapacityFacet> capacityIn(NodeId node, Option<NodeLifecycleValue> current, String operation, CapacityPhase phase) {
+    private static Result<CapacityFacet> capacityIn(NodeId node,
+                                                    Option<NodeLifecycleValue> current,
+                                                    String operation,
+                                                    CapacityPhase phase) {
         return current.flatMap(NodeLifecycleValue::capacity)
                       .toResult(WrongState.FACTORY.apply(node, operation, "no capacity"))
-                      .filter(found -> WrongState.FACTORY.apply(node, operation, "capacity " + found.phase().name()),
+                      .filter(found -> WrongState.FACTORY.apply(node,
+                                                                operation,
+                                                                "capacity " + found.phase().name()),
                               found -> found.phase() == phase);
     }
 
-    private static Result<IdentityFacet> identityIn(NodeId node, Option<NodeLifecycleValue> current, String operation, IdentityState... allowed) {
+    private static Result<IdentityFacet> identityIn(NodeId node,
+                                                    Option<NodeLifecycleValue> current,
+                                                    String operation,
+                                                    IdentityState... allowed) {
         return current.flatMap(NodeLifecycleValue::identity)
                       .toResult(WrongState.FACTORY.apply(node, operation, "no identity"))
-                      .filter(found -> WrongState.FACTORY.apply(node, operation, "identity " + found.state().name()),
+                      .filter(found -> WrongState.FACTORY.apply(node,
+                                                                operation,
+                                                                "identity " + found.state().name()),
                               found -> List.of(allowed).contains(found.state()));
     }
 
-    private static Result<CapacityFacet> sameSource(NodeId node, CapacityFacet found, String source, String binding, String operation) {
+    private static Result<CapacityFacet> sameSource(NodeId node,
+                                                    CapacityFacet found,
+                                                    String source,
+                                                    String binding,
+                                                    String operation) {
         return Option.some(found)
-                     .filter(facet -> facet.sourceName().equals(source) && facet.sourceBinding().equals(binding))
-                     .toResult(WrongState.FACTORY.apply(node, operation, "capacity of source " + found.sourceName()));
+                     .filter(facet -> facet.sourceName()
+                                           .equals(source) && facet.sourceBinding()
+                                                                   .equals(binding))
+                     .toResult(WrongState.FACTORY.apply(node,
+                                                        operation,
+                                                        "capacity of source " + found.sourceName()));
     }
 
     private static Result<IdentityFacet> sameProcess(NodeId node, IdentityFacet found, ProcessIncarnation offered) {
         return Option.some(found)
-                     .filter(bound -> bound.process().bootToken() == offered.bootToken())
+                     .filter(bound -> bound.process()
+                                           .bootToken() == offered.bootToken())
                      .toResult(ProcessMismatch.FACTORY.apply(node));
     }
 
-    private static Result<CapacityLedgerValue> roomInLedger(NodeId node, Option<CapacityLedgerValue> ledger, int limit) {
+    private static Result<CapacityLedgerValue> roomInLedger(NodeId node,
+                                                            Option<CapacityLedgerValue> ledger,
+                                                            int limit) {
         return ledger.toResult(LedgerRefused.FACTORY.apply(node, "reserve", "no ledger"))
-                     .filter(found -> LedgerRefused.FACTORY.apply(node, "reserve", "inventory incomplete"), CapacityLedgerValue::inventoryComplete)
-                     .filter(found -> LedgerRefused.FACTORY.apply(node, "reserve", "at the limit of " + limit), found -> found.allocated() < limit);
+                     .filter(found -> LedgerRefused.FACTORY.apply(node, "reserve", "inventory incomplete"),
+                             CapacityLedgerValue::inventoryComplete)
+                     .filter(found -> LedgerRefused.FACTORY.apply(node, "reserve", "at the limit of " + limit),
+                             found -> found.allocated() < limit);
     }
 
     private static Result<CapacityLedgerValue> countedDown(NodeId node, Option<CapacityLedgerValue> ledger) {
         return ledger.toResult(LedgerRefused.FACTORY.apply(node, "free", "no ledger"))
-                     .filter(found -> LedgerRefused.FACTORY.apply(node, "free", "nothing allocated to release"), found -> found.allocated() > 0);
+                     .filter(found -> LedgerRefused.FACTORY.apply(node, "free", "nothing allocated to release"),
+                             found -> found.allocated() > 0);
     }
 
     private static NodeLifecycleValue withCapacity(Option<NodeLifecycleValue> current, CapacityFacet capacity) {
@@ -270,11 +355,14 @@ public sealed interface LifecycleMutations {
         return new NodeLifecycleValue(some(identity), current.flatMap(NodeLifecycleValue::capacity));
     }
 
-    private static Mutation<AetherKey, AetherValue> record(NodeId node, Option<NodeLifecycleValue> current, NodeLifecycleValue next) {
+    private static Mutation<AetherKey, AetherValue> record(NodeId node,
+                                                           Option<NodeLifecycleValue> current,
+                                                           NodeLifecycleValue next) {
         return new Mutation<>(NodeIdentityKey.nodeIdentityKey(node), current.map(AetherValue.class::cast), some(next));
     }
 
-    private static Mutation<AetherKey, AetherValue> ledgerChange(Option<CapacityLedgerValue> before, CapacityLedgerValue after) {
+    private static Mutation<AetherKey, AetherValue> ledgerChange(Option<CapacityLedgerValue> before,
+                                                                 CapacityLedgerValue after) {
         return new Mutation<>(CapacityLedgerKey.INSTANCE, before.map(AetherValue.class::cast), some(after));
     }
 
