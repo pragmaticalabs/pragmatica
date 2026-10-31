@@ -569,7 +569,8 @@ public sealed interface TopologyAssembly {
         var managementServerRef = in.managementServerRef();
         var membershipConfig = in.membershipConfig();
         var presenceSampler = in.presenceSampler();
-        var clusterNameSupplier = in.clusterNameSupplier();
+        // The ONE place the cluster supplier is read: both replacement-id sites below use this scoped one, never the plain supplier.
+        var replacementIdScope = idScope(clusterTopologyManager, in.clusterNameSupplier());
         var membershipFsm = in.membershipFsm();
         var defer = in.defer();
         var leaderReconciler = LeaderReconciler.leaderReconciler(membershipConfig,
@@ -578,7 +579,7 @@ public sealed interface TopologyAssembly {
                                                                  configuredCoreCountSupplier,
                                                                  leaderTerm::committedTerm,
                                                                  clusterTopologyManager,
-                                                                 idScope(clusterTopologyManager, clusterNameSupplier),
+                                                                 replacementIdScope,
                                                                  TimeSource.system(),
                                                                  SharedScheduler::schedule);
 
@@ -636,8 +637,7 @@ public sealed interface TopologyAssembly {
                                                                                             id -> managementServerRef.get()
                                                                                                                      .map(server -> server.replacementDrainUnderWay(id))
                                                                                                                      .or(false),
-                                                                                            () -> ProvisionContext.coreNodeNamePrefix(idScope(clusterTopologyManager,
-                                                                                                                                              clusterNameSupplier).get()),
+                                                                                            () -> ProvisionContext.coreNodeNamePrefix(replacementIdScope.get()),
                                                                                             id -> dhtNode.ring()
                                                                                                          .nodes()
                                                                                                          .contains(id),
