@@ -263,6 +263,11 @@ class LifecycleMutationsTest {
         }
 
         @Test
+        void observe_isRefused_forABlankSource() {
+            assertThat(LifecycleMutations.observe(NODE, Option.none(), ledger(), " ", BINDING).isFailure()).isTrue();
+        }
+
+        @Test
         void observe_adoptsAgain_overAFreedTombstone_andCountsOne() {
             seedLedger(0, 1L, true);
             assertThat(reserve() && observe() && free(FreedCause.ABSENT_CONFIRMED)).isTrue();
@@ -341,7 +346,8 @@ class LifecycleMutationsTest {
             assertThat(LifecycleMutations.free(NODE, record(), ledger(), FreedCause.UNKNOWN, 1L).isFailure()).as("sentinel cause").isTrue();
 
             assertThat(free(FreedCause.REFUSED)).isTrue();
-            assertThat(LifecycleMutations.free(NODE, record(), ledger(), FreedCause.REFUSED, 2L).isFailure()).as("FREED is not freed twice (no second decrement)").isTrue();
+            seedLedger(2, ledger().or((CapacityLedgerValue) null).version() + 1, true);
+            assertThat(LifecycleMutations.free(NODE, record(), ledger(), FreedCause.REFUSED, 2L).isFailure()).as("FREED is not freed twice, even with other nodes counted (no second decrement)").isTrue();
         }
 
         @Test
