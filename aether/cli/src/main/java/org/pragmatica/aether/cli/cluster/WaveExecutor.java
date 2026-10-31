@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.ClusterConfigError;
@@ -232,7 +233,7 @@ public final class WaveExecutor {
     /// The ids a cloud action asks for. The same-name re-issue of an ABSENT row is safe only where the provider refuses a second server
     /// with that name ([ComputeProvider#honoursOperationId], Hetzner today); on any other provider a late-landing original plus a re-issue
     /// would be two live servers for one node id, so there the remainder mints fresh ids as before (v-g1 F2).
-    private static java.util.function.Supplier<String> idsFor(ComputeProvider compute,
+    private static Supplier<String> idsFor(ComputeProvider compute,
                                                               ApplyRecorder recorder,
                                                               ClusterBootstrapConfig desired) {
         var minted = WaveNodeProvisioning.mintedIds(desired.cluster().name());
