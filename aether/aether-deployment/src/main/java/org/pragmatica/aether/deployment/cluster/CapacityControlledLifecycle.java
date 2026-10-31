@@ -517,6 +517,12 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
 
         return delegate.provisionNode(spec, binding)
                        .fold(result -> result.fold(cause -> {
+                                                       if (cause instanceof EnvironmentError.AlreadyExists existing) {
+                                                           return adoptExisting(existing.existing(),
+                                                                                spec.context().sourceName(),
+                                                                                binding);
+                                                       }
+
                                                        if (cause instanceof EnvironmentError.CapacityUnavailable || cause instanceof EnvironmentError.NodeCapExceeded) {
                                                            return recordRefusal(node,
                                                                                 spec.context().sourceName(),
@@ -531,6 +537,13 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                    instance -> observeBound(List.of(instance),
                                                                             spec.context().sourceName(),
                                                                             binding).map(_ -> instance)));
+    }
+
+    /// G1-a: the provider refused the create because the server named for this NodeId already exists and carries this create's labels: an
+    /// earlier attempt whose reply was lost made it. The create HAS happened, so the reservation is OBSERVED with that instance, exactly as
+    /// after a 201, and no refusal is recorded: a refusal would release the capacity of a server that exists. No second create follows.
+    private Promise<InstanceInfo> adoptExisting(InstanceInfo existing, SourceName source, String binding) {
+        return observeBound(List.of(existing), source, binding).map(_ -> existing);
     }
 
     private Promise<Unit> releaseRefusal(NodeId node, SourceName source, String binding) {

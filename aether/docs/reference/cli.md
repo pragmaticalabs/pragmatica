@@ -2717,6 +2717,13 @@ deliberately not wired to plain `apply` — a client-side rollout would be a sec
 authority over the same fleet next to the leader's reconciler (#686; the server-side wave design
 is a separate ticket).
 
+**One decider per pool (G1-g): a resumed wave creates nodes only where nothing else does.** Before a scale-up or add-role action creates nodes in a cloud or Docker source, `--resume` asks the running cluster who fills that `(source, role)` pool.
+- **Core**, auto-heal enabled: the leader's reconciler fills it. Apply creates nothing, prints `waiting for the leader to provision core: N live of M` on each poll (every 10 s, up to 15 minutes), and continues once the cluster reports M live core nodes. Auto-heal disabled: apply creates, as before.
+- **Worker and spot**: the leader's worker reconciler fills them whether or not auto-heal is enabled (the switch holds automatic deletions, not worker provisioning), so apply waits for the leader there too.
+- **Refused, nothing created, ledger unchanged**: a pool whose committed target is below what the config needs (the leader would never fill it; commit with a plain `apply` first), and any pool when the cluster's auto-heal setting or committed config cannot be read.
+- Reprovisioning (replace-before-retire) is not gated: it must create the replacement before it drains the old node.
+- Mechanism and limits: `PoolGate` / `ClusterPoolAuthority`. The wait compares the live count of the ROLE across sources with the config's count for the role, since the live-nodes view carries no source. An operator who toggles auto-heal during a resume is seen at the next action, not mid-action.
+
 **`--resume` and `--rollback` act on the apply ledger.** Both begin by loading the apply state for the cluster and abort without it
 (`No apply state found for cluster '<name>'. Nothing to resume.` / `... Nothing to roll back.`). The ledger is written by the client-side
 wave rollout, which the default `cluster apply` does not yet start (#686), so unless a pre-rc5 CLI left a ledger behind (a schema other than 2 is refused, by file name, and left untouched) both report that message.

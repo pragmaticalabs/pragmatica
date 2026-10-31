@@ -56,6 +56,21 @@ class DockerComputeProviderTest {
     @Nested
     class CreateFromTests {
 
+        /// G1-a: Docker is handed no operation id by `provision` and refuses one it is handed anyway, typed, before any docker command.
+        @Test
+        void createFrom_operationId_refusedTypedBeforeDockerRun() {
+            var context = ProvisionContext.forBootstrap(clusterName("c").unwrap(), "core", sourceNameOrDefault("s"), "n0");
+            var request = new ProvisionRequest(InstanceType.ON_DEMAND, "docker", "", "",
+                                               Option.empty(), MarketOptions.ON_DEMAND, context).named();
+
+            provider.createFrom(request)
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(cause -> assertThat(cause).isInstanceOf(EnvironmentError.OperationIdUnsupported.class));
+
+            assertThat(testRunner.allCommands).as("a refused operation id must not issue any docker command").isEmpty();
+        }
+
         @Test
         void createFrom_spotRequest_rejectedLoudBeforeDockerRun() {
             // Docker has no spot concept; a SPOT request must fail loud, never issue a docker run.

@@ -6,7 +6,6 @@ package org.pragmatica.aether.environment.hetzner;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -21,6 +20,7 @@ import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
+import org.pragmatica.aether.environment.OperationId;
 import org.pragmatica.aether.environment.ProviderDefaults;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionRequest;
@@ -40,6 +40,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.parse.Number;
+import org.pragmatica.lang.utils.Causes;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -54,6 +55,13 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     public static Result<HetznerComputeProvider> hetznerComputeProvider(HetznerClient client,
                                                                         HetznerEnvironmentConfig config) {
         return success(new HetznerComputeProvider(client, config));
+    }
+
+    /// G1-a: the server is named by the request's [OperationId], and Hetzner refuses a second server with an existing name,
+    /// atomically (P-G1 A2, A3).
+    @Override
+    public boolean honoursOperationId() {
+        return true;
     }
 
     @Override
@@ -90,9 +98,35 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     }
 
     private Promise<InstanceInfo> createLabelled(ProvisionRequest request, ClusterName clusterName) {
-        return createAndConfirm(request, labelsFor(request.context(), clusterName)).mapError(cause -> toProvisionError(request.instanceSize(),
-                                                                                                                       request.zone(),
-                                                                                                                       cause));
+        var nodeId = request.context().resolveNodeId();
+
+        return operationIdOf(request, clusterName, nodeId).async()
+                            .flatMap(operation -> createAndConfirm(request,
+                                                                   operation,
+                                                                   labelsFor(request.context(),
+                                                                             clusterName,
+                                                                             nodeId,
+                                                                             operation)))
+                            .mapError(cause -> toProvisionError(request.instanceSize(),
+                                                                request.zone(),
+                                                                cause));
+    }
+
+    /// The identity of this create: the request's operation id, else `<cluster>-<nodeId>` ([OperationId#forNode]) for the cluster this
+    /// create resolved. The node id is resolved ONCE by the caller (a self-minted one differs per resolution), because the server name,
+    /// the `aether-node-id` label and the `aether.op` label must describe one create. An id outside the [OperationId] grammar (a cluster
+    /// name too long for it included) is refused: a name the provider cannot deduplicate on is not a fallback to take silently.
+    private static Result<OperationId> operationIdOf(ProvisionRequest request, ClusterName clusterName, String nodeId) {
+        return request.operationId()
+                      .fold(() -> requireOperationId(clusterName, nodeId),
+                            Result::success);
+    }
+
+    private static Result<OperationId> requireOperationId(ClusterName clusterName, String nodeId) {
+        return OperationId.forNode(clusterName, nodeId).mapError(cause -> Causes.cause("Refusing to provision: node id '" + nodeId
+                                                                                      + "' of cluster '" + clusterName.value()
+                                                                                      + "' cannot name a Hetzner server",
+                                                                                       Option.some(cause)));
     }
 
     /// RFC-0017 C2 — a VM whose cluster cannot be identified MUST NOT be created.
@@ -137,14 +171,69 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     private static final Cause SPOT_UNSUPPORTED = EnvironmentError.provisionFailed(new RuntimeException("Hetzner offers no spot/preemptible product; spot sub-tables are rejected at validation (PF-16) — "
                                                                                                        + "a SPOT request reaching this provider is a bug"));
 
-    private Promise<InstanceInfo> createAndConfirm(ProvisionRequest request, Map<String, String> labels) {
-        return buildCreateRequest(request, labels).onSuccess(HetznerComputeProvider::logCreateRequest)
-                                 .flatMap(client::createServer)
+    private Promise<InstanceInfo> createAndConfirm(ProvisionRequest request,
+                                                   OperationId operation,
+                                                   Map<String, String> labels) {
+        return buildCreateRequest(request, operation, labels).onSuccess(HetznerComputeProvider::logCreateRequest)
+                                 .flatMap(create -> createNamed(create, operation))
                                  .map(HetznerComputeProvider::toInstanceInfo)
                                  .flatMap(info -> confirmRunning(info,
                                                                  ReadinessPolicy.cloudDefault()))
                                  .onFailure(HetznerComputeProvider::logProvisionFailureRollbackGap);
     }
+
+    /// The create, with a refused NAME answered by who holds it. A `uniqueness_error` (HTTP 409, P-G1 A2) means the name is taken: the server
+    /// that holds it is looked up by exact name, and it is `AlreadyExists` when it carries this create's cluster and node-id
+    /// labels (the create already happened), `NameHeldByOther` when it does not. Neither is ever followed by another create. A
+    /// name nobody lists yet (the visibility lag, P-G1 A6) stays the provider's own refusal, which is a failed create, not a retry.
+    private Promise<Server> createNamed(CreateServerRequest create, OperationId operation) {
+        return client.createServer(create)
+                     .fold(result -> result.fold(cause -> nameRefused(create, operation, cause),
+                                                 Promise::success));
+    }
+
+    private Promise<Server> nameRefused(CreateServerRequest create, OperationId operation, Cause cause) {
+        return isNameTaken(cause)
+               ? client.listServers()
+                       .flatMap(servers -> holderOf(servers, create, operation, cause))
+               : cause.promise();
+    }
+
+    private static boolean isNameTaken(Cause cause) {
+        return cause instanceof HetznerError.ApiError apiError && NAME_TAKEN_CODE.equals(apiError.code());
+    }
+
+    private static Promise<Server> holderOf(List<Server> servers,
+                                            CreateServerRequest create,
+                                            OperationId operation,
+                                            Cause refusal) {
+        return servers.stream()
+                      .filter(server -> create.name()
+                                              .equals(server.name()))
+                      .findFirst()
+                      .map(holder -> holderCause(holder, create, operation))
+                      .orElse(refusal)
+                      .promise();
+    }
+
+    private static Cause holderCause(Server holder, CreateServerRequest create, OperationId operation) {
+        return carriesLabelsOf(holder, create)
+               ? EnvironmentError.alreadyExists(operation, toInstanceInfo(holder))
+               : EnvironmentError.nameHeldByOther(operation,
+                                                  new InstanceId(String.valueOf(holder.id())));
+    }
+
+    private static boolean carriesLabelsOf(Server holder, CreateServerRequest create) {
+        var labels = safeLabels(holder);
+
+        return create.labels()
+                     .get(CLUSTER_LABEL)
+                     .equals(labels.get(CLUSTER_LABEL)) && create.labels()
+                                                                 .get(NODE_ID_LABEL)
+                                                                 .equals(labels.get(NODE_ID_LABEL));
+    }
+
+    private static final String NAME_TAKEN_CODE = "uniqueness_error";
 
     /// #442 v2b — operator-visible record of the EXACT labels sent to Hetzner at create time. The
     /// server is created with whatever this map holds, so this line is the ground truth for
@@ -399,17 +488,24 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
 
     /// Both provider-side lookups (cluster-scoped SSH keys, label-resolved firewall) are independent
     /// account queries, so they run concurrently and the create request is assembled from the pair.
-    private Promise<CreateServerRequest> buildCreateRequest(ProvisionRequest request, Map<String, String> labels) {
+    private Promise<CreateServerRequest> buildCreateRequest(ProvisionRequest request,
+                                                            OperationId operation,
+                                                            Map<String, String> labels) {
         return Promise.all(resolveSshKeyIds(resolveClusterName(request.context())),
                            resolveFirewallIds(request.context()))
-                      .map((sshKeyIds, firewallIds) -> createServerRequestFor(request, sshKeyIds, firewallIds, labels));
+                      .map((sshKeyIds, firewallIds) -> createServerRequestFor(request,
+                                                                              operation,
+                                                                              sshKeyIds,
+                                                                              firewallIds,
+                                                                              labels));
     }
 
     private CreateServerRequest createServerRequestFor(ProvisionRequest request,
+                                                       OperationId operation,
                                                        List<Long> sshKeyIds,
                                                        List<Long> firewallIds,
                                                        Map<String, String> labels) {
-        return CreateServerRequest.createServerRequest(generateServerName(),
+        return CreateServerRequest.createServerRequest(operation.value(),
                                                        request.instanceSize(),
                                                        request.image(),
                                                        sshKeyIds,
@@ -586,7 +682,10 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         }
     }
 
-    private Map<String, String> labelsFor(ProvisionContext ctx, ClusterName clusterLabel) {
+    private Map<String, String> labelsFor(ProvisionContext ctx,
+                                          ClusterName clusterLabel,
+                                          String nodeId,
+                                          OperationId operation) {
         var role = ctx.role().isEmpty()
                    ? "core"
                    : ctx.role();
@@ -599,7 +698,10 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         // NODE_ID_TAG = "aether.node-id") stays provider-agnostic. The provider OWNS the
         // identity: resolveNodeId() honors a caller-supplied id (bootstrap) or self-mints
         // one (CTM auto-heal), then echoes it back into InstanceInfo.nodeId via the label.
-        base.put(NODE_ID_LABEL, ctx.resolveNodeId());
+        base.put(NODE_ID_LABEL, nodeId);
+        // G1-a: `aether.op` carries the cluster-scoped operation id (also the server name); `aether-node-id` keeps the bare node
+        // id, the key every lookup already uses.
+        base.put(OPERATION_LABEL, operation.value());
 
         return appendCompatible(base, ctx.extraTags());
     }
@@ -612,6 +714,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     /// log "no cloud instance with tag aether.node-id=...".
     static final String UPPER_LAYER_NODE_ID_TAG = "aether.node-id";
     static final String NODE_ID_LABEL = "aether-node-id";
+    static final String OPERATION_LABEL = "aether.op";
 
     static Map<String, String> translateKeys(Map<String, String> tagFilter) {
         if (tagFilter.isEmpty() || !tagFilter.containsKey(UPPER_LAYER_NODE_ID_TAG)) {
@@ -875,12 +978,6 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         return Map.copyOf(merged);
     }
 
-    private static String generateServerName() {
-        return "aether-" + UUID.randomUUID()
-                               .toString()
-                               .substring(0, 8);
-    }
-
     private static Result<Long> parseServerId(InstanceId instanceId) {
         return Number.parseLong(instanceId.value());
     }
@@ -972,6 +1069,9 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         return switch (cause) {
             // #1111: the server EXISTS (it was created, then failed readiness): the typed cause reaches the caller, never flattened into a rejection.
             case EnvironmentError.ProvisionReadinessTimeout timeout -> timeout;
+            // G1-a: typed outcomes of a refused name reach the caller as themselves; flattening them to a text would hide that the create happened.
+            case EnvironmentError.AlreadyExists existing -> existing;
+            case EnvironmentError.NameHeldByOther held -> held;
             case HetznerError.ApiError apiError when CAPACITY_UNAVAILABLE_CODE.equals(apiError.code()) -> EnvironmentError.capacityUnavailable(attemptedLocation,
                                                                                                                                                new RuntimeException(cause.message()));
             default -> EnvironmentError.provisionFailed(attemptedServerType,
