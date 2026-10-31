@@ -35,8 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// planted violation (see [PlantedViolations]) that turns it red, so a green is evidence, not silence.
 ///
 /// What is NOT in the model, so a green here does not say it: a member dying while a leader lives (the membership FSM's eviction backstop
-/// runs in real time, so a leader kill replaces the stack instead), the CTM's own real-time timers in the seeded runs (K10 is a
-/// real-time cell), the apply path (`WaveNodeProvisioning`, G1-f) and a real Hetzner.
+/// runs in real time, so a leader kill replaces the stack instead), the CTM's own real-time timers (so K10, an unjoined apply-created node seen by the orphan sweep, is not built), the apply path (`WaveNodeProvisioning`, G1-f) and a real Hetzner.
 class ProvisioningModelTest {
     private static final long FORTY_MINUTES = 2_400_000L;
 
@@ -260,7 +259,7 @@ class ProvisioningModelTest {
         /// a new OBSERVED reservation (so it holds a slot), it never joins, nothing deletes it, and the only trace is the CAPACITY_DISPATCH_RELEASED
         /// warning. The window in which it was live at the provider and unmapped (release -> adoption) is measured from the committed history.
         @Test
-        void k11_aLateVisibleCreate_isAdoptedAfterItsReleaseWindow_neverJoins_isNeverDeleted_andRaisesTheReleasedWarning() throws InterruptedException {
+        void k11_aLateVisibleCreate_isLiveAndUnmappedForAboutTenMinutesBetweenReleaseAndAdoption_thenAdopted_neverJoins_isNeverDeleted() throws InterruptedException {
             var world = lateVisibleCreate();
             var warnings = new CopyOnWriteArrayList<OperatorWarningCode>();
 
@@ -284,12 +283,25 @@ class ProvisioningModelTest {
             assertThat(released.atMs() - dispatched.atMs()).as("an uncertain create is released only after the create ceiling (10 min) and %d consecutive misses, one inventory pass (5 min) apart",
                                                                CapacityControlledLifecycle.ABSENCE_CONFIRMATIONS)
                                                          .isGreaterThanOrEqualTo(SourceProfile.DEFAULT_REPLACEMENT_CEILING.millis() + (CapacityControlledLifecycle.ABSENCE_CONFIRMATIONS - 1) * 300_000L);
-            assertThat(phases).as("TRIPWIRE K11: released, then adopted by the sweep once listed. When G1-d lands (sweep: record absent -> operator event, never an adoption of a "
-                                  + "never-joined VM into the ledger) revisit this test").containsSubsequence("DISPATCHED", "REMOVED", "OBSERVED");
+            assertThat(phases).as("TRIPWIRE K11: released, then adopted by the sweep once listed. When G1-d (the orphan sweep) lands, delete this and enable I2 for K11").containsSubsequence("DISPATCHED", "REMOVED", "OBSERVED");
             assertThat(world.nonMemberServers()).as("TRIPWIRE K11: the VM never joins and stays").extracting(ModelComputeProvider.Server::name).contains(victim);
             assertThat(world.provider.calls("delete")).as("TRIPWIRE K11: nothing deletes it").isEmpty();
             assertThat(warnings).as("TRIPWIRE K11: the only trace today").contains(OperatorWarningCode.CAPACITY_DISPATCH_RELEASED);
-            assertThat(ProvisioningInvariants.i4(world)).as("I4 at the end of the run: green, because the sweep adopted it").isEmpty();
+            assertThat(ProvisioningInvariants.i4(world)).as("I4 at the end of the run holds because the sweep adopted the VM; the window above (release -> adoption, "
+                                                            + "600 s of virtual time here) is where it was live and unmapped").isEmpty();
+            assertThat(ProvisioningInvariants.i2(world))
+                .as("TRIPWIRE I2 for K11: the leftover VM coexists with its replacement. When G1-d (the orphan sweep) lands, delete this and enable I2 for K11")
+                .isNotEmpty();
+        }
+
+        @Test
+        @Disabled("enable with G1-d")
+        void k11_i2_theLeftoverVmDoesNotExceedTheDeficit() {
+            var world = lateVisibleCreate();
+
+            world.run(3_600_000L);
+
+            assertThat(ProvisioningInvariants.i2(world)).isEmpty();
         }
 
         /// K5 / I6 delete arm: a create whose reply was lost is reaped as a dropped replacement, and the reaped server held an OBSERVED
@@ -324,52 +336,6 @@ class ProvisioningModelTest {
             world.start(4);
 
             return world;
-        }
-
-        /// K10 / AP-5: a server the core never recorded (made by an operator-side apply) that has not joined. The activation replay lists
-        /// it at two reads one provisioning window apart and deletes it. The window here is 60 ms of REAL time (the CTM's sweep timers are
-        /// real), standing for the production 60 s.
-        @Test
-        void k10_anUnrecordedUnjoinedServer_isDeletedByTheActivationReplay_afterTwoReads() throws InterruptedException {
-            var world = unjoinedApplyCreatedServer();
-
-            awaitDelete(world);
-
-            assertThat(world.provider.calls("delete").stream().filter(call -> call.name().equals(APPLY_NODE) && call.outcome().startsWith("deleted")).count())
-                .as("TRIPWIRE AP-5: today the core sweep deletes an unrecorded, unjoined server after two reads. When G1-d lands (record absent -> grace T_join, event, never "
-                    + "delete) delete this assertion and enable k10_ap5_aServerYoungerThanTheJoinGraceIsNotDeleted")
-                .isEqualTo(1);
-        }
-
-        @Test
-        @Disabled("enable with G1-d (AP-5): an unrecorded server younger than T_join is neither announced nor deleted, and older is announced, never deleted")
-        void k10_ap5_aServerYoungerThanTheJoinGraceIsNotDeleted() throws InterruptedException {
-            var world = unjoinedApplyCreatedServer();
-
-            awaitDelete(world);
-
-            assertThat(world.provider.calls("delete")).isEmpty();
-        }
-
-        private static final String APPLY_NODE = "aether-test-cluster-node-applycreated";
-
-        private ProvisioningWorld unjoinedApplyCreatedServer() {
-            var world = new ProvisioningWorld(true);
-
-            world.plantCreate(APPLY_NODE);
-            world.time.advance(3_000);
-            world.start(5);
-
-            return world;
-        }
-
-        private void awaitDelete(ProvisioningWorld world) throws InterruptedException {
-            var deadline = System.currentTimeMillis() + 10_000L;
-
-            while (System.currentTimeMillis() < deadline && world.provider.calls("delete").isEmpty()) {
-                Thread.sleep(50);
-                world.run(1_000);
-            }
         }
 
         /// I1 under G1: no `NodeIdentityKey` intent exists, and the creates are guarded by the capacity reservation instead.
