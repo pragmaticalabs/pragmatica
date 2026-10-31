@@ -308,12 +308,17 @@ public final class ClusterBootstrapConfigValidator {
         }
 
         if (worstLength > OperationId.MAX_LENGTH) {
-            errors.add("PF-36: Cluster name '" + cluster + "' (" + cluster.length()
-                      + " characters) is too long for source '" + worst[0] + "' role '" + worst[1]
-                      + "': a Hetzner server is named '<cluster>-<node id>' and the longest node id this pool can be given is "
-                      + OperationId.longestMintedIdLength(cluster.length(), worst[0], worst[1])
-                      + " characters, so the name is " + worstLength + " characters, over the limit of " + OperationId.MAX_LENGTH
-                      + ". The longest cluster name this pool allows is " + OperationId.longestClusterNameFor(worst[0], worst[1])
+            errors.add("PF-36: Cluster name '" + cluster
+                      + "' (" + cluster.length()
+                      + " characters) is too long for source '" + worst[0]
+                      + "' role '" + worst[1]
+                      + "': a Hetzner server is named '<cluster>-<node id>' and the longest node id this pool can be given is " + OperationId.longestMintedIdLength(cluster.length(),
+                                                                                                                                                                    worst[0],
+                                                                                                                                                                    worst[1])
+                      + " characters, so the name is " + worstLength
+                      + " characters, over the limit of " + OperationId.MAX_LENGTH
+                      + ". The longest cluster name this pool allows is " + OperationId.longestClusterNameFor(worst[0],
+                                                                                                              worst[1])
                       + " characters. Use a shorter cluster name or shorter source and role names.");
         }
     }
