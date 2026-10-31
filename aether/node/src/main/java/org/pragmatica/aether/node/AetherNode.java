@@ -937,6 +937,10 @@ public interface AetherNode extends ManageableNode {
     /// Know 3b01e624f1: how long a graceful stop waits for the KV backup's final flush (commit and push) before it reports the
     /// failure and stops anyway. A local-only backup flushes in milliseconds; the bound is for an unreachable or slow remote.
     TimeSpan BACKUP_STOP_FLUSH_BOUND = TimeSpan.timeSpan(10).seconds();
+    /// Know 73fd8d9759: how long a graceful stop waits for the stream segment sealer to seal what it holds before it reports
+    /// the unsealed ranges and stops anyway. It runs beside the backup flush, inside `Main`'s 30 s and Ember's 10 s stop
+    /// bounds; one seal is one local write and one DHT put. [guess: 5 s, nothing measured it]
+    TimeSpan SEALER_STOP_FLUSH_BOUND = TimeSpan.timeSpan(5).seconds();
     /// #1730: how soon a refused (moved-record) ownership write is re-decided.
     TimeSpan OWNERSHIP_REDRIVE_DELAY = TimeSpan.timeSpan(1).seconds();
     /// Declarative stream-consumer ownership poll (#488). No role-change callback is available to a
@@ -1760,15 +1764,14 @@ public interface AetherNode extends ManageableNode {
                 // those lookups resolve empty — the listener removal is silently inert — and the cursor
                 // write races clusterNode.stop() at the tail of this method.
                 streamConsumerRuntime.close();
-                // #2201 C-02 / #1875: seal what is queued now, best effort (a WAL-backed range is replayed at restart
-                // anyway; without a WAL this narrows the acknowledged-but-unsealed window a stop would lose), then close
-                // the sealer so no age timer or retry outlives the node; before the partition manager closes the WALs.
-                streamSegmentSealer.flushAll();
-                streamSegmentSealer.close();
-                streamPartitionManager.close();
-                // #932: after the partition manager, whose close can still be answered by a backfill
-                // already in flight; before the cluster node, which the controller's reconcile reads.
-                streamReplicationShutdown.run();
+                // #2201 C-02 / #1875, know 73fd8d9759: a GRACEFUL stop seals what the sealer holds (each partition's seal
+                // in flight and the backlog behind it), bounded by SEALER_STOP_FLUSH_BOUND, which reports what is left
+                // unsealed; then it closes the sealer so no age timer or retry outlives the node. The seals read the WALs,
+                // so the partition manager closes them only after (inline here when nothing is pending); the stop below
+                // waits for it, as for the backup.
+                var streamsStopped = streamSegmentSealer.stopSealed(SEALER_STOP_FLUSH_BOUND)
+                                                        .map(this::closeStreamPartitions);
+
                 certRenewalScheduler.onPresent(CertificateRenewalScheduler::stop);
                 swimHealthDetector.stop();
                 presenceSampler.stop();
@@ -1805,7 +1808,8 @@ public interface AetherNode extends ManageableNode {
                 //
                 // #1612: the chain lives in NodeStopSequence, where a failed HTTP listener stop is logged and
                 // skipped past rather than ending the shutdown.
-                return backupFlushed.flatMap(() -> NodeStopSequence.run(NodeStopSequence.Steps.steps(this::releaseWatchesThenDeactivate,
+                return backupFlushed.flatMap(() -> streamsStopped)
+                                    .flatMap(() -> NodeStopSequence.run(NodeStopSequence.Steps.steps(this::releaseWatchesThenDeactivate,
                                                                                                      () -> managementServer.map(ManagementServer::stop)
                                                                                                                            .or(Promise.unitPromise()),
                                                                                                      appHttpServer::stop,
@@ -1815,6 +1819,16 @@ public interface AetherNode extends ManageableNode {
                                                                                                      clusterNode::stop)))
                                     .onSuccess(_ -> log.info("Aether node {} stopped",
                                                              self()));
+            }
+
+            /// After the stop seal: the partition manager closes the WALs, then (#932) the replication shutdown runs, after the
+            /// partition manager, whose close can still be answered by a backfill already in flight, and before the cluster
+            /// node, which the controller's reconcile reads.
+            private Unit closeStreamPartitions(Unit sealed) {
+                streamPartitionManager.close();
+                streamReplicationShutdown.run();
+
+                return Unit.unit();
             }
 
             /// #774: `Watched` subscriptions are released first of all: they read configuration and call slice code, and

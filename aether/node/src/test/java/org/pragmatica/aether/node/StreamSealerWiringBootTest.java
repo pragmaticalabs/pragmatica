@@ -40,16 +40,16 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #2201 C-02 / #1875, pinned through the REAL boot path: the node's `[streaming] seal_*` thresholds reach the sealer
-/// `StreamAssembly` builds, and the node's stop flushes and then closes that sealer. The thresholds here (a run of 10
-/// events, no age or byte trigger within the test) differ from every default, so a node built with the defaults would
-/// not seal the first ten evictions within the bound, and would seal nothing at stop either.
+/// `StreamAssembly` builds, and the node's stop seals what that sealer holds before it resolves (know 73fd8d9759), with the
+/// partition's WAL still open, then closes it. The thresholds here (a run of 10 events, no age or byte trigger within the
+/// test) differ from every default, so a node built with the defaults would not seal the first ten evictions within the
+/// bound, and would seal nothing at stop either.
 class StreamSealerWiringBootTest {
     private static final String STREAM = "runs";
     private static final int PARTITION = 0;
     private static final int RING_EVENTS = 20;
     private static final int PAYLOAD = 1024;
     private static final int RUN_EVENTS = 10;
-    private static final long AWAIT_MS = 15_000;
     private static final TimeSpan START_BOUND = timeSpan(30).seconds();
 
     @TempDir
@@ -71,7 +71,7 @@ class StreamSealerWiringBootTest {
 
     @Test
     @Timeout(value = 90, unit = SECONDS)
-    void theNodesSealThresholds_reachTheSealer_andStopFlushesThenClosesIt() {
+    void theNodesSealThresholds_reachTheSealer_andStopSealsWhatItHolds_thenClosesIt() {
         node = AetherNode.aetherNode(config(), () -> {})
                          .onFailure(cause -> fail("boot must succeed: " + cause.message()))
                          .unwrap();
@@ -97,10 +97,27 @@ class StreamSealerWiringBootTest {
         node.stop().await(timeSpan(10).seconds()).onFailure(cause -> fail("stop: " + cause.message()));
         node = null;
 
+        assertThat(sealer.lowestUnsealed(STREAM, PARTITION)).as("the stop sealed the queued run before it resolved")
+                                                           .isEqualTo(Option.none());
+        assertThat(sealer.sealFailureCount()).as("with the WAL still open: the seal did not fail").isEqualTo(failuresBefore);
         assertThat(sealer.armedTimers()).as("stop closed the sealer: no timer outlives the node").isZero();
-        awaitCondition(() -> sealer.lowestUnsealed(STREAM, PARTITION).isEmpty() || sealer.sealFailureCount() > failuresBefore,
-                       AWAIT_MS,
-                       "stop flushed the queued run: it was sealed, or its one attempt failed against the closed WAL");
+    }
+
+    /// Know 73fd8d9759, a SOURCE tripwire for what the boot test cannot force (a sink slow enough to outlast the rest of the
+    /// stop): the stop sequence runs only after the stop seal, and the partition manager closes the WALs only after it.
+    @Test
+    void stop_closesTheWalsAndRunsTheStopSequence_onlyAfterTheStopSeal() {
+        var source = AssemblySource.spaced();
+
+        assertThat(source).containsOnlyOnce("streamSegmentSealer.stopSealed(SEALER_STOP_FLUSH_BOUND) .map(this::closeStreamPartitions);")
+                          .containsOnlyOnce("private Unit closeStreamPartitions(Unit sealed) { streamPartitionManager.close();")
+                          .containsOnlyOnce("streamPartitionManager.close();")
+                          .containsOnlyOnce("backupFlushed.flatMap(() -> streamsStopped) .flatMap(() -> NodeStopSequence.run(");
+    }
+
+    @Test
+    void theSealerStopBound_isFiveSeconds() {
+        assertThat(AetherNode.SEALER_STOP_FLUSH_BOUND).isEqualTo(timeSpan(5).seconds());
     }
 
     private static void createStream(StreamPartitionManager manager) {

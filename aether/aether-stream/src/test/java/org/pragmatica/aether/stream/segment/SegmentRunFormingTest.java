@@ -31,6 +31,9 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.storage.AppendLog;
 import org.pragmatica.storage.LocalDiskTier;
 import org.pragmatica.storage.StorageInstance;
+import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -679,6 +682,78 @@ class SegmentRunFormingTest {
         assertThat(sealer.holdsUnsealedForRead(STREAM, PARTITION, 5)).isTrue();
         awaitCondition(() -> sink.calls() == 1, 2_000);
         assertThat(range(sink.segment(0))).isEqualTo(List.of(0L, 9L));
+    }
+
+    /// Know 73fd8d9759: a graceful stop seals what the sealer holds, within its bound, and reports what it could not. Each
+    /// test names the mutation that reddens it.
+    @Nested
+    class GracefulStop {
+        /// Without a WAL the heap copy is the only holder, so the stop must wait for the seal in flight AND seal the backlog
+        /// behind it, on every partition, before it resolves; nothing is reported. Red under "the stop does not wait for
+        /// the seals" (`flushAll` answers at once), under "each partition seals at most the run it starts" (the backlog
+        /// behind the in-flight seal stays unsealed) and under "a landed seal does not settle the stop".
+        @Test
+        void stopSealed_withASealInFlightAndABacklogBehindIt_withoutAWal_sealsEverythingBeforeItResolves() {
+            var sink = RecordingSink.holding();
+            var sealer = sealerWith(sink, sealerThresholds(NEVER_BYTES, 3, HOUR, MERGE));
+            var raised = new CopyOnWriteArrayList<OperatorWarning>();
+
+            sealer.operatorWarnings(OperatorWarningSink.handingOffTo(raised::add), "node-a");
+            LongStream.rangeClosed(0, 2).forEach(offset -> evict(sealer, offset, offset));
+            awaitCondition(() -> sink.calls() == 1);
+            LongStream.rangeClosed(3, 4).forEach(offset -> evict(sealer, offset, offset));
+            sealer.onEviction(STREAM, 1, events(0, 1));
+
+            var stopped = sealer.stopSealed(timeSpan(10).seconds());
+
+            awaitCondition(() -> sink.calls() == 2);
+            sink.succeed(sink.callFor(1));
+            assertNoSealFor(sink, 2, "partition 0's backlog waits behind its seal in flight");
+            assertThat(stopped.isResolved()).as("the stop waits for the seal in flight").isFalse();
+            sink.succeed(0);
+            awaitCondition(() -> sink.calls() == 3);
+            assertThat(range(sink.segment(2))).as("the backlog behind it, sealed by the stop").isEqualTo(List.of(3L, 4L));
+            assertThat(stopped.isResolved()).as("and for the backlog").isFalse();
+            sink.succeed(2);
+            stopped.await(timeSpan(2).seconds()).onFailure(cause -> fail(cause.message()));
+
+            assertThat(List.of(0, 1)).as("nothing left unsealed when the stop resolved")
+                                     .allMatch(partition -> sealer.lowestUnsealed(STREAM, partition).isEmpty());
+            assertThat(sealer.armedTimers()).as("closed after the seals").isZero();
+            LockSupport.parkNanos(QUIET_MS * 1_000_000L);
+            assertThat(raised).as("nothing to report").isEmpty();
+        }
+
+        /// A sink that stalls past the bound: the stop resolves at the deadline, the sealer is closed, and the operator
+        /// warning names each partition with its unsealed range and whether its WAL holds it. Red under "no bound" (the stop
+        /// waits for the sink), under "an overrun is not reported" and under "the report names no range".
+        @Test
+        void stopSealed_whenTheSinkStallsPastTheDeadline_resolvesAtIt_andRaisesTheUnsealedRanges(@TempDir Path walDir) {
+            var sink = RecordingSink.holding();
+            var sealer = sealerWith(sink, sealerThresholds(NEVER_BYTES, NEVER_EVENTS, HOUR, MERGE));
+            var raised = new CopyOnWriteArrayList<OperatorWarning>();
+
+            sealer.operatorWarnings(OperatorWarningSink.handingOffTo(raised::add), "node-a");
+            sealer.walAttached(STREAM, 1, walWith(walDir, 10, 12));
+            evict(sealer, 0, 4);
+            sealer.onEviction(STREAM, 1, events(10, 12));
+
+            var started = System.nanoTime();
+
+            sealer.stopSealed(timeSpan(300).millis())
+                  .await(timeSpan(5).seconds())
+                  .onFailure(cause -> fail(cause.message()));
+
+            var tookMillis = (System.nanoTime() - started) / 1_000_000L;
+
+            assertThat(tookMillis).as("the stop returns at its deadline").isBetween(250L, 3_000L);
+            assertThat(sealer.armedTimers()).as("closed at the deadline").isZero();
+            awaitCondition(() -> raised.size() == 1);
+            assertThat(raised.getFirst().code()).isEqualTo(OperatorWarningCode.STREAM_SEAL_STOP_INCOMPLETE);
+            assertThat(raised.getFirst().subject()).isEqualTo("node node-a stream sealer");
+            assertThat(raised.getFirst().message()).contains("300 ms", "runs/0 [0-4] (no WAL)", "runs/1 [10-12] (held by its WAL)");
+            sink.open();
+        }
     }
 
     /// A listener that persists but knows nothing of runs answers the read form as `holdsUnsealed`. Red under "the

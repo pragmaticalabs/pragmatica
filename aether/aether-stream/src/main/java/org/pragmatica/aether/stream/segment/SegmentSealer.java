@@ -15,6 +15,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.stream.EvictionListener;
@@ -24,6 +25,7 @@ import org.pragmatica.aether.stream.WalRangeReader;
 import org.pragmatica.storage.AppendLog;
 import org.pragmatica.aether.stream.segment.SegmentIndex.PartitionKey;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -34,6 +36,9 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.Retry;
 import org.pragmatica.lang.utils.Retry.BackoffStrategy;
 import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -66,8 +71,10 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///     first took (I-07: what queued meanwhile waits for the next run); every failure is a WARN and a counted
 ///     failure ([#sealFailureCount]), and every [#ERROR_AFTER_FAILURES] consecutive failures of one run an
 ///     ERROR. A pending segment is never dropped (only a deleted stream's are cancelled, [#onStreamDeleted]).
-///   - **Closed at node stop (#1875).** [#close] cancels the age timers and the retry pauses and retries nothing,
-///     so no seal of a stopped node outlives it; a seal already on its first attempt finishes or fails quietly.
+///   - **Sealed, then closed, at node stop (#1875, know 73fd8d9759).** [#stopSealed] seals what the sealer holds (each
+///     partition's seal in flight and every run behind it) within the node's bound and raises an operator warning for
+///     what is left; then [#close] cancels the age timers and the retry pauses and retries nothing, so no seal of a
+///     stopped node outlives it; a seal already on its first attempt finishes or fails quietly.
 ///   - **Heap copies are bounded by `pendingCapBytes`; the WAL is the holder.** Each pending segment starts
 ///     with a heap copy. For a partition WITH a WAL (attached by its ring at construction, [#walAttached]),
 ///     going past the cap drops heap copies, oldest first, and keeps only the pending RANGE — but only for a
@@ -125,6 +132,10 @@ public final class SegmentSealer implements EvictionListener {
     /// Set by [#close]: nothing new starts, nothing failed is retried.
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final AtomicLong ageTimersScheduled = new AtomicLong(0);
+    /// Resolved once [#flushAll] was asked and no partition holds anything unsealed.
+    private final Promise<Unit> flushed = Promise.promise();
+    private volatile OperatorWarningSink operatorWarnings = OperatorWarningSink.logOnly();
+    private volatile String nodeId = "local";
 
     private SegmentSealer(SegmentSink sink,
                           long pendingCapBytes,
@@ -242,20 +253,81 @@ public final class SegmentSealer implements EvictionListener {
         return unit();
     }
 
-    /// Node stop, best effort (spec 4.2 item 6): every partition's queued run is ready at once, and so is any later one.
-    /// A WAL-backed range needs none of it (the WAL replays it at restart); for a partition without a WAL it narrows the
-    /// window of acknowledged events a crash loses. Followed by [#close], so each partition seals at most the run it
-    /// starts here.
-    public Unit flushAll() {
+    /// Node stop (spec 4.2 item 6, know 73fd8d9759): every partition's queued run is ready at once, and so is every later
+    /// one, so each seal in flight is followed by the backlog behind it until nothing is left. The promise resolves once no
+    /// partition holds anything unsealed; a failing seal is retried meanwhile as before. [#stopSealed] bounds the wait.
+    public Promise<Unit> flushAll() {
         closing.set(true);
         pending.values().forEach(this::maybeDrain);
+        settleFlush();
+
+        return flushed;
+    }
+
+    /// Node stop (know 73fd8d9759): [#flushAll], waited for up to `deadline`, then [#close]. What is still unsealed at the
+    /// deadline is raised as [OperatorWarningCode#STREAM_SEAL_STOP_INCOMPLETE], naming each partition and its range, and
+    /// the stop goes ahead: a range held by a WAL is replayed at restart, one without a WAL is lost, as in a crash. Always
+    /// succeeds.
+    public Promise<Unit> stopSealed(TimeSpan deadline) {
+        return flushAll().timeout(deadline)
+                       .recover(_ -> reportUnsealed(deadline))
+                       .map(_ -> close());
+    }
+
+    /// Where this node's operator warnings go, and the node they name.
+    @Contract
+    public void operatorWarnings(OperatorWarningSink sink, String nodeId) {
+        this.operatorWarnings = sink;
+        this.nodeId = nodeId;
+    }
+
+    private void settleFlush() {
+        if (closing.get() && pending.values().stream().allMatch(seals -> seals.queue()
+                                                                              .isEmpty())) {
+            flushed.succeed(unit());
+        }
+    }
+
+    private Unit reportUnsealed(TimeSpan deadline) {
+        OperatorWarnings.raise(log,
+                               operatorWarnings,
+                               OperatorWarningCode.STREAM_SEAL_STOP_INCOMPLETE,
+                               "node " + nodeId + " stream sealer",
+                               "Graceful stop: the segment sealer did not seal what it held within {} ms, and the stop goes "
+                              + "ahead; unsealed: {}. A range held by its WAL is replayed at restart; a range with no WAL is "
+                              + "lost, its acknowledged events included, as in a crash",
+                               deadline.millis(),
+                               unsealedRanges());
 
         return unit();
     }
 
-    /// Node stop (#1875): cancels every age timer and retry pause, starts nothing new and retries nothing, so the
-    /// sealer of a stopped node does not keep sealing against its closed WALs. A failure after this is counted but not
-    /// a WARN. What stays pending is held by the WAL, or lost with the heap on a partition without one (as a crash).
+    /// Each partition still holding something, with its range from the lowest pending offset to the highest.
+    private String unsealedRanges() {
+        return pending.entrySet()
+                      .stream()
+                      .flatMap(entry -> unsealedRange(entry.getKey(),
+                                                      List.copyOf(entry.getValue().queue())).stream())
+                      .collect(Collectors.joining(", "));
+    }
+
+    private Option<String> unsealedRange(PartitionKey key, List<PendingSegment> queued) {
+        return queued.isEmpty()
+               ? none()
+               : some(key.streamName()
+                     + "/" + key.partition()
+                     + " [" + queued.getFirst()
+                                    .startOffset()
+                     + "-" + queued.getLast()
+                                   .endOffset()
+                     + "] " + (durable(key.streamName(), key.partition())
+                               ? "(held by its WAL)"
+                               : "(no WAL)"));
+    }
+
+    /// Node stop (#1875), after [#stopSealed]'s flush: cancels every age timer and retry pause, starts nothing new and
+    /// retries nothing, so the sealer of a stopped node does not keep sealing against its closed WALs. A failure after this
+    /// is counted but not a WARN. What stays pending is held by the WAL, or lost with the heap on a partition without one.
     public Unit close() {
         closed.set(true);
         pending.values().forEach(PendingSeals::cancelTimers);
@@ -703,6 +775,7 @@ public final class SegmentSealer implements EvictionListener {
     /// stream deletion may already have released them, and [#releaseCopy] releases each copy exactly once.
     private Unit released(PendingSeals seals, List<PendingSegment> run) {
         run.forEach(entry -> released(seals, entry));
+        settleFlush();
 
         return unit();
     }
@@ -724,6 +797,7 @@ public final class SegmentSealer implements EvictionListener {
 
     private void cancel(PartitionKey key) {
         option(pending.remove(key)).onPresent(seals -> cancelSeals(key, seals));
+        settleFlush();
     }
 
     private void cancelSeals(PartitionKey key, PendingSeals seals) {

@@ -352,6 +352,9 @@ public sealed interface StreamAssembly {
         // gate and cold-restart detection raise and read.
         streamPartitionManager.partitionFlags(PartitionFlags.kvPartitionFlags(clusterNode, kvStore, nodeCodec));
         streamPartitionManager.operatorWarnings(operatorWarningSink);
+        // Know 73fd8d9759: a graceful stop that cannot seal what the sealer holds within its bound is reported to this node's sink.
+        streamSegmentSealer.operatorWarnings(operatorWarningSink,
+                                             config.self().id());
         // #1730 phase 2: a durable cut whose repair is not settled within twelve backfill redrive ticks is reported anyway.
         streamPartitionManager.repairReportBound(TimeSpan.timeSpan(STREAM_BACKFILL_REDRIVE_INTERVAL.millis() * 12L).millis());
         // `[streaming] reshuffle_concurrency` — set BEFORE any materialization, since it replaces the permit

@@ -738,6 +738,12 @@ public enum OperatorWarningCode {
                                           "storage",
                                           WarningLevel.INFO,
                                           STREAM_SEGMENT_DISK_PRESSURE),
+    /// A graceful node stop did not seal everything its stream segment sealer held within the stop's sealing bound (know
+    /// 73fd8d9759): a seal in flight, or a run queued behind it, had not landed, and the stop went ahead. The message names
+    /// each such partition, its unsealed range and whether its WAL holds it: a range held by a WAL is replayed at restart;
+    /// one without a WAL is lost, acknowledged events included, as in a crash. Raised once, while the node stops: a fact
+    /// about one stop with no runtime recovery. The subject is `node <nodeId> stream sealer`. [guess: name and level]
+    STREAM_SEAL_STOP_INCOMPLETE("stream-seal-stop-incomplete", "storage", WarningLevel.WARNING),
     /// The recovery of [#JSON_CONFIG_REJECTED], same subject (#2378): a valid `[json]` configuration was adopted after a
     /// refusal. INFO, published only after a published rejection for the subject (#752 mechanism).
     JSON_CONFIG_APPLIED("json-config-applied", "json", WarningLevel.INFO, JSON_CONFIG_REJECTED),
