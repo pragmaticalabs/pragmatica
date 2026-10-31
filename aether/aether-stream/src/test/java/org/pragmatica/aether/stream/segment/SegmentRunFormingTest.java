@@ -299,7 +299,7 @@ class SegmentRunFormingTest {
                                                  SealerThresholds.immediate(),
                                                  1,
                                                  timeSpan(10).millis(),
-                                                 timeSpan(300).millis());
+                                                 timeSpan(2).seconds());
 
         evict(sealer, 0, 0);
         awaitCondition(() -> calls.get() == 1);
@@ -309,12 +309,39 @@ class SegmentRunFormingTest {
 
         sealer.close();
 
+        var armedAfterClose = sealer.armedTimers();
         var callsAtClose = calls.get();
 
-        LockSupport.parkNanos(1_000_000_000L);
+        LockSupport.parkNanos(2_500_000_000L);
         assertThat(calls.get() - callsAtClose).as("sink calls after close").isZero();
         assertThat(armedBeforeClose).as("control: the failed cycle scheduled its retry before close").isEqualTo(1);
-        assertThat(sealer.armedTimers()).as("close cancelled it").isZero();
+        assertThat(armedAfterClose).as("close cancelled the retry pause, well before it was due").isZero();
+    }
+
+    /// A retry cycle backs off exponentially from its first delay towards the cycle pause, so a failing tier is not
+    /// retried at the first delay over and over. Red under "the backoff is capped at the first delay".
+    @Test
+    void aRetryCycle_backsOffExponentially() {
+        var callNanos = new java.util.concurrent.CopyOnWriteArrayList<Long>();
+        var sealer = SegmentSealer.segmentSealer((_, _) -> failingAt(callNanos),
+                                                 DEFAULT_PENDING_CAP_BYTES,
+                                                 SealerThresholds.immediate(),
+                                                 4,
+                                                 timeSpan(20).millis(),
+                                                 timeSpan(5).seconds());
+
+        evict(sealer, 0, 0);
+        awaitCondition(() -> callNanos.size() == 4);
+        sealer.close();
+
+        assertThat(callNanos.get(3) - callNanos.get(2)).as("the third backoff, 80 ms with jitter, not the first 20 ms")
+                                                       .isGreaterThan(50_000_000L);
+    }
+
+    private static Promise<Unit> failingAt(List<Long> callNanos) {
+        callNanos.add(System.nanoTime());
+
+        return Causes.cause("storage down").promise();
     }
 
     /// Adversarial hazards of the run former (the PR-1a self-pass). Each names the mutation that reddens it.
@@ -489,9 +516,10 @@ class SegmentRunFormingTest {
             assertThat(sealer.armedTimers()).isZero();
         }
 
-        /// A deleted stream's age timer is cancelled with its pending seals. Red under "deletion leaves the timer".
+        /// A deleted stream's pending run is never sealed by the age timer it had armed (the deletion also cancels the
+        /// timer; one left armed would fire into the deleted partition's empty queue, which nothing observes).
         @Test
-        void onStreamDeleted_cancelsThePartitionsAgeTimer() {
+        void onStreamDeleted_withAnAgeTimerPending_sealsNothingLater() {
             var sink = RecordingSink.succeeding();
             var sealer = sealerWith(sink, sealerThresholds(NEVER_BYTES, NEVER_EVENTS, timeSpan(300).millis(), MERGE));
 
@@ -499,7 +527,6 @@ class SegmentRunFormingTest {
             assertThat(sealer.armedTimers()).as("control").isEqualTo(1);
             sealer.onStreamDeleted(STREAM);
 
-            assertThat(sealer.armedTimers()).isZero();
             LockSupport.parkNanos(600_000_000L);
             assertThat(sink.calls()).isZero();
             assertThat(sealer.pendingBytes()).isZero();

@@ -126,6 +126,96 @@ class AppendLogTest {
         }
     }
 
+    /// The bounded `replay` scan keeps recovery's validity rules (#2201 C-02): it stops cleanly at the first record whose
+    /// CRC or length frame is wrong, whether that record is delivered or skipped, returns the valid prefix, and never
+    /// buffers the rest of the file for a length that runs past it. The file is corrupted under the open log, as a bad
+    /// sector or a torn write would leave it. Each test names the mutation that reddens it.
+    @Nested
+    class ReplayValidity {
+        private static final int PAYLOAD = 1024;
+        private static final int FRAME = 24 + PAYLOAD;
+
+        /// Red under "a delivered record's CRC is not checked".
+        @Test
+        void replay_stopsBeforeADeliveredRecordWhoseCrcIsWrong() throws IOException {
+            var wal = logOf("crc-delivered.wal", 5);
+
+            corrupt("crc-delivered.wal", 2L * FRAME + 24, (byte) 0x5A);
+
+            assertThat(offsetsOf(replayAll(wal, -1L))).containsExactly(0L, 1L);
+            wal.close();
+        }
+
+        /// A skipped record is still validated: the scan stops at it, so nothing after it is delivered. Red under "a
+        /// skipped record's CRC is not checked".
+        @Test
+        void replay_stopsAtASkippedRecordWhoseCrcIsWrong() throws IOException {
+            var wal = logOf("crc-skipped.wal", 5);
+
+            corrupt("crc-skipped.wal", 1L * FRAME + 24, (byte) 0x5A);
+
+            assertThat(replayAll(wal, 2L)).isEmpty();
+            wal.close();
+        }
+
+        /// A negative length ends the valid prefix; the replay succeeds with it. Red under "a negative length is not
+        /// refused" (the scan then fails instead of returning the prefix).
+        @Test
+        void replay_stopsAtANegativeLength_andReturnsThePrefix() throws IOException {
+            var wal = logOf("negative.wal", 5);
+
+            writeLength("negative.wal", 3L * FRAME, -1);
+
+            assertThat(offsetsOf(replayAll(wal, -1L))).containsExactly(0L, 1L, 2L);
+            wal.close();
+        }
+
+        /// A delivered record whose length runs past the end of the file stops the scan without buffering what remains:
+        /// a replay of the second half of a ~4 MiB log, whose first delivered record claims nearly the whole file,
+        /// allocates far less than the 2 MiB after it. Red under "no length bound" and under "the bound does not advance
+        /// with the scan".
+        @Test
+        void replay_aLengthPastTheEnd_stopsWithoutBufferingTheRest() throws IOException {
+            var wal = logOf("past-end.wal", 4_096);
+            var size = Files.size(dir.resolve("past-end.wal"));
+
+            writeLength("past-end.wal", 2_048L * FRAME, (int) (size - 2L * FRAME));
+
+            var threads = (com.sun.management.ThreadMXBean) java.lang.management.ManagementFactory.getThreadMXBean();
+            var thread = Thread.currentThread().threadId();
+            var before = threads.getThreadAllocatedBytes(thread);
+            var records = replayAll(wal, 2_047L);
+            var allocated = threads.getThreadAllocatedBytes(thread) - before;
+
+            assertThat(records).isEmpty();
+            assertThat(allocated).as("bytes allocated by a replay stopped at a length past the end").isLessThan(1024L * 1024);
+            wal.close();
+        }
+
+        private AppendLog logOf(String name, int records) {
+            var wal = open(name);
+
+            for (var offset = 0L; offset < records; offset++) {
+                wal.write(offset, new byte[PAYLOAD], 1L + offset).unwrap();
+            }
+            wal.commit(0).await();
+
+            return wal;
+        }
+
+        private void corrupt(String name, long position, byte value) throws IOException {
+            try (var channel = FileChannel.open(dir.resolve(name), StandardOpenOption.WRITE)) {
+                channel.write(ByteBuffer.wrap(new byte[]{value}), position);
+            }
+        }
+
+        private void writeLength(String name, long position, int length) throws IOException {
+            try (var channel = FileChannel.open(dir.resolve(name), StandardOpenOption.WRITE)) {
+                channel.write(ByteBuffer.allocate(4).putInt(0, length), position);
+            }
+        }
+    }
+
     @Nested
     class Durability {
 
