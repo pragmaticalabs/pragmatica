@@ -525,7 +525,8 @@ class HetznerComputeProviderTest {
             provider.createFrom(requestFor("aether-prod-node-01jabcdefghjkmnpqrstvwxyz0")).await()
                     .onFailure(cause -> assertThat(cause).isNull());
 
-            assertThat(testClient.lastCreateServerRequest.name()).isEqualTo("aether-prod-node-01jabcdefghjkmnpqrstvwxyz0");
+            assertThat(testClient.lastCreateServerRequest.name()).isEqualTo("prod-aether-prod-node-01jabcdefghjkmnpqrstvwxyz0");
+            assertThat(testClient.lastCreateServerRequest.labels()).containsEntry(HetznerComputeProvider.NODE_ID_LABEL, "aether-prod-node-01jabcdefghjkmnpqrstvwxyz0");
         }
 
         @Test
@@ -535,7 +536,7 @@ class HetznerComputeProviderTest {
             provider.createFrom(requestFor("eu-1-core-0")).await().onFailure(cause -> assertThat(cause).isNull());
 
             assertThat(testClient.lastCreateServerRequest.labels())
-                    .containsEntry(OPERATION_LABEL, "eu-1-core-0")
+                    .containsEntry(OPERATION_LABEL, "prod-eu-1-core-0")
                     .containsEntry(HetznerComputeProvider.NODE_ID_LABEL, "eu-1-core-0");
         }
 
@@ -550,7 +551,7 @@ class HetznerComputeProviderTest {
 
             var sent = testClient.lastCreateServerRequest;
             assertThat(sent.name())
-                    .isEqualTo(sent.labels().get(HetznerComputeProvider.NODE_ID_LABEL))
+                    .isEqualTo("prod-" + sent.labels().get(HetznerComputeProvider.NODE_ID_LABEL))
                     .isEqualTo(sent.labels().get(OPERATION_LABEL))
                     .matches("[a-z0-9-]{1,63}");
         }
@@ -570,13 +571,13 @@ class HetznerComputeProviderTest {
             assertThat(testClient.lastCreateServerRequest.name()).isEqualTo("op-1");
             assertThat(testClient.lastCreateServerRequest.labels())
                     .containsEntry(OPERATION_LABEL, "op-1")
-                    .containsEntry(HetznerComputeProvider.NODE_ID_LABEL, "op-1");
+                    .containsEntry(HetznerComputeProvider.NODE_ID_LABEL, "eu-1-core-0");
         }
 
         @Test
         void createFrom_uniquenessError_serverOfOurClusterButAnotherNodeId_isNameHeldByOther() {
             testClient.createServerResponse = nameTaken();
-            testClient.listServersResponse = Promise.success(List.of(serverNamed(79, "eu-1-core-0", "prod", "someone-else")));
+            testClient.listServersResponse = Promise.success(List.of(serverNamed(79, "prod-eu-1-core-0", "prod", "someone-else")));
 
             provider.createFrom(requestFor("eu-1-core-0"))
                     .await()
@@ -608,7 +609,7 @@ class HetznerComputeProviderTest {
         @Test
         void createFrom_uniquenessError_serverCarryingOurLabels_isAlreadyExistsAndNothingIsCreatedAgain() {
             testClient.createServerResponse = nameTaken();
-            testClient.listServersResponse = Promise.success(List.of(serverNamed(77, "eu-1-core-0", "prod", "eu-1-core-0")));
+            testClient.listServersResponse = Promise.success(List.of(serverNamed(77, "prod-eu-1-core-0", "prod", "eu-1-core-0")));
 
             provider.createFrom(requestFor("eu-1-core-0"))
                     .await()
@@ -621,8 +622,8 @@ class HetznerComputeProviderTest {
         @Test
         void createFrom_uniquenessError_looksTheHolderUpByExactName() {
             testClient.createServerResponse = nameTaken();
-            testClient.listServersResponse = Promise.success(List.of(serverNamed(80, "eu-1-core-1", "prod", "eu-1-core-1"),
-                                                                     serverNamed(77, "eu-1-core-0", "prod", "eu-1-core-0")));
+            testClient.listServersResponse = Promise.success(List.of(serverNamed(80, "prod-eu-1-core-1", "prod", "eu-1-core-1"),
+                                                                     serverNamed(77, "prod-eu-1-core-0", "prod", "eu-1-core-0")));
 
             provider.createFrom(requestFor("eu-1-core-0"))
                     .await()
@@ -633,7 +634,7 @@ class HetznerComputeProviderTest {
         @Test
         void createFrom_uniquenessError_serverOfAnotherCluster_isNameHeldByOtherAndNeverAdopted() {
             testClient.createServerResponse = nameTaken();
-            testClient.listServersResponse = Promise.success(List.of(serverNamed(78, "eu-1-core-0", "other-cluster", "eu-1-core-0")));
+            testClient.listServersResponse = Promise.success(List.of(serverNamed(78, "prod-eu-1-core-0", "other-cluster", "eu-1-core-0")));
 
             provider.createFrom(requestFor("eu-1-core-0"))
                     .await()
@@ -661,7 +662,7 @@ class HetznerComputeProviderTest {
         @Test
         void createFrom_otherConflict_isNotTakenForAnExistingServer() {
             testClient.createServerResponse = new HetznerError.ApiError(409, "conflict", "resource is locked").promise();
-            testClient.listServersResponse = Promise.success(List.of(serverNamed(77, "eu-1-core-0", "prod", "eu-1-core-0")));
+            testClient.listServersResponse = Promise.success(List.of(serverNamed(77, "prod-eu-1-core-0", "prod", "eu-1-core-0")));
 
             provider.createFrom(requestFor("eu-1-core-0"))
                     .await()
@@ -672,7 +673,7 @@ class HetznerComputeProviderTest {
         @Test
         void createFrom_serverError_isAFailedCreate_neverAnExistingServer() {
             testClient.createServerResponse = new HetznerError.ApiError(500, "server_error", "boom").promise();
-            testClient.listServersResponse = Promise.success(List.of(serverNamed(77, "eu-1-core-0", "prod", "eu-1-core-0")));
+            testClient.listServersResponse = Promise.success(List.of(serverNamed(77, "prod-eu-1-core-0", "prod", "eu-1-core-0")));
 
             provider.createFrom(requestFor("eu-1-core-0"))
                     .await()
@@ -743,18 +744,19 @@ class HetznerComputeProviderTest {
 
         @Test
         void waveNodeGroupWithClusterTag_stampsRealCluster() {
+            // 11 characters: the longest cluster name whose minted ids still name a Hetzner server (<cluster>-<nodeId>, 63 characters)
             // #442 v2b — WaveExecutor now threads the real cluster name into the group tags; this
             // proves that input reaches the VM label via CloudProviderSupport.toContext → provider.
             testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
             var group = NodeGroupConfig.nodeGroupConfig(sourceNameOrDefault("eu-1"), "core", 1, "cx22", "fsn1",
-                                                        Map.of("aether-cluster", "prod-cluster",
+                                                        Map.of("aether-cluster", "prodcluster",
                                                                "aether-source", "eu-1",
                                                                "aether-role", "core"));
 
             CloudProviderSupport.provisionVia(provider, group).await().onFailure(cause -> assertThat(cause).isNull());
 
             assertThat(testClient.lastCreateServerRequest.labels())
-                    .containsEntry("aether-cluster", "prod-cluster")
+                    .containsEntry("aether-cluster", "prodcluster")
                     .containsEntry("aether-role", "core");
         }
 
