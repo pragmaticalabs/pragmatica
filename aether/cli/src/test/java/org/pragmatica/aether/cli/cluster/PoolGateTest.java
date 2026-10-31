@@ -232,6 +232,79 @@ class PoolGateTest {
         assertThat(ApplyState.read(CLUSTER).unwrap().unwrap().resources()).isEmpty();
     }
 
+    /// A refusing authority that fails the test if it is asked at all.
+    private PoolAuthority neverAsked() {
+        return new PoolAuthority() {
+            @Override
+            public Result<Actor> actorFor(String source, NodeRole role, int wanted) {
+                throw new AssertionError("the pool was asked, but nothing is missing or the action is done");
+            }
+
+            @Override
+            public Result<Unit> awaitLeader(NodeRole role, int wantedInRole, Consumer<String> progress) {
+                throw new AssertionError("never waited");
+            }
+        };
+    }
+
+    private ApplyRecorder recorderWithTheRemainderCreated(org.pragmatica.aether.config.cluster.DiffPlan plan, int created) {
+        var recorder = ledger.recorder(CLUSTER, ApplyAction.fromPlan(plan).stream().map(ApplyAction::key).toList());
+
+        for (int i = 0; i < created; i++) {
+            recorder.intend("n-" + i, "hetzner").unwrap();
+            recorder.created("n-" + i, "srv-" + i).unwrap();
+        }
+
+        return recorder;
+    }
+
+    @Test
+    void scaleUp_whenTheResumeAlreadyCreatedTheRemainder_theGateIsNotAsked() {
+        WaveExecutor.poolAuthority = neverAsked();
+        var stored = ClusterBootstrapConfigParser.parse(TOML.formatted(3)).unwrap();
+        var desired = ClusterBootstrapConfigParser.parse(TOML.formatted(5)).unwrap();
+        var plan = ClusterBootstrapConfigDiff.diff(stored, desired);
+
+        var result = WaveExecutor.execute(plan, stored, desired, recorderWithTheRemainderCreated(plan, 2));
+
+        // The action goes on to its (empty) create path and ends on the missing join inputs of this test; what matters is that
+        // the gate was never asked: a question would have thrown from the authority.
+        assertThat(result.isFailure()).as("%s", result).isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).contains("cluster secret"));
+    }
+
+    @Test
+    void addRole_whenTheResumeAlreadyCreatedEveryNode_theGateIsNotAsked() {
+        WaveExecutor.poolAuthority = neverAsked();
+        var stored = ClusterBootstrapConfigParser.parse(TWO_SOURCES.formatted("")).unwrap();
+        var desired = ClusterBootstrapConfigParser.parse(TWO_SOURCES.formatted("\n[source.eu-1.worker]\ncount = 2\n")).unwrap();
+        var plan = ClusterBootstrapConfigDiff.diff(stored, desired);
+
+        var result = WaveExecutor.execute(plan, stored, desired, recorderWithTheRemainderCreated(plan, 2));
+
+        // The action goes on to its (empty) create path and ends on the missing join inputs of this test; what matters is that
+        // the gate was never asked: a question would have thrown from the authority.
+        assertThat(result.isFailure()).as("%s", result).isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).contains("cluster secret"));
+    }
+
+    @Test
+    void aDoneAction_isNotAskedAgain() {
+        WaveExecutor.poolAuthority = neverAsked();
+        var stored = ClusterBootstrapConfigParser.parse(TOML.formatted(3)).unwrap();
+        var desired = ClusterBootstrapConfigParser.parse(TOML.formatted(5)).unwrap();
+        var plan = ClusterBootstrapConfigDiff.diff(stored, desired);
+        var keys = ApplyAction.fromPlan(plan).stream().map(ApplyAction::key).toList();
+        var base = ApplyStateFixtures.state(CLUSTER);
+        var state = ApplyState.applyState(base.applyId(), CLUSTER, base.configHash(), base.storedVersion(), base.startedAt(), base.phase(),
+                                          keys.stream().map(key -> ApplyAction.applyAction(key, 0, ApplyAction.Status.DONE)).toList(),
+                                          List.of(), List.of(), List.of(), List.of());
+
+        ApplyState.save(state).unwrap();
+
+        assertThat(WaveExecutor.execute(plan, stored, desired, ApplyRecorder.applyRecorder(state)).isSuccess()).isTrue();
+    }
+
     @Test
     void scaleUp_refusedPool_failsNamingThePool_andCreatesNothing() {
         WaveExecutor.poolAuthority = refusing();
