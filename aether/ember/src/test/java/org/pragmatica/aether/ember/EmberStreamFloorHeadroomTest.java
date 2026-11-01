@@ -27,8 +27,9 @@ import static org.pragmatica.aether.ember.StreamTripwireSupport.sleepQuietly;
 /// NT-106 (#2201 C-03, spec 4.4 item 5, F-07): the steady-state soak of the floor headroom on a 3-node cluster.
 ///
 /// Every node's off-heap stream budget is [#BUDGET] (`[streaming] max_memory_bytes`, small so the fill is short). Two RF 3
-/// streams whose rings may grow far past the budget are published until, on every node, the rings have taken the growth share
-/// (three quarters of the budget) and the cluster has quiesced. Then a stream is created. Its floors are admitted against the
+/// streams whose rings may grow far past the budget are published, and the test waits until every node's ring of each holds
+/// the owner's last offset (a fresh replica can sit in its 20 s source wait first, so a quiet period is not evidence that it
+/// applied anything); by then the rings have taken the growth share (three quarters of the budget). Then a stream is created. Its floors are admitted against the
 /// WHOLE budget, so it materializes on every node: the rings were refused growth at the share and froze there.
 ///
 /// Red under MT-37 (growth admitted against the whole budget): the rings then grow to within one segment of the budget, and
@@ -78,7 +79,7 @@ class EmberStreamFloorHeadroomTest {
 
         try {
             FILLS.forEach(this::fill);
-            awaitQuiesced();
+            FILLS.forEach(this::awaitAppliedEverywhere);
             cluster.allNodes()
                    .forEach(node -> assertThat(node.streamPartitionManager().totalAllocatedBytes()).as("precondition: %s's rings took the growth share",
                                                                                                        node.self().id())
@@ -129,26 +130,20 @@ class EmberStreamFloorHeadroomTest {
         return IntStream.range(0, BATCH).mapToObj(_ -> new byte[PAYLOAD]).toList();
     }
 
-    /// Waits until no node's allocation has moved for [#QUIESCE_MS]: the replicas have applied what the owners hold.
-    private void awaitQuiesced() {
-        var deadline = System.currentTimeMillis() + SETTLE_BUDGET_MS;
-        var last = allocated();
-        var stableSince = System.currentTimeMillis();
+    /// Waits until every node's ring of `stream` holds its last published offset.
+    private void awaitAppliedEverywhere(String stream) {
+        var last = FILL_BYTES_PER_STREAM / PAYLOAD - 1;
 
-        while (System.currentTimeMillis() < deadline) {
-            sleepQuietly(500L);
+        StreamTripwireSupport.awaitUntil(() -> cluster.allNodes().stream().allMatch(node -> headOf(node, stream) == last),
+                                         SETTLE_BUDGET_MS,
+                                         "every node's ring of " + stream + " holds offset " + last + " (allocated per node: " + allocated() + ")");
+    }
 
-            var now = allocated();
-
-            if (!now.equals(last)) {
-                last = now;
-                stableSince = System.currentTimeMillis();
-            } else if (System.currentTimeMillis() - stableSince >= QUIESCE_MS) {
-                return;
-            }
-        }
-
-        throw new AssertionError("the allocations did not settle within " + SETTLE_BUDGET_MS + " ms; last " + last);
+    private static long headOf(AetherNode node, String stream) {
+        return node.streamPartitionManager()
+                   .partitionBuffer(engineKey(stream), 0)
+                   .map(ring -> ring.headOffset())
+                   .or(-1L);
     }
 
     private List<Long> allocated() {
