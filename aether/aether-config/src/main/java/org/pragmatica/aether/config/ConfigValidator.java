@@ -60,6 +60,10 @@ public final class ConfigValidator {
     /// two orders of magnitude below the 5-minute production default, not derived from a measured
     /// worst-case pass duration.
     private static final TimeSpan MIN_STORAGE_MAINTENANCE_INTERVAL = timeSpan(1).seconds();
+    /// `[streaming] seal_merge_bytes` upper bound (know 73fd8d9759: below 2 GiB). [guess: 256 MiB, 64 times the default]
+    private static final long MAX_SEAL_MERGE_BYTES = 256L * 1024 * 1024;
+    /// `[streaming] seal_run_age` upper bound, far below the overflow of the age timer's deadline. [guess: one day]
+    private static final TimeSpan MAX_SEAL_RUN_AGE = timeSpan(1).days();
 
     private ConfigValidator() {}
 
@@ -241,6 +245,20 @@ public final class ConfigValidator {
         // #2258: 0 means "derive from the heap"; a negative cap has no meaning.
         if (streaming.dhtSegmentMaxBytes() < 0) {
             errors.add("streaming.dht_segment_max_bytes must be >= 0 (0 derives the cap from the maximum heap). Got: " + streaming.dhtSegmentMaxBytes());
+        }
+        // #2201 C-02 (spec 4.2), know 73fd8d9759: a merged block is ONE array whose length the sealer sums as an int, so its cap
+        // stays far below 2 GiB. The other three thresholds size nothing: `seal_run_bytes` and `seal_run_events` are only compared
+        // against the run's long counters, and a zero or negative value only makes every run ready at once.
+        if (streaming.sealMergeBytes() > MAX_SEAL_MERGE_BYTES) {
+            errors.add("streaming.seal_merge_bytes must be <= " + MAX_SEAL_MERGE_BYTES
+                      + " (256 MiB: a merged block is one array, so the cap stays far below 2 GiB). Got: " + streaming.sealMergeBytes());
+        }
+        // #2201 C-02: the age timer's deadline is the oldest entry's monotonic nanosecond time plus `seal_run_age`; near
+        // Long.MAX_VALUE nanoseconds (about 106,000 days) that sum overflows into a zero delay, and the timer re-fires at once.
+        if (streaming.sealRunAge().nanos() > MAX_SEAL_RUN_AGE.nanos()) {
+            errors.add("streaming.seal_run_age must be at most one day (it is how long a run may wait, and without a WAL how much "
+                      + "longer an acknowledged event can be lost to a crash). Got: " + streaming.sealRunAge().millis()
+                      + "ms");
         }
     }
 

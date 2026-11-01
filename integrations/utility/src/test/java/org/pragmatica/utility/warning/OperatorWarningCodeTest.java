@@ -271,7 +271,10 @@ class OperatorWarningCodeTest {
         OperatorWarningCode.OFFLINE_FRAMES_EXPIRED,
         OperatorWarningCode.ENTITY_OWNERSHIP_UNSETTLED_MINT,
         OperatorWarningCode.SWIM_MEMBER_ADDRESS_CONFLICT,
-        OperatorWarningCode.SWIM_MEMBER_IDENTITY_CONFLICT);
+        OperatorWarningCode.SWIM_MEMBER_IDENTITY_CONFLICT,
+        // Know 73fd8d9759, added on purpose: a fact about one graceful stop with no runtime recovery. The process that raises
+        // it is ending; what it left unsealed is replayed from its WAL at restart, or is lost with the heap.
+        OperatorWarningCode.STREAM_SEAL_STOP_INCOMPLETE);
 
     /// #752: a recovery code closes a condition of its own subsystem, and a condition is not itself a recovery, so a
     /// recovery is never itself waiting for one.

@@ -245,6 +245,10 @@ public final class ConfigLoader {
                                                  "streaming",
                                                  "promotion_escape_after",
                                                  defaults.promotionEscapeAfter());
+        var sealRunBytes = parseDataSize(doc, "streaming", "seal_run_bytes", defaults.sealRunBytes());
+        var sealRunEvents = parseInt(doc, "streaming", "seal_run_events", defaults.sealRunEvents());
+        var sealRunAge = parseTimeSpan(doc, "streaming", "seal_run_age", defaults.sealRunAge());
+        var sealMergeBytes = parseDataSize(doc, "streaming", "seal_merge_bytes", defaults.sealMergeBytes());
 
         builder.streaming(StreamingConfig.streamingConfig(publishTimeout,
                                                           readTimeout,
@@ -255,7 +259,8 @@ public final class ConfigLoader {
                                          .withSegmentDiskMaxBytes(segmentDiskMaxBytes)
                                          .withDhtSegmentMaxBytes(dhtSegmentMaxBytes)
                                          .withIsrLagMax(isrLagMax)
-                                         .withPromotionEscapeAfter(promotionEscapeAfter));
+                                         .withPromotionEscapeAfter(promotionEscapeAfter)
+                                         .withSealRun(sealRunBytes, sealRunEvents, sealRunAge, sealMergeBytes));
     }
 
     private static long parseDataSize(TomlDocument doc, String section, String key, long defaultValue) {
