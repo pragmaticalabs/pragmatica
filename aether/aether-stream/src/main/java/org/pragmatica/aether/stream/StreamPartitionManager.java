@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
@@ -201,6 +202,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// for every `(stream, partition)` — the always-materialize behavior that preserves the pre-seam
     /// semantics exactly. `AetherNode` late-binds the real [ReplicaSetController#roleFor].
     private static final PlacementRoleSupplier ALWAYS_OWNER = (_, _) -> ReplicaSetController.Role.OWNER;
+    /// The owner-epoch source the factories without one default to; any other source a caller passes counts as bound
+    /// ([StreamSeam#OWNER_EPOCH_SOURCE]).
+    private static final StreamOwnerEpochSource ZERO_EPOCHS = StreamOwnerEpochSource.zero();
 
     /// #2201 A-05 (spec 5.1, rulings Q3/Q4): the stream registry: the entries, the applied configs, the deferred repair reports,
     /// the orphaned-WAL sets and each stream's per-partition state ([PartitionState]).
@@ -210,6 +214,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final ConcurrentHashMap<String, StreamEntry> streams = entries.streams();
     /// #2201 A-05: the materialization scheduling state, rows 20-28 of the spec table.
     private final MaterializationScheduler scheduler = MaterializationScheduler.materializationScheduler();
+    /// #2201 A-14 (spec 5.1 target, bullet 4): the late-bound seams this manager's wiring has bound. Each setter registers its
+    /// seam; the owner-epoch source registers when it is handed to the constructor by a caller rather than defaulted.
+    private final Set<StreamSeam> boundSeams = ConcurrentHashMap.newKeySet();
     private final AtomicLong totalAllocatedBytes = new AtomicLong(0);
     /// #2201 C-03 (spec 4.4 item 4): moved by every return of bytes to the pool ([#release]: a stream destroyed, a ring closed
     /// or released, a reservation handed back), so a ring frozen by a refused growth knows budget may have been freed since.
@@ -434,6 +441,10 @@ public final class StreamPartitionManager implements AutoCloseable {
         this.clusterNode = clusterNode;
         this.epochHighWater = epochHighWater;
         this.ownerEpochSource = ownerEpochSource;
+        if (ownerEpochSource != ZERO_EPOCHS) {
+            boundSeams.add(StreamSeam.OWNER_EPOCH_SOURCE);
+        }
+
         this.logs = logs;
         this.lastSealedOffset = lastSealedOffset;
         this.durableSealedOffset = durableSealedOffset;
@@ -451,7 +462,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           ReplicationManager.NONE,
                                           Option.none(),
                                           Option.none(),
-                                          StreamOwnerEpochSource.zero(),
+                                          ZERO_EPOCHS,
                                           Option.none(),
                                           LastSealedOffsetSource.none(),
                                           DurableSealedOffsetSource.none());
@@ -463,7 +474,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           ReplicationManager.NONE,
                                           Option.none(),
                                           Option.none(),
-                                          StreamOwnerEpochSource.zero(),
+                                          ZERO_EPOCHS,
                                           Option.none(),
                                           LastSealedOffsetSource.none(),
                                           DurableSealedOffsetSource.none());
@@ -475,7 +486,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           ReplicationManager.NONE,
                                           Option.none(),
                                           Option.none(),
-                                          StreamOwnerEpochSource.zero(),
+                                          ZERO_EPOCHS,
                                           Option.none(),
                                           LastSealedOffsetSource.none(),
                                           DurableSealedOffsetSource.none());
@@ -489,7 +500,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           replicationManager,
                                           Option.none(),
                                           Option.none(),
-                                          StreamOwnerEpochSource.zero(),
+                                          ZERO_EPOCHS,
                                           Option.none(),
                                           LastSealedOffsetSource.none(),
                                           DurableSealedOffsetSource.none());
@@ -505,7 +516,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           ReplicationManager.NONE,
                                           Option.none(),
                                           Option.none(),
-                                          StreamOwnerEpochSource.zero(),
+                                          ZERO_EPOCHS,
                                           logs,
                                           lastSealedOffset,
                                           DurableSealedOffsetSource.same(lastSealedOffset));
@@ -520,7 +531,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           replicationManager,
                                           Option.some(clusterNode),
                                           Option.none(),
-                                          StreamOwnerEpochSource.zero(),
+                                          ZERO_EPOCHS,
                                           Option.none(),
                                           LastSealedOffsetSource.none(),
                                           DurableSealedOffsetSource.none());
@@ -577,7 +588,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           ReplicationManager.NONE,
                                           Option.none(),
                                           Option.none(),
-                                          StreamOwnerEpochSource.zero(),
+                                          ZERO_EPOCHS,
                                           walBaseDir.map(AppendLog.Opener::directory),
                                           lastSealedOffset,
                                           DurableSealedOffsetSource.same(lastSealedOffset));
@@ -610,7 +621,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           ReplicationManager.NONE,
                                           Option.none(),
                                           Option.none(),
-                                          StreamOwnerEpochSource.zero(),
+                                          ZERO_EPOCHS,
                                           walBaseDir.map(AppendLog.Opener::directory),
                                           lastSealedOffset,
                                           durableSealedOffset);
@@ -631,7 +642,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           replicationManager,
                                           Option.none(),
                                           Option.none(),
-                                          StreamOwnerEpochSource.zero(),
+                                          ZERO_EPOCHS,
                                           walBaseDir.map(AppendLog.Opener::directory),
                                           lastSealedOffset,
                                           DurableSealedOffsetSource.same(lastSealedOffset));
@@ -644,7 +655,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           ReplicationManager.NONE,
                                           Option.some(clusterNode),
                                           Option.none(),
-                                          StreamOwnerEpochSource.zero(),
+                                          ZERO_EPOCHS,
                                           Option.none(),
                                           LastSealedOffsetSource.none(),
                                           DurableSealedOffsetSource.none());
@@ -747,6 +758,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void exhaustionSink(Consumer<Exhaustion> sink) {
         this.exhaustionSink = sink;
+        boundSeams.add(StreamSeam.EXHAUSTION_SINK);
     }
 
     /// Late-bind the placement-role supplier (#265 increment 1). `AetherNode` wires this to
@@ -756,6 +768,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void placementRoleSupplier(PlacementRoleSupplier supplier) {
         this.placementRoleSupplier = supplier;
+        boundSeams.add(StreamSeam.PLACEMENT_ROLE_SUPPLIER);
     }
 
     /// Set the reshuffle-slot limit (`[streaming] reshuffle_concurrency`). Set ONCE at wiring, before any
@@ -774,6 +787,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         this.reshuffleConcurrency = limit;
         this.reshuffleSlots = new Semaphore(limit);
+        boundSeams.add(StreamSeam.RESHUFFLE_CONCURRENCY);
     }
 
     /// Late-bind the cluster-size source for the aggregate partition guard (#265 increment 4). `AetherNode`    /// wires this to the topology observer's live count (the SAME source [ReplicaSetController] uses for HRW
@@ -783,6 +797,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void clusterSizeSupplier(IntSupplier supplier) {
         this.clusterSizeSupplier = supplier;
+        boundSeams.add(StreamSeam.CLUSTER_SIZE_SUPPLIER);
     }
 
     /// Late-bind the replica catch-up source (#265 increment 5). `AetherNode` wires this to the
@@ -792,6 +807,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void replicaCatchupSource(ReplicaCatchupSource source) {
         this.catchupSource = source;
+        boundSeams.add(StreamSeam.CATCHUP_SOURCE);
     }
 
     /// Late-bind the committed-ownership release guard (#265 increment 5). `AetherNode` wires this to the
@@ -801,6 +817,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void ownerReleaseGuard(OwnerReleaseGuard guard) {
         this.ownerReleaseGuard = guard;
+        boundSeams.add(StreamSeam.OWNER_RELEASE_GUARD);
     }
 
     /// Late-bind the committed-ownership write admission (#1230). `AetherNode` wires this to the committed
@@ -810,12 +827,14 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void ownerWriteAdmission(OwnerWriteAdmission admission) {
         this.ownerWriteAdmission = admission;
+        boundSeams.add(StreamSeam.OWNER_WRITE_ADMISSION);
     }
 
     /// Late-bind the owner promotion gate (#1555). Set once at wiring.
     @Contract
     public void ownerServeGate(OwnerServeGate gate) {
         this.ownerServeGate = gate;
+        boundSeams.add(StreamSeam.OWNER_SERVE_GATE);
     }
 
     /// Late-bind the owner of this node's per-stream durable refs (#1278 review): a destroyed stream drops its sealed
@@ -824,12 +843,14 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void streamFootprint(StreamFootprint footprint) {
         this.streamFootprint = footprint;
+        boundSeams.add(StreamSeam.STREAM_FOOTPRINT);
     }
 
     /// Late-bind the owner promotion block source (#1555). Set once at wiring.
     @Contract
     public void ownerBlockSource(OwnerBlockSource source) {
         this.ownerBlockSource = source;
+        boundSeams.add(StreamSeam.OWNER_BLOCK_SOURCE);
     }
 
     /// Why this node's owner promotion of `(streamName, partition)` waits for an operator (#1555), if it does.
@@ -859,12 +880,14 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void ownerEpochSource(StreamOwnerEpochSource source) {
         this.ownerEpochSource = source;
+        boundSeams.add(StreamSeam.OWNER_EPOCH_SOURCE);
     }
 
     /// Late-bind where committed epochs began ([EpochStartSource]). Set once at wiring.
     @Contract
     public void epochStarts(EpochStartSource source) {
         this.epochStarts = source;
+        boundSeams.add(StreamSeam.EPOCH_STARTS);
     }
 
     /// B5 (#1730 phase 2): a copy that is not the owner serves what it holds at and above the start of the committed epoch only
@@ -1046,6 +1069,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void tieredReader(TieredStreamReader reader) {
         this.tieredReader = Option.some(reader);
+        boundSeams.add(StreamSeam.TIERED_READER);
     }
 
     /// Whether [#tieredReader(TieredStreamReader)] was bound: a node-level wiring check (#2201 C-16, NT-04), since an unbound
@@ -1069,6 +1093,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void ownershipRecords(OwnerActivation.OwnershipRecordSource source) {
         this.ownershipRecords = source;
+        boundSeams.add(StreamSeam.OWNERSHIP_RECORDS);
     }
 
     private Result<Unit> ownerRoleGate(String streamName, int partition) {
@@ -1086,6 +1111,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void committedConfigSource(CommittedConfigSource source) {
         this.committedConfigSource = source;
+        boundSeams.add(StreamSeam.COMMITTED_CONFIG_SOURCE);
     }
 
     /// Late-bind the durable partition flag (#1596). `AetherNode` wires the KV-backed one. Until then -- and in
@@ -1094,6 +1120,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void partitionFlags(PartitionFlags flags) {
         this.partitionFlags = some(flags);
+        boundSeams.add(StreamSeam.PARTITION_FLAGS);
     }
 
     /// Late-bind the operator-warning sink (#1730 phase 2). `AetherNode` wires the cluster one; unit and Forge managers
@@ -1101,6 +1128,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void operatorWarnings(OperatorWarningSink sink) {
         this.operatorWarnings = sink;
+        boundSeams.add(StreamSeam.OPERATOR_WARNINGS);
         operatorWarningsBound = true;
         entries.deferredReports().forEach(Runnable::run);
         entries.deferredReports().clear();
@@ -2492,15 +2520,41 @@ public final class StreamPartitionManager implements AutoCloseable {
                       .or(Set.of());
     }
 
-    /// #2201 A-14 (spec 5.1 target, bullet 4): the late-bound seams still at their default on this manager.
+    /// #2201 A-14 (spec 5.1 target, bullet 4): the late-bound seams still at their default on this manager, in declaration
+    /// order.
     public List<StreamSeam> unboundSeams() {
-        return List.of();
+        return Arrays.stream(StreamSeam.values())
+                     .filter(seam -> !boundSeams.contains(seam))
+                     .toList();
     }
 
-    /// #2201 A-14: how many safety-relevant seams are still at their default on a manager that keeps a WAL; `0` on one that
-    /// keeps none.
+    /// #2201 A-14: how many safety-relevant seams ([StreamSeam#safetyRelevant]) are still at their default on a manager
+    /// that keeps a WAL; `0` on one that keeps none, whose durability is not claimed in the first place. The value of the
+    /// node gauge `aether.streams.seams.unbound.safety`.
     public int unboundSafetySeamCount() {
-        return 0;
+        return unboundSafetySeams().size();
+    }
+
+    /// #2201 A-14: the boot check. On a node configured with a WAL, every safety-relevant seam still at its default is named
+    /// at ERROR: its default lets this node act as an owner, admit writes or release a ring with no committed state behind
+    /// it. Logged once per call; the wiring calls it once, after it has bound every seam.
+    @Contract
+    public void reportUnboundSafetySeams() {
+        var unbound = unboundSafetySeams();
+
+        if (!unbound.isEmpty()) {
+            log.error("Stream partition manager keeps a WAL but {} safety-relevant seam(s) are still at their permissive default: {}",
+                      unbound.size(),
+                      unbound);
+        }
+    }
+
+    private List<StreamSeam> unboundSafetySeams() {
+        return logs.isPresent()
+               ? unboundSeams().stream()
+                             .filter(StreamSeam::safetyRelevant)
+                             .toList()
+               : List.of();
     }
 
     /// The incarnation of the ring serving `(streamName, partition)` on this node, or [Option#none] when none is built
@@ -3114,6 +3168,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void repairReportBound(TimeSpan bound) {
         this.repairReportBound = Option.some(bound);
+        boundSeams.add(StreamSeam.REPAIR_REPORT_BOUND);
     }
 
     @Contract
@@ -3303,6 +3358,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void segmentTierPressure(SegmentTierPressure pressure) {
         this.segmentTierPressure = pressure;
+        boundSeams.add(StreamSeam.SEGMENT_TIER_PRESSURE);
     }
 
     /// The owner-side pre-checks — epoch fence, then `admission` (owner admission and replica floor, #1230/#1236)
