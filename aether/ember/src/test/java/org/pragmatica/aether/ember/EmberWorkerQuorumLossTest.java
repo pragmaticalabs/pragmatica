@@ -27,10 +27,15 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// genesis one, so once three of the five ORIGINAL cores were gone (two replaced, one crashed) every worker read 2 of 3 and self-drained
 /// while four of the five real voters were alive.
 ///
-/// - `doesNotDrain`: replace two original cores, then crash a third; the worker's detector stays at or above its threshold for the whole
-///   observation, and the worker is still in the cluster.
-/// - `stillFires` is its positive control: crash three cores with NO replacement; the worker's detector goes below its threshold and the
-///   worker drains. Without it the first test would pass on a detector that was simply switched off.
+/// The test replaces two original cores, then crashes a third. Its instruments, so that a pass cannot be a switched-off detector:
+/// - before the crash the worker's detector counts all five live voters (on the genesis electorate it counts the three originals left);
+/// - after the crash the count follows the liveness down to four, so the detector reads the world it is told of;
+/// - and for the whole observation it stays at or above its threshold of three, and the worker is still in the cluster.
+///
+/// A positive control of the other kind, "crash three cores, the worker must still fire", was written and does NOT hold, with or without
+/// this fix: a worker takes member states from the leader's updates, so when a quorum is lost and there is no leader its member states do not
+/// move (observed: after crashing three of five, the worker's detector stayed at four of five for 120 s). Core loss without a quorum is the
+/// core-absence detector's tier, not this one.
 @PortBudget
 class EmberWorkerQuorumLossTest {
     private static final int CORES = 5;
@@ -81,27 +86,15 @@ class EmberWorkerQuorumLossTest {
         replaceAndAwaitWorker(replaceable.get(0), worker);
         replaceAndAwaitWorker(replaceable.get(1), worker);
         assertThat(snapshotOf(worker).armed()).as("arming: the worker's detector has seen a quorum, so it can fire").isTrue();
+        awaitCondition("the worker counts all five live voters, the replacements included", 60_000L, () -> snapshotOf(worker).strictMemberCount() == CORES);
 
-        var third = replaceable.get(2);
-
-        blackhole(third);
+        blackhole(replaceable.get(2));
+        awaitCondition("the worker's count follows the crash down to four", 60_000L, () -> snapshotOf(worker).strictMemberCount() == CORES - 1);
         var below = observeBelowThreshold(worker, OBSERVE_MS);
 
         assertThat(below).as("no sample of the worker's detector below its threshold while four of five voters live").isEmpty();
-        assertThat(snapshotOf(worker).strictMemberCount()).as("the worker counts the live voters it was told of").isGreaterThanOrEqualTo(3);
+        assertThat(snapshotOf(worker).requiredThreshold()).isEqualTo(CORES / 2 + 1);
         assertThat(cluster.getNode(worker.self().id()).isPresent()).as("the worker did not self-drain").isTrue();
-    }
-
-    @Test
-    @Timeout(900)
-    void workerQuorumLoss_afterThreeCoresGone_withoutReplacements_stillFires() {
-        var originals = startWithWorker();
-        var worker = onlyWorker();
-
-        assertThat(snapshotOf(worker).armed()).as("arming: the worker's detector has seen a quorum, so it can fire").isTrue();
-        originals.stream().limit(3).forEach(this::blackhole);
-        awaitCondition("the worker's detector goes below its threshold", 120_000L, () -> snapshotOf(worker).belowThreshold());
-        awaitCondition("the worker drains", 240_000L, () -> cluster.getNode(worker.self().id()).isEmpty());
     }
 
     private List<NodeId> startWithWorker() {
