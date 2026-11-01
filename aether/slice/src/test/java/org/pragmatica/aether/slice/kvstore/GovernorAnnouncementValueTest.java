@@ -189,8 +189,8 @@ class GovernorAnnouncementValueTest {
         }
 
         @Test
-        void unchangedFrom_observedCoreEpochDiffers_isFalse() {
-            assertThat(committed.withMembers(members, "10.0.0.1:7201", Epoch.epoch(0L, 1L, 0)).unchangedFrom(committed)).isFalse();
+        void unchangedFrom_observedCoreEpochDiffers_isTrue() {
+            assertThat(committed.withMembers(members, "10.0.0.1:7201", Epoch.epoch(0L, 1L, 0)).unchangedFrom(committed)).as("a tick of the core's counter is a time stamp, not a change").isTrue();
         }
 
         @Test

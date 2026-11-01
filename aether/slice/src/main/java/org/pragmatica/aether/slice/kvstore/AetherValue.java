@@ -1636,8 +1636,10 @@ public sealed interface AetherValue {
                                                  dissolved);
         }
 
-        /// True when `other` differs from this value in `announcedAt` alone, i.e. committing this value over `other`
-        /// would change nothing but the timestamp.
+        /// True when `other` differs from this value in the two time stamps alone, i.e. committing this value over
+        /// `other` would change nothing but when it was announced: `announcedAt`, and `observedCoreEpoch`, which is the
+        /// core's generation counter at that moment (it ticks once a second while the core leads) and which nothing
+        /// reads from an announcement. Both are refreshed by the governor's timer.
         public boolean unchangedFrom(GovernorAnnouncementValue other) {
             return new GovernorAnnouncementValue(governorId,
                                                  memberCount,
@@ -1646,7 +1648,7 @@ public sealed interface AetherValue {
                                                  other.announcedAt(),
                                                  communityTerm,
                                                  communityEpoch,
-                                                 observedCoreEpoch,
+                                                 other.observedCoreEpoch(),
                                                  transitionedAt,
                                                  dissolved).equals(other);
         }

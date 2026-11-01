@@ -237,9 +237,10 @@ class GovernorAuthorityTest {
         assertThat(answered.unchangedFrom(granted)).as("nothing but the timestamp moved").isTrue();
     }
 
-    /// A coreEpoch the committed announcement has not observed yet is a change.
+    /// The core's epoch is a generation counter that ticks every second; an announcement that differs only by a newer one is
+    /// not a change (#2542), and a refresh carries the newer one.
     @Test
-    void newerCoreEpoch_edgeRequest_isCommitted() {
+    void newerCoreEpoch_edgeRequestCommitsNothing_refreshCarriesIt() {
         var epoch = new AtomicReference<>(Epoch.ZERO);
         var observing = GovernorAuthority.governorAuthority(CORE, cluster, store, () -> true, _ -> members.get(), _ -> true, epoch::get, HlcClock.hlcClock(CORE));
         leader(CORE, 1);
@@ -247,10 +248,15 @@ class GovernorAuthorityTest {
         var commitsAfterGrant = commits.get();
 
         epoch.set(Epoch.epoch(0L, 1L, 0));
-        var answered = observing.handle(new GovernorAuthorityMessage.Request(A, "c", 1, granted.communityTerm(), "host:9000", false)).await().unwrap().authority().unwrap();
+        var edge = observing.handle(new GovernorAuthorityMessage.Request(A, "c", 1, granted.communityTerm(), "host:9000", false)).await().unwrap().authority().unwrap();
+
+        assertThat(commits.get()).isEqualTo(commitsAfterGrant);
+        assertThat(edge.observedCoreEpoch()).isEqualTo(Epoch.ZERO);
+
+        var refreshed = observing.handle(new GovernorAuthorityMessage.Request(A, "c", 1, granted.communityTerm(), "host:9000", true)).await().unwrap().authority().unwrap();
 
         assertThat(commits.get()).isEqualTo(commitsAfterGrant + 1);
-        assertThat(answered.observedCoreEpoch()).isEqualTo(Epoch.epoch(0L, 1L, 0));
+        assertThat(refreshed.observedCoreEpoch()).isEqualTo(Epoch.epoch(0L, 1L, 0));
     }
 
     /// Core-initiated recovery names another governor, so it commits; it asks for the refresh itself.
