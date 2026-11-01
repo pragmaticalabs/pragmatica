@@ -44,12 +44,14 @@ import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.HexFormat;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -76,6 +78,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 @org.junit.jupiter.api.Timeout(300)
 class CapacityLifecycleGoldenTest {
     private static final String GOLDEN = "/golden/capacity-lifecycle-transitions.txt";
+    /// Every command batch the lifecycle submits, per scenario: the batch count and a SHA-256 of the batches as submitted (keys, expected values,
+    /// replacements, read witnesses, the key that names each leader transaction; transaction ids normalised). The transition table above cannot see the
+    /// key that NAMES a leader transaction (it is not a state change), and O3-2 and O3-4 re-route every capacity access; this pins the batches themselves.
+    private static final String COMMANDS = "/golden/capacity-lifecycle-commands.txt";
+    private static final Pattern TRANSACTION_ID = Pattern.compile("transactionId=[0-9a-fA-F-]{36}");
     private static final NodeId CORE = new NodeId("core");
     private static final LeaderValue LEADER = new LeaderValue(CORE, 1);
     private static final NodeId X = new NodeId("x");
@@ -108,6 +115,7 @@ class CapacityLifecycleGoldenTest {
     private static final List<Boolean> LEADING = List.of(true, false);
 
     private final List<String> rows = new ArrayList<>();
+    private final List<String> commandLines = new ArrayList<>();
     private final Set<String> steps = new TreeSet<>();
 
     @Test
@@ -123,6 +131,28 @@ class CapacityLifecycleGoldenTest {
         }
         try (var in = CapacityLifecycleGoldenTest.class.getResourceAsStream(GOLDEN)) {
             assertThat(in).as("the pinned golden table " + GOLDEN).isNotNull();
+            var expected = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            assertThat(actual).isEqualTo(expected);
+        }
+    }
+
+    /// The command batches (see [#COMMANDS]) are those pinned. Regenerate on purpose with `-Dgolden.regenerate=true` (writes
+    /// `target/golden/capacity-lifecycle-commands.txt`).
+    @Test
+    void commandBatches_areUnchanged() throws Exception {
+        build();
+        var actual = "# CapacityControlledLifecycle command batches per scenario (O3-2): id | batches | sha256 of the batches as submitted\n" + String.join("\n", commandLines) + "\n";
+
+        if (Boolean.getBoolean("golden.regenerate")) {
+            var out = Path.of("target", "golden", "capacity-lifecycle-commands.txt");
+            Files.createDirectories(out.getParent());
+            Files.writeString(out, actual, StandardCharsets.UTF_8);
+            return;
+        }
+        assertThat(commandLines.stream().mapToInt(line -> Integer.parseInt(line.split(" \\| ")[1].substring("batches=".length()))).sum())
+            .as("control: the scenarios submit command batches, so the digests are not vacuous").isGreaterThan(100);
+        try (var in = CapacityLifecycleGoldenTest.class.getResourceAsStream(COMMANDS)) {
+            assertThat(in).as("the pinned command digests " + COMMANDS).isNotNull();
             var expected = new String(in.readAllBytes(), StandardCharsets.UTF_8);
             assertThat(actual).isEqualTo(expected);
         }
@@ -737,6 +767,7 @@ class CapacityLifecycleGoldenTest {
 
         body.accept(rig);
         rows.addAll(rig.rows);
+        commandLines.add(rig.commandLine());
         steps.addAll(rig.stepLabels);
     }
 
@@ -757,6 +788,7 @@ class CapacityLifecycleGoldenTest {
         final List<String> warnings = new CopyOnWriteArrayList<>();
         final List<String> rows = new ArrayList<>();
         final List<String> stepLabels = new ArrayList<>();
+        final List<String> trace = new CopyOnWriteArrayList<>();
         final AtomicInteger commits = new AtomicInteger();
         final AtomicInteger stepNo = new AtomicInteger();
         Create create = Create.AMBIGUOUS;
@@ -923,6 +955,8 @@ class CapacityLifecycleGoldenTest {
         Promise<List<Object>> apply(List<KVCommand<AetherKey>> commands) {
             var number = commits.incrementAndGet();
 
+            trace.add(TRANSACTION_ID.matcher(commands.toString()).replaceAll("transactionId=UUID"));
+
             if (number == hookAt) {
                 beforeCommit.run();
             }
@@ -936,6 +970,16 @@ class CapacityLifecycleGoldenTest {
                 afterCommit.run();
             }
             return Promise.success(results);
+        }
+
+        String commandLine() {
+            try {
+                var digest = MessageDigest.getInstance("SHA-256").digest(String.join("\n", trace).getBytes(StandardCharsets.UTF_8));
+
+                return id + " | batches=" + trace.size() + " | " + HexFormat.of().formatHex(digest);
+            } catch (java.security.NoSuchAlgorithmException e) {
+                throw new AssertionError(e);
+            }
         }
 
         static InstanceInfo instance(String node) {
