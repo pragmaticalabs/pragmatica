@@ -10,12 +10,21 @@ critical path of build-and-test. Surefire cannot shard, so each shard job runs `
 M is `ember` (default) or `consensus`; each has its own source tree, weights file and budget.
 
 The classes are read from the source tree, never from a list, so a new test class lands in some shard by construction.
-Weights (tools/ember-shard-weights.txt) only balance; a class without one gets the DEFAULT weight, the largest measured
-class, so a new class can lengthen a shard by its real time at most and the budget check fails the job early if a
-shard's predicted total exceeds BUDGET_SECONDS, telling the maintainer to raise --shards.
+Weights (tools/ember-shard-weights.txt) only balance, and a new class needs none: it gets the DEFAULT weight, the 75th
+percentile of the module's measured weights (default_weight), so a PR adding a test class never edits the weights file
+(#2414's per-class rule made that file a merge hotspot). The budget check still fails the job early if a shard's
+predicted total, defaults included, exceeds BUDGET_SECONDS, telling the maintainer to raise --shards. The weights
+regenerate from a CI run's own reports with tools/regen-shard-weights.py rather than by hand-added lines.
+
+The default is a percentile, not the maximum, because the maximum (Ember's 624 s class) made one new class a predicted
+overrun of a plan that had 104 s of headroom. The cost: a new class slower than the percentile is under-predicted until
+the next regeneration, and the only margin for that error is the slack between a budget and its step timeout (Ember:
+1920 s against the test step's 40 min, 480 s).
 """
 import argparse
+import math
 import re
+import statistics
 import sys
 from pathlib import Path
 
@@ -49,15 +58,19 @@ def test_classes(test_dir=TEST_DIR):
 def read_weights(path=WEIGHTS):
     weights = {}
     for line in path.read_text().splitlines():
-        line = line.strip()
-        if line and not line.startswith("#"):
+        line = line.split("#", 1)[0].strip()  # a weight line may carry its provenance as a trailing comment
+        if line:
             name, seconds = line.split()
             weights[name] = int(seconds)
     return weights
 
 
 def default_weight(weights):
-    return max(weights.values())
+    """The weight of a class the weights file does not list: the 75th percentile of the listed ones, rounded up."""
+    values = sorted(weights.values())
+    if len(values) < 2:
+        return values[0] if values else 0
+    return math.ceil(statistics.quantiles(values, n=4, method="inclusive")[2])
 
 
 def assign(classes, weights, shards):
@@ -103,8 +116,9 @@ def main(argv=None):
     if unweighted:
         print(f"unweighted classes (default {default_weight(weights)} s each): {', '.join(unweighted)}", file=sys.stderr)
     if max(b["total"] for b in bins) > budget:
-        sys.exit(f"a shard is predicted over {budget / 60:.0f} min: raise the matrix shard count "
-                 f"(and add measured weights to tools/{args.module}-shard-weights.txt)")
+        sys.exit(f"a shard is predicted over {budget / 60:.0f} min ({len(unweighted)} class(es) at the default weight): "
+                 f"raise the matrix shard count, or regenerate tools/{args.module}-shard-weights.txt from a CI run "
+                 f"with tools/regen-shard-weights.py if the defaults overstate the new classes")
     if not mine["classes"]:
         sys.exit(f"shard {args.index} has no classes: lower the shard count")
     if args.verify:
