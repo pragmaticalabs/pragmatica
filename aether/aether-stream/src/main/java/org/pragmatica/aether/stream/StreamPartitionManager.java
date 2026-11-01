@@ -5840,10 +5840,10 @@ public final class StreamPartitionManager implements AutoCloseable {
                      .or(false);
     }
 
-    /// A non-system partition whose floor does not fit the off-heap budget NOW is not queued: it would sit at the
-    /// app-class FIFO head, where the budget-AND ([#headCanProceed]) stops the whole class and starves every
-    /// fitting partition behind it, owners included. It is re-checked next tick, so it is queued the tick budget
-    /// frees. The drain keeps its head-of-line ordering unchanged (minimal change).
+    /// A non-system partition whose floor does not fit the off-heap budget NOW is not queued: it is re-checked next tick,
+    /// so it is queued the tick budget frees (v1809 p5). Since #1811 the drain skips a queued ref that no longer fits
+    /// ([#nextDrainable]), so this no longer guards the class against a blocked head; it keeps a ref that never fitted out
+    /// of the queue.
     @Contract
     private void queueIfBudgetFits(PartitionRef ref) {
         var system = isSystemStream(ref.streamName());
@@ -6048,9 +6048,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     /// Drain queued materializations as slots free (#265 increment 5): the system queue FIRST (owner decision
-    /// 2026-07-05 — cluster-critical streams never wait behind app-stream pressure), then the app queue FIFO.
-    /// Each class purges stale heads (stream gone / no longer held / already materialized) and then, while a
-    /// slot is free and the head can proceed (app: budget headroom too — the budget-AND), dequeues + materializes.
+    /// 2026-07-05 — cluster-critical streams never wait behind app-stream pressure), then the app queue in FIFO order.
+    /// Each class purges stale refs (stream gone / no longer held / already materialized) and then, while a slot is free,
+    /// dequeues and materializes the first queued ref that can proceed (app: budget headroom too — the budget-AND),
+    /// skipping, not stopping at, any ahead of it that cannot (#1811).
     private void drainMaterializeQueue() {
         drainClass(scheduler.systemMaterializeQueue(), true);
         drainClass(scheduler.appMaterializeQueue(), false);
@@ -6067,20 +6068,27 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
     }
 
-    /// Materialize the next drainable queued ref, if its budget-AND allows. False when nothing proceeded.
+    /// Materialize the next drainable queued ref. False when nothing proceeded.
     private boolean drainOne(Deque<PartitionRef> queue, boolean system) {
-        return nextDrainable(queue).filter(ref -> headCanProceed(ref, system))
-                            .filter(queue::remove)
+        return nextDrainable(queue, system).filter(queue::remove)
                             .onPresent(this::materializeQueued)
                             .isPresent();
     }
 
-    /// First queued ref that needs no slot or has one free. With a free permit that is the FIFO head; with none
-    /// it is the first partition that has since become OWNER — an owner materialize is never paced
-    /// ([#buildAndInstall]), so it must not wait behind replica backfills for a permit it will not take (#1805).
-    private Option<PartitionRef> nextDrainable(Deque<PartitionRef> queue) {
+    /// First queued ref, in FIFO order, that needs no slot or has one free (with no free permit, the first partition that has
+    /// since become OWNER: an owner materialize is never paced ([#buildAndInstall]), so it must not wait behind replica
+    /// backfills for a permit it will not take, #1805) AND passes the budget-AND ([#headCanProceed]).
+    ///
+    /// #1811 (spec 14.3 item 1): skip-not-block. A ref whose floor no longer fits the budget is skipped, not waited on: the
+    /// first ref in the class that fits is taken. A skipped ref is not moved: it keeps its position, so the next pass
+    /// offers it first, and it is admitted as soon as it fits. There is deliberately no reservation for a ref skipped
+    /// repeatedly (#1811 asks for skip-not-block only; a reservation would bring back a bounded head-of-line block).
+    /// L-20: a large ref can therefore wait while smaller partitions behind it are admitted; its wait is bounded only by
+    /// budget being released, never by a skip count.
+    private Option<PartitionRef> nextDrainable(Deque<PartitionRef> queue, boolean system) {
         return queue.stream()
                     .filter(this::slotAvailableFor)
+                    .filter(ref -> headCanProceed(ref, system))
                     .findFirst()
                     .map(Option::some)
                     .orElseGet(Option::none);
@@ -6116,9 +6124,9 @@ public final class StreamPartitionManager implements AutoCloseable {
                     .isEmpty() && shouldMaterialize(ref.streamName(), ref.partition());
     }
 
-    /// A queued head may materialize when a slot is free (the caller's guard) and — for an APP stream — the
+    /// A queued ref may materialize when a slot is free (the caller's guard) and — for an APP stream — the
     /// pool has headroom for its floor (the budget-AND; a system stream bypasses this and oversubscribes if
-    /// needed). App head-of-line: a FIFO head that cannot get budget blocks its class, preserving order.
+    /// needed). An app ref that cannot get budget is skipped, not waited on (#1811, [#nextDrainable]).
     private boolean headCanProceed(PartitionRef head, boolean system) {
         return system || availableBytes() >= floorFor(head);
     }
