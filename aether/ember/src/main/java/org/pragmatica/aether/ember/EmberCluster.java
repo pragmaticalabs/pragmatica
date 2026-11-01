@@ -156,6 +156,8 @@ public final class EmberCluster {
 
     private final int targetClusterSize;
     private int additionalNodeSlots;
+    /// Port distance between consecutive slots; 1 unless a measurement run needs more than 100 slots (see [#withPortStride]).
+    private int portStride = 1;
     private final AtomicInteger effectiveSize;
     private final Option<ConfigurationProvider> configProvider;
     private final ObservabilityConfig observability;
@@ -680,12 +682,26 @@ public final class EmberCluster {
 
     /// Forge-only capacity for mixed-role acceptance fixtures; configure before starting nodes.
     public Result<Unit> withAdditionalNodeSlots(int additionalSlots) {
-        if (additionalSlots < 0 || additionalSlots > 64 || !nodes.isEmpty() || !heldBackNodes.isEmpty()) {
-            return org.pragmatica.lang.utils.Causes.cause("Additional node slots must be 0..64 and configured before start")
+        if (additionalSlots < 0 || additionalSlots > 256 || !nodes.isEmpty() || !heldBackNodes.isEmpty()) {
+            return org.pragmatica.lang.utils.Causes.cause("Additional node slots must be 0..256 and configured before start")
                                                    .result();
         }
 
         additionalNodeSlots = additionalSlots;
+
+        return Result.unitResult();
+    }
+
+    /// Measurement-only: with more than 100 slots a node's SWIM UDP port (its cluster port + 100) lands on another slot's QUIC port.
+    /// A stride of 3 keeps every QUIC port at an offset divisible by 3 and every SWIM port at one that leaves remainder 1, so they never meet.
+    /// Configure before starting nodes.
+    public Result<Unit> withPortStride(int stride) {
+        if (stride < 1 || !nodes.isEmpty() || !heldBackNodes.isEmpty()) {
+            return org.pragmatica.lang.utils.Causes.cause("Port stride must be at least 1 and configured before start")
+                                                   .result();
+        }
+
+        portStride = stride;
 
         return Result.unitResult();
     }
@@ -738,7 +754,7 @@ public final class EmberCluster {
         for (int i = 1; i <= initialClusterSize; i++) {
             var slot = availableSlots.poll();
             var nodeId = nodeId(nodeIdPrefix + "-" + i).unwrap();
-            var port = basePort + slot;
+            var port = basePort + slot * portStride;
             var info = versionLabel.isEmpty()
                        ? NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap())
                        : NodeInfo.nodeInfo(nodeId,
@@ -765,9 +781,9 @@ public final class EmberCluster {
             var nodeInfo = initialNodes.get(i);
             var nodeIdStr = nodeInfo.id().id();
             var slot = slotsByNodeId.get(nodeIdStr);
-            var port = basePort + slot;
-            var mgmtPort = baseMgmtPort + slot;
-            var appHttpPort = baseAppHttpPort + slot;
+            var port = basePort + slot * portStride;
+            var mgmtPort = baseMgmtPort + slot * portStride;
+            var appHttpPort = baseAppHttpPort + slot * portStride;
             var node = createNode(nodeInfo.id(), port, mgmtPort, appHttpPort, initialNodes, false);
 
             if (heldBackNodeIds.contains(nodeIdStr)) {
@@ -1246,9 +1262,9 @@ public final class EmberCluster {
         }
 
         var slot = slotOpt.unwrap();
-        var port = basePort + slot;
-        var mgmtPort = baseMgmtPort + slot;
-        var appHttpPort = baseAppHttpPort + slot;
+        var port = basePort + slot * portStride;
+        var mgmtPort = baseMgmtPort + slot * portStride;
+        var appHttpPort = baseAppHttpPort + slot * portStride;
         var advertised = withVersionLabel(labels);
         var info = advertised.isEmpty()
                    ? NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap())
@@ -1466,7 +1482,7 @@ public final class EmberCluster {
                                           .isRouteReady())
                     .map(entry -> slotsByNodeId.get(entry.getKey()))
                     .filter(slot -> slot != null)
-                    .map(slot -> baseAppHttpPort + slot)
+                    .map(slot -> baseAppHttpPort + slot * portStride)
                     .sorted()
                     .toList();
     }

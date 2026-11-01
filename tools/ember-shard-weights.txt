@@ -85,3 +85,5 @@ EmberSealedTierRetentionTripwireTest 17
 EmberWalFailStopNodeTripwireTest 70
 EmberConfigForgePortTest 0
 EmberReplicaTripwireTest 22
+# EmberPortStrideTest 15 (#2512): surefire class time 14.3 s on bigboy at 3bfeddbc34 + the test (2 clusters of 3 cores, one pure-API test).
+EmberPortStrideTest 15
