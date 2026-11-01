@@ -969,7 +969,6 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// clamped to the cap. A frozen ring first thaws if it may ([#thawIfBudgetFreed]). See spec §4.2.
     private Result<Long> ensureGrownFor(int writeLen) {
         thawIfBudgetFreed(writeLen);
-
         var dataPos = Math.floorMod(dataWritePos() - dataBase, dataRegionSize);
         var requiredLinearEnd = Math.min(dataPos + writeLen, dataRegionSize);
 
@@ -998,8 +997,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         if (liveBytesUnwrapped()) {
             rebaseAndThaw();
         } else if (physicalWritePos() + writeLen > dataRing()) {
-            handOverAndEvict(countEvictionsToUnwrap()).onSuccess(_ -> rebaseAndThaw())
-                            .onFailure(this::thawDeferred);
+            handOverAndEvict(countEvictionsToUnwrap()).onSuccess(_ -> rebaseAndThaw()).onFailure(this::thawDeferred);
         }
     }
 

@@ -251,7 +251,10 @@ public final class ConfigLoader {
         var sealRunAge = parseTimeSpan(doc, "streaming", "seal_run_age", defaults.sealRunAge());
         var sealMergeBytes = parseDataSize(doc, "streaming", "seal_merge_bytes", defaults.sealMergeBytes());
         var maxMemoryBytes = parseDataSize(doc, "streaming", "max_memory_bytes", defaults.maxMemoryBytes());
-        var sealPendingCapBytes = parseDataSize(doc, "streaming", "seal_pending_cap_bytes", defaults.sealPendingCapBytes());
+        var sealPendingCapBytes = parseDataSize(doc,
+                                                "streaming",
+                                                "seal_pending_cap_bytes",
+                                                defaults.sealPendingCapBytes());
 
         builder.streaming(StreamingConfig.streamingConfig(publishTimeout,
                                                           readTimeout,
@@ -273,12 +276,12 @@ public final class ConfigLoader {
     private static Result<Unit> refuseNonPositiveStreamingMemory(TomlDocument doc) {
         return Option.from(Stream.of("max_memory_bytes", "seal_pending_cap_bytes")
                                  .filter(key -> writtenNonPositive(doc, key))
-                                 .findFirst())
-                     .fold(Result::unitResult,
-                           key -> ConfigError.invalidConfig("[streaming] " + key + " must be a positive size such as 512MB; omit it"
-                                                            + " to derive it. Got: " + doc.getString("streaming", key)
-                                                                                          .or(""))
-                                             .result());
+                                 .findFirst()).fold(Result::unitResult,
+                                                    key -> ConfigError.invalidConfig("[streaming] " + key
+                                                                                    + " must be a positive size such as 512MB; omit it"
+                                                                                    + " to derive it. Got: " + doc.getString("streaming",
+                                                                                                                             key)
+                                                                                                                  .or("")).result());
     }
 
     private static boolean writtenNonPositive(TomlDocument doc, String key) {
@@ -292,8 +295,7 @@ public final class ConfigLoader {
         return DataSize.dataSize(raw)
                        .map(DataSize::bytes)
                        .option()
-                       .orElse(() -> Number.parseLong(raw)
-                                           .option());
+                       .orElse(() -> Number.parseLong(raw).option());
     }
 
     private static long parseDataSize(TomlDocument doc, String section, String key, long defaultValue) {
