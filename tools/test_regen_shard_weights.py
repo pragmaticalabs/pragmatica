@@ -57,9 +57,14 @@ class RegenShardWeightsTest(unittest.TestCase):
         self.assertIn(f"--run {RUN}", text)
 
     def test_float_noise_in_a_sum_does_not_round_up_a_whole_second(self):
-        # 0.1 + 0.2 + 0.7 sums to 1.0000000000000002 s; rounded up as is it would read 2
-        text, _ = regen.regenerate("ember", RUN, ["XTest"], {"XTest": 0.1 + 0.2 + 0.7}, {})
-        self.assertIn("XTest 1  #", text)
+        # three millisecond suite times summing to 28.000 s add up, in report-file order ($A, $B, outer), to 28.000000000000004 s
+        with tempfile.TemporaryDirectory() as d:
+            for name, time in (("XTest$A", "3.495"), ("XTest$B", "17.638"), ("XTest", "6.867")):
+                (Path(d) / f"TEST-org.x.{name}.xml").write_text(f'<testsuite name="org.x.{name}" time="{time}"/>')
+            measured = regen.measured_seconds([d])
+        self.assertGreater(measured["XTest"], 28)  # guards the guard: without the noise this test proves nothing
+        text, _ = regen.regenerate("ember", RUN, ["XTest"], measured, {})
+        self.assertIn("XTest 28  #", text)
 
     def test_a_grouped_suite_time_is_parsed(self):
         with tempfile.TemporaryDirectory() as d:
