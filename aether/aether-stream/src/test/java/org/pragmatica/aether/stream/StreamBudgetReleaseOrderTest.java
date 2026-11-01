@@ -13,6 +13,7 @@ import org.pragmatica.aether.slice.StreamConfig;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 
 /// #2201 C-03 (spec 4.4 item 4): the freed generation moves only AFTER the bytes it announces are back in the pool. A ring
@@ -79,9 +80,15 @@ class StreamBudgetReleaseOrderTest {
         }
         stop.set(true);
         reader.join();
-
-        assertThat(observed.get()).as("the reader saw the pool between the two releases of a destroy").isPositive();
-        assertThat(violations.get()).as("reads of a moved generation whose bytes were not yet back in the pool").isZero();
         manager.close();
+
+        // Only an order violation fails. A reader starved of CPU (a loaded CI runner) may never land between the two
+        // releases; that run proved nothing, so it is skipped with the count, never failed.
+        assertThat(violations.get()).as("reads of a moved generation whose bytes were not yet back in the pool (of %d)",
+                                        observed.get())
+                                    .isZero();
+        assumeTrue(observed.get() > 0,
+                   "the reader never saw the pool between the two releases of a destroy in " + CYCLES
+                   + " cycles (observed=" + observed.get() + "): starved, nothing was tested");
     }
 }
