@@ -75,7 +75,7 @@ class OffHeapRingBufferIndexCorruptionTest {
     void read_corruptedIndexEntry_logsOneErrorNamingStreamAndPartition() {
         List<LogEvent> events;
 
-        try (var ringLog = org.pragmatica.testlogging.LogCapture.capture(OffHeapRingBuffer.class, Level.TRACE, true)) {
+        try (var ringLog = ringLogCapture()) {
             corruptedRing(EvictionListener.NOOP).read(0, 1);
             events = ringLog.events();
         }
@@ -88,6 +88,31 @@ class OffHeapRingBufferIndexCorruptionTest {
         assertThat(event.getMessage().getFormattedMessage()).contains("corrupt[3]")
                                                           .contains("NOT a concurrent close");
         assertThat(event.getThrown()).isInstanceOf(IndexOutOfBoundsException.class);
+    }
+
+    /// NT-200b (#1875 item 1): the capture the ERROR-line test reads holds the ring's logger only. A sealer retry that
+    /// outlived its manager used to WARN ("Partition WAL is closed") into a capture that resolved to the root logger, and
+    /// failed that test about 1 run in 13. Here the other logger WARNs on another thread while the capture is open. Red
+    /// under a JVM-wide capture (the root-resolving `getLoggerConfig` form #2313 removed).
+    @Test
+    void indexCorruptionLogCapture_ignoresOtherLoggers() throws InterruptedException {
+        List<LogEvent> events;
+
+        try (var ringLog = ringLogCapture()) {
+            var other = Thread.ofPlatform()
+                              .start(() -> org.slf4j.LoggerFactory.getLogger(org.pragmatica.aether.stream.segment.SegmentSealer.class)
+                                                                  .warn("Sealing corrupt/3 offsets [0-0] failed: Partition WAL is closed"));
+
+            other.join();
+            corruptedRing(EvictionListener.NOOP).read(0, 1);
+            events = ringLog.events();
+        }
+
+        assertThat(events).extracting(LogEvent::getLoggerName).containsExactly(OffHeapRingBuffer.class.getName());
+    }
+
+    private static org.pragmatica.testlogging.LogCapture ringLogCapture() {
+        return org.pragmatica.testlogging.LogCapture.capture(OffHeapRingBuffer.class, Level.TRACE, true);
     }
 
     private static void assertRingIndexCorrupted(Cause cause) {

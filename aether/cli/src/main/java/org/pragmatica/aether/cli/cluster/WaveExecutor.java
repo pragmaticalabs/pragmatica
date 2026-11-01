@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.ClusterConfigError;
@@ -27,6 +28,7 @@ import org.pragmatica.aether.environment.ProvisionedNode;
 import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
@@ -76,7 +78,12 @@ public final class WaveExecutor {
         var totalAdded = 0;
 
         for (var action : additions) {
-            var result = asAction(action, created, () -> executeAddition(action, desired, created));
+            var result = decideActor(action, desired, created).flatMap(actor -> asAction(action,
+                                                                                         created,
+                                                                                         () -> executeAddition(action,
+                                                                                                               desired,
+                                                                                                               created,
+                                                                                                               actor)));
 
             if (result.isFailure()) {
                 return result;
@@ -108,20 +115,23 @@ public final class WaveExecutor {
 
     private static Result<Integer> executeAddition(DiffAction action,
                                                    ClusterBootstrapConfig desired,
-                                                   CreatedNodes created) {
+                                                   CreatedNodes created,
+                                                   PoolAuthority.Actor actor) {
         return switch (action) {
             case DiffAction.AddSource a -> logNewSource(a.sourceName());
             case DiffAction.AddRole a -> provisionRole(a.sourceName(),
                                                        a.role(),
                                                        Math.max(0, a.count() - recorded(action, created)),
                                                        desired,
-                                                       created);
+                                                       created,
+                                                       actor);
             case DiffAction.ScaleUp a -> provisionScaleUp(a.sourceName(),
                                                           a.role(),
                                                           Math.min(a.to(), a.from() + recorded(action, created)),
                                                           a.to(),
                                                           desired,
-                                                          created);
+                                                          created,
+                                                          actor);
             default -> success(0);
         };
     }
@@ -142,14 +152,16 @@ public final class WaveExecutor {
                                                  NodeRole role,
                                                  int count,
                                                  ClusterBootstrapConfig desired,
-                                                 CreatedNodes created) {
+                                                 CreatedNodes created,
+                                                 PoolAuthority.Actor actor) {
         return lookupSource(sourceName,
-                            desired.sources()).flatMap(source -> dispatchProvision(sourceName,
-                                                                                   source,
-                                                                                   role,
-                                                                                   count,
-                                                                                   desired,
-                                                                                   created))
+                            desired.sources()).flatMap(source -> gatedProvision(sourceName,
+                                                                                source,
+                                                                                role,
+                                                                                count,
+                                                                                desired,
+                                                                                created,
+                                                                                actor))
                            .map(nodes -> logAndCount("+",
                                                      sourceName
                                                     + "." + role.value()
@@ -163,12 +175,13 @@ public final class WaveExecutor {
                                                     int from,
                                                     int to,
                                                     ClusterBootstrapConfig desired,
-                                                    CreatedNodes created) {
+                                                    CreatedNodes created,
+                                                    PoolAuthority.Actor actor) {
         var delta = to - from;
 
         return lookupSource(sourceName,
                             desired.sources()).flatMap(source -> rejectSshScaleUp(source, sourceName))
-                           .flatMap(source -> dispatchProvision(sourceName, source, role, delta, desired, created))
+                           .flatMap(source -> gatedProvision(sourceName, source, role, delta, desired, created, actor))
                            .map(nodes -> logAndCount("~",
                                                      sourceName
                                                     + "." + role.value()
@@ -181,6 +194,89 @@ public final class WaveExecutor {
         return source.type() == SourceType.SSH
                ? new ApplyError.SshScaleNotSupported(sourceName).result()
                : success(source);
+    }
+
+    /// The pool authority [PoolGate] asks; a test replaces it. Reprovisioning (replace-before-retire) is NOT gated: it must create the
+    /// replacement before it drains the old node, and a deferral would drain without one.
+    static volatile PoolAuthority poolAuthority = ClusterPoolAuthority.production();
+
+    /// G1-g: who decides for the pool of a scale-up or add-role, asked BEFORE the action is bracketed in the ledger, so a refusal leaves the
+    /// ledger exactly as it was. A DONE action (a resumed one) is not asked again, and an action that is no scale-up or add-role has no pool.
+    private static Result<PoolAuthority.Actor> decideActor(DiffAction action,
+                                                           ClusterBootstrapConfig desired,
+                                                           CreatedNodes created) {
+        return created.recorder()
+                      .statusOf(ApplyAction.actionKey(action)) == ApplyAction.Status.DONE
+               ? success(PoolAuthority.Actor.APPLY)
+               : poolOf(action, desired, created).fold(() -> success(PoolAuthority.Actor.APPLY),
+                                                       pool -> PoolGate.decide(poolAuthority, pool));
+    }
+
+    private static Option<PoolGate.Pool> poolOf(DiffAction action,
+                                                ClusterBootstrapConfig desired,
+                                                CreatedNodes created) {
+        return switch (action) {
+            case DiffAction.AddRole a -> poolIn(a.sourceName(),
+                                                a.role(),
+                                                Math.max(0, a.count() - recorded(action, created)),
+                                                desired);
+            case DiffAction.ScaleUp a -> poolIn(a.sourceName(),
+                                                a.role(),
+                                                a.to() - Math.min(a.to(), a.from() + recorded(action, created)),
+                                                desired);
+            default -> Option.none();
+        };
+    }
+
+    private static Option<PoolGate.Pool> poolIn(SourceName sourceName,
+                                                NodeRole role,
+                                                int missing,
+                                                ClusterBootstrapConfig desired) {
+        return lookupSource(sourceName,
+                            desired.sources()).option()
+                           .map(source -> poolFor(sourceName, source, role, missing, desired));
+    }
+
+    private static PoolGate.Pool poolFor(SourceName sourceName,
+                                         SourceProfile source,
+                                         NodeRole role,
+                                         int missing,
+                                         ClusterBootstrapConfig desired) {
+        return new PoolGate.Pool(sourceName.value(),
+                                 source.type(),
+                                 role,
+                                 missing,
+                                 wantedIn(source, role),
+                                 wantedInRole(desired, role));
+    }
+
+    /// Scale-up and add-role create nodes only when apply is the pool's decider; with the leader's auto-heal filling the pool they create nothing
+    /// and wait for the leader to converge.
+    private static Result<List<ProvisionedNode>> gatedProvision(SourceName sourceName,
+                                                                SourceProfile source,
+                                                                NodeRole role,
+                                                                int count,
+                                                                ClusterBootstrapConfig desired,
+                                                                CreatedNodes created,
+                                                                PoolAuthority.Actor actor) {
+        return PoolGate.carryOut(actor,
+                                 poolAuthority,
+                                 poolFor(sourceName, source, role, count, desired),
+                                 message -> logAction("~", message),
+                                 () -> dispatchProvision(sourceName, source, role, count, desired, created));
+    }
+
+    private static int wantedIn(SourceProfile source, NodeRole role) {
+        return option(source.roles().get(role)).flatMap(RoleSubTable::count)
+                     .or(0);
+    }
+
+    private static int wantedInRole(ClusterBootstrapConfig desired, NodeRole role) {
+        return desired.sources()
+                      .values()
+                      .stream()
+                      .mapToInt(source -> wantedIn(source, role))
+                      .sum();
     }
 
     private static Result<List<ProvisionedNode>> dispatchProvision(SourceName sourceName,
@@ -229,6 +325,18 @@ public final class WaveExecutor {
     /// The CLOUD wave provisioning itself, with the provider and the join inputs already resolved. Package-private
     /// so a test drives the real composition — minted ids, rendered user-data, optional zone — against a fake
     /// provider.
+    /// The ids a cloud action asks for. The same-name re-issue of an ABSENT row is safe only where the provider refuses a second server
+    /// with that name ([ComputeProvider#honoursOperationId], Hetzner today); on any other provider a late-landing original plus a re-issue
+    /// would be two live servers for one node id, so there the remainder mints fresh ids as before (v-g1 F2).
+    private static Supplier<String> idsFor(ComputeProvider compute, ApplyRecorder recorder) {
+        // cloud ids carry no cluster (the server name `<cluster>-<nodeId>` does): a re-issued id is a bare node id too
+        var minted = WaveNodeProvisioning.cloudMintedIds();
+
+        return compute.honoursOperationId()
+               ? WaveNodeProvisioning.reissuedThenMinted(recorder, minted)
+               : minted;
+    }
+
     static Result<List<ProvisionedNode>> provisionCloudNodes(ComputeProvider compute,
                                                              ClusterBootstrapConfig desired,
                                                              SourceProfile source,
@@ -242,7 +350,7 @@ public final class WaveExecutor {
                                                    role,
                                                    count,
                                                    inputs,
-                                                   WaveNodeProvisioning.cloudMintedIds(),
+                                                   idsFor(compute, recorder),
                                                    recorder);
     }
 

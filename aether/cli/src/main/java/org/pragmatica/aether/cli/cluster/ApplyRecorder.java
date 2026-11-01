@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import java.util.List;
 import java.util.function.Consumer;
 
 import org.pragmatica.lang.Contract;
@@ -88,6 +89,18 @@ public final class ApplyRecorder {
                                             .equals(key))
                           .filter(row -> row.state() == ApplyResource.State.CREATED || row.state() == ApplyResource.State.JOINED || row.state() == ApplyResource.State.ADOPTED)
                           .count();
+    }
+
+    /// Nodes of the current action whose create the resume lookup found never to have happened (ABSENT): the ids a resumed action
+    /// issues again. Never a CREATED, JOINED, GONE or TERMINATED row.
+    synchronized List<String> absentNodeIds() {
+        return state.resources()
+                    .stream()
+                    .filter(row -> row.actionKey()
+                                      .equals(actionKey))
+                    .filter(row -> row.state() == ApplyResource.State.ABSENT)
+                    .map(ApplyResource::nodeId)
+                    .toList();
     }
 
     synchronized ApplyAction.Status statusOf(String key) {

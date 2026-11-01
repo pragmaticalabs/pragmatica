@@ -1645,6 +1645,35 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
+    /// The lifecycle record of one node id (O3, owner ruling c37a7c11e2): its identity facet (the admitted process) and its capacity facet (the
+    /// reservation) under one key, never deleted. A [RuntimeKey], classified as [CapacityReservationKey] is, which this record replaces at the O3-4 flip;
+    /// the identity LEDGER on each core's disk, not the KV, is what survives the loss of every holder.
+    record NodeIdentityKey(NodeId nodeId) implements RuntimeKey {
+        private static final String PREFIX = "node-identity/";
+
+        @Override
+        public String asString() {
+            return PREFIX + nodeId.id();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static NodeIdentityKey nodeIdentityKey(NodeId nodeId) {
+            return new NodeIdentityKey(nodeId);
+        }
+
+        public static Result<NodeIdentityKey> nodeIdentityKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return NODE_IDENTITY_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return NodeId.nodeId(key.substring(PREFIX.length())).map(NodeIdentityKey::new);
+        }
+    }
+
     Fn1<Cause, String> SLICE_DESIRED_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice-desired key format: %s");
 
     Fn1<Cause, String> SLICE_OBSERVED_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice-observed key format: %s");
@@ -1654,6 +1683,8 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     Fn1<Cause, String> ARTIFACT_JUDGMENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid artifact-judgment key format: %s");
 
     Fn1<Cause, String> NODE_DEPARTURE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-departure key format: %s");
+
+    Fn1<Cause, String> NODE_IDENTITY_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-identity key format: %s");
 
     Fn1<Cause, String> NODE_ARTIFACT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-artifact key format: %s");
 
