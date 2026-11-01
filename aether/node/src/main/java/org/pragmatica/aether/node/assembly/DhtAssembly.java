@@ -240,9 +240,9 @@ public sealed interface DhtAssembly {
                                                                                                                   System::currentTimeMillis,
                                                                                                                   () -> !clusterNode.isPendingCatchUp(),
 
-        // v1882 r5: a replica accepts writes only once consensus has applied its log tail
+        // #2553: a worker reads its own report from its replica only while the replica is ready
         clusterNode::isPassiveClientReady
-                                                                                                                  // #2553: a worker reads its own report from its replica only while the replica is ready
+                                                                                                                  // v1882 r5: a replica accepts writes only once consensus has applied its log tail
                                                                                                                  ));
 
         dhtNode.onReplicationCaughtUp(_ -> dhtSettlement.report());

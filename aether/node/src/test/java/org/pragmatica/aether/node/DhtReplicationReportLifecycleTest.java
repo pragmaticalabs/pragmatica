@@ -277,7 +277,7 @@ class DhtReplicationReportLifecycleTest {
         assertThat(memberPuts).as("nothing waits, so nothing is re-filed").hasSize(putsAtSettle);
     }
 
-    /// Seeing the report present resets the backoff: the next re-file, once the interval already armed has passed, is
+    /// Seeing the report present, once the interval has passed, resets the backoff: the next re-file, once the interval already armed has passed, is
     /// followed by a 1 s interval, not by the doubled one the earlier drops had grown.
     @Test
     void backoffResets_whenTheReportIsSeenPresent() {
@@ -289,9 +289,10 @@ class DhtReplicationReportLifecycleTest {
             tick(member, 1);
         }
         assertThat(member.refileCount()).as("each drop was re-filed once its (grown) backoff passed").isEqualTo(4L);
+        clock.addAndGet(60_000L);
         tick(member, 1);
         assertThat(kvStore.getTyped(DhtReplicationReportKey.dhtReplicationReportKey(MEMBER), DhtReplicationReportValue.class).isPresent())
-            .as("the key is seen present").isTrue();
+            .as("the key is seen present once the interval has passed").isTrue();
 
         dropReport(MEMBER);
         clock.addAndGet(60_000L);
@@ -316,6 +317,137 @@ class DhtReplicationReportLifecycleTest {
 
         assertThat(memberPuts).as("no change is open").hasSize(before);
         assertThat(member.refileCount()).isZero();
+    }
+
+    /// #2556 verifier: the leader removes a re-filed report on the commit of the put itself (`onPut(DhtReplicationReportKey)`
+    /// -> `evaluate` -> `liveReports`), so a 100 ms tick of the member can fall between the put and the remove and see its
+    /// report present. That glimpse is the member's own re-file, not a sighting of a report the leader keeps: if it reset the
+    /// backoff, a member held Dead would re-file about once a second instead of about once a minute.
+    @Test
+    void heldDeadMemberGlimpsingItsOwnRefile_staysWithinTheChurnBound() {
+        openChange();
+        departed.add(MEMBER);
+        member.applied(CHANGE);
+        var putsBefore = memberPuts.size();
+
+        for (var elapsed = 0L; elapsed < 600_000L; elapsed += 100) {
+            tick(member, 1);
+            tick(member, 1);
+            leader.evaluate();
+            clock.addAndGet(100);
+        }
+
+        assertThat(committed().settled()).as("arming: the change stayed open the whole time").isFalse();
+        assertThat(member.refileCount()).as("arming: the member did re-file").isPositive();
+        assertThat(memberPuts.size() - putsBefore).as("re-files in 10 min held Dead: the 1..32 s ramp, then one per 60 s")
+                                                  .isLessThanOrEqualTo(20);
+    }
+
+    /// #2556 verifier: a re-file whose write fails is not a sighting. It does not reset the backoff, and the tick retries it
+    /// once the interval it armed has passed, never at the tick.
+    @Test
+    void failedRefile_isRetriedAfterItsInterval_andDoesNotResetTheBackoff() {
+        openChange();
+        member.applied(CHANGE);
+        dropReport(MEMBER);
+        clock.addAndGet(BACKOFF_MS);
+        failNext.set(1);
+        tick(member, 1);
+        var afterFailure = memberPuts.size();
+
+        tick(member, 10);
+        assertThat(memberPuts).as("inside the interval the failed re-file armed, nothing").hasSize(afterFailure);
+
+        clock.addAndGet(BACKOFF_MS);
+        tick(member, 1);
+        assertThat(storedApplied(MEMBER)).as("the retry landed").isEqualTo(CHANGE);
+
+        dropReport(MEMBER);
+        clock.addAndGet(BACKOFF_MS);
+        tick(member, 1);
+        assertThat(member.refileCount()).as("the retry armed 2 s: the failed re-file did not reset the interval to 1 s").isEqualTo(2L);
+        clock.addAndGet(BACKOFF_MS);
+        tick(member, 1);
+        assertThat(member.refileCount()).as("then the 2 s interval passed").isEqualTo(3L);
+    }
+
+    /// #2556 verifier: while a worker's replica is not ready its store proves nothing, either way. An absent key is not a drop
+    /// (no re-file), and a not-ready tick is not a sighting either: it must not reset the backoff the drops have grown.
+    @Test
+    void workerArm_replicaNotReady_isNotASighting() {
+        openChange();
+        var workerPuts = new ArrayList<DhtReplicationReportValue>();
+        var ready = new AtomicBoolean(true);
+        var worker = settlement(WORKER, new AtomicBoolean(false), workerPuts, false, ready);
+
+        worker.applied(CHANGE);
+        dropReport(WORKER);
+        clock.addAndGet(BACKOFF_MS);
+        tick(worker, 1);
+        dropReport(WORKER);
+        clock.addAndGet(2 * BACKOFF_MS);
+        tick(worker, 1);
+        assertThat(worker.refileCount()).as("arming: two re-files, the next interval is 4 s").isEqualTo(2L);
+
+        ready.set(false);
+        clock.addAndGet(2 * BACKOFF_MS);
+        tick(worker, 3);
+        ready.set(true);
+        dropReport(WORKER);
+        tick(worker, 1);
+        assertThat(worker.refileCount()).as("the interval armed before the outage has passed: re-filed").isEqualTo(3L);
+
+        dropReport(WORKER);
+        clock.addAndGet(BACKOFF_MS);
+        tick(worker, 1);
+        assertThat(worker.refileCount()).as("the not-ready ticks did not reset the backoff to 1 s").isEqualTo(3L);
+    }
+
+    /// #2556 verifier: concurrent callers of `report` (the 100 ms tick, a change notification, a projection) at the moment a
+    /// re-file falls due decide it once: one put, one count.
+    @Test
+    void concurrentReportsAtTheDueMoment_refileOnce() throws InterruptedException {
+        openChange();
+        var self = new NodeId("core-5");
+        var puts = java.util.Collections.synchronizedList(new ArrayList<DhtReplicationReportValue>());
+        var node = settlement(self, new AtomicBoolean(false), puts);
+        var contenders = 4;
+        var rounds = 5_000;
+        var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(60);
+        var duplicated = 0;
+        var missed = 0;
+
+        node.applied(CHANGE);
+        for (var round = 0; round < rounds && System.nanoTime() < deadline; round++) {
+            dropReport(self);
+            clock.addAndGet(61_000L);
+            var before = puts.size();
+            var gate = new java.util.concurrent.atomic.AtomicInteger(contenders);
+            var threads = new ArrayList<Thread>();
+
+            for (var i = 0; i < contenders; i++) {
+                threads.add(Thread.ofPlatform().start(() -> {
+                    gate.decrementAndGet();
+                    while (gate.get() > 0 && System.nanoTime() < deadline) {
+                        Thread.onSpinWait();
+                    }
+                    node.report();
+                }));
+            }
+            for (var thread : threads) {
+                thread.join();
+            }
+            if (puts.size() - before > 1) {
+                duplicated++;
+            }
+            if (puts.size() == before) {
+                missed++;
+            }
+        }
+
+        assertThat(duplicated).as("rounds where the due re-file was filed more than once").isZero();
+        assertThat(missed).as("rounds where the due re-file was not filed at all").isZero();
+        assertThat(node.refileCount()).as("one count per put after the first filing").isEqualTo(puts.size() - 1L);
     }
 
     // ---- harness ----------------------------------------------------------------------------------------------------

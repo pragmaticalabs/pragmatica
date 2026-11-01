@@ -89,8 +89,9 @@ public interface DhtReplicationSettlement {
     long OVERDUE_AFTER_MS = TimeUnit.MINUTES.toMillis(5);
     /// #2553: a node whose own store no longer holds its report, while a change is open, files it again no sooner than this
     /// after its last filing; each further re-file waits twice as long, up to [#REFILE_BACKOFF_MAX_MS]. Seeing the report
-    /// present resets it. These are guesses, not measurements: 1 s is far above the 100 ms retry tick (no churn at the tick)
-    /// and below the 5 min overdue mark; 60 s bounds a node the leader keeps dropping to two commits a minute.
+    /// present once the interval has passed resets it: the leader drops the report of a member it holds `Dead` on the commit
+    /// of the put itself, a tick in between can glimpse it, and that glimpse must not reset it. These are guesses, not
+    /// measurements: 1 s is far above the 100 ms retry tick (no churn at the tick) and below the 5 min overdue mark; 60 s bounds a node the leader keeps dropping to two commits a minute.
     long REFILE_BACKOFF_MIN_MS = 1_000L;
     long REFILE_BACKOFF_MAX_MS = 60_000L;
 
@@ -517,37 +518,51 @@ public interface DhtReplicationSettlement {
                                                   .isPresent();
             }
 
-            /// True while the store holds this node's report (which also resets the backoff), or while nothing waits for it, or
-            /// while the backoff since the last filing has not elapsed. False decides a re-file: it counts it and arms the next,
-            /// doubled, interval.
+            /// True while the store does not count (a worker whose replica is not ready), or while it holds this node's report (which,
+            /// once the interval since the last filing has passed, also resets the backoff), or while nothing waits for it, or while
+            /// that interval has not passed. False decides a re-file: it counts it and arms the next, doubled, interval. Concurrent
+            /// callers decide one re-file: only the one that moves the interval it read files.
             private boolean isHeldOrNotDue() {
-                if (isHeldInStore()) {
-                    backoffMs.set(REFILE_BACKOFF_MIN_MS);
-
+                if (!storeCounts()) {
                     return true;
                 }
 
                 var now = inputs.clock().getAsLong();
+                var due = notBefore.get();
 
-                if (openChangeVersion() <= DHTNode.NO_CHANGE || now < notBefore.get()) {
+                if (isHeldInStore()) {
+                    if (now >= due) {
+                        backoffMs.set(REFILE_BACKOFF_MIN_MS);
+                    }
+
+                    return true;
+                }
+
+                if (openChangeVersion() <= DHTNode.NO_CHANGE || now < due) {
                     return true;
                 }
 
                 var delay = backoffMs.get();
 
-                notBefore.set(now + delay);
+                if (!notBefore.compareAndSet(due, now + delay)) {
+                    return true;
+                }
+
                 backoffMs.set(Math.min(delay * 2, REFILE_BACKOFF_MAX_MS));
                 refiles.incrementAndGet();
 
                 return false;
             }
 
-            private boolean isHeldInStore() {
-                var counts = inputs.replica() || inputs.replicaReady().getAsBoolean();
+            private boolean storeCounts() {
+                return inputs.replica() || inputs.replicaReady()
+                                                 .getAsBoolean();
+            }
 
-                return ! counts || inputs.kvStore()
-                                         .get(DhtReplicationReportKey.dhtReplicationReportKey(inputs.self()))
-                                         .isPresent();
+            private boolean isHeldInStore() {
+                return inputs.kvStore()
+                             .get(DhtReplicationReportKey.dhtReplicationReportKey(inputs.self()))
+                             .isPresent();
             }
 
             @Override
