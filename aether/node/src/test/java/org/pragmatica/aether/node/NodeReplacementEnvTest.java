@@ -13,6 +13,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementIndex;
@@ -53,6 +54,7 @@ import static org.mockito.Mockito.when;
 /// #1543 E1 (v-2008 round 2): the reconciler's environment, the drain outcome mapping and the owner-gated announcer against a fake
 /// node that records every command the leader submits. Pins what Ember cannot: it never has a second leader, never refuses a drain
 /// for a reason other than the floor, never lets a provider hang, and has one event feed that cannot show a duplicate.
+@Timeout(120)
 class NodeReplacementEnvTest {
     private static final NodeId SELF = new NodeId("self-1");
     private static final NodeId OLD = new NodeId("core-old");

@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.Set;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.mockito.ArgumentCaptor;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
@@ -49,6 +50,7 @@ import static org.mockito.Mockito.when;
 /// #1543 E2 (v-2042): the replacement service and the reconciler's environment against a fake node. The fake records every command
 /// the leader submits, so each test states WHAT is committed and in WHICH transaction, the things Ember cannot see (its in-process
 /// admission needs no reservation, its roles are all core or worker, its ids are always fresh).
+@Timeout(120)
 class NodeReplacementServiceTest {
     private static final NodeId SELF = new NodeId("self-1");
     private static final NodeId OLD_CORE = new NodeId("core-old");
