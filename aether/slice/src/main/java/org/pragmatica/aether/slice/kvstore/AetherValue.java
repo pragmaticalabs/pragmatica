@@ -44,6 +44,7 @@ import org.pragmatica.serialization.Codec;
 import org.pragmatica.serialization.CodecFor;
 
 import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
 
 
 @Codec
@@ -4168,4 +4169,104 @@ public sealed interface AetherValue {
                               ProcessIncarnation process,
                               Option<DepartureCause> cause,
                               long decidedAt) implements AetherValue, LeaderAuthorized {}
+
+    /// Where an admitted process stands (O3-1, q4 7.1): the identity facet of [NodeLifecycleValue]. `TERMINATED` is final (I-J8).
+    @Codec
+    enum IdentityState {
+        ADMITTED,
+        DEPARTED,
+        TERMINATED,
+        /// Wire sentinel required of every `@Codec` enum; not a state the leader records.
+        UNKNOWN
+    }
+
+    /// Why a node id ended: the six ranks of the terminator (membership overhaul spec 2.1). `UNKNOWN` is last and is the codec sentinel.
+    @Codec
+    enum IdentityCause {
+        OPERATOR,
+        OPERATOR_FORCE,
+        REPLACED,
+        RETIRED,
+        DRAINED,
+        GONE,
+        /// Wire sentinel required of every `@Codec` enum; not a cause the leader records.
+        UNKNOWN;
+        /// One of the six ranks the terminator writes.
+        public boolean isWriterRank() {
+            return this != UNKNOWN;
+        }
+    }
+
+    /// The phase of a node's capacity reservation. The first three and `UNKNOWN` are `CapacityReservationPhase`, unchanged; `FREED` is the
+    /// tombstone that replaces the delete of today's release (I-O1). `UNKNOWN` is last and is the codec sentinel.
+    @Codec
+    enum CapacityPhase {
+        DISPATCHED,
+        OBSERVED,
+        RELEASED,
+        FREED,
+        UNKNOWN
+    }
+
+    /// Why a capacity was freed (q4 7.1.2). `UNKNOWN` is last and is the codec sentinel.
+    @Codec
+    enum FreedCause {
+        REFUSED,
+        ABSENT_CONFIRMED,
+        OPERATOR_CLEAR,
+        TERMINATED,
+        EXTERNAL_RELEASED,
+        /// Wire sentinel required of every `@Codec` enum; not a cause the leader records.
+        UNKNOWN;
+        /// A cause the leader records.
+        public boolean isCause() {
+            return this != UNKNOWN;
+        }
+    }
+
+    /// The identity facet of a node's lifecycle record: the process admitted for the node id, its epoch (+1 per admission, leader-assigned),
+    /// and, once ended, the cause. `supersededBy` stays on `CapacityAdmissionValue` in rc5.
+    @Codec
+    record IdentityFacet(IdentityState state,
+                         long epoch,
+                         ProcessIncarnation process,
+                         String role,
+                         Option<IdentityCause> cause,
+                         long decidedAt) {
+        public IdentityFacet admitted(ProcessIncarnation bound, long now) {
+            return new IdentityFacet(IdentityState.ADMITTED, epoch + 1, bound, role, none(), now);
+        }
+
+        public IdentityFacet departed(long now) {
+            return new IdentityFacet(IdentityState.DEPARTED, epoch, process, role, cause, now);
+        }
+
+        public IdentityFacet terminated(IdentityCause why, long now) {
+            return new IdentityFacet(IdentityState.TERMINATED, epoch, process, role, some(why), now);
+        }
+    }
+
+    /// The capacity facet of a node's lifecycle record: `CapacityReservationValue` plus the tombstone fields. `freedCause` and `freedAt` are
+    /// present for `FREED` only.
+    @Codec
+    record CapacityFacet(String sourceName,
+                         String sourceBinding,
+                         String intendedRole,
+                         CapacityPhase phase,
+                         Option<FreedCause> freedCause,
+                         Option<Long> freedAt) {
+        public CapacityFacet withPhase(CapacityPhase next) {
+            return new CapacityFacet(sourceName, sourceBinding, intendedRole, next, freedCause, freedAt);
+        }
+
+        public CapacityFacet freed(FreedCause why, long now) {
+            return new CapacityFacet(sourceName, sourceBinding, intendedRole, CapacityPhase.FREED, some(why), some(now));
+        }
+    }
+
+    /// The lifecycle record of one node id, under [AetherKey.NodeIdentityKey] (O3, q4 7.1; owner ruling c37a7c11e2): the identity facet
+    /// (membership overhaul spec 2.1) and the capacity facet (the reservation) of the same node id, so a node's life is one record. A record is
+    /// never deleted (I-O1). [LeaderAuthorized]: every write is a `LeaderTransaction` mutation expecting the WHOLE value the leader read, so a
+    /// change to one facet cannot overwrite a concurrent change to the other (I-O4).
+    record NodeLifecycleValue(Option<IdentityFacet> identity, Option<CapacityFacet> capacity) implements AetherValue, LeaderAuthorized {}
 }

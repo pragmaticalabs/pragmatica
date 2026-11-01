@@ -189,6 +189,39 @@ class CapacityControlledLifecycleTest {
         assertThat(observed.phase()).isEqualTo(AetherValue.CapacityReservationPhase.OBSERVED);
     }
 
+    /// AP-7 (G1-a): the provider refused the create because the server named for this NodeId already exists with this create's labels. The
+    /// create HAS happened, so the reservation is OBSERVED with that instance, counted once, and no refusal is recorded.
+    @Test
+    void createRefusedBecauseTheServerAlreadyExists_adoptsItAsObservedAndRecordsNoRefusal() {
+        initialize(0);
+        var existing = observedCore("first");
+        createOutcome = Option.some(EnvironmentError.alreadyExists(OperationId.operationId("first").unwrap(), existing).promise());
+
+        var adopted = lifecycle.provisionNode(spec("first", "east")).await();
+
+        assertThat(adopted.isSuccess()).as("an existing server is the answer, not a failure: %s", adopted).isTrue();
+        assertThat(adopted.unwrap()).isEqualTo(existing);
+        assertThat(phaseOf("first")).isEqualTo(AetherValue.CapacityReservationPhase.OBSERVED);
+        assertThat(ledger().allocated()).isEqualTo(1);
+        assertThat(creates.get()).as("the provider was asked once and never again").isEqualTo(1);
+    }
+
+    /// The name is held by a server that is not this create's: nothing is adopted and the reservation stays an uncertain create, examined
+    /// by lookup, never released as a refusal and never created again.
+    @Test
+    void createRefusedBecauseTheNameIsHeldByAnotherServer_adoptsNothingAndStaysUncertain() {
+        initialize(0);
+        createOutcome = Option.some(EnvironmentError.nameHeldByOther(OperationId.operationId("first").unwrap(),
+                                                                     new org.pragmatica.aether.environment.InstanceId("foreign")).promise());
+
+        var refused = lifecycle.provisionNode(spec("first", "east")).await();
+
+        assertThat(refused.isFailure()).isTrue();
+        assertThat(phaseOf("first")).isEqualTo(AetherValue.CapacityReservationPhase.DISPATCHED);
+        assertThat(ledger().allocated()).isEqualTo(1);
+        assertThat(creates.get()).isEqualTo(1);
+    }
+
     @Test
     void discoveredProviderCoreLabel_doesNotCreateCoreAdmissionAuthority() {
         initialize(0);

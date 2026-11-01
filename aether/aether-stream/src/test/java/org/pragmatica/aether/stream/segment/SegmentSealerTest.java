@@ -33,7 +33,6 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import static org.pragmatica.aether.stream.segment.SegmentSealer.segmentSealer;
 import static org.pragmatica.lang.Unit.unit;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -49,6 +48,16 @@ class SegmentSealerTest {
 
     private final List<SealedSegment> captured = new CopyOnWriteArrayList<>();
     private SegmentSealer sealer;
+
+    /// T-126 re-seated (spec 4.2): these tests pin one sealed segment per eviction batch, which the run-forming sealer keeps
+    /// only under [SealerThresholds#immediate()]: every batch is ready at once and no backlog is merged.
+    private static SegmentSealer segmentSealer(SegmentSink sink) {
+        return segmentSealer(sink, SegmentSealer.DEFAULT_PENDING_CAP_BYTES);
+    }
+
+    private static SegmentSealer segmentSealer(SegmentSink sink, long pendingCapBytes) {
+        return SegmentSealer.segmentSealer(sink, pendingCapBytes, SealerThresholds.immediate());
+    }
 
     @BeforeEach
     void setUp() {
@@ -437,6 +446,9 @@ class SegmentSealerTest {
             assertThat(spillingSealer.pendingBytes()).isZero();
             assertThat(spillingSealer.holdsUnsealed(STREAM, PARTITION, 5L)).isTrue();
             assertThat(spillingSealer.lowestUnsealed(STREAM, PARTITION)).isEqualTo(Option.some(5L));
+            // #1875: the seal keeps failing by design; an open sealer would go on retrying it, against the closed WAL,
+            // through every later test in this JVM.
+            spillingSealer.close();
             wal.close();
         }
     }
