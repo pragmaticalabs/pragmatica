@@ -128,7 +128,7 @@ public interface GovernorAuthority {
                 }
 
                 var updated = update(previous, nominee, address, members);
-                // #2542: an announcement equal to the committed one (everything but announcedAt) is no mutation unless
+                // #2542: an announcement equal to the committed one (all but its two time stamps) is no mutation unless
                 // the governor's timer asks for the liveness refresh. This is the one commit path, so no caller bypasses it.
                 if (!refresh && previous.filter(updated::unchangedFrom).isPresent()) {
                     return Promise.success(previous);
