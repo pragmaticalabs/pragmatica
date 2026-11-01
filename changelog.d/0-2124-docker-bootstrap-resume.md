@@ -1,0 +1,2 @@
+### Fixed
+- Re-running a partly failed docker bootstrap resumes the nodes of the earlier run instead of creating a second set of containers beside them (#2124). Every container name is recorded in the bootstrap ledger before its container is created; a re-run adopts the running ones, replaces only the missing or failed ones under the same name, and creates nothing when the ledger cannot hold a name or the docker host cannot be listed. Cleanup treats a recorded name whose container never came to exist as already gone.
