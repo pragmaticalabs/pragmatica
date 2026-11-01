@@ -2,6 +2,7 @@
 # Used only to balance shards; a class missing here still runs, at the default weight (the largest measured class).
 # BootTokensLedgerTest, DurableWriterAdapterTest, IdentityFactsTest, IdentityLedgerTest, ProtocolConfigIdentityLedgerTest (#2429): surefire class time 0.15-0.94 s in 3 runs on cloudbb-3 at c14c1858f3; 1 each.
 # OfferJournalTest (#2429, ID-1c): a fraction of a second on bigboy (a few small temp-file writes); 1.
+# RabiaPartialPartitionLivenessTest (Qsync probe, #2534): 109 testcases, 11-13 s in 3 runs on bigboy; 15.
 AcceptorVerdictTripwireTest 36
 AwaitingKvSyncTest 1
 BatchTest 1
@@ -115,6 +116,7 @@ RabiaObserverStaleSyncTickTest 1
 RabiaOwnRestoreFailureTest 7
 RabiaPausedSyncResponseTest 1
 RabiaQuorumIntersectionTest 1
+RabiaPartialPartitionLivenessTest 15
 RabiaReorderedDeliveryTest 37
 RabiaRestorePendingMergeTest 1
 RabiaRestoredStateSaveFailureLogTest 11
