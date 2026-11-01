@@ -149,6 +149,10 @@ final class M1Instrument {
                 add("put.same-value", 1);
             }
             add("put.bytes", sizeOf(put.cause().value()));
+            if (put.cause().value() instanceof AetherValue.NodeArtifactValue artifact) {
+                // S6: per-instance state transitions; a FAILED put is a failed (and later retried) load, which changes the count.
+                add("nodeArtifact.state:" + artifact.state(), 1);
+            }
         }
     }
 

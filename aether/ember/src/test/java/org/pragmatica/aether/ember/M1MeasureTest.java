@@ -6,6 +6,10 @@ package org.pragmatica.aether.ember;
 
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -29,17 +33,23 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AlertThresholdKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AlertThresholdValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
@@ -97,10 +107,13 @@ class M1MeasureTest {
 
         Files.createDirectories(path.toAbsolutePath().getParent());
         out = new PrintWriter(Files.newBufferedWriter(path, java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND), true);
+        if (Arrays.stream(classList()).anyMatch(c -> c.strip().startsWith("s6"))) {
+            preflightEcho();
+        }
         setUp();
         buildUp();
         emit("{\"kind\":\"census\"," + header() + ",\"keys\":" + js(census()) + "}");
-        for (var cls : System.getProperty("m1.classes", "control,idle,join,leave,crash,kill-k,kill-community,kill-governor,kill-leader").split(",")) {
+        for (var cls : classList()) {
             log("class " + cls.strip() + " begins");
             switch (cls.strip()) {
                 case "control" -> control();
@@ -118,10 +131,16 @@ class M1MeasureTest {
                 case "scale" -> scaleClass();
                 case "policy-change" -> policyChangeClass();
                 case "crash-replaced" -> crashReplacedClass();
+                case "s6a", "s6b", "s6c", "s6d" -> s6Class(cls.strip());
+                case "preflight-config" -> preflightConfig();
                 default -> throw new IllegalArgumentException("unknown class " + cls);
             }
         }
         emit("{\"kind\":\"census-end\"," + header() + ",\"keys\":" + js(census()) + "}");
+    }
+
+    private static String[] classList() {
+        return System.getProperty("m1.classes", "control,idle,join,leave,crash,kill-k,kill-community,kill-governor,kill-leader").split(",");
     }
 
     // ---- setup -------------------------------------------------------------------------------------------------------------------
@@ -441,9 +460,308 @@ class M1MeasureTest {
         settleLoose("restore", 40_000, 300_000);
     }
 
+    // ---- S6: one slice deployed (#2512, q8 P4.1) -----------------------------------------------------------------------------------
+
+    private static final String ECHO_VERSION = System.getProperty("project.version", "UNKNOWN");
+    private static final String ECHO_SLICE = "org.pragmatica-lite.aether.test:echo-slice-echo-service:" + ECHO_VERSION;
+    private static final HttpClient HTTP = HttpClient.newHttpClient();
+    private static final String WORKERS_ONLY = "WORKERS_ONLY";
+    private static final String CORE_ONLY = "CORE_ONLY";
+    /// Commit families through which a membership change (a SWIM verdict the leader acted on) surfaces; a window with any is flagged.
+    private static final List<String> MEMBERSHIP_FAMILIES = List.of("put:NodeDepartureKey", "remove:ActivationDirectiveKey", "put:UnconfirmedTerminationKey");
+
+    private record Http(int status, String body) {}
+
+    /// One S6 deployment: the arm's target instance count and placement, and what the window observed about it.
+    private static final class S6Run {
+        final String cls;
+        final int rep;
+        final String blueprintId;
+        final Artifact artifact;
+        final int instances;
+        final String placement;
+        Set<String> membersAtStart = Set.of();
+        String leaderAtStart = "none";
+        boolean converged;
+        boolean routePublished;
+
+        S6Run(String cls, int rep, Artifact artifact, int instances, String placement) {
+            this.cls = cls;
+            this.rep = rep;
+            this.blueprintId = "m1.s6:" + cls + "-r" + rep + ":1.0.0";
+            this.artifact = artifact;
+            this.instances = instances;
+            this.placement = placement;
+        }
+    }
+
+    /// Fails before any window opens when the echo slice the nodes will load is not the one built from this tree. The negative control must
+    /// detect a planted one-byte difference, otherwise a green comparison proves nothing.
+    private void preflightEcho() throws IOException {
+        check(!"UNKNOWN".equals(ECHO_VERSION), "system property project.version is not set (ember's surefire config provides it)");
+        var outcome = M1EchoPreflight.check(ECHO_VERSION);
+
+        emit("{\"kind\":\"preflight-echo\"," + header() + ",\"ok\":" + outcome.ok() + ",\"compared\":" + outcome.compared() + ",\"sha256\":\"" + outcome.digest()
+             + "\",\"jar\":\"" + M1EchoPreflight.installedJar(ECHO_VERSION) + "\",\"detail\":\"" + outcome.detail().replace("\"", "'") + "\"}");
+        check(outcome.ok(), "echo slice pre-flight: " + outcome.detail());
+        var mutated = Files.createTempDirectory("m1-echo-control");
+
+        try (var walk = Files.walk(M1EchoPreflight.headClasses())) {
+            for (var file : walk.filter(Files::isRegularFile).toList()) {
+                var target = mutated.resolve(M1EchoPreflight.headClasses().relativize(file).toString());
+
+                Files.createDirectories(target.getParent());
+                Files.write(target, Files.readAllBytes(file));
+            }
+        }
+        Path victim;
+
+        try (var walk = Files.walk(mutated)) {
+            victim = walk.filter(f -> f.toString().endsWith(".class")).sorted().findFirst().orElseThrow();
+        }
+        var bytes = Files.readAllBytes(victim);
+
+        bytes[bytes.length - 1] ^= 1;
+        Files.write(victim, bytes);
+        check(!M1EchoPreflight.compare(M1EchoPreflight.installedJar(ECHO_VERSION), mutated).ok(), "pre-flight control: a one-byte difference was not detected");
+        log("echo pre-flight ok: " + outcome.compared() + " entries, sha256 " + outcome.digest());
+    }
+
+    private void s6Class(String cls) {
+        var artifact = Artifact.artifact(ECHO_SLICE).unwrap();
+
+        for (int rep = 1; rep <= REPS; rep++) {
+            var run = new S6Run(cls, rep, artifact, s6Instances(cls), "s6c".equals(cls) ? CORE_ONLY : WORKERS_ONLY);
+
+            if ("s6d".equals(cls)) {
+                deploy(run);
+                settleLoose("s6d deployed", 40_000, 400_000);
+                emitS6(run, measure("s6d-undeploy", rep, Set.of(), () -> undeploy(run), MIN_EVENT_MS, QUIET_MS), false);
+            } else {
+                emitS6(run, measure(cls + "-deploy(" + run.placement + ",instances=" + run.instances + ")", rep, Set.of(), () -> deploy(run), MIN_EVENT_MS, QUIET_MS), true);
+                undeploy(run);
+                settleLoose("s6 undeployed", 40_000, 400_000);
+            }
+        }
+    }
+
+    private int s6Instances(String cls) {
+        return switch (cls) {
+            case "s6b" -> communities().size();
+            case "s6c" -> CORES;
+            default -> workers.size();
+        };
+    }
+
+    /// The whole deploy event: blueprint POST, then the placement pass (the blueprint TOML has no placement key, so WORKERS_ONLY is a second
+    /// leader transaction, counted inside the window), then until every target instance is ACTIVE and its route is published.
+    private void deploy(S6Run run) {
+        run.membersAtStart = memberIds();
+        run.leaderAtStart = cluster.currentLeader().or("none");
+        var blueprint = """
+            id = "%s"
+            [[slices]]
+            artifact = "%s"
+            instances = %d
+            """.formatted(run.blueprintId, ECHO_SLICE, run.instances);
+        var applied = send("POST", "/api/v1/blueprints", "application/toml", blueprint);
+
+        check(applied.status() == 200 && applied.body().contains("\"status\":\"applied\""), "blueprint applied: " + applied);
+        var key = SliceTargetKey.sliceTargetKey(run.artifact.base());
+
+        await("slice target", () -> leader().kvStore().getTyped(key, SliceTargetValue.class).isPresent(), 60_000);
+        if (WORKERS_ONLY.equals(run.placement)) {
+            placeWorkersOnly(key);
+        }
+        run.converged = awaitQuietly(() -> artifactStates(run.artifact).getOrDefault("ACTIVE", 0) >= run.instances, 600_000);
+        run.routePublished = awaitQuietly(() -> routePublished(run.artifact), 60_000);
+    }
+
+    private void placeWorkersOnly(SliceTargetKey key) {
+        for (int attempt = 1; ; attempt++) {
+            var before = leader().kvStore().getTyped(key, SliceTargetValue.class).unwrap();
+
+            try {
+                commit(key, Option.some(before), Option.some(before.withPlacement(WORKERS_ONLY)));
+                return;
+            } catch (AssertionError e) {
+                // the blueprint apply rewrote the target between the read and the transaction; read again
+                if (attempt >= 5) {
+                    throw e;
+                }
+            }
+        }
+    }
+
+    private void undeploy(S6Run run) {
+        run.membersAtStart = memberIds();
+        run.leaderAtStart = cluster.currentLeader().or("none");
+        var deleted = send("DELETE", "/api/v1/blueprints/" + run.blueprintId, "application/json", "");
+
+        check(deleted.status() == 200, "blueprint deleted: " + deleted);
+        run.converged = awaitQuietly(() -> artifactStates(run.artifact).isEmpty(), 600_000);
+    }
+
+    private boolean routePublished(Artifact artifact) {
+        return snap().keySet().stream().anyMatch(key -> key instanceof NodeRoutesKey routes && routes.artifact().equals(artifact));
+    }
+
+    private Map<String, Integer> artifactStates(Artifact artifact) {
+        var states = new TreeMap<String, Integer>();
+
+        snap().forEach((key, value) -> {
+            if (key instanceof NodeArtifactKey node && node.artifact().equals(artifact) && value instanceof NodeArtifactValue state) {
+                states.merge(state.state().name(), 1, Integer::sum);
+            }
+        });
+        return states;
+    }
+
+    /// Worker community of every worker with a directive; the coverage of S6b is read from this, never assumed.
+    private Map<String, String> communities() {
+        var byNode = new TreeMap<String, String>();
+
+        snap().forEach((key, value) -> {
+            if (key instanceof ActivationDirectiveKey directive && value instanceof ActivationDirectiveValue v && "WORKER".equals(v.role())) {
+                byNode.put(directive.nodeId().id(), v.communityId());
+            }
+        });
+        return byNode;
+    }
+
+    private Set<String> memberIds() {
+        return cluster.allNodes().stream().map(n -> n.self().id()).collect(Collectors.toCollection(java.util.TreeSet::new));
+    }
+
+    private void emitS6(S6Run run, Map<String, Long> raw, boolean deploy) {
+        var states = artifactStates(run.artifact);
+        var communityOf = communities();
+        var hosts = new java.util.TreeSet<String>();
+
+        snap().keySet().forEach(key -> {
+            if (key instanceof NodeArtifactKey node && node.artifact().equals(run.artifact)) {
+                hosts.add(node.nodeId().id());
+            }
+        });
+        var covered = hosts.stream().map(communityOf::get).filter(c -> c != null).collect(Collectors.toCollection(java.util.TreeSet::new));
+        var allCommunities = new java.util.TreeSet<>(communityOf.values());
+        long edges = MEMBERSHIP_FAMILIES.stream().mapToLong(f -> raw.getOrDefault(f, 0L)).sum();
+        boolean membersChanged = !memberIds().equals(run.membersAtStart);
+        boolean leaderChanged = !cluster.currentLeader().or("none").equals(run.leaderAtStart);
+        long failedPuts = raw.getOrDefault("nodeArtifact.state:FAILED", 0L);
+        int failedNow = states.getOrDefault("FAILED", 0);
+        long artifactPuts = raw.getOrDefault("put:NodeArtifactKey", 0L);
+        long engineMutations = raw.getOrDefault("tx.accepted.mutations", 0L) + raw.getOrDefault("cmd.Put", 0L) + raw.getOrDefault("cmd.Remove", 0L);
+        long notified = raw.getOrDefault("put.total", 0L) + raw.getOrDefault("remove.total", 0L);
+        var transitions = raw.entrySet().stream().filter(e -> e.getKey().startsWith("nodeArtifact.state:")).collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (a, b) -> a, TreeMap::new));
+        var excluded = failedPuts > 0 || failedNow > 0 || !run.converged;
+
+        emit("{\"kind\":\"s6\"," + header() + ",\"class\":\"" + run.cls + "\",\"rep\":" + run.rep + ",\"placement\":\"" + run.placement + "\",\"instances\":" + run.instances
+             + ",\"converged\":" + run.converged + ",\"routePublished\":" + run.routePublished + ",\"statesAtEnd\":" + js(states.entrySet().stream().collect(Collectors.toMap(Map.Entry::getKey, e -> (long) e.getValue(), (a, b) -> a, TreeMap::new)))
+             + ",\"hosts\":" + hosts.size() + ",\"communitiesTotal\":" + allCommunities.size() + ",\"communitiesCovered\":" + covered.size()
+             + ",\"nodeArtifactPuts\":" + artifactPuts + ",\"nodeArtifactPutsPerInstance\":" + (run.instances == 0 ? 0 : (double) artifactPuts / run.instances)
+             + ",\"transitions\":" + js(transitions) + ",\"failedPuts\":" + failedPuts + ",\"failedAtEnd\":" + failedNow
+             + ",\"txAccepted\":" + raw.getOrDefault("tx.accepted", 0L) + ",\"slots\":" + raw.getOrDefault("engine.slots", 0L)
+             + ",\"mutationsNotified\":" + notified + ",\"mutationsEngine\":" + engineMutations
+             + ",\"membershipEdges\":" + edges + ",\"membersChanged\":" + membersChanged + ",\"leaderChanged\":" + leaderChanged
+             + ",\"flaggedSwim\":" + (edges > 0 || membersChanged || leaderChanged) + ",\"excludedFromFit\":" + excluded
+             + ",\"families\":" + js(raw.entrySet().stream().filter(e -> e.getKey().startsWith("put:") || e.getKey().startsWith("remove:")).collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (a, b) -> a, TreeMap::new))) + "}");
+        if (deploy && !excluded) {
+            // Instrument self-checks against two independent readings: the engine's command count, and the leader's own KV state.
+            check(notified == engineMutations, run.cls + ": notification reading " + notified + " != engine reading " + engineMutations);
+            check(artifactPuts >= states.getOrDefault("ACTIVE", 0), run.cls + ": " + states.getOrDefault("ACTIVE", 0) + " ACTIVE instances but only " + artifactPuts + " NodeArtifactKey puts counted");
+        }
+    }
+
+    // ---- P6 pre-flight: what one CONFIG_SET commits (#2512, q8 P6.1 step 1) ------------------------------------------------------------
+
+    /// Arm K's instrument control, counts only: drives `POST /api/v1/config` over a rotating key set of 16 and records, per op, what the leader
+    /// core committed. A single op's mutations are attributed by the snapshot delta around it, so background commits can add to an op;
+    /// the family histogram says which.
+    private void preflightConfig() {
+        int ops = Integer.getInteger("m1.configOps", 48);
+        int keys = 16;
+        long keysBefore = census().getOrDefault("ConfigKey", 0L);
+        var perOp = new ArrayList<Map<String, Long>>();
+
+        measure("config-set", 1, Set.of(), () -> {
+            var leaderId = cluster.currentLeader().unwrap();
+            var instrument = instruments.stream().filter(i -> i.nodeId().equals(leaderId)).findFirst().orElseThrow();
+
+            for (int i = 0; i < ops; i++) {
+                var before = instrument.snapshot();
+                var answer = send("POST", "/api/v1/config", "application/json", "{\"key\":\"m1.arm-k." + (i % keys) + "\",\"value\":\"v-" + String.format("%06d", i) + "\"}");
+
+                check(answer.status() == 200 && answer.body().contains("config_set"), "config set: " + answer);
+                var landed = awaitQuietly(() -> M1Instrument.delta(before, instrument.snapshot()).getOrDefault("put:ConfigKey", 0L) >= 1, 5_000);
+
+                check(landed, "config commit not observed on the leader core");
+                sleep(300);
+                perOp.add(M1Instrument.delta(before, instrument.snapshot()));
+            }
+        }, 10_000, 5_000);
+        var perOpKey = histogram(perOp, d -> d.getOrDefault("put:ConfigKey", 0L));
+        var perOpTotal = histogram(perOp, d -> d.getOrDefault("put.total", 0L) + d.getOrDefault("remove.total", 0L));
+        var extraFamilies = new TreeMap<String, Long>();
+
+        perOp.forEach(d -> d.forEach((name, value) -> {
+            if ((name.startsWith("put:") || name.startsWith("remove:")) && !name.equals("put:ConfigKey")) {
+                extraFamilies.merge(name, value, Long::sum);
+            }
+        }));
+        long keysAfter = census().getOrDefault("ConfigKey", 0L);
+
+        emit("{\"kind\":\"preflight-config\"," + header() + ",\"ops\":" + ops + ",\"keySet\":" + keys + ",\"configKeysBefore\":" + keysBefore + ",\"configKeysAfter\":" + keysAfter
+             + ",\"putConfigKeyPerOp\":" + js(perOpKey) + ",\"mutationsPerOp\":" + js(perOpTotal) + ",\"otherFamiliesAcrossOps\":" + js(extraFamilies)
+             + ",\"txPerOp\":" + js(histogram(perOp, d -> d.getOrDefault("tx.accepted", 0L)))
+             + ",\"putBytesPerOp\":" + js(histogram(perOp, d -> d.getOrDefault("put.bytes", 0L))) + "}");
+        check(perOpKey.size() == 1 && perOpKey.containsKey("1"), "every CONFIG_SET must commit exactly one ConfigKey put: " + perOpKey);
+        check(keysAfter - keysBefore == keys, "the rotating driver must create exactly " + keys + " ConfigKey entries, created " + (keysAfter - keysBefore));
+    }
+
+    // ---- S6 / P6 plumbing --------------------------------------------------------------------------------------------------------
+
+    /// HTTP to the leader's management port, as an operator or the arm K driver would.
+    private Http send(String method, String path, String contentType, String body) {
+        var leaderId = cluster.currentLeader().unwrap();
+        var port = cluster.status().nodes().stream().filter(n -> n.id().equals(leaderId)).findFirst().orElseThrow().mgmtPort();
+        var request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
+                                 .header("Content-Type", contentType)
+                                 .timeout(java.time.Duration.ofSeconds(30))
+                                 .method(method, HttpRequest.BodyPublishers.ofString(body))
+                                 .build();
+
+        try {
+            var response = HTTP.send(request, HttpResponse.BodyHandlers.ofString());
+
+            return new Http(response.statusCode(), response.body());
+        } catch (IOException e) {
+            throw new IllegalStateException(e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /// value -> number of ops that showed it, keyed by the value's text so it renders through [#js].
+    private static Map<String, Long> histogram(List<Map<String, Long>> perOp, java.util.function.ToLongFunction<Map<String, Long>> value) {
+        return perOp.stream().collect(Collectors.groupingBy(d -> Long.toString(value.applyAsLong(d)), TreeMap::new, Collectors.counting()));
+    }
+
+    private static boolean awaitQuietly(BooleanSupplier condition, long millis) {
+        try {
+            await("condition", condition, millis);
+            return true;
+        } catch (AssertionError e) {
+            log("not reached within " + millis + " ms: " + e.getMessage());
+            return false;
+        }
+    }
+
     // ---- measurement -------------------------------------------------------------------------------------------------------------
 
-    private void measure(String cls, int rep, Set<String> excluded, Runnable action, long minMs, long quietMs) {
+    /// Returns the first reference core's delta over the window (the `raw` of the emitted sample).
+    private Map<String, Long> measure(String cls, int rep, Set<String> excluded, Runnable action, long minMs, long quietMs) {
         var refs = refInstruments(excluded);
         var idleBefore = idleWindow(refs, IDLE_WINDOW_MS);
         var before = refs.stream().map(M1Instrument::snapshot).toList();
@@ -479,6 +797,7 @@ class M1MeasureTest {
              + workersStart + ",\"workersEnd\":" + workers.size() + ",\"cores\":" + coreIds.size() + ",\"refCores\":" + refs.stream().map(M1Instrument::nodeId).toList().stream().map(s -> "\"" + s + "\"").toList()
              + ",\"loadStart\":\"" + loadStart + "\",\"loadEnd\":\"" + loadEnd + "\",\"directivesStart\":" + directivesStart + ",\"directivesEnd\":" + directivesEnd + ",\"leaderStart\":\"" + leaderStart + "\",\"leaderEnd\":\"" + leaderEnd + "\",\"windowMs\":" + (t1 - t0) / 1_000_000 + ",\"settled\":" + settled + ",\"lastNonIdleOffsetMs\":" + lastOffsetMs
              + ",\"raw\":" + js(deltas.getFirst()) + ",\"spread\":" + jsSpread(spread) + ",\"idleBefore\":" + idleBefore + ",\"idleAfter\":" + idleAfter + "}");
+        return deltas.getFirst();
     }
 
     private String idleWindow(List<M1Instrument> refs, long millis) {
