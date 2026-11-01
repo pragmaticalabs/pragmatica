@@ -28,6 +28,7 @@ import java.util.function.IntPredicate;
 import java.util.function.IntSupplier;
 import java.util.function.LongConsumer;
 import java.util.function.LongPredicate;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -207,6 +208,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// config over a weaker committed one.
     private final ConcurrentHashMap<String, StreamConfig> appliedConfigs = new ConcurrentHashMap<>();
     private final AtomicLong totalAllocatedBytes = new AtomicLong(0);
+    /// #2201 C-03 (spec 4.4 item 4): moved by every return of bytes to the pool ([#release]: a stream destroyed, a ring closed
+    /// or released, a reservation handed back), so a ring frozen by a refused growth knows budget may have been freed since.
+    private final AtomicLong budgetFreedGeneration = new AtomicLong(0);
     private final long maxTotalBytes;
     private final EvictionListener evictionListener;
     private final ReplicationManager replicationManager;
@@ -1212,10 +1216,12 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
     }
 
-    /// Return `bytes` to the shared pool. See spec §4.3.
+    /// Return `bytes` to the shared pool, then move the freed generation, so a frozen ring that sees it moved also sees the
+    /// bytes. See spec §4.3, §4.4 item 4.
     @Contract
     private void release(long bytes) {
         totalAllocatedBytes.addAndGet(-bytes);
+        budgetFreedGeneration.incrementAndGet();
     }
 
     /// Explicit STREAM_CREATE (`POST /api/streams`): create (materialize + publish) a stream, AWAITING
@@ -1468,6 +1474,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                       evictionListener,
                                       bytes -> reserveForGrowth(config, bytes),
                                       this::release,
+                                      budgetFreedGeneration::get,
                                       partition -> shouldMaterialize(config.name(),
                                                                      partition),
                                       logs,
@@ -1909,6 +1916,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                       evictionListener,
                                       bytes -> reserveForGrowth(config, bytes),
                                       this::release,
+                                      budgetFreedGeneration::get,
                                       partition -> shouldMaterialize(config.name(),
                                                                      partition),
                                       logs,
@@ -5576,6 +5584,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           evictionListener,
                                           bytes -> reserveForGrowth(config, bytes),
                                           this::release,
+                                          budgetFreedGeneration::get,
                                           logs,
                                           lastSealedOffset,
                                           this::trimFailedAtOpen)
@@ -6383,12 +6392,13 @@ public final class StreamPartitionManager implements AutoCloseable {
                                               EvictionListener listener,
                                               LongPredicate reserve,
                                               LongConsumer release,
+                                              LongSupplier budgetFreed,
                                               IntPredicate shouldMaterialize,
                                               Option<AppendLog.Opener> logs,
                                               LastSealedOffsetSource lastSealedOffset,
                                               TrimFailure trimFailed) {
             var selected = selectedPartitions(config, shouldMaterialize);
-            var ringResults = buildRings(config, selected, listener, reserve, release);
+            var ringResults = buildRings(config, selected, listener, reserve, release, budgetFreed);
 
             return Result.allOf(ringResults)
                          .mapError(_ -> StreamError.General.STREAM_MEMORY_EXCEEDED)
@@ -6427,9 +6437,10 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                   List<Integer> selected,
                                                                   EvictionListener listener,
                                                                   LongPredicate reserve,
-                                                                  LongConsumer release) {
+                                                                  LongConsumer release,
+                                                                  LongSupplier budgetFreed) {
             return selected.stream()
-                           .map(partition -> buildRing(config, partition, listener, reserve, release))
+                           .map(partition -> buildRing(config, partition, listener, reserve, release, budgetFreed))
                            .toList();
         }
 
@@ -6437,7 +6448,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                            int partition,
                                                            EvictionListener listener,
                                                            LongPredicate reserve,
-                                                           LongConsumer release) {
+                                                           LongConsumer release,
+                                                           LongSupplier budgetFreed) {
             var retention = config.retention();
 
             return OffHeapRingBuffer.offHeapRingBuffer(config.name(),
@@ -6447,7 +6459,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                        listener,
                                                        deriveEvictionPolicy(config),
                                                        reserve,
-                                                       release);
+                                                       release,
+                                                       budgetFreed);
         }
 
         /// Lazily materialize ONE held partition (#265 increment 2 — the reconcile hook + owner-append
@@ -6459,10 +6472,11 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                             EvictionListener listener,
                                                             LongPredicate reserve,
                                                             LongConsumer release,
+                                                            LongSupplier budgetFreed,
                                                             Option<AppendLog.Opener> logs,
                                                             LastSealedOffsetSource lastSealedOffset,
                                                             TrimFailure trimFailed) {
-            return buildRing(config, partition, listener, reserve, release).mapError(_ -> StreamError.General.STREAM_MEMORY_EXCEEDED)
+            return buildRing(config, partition, listener, reserve, release, budgetFreed).mapError(_ -> StreamError.General.STREAM_MEMORY_EXCEEDED)
                             .flatMap(ring -> openAndRecoverOne(config,
                                                                partition,
                                                                ring,
