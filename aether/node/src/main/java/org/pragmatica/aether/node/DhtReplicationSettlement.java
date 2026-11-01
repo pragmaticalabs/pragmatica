@@ -318,8 +318,9 @@ public interface DhtReplicationSettlement {
     @Contract
     void applied(long configVersion);
 
-    /// [#applied(long)] for a node that cannot read the change record (a worker, whose projection carries it):
-    /// `openChangeVersion` is the version of the unsettled change the projection names, or [DHTNode#NO_CHANGE].
+    /// [#applied(long)] with a second source of the open change: a worker's projection carries it, besides the change record
+    /// the node's own store may already return. `openChangeVersion` is the version of the unsettled change the projection
+    /// names, or [DHTNode#NO_CHANGE]; the larger of it and the record's wins.
     @Contract
     default void applied(long configVersion, long openChangeVersion) {
         applied(configVersion);
@@ -495,7 +496,7 @@ public interface DhtReplicationSettlement {
                                                   .isPresent();
             }
 
-            /// The version of the unsettled change this node knows: a core reads the record, a worker is told by its projection.
+            /// The version of the unsettled change this node knows: a core reads the record, a worker also is told by its projection.
             private long openChangeVersion() {
                 return Math.max(workerOpenChange.get(),
                                 committed().filter(change -> !change.settled())
