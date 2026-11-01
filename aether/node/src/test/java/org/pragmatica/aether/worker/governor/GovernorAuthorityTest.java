@@ -21,6 +21,7 @@ import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -269,5 +270,26 @@ class GovernorAuthorityTest {
         authority.reconcile("c", A, granted.communityTerm(), "host:9000").await().unwrap();
 
         assertThat(commits.get()).isEqualTo(commitsAfterGrant + 1);
+    }
+
+    /// #2542, the batch rule: the announcements of two communities that fall in one window reach the log as ONE
+    /// submission, and each still gets its own grant (the transactions are accepted one by one).
+    @Test
+    void twoCommunitiesInOneWindow_areOneSubmission_eachGranted() {
+        var other = new NodeId("worker-d");
+        store.process(store.createBatch(List.of(
+            new KVCommand.Put<>(AetherKey.CommunityKey.communityKey("d"), AetherValue.CommunityValue.communityValue("", "WORKER", 1)),
+            new KVCommand.Put<>(AetherKey.ActivationDirectiveKey.activationDirectiveKey(other), AetherValue.ActivationDirectiveValue.worker("d", "")))));
+        var batched = GovernorAuthority.governorAuthority(CORE, cluster, store, () -> true,
+            community -> community.equals("d") ? List.of(other) : members.get(), _ -> true, () -> Epoch.ZERO, HlcClock.hlcClock(CORE),
+            TimeSpan.timeSpan(60).seconds(), 2);
+        leader(CORE, 1);
+
+        var first = batched.handle(new GovernorAuthorityMessage.Request(A, "c", 1, 0, "host:9000", false));
+        var second = batched.handle(new GovernorAuthorityMessage.Request(other, "d", 2, 0, "host:9001", false));
+
+        assertThat(first.await().unwrap().authority().unwrap().governorId()).isEqualTo(A);
+        assertThat(second.await().unwrap().authority().unwrap().governorId()).isEqualTo(other);
+        assertThat(commits.get()).as("one command list for both communities").isEqualTo(1);
     }
 }
