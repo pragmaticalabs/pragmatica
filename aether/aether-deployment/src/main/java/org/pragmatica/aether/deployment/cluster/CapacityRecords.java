@@ -30,6 +30,12 @@ public interface CapacityRecords extends CapacityView {
     /// The key that names a transaction about the fleet counter.
     AetherKey ledgerKey();
 
+    /// The guard of a decision taken on `expected`, on the key of the reservation of `node` as THIS implementation keeps it ([#recordKey]).
+    @Override
+    default KVCommand.ReadWitness<AetherKey> witness(NodeId node, Option<CapacityReservationValue> expected) {
+        return new KVCommand.ReadWitness<>(recordKey(node), expected.map(value -> (Object) value));
+    }
+
     /// Put the reservation of `node`, expecting `expected` to be what is committed (absent, or an exact value).
     KVCommand.Mutation<AetherKey, AetherValue> put(NodeId node,
                                                    Option<CapacityReservationValue> expected,

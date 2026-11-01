@@ -43,13 +43,9 @@ public interface CapacityView {
     boolean hasLedger();
     /// A read witness that the reservation of `node` is, at commit, what this view holds for it (absent, or the exact value).
     KVCommand.ReadWitness<AetherKey> witness(NodeId node);
-
     /// A read witness that the reservation of `node` is `expected` (absent, or an exact value) at commit: the guard of a decision taken on a value read earlier.
-    default KVCommand.ReadWitness<AetherKey> witness(NodeId node, Option<CapacityReservationValue> expected) {
-        return new KVCommand.ReadWitness<>(new AetherKey.CapacityReservationKey(node),
-                                           expected.map(value -> (Object) value));
-    }
-
+    /// Abstract on purpose: the key it guards is the implementation's, and a default here would hard-code impl A's key into every implementation.
+    KVCommand.ReadWitness<AetherKey> witness(NodeId node, Option<CapacityReservationValue> expected);
     /// The reservation of `node` was freed (kept as a tombstone). Never under impl A.
     boolean isFreed(NodeId node);
 
@@ -140,6 +136,12 @@ public interface CapacityView {
             @Override
             public boolean hasLedger() {
                 return Option.option(read.apply(AetherKey.CapacityLedgerKey.INSTANCE)).isPresent();
+            }
+
+            @Override
+            public KVCommand.ReadWitness<AetherKey> witness(NodeId node, Option<CapacityReservationValue> expected) {
+                return new KVCommand.ReadWitness<>(new AetherKey.CapacityReservationKey(node),
+                                                   expected.map(value -> (Object) value));
             }
 
             @Override
