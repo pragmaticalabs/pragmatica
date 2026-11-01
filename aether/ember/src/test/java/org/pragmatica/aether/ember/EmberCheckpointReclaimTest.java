@@ -102,8 +102,10 @@ class EmberCheckpointReclaimTest {
                                                                                                                               .interval(TimeSpan.timeSpan(1)
                                                                                                                                                 .seconds())));
 
+    /// Static, so it lives as long as the class and the cluster it shares across tests. JUnit deletes an instance `@TempDir` when each
+    /// test method ends, under `PER_CLASS` too (#2538).
     @TempDir
-    Path dataDir;
+    static Path dataDir;
 
     private EmberCluster cluster;
     private int generation;
