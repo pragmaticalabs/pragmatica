@@ -62,6 +62,32 @@ class SourceComputeRegistryTest {
         assertThat(configs.get(1).compute()).containsEntry("region", "east-region");
     }
 
+    /// G1-g relies on it: a DOCKER source's pool is filled by the LEADER, so the leader must be able to resolve a compute provider for it (the
+    /// bootstrap overlay gives a docker node `socket_path = /var/run/docker.sock`). If this stops resolving, `--resume` could neither wait for the
+    /// leader nor should it have stopped creating on Docker.
+    @Test
+    void aDockerSourceResolvesAComputeProviderForTheLeader() {
+        var configs = new ArrayList<CloudConfig>();
+        var registry = SourceComputeRegistry.sourceComputeRegistry(() -> Option.some(value("""
+                                                                                            config_version = "1.0.0"
+                                                                                            [cluster]
+                                                                                            name = "test"
+                                                                                            version = "1.0.0"
+                                                                                            [source.local]
+                                                                                            type = "docker"
+                                                                                            [source.local.core]
+                                                                                            count = 3
+                                                                                            """)),
+                                                                   config -> {
+                                                                       configs.add(config);
+
+                                                                       return Result.success(EnvironmentIntegration.withCompute(new NoopProvider()));
+                                                                   });
+
+        assertThat(registry.resolve(SourceName.sourceName("local").unwrap()).isSuccess()).isTrue();
+        assertThat(configs).hasSize(1);
+    }
+
     @Test
     void missingCommittedConfigurationDoesNotUseLocalBootProvider() {
         var registry = SourceComputeRegistry.sourceComputeRegistry(Option::none,
