@@ -547,7 +547,7 @@ class M1MeasureTest {
 
     private int s6Instances(String cls) {
         return switch (cls) {
-            case "s6b" -> communities().size();
+            case "s6b" -> new java.util.HashSet<>(communities().values()).size();
             case "s6c" -> CORES;
             default -> workers.size();
         };
