@@ -19,7 +19,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// The leader's producer of the [ClusterDirectory]: reads the directory content and stamps it with the leader epoch and a generation. The
+/// The leader's producer of the [ClusterDirectory]: reads the directory content (the addressed nodes, the DHT replication and the leader's
+/// installed voter configuration) and stamps it with the leader epoch and a generation. The
 /// generation is a per-epoch counter that moves only when the content changes, so the directory a leader already sent is not re-sent, and a
 /// new epoch starts again at 1 (the epoch triple orders first).
 final class DirectoryProducer {
@@ -54,13 +55,15 @@ final class DirectoryProducer {
 
     private ClusterDirectory next(Epoch epoch, DhtReplication replication) {
         var content = nodes.get();
-        var installed = Option.<VoterConfiguration> none();
+        var installed = voters.get();
         var sameEpoch = last.map(previous -> isOf(previous, epoch)).or(false);
         var unchanged = last.map(previous -> sameEpoch
                                              && previous.nodes()
                                                         .equals(content)
                                              && previous.dhtReplication()
-                                                        .equals(replication))
+                                                        .equals(replication)
+                                             && previous.voters()
+                                                        .equals(installed))
                             .or(false);
 
         return unchanged
