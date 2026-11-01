@@ -41,7 +41,7 @@ final class DirectoryFixtures {
     static final DhtReplication DHT = new DhtReplication(3, 2, 3, 2, 1L, -1L, 0, 0, true);
 
     static ClusterDirectory directory(long epochIncarnation, long epochTerm, long epochCounter, long generation) {
-        return new ClusterDirectory(generation, epochIncarnation, epochTerm, epochCounter, List.<NodeInfo> of(), DHT);
+        return new ClusterDirectory(generation, epochIncarnation, epochTerm, epochCounter, List.<NodeInfo> of(), DHT, Option.none());
     }
 
     static DirectoryVersion version(long epochIncarnation, long epochTerm, long epochCounter, long generation) {
