@@ -14,6 +14,8 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
+import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.OperationId;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementIndex;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementPlanner;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementService.Refusal;
@@ -64,6 +66,7 @@ class NodeReplacementServiceTest {
     private Set<NodeId> readyAdmitted = Set.of();
     private Set<NodeId> genesis = Set.of();
     private int fleetLimit = Integer.MAX_VALUE;
+    private Option<ClusterName> clusterName = ClusterName.maybeClusterName("prod");
     private NodeReplacementWiring.Wiring wiring;
 
     NodeReplacementServiceTest() {
@@ -122,7 +125,7 @@ class NodeReplacementServiceTest {
                                                 ctm,
                                                 node -> Promise.success(NodeReplacementWiring.DrainOutcome.admitted()),
                                                 node -> false,
-                                                () -> "fresh",
+                                                () -> clusterName,
                                                 node -> false,
                                                 () -> genesis,
                                                 () -> fleetLimit,
@@ -180,6 +183,62 @@ class NodeReplacementServiceTest {
 
         assertThat(refused.isFailure()).isTrue();
         refused.onFailure(cause -> assertThat(cause).isInstanceOf(Refusal.RoleNotSupported.class));
+    }
+
+    // ---- begin: the id shape follows the SOURCE of the node being replaced ---------------------------------------------
+
+    private void cloudBackedSources(String... names) {
+        var cloud = Set.of(names);
+
+        when(ctm.nodeIsCloudBacked(any(), any())).thenAnswer(call -> cloud.contains(call.<String> getArgument(1)));
+    }
+
+    @Test
+    void begin_cloudSource_mintsAClusterlessId() {
+        cloudBackedSources("hetzner");
+        wiring.service().begin(OLD_WORKER, "").await();
+
+        assertThat(recordIn(onlyTransaction(), OLD_WORKER).replacement().id()).startsWith("aether-node-").doesNotContain("prod");
+    }
+
+    @Test
+    void begin_dockerSource_mintsAClusterScopedId() {
+        cloudBackedSources();
+        wiring.service().begin(OLD_WORKER, "").await();
+
+        assertThat(recordIn(onlyTransaction(), OLD_WORKER).replacement().id()).startsWith("aether-prod-node-");
+    }
+
+    /// N20 (v-g1 round 4): the wiring's own use of the prefix was untested; a changed prefix survived every NodeReplacement test.
+    @Test
+    void begin_theMintedIdIsExactlyThePrefixPlusAUlid() {
+        cloudBackedSources("hetzner");
+        wiring.service().begin(OLD_WORKER, "").await();
+
+        assertThat(recordIn(onlyTransaction(), OLD_WORKER).replacement().id()).matches("aether-node-[0-9a-z]{26}");
+    }
+
+    /// A Docker core and a Hetzner worker pool in one cluster (`production-eu`, 13 characters): the worker replacement is cloud-shaped and its
+    /// Hetzner name fits; the same id in the Docker shape would not (66 characters), which is what choosing the shape per cluster used to mint.
+    @Test
+    void begin_hybridCluster_eachPoolGetsItsOwnShape_andTheWorkerNameFitsHetzner() {
+        var cluster = ClusterName.clusterName("production-eu").unwrap();
+        clusterName = Option.some(cluster);
+        descriptors.put(OLD_CORE, new MemberDescriptor(Option.none(), "core", "local"));
+        descriptors.put(OLD_WORKER, new MemberDescriptor(Option.none(), "worker", "hz"));
+        cloudBackedSources("hz");
+
+        wiring.service().begin(OLD_WORKER, "").await();
+        var workerId = recordIn(onlyTransaction(), OLD_WORKER).replacement().id();
+        commands.clear();
+        index.remove(new AetherKey.NodeReplacementKey(OLD_WORKER));
+        wiring.service().begin(OLD_CORE, "").await();
+        var coreId = recordIn(onlyTransaction(), OLD_CORE).replacement().id();
+
+        assertThat(workerId).startsWith("aether-node-");
+        assertThat(OperationId.forNode(cluster, workerId).isSuccess()).as("52 characters: fits").isTrue();
+        assertThat(coreId).startsWith("aether-production-eu-node-");
+        assertThat(OperationId.forNode(cluster, coreId).isFailure()).as("66 characters: the Docker shape would not fit a Hetzner name").isTrue();
     }
 
     // ---- beginExternal: the identity checks --------------------------------------------------------------------------

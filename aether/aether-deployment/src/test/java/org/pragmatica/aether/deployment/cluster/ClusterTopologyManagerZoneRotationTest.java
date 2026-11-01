@@ -219,6 +219,49 @@ class ClusterTopologyManagerZoneRotationTest {
 
             assertThat(ctm.coresAreCloudBacked()).isFalse();
         }
+
+        /// A Docker core and a Hetzner worker pool in one cluster: the shape follows the source of the node being replaced.
+        private static final String HYBRID_TOML = """
+                config_version = "1.0.0"
+
+                [cluster]
+                name = "production-eu"
+                version = "1.0.0"
+
+                [source.local]
+                type = "docker"
+
+                [source.local.core]
+                count = 3
+
+                [source.hz]
+                type = "cloud"
+                provider = "hetzner"
+                credentials = "hcloud-token"
+                region = "eu-central"
+
+                [source.hz.worker]
+                count = 2
+                """;
+
+        @Test
+        void nodeIsCloudBacked_hybridCluster_followsTheSourceOfTheNodeBeingReplaced() {
+            clusterStore.seedToml(HYBRID_TOML);
+
+            assertThat(org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser.parse(HYBRID_TOML).isSuccess()).as("the hybrid config parses").isTrue();
+            assertThat(ctm.nodeIsCloudBacked(NodeRole.WORKER, "hz")).as("a Hetzner worker is cloud-shaped").isTrue();
+            assertThat(ctm.nodeIsCloudBacked(NodeRole.CORE, "local")).as("a Docker core keeps the cluster").isFalse();
+            assertThat(ctm.coresAreCloudBacked()).as("the core pool is Docker, though a worker pool is cloud").isFalse();
+        }
+
+        @Test
+        void nodeIsCloudBacked_blankOrUnknownSource_fallsBackToTheFirstCloudSourceDeclaringTheRole() {
+            clusterStore.seedToml(HYBRID_TOML);
+
+            assertThat(ctm.nodeIsCloudBacked(NodeRole.WORKER, "")).isTrue();
+            assertThat(ctm.nodeIsCloudBacked(NodeRole.WORKER, "no-such-source")).isTrue();
+            assertThat(ctm.nodeIsCloudBacked(NodeRole.CORE, "")).isFalse();
+        }
     }
 
     @Nested

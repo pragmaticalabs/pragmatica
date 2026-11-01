@@ -119,7 +119,7 @@ class NodeReplacementEnvTest {
                                                 ctm,
                                                 node -> Promise.success(drainAnswer),
                                                 node -> oldDraining.get(),
-                                                () -> "fresh",
+                                                Option::none,
                                                 node -> false,
                                                 Set::of,
                                                 () -> Integer.MAX_VALUE,

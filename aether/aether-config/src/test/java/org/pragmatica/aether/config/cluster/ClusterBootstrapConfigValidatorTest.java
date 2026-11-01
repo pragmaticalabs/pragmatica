@@ -175,6 +175,25 @@ class ClusterBootstrapConfigValidatorTest {
                                       infrastructureConfig(), defaultOperationsConfig(), java.util.Map.of());
     }
 
+    /// A Docker core and a Hetzner worker pool in one cluster: the worker pool is budgeted with the cloud shape (the shape a worker replacement is
+    /// minted in, by the source of the node being replaced), whatever backs the core.
+    private static ClusterBootstrapConfig dockerCoreHetznerWorker(String cluster) {
+        var dockerRuntime = runtimeProfile(RuntimeType.DOCKER, some("aether:latest"), none());
+        var cloudRuntime = runtimeProfile(RuntimeType.CONTAINER, some("aether:latest"), none());
+        var docker = sourceProfile(sourceNameOrDefault("local"), SourceType.DOCKER, none(), none(), none(), none(), none(), none(), none(),
+                                   LoadBalancerMode.EXTERNAL, List.of(), none(), Map.of(),
+                                   Map.of(NodeRole.CORE, roleSubTable(some(3), none(), none(), "dock")), List.of(), none());
+        var hetzner = sourceProfile(sourceNameOrDefault("hz"), SourceType.CLOUD, some(CloudProviderName.HETZNER),
+                                    some("key"), some("eu-central"), none(), none(), none(), none(),
+                                    LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
+                                    Map.of(NodeRole.WORKER, roleSubTable(some(2), none(), some("cx41"), "prod")), List.of(), none());
+
+        return clusterBootstrapConfig(clusterIdentity(cluster, "1.0.0").unwrap(),
+                                      defaultCoreTopology(), Map.of("local", docker, "hz", hetzner),
+                                      Map.of("prod", cloudRuntime, "dock", dockerRuntime),
+                                      infrastructureConfig(), defaultOperationsConfig(), java.util.Map.of());
+    }
+
     /// G1-a: a Hetzner server is named `<cluster>-<node id>`, at most 63 characters, so a cluster name over 24 characters cannot name
     /// the servers of its own minted ids. Refused at validation, never truncated.
     @Nested
@@ -215,6 +234,15 @@ class ClusterBootstrapConfigValidatorTest {
         void validate_productionEu_passes_atAComputedTotalOf52() {
             validate(cloudConfigNamed(CloudProviderName.HETZNER, "production-eu"))
                 .onFailure(cause -> Assertions.fail(cause.message()));
+        }
+
+        @Test
+        void validate_dockerCoreWithAHetznerWorkerPool_budgetsTheWorkerPoolWithTheCloudShape() {
+            validate(dockerCoreHetznerWorker("production-eu")).onFailure(cause -> Assertions.fail(cause.message()));
+            validate(dockerCoreHetznerWorker("a".repeat(24))).onFailure(cause -> Assertions.fail(cause.message()));
+            validate(dockerCoreHetznerWorker("a".repeat(25)))
+                .onSuccess(v -> Assertions.fail("the Hetzner worker pool must still be budgeted when the core is Docker"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-36").contains("source 'hz'").contains("role 'worker'"));
         }
 
         @Test

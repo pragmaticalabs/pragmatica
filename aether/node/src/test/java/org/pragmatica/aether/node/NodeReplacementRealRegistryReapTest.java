@@ -163,7 +163,7 @@ class NodeReplacementRealRegistryReapTest {
                                                                              ctm,
                                                                              node -> Promise.success(NodeReplacementWiring.DrainOutcome.admitted()),
                                                                              node -> false,
-                                                                             () -> "fresh",
+                                                                             Option::none,
                                                                              node -> false,
                                                                              java.util.Set::of,
                                                                              () -> 10,
