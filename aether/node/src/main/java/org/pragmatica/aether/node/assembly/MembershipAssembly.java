@@ -698,7 +698,8 @@ public sealed interface MembershipAssembly {
         metricsScheduler.setPeerMetricsForwarding(hierarchyPeerPolicy::forwardsPeerMetrics);
         // W-OBS W2: the leader's cluster directory content, and the governor lookup of the pong path's sender gate (I-W14).
         metricsScheduler.setDirectorySources(() -> ReplicaFeedAssembly.directoryNodes(membershipFsm),
-                                             () -> ReplicaFeedAssembly.directoryDhtReplication(kvStore));
+                                             () -> ReplicaFeedAssembly.directoryDhtReplication(kvStore),
+                                             clusterNode::voterConfiguration);
         metricsCollector.setDirectoryGovernor(sender -> ReplicaFeedAssembly.isOwnGovernor(config.self(),
                                                                                           sender,
                                                                                           communityDirectory::assignment,

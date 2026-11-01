@@ -156,3 +156,4 @@ IdentityLedgerTest 1
 ProtocolConfigIdentityLedgerTest 1
 OfferJournalTest 1
 OfferLockStressTest 3
+RabiaEnginePassiveVotersTest 1
