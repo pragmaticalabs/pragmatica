@@ -85,6 +85,19 @@ class ReplicaClientAssemblyTest {
         assertThat(votersInstalled).containsExactly(carried);
     }
 
+    /// A governor's relay is installed by the same installer, so a strictly newer DIRECTORY can carry an OLDER electorate. The installer
+    /// filters nothing by voter epoch: it hands every carried electorate to the engine door, whose own epoch guard (RabiaEnginePassiveVotersTest
+    /// `_olderConfigInsideANewerRelayedDirectory_ignored`) decides. Mutation: compare voter epochs here instead (the guard would then live in two places).
+    @Test
+    void tick_aNewerDirectoryCarryingAnOlderElectorate_stillReachesTheEngineDoor() {
+        held.set(Option.some(new ClusterDirectory(1L, 1L, 1L, 2L, List.of(), DHT, Option.some(voters(3)))));
+        installer.tick();
+        held.set(Option.some(new ClusterDirectory(1L, 1L, 1L, 3L, List.of(), DHT, Option.some(voters(1)))));
+        installer.tick();
+
+        assertThat(votersInstalled).extracting(VoterConfiguration::epoch).containsExactly(3L, 1L);
+    }
+
     /// A directory from a leader with no installed electorate installs none: the worker keeps the one it holds.
     @Test
     void tick_aDirectoryWithoutVoters_installsNoVoters() {

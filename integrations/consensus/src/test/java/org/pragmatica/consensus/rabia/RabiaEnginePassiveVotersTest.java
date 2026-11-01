@@ -104,6 +104,21 @@ class RabiaEnginePassiveVotersTest {
         assertThat(heard).as("nothing was installed, nothing is announced").isEmpty();
     }
 
+    /// A governor relays the leader's directory to its members, and a relayed directory can be strictly newer as a DIRECTORY (a higher
+    /// generation, e.g. a changed node list) while carrying an electorate older than the one the worker already holds. The directory's
+    /// version decides nothing here: only the voter configuration's own epoch does.
+    @Test
+    void installPassiveVoters_olderConfigInsideANewerRelayedDirectory_ignored() {
+        var passive = engine(WORKER, true);
+        var held = voters(3, CORE_1, CORE_4, CORE_5);
+        var relayedOlder = voters(2, CORE_1, CORE_2, CORE_4);
+
+        passive.installPassiveVoters(held);
+
+        assertThat(passive.installPassiveVoters(relayedOlder).isSuccess()).isTrue();
+        assertThat(passive.voterConfiguration().unwrap()).as("the relayed older electorate did not replace the held one").isEqualTo(held);
+    }
+
     @Test
     void installPassiveVoters_equalEpochSameRoster_noop() {
         var passive = engine(WORKER, true);
