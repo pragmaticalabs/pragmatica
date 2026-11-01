@@ -163,3 +163,7 @@ driver_server_count_by_label(){ hcloud server list --selector "$1" -o noheader 2
 # Reports the most common type so a fleet with a stray odd node still prices sensibly.
 driver_server_type_by_label(){ hcloud server list --selector "$1" -o noheader -o columns=type 2>/dev/null | sort | uniq -c | sort -rn | head -1 | awk '{print $2}'; }
 driver_show_servers_by_label(){ hcloud server list --selector "$1"; }
+# Every server in the project, whatever its labels: the arm X/K teardown check compares this against the count read before provisioning,
+# so a server created without the run's label (an auto-provisioned replacement) still keeps the teardown open.
+driver_server_count_all()     { hcloud server list -o noheader 2>/dev/null | wc -l | tr -d ' '; }
+driver_server_private_ip()    { hcloud server describe "$1" -o json | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d["private_net"][0]["ip"])'; }
