@@ -38,6 +38,7 @@ EmberConfigStartTimeoutTest 0
 EmberDrainAcknowledgementWiringTest 24
 EmberDrainEvictionWiringTest 9
 EmberFollowerLinkLossKeepsLeaderTest 49
+EmberRabiaPartialPartitionTest 120
 EmberForwardedMavenPushTest 19
 EmberGenesisRecoveryTest 178
 EmberHeldPartitionPublishTest 10
