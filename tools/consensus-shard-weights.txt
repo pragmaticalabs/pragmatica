@@ -39,6 +39,7 @@ LeaderReconnectTransportTest 5
 LeaderReconnectTripwireTest 1
 LifecycleGoldenTranscriptTest 2
 LifecycleRoleTruthTableTest 1
+LifecycleRoleWiringTest 1
 LifecycleTripwireTest 1
 OfflineBufferTripwireTest 5
 OutboundMessageLimitTest 1
