@@ -40,6 +40,8 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// -> `registerBatch` -> `mergePending`: the batch enters that node's own pending queue; nothing is forwarded to a
 /// leader), about 20 writes per second each. A write is acknowledged when it commits.
 ///
+/// One representative cell per type keeps the shard weight small; the other Q shapes live in arm 1.
+///
 /// - **E1, consensus-only cut:** the inbound fault filter drops Rabia protocol messages across the cut pairs and every
 ///   `NewBatch` between voters, so a batch spreads only through the proposals themselves (`learnProposedBatch`); SWIM
 ///   and everything else stay up, so membership does not react.
@@ -69,9 +71,9 @@ class EmberRabiaPartialPartitionTest {
     private static final long STALL_MS = 10_000L;
     private static final long WRITE_PERIOD_MS = 50L;
     private static final long DRAIN_BOUND_MS = 45_000L;
-    private static final long PRE_MS = 5_000L;
-    private static final long CUT_MS = 24_000L;
-    private static final long POST_MS = 6_000L;
+    private static final long PRE_MS = 4_000L;
+    private static final long CUT_MS = 20_000L;
+    private static final long POST_MS = 4_000L;
     private static final long CONTROL_CUT_MS = 10_000L;
     private static final long CONTROL_POST_MS = 2_000L;
 
@@ -99,16 +101,11 @@ class EmberRabiaPartialPartitionTest {
         var nodes = cluster.allNodes().stream().sorted(Comparator.comparing(node -> node.self().id())).toList();
         var failures = new ArrayList<String>();
 
-        // C-controls: an unfiltered run, then NewBatch dropped with no cut (the E1 baseline), before any cut.
-        record(failures, runCell("E00-clean", List.of(nodes.get(0), nodes.get(2)), () -> {}, 0, CONTROL_CUT_MS, CONTROL_POST_MS, new Drops()));
+        // Control: NewBatch dropped with no cut (the E1 baseline). The remaining shapes live in arm 1 (engine level).
         record(failures, runConsensusOnly("E0-newbatch-dropped", nodes, List.of(0, 2), Set.of(), CONTROL_CUT_MS, CONTROL_POST_MS));
-        // E1: Q1's shape on cores 0-2 (cut 0<->2), then Q3 on all five (cut {0,1}<->{3,4}).
+        // E1: Q1's shape on cores 0-2 (cut 0<->2) behind the consensus-only filter.
         record(failures, runConsensusOnly("E1-Q1", nodes, List.of(0, 2), edges(nodes, List.of(0), List.of(2), true), CUT_MS, POST_MS));
-        record(failures, runConsensusOnly("E1-Q3", nodes, List.of(0, 4), edges(nodes, List.of(0, 1), List.of(3, 4), true), CUT_MS, POST_MS));
-        // Interleaved no-cut control between the arms.
-        record(failures, runConsensusOnly("E0-newbatch-dropped-again", nodes, List.of(0, 2), Set.of(), CONTROL_CUT_MS, CONTROL_POST_MS));
-        // E2: partitionFrom on both sides (membership reacts), Q1's and Q3's pairs.
-        record(failures, runCell("E2-Q1", List.of(nodes.get(0), nodes.get(2)), () -> partition(nodes, List.of(0), List.of(2)), PRE_MS, CUT_MS, POST_MS, new Drops(ids(nodes, 0, 2))));
+        // E2: Q3's cut ({0,1}<->{3,4}) through partitionFrom on both sides (membership reacts).
         record(failures, runCell("E2-Q3", List.of(nodes.get(0), nodes.get(4)), () -> partition(nodes, List.of(0, 1), List.of(3, 4)), PRE_MS, CUT_MS, POST_MS, new Drops(ids(nodes, 0, 1, 3, 4))));
 
         assertThat(failures).as("every cell commits (no stall of %d ms, no failed or unanswered write)", STALL_MS).isEmpty();
