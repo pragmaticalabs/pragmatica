@@ -16,8 +16,8 @@ percentile of the module's measured weights (default_weight), so a PR adding a t
 predicted total, defaults included, exceeds BUDGET_SECONDS, telling the maintainer to raise --shards. The weights
 regenerate from a CI run's own reports with tools/regen-shard-weights.py rather than by hand-added lines.
 
-The default is a percentile, not the maximum, because the maximum (Ember's 624 s class) made one new class a predicted
-overrun of a plan that had 104 s of headroom. The cost: a new class slower than the percentile is under-predicted until
+The default is a percentile, not the maximum, because at 8d4c507347 the maximum (Ember's 624 s class) made one new class
+a predicted overrun of a plan that had 104 s of headroom. The cost: a new class slower than the percentile is under-predicted until
 the next regeneration, and the only margin for that error is the slack between a budget and its step timeout (Ember:
 1920 s against the test step's 40 min, 480 s).
 """
