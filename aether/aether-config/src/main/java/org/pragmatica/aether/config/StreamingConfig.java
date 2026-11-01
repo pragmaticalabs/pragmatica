@@ -376,13 +376,15 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
     /// (the host's physical memory, as the JVM sees it inside a container), clamped to
     /// [[#MIN_DERIVED_MAX_MEMORY_BYTES], [#MAX_DERIVED_MAX_MEMORY_BYTES]].
     public static long derivedMaxMemoryBytes(long totalMemoryBytes) {
-        return MIN_DERIVED_MAX_MEMORY_BYTES;
+        return Math.clamp(totalMemoryBytes / 8, MIN_DERIVED_MAX_MEMORY_BYTES, MAX_DERIVED_MAX_MEMORY_BYTES);
     }
 
     /// The sealer's pending-seal heap cap: the configured value, or when it is [#DERIVE_SEAL_PENDING_CAP_BYTES] the smaller
     /// of `maxMemoryBytes` (the node's resolved off-heap budget) and [#MAX_DERIVED_SEAL_PENDING_CAP_BYTES].
     public long effectiveSealPendingCapBytes(long maxMemoryBytes) {
-        return maxMemoryBytes;
+        return sealPendingCapBytes == DERIVE_SEAL_PENDING_CAP_BYTES
+               ? Math.min(maxMemoryBytes, MAX_DERIVED_SEAL_PENDING_CAP_BYTES)
+               : sealPendingCapBytes;
     }
 
     /// The owner activation gate's alarm bound (#1555 item 8): two SWIM suspect windows. The promotion escape bound may not be below it.

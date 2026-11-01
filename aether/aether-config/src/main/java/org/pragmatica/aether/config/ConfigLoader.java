@@ -108,6 +108,7 @@ public final class ConfigLoader {
             mergeCliOverrides(overrides, builder);
 
             return refuseRemovedTargetRf(doc).flatMap(_ -> refuseUnknownUploadKeys(doc))
+                                        .flatMap(_ -> refuseNonPositiveStreamingMemory(doc))
                                         .flatMap(_ -> refuseUnsupportedSecurityModes(doc))
                                         .flatMap(_ -> parseReadLinearization(doc))
                                         .map(mode -> applyReadLinearization(builder.build(),
@@ -249,6 +250,8 @@ public final class ConfigLoader {
         var sealRunEvents = parseInt(doc, "streaming", "seal_run_events", defaults.sealRunEvents());
         var sealRunAge = parseTimeSpan(doc, "streaming", "seal_run_age", defaults.sealRunAge());
         var sealMergeBytes = parseDataSize(doc, "streaming", "seal_merge_bytes", defaults.sealMergeBytes());
+        var maxMemoryBytes = parseDataSize(doc, "streaming", "max_memory_bytes", defaults.maxMemoryBytes());
+        var sealPendingCapBytes = parseDataSize(doc, "streaming", "seal_pending_cap_bytes", defaults.sealPendingCapBytes());
 
         builder.streaming(StreamingConfig.streamingConfig(publishTimeout,
                                                           readTimeout,
@@ -260,7 +263,37 @@ public final class ConfigLoader {
                                          .withDhtSegmentMaxBytes(dhtSegmentMaxBytes)
                                          .withIsrLagMax(isrLagMax)
                                          .withPromotionEscapeAfter(promotionEscapeAfter)
-                                         .withSealRun(sealRunBytes, sealRunEvents, sealRunAge, sealMergeBytes));
+                                         .withSealRun(sealRunBytes, sealRunEvents, sealRunAge, sealMergeBytes)
+                                         .withMemoryBudget(maxMemoryBytes, sealPendingCapBytes));
+    }
+
+    /// #2201 C-03 (spec 4.4 items 1 and 3, D-12): a written `[streaming] max_memory_bytes` or `seal_pending_cap_bytes` must be
+    /// a positive size. Unset derives it (0 is the derive sentinel in the built config), so a written zero or negative is
+    /// refused here naming the key, never read as "derive". Text that is no size at all is refused by the #1455 gate.
+    private static Result<Unit> refuseNonPositiveStreamingMemory(TomlDocument doc) {
+        return Option.from(Stream.of("max_memory_bytes", "seal_pending_cap_bytes")
+                                 .filter(key -> writtenNonPositive(doc, key))
+                                 .findFirst())
+                     .fold(Result::unitResult,
+                           key -> ConfigError.invalidConfig("[streaming] " + key + " must be a positive size such as 512MB; omit it"
+                                                            + " to derive it. Got: " + doc.getString("streaming", key)
+                                                                                          .or(""))
+                                             .result());
+    }
+
+    private static boolean writtenNonPositive(TomlDocument doc, String key) {
+        return doc.getString("streaming", key)
+                  .flatMap(ConfigLoader::sizeOrWholeNumber)
+                  .filter(bytes -> bytes <= 0)
+                  .isPresent();
+    }
+
+    private static Option<Long> sizeOrWholeNumber(String raw) {
+        return DataSize.dataSize(raw)
+                       .map(DataSize::bytes)
+                       .option()
+                       .orElse(() -> Number.parseLong(raw)
+                                           .option());
     }
 
     private static long parseDataSize(TomlDocument doc, String section, String key, long defaultValue) {

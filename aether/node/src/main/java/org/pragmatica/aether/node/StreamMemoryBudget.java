@@ -13,7 +13,7 @@ import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
-import org.pragmatica.lang.parse.Number;
+import org.pragmatica.lang.parse.DataSize;
 import org.pragmatica.lang.utils.Causes;
 
 import com.sun.management.OperatingSystemMXBean;
@@ -35,10 +35,36 @@ public record StreamMemoryBudget(long maxMemoryBytes, long sealPendingCapBytes) 
     public static Result<StreamMemoryBudget> streamMemoryBudget(Fn1<Option<String>, String> environment,
                                                                 StreamingConfig streaming,
                                                                 long totalMemoryBytes) {
-        return success(environment.apply(MAX_MEMORY_VARIABLE)
-                                  .filter(Verify.Is::notBlank)
-                                  .flatMap(raw -> Number.parseLong(raw).option())
-                                  .or(128 * 1024 * 1024L)).map(budget -> new StreamMemoryBudget(budget, budget));
+        return maxMemoryBytes(environment, streaming, totalMemoryBytes).map(budget -> new StreamMemoryBudget(budget,
+                                                                                                       streaming.effectiveSealPendingCapBytes(budget)));
+    }
+
+    private static Result<Long> maxMemoryBytes(Fn1<Option<String>, String> environment,
+                                               StreamingConfig streaming,
+                                               long totalMemoryBytes) {
+        return environment.apply(MAX_MEMORY_VARIABLE)
+                          .filter(Verify.Is::notBlank)
+                          .map(StreamMemoryBudget::parse)
+                          .or(() -> success(configuredOrDerived(streaming, totalMemoryBytes)));
+    }
+
+    private static long configuredOrDerived(StreamingConfig streaming, long totalMemoryBytes) {
+        return streaming.maxMemoryBytes() == StreamingConfig.DERIVE_MAX_MEMORY_BYTES
+               ? StreamingConfig.derivedMaxMemoryBytes(totalMemoryBytes)
+               : streaming.maxMemoryBytes();
+    }
+
+    private static Result<Long> parse(String raw) {
+        return DataSize.dataSize(raw.trim())
+                       .mapError(origin -> StreamMemoryBudgetError.NotADataSize.FACTORY.apply(raw, origin))
+                       .map(DataSize::bytes)
+                       .flatMap(bytes -> positive(raw, bytes));
+    }
+
+    private static Result<Long> positive(String raw, long bytes) {
+        return bytes > 0
+               ? success(bytes)
+               : StreamMemoryBudgetError.NotPositive.FACTORY.apply(raw).result();
     }
 
     /// The host's physical memory as the JVM reports it (container-aware: the memory MXBean answers the container's limit),
