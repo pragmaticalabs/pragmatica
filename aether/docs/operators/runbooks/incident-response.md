@@ -328,6 +328,17 @@ grep -i "slice\|artifact" /var/log/aether/aether.log | tail -100
 1. Raise `[streaming] segment_disk_max_bytes`, add disk, or shorten stream retention.
 2. `stream-segment-disk-pressure-relieved` (INFO, same subject) follows when the tier falls below the warning ratio.
 
+### Stream Seal Incomplete at Stop (`stream-seal-stop-incomplete`)
+
+**Symptoms:** a WARNING `OPERATOR_WARNING` with `details.code` `stream-seal-stop-incomplete`, subject `node <nodeId> stream sealer`, raised while the node stops; the message lists `stream/partition [from-to]` with `(held by its WAL)` or `(no WAL)`.
+
+**Cause:** a graceful stop waits up to 5 s (`AetherNode.SEALER_STOP_FLUSH_BOUND`) for the stream segment sealer to seal what it holds: each partition's seal in flight and the runs queued behind it. A seal had not landed by then, usually because the storage tier or the DHT was slow or failing, and the stop went ahead. There is no recovery event: the process that raised it has ended.
+
+**Actions:**
+
+1. A range `(held by its WAL)` is replayed when the node starts again and sealed then; nothing to do but check that it starts.
+2. A range `(no WAL)` is lost, acknowledged events included, as in a crash; consumers past it see the offsets assigned again (see `guarantees.md`, Restart without a WAL). Find why seals were slow (`stream-segment-dht-full`, `stream-segment-disk-pressure`, seal failure WARNs before the stop) before the next stop.
+
 ### Stream Consumer Behind the Ring (`stream-consumer-behind-ring`)
 
 **Symptoms:** a WARNING `OPERATOR_WARNING` with `details.code` `stream-consumer-behind-ring`, subject `stream[partition]/group`.
