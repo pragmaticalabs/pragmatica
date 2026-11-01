@@ -349,7 +349,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// partition's list is also that partition's lock serialising recording an install against trimming one, so a trim
     /// never drops an entry a pending install has just recorded or skipped; partitions never wait on each other's
     /// sidecar fsyncs (#1638 N2). Lock order: a partition's list → its log's write lock, never the reverse. One list per
-    /// partition that ever caught up here, kept for the manager's lifetime.
+    /// partition that ever caught up here, kept until its stream is removed ([#purgePartitionState]).
     private final Map<PartitionRef, List<InstalledSlice>> pendingInstalls = new ConcurrentHashMap<>();
 
     private static final long DURABLE_WATERMARK_TTL_NANOS = 10_000_000_000L;
@@ -5280,11 +5280,65 @@ public final class StreamPartitionManager implements AutoCloseable {
         evictionListener.onStreamDeleted(entry.config().name());
         forgetHeldBack(entry);
         forgetFootprint(entry.config().name());
-        closeRefusedCuts(ref -> ref.streamName()
-                                   .equals(entry.config().name()),
-                         "the stream is gone from this node");
+        purgePartitionState(entry.config().name(),
+                            "the stream is gone from this node");
 
         return success(unit());
+    }
+
+    /// #2201 I-20 (know `d9cd07cda1`, S1): a life that ends takes its per-partition state (spec 5.1 rows 4-19) with it, so a
+    /// stream created again under the same name inherits nothing from it. Runs on every stream-removal path through
+    /// [#closeAndRelease]. An open cut refusal is closed first, with `reason`, so its operator warning is resolved rather than
+    /// dropped. The quarantine marker [#divergedAt] is not purged here.
+    @Contract
+    private void purgePartitionState(String streamName, String reason) {
+        closeRefusedCuts(ref -> ref.streamName()
+                                   .equals(streamName),
+                         reason);
+        lastReplicatedWalWrite.keySet().removeIf(key -> isPartitionKeyOf(key, streamName));
+        unverifiedReplicas.removeIf(key -> isPartitionKeyOf(key, streamName));
+        verifiedPrefix.keySet().removeIf(key -> isPartitionKeyOf(key, streamName));
+        durableWatermarks.keySet().removeIf(ref -> ref.streamName()
+                                                      .equals(streamName));
+        openCuts.keySet().removeIf(key -> isPartitionKeyOf(key, streamName));
+        provenanceMismatchAt.keySet().removeIf(ref -> ref.streamName()
+                                                         .equals(streamName));
+        epochTrust.keySet().removeIf(key -> isPartitionKeyOf(key, streamName));
+        replicaCommitted.keySet().removeIf(key -> isPartitionKeyOf(key, streamName));
+        pendingInstalls.keySet().removeIf(ref -> ref.streamName()
+                                                    .equals(streamName));
+        raisedLocally.removeIf(raised -> isRaiseOf(raised, streamName));
+        cutGenerations.keySet().removeIf(key -> isPartitionKeyOf(key, streamName));
+        pendingCuts.keySet().removeIf(ref -> ref.streamName()
+                                                .equals(streamName));
+        reportedUnsettled.keySet().removeIf(ref -> ref.streamName()
+                                                      .equals(streamName));
+        repairGenerationOf.keySet().removeIf(ref -> ref.streamName()
+                                                       .equals(streamName));
+    }
+
+    /// Whether `key` is a [#partitionKeyOf] key of `streamName`: the stream name, `#`, and nothing but the partition's digits,
+    /// so a stream whose own name continues with `#<digits>#...` is never mistaken for it.
+    private static boolean isPartitionKeyOf(String key, String streamName) {
+        return key.startsWith(streamName + "#") && isPartitionNumber(key.substring(streamName.length() + 1));
+    }
+
+    private static boolean isPartitionNumber(String text) {
+        return ! text.isEmpty() && text.chars()
+                                       .allMatch(Character::isDigit);
+    }
+
+    /// Whether `raised` (a [#raisedLocally] key, `stream#partition#kind#evidence`) was raised for a partition of `streamName`.
+    private static boolean isRaiseOf(String raised, String streamName) {
+        return raised.startsWith(streamName + "#") && startsWithPartitionAndKind(raised.substring(streamName.length() + 1));
+    }
+
+    private static boolean startsWithPartitionAndKind(String rest) {
+        var digits = rest.indexOf('#');
+
+        return digits > 0
+               && isPartitionNumber(rest.substring(0, digits))
+               && startsWithReasonKind(rest.substring(digits + 1));
     }
 
     /// A destroyed stream stops being served and its life's durable refs are reclaimed (#1278 review). Best-effort:
