@@ -124,6 +124,39 @@ class StreamBudgetThawTest {
                 manager.close();
             }
         }
+
+        /// The same for a ring the manager built while hydrating a committed config whose floor fit (`onStreamConfigPut`,
+        /// `hydrateEntry`): the path a follower and a restarted node take.
+        @Test
+        void aHydratedRing_frozenByAnExhaustedBudget_alsoRegrowsAfterBudgetIsReleased() {
+            var sink = new GrowthRefusals();
+            var manager = streamPartitionManager(2 * MIB);
+
+            manager.exhaustionSink(sink);
+            try {
+                manager.onStreamConfigPut(streamConfigPut(stream("a", 4 * MIB)));
+                assertThat(manager.partitionBuffer("a", 0).isPresent()).as("control: a's floor fit, it was hydrated at once").isTrue();
+                create(manager, stream("b", SEGMENT));
+
+                var offsets = new AtomicLong();
+                var ring = manager.partitionBuffer("a", 0).unwrap();
+
+                for (var i = 0; i < 2_000 && sink.refused("a") == 0; i++) {
+                    appendBytes(ring, offsets, PAYLOAD);
+                }
+                assertThat(sink.refused("a")).as("the growth of a was refused").isPositive();
+
+                var frozenAt = ring.allocatedBytes();
+
+                manager.destroyStream("b").onFailure(cause -> fail("destroy b: " + cause.message()));
+                appendBytes(ring, offsets, 3 * frozenAt);
+
+                assertThat(ring.allocatedBytes()).as("after b's floor was released, the hydrated ring grew past %d", frozenAt)
+                                                 .isGreaterThan(frozenAt);
+            } finally {
+                manager.close();
+            }
+        }
     }
 
     /// The ring's side of item 4, with the generation as a plain counter: a frozen ring asks the budget again only after the
