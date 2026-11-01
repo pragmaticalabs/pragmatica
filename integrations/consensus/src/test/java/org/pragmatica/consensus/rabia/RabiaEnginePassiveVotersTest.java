@@ -10,11 +10,18 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.StateMachine;
+import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.rabia.RabiaEngineTest.TestClusterNetwork;
 import org.pragmatica.consensus.rabia.RabiaEngineTest.TestCommand;
 import org.pragmatica.consensus.rabia.RabiaEngineTest.TestStateMachine;
 import org.pragmatica.consensus.rabia.RabiaEngineTest.TestTopologyManager;
+import org.pragmatica.consensus.rabia.RabiaPersistence.SavedState;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Decision;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Propose;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.SyncResponse;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound1;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound2;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
@@ -32,6 +39,7 @@ class RabiaEnginePassiveVotersTest {
 
     private final List<RabiaEngine<TestCommand>> engines = new CopyOnWriteArrayList<>();
     private final TestClusterNetwork network = new TestClusterNetwork();
+    private final TestStateMachine machine = new TestStateMachine();
 
     @AfterEach
     void stopEngines() {
@@ -39,7 +47,10 @@ class RabiaEnginePassiveVotersTest {
     }
 
     private RabiaEngine<TestCommand> engine(NodeId self, boolean passive) {
-        StateMachine<TestCommand> machine = new TestStateMachine();
+        return engine(self, passive, true);
+    }
+
+    private RabiaEngine<TestCommand> engine(NodeId self, boolean passive, boolean gated) {
         var topology = new TestTopologyManager(self, 3) {
             @Override
             public Set<NodeId> coreNodes() {
@@ -57,7 +68,7 @@ class RabiaEnginePassiveVotersTest {
                                         ProtocolConfig.consensusConfig(org.pragmatica.lang.io.TimeSpan.timeSpan(60).seconds(),
                                                                        org.pragmatica.lang.io.TimeSpan.timeSpan(60).seconds()),
                                         ConsensusMetrics.noop(),
-                                        true);
+                                        gated);
 
         engines.add(created);
         if (passive) {
@@ -168,5 +179,36 @@ class RabiaEnginePassiveVotersTest {
 
         assertThat(passive.isObserving()).isEqualTo(observingBefore);
         assertThat(passive.isActive()).isEqualTo(activeBefore).isFalse();
+    }
+
+    /// #2543 passivity, the main risk of the fix: an installed electorate must not turn a worker into a participant. The worker is driven
+    /// with everything that moves a core engine (cluster ACTIVE, activation, a sync quorum, proposals, both ballot rounds and a decision from
+    /// the members of its NEW electorate); it must send nothing, apply nothing, and stay neither active nor observing. Ungated, so that the
+    /// only thing between these stimuli and participation is the passive-client fence. Mutation that goes red: `passiveClient = false` in
+    /// `installReportedVoters`. The fence is layered: deleting any ONE of the `passiveClient` returns in `safeExecute`, `clusterState` or
+    /// `authorizeActivation` leaves this green, because the others still stop these stimuli.
+    @Test
+    void installPassiveVoters_thenEveryCoreStimulus_theWorkerNeverParticipates() {
+        var worker = engine(WORKER, true, false);
+        var batch = Batch.create(machine.serializer(), List.of(new TestCommand("core-only")));
+
+        assertThat(worker.installPassiveVoters(voters(2, CORE_1, CORE_4, CORE_5)).isSuccess()).as("precondition: the roster is installed").isTrue();
+        worker.clusterState(ClusterStateNotification.active());
+        worker.authorizeActivation();
+        List.of(CORE_1, CORE_4, CORE_5).forEach(core -> {
+            worker.processSyncResponse(new SyncResponse<>(core, SavedState.savedState(new byte[0], Phase.ZERO, List.of()), ResponderState.COLD));
+            worker.processPropose(new Propose<>(core, Phase.ZERO, batch));
+            worker.processVoteRound1(new VoteRound1(core, Phase.ZERO, StateValue.V1));
+            worker.processVoteRound2(new VoteRound2(core, Phase.ZERO, StateValue.V1));
+        });
+        worker.processDecision(new Decision<>(CORE_4, Phase.ZERO, StateValue.V1, batch));
+        worker.settleForTesting().await();
+        worker.settleForTesting().await();
+
+        assertThat(network.getMessages()).as("a worker never asks to sync, proposes, votes or relays a decision").isEmpty();
+        assertThat(machine.getProcessedCommands()).as("a worker applies no decision itself; its state comes from the replica feed").isEmpty();
+        assertThat(worker.isActive()).isFalse();
+        assertThat(worker.isObserving()).isFalse();
+        assertThat(worker.isPassiveClientReady()).as("the install does not mark the worker ready either").isFalse();
     }
 }

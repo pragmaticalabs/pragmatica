@@ -32,10 +32,9 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// - after the crash the count follows the liveness down to four, so the detector reads the world it is told of;
 /// - and for the whole observation it stays at or above its threshold of three, and the worker is still in the cluster.
 ///
-/// A positive control of the other kind, "crash three cores, the worker must still fire", was written and does NOT hold, with or without
-/// this fix: a worker takes member states from the leader's updates, so when a quorum is lost and there is no leader its member states do not
-/// move (observed: after crashing three of five, the worker's detector stayed at four of five for 120 s). Core loss without a quorum is the
-/// core-absence detector's tier, not this one.
+/// Real quorum loss is pinned by `EmberWorkerRealQuorumLossTest`: with three of five voters gone, the leader among them or not, the worker
+/// does leave service through this detector (it reads 2 of 3 and self-drains, measured about 35-76 s), on the genesis electorate and on one
+/// learned after two replacements.
 @PortBudget
 class EmberWorkerQuorumLossTest {
     private static final int CORES = 5;

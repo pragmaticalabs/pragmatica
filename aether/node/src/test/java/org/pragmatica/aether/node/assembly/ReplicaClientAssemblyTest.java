@@ -108,6 +108,21 @@ class ReplicaClientAssemblyTest {
         assertThat(installer.isInstalled()).isTrue();
     }
 
+    /// #2543: a newer directory with no electorate (a leader whose genesis is pending) never reaches the engine door, so it can never clear
+    /// or replace the electorate a worker holds. Mutation: hand `voters().or(null)` to the door.
+    @Test
+    void tick_aNewerDirectoryWithoutVoters_afterOneWithVoters_leavesTheDoorUntouched() {
+        var carried = voters(3);
+
+        held.set(Option.some(new ClusterDirectory(1L, 1L, 1L, 1L, List.of(), DHT, Option.some(carried))));
+        installer.tick();
+        held.set(Option.some(new ClusterDirectory(2L, 1L, 1L, 1L, List.of(), DHT, Option.none())));
+        installer.tick();
+
+        assertThat(votersInstalled).containsExactly(carried);
+        assertThat(endpointsInstalled).as("the newer directory itself was installed").hasSize(2);
+    }
+
     /// Mutation: install on `!equals` instead of `isStrictlyAfter` (an older directory would replace a newer one).
     @Test
     void tick_neverInstallsAnOlderOrEqualDirectory() {

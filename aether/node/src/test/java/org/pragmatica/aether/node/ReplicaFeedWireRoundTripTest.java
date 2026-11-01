@@ -33,6 +33,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.ReplicaEntry;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.lang.Option;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.FrameworkCodecs;
@@ -144,5 +145,24 @@ class ReplicaFeedWireRoundTripTest {
         assertThat(roundTrip(without)).isEqualTo(without);
         assertThat(roundTrip(with)).isEqualTo(with);
         assertThat(roundTrip(with).observedDirectoryGeneration()).isEqualTo(held);
+    }
+
+    /// #2543. The leader's electorate rides the directory to the worker: a directory that carries one survives the codec with the epoch
+    /// and the members intact (tag 114 inside the new last component).
+    @Test
+    void clusterSyncPing_survives_withADirectoryCarryingTheElectorate() {
+        var electorate = VoterConfiguration.voterConfiguration(7L, List.of(SENDER, new NodeId("core-4"), new NodeId("core-5"))).unwrap();
+        var base = directory();
+        var carrying = new ClusterDirectory(base.generation(),
+                                            base.epochIncarnation(),
+                                            base.epochTerm(),
+                                            base.epochCounter(),
+                                            base.nodes(),
+                                            base.dhtReplication(),
+                                            Option.some(electorate));
+        var ping = new ClusterSyncPing(SENDER, Map.of(), 5L, 1L, 5L, 0L, Set.of(), Set.of(), Map.of(), Set.of(), true, true, carrying.version(), Option.some(carrying));
+
+        assertThat(roundTrip(ping)).isEqualTo(ping);
+        assertThat(roundTrip(ping).directory().flatMap(ClusterDirectory::voters).unwrap()).isEqualTo(electorate);
     }
 }

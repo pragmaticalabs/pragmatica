@@ -38,4 +38,13 @@ class ClusterDirectoryTest {
         assertThat(directory(1L, voters(1, "a", "b", "c")).sameContentAs(directory(1L, voters(2, "a", "b", "d")))).isFalse();
         assertThat(directory(1L, voters(1, "a", "b", "c")).sameContentAs(directory(1L, Option.none()))).isFalse();
     }
+
+    /// The version-taking factory carries the electorate it is given. Mutation: pass `Option.none()` in `clusterDirectory`.
+    @Test
+    void clusterDirectory_carriesTheElectorate() {
+        var electorate = voters(3, "a", "b", "c");
+
+        assertThat(ClusterDirectory.clusterDirectory(DirectoryVersion.directoryVersion(1L, 5L, 0L, 2L), List.of(), DHT, electorate).voters())
+            .isEqualTo(electorate);
+    }
 }
