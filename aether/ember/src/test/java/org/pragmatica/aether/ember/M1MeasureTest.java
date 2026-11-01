@@ -465,6 +465,8 @@ class M1MeasureTest {
     private static final String ECHO_VERSION = System.getProperty("project.version", "UNKNOWN");
     private static final String ECHO_SLICE = "org.pragmatica-lite.aether.test:echo-slice-echo-service:" + ECHO_VERSION;
     private static final HttpClient HTTP = HttpClient.newHttpClient();
+    /// The blueprint parser refuses a slice with fewer instances (HTTP 400); with fewer than 3 communities S6b therefore deploys 3 and says so.
+    private static final int MIN_BLUEPRINT_INSTANCES = 3;
     private static final String WORKERS_ONLY = "WORKERS_ONLY";
     private static final String CORE_ONLY = "CORE_ONLY";
     /// Commit families through which a membership change (a SWIM verdict the leader acted on) surfaces; a window with any is flagged.
@@ -547,7 +549,7 @@ class M1MeasureTest {
 
     private int s6Instances(String cls) {
         return switch (cls) {
-            case "s6b" -> new java.util.HashSet<>(communities().values()).size();
+            case "s6b" -> Math.max(MIN_BLUEPRINT_INSTANCES, new java.util.HashSet<>(communities().values()).size());
             case "s6c" -> CORES;
             default -> workers.size();
         };
