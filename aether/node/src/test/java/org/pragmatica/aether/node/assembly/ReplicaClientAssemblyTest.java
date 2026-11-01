@@ -22,6 +22,7 @@ import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -38,11 +39,13 @@ class ReplicaClientAssemblyTest {
     private final List<List<NodeInfo>> peersInstalled = new ArrayList<>();
     private final List<List<NodeInfo>> endpointsInstalled = new ArrayList<>();
     private final AtomicInteger dhtInstalled = new AtomicInteger();
+    private final List<VoterConfiguration> votersInstalled = new ArrayList<>();
     private final AtomicReference<Result<Unit>> peersResult = new AtomicReference<>(Result.success(Unit.unit()));
     private final DirectoryInstaller installer = DirectoryInstaller.directoryInstaller(held::get,
                                                                                       new DirectoryInstall(peers -> record(peers),
                                                                                                            endpointsInstalled::add,
-                                                                                                           _ -> dhtInstalled.incrementAndGet()));
+                                                                                                           _ -> dhtInstalled.incrementAndGet(),
+                                                                                                           votersInstalled::add));
 
     private Result<Unit> record(List<NodeInfo> peers) {
         peersInstalled.add(peers);
@@ -51,7 +54,7 @@ class ReplicaClientAssemblyTest {
     }
 
     private static ClusterDirectory directory(long incarnation, long term, long counter, long generation) {
-        return ClusterDirectory.clusterDirectory(DirectoryVersion.directoryVersion(incarnation, term, counter, generation), List.of(), DHT);
+        return ClusterDirectory.clusterDirectory(DirectoryVersion.directoryVersion(incarnation, term, counter, generation), List.of(), DHT, Option.none());
     }
 
     @Test
@@ -64,6 +67,31 @@ class ReplicaClientAssemblyTest {
         assertThat(peersInstalled).hasSize(1);
         assertThat(endpointsInstalled).hasSize(1);
         assertThat(dhtInstalled.get()).isEqualTo(1);
+        assertThat(installer.isInstalled()).isTrue();
+    }
+
+    private static VoterConfiguration voters(long epoch) {
+        return VoterConfiguration.voterConfiguration(epoch, List.of(NodeId.nodeId("core-1").unwrap(), NodeId.nodeId("core-2").unwrap())).unwrap();
+    }
+
+    /// #2543. The leader's electorate reaches the engine door with the rest of the directory. Mutation: drop the `voters` line of `installRest`.
+    @Test
+    void tick_installsTheDirectoryVoters_whenItCarriesThem() {
+        var carried = voters(3);
+
+        held.set(Option.some(new ClusterDirectory(1L, 1L, 1L, 1L, List.of(), DHT, Option.some(carried))));
+        installer.tick();
+
+        assertThat(votersInstalled).containsExactly(carried);
+    }
+
+    /// A directory from a leader with no installed electorate installs none: the worker keeps the one it holds.
+    @Test
+    void tick_aDirectoryWithoutVoters_installsNoVoters() {
+        held.set(Option.some(directory(1, 1, 1, 1)));
+        installer.tick();
+
+        assertThat(votersInstalled).isEmpty();
         assertThat(installer.isInstalled()).isTrue();
     }
 
@@ -158,7 +186,7 @@ class ReplicaClientAssemblyTest {
                                                       Option::none,
                                                       Set::of,
                                                       new org.pragmatica.cluster.replica.ReplicaFeedClient.GovernorArm(() -> false, Option::none),
-                                                      new DirectoryInstall(_ -> Result.success(Unit.unit()), _ -> {}, _ -> {}),
+                                                      new DirectoryInstall(_ -> Result.success(Unit.unit()), _ -> {}, _ -> {}, _ -> {}),
                                                       () -> {},
                                                       freshness,
                                                       routes,

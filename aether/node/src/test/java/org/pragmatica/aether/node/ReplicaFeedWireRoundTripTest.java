@@ -118,7 +118,8 @@ class ReplicaFeedWireRoundTripTest {
                                     5L,
                                     0L,
                                     List.of(NodeInfo.nodeInfo(SENDER, new NodeAddress("localhost", 7000), Map.of(NodeInfo.LABEL_ROLE, "core"))),
-                                    new DhtReplication(3, 2, 3, 2, 8L, -1L, 0, 0, true));
+                                    new DhtReplication(3, 2, 3, 2, 8L, -1L, 0, 0, true),
+                                    Option.none());
     }
 
     /// C-3. The directory pair and payload are the last two components, and a ping with and without a directory both survive. Mutation:
