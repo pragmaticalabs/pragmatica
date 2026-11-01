@@ -244,9 +244,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final ConcurrentHashMap<String, ReplicatedWrite> lastReplicatedWalWrite = new ConcurrentHashMap<>();
     /// #1505 F2: per partition, the lowest offset at which this replica was found to hold a DIVERGENT entry. Read
     /// and written only inside the partition's ordered append section ([OffHeapRingBuffer#appendOrderedAt]).
-    /// Kept for the life of this manager, so it survives a ring release and rebuild. It does NOT survive a
-    /// process restart: persisting it would be a new persisted-state format, tracked as #1513. Cleared
-    /// only when the stream is destroyed.
+    /// Kept for the life of the stream on this node, so it survives a ring release and rebuild. It does NOT survive a
+    /// process restart: persisting it would be a new persisted-state format, tracked as #1513. Cleared when a repair cut
+    /// lifts it ([#forgetCutState]) and when the stream is removed on any path ([#purgePartitionState]).
     private final ConcurrentHashMap<PartitionRef, Long> divergedAt = new ConcurrentHashMap<>();
     /// #1505 R3: serialises RECORDING a divergence ([PartitionQuarantine#recordDivergence], called inside a ring's
     /// ordered section) against a self-promotion and its completion ack ([#quarantineView]). A promotion that runs
@@ -1567,16 +1567,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         return option(streams.remove(streamName)).toResult(new StreamError.StreamNotFound(streamName))
                      .flatMap(this::closeAndRelease)
-                     .onSuccess(_ -> forgetQuarantine(streamName))
                      .onSuccess(_ -> publishStreamConfigRemoval(streamName));
-    }
-
-    /// A destroyed stream takes its partitions' quarantine with it (#1505 F2): a stream later created under the
-    /// same name starts with fresh rings and must not inherit a divergence it never had.
-    @Contract
-    private void forgetQuarantine(String streamName) {
-        divergedAt.keySet().removeIf(ref -> ref.streamName()
-                                               .equals(streamName));
     }
 
     @Contract
@@ -5289,7 +5280,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// #2201 I-20 (know `d9cd07cda1`, S1): a life that ends takes its per-partition state (spec 5.1 rows 4-19) with it, so a
     /// stream created again under the same name inherits nothing from it. Runs on every stream-removal path through
     /// [#closeAndRelease]. An open cut refusal is closed first, with `reason`, so its operator warning is resolved rather than
-    /// dropped. The quarantine marker [#divergedAt] is not purged here.
+    /// dropped. The quarantine marker [#divergedAt] goes too, on every path (#1505 F2 for destroy; know `e0035a56ef` for
+    /// config removal and the idle reaper): the life's records are deleted with it, so a marker left behind would fence the
+    /// fresh log of a stream created again under the same name, which could then never reach CAUGHT_UP.
     @Contract
     private void purgePartitionState(String streamName, String reason) {
         closeRefusedCuts(ref -> ref.streamName()
@@ -5301,6 +5294,8 @@ public final class StreamPartitionManager implements AutoCloseable {
         durableWatermarks.keySet().removeIf(ref -> ref.streamName()
                                                       .equals(streamName));
         openCuts.keySet().removeIf(key -> isPartitionKeyOf(key, streamName));
+        divergedAt.keySet().removeIf(ref -> ref.streamName()
+                                               .equals(streamName));
         provenanceMismatchAt.keySet().removeIf(ref -> ref.streamName()
                                                          .equals(streamName));
         epochTrust.keySet().removeIf(key -> isPartitionKeyOf(key, streamName));
