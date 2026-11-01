@@ -78,6 +78,8 @@ class M1MeasureTest {
     private static final long MAX_EVENT_MS = Long.getLong("m1.maxEventMs", 240_000L);
     private static final String LABEL = System.getProperty("m1.label", "run");
     private static final String SOURCE = System.getProperty("m1.source", "default");
+    /// Source SHA the run was built from (`-Dm1.sha=`) and the host it ran on, on every emitted line: a sample is only comparable to one with the same base.
+    private static final String HOST = System.getProperty("m1.host", "unknown");
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(300).seconds();
     private static final TimeSpan APPLY_BOUND = TimeSpan.timeSpan(30).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(180).seconds();
@@ -1022,7 +1024,7 @@ class M1MeasureTest {
     }
 
     private String header() {
-        return "\"label\":\"" + LABEL + "\",\"n\":" + N + ",\"utc\":\"" + Instant.now() + "\"";
+        return "\"label\":\"" + LABEL + "\",\"sha\":\"" + System.getProperty("m1.sha", "unknown") + "\",\"host\":\"" + HOST + "\",\"n\":" + N + ",\"utc\":\"" + Instant.now() + "\"";
     }
 
     private void emit(String line) {
