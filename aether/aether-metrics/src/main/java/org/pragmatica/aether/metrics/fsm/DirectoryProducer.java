@@ -10,6 +10,7 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.cluster.metrics.ClusterDirectory;
 import org.pragmatica.cluster.metrics.ClusterDirectory.DhtReplication;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -18,7 +19,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// The leader's producer of the [ClusterDirectory]: reads the directory content and stamps it with the leader epoch and a generation. The
+/// The leader's producer of the [ClusterDirectory]: reads the directory content (the addressed nodes, the DHT replication and the leader's
+/// installed voter configuration) and stamps it with the leader epoch and a generation. The
 /// generation is a per-epoch counter that moves only when the content changes, so the directory a leader already sent is not re-sent, and a
 /// new epoch starts again at 1 (the epoch triple orders first).
 final class DirectoryProducer {
@@ -26,11 +28,15 @@ final class DirectoryProducer {
 
     private final Supplier<List<NodeInfo>> nodes;
     private final Supplier<Result<DhtReplication>> dhtReplication;
+    private final Supplier<Option<VoterConfiguration>> voters;
     private Option<ClusterDirectory> last = Option.none();
 
-    DirectoryProducer(Supplier<List<NodeInfo>> nodes, Supplier<Result<DhtReplication>> dhtReplication) {
+    DirectoryProducer(Supplier<List<NodeInfo>> nodes,
+                      Supplier<Result<DhtReplication>> dhtReplication,
+                      Supplier<Option<VoterConfiguration>> voters) {
         this.nodes = nodes;
         this.dhtReplication = dhtReplication;
+        this.voters = voters;
     }
 
     /// The directory for `epoch`: the previous one when nothing changed under the same epoch, the next generation when the content changed,
@@ -49,17 +55,20 @@ final class DirectoryProducer {
 
     private ClusterDirectory next(Epoch epoch, DhtReplication replication) {
         var content = nodes.get();
+        var installed = voters.get();
         var sameEpoch = last.map(previous -> isOf(previous, epoch)).or(false);
         var unchanged = last.map(previous -> sameEpoch
                                              && previous.nodes()
                                                         .equals(content)
                                              && previous.dhtReplication()
-                                                        .equals(replication))
+                                                        .equals(replication)
+                                             && previous.voters()
+                                                        .equals(installed))
                             .or(false);
 
         return unchanged
-               ? last.or(() -> stamp(1L, epoch, content, replication))
-               : stamp(generationAfter(sameEpoch), epoch, content, replication);
+               ? last.or(() -> stamp(1L, epoch, content, replication, installed))
+               : stamp(generationAfter(sameEpoch), epoch, content, replication, installed);
     }
 
     private long generationAfter(boolean sameEpoch) {
@@ -78,12 +87,14 @@ final class DirectoryProducer {
     private static ClusterDirectory stamp(long generation,
                                           Epoch epoch,
                                           List<NodeInfo> content,
-                                          DhtReplication replication) {
+                                          DhtReplication replication,
+                                          Option<VoterConfiguration> voters) {
         return new ClusterDirectory(generation,
                                     epoch.incarnation(),
                                     epoch.rabiaTerm(),
                                     epoch.localCounter(),
                                     content,
-                                    replication);
+                                    replication,
+                                    voters);
     }
 }

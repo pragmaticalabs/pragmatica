@@ -100,7 +100,8 @@ public final class SegmentSealer implements EvictionListener {
     private static final int PER_EVENT_HEADER = Long.BYTES + Long.BYTES + Integer.BYTES;
     /// The default pending-seal cap: the default per-node stream memory budget (128 MiB,
     /// `StreamPartitionManager`'s `DEFAULT_MAX_TOTAL_BYTES`), so a stalled storage tier can at most double the
-    /// memory the node's streams hold. A node passes its configured budget instead (`STREAM_MAX_MEMORY_BYTES`).
+    /// memory the node's streams hold. A node passes `[streaming] seal_pending_cap_bytes` instead (#2201 C-03: by default the
+    /// smaller of its stream memory budget and 256 MiB).
     public static final long DEFAULT_PENDING_CAP_BYTES = 128 * 1024 * 1024L;
     /// Consecutive failures of one run per retry cycle; each exhausted cycle logs an ERROR and a new
     /// cycle starts after [#CYCLE_PAUSE].
@@ -371,6 +372,11 @@ public final class SegmentSealer implements EvictionListener {
     /// Heap bytes currently retained for segments not yet sealed (WAL-backed ranges hold none).
     public long pendingBytes() {
         return pendingBytes.get();
+    }
+
+    /// The cap on [#pendingBytes] this sealer was built with (a node passes `[streaming] seal_pending_cap_bytes`, #2201 C-03).
+    public long pendingCapBytes() {
+        return pendingCapBytes;
     }
 
     private boolean durable(String streamName, int partition) {
