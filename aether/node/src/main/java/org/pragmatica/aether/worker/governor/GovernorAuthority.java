@@ -33,10 +33,8 @@ public interface GovernorAuthority {
     /// edges of one failure reach the governors within a few milliseconds of each other), far below the 30 s
     /// re-announce period and the 60 s freshness window the announcement serves, so the delay costs nothing observable.
     TimeSpan DEFAULT_COMMIT_WINDOW = TimeSpan.timeSpan(50).millis();
-
     /// A guess: one command list stays small enough to apply in one step; a window that fills is submitted at once.
     int DEFAULT_COMMIT_CAP = 16;
-
     Promise<GovernorAuthorityMessage.Response> handle(GovernorAuthorityMessage.Request request);
 
     /// Core-initiated recovery after the reporting contract expires; no worker request is forged.
@@ -170,10 +168,19 @@ public interface GovernorAuthority {
 
                 var ticket = commits.enqueue(key,
                                              nominee,
-                                             id -> transaction(id, key, leader, communityKey, community, directiveKey, directive, previous, updated));
+                                             id -> transaction(id,
+                                                               key,
+                                                               leader,
+                                                               communityKey,
+                                                               community,
+                                                               directiveKey,
+                                                               directive,
+                                                               previous,
+                                                               updated));
 
                 return ticket.outcomes()
-                             .map(outcomes -> accepted(outcomes, ticket.transactionId())
+                             .map(outcomes -> accepted(outcomes,
+                                                       ticket.transactionId())
                                               ? store.getTyped(key, GovernorAnnouncementValue.class)
                                               : Option.none());
             }

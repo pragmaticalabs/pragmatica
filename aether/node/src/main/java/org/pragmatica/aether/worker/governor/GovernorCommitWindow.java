@@ -63,10 +63,7 @@ final class GovernorCommitWindow {
             closed = competes(key, nominee)
                      ? take()
                      : Option.none();
-
-            var id = Option.option(entries.get(key))
-                           .map(Entry::transactionId)
-                           .or(() -> UUID.randomUUID().toString());
+            var id = Option.option(entries.get(key)).map(Entry::transactionId).or(() -> UUID.randomUUID().toString());
             var opening = entries.isEmpty();
 
             entries.put(key, new Entry(nominee, id, build.apply(id)));
@@ -74,19 +71,21 @@ final class GovernorCommitWindow {
             full = entries.size() >= cap
                    ? take()
                    : Option.none();
-
             if (opening && full.isEmpty()) {
                 scheduleFlush(outcomes);
             }
         }
+
         closed.onPresent(this::send);
         full.onPresent(this::send);
+
         return ticket;
     }
 
     private boolean competes(AetherKey key, NodeId nominee) {
         return Option.option(entries.get(key))
-                     .filter(entry -> !entry.nominee().equals(nominee))
+                     .filter(entry -> !entry.nominee()
+                                            .equals(nominee))
                      .isPresent();
     }
 
@@ -103,6 +102,7 @@ final class GovernorCommitWindow {
                   ? take()
                   : Option.none();
         }
+
         due.onPresent(this::send);
     }
 
@@ -112,18 +112,15 @@ final class GovernorCommitWindow {
         }
 
         var batch = new Batch(outcomes,
-                              entries.values()
-                                     .stream()
-                                     .map(Entry::command)
-                                     .toList());
+                              entries.values().stream().map(Entry::command).toList());
 
         entries.clear();
         outcomes = Promise.promise();
+
         return Option.some(batch);
     }
 
     private void send(Batch batch) {
-        submit.apply(batch.commands())
-              .onResult(batch.outcomes()::resolve);
+        submit.apply(batch.commands()).onResult(batch.outcomes()::resolve);
     }
 }
