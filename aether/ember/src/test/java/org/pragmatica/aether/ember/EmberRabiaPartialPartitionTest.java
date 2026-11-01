@@ -73,6 +73,9 @@ class EmberRabiaPartialPartitionTest {
     private static final long DRAIN_BOUND_MS = 45_000L;
     private static final long PRE_MS = 4_000L;
     private static final long CUT_MS = 20_000L;
+    /// E2 keeps the realistic cut longer: membership reacts and the stall must outlast the bound.
+    private static final long E2_CUT_MS = 26_000L;
+    private static final long CLEAN_CUT_MS = 6_000L;
     private static final long POST_MS = 4_000L;
     private static final long CONTROL_CUT_MS = 10_000L;
     private static final long CONTROL_POST_MS = 2_000L;
@@ -101,12 +104,15 @@ class EmberRabiaPartialPartitionTest {
         var nodes = cluster.allNodes().stream().sorted(Comparator.comparing(node -> node.self().id())).toList();
         var failures = new ArrayList<String>();
 
-        // Control: NewBatch dropped with no cut (the E1 baseline). The remaining shapes live in arm 1 (engine level).
-        record(failures, runConsensusOnly("E0-newbatch-dropped", nodes, List.of(0, 2), Set.of(), CONTROL_CUT_MS, CONTROL_POST_MS));
+        // E00: the true clean control, every message delivered. Green at head AND under C2: a C2 red elsewhere then comes from the mechanism, not the harness.
+        record(failures, runCell("E00-clean", List.of(nodes.get(0), nodes.get(2)), () -> {}, 3_000L, CLEAN_CUT_MS, CONTROL_POST_MS, new Drops()));
+        // E0: divergence without a cut (every NewBatch dropped, all else delivered): isolates the queue divergence from the cut.
+        record(failures, runConsensusOnly("E0-divergence-nocut", nodes, List.of(0, 2), Set.of(), CONTROL_CUT_MS, CONTROL_POST_MS));
         // E1: Q1's shape on cores 0-2 (cut 0<->2) behind the consensus-only filter.
         record(failures, runConsensusOnly("E1-Q1", nodes, List.of(0, 2), edges(nodes, List.of(0), List.of(2), true), CUT_MS, POST_MS));
-        // E2: Q3's cut ({0,1}<->{3,4}) through partitionFrom on both sides (membership reacts).
-        record(failures, runCell("E2-Q3", List.of(nodes.get(0), nodes.get(4)), () -> partition(nodes, List.of(0, 1), List.of(3, 4)), PRE_MS, CUT_MS, POST_MS, new Drops(ids(nodes, 0, 1, 3, 4))));
+        // E2: the same pair through partitionFrom on both sides (membership reacts). Q1, not Q3: under C2 Q3 kept a 4 s ack gap
+        // (NewBatch still reaches the bridge), while Q1 stalls past the bound.
+        record(failures, runCell("E2-Q1", List.of(nodes.get(0), nodes.get(2)), () -> partition(nodes, List.of(0), List.of(2)), PRE_MS, E2_CUT_MS, POST_MS, new Drops(ids(nodes, 0, 2))));
 
         assertThat(failures).as("every cell commits (no stall of %d ms, no failed or unanswered write)", STALL_MS).isEmpty();
     }
