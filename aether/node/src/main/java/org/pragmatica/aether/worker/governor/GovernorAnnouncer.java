@@ -177,7 +177,7 @@ public interface GovernorAnnouncer {
                 if (started.get() && sequence.get() == id && response.requestId() == id && response.communityId()
                                                                                                    .equals(community.get())) {
                     granted.set(response.authority());
-                    if (refreshed) {
+                    if (refreshed && response.authority().isPresent()) {
                         refreshDue.set(false);
                     }
                 }

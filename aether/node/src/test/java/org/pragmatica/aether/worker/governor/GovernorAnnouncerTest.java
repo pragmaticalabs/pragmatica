@@ -111,6 +111,32 @@ class GovernorAnnouncerTest {
         assertThat(requests.get(1).refresh()).isTrue();
     }
 
+    /// A refusal does not pay the refresh (#2549 F1): no Put was committed, and edges no longer re-commit an unchanged
+    /// announcement, so the next request, edge or tick, carries it again until a grant answers.
+    @Test
+    void refusedRefresh_keepsTheRefreshOwed_untilAGrantAnswersIt() {
+        var sent = new ArrayList<GovernorAuthorityMessage.Request>();
+        var replies = new ArrayList<Promise<GovernorAuthorityMessage.Response>>();
+        var tracked = GovernorAnnouncer.governorAnnouncer(SELF, () -> "pool-a", () -> "host:9000", () -> Option.none(), () -> true, request -> {
+            sent.add(request);
+            replies.add(Promise.promise());
+
+            return replies.getLast();
+        });
+
+        tracked.start();
+        tracked.refresh();
+        replies.getFirst().succeed(new GovernorAuthorityMessage.Response(CORE, "pool-a", sent.getFirst().requestId(), Option.none()));
+        tracked.onMembershipChange(List.of(alive(SELF), alive(PEER)));
+        assertThat(sent).hasSize(2);
+        assertThat(sent.get(1).refresh()).as("the refused refresh is still owed").isTrue();
+        replies.getLast().succeed(new GovernorAuthorityMessage.Response(CORE, "pool-a", sent.getLast().requestId(), Option.some(authority(SELF, 1))));
+        tracked.onMembershipChange(List.of(alive(SELF), alive(PEER)));
+        assertThat(sent).hasSize(3);
+        assertThat(sent.get(2).refresh()).as("a grant pays it").isFalse();
+        tracked.stop();
+    }
+
     /// The refresh is owed until a grant answers the request that carried it; then it is paid, and a stop forgets it.
     @Test
     void answeredRefresh_isNotCarriedByLaterEdges_andStopForgetsAPendingOne() {
