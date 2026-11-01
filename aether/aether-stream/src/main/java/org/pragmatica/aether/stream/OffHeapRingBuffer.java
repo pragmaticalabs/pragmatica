@@ -297,6 +297,20 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                  release);
     }
 
+    /// As the seam factory above, with the budget's freed generation (#2201 C-03, spec 4.4 item 4): a counter the budget's
+    /// owner bumps on every release. A ring refused growth stays frozen while it has not moved, and asks again once it has.
+    public static Result<OffHeapRingBuffer> offHeapRingBuffer(String streamName,
+                                                              int partition,
+                                                              long capacity,
+                                                              long dataRegionSize,
+                                                              EvictionListener listener,
+                                                              EvictionPolicy policy,
+                                                              LongPredicate reserve,
+                                                              LongConsumer release,
+                                                              LongSupplier budgetFreed) {
+        return offHeapRingBuffer(streamName, partition, capacity, dataRegionSize, listener, policy, reserve, release);
+    }
+
     /// JDK boundary for floor allocation (bug #6 sibling of `allocateGuarded`) — one of the four marked
     /// `catch` sites in this file, with [#allocateGuarded], [#guardedAccess] and [#guardedRead]: the
     /// floor `arena.allocate` calls can fail with native `OutOfMemoryError`. On failure the arena is

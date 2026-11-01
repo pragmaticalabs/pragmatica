@@ -373,6 +373,11 @@ public final class SegmentSealer implements EvictionListener {
         return pendingBytes.get();
     }
 
+    /// The cap on [#pendingBytes] this sealer was built with (a node passes `[streaming] seal_pending_cap_bytes`, #2201 C-03).
+    public long pendingCapBytes() {
+        return pendingCapBytes;
+    }
+
     private boolean durable(String streamName, int partition) {
         return wals.containsKey(PartitionKey.partitionKey(streamName, partition));
     }
