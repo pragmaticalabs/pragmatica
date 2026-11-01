@@ -11,9 +11,9 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DhtReplicationChangeKey;
@@ -48,11 +48,15 @@ class DhtReplicationReportLifecycleTest {
     private static final NodeId MEMBER = new NodeId("core-1");
     private static final SliceCodec CODEC = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
     private static final DHTConfig OLD = DHTConfig.DEFAULT.withFactors(3, 1).unwrap();
+    private static final NodeId WORKER = new NodeId("worker-1");
     private static final long CHANGE = 3L;
+    private static final long BACKOFF_MS = 1_000L;
 
     private final List<DhtReplicationReportValue> memberPuts = new ArrayList<>();
+    private final List<Long> memberPutTimes = new ArrayList<>();
     private final Set<NodeId> departed = new HashSet<>();
     private final AtomicInteger failNext = new AtomicInteger();
+    private final AtomicLong clock = new AtomicLong(1_000_000L);
     private LeaderValue leaderValue = LeaderValue.leaderValue(LEAD, 1L);
     private KVStore<AetherKey, AetherValue> kvStore;
     private DhtReplicationSettlement leader;
@@ -150,32 +154,12 @@ class DhtReplicationReportLifecycleTest {
         assertThat(memberAppliedPuts()).as("1, the failed 3, its retry; then nothing").containsExactly(1L, CHANGE, CHANGE);
     }
 
-    /// TRIPWIRE for F1, asserting today's behaviour: after the leader drops a departed member's report and the same live
-    /// process rejoins, nothing re-files it, so the open change stays APPLYING. When this goes red, F1 is fixed: delete
-    /// this test and enable [#reportDroppedForADepartedMember_isFiledAgainOnceTheMemberIsBack].
-    @Test
-    void reportDroppedForADepartedMember_staysDropped_tripwire() {
-        openChange();
-        member.applied(CHANGE);
-        departed.add(MEMBER);
-        leader.evaluate();
-        departed.remove(MEMBER);
-        leader.applied(CHANGE);
-        leader.onChangeCommitted(Option.none(), committed());
-        tick(member, 5);
-        member.applied(4L);
-        leader.evaluate();
-
-        assertThat(kvStore.getTyped(DhtReplicationReportKey.dhtReplicationReportKey(MEMBER), DhtReplicationReportValue.class).isEmpty())
-            .as("F1 still open: the rejoined member's report is not re-filed (if this fails, F1 is fixed: see the comment)").isTrue();
-        assertThat(committed().stage()).as("F1 still open: the change cannot advance").isEqualTo(DhtReplicationStage.APPLYING);
-    }
-
     /// The leader drops the report of a member its membership view holds Dead (`liveReports`). A live process may rejoin
     /// under its own id (4e3f3f663); it is then expected again, and the open change can advance only once it re-files.
-    @Disabled("#2545 verifier finding F1: a dropped report is never re-filed by a live process that rejoins; enable when fixed and delete the tripwire")
+    /// The member sees its report absent from the store while a change is open, and files it again once its backoff (1 s)
+    /// has elapsed (#2553).
     @Test
-    void reportDroppedForADepartedMember_isFiledAgainOnceTheMemberIsBack() {
+    void departedMembersReportDropped_sameLiveProcessRejoins_refilesWithinBackoff() {
         openChange();
         member.applied(CHANGE);
         assertThat(storedApplied(MEMBER)).as("arming: the member filed the version reaching the change").isEqualTo(CHANGE);
@@ -189,11 +173,149 @@ class DhtReplicationReportLifecycleTest {
         leader.applied(CHANGE);
         leader.onChangeCommitted(Option.none(), committed());
         tick(member, 5);
-        member.applied(4L);
+        assertThat(kvStore.getTyped(DhtReplicationReportKey.dhtReplicationReportKey(MEMBER), DhtReplicationReportValue.class).isEmpty())
+            .as("inside the backoff nothing is re-filed").isTrue();
+        clock.addAndGet(BACKOFF_MS);
+        tick(member, 5);
         leader.evaluate();
 
         assertThat(storedReport(MEMBER).appliedVersion()).as("the member's report is back in the store").isGreaterThanOrEqualTo(CHANGE);
         assertThat(committed().stage()).as("so the change advances").isEqualTo(DhtReplicationStage.WRITERS_SWITCHED);
+        assertThat(member.refileCount()).isEqualTo(1L);
+    }
+
+    /// A ready worker reads its own replica store as a core reads its KV, and re-files a dropped report the same way.
+    @Test
+    void workerArm_readyReplica_refilesADroppedReport() {
+        openChange();
+        var workerPuts = new ArrayList<DhtReplicationReportValue>();
+        var worker = settlement(WORKER, new AtomicBoolean(false), workerPuts, false, new AtomicBoolean(true));
+
+        worker.applied(CHANGE);
+        dropReport(WORKER);
+        clock.addAndGet(BACKOFF_MS);
+        tick(worker, 5);
+
+        assertThat(workerPuts).as("filed, then filed again after the drop").hasSize(2);
+        assertThat(storedApplied(WORKER)).isEqualTo(CHANGE);
+        assertThat(worker.refileCount()).isEqualTo(1L);
+    }
+
+    /// The readiness guard is for workers: a core reads its own KV, which has no replica to wait for.
+    @Test
+    void coreArm_replicaNotReady_stillRefiles() {
+        openChange();
+        var corePuts = new ArrayList<DhtReplicationReportValue>();
+        var core = settlement(new NodeId("core-7"), new AtomicBoolean(false), corePuts, true, new AtomicBoolean(false));
+
+        core.applied(CHANGE);
+        dropReport(new NodeId("core-7"));
+        clock.addAndGet(BACKOFF_MS);
+        tick(core, 5);
+
+        assertThat(corePuts).as("filed, then filed again").hasSize(2);
+    }
+
+    /// While the replica is not ready (a snapshot half installed, a refused feed) an absent key proves nothing: the
+    /// worker goes by what it filed, as before.
+    @Test
+    void workerArm_replicaNotReady_doesNotRefile() {
+        openChange();
+        var workerPuts = new ArrayList<DhtReplicationReportValue>();
+        var ready = new AtomicBoolean(true);
+        var worker = settlement(WORKER, new AtomicBoolean(false), workerPuts, false, ready);
+
+        worker.applied(CHANGE);
+        dropReport(WORKER);
+        ready.set(false);
+        clock.addAndGet(BACKOFF_MS);
+        tick(worker, 5);
+
+        assertThat(workerPuts).as("only the first filing").hasSize(1);
+        assertThat(worker.refileCount()).isZero();
+    }
+
+    /// A member the leader holds Dead while it keeps committing is re-filed at most once per backoff interval, never at the
+    /// 100 ms tick: the gaps between its re-files are 1, 2, 4, 8, 16, 32 s, then the 60 s cap. The trickle stops when the
+    /// change settles.
+    @Test
+    void heldDeadMemberStillCommitting_refilesAtMostOncePerBackoff_andStopsWhenChangeSettles() {
+        openChange();
+        departed.add(MEMBER);
+        member.applied(CHANGE);
+
+        for (var elapsed = 0L; elapsed < 400_000L; elapsed += 100) {
+            leader.evaluate();
+            tick(member, 1);
+            clock.addAndGet(100);
+        }
+
+        var times = memberPutTimes.subList(2, memberPutTimes.size());
+        var gaps = new ArrayList<Long>();
+
+        for (var i = 1; i < times.size(); i++) {
+            gaps.add(times.get(i) - times.get(i - 1));
+        }
+
+        var expected = List.of(1_000L, 2_000L, 4_000L, 8_000L, 16_000L, 32_000L, 60_000L, 60_000L);
+
+        assertThat(gaps).as("re-file gaps (a 100 ms tick of slack each)").hasSizeGreaterThanOrEqualTo(expected.size());
+        for (var i = 0; i < expected.size(); i++) {
+            assertThat(gaps.get(i)).as("gap %d", i).isBetween(expected.get(i), expected.get(i) + 100);
+        }
+        assertThat(member.refileCount()).as("one per re-file").isEqualTo(times.size());
+        assertThat(memberPuts).as("the baseline, the filing that reaches the change, and each re-file").hasSize((int) member.refileCount() + 2);
+
+        settleChange();
+        var putsAtSettle = memberPuts.size();
+
+        for (var elapsed = 0L; elapsed < 120_000L; elapsed += 100) {
+            leader.evaluate();
+            tick(member, 1);
+            clock.addAndGet(100);
+        }
+        assertThat(memberPuts).as("nothing waits, so nothing is re-filed").hasSize(putsAtSettle);
+    }
+
+    /// Seeing the report present resets the backoff: the next re-file, once the interval already armed has passed, is
+    /// followed by a 1 s interval, not by the doubled one the earlier drops had grown.
+    @Test
+    void backoffResets_whenTheReportIsSeenPresent() {
+        openChange();
+        member.applied(CHANGE);
+        for (var round = 0; round < 4; round++) {
+            dropReport(MEMBER);
+            clock.addAndGet(60_000L);
+            tick(member, 1);
+        }
+        assertThat(member.refileCount()).as("each drop was re-filed once its (grown) backoff passed").isEqualTo(4L);
+        tick(member, 1);
+        assertThat(kvStore.getTyped(DhtReplicationReportKey.dhtReplicationReportKey(MEMBER), DhtReplicationReportValue.class).isPresent())
+            .as("the key is seen present").isTrue();
+
+        dropReport(MEMBER);
+        clock.addAndGet(60_000L);
+        tick(member, 1);
+        tick(member, 1);
+        dropReport(MEMBER);
+        clock.addAndGet(BACKOFF_MS);
+        tick(member, 1);
+
+        assertThat(member.refileCount()).as("after the reset the interval is 1 s again, not 16 s").isEqualTo(6L);
+    }
+
+    /// An absent report costs nothing while no change waits: a change opened later is filed anyway, because its version
+    /// exceeds what the member filed.
+    @Test
+    void absentReport_noOpenChange_doesNotRefile() {
+        var before = memberPuts.size();
+
+        dropReport(MEMBER);
+        clock.addAndGet(120_000L);
+        tick(member, 10);
+
+        assertThat(memberPuts).as("no change is open").hasSize(before);
+        assertThat(member.refileCount()).isZero();
     }
 
     // ---- harness ----------------------------------------------------------------------------------------------------
@@ -202,11 +324,19 @@ class DhtReplicationReportLifecycleTest {
     }
 
     private DhtReplicationSettlement settlement(NodeId self, AtomicBoolean isLeader, List<DhtReplicationReportValue> puts) {
+        return settlement(self, isLeader, puts, true, new AtomicBoolean(true));
+    }
+
+    private DhtReplicationSettlement settlement(NodeId self,
+                                                AtomicBoolean isLeader,
+                                                List<DhtReplicationReportValue> puts,
+                                                boolean replica,
+                                                AtomicBoolean replicaReady) {
         var dhtNode = DHTNode.dhtNodeAwaitingReplication(self, memoryStorageEngine(), ring(), DHTConfig.DEFAULT, HlcClock.hlcClock(self));
 
         dhtNode.resolveReplication(OLD, 1L);
         return DhtReplicationSettlement.dhtReplicationSettlement(new DhtReplicationSettlement.Inputs(self,
-                                                                                                     true,
+                                                                                                     replica,
                                                                                                      kvStore,
                                                                                                      dhtNode,
                                                                                                      DHTConfig.DEFAULT,
@@ -215,8 +345,9 @@ class DhtReplicationReportLifecycleTest {
                                                                                                      Set::of,
                                                                                                      departed::contains,
                                                                                                      _ -> {},
-                                                                                                     System::currentTimeMillis,
-                                                                                                     () -> true));
+                                                                                                     clock::get,
+                                                                                                     () -> true,
+                                                                                                     replicaReady::get));
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
@@ -224,6 +355,9 @@ class DhtReplicationReportLifecycleTest {
         commands.forEach(command -> {
             if (command instanceof KVCommand.Put<?, ?> put && put.value() instanceof DhtReplicationReportValue report) {
                 puts.add(report);
+                if (puts == memberPuts) {
+                    memberPutTimes.add(clock.get());
+                }
             }
         });
         if (failNext.getAndUpdate(n -> Math.max(0, n - 1)) > 0) {
@@ -236,6 +370,25 @@ class DhtReplicationReportLifecycleTest {
         for (var i = 0; i < times; i++) {
             settlement.report();
         }
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private void dropReport(NodeId node) {
+        kvStore.process(kvStore.createBatch((List) List.of(new KVCommand.Remove<>(DhtReplicationReportKey.dhtReplicationReportKey(node)))));
+    }
+
+    private void settleChange() {
+        var key = DhtReplicationChangeKey.dhtReplicationChangeKey();
+        var current = committed();
+        var settled = current.withStage(DhtReplicationStage.SETTLED);
+
+        kvStore.process(kvStore.createBatch(List.of(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                                                                                                           UUID.randomUUID().toString(),
+                                                                                                           leaderValue,
+                                                                                                           List.of(),
+                                                                                                           List.of(new KVCommand.Mutation<>(key,
+                                                                                                                                            Option.some((AetherValue) current),
+                                                                                                                                            Option.some(settled)))))));
     }
 
     private List<Long> memberAppliedPuts() {
