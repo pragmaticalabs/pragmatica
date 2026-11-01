@@ -34,9 +34,12 @@ jobs:
           python3 -B -m unittest discover -s tools -p test_check_test_ports.py
           python3 -B tools/check-test-ports.py
 
-      # The Ember shard planner (#1643): every Ember test class lands in exactly one shard, for any shard count.
+      # The Ember shard planner (#1643): every Ember test class lands in exactly one shard, for any shard count, and a class
+      # with no weight plans at the default. The weights regenerate from a CI run's reports (tools/regen-shard-weights.py).
       - name: Ember shard planner pins
-        run: python3 -B -m unittest discover -s tools -p test_ember_shard.py
+        run: |
+          python3 -B -m unittest discover -s tools -p test_ember_shard.py
+          python3 -B -m unittest discover -s tools -p test_regen_shard_weights.py
 
       # The heavy-forge nightly's reporting (#2017): what a night reads as (ok, red, unknown) and when the notify job may close the issue.
       # The same planner for Consensus (#2414), plus a check that the consensus-shard matrix below covers every Consensus test class.
