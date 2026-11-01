@@ -43,7 +43,7 @@ public final class WaveExecutor {
                                               ClusterBootstrapConfig stored,
                                               ClusterBootstrapConfig desired,
                                               ApplyRecorder recorder) {
-        return ApplyLabels.requireMintable(desired.cluster().name(),
+        return ApplyLabels.requireMintable(desired,
                                            recorder.applyId())
                           .flatMap(_ -> executeWaves(plan, stored, desired, recorder));
     }

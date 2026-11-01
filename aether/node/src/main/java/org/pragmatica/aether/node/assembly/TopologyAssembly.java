@@ -637,7 +637,7 @@ public sealed interface TopologyAssembly {
                                                                                             id -> managementServerRef.get()
                                                                                                                      .map(server -> server.replacementDrainUnderWay(id))
                                                                                                                      .or(false),
-                                                                                            () -> ProvisionContext.coreNodeNamePrefix(replacementIdScope.get()),
+                                                                                            in.clusterNameSupplier(),
                                                                                             id -> dhtNode.ring()
                                                                                                          .nodes()
                                                                                                          .contains(id),
