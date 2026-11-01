@@ -8,11 +8,15 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiPredicate;
 import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -23,12 +27,14 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.metrics.ClusterDirectory;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
 import org.pragmatica.cluster.replica.ReplicaFeedClient;
-import org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaSnapshotChunk;
+import org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaSnapshotRequest;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.messaging.Message;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
@@ -58,14 +64,17 @@ class EmberReplicaRelayTest {
     private static final TimeSpan APPLY_BOUND = TimeSpan.timeSpan(10).seconds();
     private static final long BOUND_MS = 180_000L;
     private static final int LOAD_KEYS = 40;
+    private static final int CONTROL_DROPS = 3;
 
     private EmberCluster cluster;
-    private final List<String> workers = new ArrayList<>();
+    private final List<String> workers = new CopyOnWriteArrayList<>();
     private final List<String> cores = new ArrayList<>();
     private final Map<String, String> communityOf = new HashMap<>();
+    private final SilenceWatch silences = new SilenceWatch();
 
     @AfterEach
     void tearDown() {
+        silences.stop();
         if (cluster != null) {
             cluster.allNodes().forEach(node -> node.setInboundFaultFilter((_, _) -> true));
             cluster.stop().await(STOP_BOUND);
@@ -81,6 +90,7 @@ class EmberReplicaRelayTest {
         await("a leader is elected", () -> cluster.currentLeader().isPresent());
         cluster.allNodes().forEach(node -> cores.add(node.self().id()));
 
+        silences.start();
         addWorkers("east", EAST);
         addWorkers("west", WEST);
         await("every worker is ready", () -> workers.stream().allMatch(this::ready));
@@ -104,29 +114,37 @@ class EmberReplicaRelayTest {
         await("every member of both communities follows its governor, none a core",
               () -> workers.stream().allMatch(id -> isGovernor(id) || sourceOf(id).equals(governorOf(communityOf.get(id)).map(NodeId::id))));
         assertThat(workers).allSatisfy(id -> assertThat(ready(id)).as(id).isTrue());
-        assertThat(workers.stream().mapToLong(id -> client(id).counters().get("replica_silence_switch_total")).sum())
-            .as("no member waited out a silent governor while joining: a governor is followed only over a link that is up")
-            .isZero();
+        silences.stop();
+        assertThat(silences.governorSilences())
+            .as("no member waited out a silent governor while joining: a governor is followed only over a link that is up (silences toward a core: %s)",
+                silences.coreSilences())
+            .isEmpty();
     }
 
     // ---- phase 2: NT-O44 over a governor ----
     /// A plain member drops every `ClusterSyncPong` that carries a directory but its governor's. With every directory dropped (the control) it holds the
-    /// directory it had while the cores move on; with only its governor's allowed it catches up to the cores' directory. The window is kept short (well
-    /// under the 10 s core-absence timeout): a member whose directory is stale gets a directory on every core pong, so dropping them also drops its
-    /// core contact, and the core-absence fence drains it. A leader ping never reaches a member, so the update came through
-    /// the governor's pong.
+    /// directory it had while the cores move on; with only its governor's allowed it catches up to the cores' directory. A leader ping never reaches a
+    /// member, so the update came through the governor's pong.
+    ///
+    /// The window is bounded by what the test waits on, never by a clock: a member whose directory is stale gets a directory on every core pong, so
+    /// dropping them also drops its core contact, and the core-absence fence (10 s) drains it. The extra worker is therefore started without waiting
+    /// for its join (the join is what took seconds); the control is a count of directory-bearing pongs dropped after the cores' directory moved; and the
+    /// extra worker is awaited only after the member has caught up and its filter is lifted.
     private void phaseTwoAMemberHearsTheDirectoryFromItsGovernorAlone() {
         var member = workers.stream().filter(id -> !isGovernor(id)).findFirst().orElseThrow();
         var governor = governorOf(communityOf.get(member)).unwrap();
         var allowed = new AtomicReference<Predicate<NodeId>>(_ -> false);
+        var dropped = new AtomicInteger();
 
-        node(member).setInboundFaultFilter((sender, message) -> !(message instanceof ClusterSyncPong pong && pong.directory().isPresent()) || allowed.get().test(sender));
+        node(member).setInboundFaultFilter(dropsDirectoryPongs(allowed, dropped));
         var held = directory(member).unwrap().version();
 
-        var extra = startWorker("east");
+        var extra = startWorkerWithoutWaiting("east");
 
         await("a core's directory moves past the member's", () -> directory(anyFollowerCore()).filter(d -> d.version().isStrictlyAfter(held)).isPresent());
-        sleep(3_000);
+        var droppedBefore = dropped.get();
+
+        await("the member has been offered the moved directory CONTROL_DROPS times and dropped it", () -> dropped.get() >= droppedBefore + CONTROL_DROPS);
         assertThat(directory(member).unwrap().version()).as("control: with every directory-bearing pong dropped the member's directory does not move").isEqualTo(held);
 
         allowed.set(sender -> sender.equals(governor));
@@ -134,7 +152,18 @@ class EmberReplicaRelayTest {
               () -> directory(member).map(d -> d.version()).equals(directory(anyFollowerCore()).map(d -> d.version())));
         assertThat(directory(member).unwrap().version().isStrictlyAfter(held)).isTrue();
         node(member).setInboundFaultFilter((_, _) -> true);
-        register(extra);
+        register(extra.await(START_BOUND).unwrap().id());
+    }
+
+    /// Drops a `ClusterSyncPong` that carries a directory unless `allowed` admits its sender, counting each one dropped.
+    private static BiPredicate<NodeId, Message.Wired> dropsDirectoryPongs(AtomicReference<Predicate<NodeId>> allowed, AtomicInteger dropped) {
+        return (sender, message) -> !(message instanceof ClusterSyncPong pong && pong.directory().isPresent()) || allowed.get().test(sender) || countedDrop(dropped);
+    }
+
+    private static boolean countedDrop(AtomicInteger dropped) {
+        dropped.incrementAndGet();
+
+        return false;
     }
 
     // ---- phase 3: kill a governor under load ----
@@ -169,24 +198,44 @@ class EmberReplicaRelayTest {
     }
 
     // ---- phase 4: kill a core mid-snapshot ----
-    /// A worker of a fresh community has no governor, so it joins from a core. Its snapshot chunks are dropped (the transfer is under way and stalled);
-    /// the core it asked is killed; with the chunks flowing again the worker restarts on the other core and ends equal to the leader.
+    /// A worker of a fresh community has no governor, so it joins from a core. The core it asks never answers its snapshot request (the transfer is under
+    /// way and stalled, whatever its size); that core is killed; the worker restarts on the other core, which answers, and ends equal to the leader.
+    ///
+    /// The stall sits on the cores, which exist before the joiner, and not on the joiner: a joiner's filter can only be installed after its node has
+    /// started, and a joiner that fetched its snapshot in that interval (a small snapshot, a fast core) is ready and has nothing to restart. It stays on
+    /// the one core for good, so it needs no release: `killNode(core, false)` returns after its one-second stop bound whether or not the core has stopped,
+    /// and a core still alive cannot serve the snapshot either way. The other core answers from the start, so a joiner that leaves the dying core cannot
+    /// be left waiting on a request nobody answers.
     private void phaseFourACoreDiesMidSnapshot() {
-        var stalled = new AtomicBoolean(true);
+        var stalledCore = new AtomicReference<String>();
+        var registered = List.copyOf(workers);
+
+        cores.forEach(id -> node(id).setInboundFaultFilter(holdsBackNewcomerSnapshots(id, stalledCore, registered)));
         var joiner = addWorkers("north", 1).getFirst();
 
-        node(joiner).setInboundFaultFilter((_, message) -> !(message instanceof ReplicaSnapshotChunk) || !stalled.get());
-        await("the joiner has asked a core for its snapshot",
-              () -> client(joiner).source().filter(source -> !workers.contains(source.id())).isPresent());
-        var core = client(joiner).source().unwrap().id();
+        await("a core has been asked for the joiner's snapshot, and the joiner follows it", () -> sourceOf(joiner).equals(Option.option(stalledCore.get())));
+        var core = stalledCore.get();
 
-        assertThat(ready(joiner)).as("precondition: the snapshot is still under way").isFalse();
+        assertThat(client(joiner).counters().get("replica_snapshots_installed_total")).as("precondition: the snapshot is still under way").isZero();
+        assertThat(ready(joiner)).as("precondition: the joiner is not ready without its snapshot").isFalse();
         cluster.killNode(core, false).await(STOP_BOUND);
-        stalled.set(false);
 
-        await("the joiner restarts on the other core and becomes ready", () -> ready(joiner));
+        await(() -> "the joiner restarts on the other core and becomes ready; it follows " + sourceOf(joiner) + " (killed " + core + "), counters "
+                    + new java.util.TreeMap<>(client(joiner).counters()),
+              () -> ready(joiner));
         assertThat(client(joiner).source().unwrap().id()).isNotEqualTo(core);
         await("it equals the leader", () -> equalsTheLeader(joiner));
+    }
+
+    /// The first core a newcomer (a node not in `registered`) asks for a snapshot is the one that never answers; every other core answers.
+    private static BiPredicate<NodeId, Message.Wired> holdsBackNewcomerSnapshots(String self, AtomicReference<String> stalledCore, List<String> registered) {
+        return (sender, message) -> !(message instanceof ReplicaSnapshotRequest) || registered.contains(sender.id()) || answers(self, stalledCore);
+    }
+
+    private static boolean answers(String self, AtomicReference<String> stalledCore) {
+        stalledCore.compareAndSet(null, self);
+
+        return !self.equals(stalledCore.get());
     }
 
     // ---- helpers ----
@@ -225,6 +274,68 @@ class EmberReplicaRelayTest {
         }
     }
 
+    /// Names, for every silence switch a member makes (`replica_silence_switch_total`), the source it waited out. The client keeps its source for the
+    /// retry delay after the switch, so a short poll reads the one that went silent. A silent core is load (up to 32 nodes in one JVM, a
+    /// 3 s silence limit); a silent governor is what phase one pins: a governor is followed only over a link that is up.
+    private final class SilenceWatch {
+        private static final long POLL_MILLIS = 10L;
+        private final List<String> governorSilences = new CopyOnWriteArrayList<>();
+        private final List<String> coreSilences = new CopyOnWriteArrayList<>();
+        private final Map<String, Long> seen = new ConcurrentHashMap<>();
+        private volatile boolean running;
+        private Thread thread;
+
+        void start() {
+            running = true;
+            thread = Thread.ofPlatform().daemon().name("relay-silence-watch").unstarted(this::run);
+            thread.start();
+        }
+
+        void stop() {
+            running = false;
+            if (thread != null) {
+                try {
+                    thread.join(5_000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        }
+
+        List<String> governorSilences() {
+            return List.copyOf(governorSilences);
+        }
+
+        List<String> coreSilences() {
+            return List.copyOf(coreSilences);
+        }
+
+        private void run() {
+            while (running) {
+                workers.forEach(this::poll);
+                sleep(POLL_MILLIS);
+            }
+        }
+
+        private void poll(String id) {
+            optionalClient(id).onPresent(client -> note(id, client));
+        }
+
+        private void note(String id, ReplicaFeedClient<?, ?> client) {
+            var total = client.counters().get("replica_silence_switch_total");
+            var before = seen.getOrDefault(id, 0L);
+
+            if (total > before) {
+                seen.put(id, total);
+                record(id, client.source().map(NodeId::id).or("none"));
+            }
+        }
+
+        private void record(String id, String source) {
+            (cores.contains(source) ? coreSilences : governorSilences).add(id + " -> " + source);
+        }
+    }
+
     private List<String> addWorkers(String source, int count) {
         var added = new ArrayList<String>();
 
@@ -236,7 +347,11 @@ class EmberReplicaRelayTest {
     }
 
     private String startWorker(String source) {
-        return cluster.addNode(Map.of(NodeInfo.LABEL_ROLE, "worker", NodeInfo.LABEL_SOURCE, source)).await(START_BOUND).unwrap().id();
+        return startWorkerWithoutWaiting(source).await(START_BOUND).unwrap().id();
+    }
+
+    private Promise<NodeId> startWorkerWithoutWaiting(String source) {
+        return cluster.addNode(Map.of(NodeInfo.LABEL_ROLE, "worker", NodeInfo.LABEL_SOURCE, source));
     }
 
     private String register(String id) {
@@ -270,14 +385,22 @@ class EmberReplicaRelayTest {
         return client(id).source().map(NodeId::id);
     }
 
-    @SuppressWarnings("unchecked")
     private ReplicaFeedClient<?, ?> client(String id) {
+        return optionalClient(id).unwrap();
+    }
+
+    private Option<ReplicaFeedClient<?, ?>> optionalClient(String id) {
+        return cluster.getNode(id).flatMap(EmberReplicaRelayTest::replicaClientOf);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Option<ReplicaFeedClient<?, ?>> replicaClientOf(AetherNode node) {
         try {
-            var method = node(id).getClass().getDeclaredMethod("replicaClient");
+            var method = node.getClass().getDeclaredMethod("replicaClient");
 
             method.setAccessible(true);
 
-            return ((Option<ReplicaFeedClient<?, ?>>) method.invoke(node(id))).unwrap();
+            return (Option<ReplicaFeedClient<?, ?>>) method.invoke(node);
         } catch (ReflectiveOperationException e) {
             throw new AssertionError(e);
         }
@@ -333,11 +456,15 @@ class EmberReplicaRelayTest {
     }
 
     private static void await(String what, BooleanSupplier condition) {
+        await(() -> what, condition);
+    }
+
+    private static void await(Supplier<String> what, BooleanSupplier condition) {
         var deadline = System.currentTimeMillis() + BOUND_MS;
 
         while (!condition.getAsBoolean()) {
             if (System.currentTimeMillis() > deadline) {
-                throw new AssertionError("timed out waiting: " + what);
+                throw new AssertionError("timed out waiting: " + what.get());
             }
             sleep(250);
         }

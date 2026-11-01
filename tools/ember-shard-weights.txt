@@ -94,3 +94,7 @@ EmberDhtCapFullEventTest 11
 EmberWorkerQuorumLossTest 110
 EmberWorkerVoterRosterTest 35
 EmberWorkerRealQuorumLossTest 300
+# EmberPortStrideTest 15 (#2512): surefire class time 14.3 s on bigboy at 3bfeddbc34 + the test (2 clusters of 3 cores, one pure-API test).
+EmberPortStrideTest 15
+# M1InstrumentRefreshOnlyTest 1 (#2512): pure record comparisons, no cluster.
+M1InstrumentRefreshOnlyTest 1
