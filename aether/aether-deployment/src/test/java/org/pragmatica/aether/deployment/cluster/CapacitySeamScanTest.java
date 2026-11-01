@@ -21,7 +21,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// node placement, the admission marker, the placement operations).
 class CapacitySeamScanTest {
     private static final Path LIFECYCLE = Path.of("src", "main", "java", "org", "pragmatica", "aether", "deployment", "cluster", "CapacityControlledLifecycle.java");
-    private static final Pattern RECORD_KEYS = Pattern.compile("CapacityReservationKey|CapacityLedgerKey|CapacityReservationValue\\.class|CapacityLedgerValue\\.class");
+    private static final Pattern RECORD_KEYS = Pattern.compile("CapacityReservationKey|CapacityLedgerKey|CapacityReservationValue\\.class|CapacityLedgerValue\\.class|instanceof\\s+Capacity(?:Reservation|Ledger)Value");
+    /// Ways to reach the store that the direct-read pattern below cannot see: an alias of it, its record accessor.
+    private static final Pattern STORE_ALIAS = Pattern.compile("=\\s*(?:this\\s*\\.\\s*)?store\\s*[;,)]|\\bstore\\s*\\(\\s*\\)");
+    private static final Pattern SNAPSHOT = Pattern.compile("store\\s*\\.\\s*snapshot\\(");
+    private static final Pattern PLACEMENT_KEY_DEFINITION = Pattern.compile("placementKey\\s*=\\s*([^;]*);");
     private static final Pattern STORE_ACCESS = Pattern.compile("store\\s*\\.\\s*(?:getTyped|get|snapshot)\\(([^;]*?)[,)]", Pattern.DOTALL);
 
     private static String read(Path path) {
@@ -50,8 +54,26 @@ class CapacitySeamScanTest {
         assertThat(accesses).allMatch(allowed::contains);
     }
 
+    /// The text scan above reads `store.<call>(<expression>)`, so it is blind to the same read made through another name for the store, through a
+    /// snapshot filtered by value type, or through a capacity key held in a variable whose name is on the allow list. Each of those is closed here:
+    /// no alias or accessor of the store, one snapshot (the placement-operation scan), and `placementKey` only ever the node placement key.
+    @Test
+    void theLifecycle_hasNoOtherWayToTheStore_thanTheDirectReadsAboveAndTheOnePlacementSnapshot() {
+        var source = read(LIFECYCLE);
+        var definitions = PLACEMENT_KEY_DEFINITION.matcher(source).results().map(match -> match.group(1).strip()).toList();
+
+        assertThat(STORE_ALIAS.matcher(source).find()).as("an alias or accessor of the store").isFalse();
+        assertThat(SNAPSHOT.matcher(source).results().count()).as("control: the one snapshot read that remains, over placement operations").isEqualTo(1);
+        assertThat(definitions).as("control: the allowed variable is defined").isNotEmpty().allMatch("new AetherKey.NodePlacementKey(node)"::equals);
+    }
+
     @Test
     void thePatterns_matchTheOldInlineAccess_andMissThePortCall() {
+        assertThat(RECORD_KEYS.matcher("if (value instanceof CapacityReservationValue state) {").find()).isTrue();
+        assertThat(STORE_ALIAS.matcher("var alias = store;").find()).isTrue();
+        assertThat(STORE_ALIAS.matcher("return store().get(key);").find()).isTrue();
+        assertThat(STORE_ALIAS.matcher("CapacityRecords.overReservations(store);").find()).as("passing the store to the port is the one allowed use").isFalse();
+
         assertThat(RECORD_KEYS.matcher("store.getTyped(new AetherKey.CapacityReservationKey(node), CapacityReservationValue.class)").find()).isTrue();
         assertThat(RECORD_KEYS.matcher("AetherKey.CapacityLedgerKey.INSTANCE").find()).isTrue();
         assertThat(RECORD_KEYS.matcher("records().reservation(node)").find()).isFalse();
