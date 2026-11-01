@@ -110,6 +110,39 @@ class DhtReplicationReportDedupeTest {
         assertThat(appliedVersions()).as("a settled change waits for nobody").containsExactly(1L);
     }
 
+    @Test
+    void workerProjectionNamingAnOpenChange_isFiledOnceItsVersionIsReached() {
+        settlement.applied(1L, DHTNode.NO_CHANGE);
+        settlement.applied(2L, 4L);
+        settlement.applied(4L, 4L);
+
+        assertThat(appliedVersions()).containsExactly(1L, 4L);
+    }
+
+    @Test
+    void workerProjectionThatSettledTheChange_stopsWaitingForIt() {
+        settlement.applied(1L, DHTNode.NO_CHANGE);
+        settlement.applied(2L, 4L);
+        settlement.applied(5L, DHTNode.NO_CHANGE);
+
+        assertThat(appliedVersions()).containsExactly(1L);
+    }
+
+    @Test
+    void readsAsFiled_decidesOnlyByTheOpenChangeAndTheOtherFields() {
+        var last = new DhtReplicationReportValue(5L, 3L, true);
+
+        assertThat(DhtReplicationSettlement.readsAsFiled(last, last, 4L)).as("identical").isTrue();
+        assertThat(DhtReplicationSettlement.readsAsFiled(last, new DhtReplicationReportValue(9L, 3L, true), DHTNode.NO_CHANGE)).as("no open change").isTrue();
+        assertThat(DhtReplicationSettlement.readsAsFiled(last, new DhtReplicationReportValue(9L, 3L, true), 4L)).as("open change already reached by last").isTrue();
+        assertThat(DhtReplicationSettlement.readsAsFiled(last, new DhtReplicationReportValue(9L, 3L, true), 12L)).as("open change not reached yet").isTrue();
+        assertThat(DhtReplicationSettlement.readsAsFiled(last, new DhtReplicationReportValue(9L, 3L, true), 7L)).as("the bump reaches the open change").isFalse();
+        assertThat(DhtReplicationSettlement.readsAsFiled(last, new DhtReplicationReportValue(9L, 3L, true), 9L)).as("the bump reaches it exactly").isFalse();
+        assertThat(DhtReplicationSettlement.readsAsFiled(last, new DhtReplicationReportValue(9L, 4L, true), DHTNode.NO_CHANGE)).as("caught-up version moved").isFalse();
+        assertThat(DhtReplicationSettlement.readsAsFiled(last, new DhtReplicationReportValue(9L, 3L, false), DHTNode.NO_CHANGE)).as("replica flag moved").isFalse();
+        assertThat(DhtReplicationSettlement.readsAsFiled(last, new DhtReplicationReportValue(4L, 3L, true), DHTNode.NO_CHANGE)).as("applied version never reads as going back").isFalse();
+    }
+
     private Promise<List<Object>> file(List<KVCommand<AetherKey>> commands) {
         commands.forEach(command -> {
             if (command instanceof KVCommand.Put<?, ?> put && put.value() instanceof DhtReplicationReportValue report) {

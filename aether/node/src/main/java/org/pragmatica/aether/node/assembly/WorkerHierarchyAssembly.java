@@ -797,7 +797,10 @@ public sealed interface WorkerHierarchyAssembly {
         }
         // a worker holds no partitions and receives no DHT writes; its fence is what its projection says
         dhtNode.confirmReplicationFence();
-        settlement.applied(replication.configVersion());
+        settlement.applied(replication.configVersion(),
+                           replication.changeSettled()
+                           ? DHTNode.NO_CHANGE
+                           : replication.changeVersion());
     }
 
     /// The committed change a worker projection carries, as the record a core reads. A worker holds no partitions, so
