@@ -6,12 +6,14 @@ package org.pragmatica.aether.stream;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
@@ -33,6 +35,7 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.ReplicationFactors;
@@ -2539,6 +2542,77 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// [Option#none] when the partition is not quarantined.
     public Option<Long> quarantinedAt(String streamName, int partition) {
         return option(divergedAt.get(new PartitionRef(streamName, partition)));
+    }
+
+    /// #2201 NT-23: the names of the per-partition rows (spec 5.1 rows 4-19) that hold an entry for `(streamName, partition)` on
+    /// this node, for tests that pin what a removed, re-created or replaced stream carries over. Read-only.
+    Set<String> heldPartitionRows(String streamName, int partition) {
+        var key = partitionKeyOf(streamName, partition);
+        var ref = new PartitionRef(streamName, partition);
+
+        return Stream.of(heldRow("lastReplicatedWalWrite",
+                                 lastReplicatedWalWrite.containsKey(key)),
+                         heldRow("unverifiedReplicas",
+                                 unverifiedReplicas.contains(key)),
+                         heldRow("verifiedPrefix",
+                                 verifiedPrefix.containsKey(key)),
+                         heldRow("durableWatermarks",
+                                 durableWatermarks.containsKey(ref)),
+                         heldRow("openCuts",
+                                 openCuts.containsKey(key)),
+                         heldRow("divergedAt",
+                                 divergedAt.containsKey(ref)),
+                         heldRow("provenanceMismatchAt",
+                                 provenanceMismatchAt.containsKey(ref)),
+                         heldRow("epochTrust",
+                                 epochTrust.containsKey(key)),
+                         heldRow("replicaCommitted",
+                                 replicaCommitted.containsKey(key)),
+                         heldRow("pendingInstalls",
+                                 pendingInstalls.containsKey(ref)),
+                         heldRow("raisedLocally",
+                                 raisedLocally.stream().anyMatch(raised -> raisedFor(raised, key))),
+                         heldRow("cutGenerations",
+                                 cutGenerations.containsKey(key)),
+                         heldRow("refusedCuts",
+                                 refusedCuts.containsKey(ref)),
+                         heldRow("pendingCuts",
+                                 pendingCuts.containsKey(ref)),
+                         heldRow("reportedUnsettled",
+                                 reportedUnsettled.containsKey(ref)),
+                         heldRow("repairGenerationOf",
+                                 repairGenerationOf.containsKey(ref)))
+                     .filter(HeldRow::held)
+                     .map(HeldRow::name)
+                     .collect(Collectors.toCollection(TreeSet::new));
+    }
+
+    private record HeldRow(String name, boolean held) {}
+
+    private static HeldRow heldRow(String name, boolean held) {
+        return new HeldRow(name, held);
+    }
+
+    /// Whether `raised` (a [#raisedLocally] key, `stream#partition#kind#evidence`) was raised for the partition whose
+    /// [#partitionKeyOf] is `partitionKey`. The reason kind that must follow tells it apart from a stream whose own name
+    /// continues with `#<digits>`.
+    private static boolean raisedFor(String raised, String partitionKey) {
+        return raised.startsWith(partitionKey + "#") && startsWithReasonKind(raised.substring(partitionKey.length() + 1));
+    }
+
+    private static boolean startsWithReasonKind(String rest) {
+        return Arrays.stream(PartitionRecoveryReasonKind.values()).anyMatch(kind -> rest.startsWith(kind.name() + "#"));
+    }
+
+    /// #2201 A-14 (spec 5.1 target, bullet 4): the late-bound seams still at their default on this manager.
+    public List<StreamSeam> unboundSeams() {
+        return List.of();
+    }
+
+    /// #2201 A-14: how many safety-relevant seams are still at their default on a manager that keeps a WAL; `0` on one that
+    /// keeps none.
+    public int unboundSafetySeamCount() {
+        return 0;
     }
 
     /// The incarnation of the ring serving `(streamName, partition)` on this node, or [Option#none] when none is built
