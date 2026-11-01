@@ -1636,6 +1636,21 @@ public sealed interface AetherValue {
                                                  dissolved);
         }
 
+        /// True when `other` differs from this value in `announcedAt` alone, i.e. committing this value over `other`
+        /// would change nothing but the timestamp.
+        public boolean unchangedFrom(GovernorAnnouncementValue other) {
+            return new GovernorAnnouncementValue(governorId,
+                                                 memberCount,
+                                                 members,
+                                                 tcpAddress,
+                                                 other.announcedAt(),
+                                                 communityTerm,
+                                                 communityEpoch,
+                                                 observedCoreEpoch,
+                                                 transitionedAt,
+                                                 dissolved).equals(other);
+        }
+
         public GovernorAnnouncementValue withMembers(List<NodeId> newMembers, String newTcpAddress, Epoch coreEpoch) {
             return new GovernorAnnouncementValue(governorId,
                                                  newMembers.size(),

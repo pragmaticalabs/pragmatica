@@ -72,7 +72,11 @@ class GovernorAuthorityTest {
     }
 
     private GovernorAuthorityMessage.Response request(NodeId worker, long expected) {
-        return authority.handle(new GovernorAuthorityMessage.Request(worker, "c", 1, expected, "host:9000")).await().unwrap();
+        return authority.handle(new GovernorAuthorityMessage.Request(worker, "c", 1, expected, "host:9000", false)).await().unwrap();
+    }
+
+    private GovernorAuthorityMessage.Response refresh(NodeId worker, long expected) {
+        return authority.handle(new GovernorAuthorityMessage.Request(worker, "c", 1, expected, "host:9000", true)).await().unwrap();
     }
 
     @Test
@@ -111,7 +115,7 @@ class GovernorAuthorityTest {
         leader(CORE, 1);
         var incumbent = request(A, 0).authority().unwrap();
         beforeApply.set(() -> leader(new NodeId("replacement-core"), 2));
-        assertThat(request(A, incumbent.communityTerm()).authority().isEmpty()).isTrue();
+        assertThat(refresh(A, incumbent.communityTerm()).authority().isEmpty()).isTrue();
         assertThat(store.getTyped(KEY, GovernorAnnouncementValue.class).unwrap()).isEqualTo(incumbent);
     }
 
@@ -211,9 +215,53 @@ class GovernorAuthorityTest {
         var granted = request(A, 0).authority().unwrap();
         var commitsAfterGrant = commits.get();
 
-        var answered = authority.handle(new GovernorAuthorityMessage.Request(A, "c", 1, granted.communityTerm(), "moved:9000")).await().unwrap().authority().unwrap();
+        var answered = authority.handle(new GovernorAuthorityMessage.Request(A, "c", 1, granted.communityTerm(), "moved:9000", false)).await().unwrap().authority().unwrap();
 
         assertThat(commits.get()).isEqualTo(commitsAfterGrant + 1);
         assertThat(answered.tcpAddress()).isEqualTo("moved:9000");
+    }
+
+    /// The re-announce timer is the liveness refresh: the same unchanged announcement is committed again, with only its
+    /// timestamp new, so the committed `announcedAt` (and the Put the core's freshness window reads) keeps moving.
+    @Test
+    void unchangedAnnouncement_refreshRequest_isCommittedWithANewTimestamp() throws InterruptedException {
+        leader(CORE, 1);
+        var granted = request(A, 0).authority().unwrap();
+        var commitsAfterGrant = commits.get();
+
+        Thread.sleep(5);
+        var answered = refresh(A, granted.communityTerm()).authority().unwrap();
+
+        assertThat(commits.get()).isEqualTo(commitsAfterGrant + 1);
+        assertThat(answered.announcedAt()).isGreaterThan(granted.announcedAt());
+        assertThat(answered.unchangedFrom(granted)).as("nothing but the timestamp moved").isTrue();
+    }
+
+    /// A coreEpoch the committed announcement has not observed yet is a change.
+    @Test
+    void newerCoreEpoch_edgeRequest_isCommitted() {
+        var epoch = new AtomicReference<>(Epoch.ZERO);
+        var observing = GovernorAuthority.governorAuthority(CORE, cluster, store, () -> true, _ -> members.get(), _ -> true, epoch::get, HlcClock.hlcClock(CORE));
+        leader(CORE, 1);
+        var granted = observing.handle(new GovernorAuthorityMessage.Request(A, "c", 1, 0, "host:9000", false)).await().unwrap().authority().unwrap();
+        var commitsAfterGrant = commits.get();
+
+        epoch.set(Epoch.epoch(0L, 1L, 0));
+        var answered = observing.handle(new GovernorAuthorityMessage.Request(A, "c", 1, granted.communityTerm(), "host:9000", false)).await().unwrap().authority().unwrap();
+
+        assertThat(commits.get()).isEqualTo(commitsAfterGrant + 1);
+        assertThat(answered.observedCoreEpoch()).isEqualTo(Epoch.epoch(0L, 1L, 0));
+    }
+
+    /// Core-initiated recovery names another governor, so it commits; it asks for the refresh itself.
+    @Test
+    void recoveryNamingTheSittingGovernor_isCommitted() {
+        leader(CORE, 1);
+        var granted = request(A, 0).authority().unwrap();
+        var commitsAfterGrant = commits.get();
+
+        authority.reconcile("c", A, granted.communityTerm(), "host:9000").await().unwrap();
+
+        assertThat(commits.get()).isEqualTo(commitsAfterGrant + 1);
     }
 }

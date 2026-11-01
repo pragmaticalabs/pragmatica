@@ -59,10 +59,11 @@ public interface GovernorAuthority {
                              request.sender(),
                              request.expectedTerm(),
                              request.tcpAddress(),
-                             false).map(value -> new GovernorAuthorityMessage.Response(self,
-                                                                                       request.communityId(),
-                                                                                       request.requestId(),
-                                                                                       value));
+                             false,
+                             request.refresh()).map(value -> new GovernorAuthorityMessage.Response(self,
+                                                                                                   request.communityId(),
+                                                                                                   request.requestId(),
+                                                                                                   value));
             }
 
             @Override
@@ -70,18 +71,25 @@ public interface GovernorAuthority {
                                                                         NodeId candidate,
                                                                         long expectedTerm,
                                                                         String address) {
-                return grant(community, candidate, expectedTerm, address, true);
+                return grant(community, candidate, expectedTerm, address, true, true);
             }
 
             private Promise<Option<GovernorAnnouncementValue>> grant(String communityId,
                                                                      NodeId nominee,
                                                                      long expectedTerm,
                                                                      String address,
-                                                                     boolean recovery) {
+                                                                     boolean recovery,
+                                                                     boolean refresh) {
                 return store.getTyped(LeaderKey.INSTANCE, LeaderValue.class)
                             .filter(leader -> leader.leader()
                                                     .equals(self) && isActiveLeader.getAsBoolean())
-                            .map(leader -> authorize(communityId, nominee, expectedTerm, address, recovery, leader))
+                            .map(leader -> authorize(communityId,
+                                                     nominee,
+                                                     expectedTerm,
+                                                     address,
+                                                     recovery,
+                                                     refresh,
+                                                     leader))
                             .or(() -> Causes.cause("Governor authority requires the active committed core leader").promise());
             }
 
@@ -90,6 +98,7 @@ public interface GovernorAuthority {
                                                                          long expectedTerm,
                                                                          String address,
                                                                          boolean recovery,
+                                                                         boolean refresh,
                                                                          LeaderValue leader) {
                 var key = AetherKey.GovernorAnnouncementKey.forCommunity(communityId);
                 var previous = store.getTyped(key, GovernorAnnouncementValue.class);
@@ -119,6 +128,12 @@ public interface GovernorAuthority {
                 }
 
                 var updated = update(previous, nominee, address, members);
+                // #2542: an announcement equal to the committed one (everything but announcedAt) is no mutation unless
+                // the governor's timer asks for the liveness refresh. This is the one commit path, so no caller bypasses it.
+                if (!refresh && previous.filter(updated::unchangedFrom).isPresent()) {
+                    return Promise.success(previous);
+                }
+
                 var transactionId = UUID.randomUUID().toString();
                 var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
                                                                                       transactionId,

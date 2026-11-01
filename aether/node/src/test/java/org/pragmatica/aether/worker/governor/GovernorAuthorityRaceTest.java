@@ -71,7 +71,7 @@ class GovernorAuthorityRaceTest {
     }
 
     private GovernorAuthorityMessage.Response request(GovernorAuthority authority, NodeId worker, long expected) {
-        return authority.handle(new GovernorAuthorityMessage.Request(worker, "c", 1, expected, "host:9000")).await().unwrap();
+        return authority.handle(new GovernorAuthorityMessage.Request(worker, "c", 1, expected, "host:9000", false)).await().unwrap();
     }
 
     /// Two grantable nominations built from the same empty base: A reads previous=none as the
@@ -136,7 +136,7 @@ class GovernorAuthorityRaceTest {
     @Test
     void storeLeaderButInactiveEngine_refusesWithFailureAndWritesNothing() {
         activeLeader.set(false);
-        var result = authority().handle(new GovernorAuthorityMessage.Request(A, "c", 1, 0, "host:9000")).await();
+        var result = authority().handle(new GovernorAuthorityMessage.Request(A, "c", 1, 0, "host:9000", false)).await();
         assertThat(result.isFailure()).isTrue();
         assertThat(store.get(KEY).isEmpty()).isTrue();
     }

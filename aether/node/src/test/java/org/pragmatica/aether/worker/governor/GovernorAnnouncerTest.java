@@ -84,6 +84,85 @@ class GovernorAnnouncerTest {
         assertThat(requests).hasSize(1);
     }
 
+    /// #2542: only the timer's tick asks the core to re-commit an unchanged announcement; a membership edge never does.
+    @Test
+    void membershipEdge_doesNotAskForARefresh_theTimerTickDoes() {
+        announcer.start();
+        announcer.onMembershipChange(List.of(alive(SELF), alive(PEER)));
+        reply.succeed(new GovernorAuthorityMessage.Response(CORE, "pool-a", requests.getFirst().requestId(), Option.some(authority(SELF, 1))));
+        announcer.onMembershipChange(List.of(alive(SELF), alive(PEER)));
+        announcer.refresh();
+        assertThat(requests).hasSize(3);
+        assertThat(requests.get(0).refresh()).isFalse();
+        assertThat(requests.get(1).refresh()).as("a second edge").isFalse();
+        assertThat(requests.get(2).refresh()).as("the tick").isTrue();
+    }
+
+    /// A tick that finds a request in flight is not lost: the next request carries the refresh until a grant answers it.
+    @Test
+    void timerTickDuringAPendingRequest_isCarriedByTheNextRequest() {
+        announcer.start();
+        announcer.onMembershipChange(List.of(alive(SELF), alive(PEER)));
+        announcer.refresh();
+        assertThat(requests).as("the tick found a request in flight").hasSize(1);
+        reply.succeed(new GovernorAuthorityMessage.Response(CORE, "pool-a", requests.getFirst().requestId(), Option.some(authority(SELF, 1))));
+        announcer.onMembershipChange(List.of(alive(SELF), alive(PEER)));
+        assertThat(requests).hasSize(2);
+        assertThat(requests.get(1).refresh()).isTrue();
+    }
+
+    /// The refresh is owed until a grant answers the request that carried it; then it is paid, and a stop forgets it.
+    @Test
+    void answeredRefresh_isNotCarriedByLaterEdges_andStopForgetsAPendingOne() {
+        var sent = new ArrayList<GovernorAuthorityMessage.Request>();
+        var replies = new ArrayList<Promise<GovernorAuthorityMessage.Response>>();
+        var tracked = GovernorAnnouncer.governorAnnouncer(SELF, () -> "pool-a", () -> "host:9000", () -> Option.none(), () -> true, request -> {
+            sent.add(request);
+            replies.add(Promise.promise());
+
+            return replies.getLast();
+        });
+
+        tracked.start();
+        tracked.refresh();
+        replies.getFirst().succeed(new GovernorAuthorityMessage.Response(CORE, "pool-a", sent.getFirst().requestId(), Option.some(authority(SELF, 1))));
+        tracked.onMembershipChange(List.of(alive(SELF), alive(PEER)));
+        assertThat(sent).hasSize(2);
+        assertThat(sent.get(0).refresh()).as("the tick").isTrue();
+        assertThat(sent.get(1).refresh()).as("the answered refresh is paid").isFalse();
+        replies.getLast().succeed(new GovernorAuthorityMessage.Response(CORE, "pool-a", sent.getLast().requestId(), Option.some(authority(SELF, 1))));
+
+        tracked.refresh();
+        assertThat(sent).hasSize(3);
+        tracked.stop();
+        replies.getLast().succeed(new GovernorAuthorityMessage.Response(CORE, "pool-a", sent.getLast().requestId(), Option.none()));
+        tracked.start();
+        tracked.onMembershipChange(List.of(alive(SELF), alive(PEER)));
+        assertThat(sent).hasSize(4);
+        assertThat(sent.getLast().refresh()).as("a refresh owed before a stop is forgotten").isFalse();
+        tracked.stop();
+    }
+
+    /// The re-announce timer is wired to the refresh: with no membership edge at all, its ticks ask for it.
+    @Test
+    void timer_tickAsksForARefresh() throws InterruptedException {
+        var sent = new java.util.concurrent.CopyOnWriteArrayList<GovernorAuthorityMessage.Request>();
+        var ticking = GovernorAnnouncer.governorAnnouncer(SELF, () -> "pool-a", () -> "host:9000", () -> Option.none(), () -> true,
+            request -> { sent.add(request); return Promise.success(new GovernorAuthorityMessage.Response(CORE, "pool-a", request.requestId(), Option.some(authority(SELF, 1)))); },
+            org.pragmatica.lang.io.TimeSpan.timeSpan(40).millis());
+
+        try {
+            ticking.start();
+            for (var waited = 0; sent.size() < 2 && waited < 100; waited++) {
+                Thread.sleep(50);
+            }
+            assertThat(sent).as("the timer ticked at least twice").hasSizeGreaterThanOrEqualTo(2);
+            assertThat(sent).allMatch(GovernorAuthorityMessage.Request::refresh);
+        } finally {
+            ticking.stop();
+        }
+    }
+
     @Test
     void singletonReadyWorkerNominatesWithoutSwimSelfEntry() {
         announcer.start();
