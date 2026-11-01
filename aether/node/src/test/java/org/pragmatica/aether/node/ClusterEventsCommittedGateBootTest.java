@@ -40,6 +40,7 @@ import org.pragmatica.net.tcp.TlsConfig;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
@@ -107,18 +108,48 @@ class ClusterEventsCommittedGateBootTest {
         boot();
         commitLeaderKey(node.self(), 500_000L);
         var record = StreamPartitionOwnershipKey.streamPartitionOwnershipKey(SystemStreams.CLUSTER_EVENTS.asString(), 0);
-        var epoch = Epoch.epoch(0L, 7, 3);
+        var bootstrapped = awaitOwnBootstrapRecord(record);
+        var epoch = bootstrapped.ownerEpoch().nextCounter();
         var named = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(OTHER, epoch, epoch.localCounter(), HlcTimestamp.ZERO);
 
-        assertThat(raisedBy("control")).as("control: no record, the committed leader is this node").isTrue();
+        assertThat(raisedBy("control")).as("control: the record names this node, the committed leader").isTrue();
 
-        commitAsLeader(record, Option.none(), Option.some(named));
-        assertThat(node.kvStore().getTyped(record, StreamPartitionOwnershipValue.class).isPresent()).as("control: the record is committed").isTrue();
+        commitAsLeader(record, Option.some(bootstrapped), Option.some(named));
+        assertThat(node.kvStore().getTyped(record, StreamPartitionOwnershipValue.class).map(StreamPartitionOwnershipValue::owner).or(node.self()))
+            .as("control: the committed record names another node, not the one this node bootstrapped").isEqualTo(OTHER);
         assertThat(raisedBy("record-names-another")).as("the record outranks the leader (ownership route and lookup)").isFalse();
 
-        commitAsLeader(record, Option.some(named), Option.none());
+        commitAsLeader(record, Option.some(awaitFailoverRefusal(record)), Option.none());
         assertThat(node.kvStore().getTyped(record, StreamPartitionOwnershipValue.class).isPresent()).as("control: the record is gone").isFalse();
         assertThat(raisedBy("record-removed")).as("the removal route clears the owner this node holds").isTrue();
+    }
+
+    /// Becoming leader makes the node propose its OWN ownership record for the cluster-events partition (stream failover recovery), and the
+    /// record is written in steps: it first appears without a lineage (`isrVersion` 1, no `epochStarts`) and the lineage is announced into it a
+    /// moment later. A record committed by the test before the last step is refused or overwritten, so the test waits for the settled record
+    /// and replaces exactly that value, with an epoch after the one it holds (the ownership fence).
+    private StreamPartitionOwnershipValue awaitOwnBootstrapRecord(StreamPartitionOwnershipKey record) {
+        await().atMost(15, SECONDS)
+               .untilAsserted(() -> assertThat(ownBootstrapRecord(record)).as("the node bootstraps its own ownership record, lineage included").isTrue());
+
+        return node.kvStore().getTyped(record, StreamPartitionOwnershipValue.class).unwrap();
+    }
+
+    /// A record that names another node, which this node cannot reach, is marked `failoverRefused` by the node a moment after it is committed.
+    /// The removal replaces the record as it is after that write, not as the test committed it.
+    private StreamPartitionOwnershipValue awaitFailoverRefusal(StreamPartitionOwnershipKey record) {
+        await().atMost(15, SECONDS)
+               .untilAsserted(() -> assertThat(node.kvStore().getTyped(record, StreamPartitionOwnershipValue.class).filter(StreamPartitionOwnershipValue::failoverRefused).isPresent())
+                   .as("the node marks the record it cannot fail over").isTrue());
+
+        return node.kvStore().getTyped(record, StreamPartitionOwnershipValue.class).unwrap();
+    }
+
+    private boolean ownBootstrapRecord(StreamPartitionOwnershipKey record) {
+        return node.kvStore()
+                   .getTyped(record, StreamPartitionOwnershipValue.class)
+                   .filter(value -> value.owner().equals(node.self()) && !value.epochStarts().isEmpty())
+                   .isPresent();
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
