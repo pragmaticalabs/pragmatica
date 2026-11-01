@@ -37,6 +37,8 @@ class EmberShardTest(unittest.TestCase):
     def test_unknown_class_costs_the_75th_percentile_weight(self):
         self.assertEqual(shard.default_weight({"A": 1, "B": 2, "C": 3, "D": 4, "E": 100}), 4)
         self.assertEqual(shard.default_weight({"A": 0, "B": 5}), 4)  # 3.75 rounded up
+        self.assertEqual(shard.default_weight({"A": 7}), 7)  # one weight: quantiles needs two
+        self.assertEqual(shard.default_weight({}), 0)
         bins = shard.assign(self.classes + ["EmberBrandNewTest"], self.weights, 2)
         placed = next(b for b in bins if "EmberBrandNewTest" in b["classes"])
         self.assertGreaterEqual(placed["total"], shard.default_weight(self.weights))

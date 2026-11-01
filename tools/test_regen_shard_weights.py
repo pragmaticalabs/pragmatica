@@ -1,7 +1,11 @@
+import contextlib
 import importlib.util
+import io
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 _spec = importlib.util.spec_from_file_location("regen", Path(__file__).with_name("regen-shard-weights.py"))
 regen = importlib.util.module_from_spec(_spec)
@@ -10,6 +14,7 @@ _spec.loader.exec_module(regen)
 # Real surefire reports from CI run 41351583462 (rc5 69b24d0f3a), with <properties> and <system-out> removed.
 RUN = "41351583462"
 FIXTURE = Path(__file__).resolve().parent / f"testdata/shard-weights-run-{RUN}"
+CI = Path(__file__).resolve().parent.parent / ".github/workflows/ci.yml"
 
 
 class RegenShardWeightsTest(unittest.TestCase):
@@ -50,6 +55,58 @@ class RegenShardWeightsTest(unittest.TestCase):
         self.assertIn("QuicDialAttemptTest 41  # bigboy, 3 runs\n", text)
         self.assertIn(f"QuicBareTest 3  # carried forward, not reported by run {RUN}\n", text)
         self.assertIn(f"--run {RUN}", text)
+
+    def test_float_noise_in_a_sum_does_not_round_up_a_whole_second(self):
+        # 0.1 + 0.2 + 0.7 sums to 1.0000000000000002 s; rounded up as is it would read 2
+        text, _ = regen.regenerate("ember", RUN, ["XTest"], {"XTest": 0.1 + 0.2 + 0.7}, {})
+        self.assertIn("XTest 1  #", text)
+
+    def test_a_grouped_suite_time_is_parsed(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "TEST-org.x.XTest.xml").write_text('<testsuite name="org.x.XTest" time="1,234.5"/>')
+            self.assertEqual(regen.measured_seconds([d]), {"XTest": 1234.5})
+
+    def _module(self):
+        """A synthetic module whose source tree plans the fixture's four classes plus one the run never reported."""
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+        (d / "src").mkdir()
+        for c in ("EmberAllHoldersRestartKeepRetirementTest", "EmberConfigBasePortTest", "QuicBootTokenAdmissionTest",
+                  "QuicConsensusBackpressureTest", "QuicDialAttemptTest"):
+            (d / "src" / f"{c}.java").write_text(f"class {c} {{ @Test void t() {{}} }}")
+        weights = d / "w.txt"
+        weights.write_text("QuicDialAttemptTest 41\n")
+        return d / "src", weights
+
+    def _main(self, src, weights, *argv):
+        err = io.StringIO()
+        with mock.patch.dict(regen.shard.MODULES, {"synthetic": (src, weights, 0)}), contextlib.redirect_stderr(err):
+            regen.main(["--module", "synthetic", "--run", RUN, *argv])
+        return err.getvalue()
+
+    def test_main_rewrites_the_module_weights_file(self):
+        src, weights = self._module()
+        err = self._main(src, weights, "--dir", str(FIXTURE))
+        self.assertEqual(regen.shard.read_weights(weights), {
+            "EmberAllHoldersRestartKeepRetirementTest": 24, "EmberConfigBasePortTest": 1, "QuicBootTokenAdmissionTest": 70,
+            "QuicConsensusBackpressureTest": 1, "QuicDialAttemptTest": 41})
+        self.assertIn(f"4 class(es) measured at run {RUN}, 1 carried forward: QuicDialAttemptTest", err)
+
+    def test_main_without_a_dir_downloads_the_runs_module_artifacts(self):
+        src, weights = self._module()
+        calls = []
+        def fake_run(args, check):
+            calls.append((args, check))
+            shutil.copytree(FIXTURE, args[-1], dirs_exist_ok=True)
+        with mock.patch.object(regen.subprocess, "run", fake_run):
+            self._main(src, weights)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0][:6], ["gh", "run", "download", RUN, "-p", "synthetic-test-results-*"])
+        self.assertEqual((calls[0][0][6], calls[0][1]), ("-D", True))
+        self.assertEqual(regen.shard.read_weights(weights)["QuicBootTokenAdmissionTest"], 70)
+
+    def test_ci_runs_these_pins(self):
+        self.assertIn("python3 -B -m unittest discover -s tools -p test_regen_shard_weights.py", CI.read_text())
 
     def test_main_refuses_to_rewrite_from_zero_reports(self):
         with tempfile.TemporaryDirectory() as d, self.assertRaises(SystemExit) as raised:

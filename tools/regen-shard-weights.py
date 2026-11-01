@@ -38,7 +38,8 @@ def measured_seconds(report_dirs):
     seconds = {}
     for d in report_dirs:
         for report in sorted(Path(d).rglob("TEST-*.xml")):
-            suite_time = float(ET.parse(report).getroot().get("time", "0").replace(",", ""))
+            # "1,234.5": a grouped time, should surefire format one that way; a report with no time fails here, loudly
+            suite_time = float(ET.parse(report).getroot().get("time").replace(",", ""))
             name = top_level_class(report)
             seconds[name] = seconds.get(name, 0.0) + suite_time
     return seconds
