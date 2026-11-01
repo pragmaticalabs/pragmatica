@@ -1,0 +1,2 @@
+### Added
+- The M-1 measurement harness for the core's per-event KV work (#2512): `M1MeasureTest` and `M1Instrument` in `aether/ember` count committed mutations per key family, leader transactions and slots for each node event. Excluded from CI by the `Benchmark` tag; run it explicitly (README in the test package, analysis scripts in `tools/m1-measure/`). `EmberCluster.withAdditionalNodeSlots` now accepts up to 256 slots and a new `withPortStride` keeps SWIM and cluster ports apart beyond 100 slots; defaults are unchanged.
