@@ -1787,6 +1787,9 @@ public final class StreamPartitionManager implements AutoCloseable {
             releaseEntry(local);
             local.deleteWals();
         }
+        // Know 548514c110 Q1 / d9cd07cda1: the committed life inherits none of the per-partition state recorded under the
+        // name while the replaced life was local. Purged before the hydrate, which records the committed life's own.
+        purgePartitionState(committed.name(), "the stream's local life was replaced by its committed life");
 
         return hydrateEntry(committed);
     }
@@ -5279,10 +5282,11 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// #2201 I-20 (know `d9cd07cda1`, S1): a life that ends takes its per-partition state (spec 5.1 rows 4-19) with it, so a
     /// stream created again under the same name inherits nothing from it. Runs on every stream-removal path through
-    /// [#closeAndRelease]. An open cut refusal is closed first, with `reason`, so its operator warning is resolved rather than
-    /// dropped. The quarantine marker [#divergedAt] goes too, on every path (#1505 F2 for destroy; know `e0035a56ef` for
-    /// config removal and the idle reaper): the life's records are deleted with it, so a marker left behind would fence the
-    /// fresh log of a stream created again under the same name, which could then never reach CAUGHT_UP.
+    /// [#closeAndRelease], and when a committed life replaces this node's losing proposal ([#replaceLosingLife]). An open
+    /// cut refusal is closed first, with `reason`, so its operator warning is resolved rather than dropped. The quarantine
+    /// marker [#divergedAt] goes too, on every path (#1505 F2 for destroy; know `e0035a56ef` for config removal and the
+    /// idle reaper): the life's records are deleted with it, so a marker left behind would fence the fresh log of a stream
+    /// created again under the same name, which could then never reach CAUGHT_UP.
     @Contract
     private void purgePartitionState(String streamName, String reason) {
         closeRefusedCuts(ref -> ref.streamName()
