@@ -36,7 +36,7 @@ public record StreamMemoryBudget(long maxMemoryBytes, long sealPendingCapBytes) 
                                                                 StreamingConfig streaming,
                                                                 long totalMemoryBytes) {
         return maxMemoryBytes(environment, streaming, totalMemoryBytes).map(budget -> new StreamMemoryBudget(budget,
-                                                                                                       streaming.effectiveSealPendingCapBytes(budget)));
+                                                                                                             streaming.effectiveSealPendingCapBytes(budget)));
     }
 
     private static Result<Long> maxMemoryBytes(Fn1<Option<String>, String> environment,
@@ -81,21 +81,21 @@ public record StreamMemoryBudget(long maxMemoryBytes, long sealPendingCapBytes) 
         @SuppressWarnings("JBCT-CAUSE-04")
         record NotADataSize(String value, Cause origin, String message) implements StreamMemoryBudgetError, Cause.Wrapped {
             static final Fn2<NotADataSize, String, Cause> FACTORY = Causes.forTwoValues(MAX_MEMORY_VARIABLE
-                                                                                         + "='%s' is not a data size such as 512MB; the"
-                                                                                         + " node refuses to boot rather than run its"
-                                                                                         + " streams under a budget nobody chose. Unset"
-                                                                                         + " it for [streaming] max_memory_bytes or the"
-                                                                                         + " derived default.",
-                                                                                         NotADataSize::new);
+                                                                                       + "='%s' is not a data size such as 512MB; the"
+                                                                                       + " node refuses to boot rather than run its"
+                                                                                       + " streams under a budget nobody chose. Unset"
+                                                                                       + " it for [streaming] max_memory_bytes or the"
+                                                                                       + " derived default.",
+                                                                                        NotADataSize::new);
         }
 
         /// The variable is a data size of zero bytes.
         record NotPositive(String value, String message) implements StreamMemoryBudgetError {
             static final Fn1<NotPositive, String> FACTORY = Causes.forOneValue(MAX_MEMORY_VARIABLE
-                                                                               + "='%s' is not a positive data size; a stream"
-                                                                               + " memory budget of zero holds no stream, so the"
-                                                                               + " node refuses to boot. Unset it for [streaming]"
-                                                                               + " max_memory_bytes or the derived default.",
+                                                                              + "='%s' is not a positive data size; a stream"
+                                                                              + " memory budget of zero holds no stream, so the"
+                                                                              + " node refuses to boot. Unset it for [streaming]"
+                                                                              + " max_memory_bytes or the derived default.",
                                                                                NotPositive::new);
         }
     }
