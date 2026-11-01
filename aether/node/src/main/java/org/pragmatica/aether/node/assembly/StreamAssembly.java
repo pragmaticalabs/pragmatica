@@ -121,6 +121,7 @@ import org.pragmatica.aether.stream.replication.WatermarkTracker;
 import org.pragmatica.aether.stream.segment.CursorStore;
 import org.pragmatica.aether.stream.segment.RefDurability;
 import org.pragmatica.aether.stream.segment.RetentionEnforcer;
+import org.pragmatica.aether.stream.segment.SealerThresholds;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.SegmentReader;
 import org.pragmatica.aether.stream.segment.SegmentSealer;
@@ -231,6 +232,14 @@ public sealed interface StreamAssembly {
                                     StreamForwardClient streamForwardClient) {}
 
     /// The replica registry, the replication manager and transport, the partition manager with its segment index and stores, the ISR announcer and the forward client.
+    /// The run-forming sealer's thresholds, as the node's `[streaming] seal_*` keys set them (#2201 C-02).
+    static SealerThresholds sealerThresholds(StreamingConfig streaming) {
+        return SealerThresholds.sealerThresholds(streaming.sealRunBytes(),
+                                                 streaming.sealRunEvents(),
+                                                 streaming.sealRunAge(),
+                                                 streaming.sealMergeBytes());
+    }
+
     static StreamReplicationOutputs streamReplication(StreamReplicationInputs in) {
         var config = in.config();
         var delegateRouter = in.delegateRouter();
@@ -314,10 +323,12 @@ public sealed interface StreamAssembly {
         // #1240: the entity log substrate asks the same sealer which evicted offsets are still in flight.
         // #1441: a partition WITHOUT a WAL has nothing above that snapshot but the refs, so its seals force a
         // snapshot before they resolve; boot's rebuilt floor then covers every completed seal on both paths.
+        // #2201 C-02: evictions are sealed in runs, by the `[streaming] seal_*` thresholds.
         var streamSegmentSealer = SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(streamStorage,
                                                                                                     streamSegmentIndex,
                                                                                                     RefDurability.snapshotted(streamStorageSetup.snapshotManager())),
-                                                              streamMaxMemoryBytes);
+                                                              streamMaxMemoryBytes,
+                                                              sealerThresholds(config.streaming()));
         var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes,
                                                                                    streamSegmentSealer,
                                                                                    streamReplicationManager,
@@ -341,6 +352,9 @@ public sealed interface StreamAssembly {
         // gate and cold-restart detection raise and read.
         streamPartitionManager.partitionFlags(PartitionFlags.kvPartitionFlags(clusterNode, kvStore, nodeCodec));
         streamPartitionManager.operatorWarnings(operatorWarningSink);
+        // Know 73fd8d9759: a graceful stop that cannot seal what the sealer holds within its bound is reported to this node's sink.
+        streamSegmentSealer.operatorWarnings(operatorWarningSink,
+                                             config.self().id());
         // #1730 phase 2: a durable cut whose repair is not settled within twelve backfill redrive ticks is reported anyway.
         streamPartitionManager.repairReportBound(TimeSpan.timeSpan(STREAM_BACKFILL_REDRIVE_INTERVAL.millis() * 12L).millis());
         // `[streaming] reshuffle_concurrency` — set BEFORE any materialization, since it replaces the permit
