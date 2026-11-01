@@ -51,11 +51,16 @@ final class ApplyLabels {
     }
 
     private static Result<Unit> requireMintedNodeIdSafe(ClusterBootstrapConfig desired, ClusterName cluster) {
-        return mintsDockerIds(desired) ? requireDockerNodeIdSafe(cluster) : Result.unitResult();
+        return mintsDockerIds(desired)
+               ? requireDockerNodeIdSafe(cluster)
+               : Result.unitResult();
     }
 
     private static boolean mintsDockerIds(ClusterBootstrapConfig desired) {
-        return desired.sources().values().stream().anyMatch(source -> source.type() == SourceType.DOCKER);
+        return desired.sources()
+                      .values()
+                      .stream()
+                      .anyMatch(source -> source.type() == SourceType.DOCKER);
     }
 
     private static Result<Unit> requireDockerNodeIdSafe(ClusterName cluster) {

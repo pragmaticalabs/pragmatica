@@ -328,7 +328,8 @@ public final class NodeReplacementWiring {
     /// each pool's own shape. The same rule PF-36 budgets (every cloud pool is sized with the cloud shape).
     static String replacementIdPrefix(NodeReplacementWiring.Inputs in, String role, String source) {
         return in.ctm()
-                 .nodeIsCloudBacked(NodeRole.nodeRole(role).or(NodeRole.CORE), source)
+                 .nodeIsCloudBacked(NodeRole.nodeRole(role).or(NodeRole.CORE),
+                                    source)
                ? ProvisionContext.CLOUD_NODE_PREFIX
                : ProvisionContext.coreNodeNamePrefix(in.clusterName().get());
     }

@@ -790,8 +790,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     private static boolean sourceIsCloud(ClusterBootstrapConfig config, NodeRole role, String sourceName) {
-        var named = Option.option(config.sources()
-                                        .get(sourceName));
+        var named = Option.option(config.sources().get(sourceName));
 
         return named.isPresent()
                ? named.unwrap()
