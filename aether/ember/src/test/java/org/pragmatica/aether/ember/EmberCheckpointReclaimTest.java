@@ -77,6 +77,9 @@ class EmberCheckpointReclaimTest {
     private static final long LEADER_BUDGET_MS = 90_000L;
     private static final long REPLICATION_BUDGET_MS = 30_000L;
     private static final long DELETE_BUDGET_MS = 30_000L;
+    /// A replica's owner-epoch fence refused the first save 7 s after start, while the writer's owner-epoch view still lagged (CI
+    /// ember-shard-1 at 0882379463): every node's DHT writes must be accepted before the first save on a cluster.
+    private static final long WRITES_ACCEPTED_BUDGET_MS = 30_000L;
     /// Three anti-entropy intervals (30 s each) and margin.
     private static final long ANTI_ENTROPY_BUDGET_MS = 150_000L;
     /// The survivors declared a silenced replica Dead after about 26 s in the v-2516 probe; the budget is generous.
@@ -110,9 +113,34 @@ class EmberCheckpointReclaimTest {
         if (cluster == null) {
             cluster = EmberTestPorts.startedCluster(PORTS, this::threeNodes, START_BOUND);
             awaitCondition("a leader is elected", LEADER_BUDGET_MS, () -> cluster.currentLeader().isPresent());
+            awaitWritesAccepted(cluster.allNodes());
         }
 
         return cluster;
+    }
+
+    /// Puts a small probe block through each node's `streams` storage until the write is accepted. A probe is not a checkpoint: no
+    /// pointer names it, and its unique content makes it a block no assertion looks up (each names `B0` or a block a pointer names).
+    private void awaitWritesAccepted(List<AetherNode> nodes) {
+        var accepted = new LinkedHashSet<String>();
+        var attempts = new int[1];
+
+        awaitCondition("every node's DHT writes are accepted", WRITES_ACCEPTED_BUDGET_MS, () -> {
+            attempts[0]++;
+            nodes.stream()
+                 .filter(node -> !accepted.contains(node.self().id()))
+                 .filter(node -> probeAccepted(node, attempts[0]))
+                 .forEach(node -> accepted.add(node.self().id()));
+
+            return accepted.size() == nodes.size();
+        });
+        System.out.printf("NT-63 cluster %d: every node's DHT writes accepted after %d probe attempt(s)%n", generation, attempts[0]);
+    }
+
+    private boolean probeAccepted(AetherNode node, int attempt) {
+        var probe = bytes("NT-63 write probe, cluster " + generation + ", " + node.self().id() + ", attempt " + attempt);
+
+        return streams(node).put(probe).await(SAVE_BOUND).isSuccess();
     }
 
     @AfterAll
