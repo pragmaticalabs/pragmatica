@@ -19,7 +19,14 @@ public sealed interface GovernorAuthorityMessage extends ProtocolMessage {
         return StreamType.KV;
     }
 
-    record Request(NodeId sender, String communityId, long requestId, long expectedTerm, String tcpAddress) implements GovernorAuthorityMessage {}
+    /// `refresh` asks for the liveness re-commit of an announcement that is otherwise unchanged; only the governor's
+    /// re-announce timer sets it, a membership edge never does.
+    record Request(NodeId sender,
+                   String communityId,
+                   long requestId,
+                   long expectedTerm,
+                   String tcpAddress,
+                   boolean refresh) implements GovernorAuthorityMessage {}
 
     record Response(NodeId sender, String communityId, long requestId, Option<GovernorAnnouncementValue> authority) implements GovernorAuthorityMessage {}
 }

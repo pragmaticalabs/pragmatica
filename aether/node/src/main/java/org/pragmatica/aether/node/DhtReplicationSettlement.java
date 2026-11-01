@@ -145,6 +145,20 @@ public interface DhtReplicationSettlement {
                                                          false));
     }
 
+    /// #2545: whether the leader would read the same thing from `desired` as from `last`, the report this node filed. They
+    /// are the same unless the caught-up version or the replica flag differ, or `desired.appliedVersion` reaches the
+    /// version of the open change (`openChangeVersion`, or [DHTNode#NO_CHANGE]) that `last.appliedVersion` was below:
+    /// the leader compares `appliedVersion` with that version and with nothing else. A change that arrives, or is named,
+    /// later finds `appliedVersion` already above it, and files then.
+    static boolean readsAsFiled(DhtReplicationReportValue last,
+                                DhtReplicationReportValue desired,
+                                long openChangeVersion) {
+        return last.caughtUpVersion() == desired.caughtUpVersion()
+               && last.replica() == desired.replica()
+               && last.appliedVersion() <= desired.appliedVersion()
+               && (openChangeVersion <= last.appliedVersion() || openChangeVersion > desired.appliedVersion());
+    }
+
     /// The next stage of `change` given the members' reports, or nothing when it cannot advance. `cores` are the DHT
     /// replicas, `workers` the other writers; a reporter whose report says `replica` counts as a core too. Members with a
     /// `Dead` in the leader's membership view are not waited for. Also commits `overdue` once the change has been unsettled for longer than
@@ -299,9 +313,18 @@ public interface DhtReplicationSettlement {
     }
 
     // ---- the running driver -----------------------------------------------------------------------------------------
-    /// The configuration version this node applied ([DhtReplicationReportValue#appliedVersion]).
+    /// The configuration version this node applied ([DhtReplicationReportValue#appliedVersion]). It files a report only
+    /// when that can change what the leader reads (see [#report]).
     @Contract
     void applied(long configVersion);
+
+    /// [#applied(long)] with a second source of the open change: a worker's projection carries it, besides the change record
+    /// the node's own store may already return. `openChangeVersion` is the version of the unsettled change the projection
+    /// names, or [DHTNode#NO_CHANGE]; the larger of it and the record's wins.
+    @Contract
+    default void applied(long configVersion, long openChangeVersion) {
+        applied(configVersion);
+    }
 
     /// A committed configuration: the leader commits the change it carries, if any.
     @Contract
@@ -319,10 +342,13 @@ public interface DhtReplicationSettlement {
     @Contract
     void evaluate();
 
-    /// File this node's report when it differs from the one it last filed. Called on every event that changes it, and on
-    /// the worker-metadata tick every node already runs, which retries a report whose submission failed (a worker before
-    /// its forwarding path is up, a core during a quorum loss): without a retry, one lost report would hold the change
-    /// unsettled until an operator noticed.
+    /// File this node's report when it differs from the one it last filed in a way the leader can read. The leader reads
+    /// `appliedVersion` only as "at or above the version of the open change", so a newer applied version alone is not
+    /// filed until an open change names a version it now reaches (#2545); a changed caught-up version or replica flag
+    /// always is. Called on every event that changes it, and on the worker-metadata tick every node already runs, which
+    /// retries a report whose submission failed (a worker before its forwarding path is up, a core during a quorum
+    /// loss): without a retry, one lost report would hold the change unsettled until an operator noticed. The report has
+    /// no other liveness role: the leader waits for members by its membership view and the ring, not by report age.
     @Contract
     void report();
 
@@ -347,12 +373,20 @@ public interface DhtReplicationSettlement {
                        AtomicReference<Option<DhtReplicationChangeValue>> inFlight,
                        AtomicReference<Option<DhtReplicationReportValue>> filed,
                        AtomicReference<Option<DhtReplicationReportValue>> filing,
+                       AtomicLong workerOpenChange,
                        AtomicBoolean restored) implements DhtReplicationSettlement {
             @Override
             @Contract
             public void applied(long configVersion) {
                 appliedVersion.accumulateAndGet(configVersion, Math::max);
                 report();
+            }
+
+            @Override
+            @Contract
+            public void applied(long configVersion, long openChangeVersion) {
+                workerOpenChange.set(openChangeVersion);
+                applied(configVersion);
             }
 
             @Override
@@ -435,8 +469,8 @@ public interface DhtReplicationSettlement {
                                                             ? inputs.dhtNode().replicationCaughtUpVersion()
                                                             : DHTNode.NO_CHANGE,
                                                             inputs.replica());
-                // what this node last filed, not the store: a worker never sees report keys (core-only scope)
-                if (filed.get().filter(desired::equals).isPresent() || filing.get().filter(desired::equals).isPresent()) {
+
+                if (alreadyFiled(desired)) {
                     return;
                 }
 
@@ -449,6 +483,25 @@ public interface DhtReplicationSettlement {
                       .withResult(_ -> filing.set(Option.none()))
                       .withFailure(cause -> LOG.debug("DHT replication report not filed: {}",
                                                       cause.message()));
+            }
+
+            /// What this node last filed, not the store: a worker never sees report keys (core-only scope).
+            private boolean alreadyFiled(DhtReplicationReportValue desired) {
+                return filing.get()
+                             .filter(desired::equals)
+                             .isPresent() || filed.get()
+                                                  .filter(last -> DhtReplicationSettlement.readsAsFiled(last,
+                                                                                                        desired,
+                                                                                                        openChangeVersion()))
+                                                  .isPresent();
+            }
+
+            /// The version of the unsettled change this node knows: a core reads the record, a worker also is told by its projection.
+            private long openChangeVersion() {
+                return Math.max(workerOpenChange.get(),
+                                committed().filter(change -> !change.settled())
+                                         .map(DhtReplicationChangeValue::version)
+                                         .or(DHTNode.NO_CHANGE));
             }
 
             private Option<DhtReplicationChangeValue> committed() {
@@ -531,6 +584,7 @@ public interface DhtReplicationSettlement {
                            new AtomicReference<>(Option.none()),
                            new AtomicReference<>(Option.none()),
                            new AtomicReference<>(Option.none()),
+                           new AtomicLong(DHTNode.NO_CHANGE),
                            new AtomicBoolean(false));
     }
 }

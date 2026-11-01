@@ -86,6 +86,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// No-op release (default seam).
     private static final LongConsumer NOOP_RELEASE = _ -> {};
 
+    /// No budget is ever freed (default seam): a ring outside a manager has no budget to wait for.
+    private static final LongSupplier NO_BUDGET_FREED = () -> 0L;
+
     /// No-op read-window probe (default seam — production never parks a reader).
     private static final Runnable NO_READ_WINDOW_PROBE = () -> {};
 
@@ -124,14 +127,26 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     private final EvictionPolicy evictionPolicy;
     private final LongPredicate reserve;
     private final LongConsumer release;
-    /// Live count of allocated data bytes (Σ dataSegments sizes), always <= dataRegionSize cap.
-    private long allocatedDataBytes;
-    /// Once a DROP_OLDEST stream is refused growth and starts wrapping within its allocated bytes,
-    /// the data ring is frozen at that size: it must never grow again, otherwise an already-wrapped
-    /// event (laid out under the smaller ring) would be misread under a larger modulus. This matches
-    /// the spec's "behaves like a fixed ring at its current allocated size" + no-reclamation
-    /// decisions (§4.2, §10).
+    /// The budget's freed generation (#2201 C-03, spec 4.4 item 4): its owner bumps it on every release.
+    private final LongSupplier budgetFreed;
+    /// Live count of allocated data bytes (Σ dataSegments sizes), always <= dataRegionSize cap. It is also the wrap modulus
+    /// readers split a record at ([#dataRing]); volatile, and raised only after the segment it covers is in `dataSegments`,
+    /// so a reader that sees a grown ring sees the segment too (a stale reader of an evicted record that straddled the old
+    /// modulus then copies bytes it discards, rather than indexing a segment it cannot see).
+    private volatile long allocatedDataBytes;
+    /// Once a DROP_OLDEST stream is refused growth and starts wrapping within its allocated bytes, the data ring is frozen at
+    /// that size: an already-wrapped event (laid out under the smaller ring) would be misread under a larger modulus. This
+    /// matches the spec's "behaves like a fixed ring at its current allocated size" (§4.2, §10). It thaws (#2201 C-03, spec 4.4
+    /// item 4) once the budget's freed generation has moved past [#frozenAtGeneration] AND its live bytes sit in one unwrapped
+    /// stretch of the data region ([#thawIfBudgetFreed]), when no live record is laid out across the wrap point.
     private boolean growthFrozen = false;
+    /// The budget's freed generation read just before the growth request that froze the ring was refused: a release after
+    /// that read moves the generation past it, so no release is missed.
+    private long frozenAtGeneration;
+    /// The absolute data position that is physical position 0 of the data region: 0 until a thawed ring re-bases it so that
+    /// its live records keep their physical positions under the grown modulus ([#thawIfBudgetFreed]). Writer-only (appends
+    /// hold `appendLock`); readers use the physical positions in the index.
+    private long dataBase;
     /// Bytes accounted against the seam over this buffer's lifetime (released on close()).
     private long accountedBytes;
     private final List<LongConsumer> appendListeners = new CopyOnWriteArrayList<>();
@@ -197,6 +212,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                               EvictionPolicy evictionPolicy,
                               LongPredicate reserve,
                               LongConsumer release,
+                              LongSupplier budgetFreed,
                               long accountedBytes) {
         this.arena = arena;
         this.controlSegment = controlSegment;
@@ -212,6 +228,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         this.evictionPolicy = evictionPolicy;
         this.reserve = reserve;
         this.release = release;
+        this.budgetFreed = budgetFreed;
         this.accountedBytes = accountedBytes;
     }
 
@@ -251,7 +268,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                           listener,
                           policy,
                           ALWAYS_ADMIT,
-                          NOOP_RELEASE);
+                          NOOP_RELEASE,
+                          NO_BUDGET_FREED);
     }
 
     /// Floor bytes a buffer reserves at creation: control region (header + index) plus the first
@@ -284,6 +302,28 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                                               EvictionPolicy policy,
                                                               LongPredicate reserve,
                                                               LongConsumer release) {
+        return offHeapRingBuffer(streamName,
+                                 partition,
+                                 capacity,
+                                 dataRegionSize,
+                                 listener,
+                                 policy,
+                                 reserve,
+                                 release,
+                                 NO_BUDGET_FREED);
+    }
+
+    /// As the seam factory above, with the budget's freed generation (#2201 C-03, spec 4.4 item 4): a counter the budget's
+    /// owner bumps on every release. A ring refused growth stays frozen while it has not moved, and asks again once it has.
+    public static Result<OffHeapRingBuffer> offHeapRingBuffer(String streamName,
+                                                              int partition,
+                                                              long capacity,
+                                                              long dataRegionSize,
+                                                              EvictionListener listener,
+                                                              EvictionPolicy policy,
+                                                              LongPredicate reserve,
+                                                              LongConsumer release,
+                                                              LongSupplier budgetFreed) {
         var arena = Arena.ofShared();
 
         return buildFloorGuarded(arena,
@@ -294,7 +334,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                  listener,
                                  policy,
                                  reserve,
-                                 release);
+                                 release,
+                                 budgetFreed);
     }
 
     /// JDK boundary for floor allocation (bug #6 sibling of `allocateGuarded`) — one of the four marked
@@ -311,7 +352,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                                                EvictionListener listener,
                                                                EvictionPolicy policy,
                                                                LongPredicate reserve,
-                                                               LongConsumer release) {
+                                                               LongConsumer release,
+                                                               LongSupplier budgetFreed) {
         if (!floorAllocAdmit.test(partition)) {
             arena.close();
 
@@ -327,7 +369,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                       listener,
                                       policy,
                                       reserve,
-                                      release));
+                                      release,
+                                      budgetFreed));
         } catch (OutOfMemoryError _) {
             arena.close();
 
@@ -343,7 +386,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                                 EvictionListener listener,
                                                 EvictionPolicy policy,
                                                 LongPredicate reserve,
-                                                LongConsumer release) {
+                                                LongConsumer release,
+                                                LongSupplier budgetFreed) {
         var indexSize = INDEX_ENTRY_SIZE * capacity;
         var controlSize = HEADER_SIZE + indexSize;
         var firstSegmentBytes = firstSegmentBytes(dataRegionSize);
@@ -370,6 +414,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                      policy,
                                      reserve,
                                      release,
+                                     budgetFreed,
                                      firstSegmentBytes);
     }
 
@@ -605,7 +650,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         var currentHead = rawHeadOffset();
         var newOffset = currentHead + 1;
         var slotIndex = Math.floorMod(newOffset, capacity);
-        var dataPos = Math.floorMod(dataWritePos(), dataRing());
+        var dataPos = physicalWritePos();
 
         writeDataBytes(dataPos, payload);
         writeIndexEntry(slotIndex, dataPos, payload.length, timestamp);
@@ -920,13 +965,86 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// Grow the data region until it can hold a write of `writeLen` bytes at the current logical
     /// write position, or until the cap is reached. A write spanning the logical ring-wrap point
     /// only happens at full cap, so growth (which always precedes wrap) needs to cover the highest
-    /// linear position the next write touches: `floorMod(dataWritePos, dataRegionSize) + writeLen`,
-    /// clamped to the cap. See spec §4.2.
+    /// linear position the next write touches: `floorMod(dataWritePos - dataBase, dataRegionSize) + writeLen`,
+    /// clamped to the cap. A frozen ring first thaws if it may ([#thawIfBudgetFreed]). See spec §4.2.
     private Result<Long> ensureGrownFor(int writeLen) {
-        var dataPos = Math.floorMod(dataWritePos(), dataRegionSize);
+        thawIfBudgetFreed(writeLen);
+        var dataPos = Math.floorMod(dataWritePos() - dataBase, dataRegionSize);
         var requiredLinearEnd = Math.min(dataPos + writeLen, dataRegionSize);
 
         return growUntil(requiredLinearEnd);
+    }
+
+    /// #2201 C-03 (spec 4.4 item 4): a frozen ring asks for growth again once the budget's freed generation has moved since
+    /// the refusal. The index holds physical positions wrapped at the frozen allocation, so the region may lengthen only past
+    /// the last live byte, while the live bytes sit in one unwrapped stretch: re-basing the absolute positions at the tail then
+    /// keeps every live record where it is, and the next write continues past it into the grown region. A full ring's live
+    /// bytes are wrapped almost always (the head trails the tail by less than one record), so the ring thaws at the append
+    /// whose write would wrap: it first hands over the records still above the head, fewer bytes than that write would
+    /// evict, which unwraps the live bytes. Until then (at most one lap of appends) it stays frozen. The generation is read
+    /// only for a frozen ring.
+    @Contract
+    private void thawIfBudgetFreed(int writeLen) {
+        if (growthFrozen && budgetFreed.getAsLong() != frozenAtGeneration) {
+            thawAtTheWrapPoint(writeLen);
+        }
+    }
+
+    /// FER on a refused hand-over: the records stay in the ring, the ring stays frozen, and the next wrapping append tries
+    /// again; the append itself proceeds as a frozen ring's would. The listener that refused has reported it (#1234).
+    @Contract
+    private void thawAtTheWrapPoint(int writeLen) {
+        if (liveBytesUnwrapped()) {
+            rebaseAndThaw();
+        } else if (physicalWritePos() + writeLen > dataRing()) {
+            handOverAndEvict(countEvictionsToUnwrap()).onSuccess(_ -> rebaseAndThaw()).onFailure(this::thawDeferred);
+        }
+    }
+
+    @Contract
+    private void rebaseAndThaw() {
+        dataBase = dataTailPos() - physicalTailPos();
+        growthFrozen = false;
+    }
+
+    private void thawDeferred(Cause cause) {
+        log.debug("OffHeapRingBuffer {}[{}]: regrowth deferred, eviction listener refused: {}",
+                  streamName,
+                  partition,
+                  cause.message());
+    }
+
+    /// How many of the oldest records to hand over so the live bytes no longer wrap: every record laid out above the head.
+    private long countEvictionsToUnwrap() {
+        var count = 0L;
+        var simulatedTail = rawTailOffset();
+        var simulatedTailPos = dataTailPos();
+        var simulatedCount = rawEventCount();
+
+        while (simulatedCount > 0 && !unwrappedFrom(simulatedTailPos)) {
+            simulatedTailPos += dataLengthAt(Math.floorMod(simulatedTail, capacity));
+            simulatedTail++;
+            simulatedCount--;
+            count++;
+        }
+
+        return count;
+    }
+
+    private boolean liveBytesUnwrapped() {
+        return unwrappedFrom(dataTailPos());
+    }
+
+    private boolean unwrappedFrom(long tailPos) {
+        return Math.floorMod(tailPos - dataBase, dataRing()) + (dataWritePos() - tailPos) <= dataRing();
+    }
+
+    private long physicalTailPos() {
+        return Math.floorMod(dataTailPos() - dataBase, dataRing());
+    }
+
+    private long physicalWritePos() {
+        return Math.floorMod(dataWritePos() - dataBase, dataRing());
     }
 
     /// Grow until allocation reaches the required linear end or the cap, OR a growth attempt makes
@@ -952,9 +1070,10 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
     private Result<Long> growOneSegment() {
         var nextSegmentBytes = Math.min(DEFAULT_SEGMENT_BYTES, dataRegionSize - allocatedDataBytes);
+        var generation = budgetFreed.getAsLong();
 
         if (!reserve.test(nextSegmentBytes)) {
-            return rejectGrowth();
+            return rejectGrowth(generation);
         }
 
         return allocateGuarded(nextSegmentBytes).onSuccess(this::attachSegment)
@@ -963,14 +1082,15 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     /// DROP_OLDEST: freeze the ring at the current allocation and return it so `growUntil` halts and
-    /// the caller falls back to eviction within the frozen ring. REJECT_WHEN_FULL: loud failure.
-    /// See spec §4.2.
-    private Result<Long> rejectGrowth() {
+    /// the caller falls back to eviction within the frozen ring; it remembers `generation`, the budget's freed generation
+    /// read before the refused request. REJECT_WHEN_FULL: loud failure. See spec §4.2.
+    private Result<Long> rejectGrowth(long generation) {
         if (evictionPolicy == EvictionPolicy.REJECT_WHEN_FULL) {
             return StreamError.General.STREAM_MEMORY_EXCEEDED.result();
         }
 
         growthFrozen = true;
+        frozenAtGeneration = generation;
 
         return success(allocatedDataBytes);
     }
@@ -1591,7 +1711,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
             lastOffset = currentHead + 1 + i;
             var slotIndex = Math.floorMod(lastOffset, capacity);
-            var dataPos = Math.floorMod(dataWritePos(), dataRing());
+            var dataPos = physicalWritePos();
 
             writeDataBytes(dataPos, payload);
             writeIndexEntry(slotIndex, dataPos, payload.length, timestamps[i]);
@@ -1626,7 +1746,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// Current wrap modulus of the logical data ring = the live allocated data bytes. While the
     /// region is still growing this is raised before each write to cover it (so writes never wrap
     /// below cap); once a stream can no longer grow (EVENTUAL pool-exhausted) it stays fixed and the
-    /// ring wraps within the allocated bytes — i.e. behaves like a fixed ring at its current size.
+    /// ring wraps within the allocated bytes — i.e. behaves like a fixed ring at its current size —
+    /// until it thaws ([#thawIfBudgetFreed], #2201 C-03).
     /// At full cap this equals `dataRegionSize`. Always <= `dataRegionSize`. See spec §4.2.
     private long dataRing() {
         return allocatedDataBytes;
