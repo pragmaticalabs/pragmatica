@@ -143,6 +143,10 @@ final class M1Instrument {
                 add("put.same-value", 1);
             }
             add("put.bytes", sizeOf(put.cause().value()));
+            if (put.cause().value() instanceof AetherValue.NodeArtifactValue artifact) {
+                // S6: per-instance state transitions; a FAILED put is a failed (and later retried) load, which changes the count.
+                add("nodeArtifact.state:" + artifact.state(), 1);
+            }
         }
     }
 
@@ -240,6 +244,11 @@ final class M1Instrument {
             var kind = command.getClass().getSimpleName();
 
             add("cmd." + kind, 1);
+            if (command instanceof KVCommand.Put<?, ?> put) {
+                add("cmd.Put:" + put.key().getClass().getSimpleName(), 1);
+            } else if (command instanceof KVCommand.Remove<?> remove) {
+                add("cmd.Remove:" + remove.key().getClass().getSimpleName(), 1);
+            }
             if (command instanceof KVCommand.LeaderTransaction<?, ?> tx) {
                 var accepted = results != null && i < results.size()
                                && results.get(i) instanceof KVCommand.TransactionResult outcome && outcome.accepted();
@@ -250,6 +259,9 @@ final class M1Instrument {
                     tx.mutations().forEach(m -> add("tx.refused.mut:" + m.key().getClass().getSimpleName(), 1));
                 }
                 add(accepted ? "tx.accepted.mutations" : "tx.refused.mutations", tx.mutations().size());
+                if (accepted) {
+                    tx.mutations().forEach(m -> add("tx.mut:" + m.key().getClass().getSimpleName(), 1));
+                }
             }
         }
     }
