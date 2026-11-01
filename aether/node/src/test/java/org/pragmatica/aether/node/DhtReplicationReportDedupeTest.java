@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -44,6 +45,7 @@ class DhtReplicationReportDedupeTest {
     private static final DHTConfig OLD = DHTConfig.DEFAULT.withFactors(3, 1).unwrap();
 
     private final List<DhtReplicationReportValue> filed = new ArrayList<>();
+    private final AtomicReference<Promise<List<Object>>> held = new AtomicReference<>();
     private KVStore<AetherKey, AetherValue> kvStore;
     private DhtReplicationSettlement settlement;
 
@@ -136,11 +138,23 @@ class DhtReplicationReportDedupeTest {
         assertThat(DhtReplicationSettlement.readsAsFiled(last, new DhtReplicationReportValue(9L, 3L, true), DHTNode.NO_CHANGE)).as("no open change").isTrue();
         assertThat(DhtReplicationSettlement.readsAsFiled(last, new DhtReplicationReportValue(9L, 3L, true), 4L)).as("open change already reached by last").isTrue();
         assertThat(DhtReplicationSettlement.readsAsFiled(last, new DhtReplicationReportValue(9L, 3L, true), 12L)).as("open change not reached yet").isTrue();
+        assertThat(DhtReplicationSettlement.readsAsFiled(last, new DhtReplicationReportValue(9L, 3L, true), 5L)).as("open change exactly at last's applied version").isTrue();
         assertThat(DhtReplicationSettlement.readsAsFiled(last, new DhtReplicationReportValue(9L, 3L, true), 7L)).as("the bump reaches the open change").isFalse();
         assertThat(DhtReplicationSettlement.readsAsFiled(last, new DhtReplicationReportValue(9L, 3L, true), 9L)).as("the bump reaches it exactly").isFalse();
         assertThat(DhtReplicationSettlement.readsAsFiled(last, new DhtReplicationReportValue(9L, 4L, true), DHTNode.NO_CHANGE)).as("caught-up version moved").isFalse();
         assertThat(DhtReplicationSettlement.readsAsFiled(last, new DhtReplicationReportValue(9L, 3L, false), DHTNode.NO_CHANGE)).as("replica flag moved").isFalse();
         assertThat(DhtReplicationSettlement.readsAsFiled(last, new DhtReplicationReportValue(4L, 3L, true), DHTNode.NO_CHANGE)).as("applied version never reads as going back").isFalse();
+    }
+
+    @Test
+    void report_whileAFilingIsInFlight_doesNotFileTheSameReportAgain() {
+        held.set(Promise.promise());
+
+        settlement.applied(1L);
+        settlement.applied(1L);
+        settlement.report();
+
+        assertThat(appliedVersions()).as("one submission while the first is unanswered").containsExactly(1L);
     }
 
     private Promise<List<Object>> file(List<KVCommand<AetherKey>> commands) {
@@ -150,7 +164,7 @@ class DhtReplicationReportDedupeTest {
             }
         });
 
-        return Promise.success(List.of());
+        return Option.option(held.get()).or(() -> Promise.success(List.<Object>of()));
     }
 
     private List<Long> appliedVersions() {
