@@ -1,0 +1,2 @@
+### Changed
+- Internal: the readers of the per-node capacity reservation and of the fleet counter (community placement, node replacement, core and worker admission, the topology assembly) now read through one `CapacityView`, and the capacity writes of node replacement are built through the `CapacityRecords` port (O3-3). Behaviour is unchanged: the golden transition table, the committed command digests and a new golden table of the node-replacement capacity writes are identical to before.
