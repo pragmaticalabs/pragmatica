@@ -102,11 +102,14 @@ class EmberCheckpointReclaimTest {
                                                                                                                               .interval(TimeSpan.timeSpan(1)
                                                                                                                                                 .seconds())));
 
+    /// Static, so it lives as long as the class and the cluster it shares across tests. JUnit deletes an instance `@TempDir` when each
+    /// test method ends, under `PER_CLASS` too (#2538).
     @TempDir
-    Path dataDir;
+    static Path dataDir;
 
     private EmberCluster cluster;
     private int generation;
+    private Path clusterDir;
 
     /// One cluster for both tests, started inside the first test that runs: the port budget is per test ([PortBudget]).
     private EmberCluster cluster() {
@@ -114,9 +117,17 @@ class EmberCheckpointReclaimTest {
             cluster = EmberTestPorts.startedCluster(PORTS, this::threeNodes, START_BOUND);
             awaitCondition("a leader is elected", LEADER_BUDGET_MS, () -> cluster.currentLeader().isPresent());
             awaitWritesAccepted(cluster.allNodes());
+        } else {
+            assertTheDataDirOutlivesTheTest();
         }
 
         return cluster;
+    }
+
+    /// The shared cluster's data dir must live as long as the cluster (#2538): a dir deleted under a running node fail-stops its WAL at
+    /// the next file it creates, and every assertion here still passes.
+    private void assertTheDataDirOutlivesTheTest() {
+        assertThat(clusterDir).as("the running cluster's data dir").isDirectory();
     }
 
     /// Puts a small probe block through each node's `streams` storage until the write is accepted. A probe is not a checkpoint: no
@@ -147,6 +158,7 @@ class EmberCheckpointReclaimTest {
     void stopCluster() {
         if (cluster != null) {
             assertThat(cluster.stop().await(STOP_BOUND).fold(Cause::message, _ -> "stopped")).isEqualTo("stopped");
+            assertTheDataDirOutlivesTheTest();
         }
     }
 
@@ -320,7 +332,8 @@ class EmberCheckpointReclaimTest {
     private EmberCluster threeNodes(int basePort) {
         var built = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "ckptreclaim");
 
-        built.withDataBaseDir(dataDir.resolve("cluster-" + generation));
+        clusterDir = dataDir.resolve("cluster-" + generation);
+        built.withDataBaseDir(clusterDir);
         built.withDhtReplication(DHTConfig.DEFAULT);
 
         return built;
