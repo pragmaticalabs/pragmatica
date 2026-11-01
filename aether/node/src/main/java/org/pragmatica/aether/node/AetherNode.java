@@ -497,6 +497,8 @@ public interface AetherNode extends ManageableNode {
 
     /// #1549: the `CLUSTER_EVENTS_MAX_*` overrides are checked before anything is built — an out-of-range
     /// value refuses the boot ([ClusterEventsLimits.InvalidLimit]) instead of reaching the stream engine.
+    /// #2201 C-03: so is `STREAM_MAX_MEMORY_BYTES`, resolved with `[streaming] max_memory_bytes` and the host's memory into the
+    /// stream memory budget ([StreamMemoryBudget]).
     private static Result<AetherNode> createNode(AetherNodeConfig config,
                                                  MessageRouter.DelegateRouter delegateRouter,
                                                  SliceCodec nodeCodec,
@@ -505,15 +507,36 @@ public interface AetherNode extends ManageableNode {
                                                  Runnable gossipKeyDivergedExit,
                                                  Fn1<Option<String>, String> environment,
                                                  Supplier<Result<Unit>> gitProbe) {
-        return requireBackupGit(config, gitProbe).flatMap(_ -> ClusterEventsLimits.clusterEventsLimits(environment))
-                               .flatMap(limits -> createNodeWithBootToken(config,
+        return requireBackupGit(config, gitProbe).flatMap(_ -> createNodeWithinBounds(config,
+                                                                                      delegateRouter,
+                                                                                      nodeCodec,
+                                                                                      jvmExit,
+                                                                                      identityRefusedExit,
+                                                                                      gossipKeyDivergedExit,
+                                                                                      environment));
+    }
+
+    /// The environment-driven bounds, both checked before anything is built; each refusal names its variable.
+    private static Result<AetherNode> createNodeWithinBounds(AetherNodeConfig config,
+                                                             MessageRouter.DelegateRouter delegateRouter,
+                                                             SliceCodec nodeCodec,
+                                                             Runnable jvmExit,
+                                                             Runnable identityRefusedExit,
+                                                             Runnable gossipKeyDivergedExit,
+                                                             Fn1<Option<String>, String> environment) {
+        return Result.all(ClusterEventsLimits.clusterEventsLimits(environment),
+                          StreamMemoryBudget.streamMemoryBudget(environment,
+                                                                config.streaming(),
+                                                                StreamMemoryBudget.physicalMemoryBytes()))
+                     .flatMap((limits, budget) -> createNodeWithBootToken(config,
                                                                           delegateRouter,
                                                                           nodeCodec,
                                                                           jvmExit,
                                                                           identityRefusedExit,
                                                                           gossipKeyDivergedExit,
                                                                           BootToken.bootToken(),
-                                                                          limits));
+                                                                          limits,
+                                                                          budget));
     }
 
     /// #2007: `[backup]` shells out to git, so a node that has it enabled and cannot run git refuses to boot here, naming `[backup]` and
@@ -530,7 +553,8 @@ public interface AetherNode extends ManageableNode {
                                                               Runnable identityRefusedExit,
                                                               Runnable gossipKeyDivergedExit,
                                                               long bootToken,
-                                                              ClusterEventsLimits clusterEventsLimits) {
+                                                              ClusterEventsLimits clusterEventsLimits,
+                                                              StreamMemoryBudget streamMemoryBudget) {
         return resolveStorageEncryptionKeyring(config).flatMap(keyring -> createNodeWithStorage(config,
                                                                                                 delegateRouter,
                                                                                                 nodeCodec,
@@ -540,7 +564,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                 keyring,
                                                                                                 resolvePersistence(config),
                                                                                                 bootToken,
-                                                                                                clusterEventsLimits));
+                                                                                                clusterEventsLimits,
+                                                                                                streamMemoryBudget));
     }
 
     private static Result<AetherNode> createNodeWithStorage(AetherNodeConfig config,
@@ -552,7 +577,8 @@ public interface AetherNode extends ManageableNode {
                                                             Option<EncryptionKeyring> storageKeyring,
                                                             RabiaPersistence<KVCommand<AetherKey>> persistence,
                                                             long bootToken,
-                                                            ClusterEventsLimits clusterEventsLimits) {
+                                                            ClusterEventsLimits clusterEventsLimits,
+                                                            StreamMemoryBudget streamMemoryBudget) {
         Serializer serializer = nodeCodec;
         Deserializer deserializer = nodeCodec;
         // W-OBS W2: the commit ring records and serves under the committed cluster incarnation (the production reader), filtered by the
@@ -754,7 +780,8 @@ public interface AetherNode extends ManageableNode {
                                                              gossipKeyDivergedExit,
                                                              storageKeyring,
                                                              bootToken,
-                                                             clusterEventsLimits));
+                                                             clusterEventsLimits,
+                                                             streamMemoryBudget));
     }
 
     /// #253 — resolves the boot-time storage-encryption keyring before any storage tier exists. No
@@ -1406,7 +1433,8 @@ public interface AetherNode extends ManageableNode {
                                                    Runnable gossipKeyDivergedExit,
                                                    Option<EncryptionKeyring> storageKeyring,
                                                    long bootToken,
-                                                   ClusterEventsLimits clusterEventsLimits) {
+                                                   ClusterEventsLimits clusterEventsLimits,
+                                                   StreamMemoryBudget streamMemoryBudget) {
         // #329: leader-pinned task-group ownership is gated on consensus catch-up. A freshly
         // elected replacement leader whose Rabia log is still draining (isPendingCatchUp) is
         // isActive but not caught up; granting it ownership funnels every leader-pinned op
@@ -3083,6 +3111,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                nodeCodec,
                                                                                                                ownershipEpochHighWater,
                                                                                                                clusterEventsLimits,
+                                                                                                               streamMemoryBudget,
                                                                                                                streamStorageSetup,
                                                                                                                clusterEventsControllerRef,
                                                                                                                clusterEventsStreamName,

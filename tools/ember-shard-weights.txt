@@ -80,7 +80,7 @@ EmberConsumerPathTripwireTest 15
 EmberCursorCheckpointLoadTripwireTest 55
 EmberForwardLaneTripwireTest 33
 EmberForwardedPublishLoopTripwireTest 12
-EmberMemoryBudgetTripwireTest 70
+EmberMemoryBudgetTripwireTest 44
 EmberOwnerRestartAckedTailTripwireTest 62
 EmberReplicationBatchingTripwireTest 15
 EmberSealedTierRetentionTripwireTest 17
@@ -90,6 +90,9 @@ EmberReplicaTripwireTest 22
 EmberCheckpointReclaimTest 160
 # EmberDhtCapFullEventTest 11 (#2201 PR-0b-3, #2509): surefire class time 10.118 s on bigboy at 3f6814b5d3 and 10.08 s in CI ember-shard-1 at 0882379463 (1 test); maximum rounded up. It had no weight, so it was charged the default.
 EmberDhtCapFullEventTest 11
+# EmberMemoryBudgetTripwireTest 44 (#2201 PR-1b, C-03): surefire class time 42.73 s at 7e92926887 and 43.34 s at 1defde73f5 on bigboy (1 test: the C-03 real, enabled; its tripwire deleted; host load average 7-10); maximum rounded up. Was 70 (69.3-69.9 s in the ten-class line above, two tests).
+# EmberStreamFloorHeadroomTest 124 (#2201 PR-1b, NT-106): surefire class time 118.11 s on bigboy at 1defde73f5 and 123.70 s, 83.91 s, 88.55 s at e39afe3cdf (1 test: a 3-node cluster at a 32 MiB budget, 80 MiB published into two RF 3 streams, a 30 s allocation quiet period, then a 4-partition stream created; host load average 7-8); maximum rounded up.
+EmberStreamFloorHeadroomTest 124
 # EmberPortStrideTest 15 (#2512): surefire class time 14.3 s on bigboy at 3bfeddbc34 + the test (2 clusters of 3 cores, one pure-API test).
 EmberPortStrideTest 15
 # M1InstrumentRefreshOnlyTest 1 (#2512): pure record comparisons, no cluster.
