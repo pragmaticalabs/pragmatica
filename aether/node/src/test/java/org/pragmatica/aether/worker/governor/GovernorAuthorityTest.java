@@ -26,6 +26,7 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -41,6 +42,7 @@ class GovernorAuthorityTest {
         @Override public <T> T read(ByteBuf buffer) { return null; }
     });
     private final AtomicReference<List<NodeId>> members = new AtomicReference<>(List.of(A, B));
+    private final AtomicInteger commits = new AtomicInteger();
     private final AtomicReference<Runnable> beforeApply = new AtomicReference<>(() -> {});
     private final ClusterNode<KVCommand<AetherKey>> cluster = new ClusterNode<>() {
         @Override public NodeId self() { return CORE; }
@@ -48,6 +50,7 @@ class GovernorAuthorityTest {
         @Override public Promise<Unit> start() { return Promise.success(Unit.unit()); }
         @Override public Promise<Unit> stop() { return Promise.success(Unit.unit()); }
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
+            commits.incrementAndGet();
             beforeApply.getAndSet(() -> {}).run();
             return Promise.success(store.process(store.createBatch(commands)));
         }
@@ -169,5 +172,48 @@ class GovernorAuthorityTest {
         leader(CORE, 1);
         members.set(List.of());
         assertThat(request(A, 0).authority().isEmpty()).isTrue();
+    }
+
+    /// #2542: a SWIM edge re-nominates the sitting governor with nothing changed; the committed value is already that
+    /// announcement, so nothing is committed and the committed value (timestamp included) stays as it was.
+    @Test
+    void unchangedAnnouncement_edgeRequest_commitsNothing() {
+        leader(CORE, 1);
+        var granted = request(A, 0).authority().unwrap();
+        var commitsAfterGrant = commits.get();
+
+        var answered = request(A, granted.communityTerm()).authority().unwrap();
+
+        assertThat(commits.get()).as("an unchanged announcement must not reach consensus").isEqualTo(commitsAfterGrant);
+        assertThat(answered).as("the reply carries the committed value").isEqualTo(granted);
+        assertThat(store.getTyped(KEY, GovernorAnnouncementValue.class).unwrap()).isEqualTo(granted);
+    }
+
+    /// Control for the test above: a change of roster is still committed, with the term kept.
+    @Test
+    void changedRoster_edgeRequest_isCommitted() {
+        leader(CORE, 1);
+        var granted = request(A, 0).authority().unwrap();
+        var commitsAfterGrant = commits.get();
+        members.set(List.of(A));
+
+        var answered = request(A, granted.communityTerm()).authority().unwrap();
+
+        assertThat(commits.get()).isEqualTo(commitsAfterGrant + 1);
+        assertThat(answered.members()).containsExactly(A);
+        assertThat(answered.communityTerm()).isEqualTo(granted.communityTerm());
+    }
+
+    /// Control: a changed address is a change.
+    @Test
+    void changedAddress_edgeRequest_isCommitted() {
+        leader(CORE, 1);
+        var granted = request(A, 0).authority().unwrap();
+        var commitsAfterGrant = commits.get();
+
+        var answered = authority.handle(new GovernorAuthorityMessage.Request(A, "c", 1, granted.communityTerm(), "moved:9000")).await().unwrap().authority().unwrap();
+
+        assertThat(commits.get()).isEqualTo(commitsAfterGrant + 1);
+        assertThat(answered.tcpAddress()).isEqualTo("moved:9000");
     }
 }
