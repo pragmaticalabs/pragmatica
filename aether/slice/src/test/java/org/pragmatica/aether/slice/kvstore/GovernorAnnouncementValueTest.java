@@ -177,6 +177,13 @@ class GovernorAnnouncementValueTest {
         }
 
         @Test
+        void unchangedFrom_membersDifferAtTheSameCount_isFalse() {
+            var swapped = new GovernorAnnouncementValue(governor, 2, List.of(members.get(0), NodeId.nodeId("w-9").unwrap()), "10.0.0.1:7201", 1000L, 3L, Epoch.epoch(0L, 3L, 0), Epoch.ZERO, HlcTimestamp.ZERO, false);
+
+            assertThat(swapped.unchangedFrom(committed)).isFalse();
+        }
+
+        @Test
         void unchangedFrom_addressDiffers_isFalse() {
             assertThat(committed.withMembers(members, "10.0.0.9:7201", Epoch.ZERO).unchangedFrom(committed)).isFalse();
         }
