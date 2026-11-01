@@ -9,6 +9,8 @@ import java.lang.reflect.Proxy;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.CapacityReservationPhase;
+import org.pragmatica.aether.slice.kvstore.AetherValue.CapacityReservationValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
@@ -19,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// respect but its record key, and goes through the interface's own default for the witness.
 class CapacityRecordsWitnessTest {
     private static final NodeId NODE = new NodeId("heal-7");
+    private static final CapacityReservationValue HELD = new CapacityReservationValue("east", "bind", "core", CapacityReservationPhase.DISPATCHED);
 
     @Test
     void theWitnessOfAnExpectedValue_followsTheRecordKeyOfTheImplementation() {
@@ -39,5 +42,7 @@ class CapacityRecordsWitnessTest {
         assertThat(implA.witness(NODE, Option.none()).key()).as("control: impl A guards its own reservation key").isEqualTo(implA.recordKey(NODE));
         assertThat(standIn.recordKey(NODE)).as("control: the stand-in moved the record").isEqualTo(elsewhere);
         assertThat(standIn.witness(NODE, Option.none()).key()).isEqualTo(elsewhere);
+        assertThat(standIn.witness(NODE, Option.none()).expected().isEmpty()).as("an expected absence stays an absence").isTrue();
+        assertThat(standIn.witness(NODE, Option.some(HELD)).expected().or((Object) null)).as("an expected value is carried exactly").isEqualTo(HELD);
     }
 }
