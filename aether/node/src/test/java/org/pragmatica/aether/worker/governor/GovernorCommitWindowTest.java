@@ -5,30 +5,40 @@
 package org.pragmatica.aether.worker.governor;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// #2542, the batch rule: one window's announcements are one submission, bounded in time and in size.
+@Timeout(value = 10, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
 class GovernorCommitWindowTest {
     private static final NodeId A = new NodeId("worker-a");
     private static final NodeId B = new NodeId("worker-b");
     private static final TimeSpan LONG = TimeSpan.timeSpan(60).seconds();
     private static final TimeSpan SHORT = TimeSpan.timeSpan(30).millis();
 
+    private static final TimeSpan BOUND = TimeSpan.timeSpan(5).seconds();
+
     private final List<List<KVCommand<AetherKey>>> submissions = new CopyOnWriteArrayList<>();
+    private final AtomicBoolean failNext = new AtomicBoolean();
 
     private GovernorCommitWindow window(TimeSpan window, int cap) {
         return new GovernorCommitWindow(commands -> {
             submissions.add(new ArrayList<>(commands));
+            if (failNext.getAndSet(false)) {
+                return Causes.cause("submission lost").promise();
+            }
             return Promise.success(commands.stream().map(c -> (Object) c).toList());
         }, window, cap);
     }
@@ -60,7 +70,7 @@ class GovernorCommitWindowTest {
 
         var first = window.enqueue(key("c1"), A, id -> command(key("c1"), id));
         var second = window.enqueue(key("c2"), B, id -> command(key("c2"), id));
-        first.outcomes().await(TimeSpan.timeSpan(5).seconds());
+        assertThat(first.outcomes().await(BOUND).isSuccess()).as("the submission's outcome reaches its tickets").isTrue();
 
         assertThat(second.outcomes()).as("both tickets wait on the same submission").isSameAs(first.outcomes());
         assertThat(submissions).hasSize(1);
@@ -117,5 +127,49 @@ class GovernorCommitWindowTest {
         assertThat(submissions).as("the first window's timer (400 ms) has fired, the third command's (650 ms) has not").hasSize(1);
         third.outcomes().await(TimeSpan.timeSpan(5).seconds());
         assertThat(submissions).hasSize(2);
+    }
+
+    /// The timer submits what the window holds, each key once, in the order the keys first arrived, carrying the
+    /// latest write of a repeated key.
+    @Test
+    void enqueue_timerFlush_keepsArrivalOrderAndTheLatestWriteOfAKey() {
+        var window = window(SHORT, 16);
+        var built = new ArrayList<KVCommand<AetherKey>>();
+
+        window.enqueue(key("c1"), A, id -> remember(built, key("c1")));
+        window.enqueue(key("c2"), A, id -> remember(built, key("c2")));
+        window.enqueue(key("c3"), B, id -> remember(built, key("c3")));
+        var last = window.enqueue(key("c1"), A, id -> remember(built, key("c1")));
+
+        assertThat(last.outcomes().await(BOUND).isSuccess()).isTrue();
+        assertThat(submissions).hasSize(1);
+        assertThat(submissions.getFirst()).as("by identity: equal commands for one key are told apart by which was built last")
+                                          .usingElementComparator((left, right) -> left == right ? 0 : 1)
+                                          .containsExactly(built.get(3), built.get(1), built.get(2));
+    }
+
+    /// A failed submission fails the tickets of its own window and nothing else: the next window opens, is timed and
+    /// is submitted as usual.
+    @Test
+    void enqueue_failedSubmission_failsItsTickets_andTheNextWindowStillSubmits() {
+        var window = window(SHORT, 16);
+        failNext.set(true);
+
+        var lost = window.enqueue(key("c1"), A, id -> command(key("c1"), id));
+
+        assertThat(lost.outcomes().await(BOUND).isFailure()).isTrue();
+        var next = window.enqueue(key("c1"), A, id -> command(key("c1"), id));
+
+        assertThat(next.outcomes()).isNotSameAs(lost.outcomes());
+        assertThat(next.outcomes().await(BOUND).isSuccess()).isTrue();
+        assertThat(submissions).hasSize(2);
+    }
+
+    private static KVCommand<AetherKey> remember(List<KVCommand<AetherKey>> built, AetherKey key) {
+        var command = new KVCommand.Remove<AetherKey>(key);
+
+        built.add(command);
+
+        return command;
     }
 }

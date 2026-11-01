@@ -7,6 +7,7 @@ package org.pragmatica.aether.worker.governor;
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -22,17 +23,23 @@ import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/// A submission whose outcome never arrives would park `await()` for good: the timeout turns that into a red test.
+@Timeout(value = 10, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
 class GovernorAuthorityTest {
+    private static final TimeSpan UNBATCHED = TimeSpan.timeSpan(60).seconds();
+    private static final TimeSpan BOUND = TimeSpan.timeSpan(5).seconds();
     private static final NodeId CORE = new NodeId("core");
     private static final NodeId A = new NodeId("worker-a");
     private static final NodeId B = new NodeId("worker-b");
@@ -45,6 +52,7 @@ class GovernorAuthorityTest {
     private final AtomicReference<List<NodeId>> members = new AtomicReference<>(List.of(A, B));
     private final AtomicInteger commits = new AtomicInteger();
     private final AtomicReference<Runnable> beforeApply = new AtomicReference<>(() -> {});
+    private final AtomicBoolean failNext = new AtomicBoolean();
     private final ClusterNode<KVCommand<AetherKey>> cluster = new ClusterNode<>() {
         @Override public NodeId self() { return CORE; }
         @Override public TopologyManager topologyManager() { return null; }
@@ -52,12 +60,15 @@ class GovernorAuthorityTest {
         @Override public Promise<Unit> stop() { return Promise.success(Unit.unit()); }
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
             commits.incrementAndGet();
+            if (failNext.getAndSet(false)) {
+                return Causes.cause("submission lost").promise();
+            }
             beforeApply.getAndSet(() -> {}).run();
             return Promise.success(store.process(store.createBatch(commands)));
         }
     };
     private final GovernorAuthority authority = GovernorAuthority.governorAuthority(CORE, cluster, store,
-        () -> true, _ -> members.get(), _ -> true, () -> Epoch.ZERO, HlcClock.hlcClock(CORE));
+        () -> true, _ -> members.get(), _ -> true, () -> Epoch.ZERO, HlcClock.hlcClock(CORE), UNBATCHED, 1);
 
     @BeforeEach
     void seedCommunity() {
@@ -243,7 +254,7 @@ class GovernorAuthorityTest {
     @Test
     void newerCoreEpoch_edgeRequestCommitsNothing_refreshCarriesIt() {
         var epoch = new AtomicReference<>(Epoch.ZERO);
-        var observing = GovernorAuthority.governorAuthority(CORE, cluster, store, () -> true, _ -> members.get(), _ -> true, epoch::get, HlcClock.hlcClock(CORE));
+        var observing = GovernorAuthority.governorAuthority(CORE, cluster, store, () -> true, _ -> members.get(), _ -> true, epoch::get, HlcClock.hlcClock(CORE), UNBATCHED, 1);
         leader(CORE, 1);
         var granted = observing.handle(new GovernorAuthorityMessage.Request(A, "c", 1, 0, "host:9000", false)).await().unwrap().authority().unwrap();
         var commitsAfterGrant = commits.get();
@@ -291,5 +302,53 @@ class GovernorAuthorityTest {
         assertThat(first.await().unwrap().authority().unwrap().governorId()).isEqualTo(A);
         assertThat(second.await().unwrap().authority().unwrap().governorId()).isEqualTo(other);
         assertThat(commits.get()).as("one command list for both communities").isEqualTo(1);
+    }
+
+    /// The plain factory is the one the core is wired with, so it carries the production window: a grant is held for
+    /// the window instead of being submitted on the calling thread, and is still answered once the window closes.
+    @Test
+    void defaultFactory_holdsAGrantForTheWindow_thenSubmitsIt() {
+        var core = GovernorAuthority.governorAuthority(CORE, cluster, store, () -> true, _ -> members.get(), _ -> true,
+            () -> Epoch.ZERO, HlcClock.hlcClock(CORE));
+        leader(CORE, 1);
+
+        var pending = core.handle(new GovernorAuthorityMessage.Request(A, "c", 1, 0, "host:9000", false));
+
+        assertThat(commits.get()).as("nothing is submitted before the window closes").isZero();
+        assertThat(pending.await(BOUND).unwrap().authority().unwrap().governorId()).isEqualTo(A);
+        assertThat(commits.get()).isEqualTo(1);
+    }
+
+    /// Leadership moves while a grant waits in the window: the old leader's transaction is refused at apply, and its
+    /// waiter is answered (no grant) rather than left waiting.
+    @Test
+    void leadershipChangesWhileTheGrantWaitsInTheWindow_isRefusedAndAnswered() {
+        var batched = GovernorAuthority.governorAuthority(CORE, cluster, store, () -> true, _ -> members.get(), _ -> true,
+            () -> Epoch.ZERO, HlcClock.hlcClock(CORE), TimeSpan.timeSpan(300).millis(), 16);
+        leader(CORE, 1);
+
+        var pending = batched.handle(new GovernorAuthorityMessage.Request(A, "c", 1, 0, "host:9000", false));
+        leader(new NodeId("replacement-core"), 2);
+
+        assertThat(pending.await(BOUND).unwrap().authority().isEmpty()).isTrue();
+        assertThat(store.get(KEY).isEmpty()).isTrue();
+    }
+
+    /// A submission that fails (the core stopping, a lost forward) fails its own waiters and leaves the next window
+    /// working.
+    @Test
+    void failedSubmission_failsItsWaiters_andTheNextWindowStillCommits() {
+        var batched = GovernorAuthority.governorAuthority(CORE, cluster, store, () -> true, _ -> members.get(), _ -> true,
+            () -> Epoch.ZERO, HlcClock.hlcClock(CORE), TimeSpan.timeSpan(50).millis(), 16);
+        leader(CORE, 1);
+        failNext.set(true);
+
+        var lost = batched.handle(new GovernorAuthorityMessage.Request(A, "c", 1, 0, "host:9000", false)).await(BOUND);
+
+        assertThat(lost.isFailure()).isTrue();
+        assertThat(store.get(KEY).isEmpty()).isTrue();
+        var retried = batched.handle(new GovernorAuthorityMessage.Request(A, "c", 2, 0, "host:9000", false)).await(BOUND);
+
+        assertThat(retried.unwrap().authority().unwrap().governorId()).isEqualTo(A);
     }
 }

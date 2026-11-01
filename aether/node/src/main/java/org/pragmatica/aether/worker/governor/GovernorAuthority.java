@@ -43,7 +43,8 @@ public interface GovernorAuthority {
                                                          long expectedTerm,
                                                          String address);
 
-    /// Unbatched: each announcement transaction is its own submission. The core's wiring passes the batching window.
+    /// The core's authority: announcements are gathered for [#DEFAULT_COMMIT_WINDOW], up to [#DEFAULT_COMMIT_CAP] per
+    /// submission. Tests that pin the order of single submissions pass a `cap` of 1 to the overload below.
     static GovernorAuthority governorAuthority(NodeId self,
                                                ClusterNode<KVCommand<AetherKey>> cluster,
                                                KVStore<AetherKey, AetherValue> store,
@@ -61,7 +62,7 @@ public interface GovernorAuthority {
                                  coreEpoch,
                                  clock,
                                  DEFAULT_COMMIT_WINDOW,
-                                 1);
+                                 DEFAULT_COMMIT_CAP);
     }
 
     /// `window` and `cap` bound how long and how many announcement transactions are gathered into one submission to

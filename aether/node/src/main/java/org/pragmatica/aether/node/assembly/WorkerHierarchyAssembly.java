@@ -603,9 +603,7 @@ public sealed interface WorkerHierarchyAssembly {
                                                                     communityDirectory::members,
                                                                     peer -> candidateHealth.isEligible(peer) || communityHealth.isReady(peer),
                                                                     leaderEpochSupplier,
-                                                                    hlcClock,
-                                                                    GovernorAuthority.DEFAULT_COMMIT_WINDOW,
-                                                                    GovernorAuthority.DEFAULT_COMMIT_CAP);
+                                                                    hlcClock);
 
         allEntries.add(MessageRouter.Entry.route(GovernorAuthorityMessage.Request.class,
                                                  request -> {
