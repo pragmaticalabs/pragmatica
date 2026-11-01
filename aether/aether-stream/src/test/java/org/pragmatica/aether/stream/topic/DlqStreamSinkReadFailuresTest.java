@@ -9,6 +9,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.stream.segment.SealerThresholds;
+import org.pragmatica.aether.stream.segment.SegmentSealer;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -33,7 +35,6 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
-import static org.pragmatica.aether.stream.segment.SegmentSealer.segmentSealer;
 import static org.pragmatica.aether.stream.segment.StorageSegmentSink.storageSegmentSink;
 import static org.pragmatica.aether.stream.segment.TieredStreamReader.tieredStreamReader;
 
@@ -192,5 +193,11 @@ class DlqStreamSinkReadFailuresTest {
 
         assertThat(sink.read(TOPIC_STREAM, 10).await().or(List.of())).as("control: all dead letters listed before the reclaim")
                                                                        .hasSize(expected);
+    }
+
+    /// One sealed segment per eviction, sealed at once (the sealer before runs, #2201 C-02): this fixture reclaims the segment
+    /// of ONE dead letter, which needs one segment per eviction.
+    private static SegmentSealer segmentSealer(SegmentSink sink) {
+        return SegmentSealer.segmentSealer(sink, SegmentSealer.DEFAULT_PENDING_CAP_BYTES, SealerThresholds.immediate());
     }
 }
