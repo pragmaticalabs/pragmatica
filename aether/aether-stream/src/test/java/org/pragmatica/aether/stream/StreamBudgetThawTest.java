@@ -6,18 +6,25 @@
 package org.pragmatica.aether.stream;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.stream.StreamPartitionManager.Exhaustion;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -80,6 +87,43 @@ class StreamBudgetThawTest {
                 manager.close();
             }
         }
+
+        /// The same for a ring the manager built lazily (`materializePartition`, the replica and deferred-hydration path):
+        /// `a` is committed while `x` holds the budget, so its partition is deferred and built only after `x` is destroyed.
+        @Test
+        void aLazilyMaterializedRing_frozenByAnExhaustedBudget_alsoRegrowsAfterBudgetIsReleased() {
+            var sink = new GrowthRefusals();
+            var manager = streamPartitionManager(2 * MIB);
+
+            manager.exhaustionSink(sink);
+            try {
+                create(manager, StreamConfig.streamConfig("x", 1, RetentionPolicy.retentionPolicy(70_000, SEGMENT, 3_600_000L), "latest"));
+                manager.onStreamConfigPut(streamConfigPut(stream("a", 4 * MIB)));
+                assertThat(manager.partitionBuffer("a", 0).isPresent()).as("control: a's floor did not fit, it is deferred").isFalse();
+
+                manager.destroyStream("x").onFailure(cause -> fail("destroy x: " + cause.message()));
+                manager.materializePartition("a", 0).onFailure(cause -> fail("materialize a/0: " + cause.message()));
+                create(manager, stream("b", SEGMENT));
+
+                var offsets = new AtomicLong();
+                var ring = manager.partitionBuffer("a", 0).unwrap();
+
+                for (var i = 0; i < 2_000 && sink.refused("a") == 0; i++) {
+                    appendBytes(ring, offsets, PAYLOAD);
+                }
+                assertThat(sink.refused("a")).as("the growth of a was refused").isPositive();
+
+                var frozenAt = ring.allocatedBytes();
+
+                manager.destroyStream("b").onFailure(cause -> fail("destroy b: " + cause.message()));
+                appendBytes(ring, offsets, 3 * frozenAt);
+
+                assertThat(ring.allocatedBytes()).as("after b's floor was released, the lazily built ring grew past %d", frozenAt)
+                                                 .isGreaterThan(frozenAt);
+            } finally {
+                manager.close();
+            }
+        }
     }
 
     /// The ring's side of item 4, with the generation as a plain counter: a frozen ring asks the budget again only after the
@@ -127,6 +171,55 @@ class StreamBudgetThawTest {
                 ring.close();
             }
         }
+
+        /// A full frozen ring's live bytes are almost always wrapped: in this geometry (one 256 KiB segment holding 26 records
+        /// of 10,000 B) they are unwrapped only when the tail record's index t has `10,000 t mod 262,144 <= 2,144`, i.e. at
+        /// t = 0, 105, 236, ... The release lands with the tail at 110, and the next lap of appends (tail 110 to 136) passes
+        /// no such point, so only the hand-over at the wrap point can thaw it within the lap. The thaw grows by one segment,
+        /// the one its next write needs, never by a jump to a position computed without the re-base.
+        @Test
+        void aFullFrozenRing_regrowsWithinOneLapOfTheGenerationMoving_oneSegmentAtATime() {
+            var admit = new AtomicBoolean(false);
+            var generation = new AtomicLong();
+            var ring = OffHeapRingBuffer.offHeapRingBuffer("lap",
+                                                           0,
+                                                           10_000,
+                                                           8 * SEGMENT,
+                                                           EvictionListener.NOOP,
+                                                           EvictionPolicy.DROP_OLDEST,
+                                                           _ -> admit.get(),
+                                                           _ -> {},
+                                                           generation::get)
+                                        .unwrap();
+            var offsets = new AtomicLong();
+
+            try {
+                appendBytes(ring, offsets, 136L * PAYLOAD);
+                assertThat(ring.allocatedBytes() - ring.controlBytes()).as("control: frozen at the first segment").isEqualTo(SEGMENT);
+                assertThat(ring.tailOffset()).as("control: the release lands with the tail at 110").isEqualTo(110L);
+                assertThat(IntStream.rangeClosed(110, 136).filter(t -> (10_000L * t) % SEGMENT <= SEGMENT - 26L * PAYLOAD).boxed().toList())
+                    .as("control: the lap passes no point where the live bytes are unwrapped by themselves").isEmpty();
+
+                admit.set(true);
+                generation.incrementAndGet();
+
+                var steps = new ArrayList<Long>();
+
+                for (var i = 0; i < 27; i++) {
+                    var before = ring.allocatedBytes();
+
+                    appendBytes(ring, offsets, PAYLOAD);
+                    if (ring.allocatedBytes() != before) {
+                        steps.add(ring.allocatedBytes() - before);
+                    }
+                }
+
+                assertThat(steps).as("the ring regrew within one lap of the generation moving").isNotEmpty();
+                assertThat(steps).as("each regrowth is the one segment the next write needs").allMatch(step -> step == SEGMENT);
+            } finally {
+                ring.close();
+            }
+        }
     }
 
     /// F-07: the growth share and the floor headroom. 4 MiB budget: growth stops at 3 MiB, and the floors of two more streams
@@ -159,6 +252,13 @@ class StreamBudgetThawTest {
                 manager.close();
             }
         }
+    }
+
+    private static ValuePut<StreamConfigKey, StreamConfigValue> streamConfigPut(StreamConfig config) {
+        var key = StreamConfigKey.streamConfigKey(config.name());
+        var value = StreamConfigValue.streamConfigValue(config);
+
+        return new ValuePut<>(new KVCommand.Put<>(key, value), Option.none());
     }
 
     private static void create(StreamPartitionManager manager, StreamConfig config) {
