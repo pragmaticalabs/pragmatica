@@ -114,9 +114,11 @@ class RegenShardWeightsTest(unittest.TestCase):
         self.assertIn("python3 -B -m unittest discover -s tools -p test_regen_shard_weights.py", CI.read_text())
 
     def test_main_refuses_to_rewrite_from_zero_reports(self):
+        src, weights = self._module()  # a synthetic module, so a broken refusal rewrites no tracked file
         with tempfile.TemporaryDirectory() as d, self.assertRaises(SystemExit) as raised:
-            regen.main(["--module", "ember", "--run", RUN, "--dir", d])
+            self._main(src, weights, "--dir", d)
         self.assertIn("refusing to rewrite", str(raised.exception))
+        self.assertEqual(weights.read_text(), "QuicDialAttemptTest 41\n")
 
 
 if __name__ == "__main__":
