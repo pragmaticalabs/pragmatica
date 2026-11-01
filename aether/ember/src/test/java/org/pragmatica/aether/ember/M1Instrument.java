@@ -131,13 +131,7 @@ final class M1Instrument {
         add(prefix + family, 1);
         if (!replaying && put.cause().value() instanceof AetherValue.GovernorAnnouncementValue next
             && put.oldValue().isPresent() && put.oldValue().unwrap() instanceof AetherValue.GovernorAnnouncementValue previous) {
-            var unchanged = previous.governorId().equals(next.governorId())
-                            && previous.members().equals(next.members())
-                            && previous.tcpAddress().equals(next.tcpAddress())
-                            && previous.communityTerm() == next.communityTerm()
-                            && previous.communityEpoch().equals(next.communityEpoch())
-                            && previous.observedCoreEpoch().equals(next.observedCoreEpoch())
-                            && previous.dissolved() == next.dissolved();
+            var unchanged = refreshOnly(previous, next);
 
             add(unchanged ? "gov.refresh-only" : "gov.changed", 1);
         }
@@ -150,6 +144,21 @@ final class M1Instrument {
             }
             add("put.bytes", sizeOf(put.cause().value()));
         }
+    }
+
+    /// True when `next` differs from `previous` in the two heartbeat stamps alone, `announcedAt` and `observedCoreEpoch`: the same
+    /// equality as `GovernorAnnouncementValue.unchangedFrom` (#2542, know 193c4abe4f), so M-1 and M-1b classify commits alike.
+    static boolean refreshOnly(AetherValue.GovernorAnnouncementValue previous, AetherValue.GovernorAnnouncementValue next) {
+        return new AetherValue.GovernorAnnouncementValue(next.governorId(),
+                                                         next.memberCount(),
+                                                         next.members(),
+                                                         next.tcpAddress(),
+                                                         previous.announcedAt(),
+                                                         next.communityTerm(),
+                                                         next.communityEpoch(),
+                                                         previous.observedCoreEpoch(),
+                                                         next.transitionedAt(),
+                                                         next.dissolved()).equals(previous);
     }
 
     private void countRemove(ValueRemove<?, ?> remove) {
