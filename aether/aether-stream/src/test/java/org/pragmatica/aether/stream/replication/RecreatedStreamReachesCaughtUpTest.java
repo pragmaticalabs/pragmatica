@@ -27,6 +27,9 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import java.util.concurrent.TimeUnit;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -45,6 +48,7 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Catchu
 /// holds, and the ring's ordered section records it ([StreamPartitionManager#quarantinedAt]). RED at `15ac4ef4da` on the
 /// config-remove and reaper arms, which skip `forgetQuarantine`; the destroy arm is the CONTROL, green at every commit, because
 /// destroy already clears it.
+@Timeout(value = 60, unit = TimeUnit.SECONDS)
 class RecreatedStreamReachesCaughtUpTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;

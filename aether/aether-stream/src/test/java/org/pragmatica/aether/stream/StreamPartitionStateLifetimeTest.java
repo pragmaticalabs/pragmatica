@@ -9,6 +9,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.aether.slice.RetentionDimensions;
@@ -46,6 +47,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
+import java.util.concurrent.TimeUnit;
+
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -62,6 +65,7 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 /// catch-up install ([StreamPartitionManager#releaseProvenance]) and a durable-flag raise (records with no owner-epoch history).
 /// It is observed through behaviour where one exists (the epoch verdict, the cut generation, a second raise) and otherwise through
 /// [StreamPartitionManager#heldPartitionRows].
+@Timeout(value = 60, unit = TimeUnit.SECONDS)
 class StreamPartitionStateLifetimeTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
