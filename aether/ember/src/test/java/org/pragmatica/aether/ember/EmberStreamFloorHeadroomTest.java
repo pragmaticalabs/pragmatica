@@ -27,9 +27,10 @@ import static org.pragmatica.aether.ember.StreamTripwireSupport.sleepQuietly;
 /// NT-106 (#2201 C-03, spec 4.4 item 5, F-07): the steady-state soak of the floor headroom on a 3-node cluster.
 ///
 /// Every node's off-heap stream budget is [#BUDGET] (`[streaming] max_memory_bytes`, small so the fill is short). Two RF 3
-/// streams whose rings may grow far past the budget are published, and the test waits until every node's ring of each holds
-/// the owner's last offset (a fresh replica can sit in its 20 s source wait first, so a quiet period is not evidence that it
-/// applied anything); by then the rings have taken the growth share (three quarters of the budget). Then a stream is created. Its floors are admitted against the
+/// streams whose rings may grow far past the budget are each published with more than the whole budget, so an owner's ring
+/// alone could fill it. The test waits until every node's allocation is past the growth share (three quarters of the budget),
+/// then until no node's allocation has moved for [#ALLOCATION_QUIESCE_MS], longer than the 20 s source wait a fresh replica
+/// can sit in before it applies anything. Then a stream is created. Its floors are admitted against the
 /// WHOLE budget, so it materializes on every node: the rings were refused growth at the share and froze there.
 ///
 /// Red under MT-37 (growth admitted against the whole budget): the rings then grow to within one segment of the budget, and
@@ -45,11 +46,13 @@ class EmberStreamFloorHeadroomTest {
     private static final long GROWTH_SHARE = BUDGET - BUDGET / 4;
     private static final int PAYLOAD = 4 * 1024;
     private static final int BATCH = 64;
-    /// Published per fill stream: together the two exceed the whole budget, so a ring allowed past the share fills it.
-    private static final long FILL_BYTES_PER_STREAM = 20 * MIB;
+    /// Published per fill stream: more than the whole budget, so the owner's ring alone fills it when growth is allowed past
+    /// the share, however far a replica lags.
+    private static final long FILL_BYTES_PER_STREAM = 40 * MIB;
     private static final int LATE_PARTITIONS = 4;
     private static final int RESHUFFLE_CONCURRENCY = 256;
     private static final long QUIESCE_MS = 10_000L;
+    private static final long ALLOCATION_QUIESCE_MS = 30_000L;
     private static final long SETTLE_BUDGET_MS = 120_000L;
     private static final List<String> FILLS = List.of("f106a", "f106b");
     private static final String LATE = "late106";
@@ -79,11 +82,10 @@ class EmberStreamFloorHeadroomTest {
 
         try {
             FILLS.forEach(this::fill);
-            FILLS.forEach(this::awaitAppliedEverywhere);
-            cluster.allNodes()
-                   .forEach(node -> assertThat(node.streamPartitionManager().totalAllocatedBytes()).as("precondition: %s's rings took the growth share",
-                                                                                                       node.self().id())
-                                                                                                   .isGreaterThan(GROWTH_SHARE - SEGMENT));
+            StreamTripwireSupport.awaitUntil(() -> allocated().stream().allMatch(bytes -> bytes > GROWTH_SHARE - SEGMENT),
+                                             SETTLE_BUDGET_MS,
+                                             "precondition: every node's rings took the growth share");
+            awaitAllocationsQuiesced();
 
             StreamTripwireSupport.createStream(cluster.allNodes().getFirst(),
                                                StreamConfig.streamConfig(engineKey(LATE),
@@ -130,20 +132,26 @@ class EmberStreamFloorHeadroomTest {
         return IntStream.range(0, BATCH).mapToObj(_ -> new byte[PAYLOAD]).toList();
     }
 
-    /// Waits until every node's ring of `stream` holds its last published offset.
-    private void awaitAppliedEverywhere(String stream) {
-        var last = FILL_BYTES_PER_STREAM / PAYLOAD - 1;
+    /// Waits until no node's allocation has moved for [#ALLOCATION_QUIESCE_MS].
+    private void awaitAllocationsQuiesced() {
+        var deadline = System.currentTimeMillis() + SETTLE_BUDGET_MS;
+        var last = allocated();
+        var stableSince = System.currentTimeMillis();
 
-        StreamTripwireSupport.awaitUntil(() -> cluster.allNodes().stream().allMatch(node -> headOf(node, stream) == last),
-                                         SETTLE_BUDGET_MS,
-                                         "every node's ring of " + stream + " holds offset " + last + " (allocated per node: " + allocated() + ")");
-    }
+        while (System.currentTimeMillis() < deadline) {
+            sleepQuietly(500L);
 
-    private static long headOf(AetherNode node, String stream) {
-        return node.streamPartitionManager()
-                   .partitionBuffer(engineKey(stream), 0)
-                   .map(ring -> ring.headOffset())
-                   .or(-1L);
+            var now = allocated();
+
+            if (!now.equals(last)) {
+                last = now;
+                stableSince = System.currentTimeMillis();
+            } else if (System.currentTimeMillis() - stableSince >= ALLOCATION_QUIESCE_MS) {
+                return;
+            }
+        }
+
+        throw new AssertionError("the allocations did not settle within " + SETTLE_BUDGET_MS + " ms; last " + last);
     }
 
     private List<Long> allocated() {
