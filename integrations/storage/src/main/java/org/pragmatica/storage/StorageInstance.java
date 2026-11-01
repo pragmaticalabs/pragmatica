@@ -224,9 +224,13 @@ public interface StorageInstance {
         return deleteFromPrivateTiers(orphan);
     }
 
-    /// Delete a block from all tiers and remove its lifecycle metadata, whatever its references. No production code calls
-    /// it at rc5: content/manifest deletion releases (#981), and stream retention releases a segment's ref with shared-delete
-    /// authority ([#deleteRef(String, SharedDelete)]) and leaves the block to the collector's [#deleteEverywhere] (#2258).
+    /// Delete a block from all tiers and remove its lifecycle metadata, whatever its references. Its one production caller is
+    /// the entity checkpoint writer (`StreamEntityLogSubstrate`, PR-3c): after a confirmed pointer swap it deletes the block the
+    /// replaced pointer named, and after a refused one its own new block, each only when the block's claim is below the committed
+    /// claim, so no pointer can name it again. It deletes rather than releases because it may hold no lifecycle record for the
+    /// block (a previous owner wrote it). Content/manifest deletion releases (#981), and stream retention releases a segment's ref
+    /// with shared-delete authority ([#deleteRef(String, SharedDelete)]) and leaves the block to the collector's
+    /// [#deleteEverywhere] (#2258).
     Promise<Unit> delete(BlockId id);
 
     /// Collect `orphan` -- the lifecycle record exactly as the caller's scan saw it -- from

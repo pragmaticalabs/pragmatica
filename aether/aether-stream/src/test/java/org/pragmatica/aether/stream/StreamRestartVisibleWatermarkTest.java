@@ -8,6 +8,9 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.function.Function;
 
+import org.pragmatica.aether.stream.segment.SegmentSink;
+import org.pragmatica.aether.stream.segment.SealerThresholds;
+import org.pragmatica.aether.stream.segment.SegmentSealer;
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamAccess.StreamEvent;
@@ -38,7 +41,6 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 import static org.pragmatica.aether.stream.replication.ReplicaRegistry.replicaRegistry;
 import static org.pragmatica.aether.stream.replication.ReplicationManager.replicationManager;
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.ReplicateAck.replicateAck;
-import static org.pragmatica.aether.stream.segment.SegmentSealer.segmentSealer;
 import static org.pragmatica.aether.stream.segment.StorageSegmentSink.storageSegmentSink;
 import static org.pragmatica.aether.stream.segment.TieredStreamReader.tieredStreamReader;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -286,5 +288,11 @@ class StreamRestartVisibleWatermarkTest {
                 return (T) bytes;
             }
         };
+    }
+
+    /// One sealed segment per eviction, sealed at once (the sealer before runs, #2201 C-02): this fixture waits for each
+    /// evicted offset to be sealed, which the run-forming defaults would hold for up to `seal_run_age`.
+    private static SegmentSealer segmentSealer(SegmentSink sink) {
+        return SegmentSealer.segmentSealer(sink, SegmentSealer.DEFAULT_PENDING_CAP_BYTES, SealerThresholds.immediate());
     }
 }
