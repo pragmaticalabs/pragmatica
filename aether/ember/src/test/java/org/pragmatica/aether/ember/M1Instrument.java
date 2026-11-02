@@ -261,7 +261,17 @@ final class M1Instrument {
                 outermost = i;
             }
         }
-        var entry = outermost < 0 ? "none" : frames.get(outermost).getMethodName();
+        var chain = new java.util.ArrayList<String>();
+
+        // the outermost three RabiaEngine frames, outermost first: the first is often only the executor wrapper (safeExecute), the next ones name the handler
+        for (int i = outermost; i >= 0 && chain.size() < 4; i--) {
+            var f = frames.get(i);
+
+            if (f.getClassName().startsWith("org.pragmatica.consensus.rabia")) {
+                chain.add(f.getMethodName() + ":" + f.getLineNumber());
+            }
+        }
+        var entry = outermost < 0 ? "none" : String.join(">", chain);
         var via = outermost < 0 || outermost + 1 >= frames.size() ? "none" : frames.get(outermost + 1).getClassName().substring(frames.get(outermost + 1).getClassName().lastIndexOf('.') + 1)
                                                                             + "." + frames.get(outermost + 1).getMethodName();
 
