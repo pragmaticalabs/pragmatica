@@ -5,6 +5,7 @@
 #   armxk.sh dry-run  <user@host> <checkout> [run-dir]       the whole run against a local multi-node cluster on ONE host; spends nothing
 #   armxk.sh cloud-run <build-host> <checkout> [run-dir]     SPENDS MONEY. Run by the CTO or the owner only, as:
 #                                                              with-hcloud env ARMXK_SPEND=yes bash armxk.sh cloud-run ...
+#   armxk.sh stage-local <user@host> <checkout> <run-dir>     the dry run's inventory and staging only, to run steps one by one
 #   armxk.sh teardown <run-dir>                              deletes the run's servers, then checks the count is back at the baseline
 #   armxk.sh teardown-check <run-dir>                        the check alone
 #   armxk.sh <armxk.py command> <run-dir>                    one step: cores-up, control, armk, workers-up, s0, s3, s4, s6, pull, stop-all
@@ -88,7 +89,7 @@ PY
 
 case "$CMD" in
     estimate) exec python3 "$HERE/lib/estimate.py" "$@" ;;
-    dry-run)
+    dry-run|stage-local)
         TARGET=${1:?user@host}; CHECKOUT=${2:?checkout on the host}
         RUN_DIR=${3:-"$HERE/runs/dry-$(date -u +%Y%m%dT%H%M%SZ)"}
         KEY=${ARMXK_SSH_KEY:-$HOME/.ssh/aether_test}
@@ -97,6 +98,7 @@ case "$CMD" in
         ROOT=$(python3 -c "import json;print(json.load(open('$RUN_DIR/inventory.json'))['remoteRoot'])")
         ssh -i "$KEY" "${ssh_opts[@]}" "$TARGET" "if [ -d $ROOT/nodes ]; then for d in $ROOT/nodes/*/; do bash $ROOT/lib/node.sh stop $ROOT \$(basename \$d) || true; done; fi; rm -rf $ROOT && mkdir -p $ROOT"
         stage "$RUN_DIR" "$TARGET" "$CHECKOUT" "$KEY"
+        [ "$CMD" = stage-local ] && exit 0
         rc=0
         python3 "$HERE/lib/armxk.py" run-all --run-dir "$RUN_DIR" || rc=$?
         python3 "$HERE/lib/armxk.py" pull --run-dir "$RUN_DIR" || true

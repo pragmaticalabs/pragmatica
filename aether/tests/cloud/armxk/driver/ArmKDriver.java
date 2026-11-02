@@ -40,6 +40,9 @@ public final class ArmKDriver {
         var measureFrom = start + warmupMs;
         var measureTo = measureFrom + measureMs;
         var serial = new AtomicLong();
+        // The orchestrator waits for this line before it starts its warm-up clock: the source launch itself takes seconds, and core
+        // readings taken before the clients run would widen the reading window with unloaded time.
+        System.err.println("armk-driver started; measure starts in " + warmupMs + " ms");
         var workers = new ArrayList<Worker>();
 
         for (int i = 0; i < concurrency; i++) {

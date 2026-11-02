@@ -673,6 +673,8 @@ def armk_step(run, p, c, url, target, driver_host):
     cmd = (f"cd {run.root} && java driver/ArmKDriver.java {url} {run.root}/secrets/api-keys {c} {k['warmupS']} {k['measureS']} "
            f"armk.p{p}.c{c}. > {run.root}/armk-p{p}-c{c}.json 2> {run.root}/armk-p{p}-c{c}.err; echo $? > {run.root}/armk-p{p}-c{c}.rc")
     run.sh(driver_host, f"rm -f {run.root}/armk-p{p}-c{c}.*; nohup bash -c {shlex.quote(cmd)} >/dev/null 2>&1 &")
+    await_cond(f"driver p{p} c{c} started", lambda: "armk-driver started" in run.sh(driver_host, f"cat {run.root}/armk-p{p}-c{c}.err 2>/dev/null",
+                                                                                    check=False), 120, 0.5)
     sleep_s(k["warmupS"])
     before = core_readings(run)
     sleep_s(k["measureS"])
