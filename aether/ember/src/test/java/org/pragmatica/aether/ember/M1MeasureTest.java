@@ -559,6 +559,24 @@ class M1MeasureTest {
         }
     }
 
+    /// Capture runs: engine probes INSIDE the first minute after the undeploy request (+10 s, +30 s, +50 s), from a daemon thread, so an early stuck batch can be told from a
+    /// configuration-request loop. Each line carries per core pendingBatches, the oldest age, requestedConfiguration, currentConfig and the phase.
+    private void probeEarly(int rep) {
+        var thread = new Thread(() -> {
+            long started = System.nanoTime();
+
+            for (int offsetSec : new int[]{10, 30, 50}) {
+                sleep(Math.max(0, offsetSec * 1_000L - (System.nanoTime() - started) / 1_000_000));
+                var probes = instruments.stream().filter(i -> coreIds.contains(i.nodeId())).map(M1Instrument::engineProbe).collect(Collectors.joining(",", "[", "]"));
+
+                emit("{\"kind\":\"engine-probe-early\"," + header() + ",\"rep\":" + rep + ",\"offsetSec\":" + offsetSec + ",\"load\":\"" + loadavg() + "\",\"cores\":" + probes + "}");
+            }
+        }, "m1-early-probe");
+
+        thread.setDaemon(true);
+        thread.start();
+    }
+
     /// Per live core: the engine's pending batches, the age of the oldest on that core's own clock, and its phase; read twice 10 s apart after every S6d rep (the reps that did not flood are the control).
     private void probeEngines(String cls, int rep, int reading, boolean flooded, long slots) {
         var probes = instruments.stream().filter(i -> coreIds.contains(i.nodeId())).map(M1Instrument::engineProbe).collect(Collectors.joining(",", "[", "]"));
@@ -645,6 +663,9 @@ class M1MeasureTest {
 
     private void undeploy(S6Run run) {
         M1Instrument.anchor();
+        if (M1Instrument.CAPTURE && "s6d".equals(run.cls)) {
+            probeEarly(run.rep);
+        }
         run.membersAtStart = memberIds();
         run.leaderAtStart = cluster.currentLeader().or("none");
         var deleted = send("DELETE", "/api/v1/blueprints/" + run.blueprintId, "application/json", "");
