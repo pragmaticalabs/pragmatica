@@ -852,7 +852,7 @@ class ClusterCursorStoreTest {
                     .isTrue();
         }
 
-        @Disabled("#2590 P2: enable when a worker's checkpoint verdict no longer reads a replica that excludes the cursor key; delete the _reportsLocalOnly tripwire then")
+        @Disabled("#2590 P2: enable when a worker's checkpoint verdict no longer reads a replica that excludes the cursor key, ported onto the P2 cursor store if ClusterCursorStore and the legacy key are gone; delete the _reportsLocalOnly tripwire then")
         @Test
         void commit_forwardingWorker_landedOnCore_reportsPersisted() {
             var outcome = worker().commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
@@ -862,7 +862,7 @@ class ClusterCursorStoreTest {
                                .isEqualTo(Result.success(CommitOutcome.persisted()));
         }
 
-        /// #2045: every attempt of a forwarding worker costs two consensus commands, the `Put` and the `Noop` barrier, and since the
+        /// #2596: every attempt of a forwarding worker costs two consensus commands, the `Put` and the `Noop` barrier, and since the
         /// verdict above never reaches `Persisted`, every periodic checkpoint is retried with that same pair.
         @Test
         void commit_forwardingWorker_eachAttemptSendsPutAndNoop() {
@@ -873,7 +873,7 @@ class ClusterCursorStoreTest {
             worker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
             var retry = attemptKinds();
 
-            assertThat(List.of(first, retry)).describedAs("commands per attempt")
+            assertThat(List.of(first, retry)).describedAs("#2596 changed? #2590 P2 drops the verdict re-read and the Noop barrier: when it lands, delete this characterisation; commands per attempt")
                                              .isEqualTo(List.of(List.of("Put", "Noop"), List.of("Put", "Noop")));
         }
     }
@@ -910,7 +910,7 @@ class ClusterCursorStoreTest {
                                          .isEqualTo(Option.some(100L));
         }
 
-        @Disabled("#2590 P2: enable when a cursor record below the committed one is refused as Covered; delete the _regressesCommittedOffset tripwire then")
+        @Disabled("#2590 P2: enable when a cursor record below the committed one is refused as Covered, ported onto the P2 cursor store if ClusterCursorStore and the legacy key are gone; delete the _regressesCommittedOffset tripwire then")
         @Test
         void apply_lateStaleCheckpointSameEpochs_isRefusedCovered() {
             apply(ClusterCursorStore.checkpointCommand(CHECKPOINT_KEY, 200L, SELF_TOKEN, RewindEpoch.NONE));
