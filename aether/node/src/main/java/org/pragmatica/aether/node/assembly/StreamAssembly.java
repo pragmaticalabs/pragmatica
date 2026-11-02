@@ -49,6 +49,7 @@ import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.node.StreamFailoverAnnouncer;
 import org.pragmatica.aether.node.StreamIsrAnnouncer;
 import org.pragmatica.aether.node.StreamLineageAnnouncer;
+import org.pragmatica.aether.node.StreamMemoryBudget;
 import org.pragmatica.aether.node.projection.CommitWitness;
 import org.pragmatica.aether.node.projection.PartitionBounds;
 import org.pragmatica.aether.node.projection.ProjectionAwareCursorStore;
@@ -201,6 +202,7 @@ public sealed interface StreamAssembly {
                                    SliceCodec nodeCodec,
                                    OwnershipEpochHighWater ownershipEpochHighWater,
                                    ClusterEventsLimits clusterEventsLimits,
+                                   StreamMemoryBudget streamMemoryBudget,
                                    StorageFactory.StorageSetup streamStorageSetup,
                                    AtomicReference<ReplicaSetController> clusterEventsControllerRef,
                                    String clusterEventsStreamName,
@@ -254,7 +256,7 @@ public sealed interface StreamAssembly {
         var eventAggregator = in.eventAggregator();
         var operatorWarningSink = in.operatorWarningSink();
         var allEntries = in.allEntries();
-        var streamMaxMemoryBytes = resolveStreamMaxMemoryBytes();
+        var streamMaxMemoryBytes = in.streamMemoryBudget().maxMemoryBytes();
         // A6: activate replication. The replica registry (populated by the A2 ReplicaSetController from
         // HRW placement) and a network-backed ReplicationTransport are constructed here — ahead of the
         // StreamPartitionManager — so SPM can be given a REAL DefaultReplicationManager instead of
@@ -315,8 +317,9 @@ public sealed interface StreamAssembly {
         var streamOwnerEpochSource = KvStreamOwnerEpochSource.kvStreamOwnerEpochSource(kvStore);
         // #1730 phase 2 (B11): the owner counts a replica's confirmation only under the committed epoch now in force.
         streamReplicationManager.ownerEpochs(streamOwnerEpochSource);
-        // #1234: the sealer retains each evicted segment until storage has it; those copies are capped at the
-        // node's stream memory budget, and only past that cap are appends refused (SEALING_BEHIND).
+        // #1234: the sealer retains each evicted segment until storage has it; those copies are capped (#2201 C-03: at
+        // `[streaming] seal_pending_cap_bytes`, by default the smaller of the stream memory budget and 256 MiB), and only past
+        // that cap are appends refused (SEALING_BEHIND).
         // #1345: WAL truncation is bounded by the refs in the latest metadata snapshot ON DISK — the watermark
         // the `rebuildFromRefs` above would compute at the next boot — never by the live index, which runs
         // ahead of disk by every seal since that snapshot (STREAM_SNAPSHOT_* in StorageFactory bound the lag).
@@ -327,7 +330,7 @@ public sealed interface StreamAssembly {
         var streamSegmentSealer = SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(streamStorage,
                                                                                                     streamSegmentIndex,
                                                                                                     RefDurability.snapshotted(streamStorageSetup.snapshotManager())),
-                                                              streamMaxMemoryBytes,
+                                                              in.streamMemoryBudget().sealPendingCapBytes(),
                                                               sealerThresholds(config.streaming()));
         var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes,
                                                                                    streamSegmentSealer,
@@ -1951,13 +1954,6 @@ public sealed interface StreamAssembly {
         } else {
             storageAdapter.deactivate();
         }
-    }
-
-    private static long resolveStreamMaxMemoryBytes() {
-        return Option.option(System.getenv("STREAM_MAX_MEMORY_BYTES"))
-                     .filter(s -> !s.isBlank())
-                     .flatMap(s -> Result.lift(() -> Long.parseLong(s)).option())
-                     .or(128 * 1024 * 1024L);
     }
 
     private static StreamForwardTransport createStreamForwardTransport(ClusterNetwork network) {

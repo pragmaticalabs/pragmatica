@@ -1,5 +1,5 @@
 # Measured wall seconds per Consensus test class (#2414). Source: CI build-and-test run 40193494341 (rc5 fe25a2796), surefire suite times summed per top-level class (@Nested included), rounded up.
-# Used only to balance shards; a class missing here still runs, at the default weight (the largest measured class).
+# Used only to balance shards; a class missing here still runs, at the planner's default weight (75th percentile), so a new class needs no line here.
 # BootTokensLedgerTest, DurableWriterAdapterTest, IdentityFactsTest, IdentityLedgerTest, ProtocolConfigIdentityLedgerTest (#2429): surefire class time 0.15-0.94 s in 3 runs on cloudbb-3 at c14c1858f3; 1 each.
 # OfferJournalTest (#2429, ID-1c): a fraction of a second on bigboy (a few small temp-file writes); 1.
 # RabiaPartialPartitionLivenessTest (Qsync probe, #2534): 109 testcases, 11-13 s in 3 runs on bigboy; 15.
@@ -156,3 +156,4 @@ IdentityLedgerTest 1
 ProtocolConfigIdentityLedgerTest 1
 OfferJournalTest 1
 OfferLockStressTest 3
+RabiaEnginePassiveVotersTest 1

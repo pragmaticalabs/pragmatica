@@ -182,6 +182,7 @@ class StreamSegmentDhtReclaimTest {
                                                                                          null,
                                                                                          null,
                                                                                          null,
+                                                                                         new StreamMemoryBudget(128L << 20, 128L << 20),
                                                                                          setup,
                                                                                          null,
                                                                                          null,

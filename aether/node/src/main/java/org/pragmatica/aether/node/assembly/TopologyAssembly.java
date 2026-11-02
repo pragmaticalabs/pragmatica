@@ -24,6 +24,7 @@ import org.pragmatica.aether.api.ClusterEventAggregator;
 import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.cluster.CapacityControlledLifecycle;
+import org.pragmatica.aether.deployment.cluster.CapacityView;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.CommunityPlacementReconciler;
 import org.pragmatica.aether.deployment.cluster.CommunityRetirementIndex;
@@ -306,8 +307,7 @@ public sealed interface TopologyAssembly {
                                                                                               clusterNode.verifiedVoterHistoryIds())));
         var coreAdmission = CoreAdmission.coreAdmission(membershipFsmRef::get,
                                                         verifiedVoterIdentities::get,
-                                                        node -> kvStore.getTyped(new AetherKey.CapacityReservationKey(node),
-                                                                                 AetherValue.CapacityReservationValue.class),
+                                                        CapacityView.overStore(kvStore)::reservation,
                                                         node -> config.environment()
                                                                       .map(environment -> environment.isLocalCoreAdmissionAuthorized(node.id()))
                                                                       .or(false));

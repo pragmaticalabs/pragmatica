@@ -20,6 +20,7 @@ import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.api.ClusterEventAggregator;
 import org.pragmatica.aether.config.ReplicationDefaultsConfig;
 import org.pragmatica.aether.controller.ControlLoop;
+import org.pragmatica.aether.deployment.cluster.CapacityView;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.cluster.ClusterReplication;
 import org.pragmatica.aether.deployment.cluster.CommunityRetirementIndex;
@@ -76,6 +77,7 @@ import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.dht.DHTNode;
 import org.pragmatica.hlc.HlcClock;
@@ -386,6 +388,13 @@ public sealed interface WorkerHierarchyAssembly {
                                                                                                                                                  config.cache(),
                                                                                                                                                  cacheDhtConfig,
                                                                                                                                                  dhtSettlement);
+        // #2543: a passive client applies no roster change itself, so the leader's installed electorate rides the directory and is installed here.
+        // FER: a refused install (an older epoch or a conflicting roster at the same epoch) is logged and dropped; this worker keeps the electorate it
+        // already holds, which only ever moves forward by epoch. Guarantee earned: a worker's roster never regresses. Mechanism: the epoch guard in
+        // RabiaEngine.installPassiveVoters; the next newer directory retries.
+        Consumer<VoterConfiguration> installVoters = voters -> clusterNode.installPassiveVoters(voters)
+                                                                          .onFailure(cause -> LOG.warn("Worker electorate install refused: {}",
+                                                                                                       cause.message()));
         Runnable workerReady = () -> becomeForwarding(switchableCluster,
                                                       forwardingClusterNode,
                                                       clusterNode,
@@ -446,7 +455,8 @@ public sealed interface WorkerHierarchyAssembly {
                                                                                                                                                                                                 .contains(governor))),
                                                                                            new ReplicaClientAssembly.DirectoryInstall(installPeers,
                                                                                                                                       installEndpoints,
-                                                                                                                                      applyDht),
+                                                                                                                                      applyDht,
+                                                                                                                                      installVoters),
                                                                                            workerReady,
                                                                                            workerProjectionFreshRef,
                                                                                            allEntries,
@@ -797,7 +807,10 @@ public sealed interface WorkerHierarchyAssembly {
         }
         // a worker holds no partitions and receives no DHT writes; its fence is what its projection says
         dhtNode.confirmReplicationFence();
-        settlement.applied(replication.configVersion());
+        settlement.applied(replication.configVersion(),
+                           replication.changeSettled()
+                           ? DHTNode.NO_CHANGE
+                           : replication.changeVersion());
     }
 
     /// The committed change a worker projection carries, as the record a core reads. A worker holds no partitions, so
@@ -1044,11 +1057,11 @@ public sealed interface WorkerHierarchyAssembly {
                          .filter(descriptor -> "worker".equalsIgnoreCase(descriptor.role()) || "spot".equalsIgnoreCase(descriptor.role()))
                          .filter(descriptor -> config.environment()
                                                      .map(environment -> environment.isLocalWorkerAdmissionAuthorized(peer.id()))
-                                                     .or(false) || store.getTyped(new AetherKey.CapacityReservationKey(peer),
-                                                                                  AetherValue.CapacityReservationValue.class)
-                                                                        .filter(value -> value.intendedRole()
-                                                                                              .equalsIgnoreCase(descriptor.role()) && (value.phase() == AetherValue.CapacityReservationPhase.DISPATCHED || value.phase() == AetherValue.CapacityReservationPhase.OBSERVED))
-                                                                        .isPresent())
+                                                     .or(false) || CapacityView.overStore(store)
+                                                                               .reservation(peer)
+                                                                               .filter(value -> value.intendedRole()
+                                                                                                     .equalsIgnoreCase(descriptor.role()) && (value.phase() == AetherValue.CapacityReservationPhase.DISPATCHED || value.phase() == AetherValue.CapacityReservationPhase.OBSERVED))
+                                                                               .isPresent())
                          .isPresent();
     }
 
