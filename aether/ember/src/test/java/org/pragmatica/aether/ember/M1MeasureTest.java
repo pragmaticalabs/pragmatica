@@ -563,7 +563,15 @@ class M1MeasureTest {
     private void probeEngines(String cls, int rep, int reading, boolean flooded, long slots) {
         var probes = instruments.stream().filter(i -> coreIds.contains(i.nodeId())).map(M1Instrument::engineProbe).collect(Collectors.joining(",", "[", "]"));
 
-        emit("{\"kind\":\"engine-probe\"," + header() + ",\"class\":\"" + cls + "\",\"rep\":" + rep + ",\"reading\":" + reading + ",\"flooded\":" + flooded + ",\"repSlots\":" + slots + ",\"load\":\"" + loadavg() + "\",\"cores\":" + probes + "}");
+        emit("{\"kind\":\"engine-probe\"," + header() + ",\"class\":\"" + cls + "\",\"rep\":" + rep + ",\"reading\":" + reading + ",\"flooded\":" + flooded + ",\"repSlots\":" + slots + ",\"load\":\"" + loadavg() + "\",\"clusterEventsOwnership\":\"" + clusterEventsOwnership() + "\",\"cores\":" + probes + "}");
+    }
+
+    /// The committed ownership record(s) of the system cluster-events stream partitions, as the leader's store holds them (who owns the stream the Noop barrier is for).
+    private String clusterEventsOwnership() {
+        return snap().entrySet().stream()
+                     .filter(e -> e.getKey().toString().contains("system:cluster-events"))
+                     .map(e -> e.getKey() + "=" + e.getValue())
+                     .collect(Collectors.joining(" ; ")).replace("\"", "'");
     }
 
     /// Capture runs: the first S6d rep whose window plus tail committed more than `m1.floodSlots` (default 3000) slots ends the run; the reps before it are the controls.

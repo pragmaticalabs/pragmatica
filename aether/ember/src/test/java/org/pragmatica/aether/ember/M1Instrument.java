@@ -143,12 +143,17 @@ final class M1Instrument {
             var pending = type.getDeclaredMethod("pendingBatchCountForTesting");
             var age = type.getDeclaredMethod("oldestPendingBatchAgeMs");
             var phase = type.getDeclaredField("currentPhase");
+            var requested = type.getDeclaredField("requestedConfiguration");
+            var config = type.getDeclaredField("currentConfig");
 
             pending.setAccessible(true);
             age.setAccessible(true);
             phase.setAccessible(true);
+            requested.setAccessible(true);
+            config.setAccessible(true);
             return "{\"core\":\"" + nodeId + "\",\"pendingBatches\":" + pending.invoke(engineRef) + ",\"oldestPendingBatchAgeMs\":" + age.invoke(engineRef) + ",\"phase\":\""
-                   + String.valueOf(phase.get(engineRef)).replace("\"", "'") + "\"}";
+                   + String.valueOf(phase.get(engineRef)).replace("\"", "'") + "\",\"requestedConfiguration\":\"" + String.valueOf(requested.get(engineRef)).replace("\"", "'")
+                   + "\",\"currentConfig\":\"" + String.valueOf(config.get(engineRef)).replace("\"", "'") + "\"}";
         } catch (ReflectiveOperationException | RuntimeException e) {
             return "{\"core\":\"" + nodeId + "\",\"error\":\"" + e.getClass().getSimpleName() + "\"}";
         }
@@ -219,7 +224,7 @@ final class M1Instrument {
             if (command instanceof KVCommand.Noop<?> noop) {
                 source("noop.submitted key=" + noop.key().getClass().getSimpleName() + " " + noop.key());
                 if (noopSerial.incrementAndGet() % CAPTURE_SAMPLE == 1) {
-                    source("noop.stack " + stackTop(3));
+                    source("noop.stack " + stackTop(10));
                 }
             }
         }
