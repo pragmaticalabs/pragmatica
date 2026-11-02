@@ -23,6 +23,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.stream.provenance.PartitionFlags;
 import org.pragmatica.aether.stream.provenance.PartitionFlags.PartitionFlag;
+import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -40,6 +41,8 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.storage.AppendLog;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Set;
@@ -72,6 +75,9 @@ class StreamPartitionStateLifetimeTest {
     private static final Epoch EPOCH = Epoch.epoch(1L, 1L, 1L);
     private static final long CUT_MASK = (1L << 24) - 1;
     private static final byte[] PAYLOAD = "e".getBytes(UTF_8);
+    private static final long COMMITTED_LIFE = 77L;
+    private static final Epoch GHOST_E1 = Epoch.epoch(0, 1, 0);
+    private static final Epoch GHOST_E3 = Epoch.epoch(0, 3, 0);
     /// The rows NT-23 names.
     private static final Set<String> NAMED_ROWS = Set.of("epochTrust", "replicaCommitted", "pendingInstalls", "cutGenerations", "raisedLocally");
 
@@ -214,6 +220,62 @@ class StreamPartitionStateLifetimeTest {
                 assertThat(entriesOf(node).lifePartitionState(STREAM, proposed).isEmpty()).as("the losing life's state is dropped").isTrue();
             } finally {
                 node.close();
+            }
+        }
+
+        /// Know `f7bc44d170` item 3, verifier v2559 delta (spike's survivor I3d): a committed life that replaces this node's losing
+        /// proposal and fails its trim at open records the raise in the state of the life it hydrates, so the open retried for the
+        /// same committed life raises `LOCAL_MISMATCH` once. Red under "`hydrateEntry`'s trim failure records through the live-life
+        /// accessor": inside the replacing compute the live life is still the proposal, the raise lands in a dead bucket, and the
+        /// retry raises again.
+        @Test
+        void replaceLosingLife_committedHydrateFailsItsTrim_theRetryRaisesLocalMismatchOnce() throws IOException {
+            var committedLife = config().withIncarnation(COMMITTED_LIFE);
+
+            ghostAboveTheHead(committedLife);
+
+            var node = clusterManager();
+
+            try {
+                node.partitionFlags(recordingFlags(raised));
+                node.createStream(config()).onFailure(cause -> fail(cause.message()));
+                assertThat(node.enforcedConfig(STREAM).map(StreamConfig::incarnation).or(-1L))
+                    .as("fixture: a proposal of another life").isNotEqualTo(COMMITTED_LIFE);
+
+                node.onStreamConfigPut(committed(committedLife));
+                assertThat(raised).as("fixture: the committed hydrate failed its trim and raised").hasSize(1);
+                node.onStreamConfigPut(committed(committedLife));
+
+                assertThat(raised).extracting(AetherValue.PartitionRecoveryReason::kind)
+                                  .containsExactly(AetherValue.PartitionRecoveryReasonKind.LOCAL_MISMATCH);
+            } finally {
+                node.close();
+            }
+        }
+
+        /// The committed life's log on this volume: a record at offset 0, an owner-epoch history recorded up to offset 9 by a
+        /// catch-up install, and the history's temp file blocked, so the trim at the next open cannot drop the ghost.
+        private void ghostAboveTheHead(StreamConfig life) throws IOException {
+            var writer = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+
+            try {
+                writer.ensureStreamMaterialized(life).onFailure(cause -> fail(cause.message()));
+                writer.appendRecovered(STREAM, PARTITION, 0, PAYLOAD, 1L, GHOST_E1).onFailure(cause -> fail(cause.message()));
+                writer.installProvenance(STREAM,
+                                         PARTITION,
+                                         3,
+                                         9,
+                                         List.of(ProvenanceEntry.provenanceEntry(GHOST_E1, Option.none(), 0),
+                                                 ProvenanceEntry.provenanceEntry(GHOST_E3, Option.none(), 6)))
+                      .onFailure(cause -> fail(cause.message()));
+            } finally {
+                writer.close();
+            }
+
+            try (var files = Files.walk(walDir)) {
+                var sidecar = files.filter(path -> path.getFileName().toString().endsWith(".epochs")).findFirst().orElseThrow();
+
+                Files.createDirectories(sidecar.resolveSibling(sidecar.getFileName() + ".tmp").resolve("blocked"));
             }
         }
 
