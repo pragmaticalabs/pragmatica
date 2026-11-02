@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.cluster.fsm;
 import java.util.Map;
 
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState.Active;
+import org.pragmatica.aether.deployment.cluster.fsm.write.WriteSite;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
@@ -130,14 +131,14 @@ record StuckTransitionalRemediator(Active active) {
                  sliceKey.artifact(),
                  sliceKey.nodeId());
         sliceStates().remove(sliceKey);
-        active.issueUnloadCommand(sliceKey);
+        active.issueUnloadCommand(WriteSite.UNLOAD_STUCK_RESET, sliceKey);
     }
 
     private void forceRemoveStuckSlice(SliceNodeKey sliceKey, SliceState state) {
         transitionalStateTimestamps().remove(sliceKey);
         log.warn("Force-removing stuck {} slice {} on {} from DHT", state, sliceKey.artifact(), sliceKey.nodeId());
         sliceStates().remove(sliceKey);
-        active.removeNodeArtifactKey(sliceKey);
+        active.removeNodeArtifactKey(WriteSite.NODE_ARTIFACT_REMOVE_STUCK, sliceKey);
     }
 
     private Map<SliceNodeKey, SliceState> sliceStates() {

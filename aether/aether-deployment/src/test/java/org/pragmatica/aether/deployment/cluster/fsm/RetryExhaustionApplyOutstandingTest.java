@@ -149,7 +149,7 @@ class RetryExhaustionApplyOutstandingTest {
                 .isEqualTo(DeploymentOutcomeStatus.IN_PROGRESS.name());
 
         // The production path: every slice ACTIVE retires the blueprint via trackBlueprintSliceActive,
-        // whose terminal is recordSucceededOutcome -> submitBatch -> ctx.cluster().apply(...).
+        // whose terminal is recordSucceededOutcome -> termWriter.write(SUCCEEDED_OUTCOME, ...) -> the stub cluster's apply.
         leaderHarness.dispatch(new NodeArtifactPutReceived(replayOn(NODE_A, SLICE, activeInstance())));
         leaderHarness.dispatch(new NodeArtifactPutReceived(replayOn(SELF, SLICE, activeInstance())));
 

@@ -49,6 +49,8 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Vers
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.WorkerJoinReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeDrainingReported;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.WorkerLeaveReceived;
+import org.pragmatica.aether.deployment.cluster.fsm.write.TermWriter;
+import org.pragmatica.aether.deployment.cluster.fsm.write.WriteSite;
 import org.pragmatica.aether.deployment.schema.SchemaEvent.ActivationBlocked;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentFailed;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentStarted;
@@ -266,6 +268,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                   Set<NodeId> drainEvictionsInProgress,
                   AtomicInteger allocationIndex,
                   AtomicBoolean deactivated,
+                  TermWriter termWriter,
                   CancellableTask reconcileTimer) implements ClusterDeploymentState {
         private static final Logger log = LoggerFactory.getLogger(Active.class);
         private static final int MAX_RETRIES = 5;
@@ -731,9 +734,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             // acquire takes over, and a bare Remove of a `WitnessedRemoval` value is refused anyway.
             var commands = List.<KVCommand<AetherKey>> of(new KVCommand.Put<>(versionKey, updated));
 
-            ctx.cluster()
-               .apply(commands)
-               .onFailure(cause -> log.error("Failed to reset stalled migration for '{}': {}",
+            termWriter.write(WriteSite.SCHEMA_STALLED_RESET, () -> commands)
+                      .onFailure(cause -> log.error("Failed to reset stalled migration for '{}': {}",
                                              datasourceName,
                                              cause.message()));
         }
@@ -1067,7 +1069,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 consensusCommands.add(new KVCommand.Remove<>(SliceTargetKey.sliceTargetKey(artifact.base())));
             }
 
-            submitBatch(consensusCommands);
+            submitBatch(WriteSite.BLUEPRINT_DELETE_TARGET_REMOVE, consensusCommands);
             SharedScheduler.schedule(this::reconcile, timeSpan(5).seconds());
         }
 
@@ -1380,17 +1382,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                       .or(DEFAULT_SOURCE);
         }
 
-        private org.pragmatica.aether.deployment.cluster.HierarchyStateWriter hierarchyWriter() {
-            return org.pragmatica.aether.deployment.cluster.HierarchyStateWriter.hierarchyStateWriter(() -> ctx.kvStore()
-                                                                                                               .getTyped(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
-                                                                                                                         org.pragmatica.cluster.state.kvstore.LeaderValue.class)
-                                                                                                               .filter(value -> value.leader()
-                                                                                                                                     .equals(ctx.self()) && !deactivated.get()),
-                                                                                                      ctx.kvStore()::get,
-                                                                                                      commands -> ctx.cluster()
-                                                                                                                     .apply(commands));
-        }
-
         private void submitActivationDirective(NodeId targetNode, ActivationDirectiveValue directive) {
             var key = ActivationDirectiveKey.activationDirectiveKey(targetNode);
             var before = ctx.kvStore().get(key);
@@ -1401,8 +1392,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 return;
             }
 
-            hierarchyWriter().put(key, before, directive)
-                           .onFailure(cause -> log.warn("Activation refused for {}: {}",
+            termWriter.hierarchyPut(key, before, directive)
+                      .onFailure(cause -> log.warn("Activation refused for {}: {}",
                                                         targetNode,
                                                         cause.message()));
         }
@@ -1410,8 +1401,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private void submitActivationCommands(NodeId targetNode,
                                               String transactionId,
                                               List<KVCommand<AetherKey>> commands) {
-            ctx.cluster()
-               .<Object> apply(commands)
+            termWriter.<Object> write(WriteSite.WORKER_ASSIGNMENT, () -> commands)
                .onSuccess(results -> results.stream()
                                             .filter(KVCommand.TransactionResult.class::isInstance)
                                             .map(KVCommand.TransactionResult.class::cast)
@@ -1555,9 +1545,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                      artifactKeysToRemove.size(),
                      sliceKeysToRemove.size(),
                      nodeRouteCommands.size());
-            ctx.cluster()
-               .apply(consensusCommands)
-               .onFailure(cause -> log.error("Snapshot-delta cleanup for {} failed: {}",
+            termWriter.write(WriteSite.DECOMMISSION_FOOTPRINT, () -> consensusCommands)
+                      .onFailure(cause -> log.error("Snapshot-delta cleanup for {} failed: {}",
                                              departedNode,
                                              cause.message()));
         }
@@ -1656,7 +1645,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
             if (hasActiveReplacement) {
                 log.info("Drain eviction: replacement ACTIVE for {}, unloading from {}", artifact, drainingNode);
-                issueUnloadCommand(originalKey);
+                issueUnloadCommand(WriteSite.UNLOAD_DRAIN, originalKey);
                 SharedScheduler.schedule(() -> evictNextSliceFromNode(drainingNode), timeSpan(2).seconds());
             } else {
                 log.debug("Drain eviction: replacement not yet ACTIVE for {}, rechecking", artifact);
@@ -1806,7 +1795,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 ctx.pendingTargetPuts().put(artifact.base(), target);
             }
 
-            submitBatch(consensusCommands);
+            submitBatch(WriteSite.DEPLOY_TARGET_PUT, consensusCommands);
             trackInFlightBlueprint(expanded, value.attemptId(), previousExpanded);
         }
 
@@ -2115,7 +2104,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             sliceStates.remove(sliceKey);
             transitionalStateTimestamps.remove(sliceKey);
             reportedSchemaHolds.remove(sliceKey);
-            issueUnloadCommand(sliceKey);
+            issueUnloadCommand(WriteSite.UNLOAD_SLICE_FAILED, sliceKey);
             if (sliceNodeValue.fatal()) {
                 handleDeterministicFailure(sliceKey, failureReason);
             } else {
@@ -2249,9 +2238,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                     int attempt) {
             var command = List.<KVCommand<AetherKey>> of(bestEffortFailureCommand(blueprintId, artifact, failureReason));
 
-            ctx.cluster()
-               .apply(command)
-               .onSuccess(_ -> confirmBestEffortFailureOutcome(blueprintId, artifact, failureReason, attempt))
+            termWriter.write(WriteSite.BEST_EFFORT_FAILURE_OUTCOME, () -> command)
+                      .onSuccess(_ -> confirmBestEffortFailureOutcome(blueprintId, artifact, failureReason, attempt))
                .onFailure(cause -> handleBatchFailure(cause, command));
         }
 
@@ -2775,13 +2763,13 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 log.warn("No committed SliceTarget names {} — issuing UNLOAD instead of ACTIVATE for {} (#1068)",
                          sliceKey.artifact(),
                          sliceKey.nodeId());
-                issueUnloadCommand(sliceKey);
+                issueUnloadCommand(WriteSite.UNLOAD_NOT_PERMITTED, sliceKey);
 
                 return;
             }
 
             log.debug("Issuing ACTIVATE command for {}", sliceKey);
-            applyStateWrite(sliceKey, SliceState.ACTIVATE).onFailure(cause -> log.error("Failed to issue ACTIVATE command for {}: {}",
+            applyStateWrite(WriteSite.ACTIVATE, sliceKey, SliceState.ACTIVATE).onFailure(cause -> log.error("Failed to issue ACTIVATE command for {}: {}",
                                                                                         sliceKey,
                                                                                         cause.message()));
         }
@@ -2793,7 +2781,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             log.debug("Issuing LOAD command for {}", sliceKey);
             var timestamp = ctx.nowMs();
 
-            applyStateWrite(sliceKey, SliceState.LOAD).withSuccess(_ -> ctx.router()
+            applyStateWrite(WriteSite.LOAD, sliceKey, SliceState.LOAD).withSuccess(_ -> ctx.router()
                                                                            .route(DeploymentStarted.deploymentStarted(sliceKey.artifact(),
                                                                                                                       sliceKey.nodeId(),
                                                                                                                       timestamp)))
@@ -2803,14 +2791,14 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         // Fire-and-forget UNLOAD: callers (forEach(active::issueUnloadCommand), reconcile/eviction
         // sweeps) ignore the outcome; failure is logged inline. void is the contract.
         @Contract
-        void issueUnloadCommand(SliceNodeKey sliceKey) {
+        void issueUnloadCommand(WriteSite site, SliceNodeKey sliceKey) {
             log.debug("Issuing UNLOAD command for {}", sliceKey);
-            applyStateWrite(sliceKey, SliceState.UNLOAD).onFailure(cause -> log.error("Failed to issue UNLOAD command for {}: {}",
+            applyStateWrite(site, sliceKey, SliceState.UNLOAD).onFailure(cause -> log.error("Failed to issue UNLOAD command for {}: {}",
                                                                                       sliceKey,
                                                                                       cause.message()));
         }
 
-        private Promise<Unit> applyStateWrite(SliceNodeKey sliceKey, SliceState state) {
+        private Promise<Unit> applyStateWrite(WriteSite site, SliceNodeKey sliceKey, SliceState state) {
             var transitionedAt = state.isTransitional()
                                  ? ctx.nowMs()
                                  : 0L;
@@ -2819,32 +2807,30 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                    NodeArtifactValue.nodeArtifactValue(state,
                                                                                                        transitionedAt));
 
-            return ctx.cluster()
-                      .apply(List.of(putArtifact))
-                      .mapToUnit();
+            return termWriter.write(site, () -> List.of(putArtifact))
+                             .mapToUnit();
         }
 
         // Fire-and-forget KV removal: callers (forEach(this::removeNodeArtifactKey), cleanup sweeps)
         // ignore the outcome; failure is logged inline. void is the contract.
         @Contract
-        void removeNodeArtifactKey(SliceNodeKey sliceKey) {
+        void removeNodeArtifactKey(WriteSite site, SliceNodeKey sliceKey) {
             KVCommand<AetherKey> removeArtifact = new KVCommand.Remove<>(NodeArtifactKey.nodeArtifactKey(sliceKey.nodeId(),
                                                                                                          sliceKey.artifact()));
 
-            ctx.cluster()
-               .apply(List.of(removeArtifact))
-               .onFailure(cause -> log.error("Failed to remove node-artifact-key for {}: {}",
+            termWriter.write(site, () -> List.of(removeArtifact))
+                      .onFailure(cause -> log.error("Failed to remove node-artifact-key for {}: {}",
                                              sliceKey,
                                              cause.message()));
         }
 
         @Contract
-        void submitBatch(List<KVCommand<AetherKey>> commands) {
+        void submitBatch(WriteSite site, List<KVCommand<AetherKey>> commands) {
             if (commands.isEmpty()) {
                 return;
             }
 
-            ctx.cluster().apply(commands).onFailure(cause -> handleBatchFailure(cause, commands));
+            termWriter.write(site, () -> commands).onFailure(cause -> handleBatchFailure(cause, commands));
         }
 
         private void handleBatchFailure(Cause cause, List<KVCommand<AetherKey>> commands) {
@@ -2876,7 +2862,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
             sliceKeysToRemove.forEach(sliceStates::remove);
             sliceKeysToRemove.forEach(transitionalStateTimestamps::remove);
-            sliceKeysToRemove.forEach(this::removeNodeArtifactKey);
+            sliceKeysToRemove.forEach(key -> removeNodeArtifactKey(WriteSite.NODE_ARTIFACT_REMOVE_DEPARTED, key));
             var artifactKeysToRemove = findNodeArtifactKeysForNode(removedNode);
             var nodeRouteCommands = cleanupNodeRoutesForNode(removedNode);
             List<KVCommand<AetherKey>> consensusCommands = new ArrayList<>();
@@ -2898,7 +2884,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                      nodeRouteCommands.size(),
                      removedNode);
 
-            return applyFootprintRemoval(consensusCommands).flatMap(_ -> hierarchyWriter().commit(List.of(new KVCommand.Mutation<>(directiveKey,
+            return applyFootprintRemoval(consensusCommands).flatMap(_ -> termWriter.hierarchyCommit(List.of(new KVCommand.Mutation<>(directiveKey,
                                                                                                                                    previousDirective,
                                                                                                                                    Option.none())),
                                                                                                   List.of()))
@@ -2914,9 +2900,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private Promise<Unit> applyFootprintRemoval(List<KVCommand<AetherKey>> commands) {
             return commands.isEmpty()
                    ? Promise.unitPromise()
-                   : ctx.cluster()
-                        .<Object> apply(commands)
-                        .mapToUnit();
+                   : termWriter.<Object> write(WriteSite.DEPARTURE_FOOTPRINT, () -> commands)
+                               .mapToUnit();
         }
 
         private List<NodeArtifactKey> findNodeArtifactKeysForNode(NodeId nodeId) {
@@ -3060,7 +3045,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private void issueDeallocationCommands(Artifact artifact) {
-            getCurrentInstances(artifact).forEach(this::issueUnloadCommand);
+            getCurrentInstances(artifact).forEach(key -> issueUnloadCommand(WriteSite.UNLOAD_DEALLOCATION, key));
         }
 
         private void issueAllocationCommandsWithPlacement(Artifact artifact, int desiredInstances, String placement) {
@@ -3129,8 +3114,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                         CommunityValue.class,
                         (key, value) -> collectCommunityTransition(batch, key, value));
             if (!batch.isEmpty()) {
-                ctx.cluster()
-                   .<Object> apply(batch)
+                termWriter.<Object> write(WriteSite.COMMUNITY_TRANSITIONS, () -> batch)
                    .onSuccess(results -> results.stream()
                                                 .filter(KVCommand.TransactionResult.class::isInstance)
                                                 .map(KVCommand.TransactionResult.class::cast)
@@ -3345,7 +3329,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                      donorLoad,
                      target,
                      targetLoad);
-            issueUnloadCommand(donorKey);
+            issueUnloadCommand(WriteSite.UNLOAD_REBALANCE_DONOR, donorKey);
             tryAllocate(artifact, target);
 
             return true;
@@ -3419,9 +3403,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var value = DeploymentOutcomeValue.succeeded(ctx.nowMs(), nextOutcomeVersion(key), attemptId);
             var command = List.<KVCommand<AetherKey>> of(new KVCommand.Put<>(key, value));
 
-            ctx.cluster()
-               .apply(command)
-               .onSuccess(_ -> confirmSucceededOutcome(blueprintId, attemptId, attempt))
+            termWriter.write(WriteSite.SUCCEEDED_OUTCOME, () -> command)
+                      .onSuccess(_ -> confirmSucceededOutcome(blueprintId, attemptId, attempt))
                .onFailure(cause -> handleSucceededOutcomeWriteFailure(blueprintId, cause, command));
         }
 
@@ -3627,9 +3610,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             log.warn("ALL_OR_NOTHING: no committed leader record to fence the rollback of blueprint {} with — applying it"
                     + " unfenced, so a publish of the same id racing it can be undone by it",
                      inflight.id().asString());
-            ctx.cluster()
-               .apply(batch)
-               .onSuccess(_ -> onLanded.run())
+            termWriter.write(WriteSite.ROLLBACK_UNFENCED, () -> batch)
+                      .onSuccess(_ -> onLanded.run())
                .onFailure(cause -> abandonRollback(inflight, cause, batch, onAbandoned));
 
             return Unit.unit();
@@ -3666,9 +3648,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                                            .toList());
             var submitted = List.<KVCommand<AetherKey>> of(transaction);
 
-            ctx.cluster()
-               .apply(submitted)
-               .onSuccess(_ -> confirmRollback(inflight, rolledBack, commands, onLanded, onAbandoned, attempt))
+            termWriter.write(WriteSite.ROLLBACK_FENCED, () -> submitted)
+                      .onSuccess(_ -> confirmRollback(inflight, rolledBack, commands, onLanded, onAbandoned, attempt))
                .onFailure(cause -> abandonRollback(inflight, cause, submitted, onAbandoned));
 
             return Unit.unit();
