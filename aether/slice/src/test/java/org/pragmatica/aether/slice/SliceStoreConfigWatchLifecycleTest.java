@@ -42,6 +42,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -50,6 +51,7 @@ import static org.awaitility.Awaitility.await;
 /// #774, the subscription lifecycle through a REAL `SliceStore` loading real slice jars: a subscription belongs to
 /// the slice ARTIFACT that declares it, lives from the factory to that artifact's own unload, and is released by
 /// nothing else. The feed here counts subscriptions per owner and releases them on `releaseAll`, as the node's does.
+@Timeout(120)
 class SliceStoreConfigWatchLifecycleTest {
     private static final String DEP_CLASS = "org.pragmatica.aether.slice.dependency.WatchingDepFactory";
     private static final String CODEC_THROWS_CLASS = "org.pragmatica.aether.slice.dependency.WatchingCodecThrowsFactory";
@@ -60,6 +62,7 @@ class SliceStoreConfigWatchLifecycleTest {
     private static final Artifact D = artifact("org.example:d:1.0.0");
     private static final Artifact CODEC_THROWS = artifact("org.example:codec-throws:1.0.0");
     private static final Artifact CODEC_THROWS_DEP = artifact("org.example:codec-throws-dep:1.0.0");
+    private static final int FAILED_LOAD_ATTEMPTS = 2_000;
     private static final SliceInvokerFacade STUB_INVOKER = new SliceInvokerFacade() {
         @Override
         public <R, T> Result<MethodHandle<R, T>> methodHandle(String artifact, String method, TypeToken<T> requestType, TypeToken<R> responseType) {
@@ -260,6 +263,38 @@ class SliceStoreConfigWatchLifecycleTest {
 
         assertThat(later.isSuccess()).as("a store with no codec scoping loads the same artifact: nothing was poisoned").isTrue();
         assertThat(store.entries()).containsKey(CODEC_THROWS);
+    }
+
+    /// #2571: a failed load has left the map by the time its failure is visible, so a retry right after it starts
+    /// a new load. The eviction used to be an independent action that could run after the caller had resumed:
+    /// [#aThrowingCodecOfAnAlreadyRegisteredSlice_isAFailedLoad_notAThrowOutOfComputeIfAbsent_andALaterLoadWorks]
+    /// failed in CI on exactly this check, with the key present when checked and gone when printed. Repeated
+    /// because the old order lost only some of the races.
+    @Test
+    void aFailedLoad_hasLeftTheMap_byTheTimeItsFailureIsSeen() {
+        var failing = storeOver(art -> Causes.cause("no location for " + art.asString()).promise());
+
+        for (int attempt = 0; attempt < FAILED_LOAD_ATTEMPTS; attempt++) {
+            var loaded = failing.loadSlice(X).await();
+
+            assertThat(loaded.isFailure()).as("control: attempt %d fails", attempt).isTrue();
+            assertThat(failing.entries()).as("attempt %d: no failed entry once the failure is seen", attempt)
+                                         .doesNotContainKey(X);
+        }
+    }
+
+    private sliceStore storeOver(Repository source) {
+        return (sliceStore) SliceStore.sliceStore(registry,
+                                                  List.of(source),
+                                                  sharedLoader,
+                                                  STUB_INVOKER,
+                                                  noResources(),
+                                                  SliceActionConfig.sliceActionConfig(),
+                                                  Option.empty(),
+                                                  Option.empty(),
+                                                  Option.empty(),
+                                                  SliceLoadingContext.noResourceOverlay(),
+                                                  Option.some(feed));
     }
 
     private sliceStore storeWithNodeCodec() {

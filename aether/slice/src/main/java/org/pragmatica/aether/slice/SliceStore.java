@@ -280,9 +280,22 @@ public interface SliceStore {
             // Failed-load eviction is attached HERE, after computeIfAbsent returns — attaching it
             // inside the mapping function would fire synchronously-failed callbacks reentrantly
             // on the same key (the reason the old code needed a CompletableFuture.runAsync hop).
-            return entries.computeIfAbsent(artifact, this::startLoading)
-                          .onFailure(_ -> entries.remove(artifact))
+            var loading = entries.computeIfAbsent(artifact, this::startLoading);
+
+            return loading.fold(result -> evictIfFailed(artifact, loading, result))
                           .map(entry -> (LoadedSlice) entry);
+        }
+
+        /// #2571: the eviction is a DEPENDENT step, so a caller sees the failure only after the failed entry has left
+        /// the map. As an independent `onFailure` action it ran asynchronously, and the caller's own continuation
+        /// could run first: a retry right after the failure found the failed promise still cached. Only this load's
+        /// promise is removed, never a newer load's entry.
+        private Promise<LoadedSliceEntry> evictIfFailed(Artifact artifact,
+                                                        Promise<LoadedSliceEntry> loading,
+                                                        Result<LoadedSliceEntry> result) {
+            result.onFailure(_ -> entries.remove(artifact, loading));
+
+            return result.async();
         }
 
         private Promise<LoadedSliceEntry> startLoading(Artifact artifact) {
