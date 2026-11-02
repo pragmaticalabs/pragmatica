@@ -66,6 +66,7 @@ class DhtReplicationReportDedupeTest {
                                                                                                           _ -> false,
                                                                                                           _ -> {},
                                                                                                           System::currentTimeMillis,
+                                                                                                          () -> true,
                                                                                                           () -> true));
         commitLeader();
     }

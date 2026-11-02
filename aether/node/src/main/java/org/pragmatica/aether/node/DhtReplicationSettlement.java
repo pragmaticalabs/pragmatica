@@ -87,6 +87,13 @@ public interface DhtReplicationSettlement {
     /// something is holding the stricter read quorum in place that an operator should look at: a member alive enough
     /// to stay counted but not reporting, or a core whose catch-up cannot complete.
     long OVERDUE_AFTER_MS = TimeUnit.MINUTES.toMillis(5);
+    /// #2553: a node whose own store no longer holds its report, while a change is open, files it again no sooner than this
+    /// after its last filing; each further re-file waits twice as long, up to [#REFILE_BACKOFF_MAX_MS]. Seeing the report
+    /// present once the interval has passed resets it: the leader drops the report of a member it holds `Dead` on the commit
+    /// of the put itself, a tick in between can glimpse it, and that glimpse must not reset it. These are guesses, not
+    /// measurements: 1 s is far above the 100 ms retry tick (no churn at the tick) and below the 5 min overdue mark; 60 s bounds a node the leader keeps dropping to two commits a minute.
+    long REFILE_BACKOFF_MIN_MS = 1_000L;
+    long REFILE_BACKOFF_MAX_MS = 60_000L;
 
     String UNSETTLED_REASON = "unsettled for longer than " + TimeUnit.MILLISECONDS.toMinutes(OVERDUE_AFTER_MS)
                             + " minutes";
@@ -352,6 +359,12 @@ public interface DhtReplicationSettlement {
     @Contract
     void report();
 
+    /// How many times this node filed its report AGAIN because its own store no longer held it while a change was open
+    /// (#2553). Zero for a node whose report was never dropped; a node the leader keeps dropping shows a slow trickle.
+    default long refileCount() {
+        return 0L;
+    }
+
     /// The inputs of a running settlement. `submit` applies commands through this node's cluster path (a worker
     /// forwards to a core). `departed` answers whether the leader's membership view holds a member `Dead`.
     record Inputs(NodeId self,
@@ -365,7 +378,8 @@ public interface DhtReplicationSettlement {
                   Predicate<NodeId> departed,
                   Consumer<OperationalEvent> events,
                   LongSupplier clock,
-                  BooleanSupplier consensusCaughtUp) {}
+                  BooleanSupplier consensusCaughtUp,
+                  BooleanSupplier replicaReady) {}
 
     static DhtReplicationSettlement dhtReplicationSettlement(Inputs inputs) {
         record running(Inputs inputs,
@@ -374,7 +388,10 @@ public interface DhtReplicationSettlement {
                        AtomicReference<Option<DhtReplicationReportValue>> filed,
                        AtomicReference<Option<DhtReplicationReportValue>> filing,
                        AtomicLong workerOpenChange,
-                       AtomicBoolean restored) implements DhtReplicationSettlement {
+                       AtomicBoolean restored,
+                       AtomicLong notBefore,
+                       AtomicLong backoffMs,
+                       AtomicLong refiles) implements DhtReplicationSettlement {
             @Override
             @Contract
             public void applied(long configVersion) {
@@ -477,6 +494,8 @@ public interface DhtReplicationSettlement {
                 var key = DhtReplicationReportKey.dhtReplicationReportKey(inputs.self());
 
                 filing.set(Option.some(desired));
+                notBefore.accumulateAndGet(inputs.clock().getAsLong() + REFILE_BACKOFF_MIN_MS,
+                                           Math::max);
                 inputs.submit()
                       .apply(List.of(new KVCommand.Put<>(key, desired)))
                       .withSuccess(_ -> filed.set(Option.some(desired)))
@@ -485,7 +504,9 @@ public interface DhtReplicationSettlement {
                                                       cause.message()));
             }
 
-            /// What this node last filed, not the store: a worker never sees report keys (core-only scope).
+            /// What this node filed, checked against its own store: the leader drops the report of a member it holds `Dead`, and
+            /// a live process that rejoins would otherwise go on believing it filed (#2553). A core reads its KV; a worker reads
+            /// its replica, whose filter includes report keys, and only while the replica is ready.
             private boolean alreadyFiled(DhtReplicationReportValue desired) {
                 return filing.get()
                              .filter(desired::equals)
@@ -493,7 +514,60 @@ public interface DhtReplicationSettlement {
                                                   .filter(last -> DhtReplicationSettlement.readsAsFiled(last,
                                                                                                         desired,
                                                                                                         openChangeVersion()))
+                                                  .filter(_ -> isHeldOrNotDue())
                                                   .isPresent();
+            }
+
+            /// True while the store does not count (a worker whose replica is not ready), or while it holds this node's report (which,
+            /// once the interval since the last filing has passed, also resets the backoff), or while nothing waits for it, or while
+            /// that interval has not passed. False decides a re-file: it counts it and arms the next, doubled, interval. Concurrent
+            /// callers decide one re-file: only the one that moves the interval it read files.
+            private boolean isHeldOrNotDue() {
+                if (!storeCounts()) {
+                    return true;
+                }
+
+                var now = inputs.clock().getAsLong();
+                var due = notBefore.get();
+
+                if (isHeldInStore()) {
+                    if (now >= due) {
+                        backoffMs.set(REFILE_BACKOFF_MIN_MS);
+                    }
+
+                    return true;
+                }
+
+                if (openChangeVersion() <= DHTNode.NO_CHANGE || now < due) {
+                    return true;
+                }
+
+                var delay = backoffMs.get();
+
+                if (!notBefore.compareAndSet(due, now + delay)) {
+                    return true;
+                }
+
+                backoffMs.set(Math.min(delay * 2, REFILE_BACKOFF_MAX_MS));
+                refiles.incrementAndGet();
+
+                return false;
+            }
+
+            private boolean storeCounts() {
+                return inputs.replica() || inputs.replicaReady()
+                                                 .getAsBoolean();
+            }
+
+            private boolean isHeldInStore() {
+                return inputs.kvStore()
+                             .get(DhtReplicationReportKey.dhtReplicationReportKey(inputs.self()))
+                             .isPresent();
+            }
+
+            @Override
+            public long refileCount() {
+                return refiles.get();
             }
 
             /// The version of the unsettled change this node knows: a core reads the record, a worker also is told by its projection.
@@ -585,6 +659,9 @@ public interface DhtReplicationSettlement {
                            new AtomicReference<>(Option.none()),
                            new AtomicReference<>(Option.none()),
                            new AtomicLong(DHTNode.NO_CHANGE),
-                           new AtomicBoolean(false));
+                           new AtomicBoolean(false),
+                           new AtomicLong(0L),
+                           new AtomicLong(REFILE_BACKOFF_MIN_MS),
+                           new AtomicLong(0L));
     }
 }
