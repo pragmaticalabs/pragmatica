@@ -125,7 +125,7 @@ class DistributedDHTClientQuorumGuardTest {
                .onFailure(cause -> fail("Expected success: " + cause.message()));
     }
 
-    /// Network stub with a configurable `livePeers()` set. `sendOutcome` reports `Sent` and the
+    /// Network stub with a configurable `livePeers()` set. `send` reports `Sent` and the
     /// request is NEVER answered — so any op that is allowed to dispatch would hang to the per-op
     /// timeout. The fast-fail guard must therefore prevent the dispatch entirely.
     private static final class SilentNetwork implements DHTNetwork {

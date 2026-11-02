@@ -24,7 +24,7 @@ import org.pragmatica.lang.Promise;
 
 
 /// Test [DHTNetwork] that hands every message to a sink and reports it accepted ([WriteOutcome.Sent]): the answer
-/// the removed `sendOutcome` default gave for a sink-only network (#2583 P1).
+/// the removed outcome default gave for a sink-only network (#2583 P1).
 public sealed interface AcceptingNetwork {
     static DHTNetwork accepting(BiConsumer<NodeId, ProtocolMessage> sink) {
         return (target, message) -> accept(sink, target, message);
