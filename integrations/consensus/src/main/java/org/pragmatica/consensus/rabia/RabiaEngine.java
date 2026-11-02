@@ -62,6 +62,7 @@ import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusPassive;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.NullReturn;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.Option;
@@ -810,6 +811,9 @@ public class RabiaEngine<C extends Command> {
 
     /// #2011: committed (batch id, correlation ids), so a delivery that trails its slot's Decision is not re-queued.
     private final CommittedBatchLedger committedLedger = new CommittedBatchLedger(CommittedBatchLedger.DEFAULT_CAPACITY);
+    /// #2045: slots decided in a row without applying a batch while this voter held pending batches. A level that climbs
+    /// without bound is the empty-slot livelock: the voters' first choices differ and no batch reaches a quorum.
+    private final AtomicLong consecutiveEmptySlotsWithPending = new AtomicLong();
 
     private final Map<NodeId, SyncResponse<C>> syncResponses = new ConcurrentHashMap<>();
     /// Whether a sync round is open: a [SyncRequest] has gone out and the engine has not yet adopted a state from the answers. A
@@ -1071,6 +1075,7 @@ public class RabiaEngine<C extends Command> {
         this.participationMarker = config.participationMarker().or(ParticipationMarker::unknown);
         this.metrics = Option.option(metrics).or(ConsensusMetrics.noop());
         this.metrics.registerOldestPendingBatchAgeProbe(self, this::oldestPendingBatchAgeMs);
+        this.metrics.registerProposalConvergenceProbes(self, consecutiveEmptySlotsWithPending::get, this::firstChoiceBatchId);
         this.activationGated = activationGated;
         this.activationAuthorized = !activationGated;
         this.persistence = persistence;
@@ -1802,6 +1807,17 @@ public class RabiaEngine<C extends Command> {
                                 .orElse(0L);
     }
 
+    /// #2045: the batch this voter proposes when it opens or joins a slot ([#nextProposal]), none when nothing is pending.
+    Option<String> firstChoiceBatchId() {
+        return Option.option(pendingBatches.firstEntry())
+                     .map(entry -> entry.getKey()
+                                        .id());
+    }
+
+    long consecutiveEmptySlotsWithPending() {
+        return consecutiveEmptySlotsWithPending.get();
+    }
+
     @Contract
     @MessageReceiver
     public void handleSubmit(SubmitCommands<C> submitCommands) {
@@ -2145,6 +2161,27 @@ public class RabiaEngine<C extends Command> {
         safeExecute(() -> doHandleNewBatch((Batch<C>) newBatch.batch()));
     }
 
+    @Contract
+    @MessageReceiver
+    public void handleBatchCommitted(BatchCommitted batchCommitted) {
+        safeExecute(() -> doHandleBatchCommitted(batchCommitted));
+    }
+
+    /// #2045 limit 2: a peer's ledger holds these correlation ids as committed under this batch id, in a slot this voter
+    /// did not apply (a snapshot restore skipped it). Record them, so the batch is refused here as everywhere else, and
+    /// drop them from the queue, so this voter stops proposing a batch the others will never learn. A local caller
+    /// waiting on one of them cannot be given the slot's result, which this voter never computed.
+    private void doHandleBatchCommitted(BatchCommitted batchCommitted) {
+        if (authorityFailure.isPresent() || !isTrustedPeer(batchCommitted.sender())) {
+            return;
+        }
+
+        committedLedger.record(batchCommitted.batchId(), batchCommitted.correlationIds());
+        stripSatisfied(batchCommitted.batchId(), batchCommitted.correlationIds());
+        failCorrelations(batchCommitted.correlationIds(),
+                         new ConsensusError.CommittedOutcomeUnknown(self, batchCommitted.batchId().id()));
+    }
+
     private void doHandleNewBatch(Batch<C> incoming) {
         // #2011: a NewBatch trailing its slot's Decision must not put the committed batch back in the queue.
         committedLedger.unseen(incoming).onPresent(this::admitRemoteBatch);
@@ -2158,6 +2195,16 @@ public class RabiaEngine<C extends Command> {
         } else {
             triggerPhaseIfNeeded();
         }
+    }
+
+    /// #2045 limit 2: a proposal carrying correlation ids this voter's ledger holds as committed is answered with
+    /// `BatchCommitted`, so a proposer that skipped the committing slot drops them instead of proposing them forever.
+    private void learnProposal(NodeId proposer, Batch<C> proposed) {
+        committedLedger.committedOf(proposed)
+                       .filter(_ -> !proposer.equals(self))
+                       .onPresent(committed -> network.send(proposer,
+                                                            new BatchCommitted(self, proposed.id(), committed)));
+        learnProposedBatch(proposed);
     }
 
     /// Proposal retransmission must not duplicate request correlations in the pending queue.
@@ -2848,7 +2895,11 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void failPendingCorrelations(Batch<C> batch, Cause cause) {
-        for (var correlationId : batch.correlationIds()) {
+        failCorrelations(batch.correlationIds(), cause);
+    }
+
+    private void failCorrelations(List<CorrelationId> correlationIds, Cause cause) {
+        for (var correlationId : correlationIds) {
             Option.option(correlationMap.remove(correlationId)).onPresent(promise -> promise.fail(cause));
         }
     }
@@ -3550,7 +3601,7 @@ public class RabiaEngine<C extends Command> {
         // heads survive every V0 slot and fair ballot delivery cannot make application progress.
         // The past-slot guard above prevents delayed proposals from resurrecting committed work.
         if (propose.value().isNotEmpty()) {
-            learnProposedBatch(propose.value());
+            learnProposal(propose.sender(), propose.value());
         }
 
         var phaseData = getOrCreatePhaseData(propose.phase());
@@ -3924,6 +3975,8 @@ public class RabiaEngine<C extends Command> {
                 commitChanges(phaseData, decision);
             }
 
+            noteSlotProgress(decision);
+
             phaseData.completedDecision(decision);
             if (decision.stateValue() == StateValue.V1) {
                 decision.reconfiguration().onPresent(command -> applyReconfiguration(phaseData.phase(), command));
@@ -3933,28 +3986,54 @@ public class RabiaEngine<C extends Command> {
         }
     }
 
+    /// #2045: a slot satisfies exactly the correlation ids its Decision carries. Ids this voter merged locally into the
+    /// same batch id are separate submissions: they stay pending, are proposed and applied in a slot of their own, and
+    /// complete their own callers there. Recording only the Decision's ids makes the ledger a function of the applied log,
+    /// identical on every replica, so no late batch is refused on some voters and re-queued on others.
     @SuppressWarnings("unchecked")
     private void commitChanges(PhaseData<C> phaseData, Decision<C> decision) {
         log.trace("Node {} applies decision {}", self, decision);
         var results = stateMachine.processCommitted(decision.value(),
                                                     decision.phase().successor().value());
-        // Get the batch from pendingBatches BEFORE removing - this has all merged correlationIds.
-        // The decision.value() may have partial IDs if the proposer hadn't received all batches yet.
-        var localBatch = Option.option(pendingBatches.remove(decision.value().id()));
+        var decided = decision.value().correlationIds();
 
-        pendingSinceNanos.remove(decision.value().id());
-        metrics.updatePendingBatches(self, pendingBatches.size());
-        // Use correlationIds from our local pendingBatches (fully merged) rather than
-        // from decision.value() (which may have partial IDs from early proposals)
-        var correlationIds = localBatch.map(Batch::correlationIds).or(() -> decision.value()
-                                                                                    .correlationIds());
-
-        committedLedger.record(decision.value().id(),
-                               correlationIds);
-        committedLedger.record(decision.value().id(),
-                               decision.value().correlationIds());
-        for (var correlationId : correlationIds) {
+        stripSatisfied(decision.value().id(), decided);
+        committedLedger.record(decision.value().id(), decided);
+        for (var correlationId : decided) {
             Option.option(correlationMap.remove(correlationId)).onPresent(promise -> promise.succeed(results));
+        }
+    }
+
+    /// Removes `satisfied` from the pending batch `batchId`; the batch leaves the queue only when no correlation id is left.
+    private void stripSatisfied(Id batchId, List<CorrelationId> satisfied) {
+        pendingBatches.computeIfPresent(batchId, (_, local) -> withoutCorrelations(local, satisfied));
+        if (!pendingBatches.containsKey(batchId)) {
+            pendingSinceNanos.remove(batchId);
+        }
+
+        metrics.updatePendingBatches(self, pendingBatches.size());
+    }
+
+    /// `computeIfPresent` removes the entry when the remapping returns null: nothing of the batch is left to commit.
+    @NullReturn
+    private static <C extends Command> Batch<C> withoutCorrelations(Batch<C> local, List<CorrelationId> satisfied) {
+        var remaining = local.correlationIds()
+                             .stream()
+                             .filter(correlationId -> !satisfied.contains(correlationId))
+                             .toList();
+
+        return remaining.isEmpty()
+               ? null
+               : new Batch<>(local.id(), remaining, local.timestamp(), local.commands());
+    }
+
+    /// #2045: counts slots decided in a row without applying a batch while something is pending; any applied batch, or an
+    /// empty queue, resets it.
+    private void noteSlotProgress(Decision<C> decision) {
+        if (decision.stateValue() == StateValue.V1 && decision.value().isNotEmpty() || pendingBatches.isEmpty()) {
+            consecutiveEmptySlotsWithPending.set(0);
+        } else {
+            consecutiveEmptySlotsWithPending.incrementAndGet();
         }
     }
 

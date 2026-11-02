@@ -6,6 +6,7 @@ package org.pragmatica.aether.metrics.consensus;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.rabia.Phase;
 import org.pragmatica.consensus.rabia.StateValue;
+import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.Test;
 
@@ -95,7 +96,8 @@ class RabiaMetricsCollectorTest {
                                          "consensus_sync_failure_total",
                                          "consensus_pending_batches",
                                          "consensus_oldest_pending_batch_age_ms",
-                                         "consensus_apply_timeouts_total");
+                                         "consensus_apply_timeouts_total",
+                                         "consensus_consecutive_empty_slots_with_pending");
         assertThat(map.get("consensus_vote_round1_total").longValue()).isEqualTo(1);
         assertThat(map.get("consensus_pending_batches").intValue()).isEqualTo(3);
     }
@@ -123,6 +125,27 @@ class RabiaMetricsCollectorTest {
             .as("a level is read, never reset")
             .isEqualTo(20_000L);
         assertThat(collector.snapshot().oldestPendingBatchAgeMs()).isEqualTo(20_000L);
+    }
+
+    /// #2045: both convergence probes are read when the snapshot is taken, and are levels that a reset never touches; the
+    /// sink starts with probes that read 0 and none.
+    @Test
+    void proposalConvergenceProbes_areReadAtSnapshotTime_andNeverReset() {
+        var collector = RabiaMetricsCollector.rabiaMetricsCollector();
+        var emptySlots = new java.util.concurrent.atomic.AtomicLong(0L);
+
+        assertThat(collector.snapshot().consecutiveEmptySlotsWithPending()).as("no probe registered yet").isZero();
+        assertThat(collector.snapshot().firstChoiceBatchId()).isEqualTo(Option.none());
+
+        collector.registerProposalConvergenceProbes(NODE, emptySlots::get, () -> Option.some("batch-x"));
+        emptySlots.set(1_867L);
+
+        assertThat(collector.snapshot().consecutiveEmptySlotsWithPending()).isEqualTo(1_867L);
+        assertThat(collector.snapshot().counterMap().get("consensus_consecutive_empty_slots_with_pending").longValue())
+            .as("the Prometheus vocabulary carries the same level")
+            .isEqualTo(1_867L);
+        assertThat(collector.snapshotAndReset().firstChoiceBatchId()).isEqualTo(Option.some("batch-x"));
+        assertThat(collector.snapshot().consecutiveEmptySlotsWithPending()).as("a level is read, never reset").isEqualTo(1_867L);
     }
 
     @Test

@@ -724,7 +724,11 @@ public interface SystemTags {
         pin(table, 2198, "org.pragmatica.aether.slice.kvstore.AetherValue.CapacityFacet");
         pin(table, 2199, "org.pragmatica.aether.slice.kvstore.AetherValue.CapacityPhase");
         pin(table, 2200, "org.pragmatica.aether.slice.kvstore.AetherValue.FreedCause");
-        // ---- 2201..16383 RESERVED ----
+        // #2045: the answer to a proposal of an already-committed batch. Consensus-prefixed but exempt from the one-byte window
+        // like SyncRejected: it is sent only when a voter's ledger refuses a proposal, which is failure-bounded traffic.
+        // 2201 was free on every origin branch and every PR head (1,291 refs), scanned 2026-11-02.
+        pin(table, 2201, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.BatchCommitted");
+        // ---- 2202..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);

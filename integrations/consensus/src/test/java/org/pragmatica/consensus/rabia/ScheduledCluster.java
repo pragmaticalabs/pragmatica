@@ -285,6 +285,7 @@ final class ScheduledCluster {
             case ReconfigurationRequest message -> engine.reconfigurationRequest(message);
             case GenesisAnnouncement message -> engine.genesisAnnouncement(message);
             case SyncResponse<?> message -> engine.processSyncResponse((SyncResponse<TestCommand>) message);
+            case BatchCommitted message -> engine.handleBatchCommitted(message);
             default -> {}
         }
     }

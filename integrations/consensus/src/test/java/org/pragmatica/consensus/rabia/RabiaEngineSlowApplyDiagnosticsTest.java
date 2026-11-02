@@ -21,6 +21,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -32,6 +33,7 @@ import org.pragmatica.consensus.rabia.RabiaEngineApplyContainmentTest.TestCluste
 import org.pragmatica.consensus.rabia.RabiaEngineApplyContainmentTest.TestCommand;
 import org.pragmatica.consensus.rabia.RabiaEngineApplyContainmentTest.TestTopologyManager;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
+import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
@@ -232,6 +234,48 @@ class RabiaEngineSlowApplyDiagnosticsTest {
             .isGreaterThanOrEqualTo(200L);
     }
 
+    /// #2045: the engine hands the sink its proposal-convergence probes at construction; the first choice is the batch it
+    /// would propose, and the counter reads 0 while slots apply.
+    @Test
+    void theProposalConvergenceProbes_areRegisteredAtConstruction_andReadTheEngine() throws Exception {
+        engine(ProtocolConfig.testConfig());
+
+        assertThat(metrics.firstChoiceBatchId.get()).as("registered at construction").isNotNull();
+        assertThat(metrics.consecutiveEmptySlots.get().getAsLong()).isZero();
+        assertThat(metrics.firstChoiceBatchId.get().get()).as("nothing pending").isEqualTo(Option.none());
+
+        var batch = Batch.create(SERIALIZER, List.of(new TestCommand("first-choice")));
+        engine.handleNewBatch(new RabiaProtocolMessage.Asynchronous.NewBatch<>(NODE_2, batch));
+        awaitIdle();
+
+        assertThat(metrics.firstChoiceBatchId.get().get()).isEqualTo(Option.some(batch.id().id()));
+    }
+
+    /// #2045: a Decision strips only its own correlation ids; the leftover keeps the batch's local arrival time, and the
+    /// queue gauge follows each strip, down to 0 once the leftover commits too.
+    @Test
+    void aLeftoverAfterACommit_keepsItsArrivalAge_andTheQueueGaugeFollows() throws Exception {
+        engine(ProtocolConfig.testConfig());
+        activate();
+        var c1 = Batch.create(SERIALIZER, List.of(new TestCommand("two-submissions")));
+        var c2 = Batch.create(SERIALIZER, List.of(new TestCommand("two-submissions")));
+        engine.handleNewBatch(new RabiaProtocolMessage.Asynchronous.NewBatch<>(NODE_2, c1));
+        engine.handleNewBatch(new RabiaProtocolMessage.Asynchronous.NewBatch<>(NODE_3, c2));
+        Thread.sleep(300);
+
+        engine.processDecision(new RabiaProtocolMessage.Synchronous.Decision<>(NODE_2, Phase.ZERO, StateValue.V1, c1));
+        awaitIdle();
+
+        assertThat(metrics.pendingBatches.get()).as("c2 is still a request").isEqualTo(1);
+        assertThat(metrics.oldestPendingAgeMs.get().getAsLong()).as("the leftover keeps its arrival time").isGreaterThanOrEqualTo(250L);
+
+        engine.processDecision(new RabiaProtocolMessage.Synchronous.Decision<>(NODE_2, new Phase(1), StateValue.V1, c2));
+        awaitIdle();
+
+        assertThat(metrics.pendingBatches.get()).isZero();
+        assertThat(metrics.oldestPendingAgeMs.get().getAsLong()).as("nothing pending").isZero();
+    }
+
     @Test
     void withTwoBatchesPending_theAgeIsTheOlderOnes() throws Exception {
         engine(ProtocolConfig.testConfig());
@@ -415,7 +459,17 @@ class RabiaEngineSlowApplyDiagnosticsTest {
 
     private static final class RecordingMetrics implements ConsensusMetrics {
         final AtomicReference<LongSupplier> oldestPendingAgeMs = new AtomicReference<>();
+        final AtomicReference<LongSupplier> consecutiveEmptySlots = new AtomicReference<>();
+        final AtomicReference<Supplier<Option<String>>> firstChoiceBatchId = new AtomicReference<>();
         final AtomicInteger applyTimeouts = new AtomicInteger();
+        final AtomicInteger pendingBatches = new AtomicInteger(-1);
+
+        @Override public void registerProposalConvergenceProbes(NodeId nodeId,
+                                                                LongSupplier consecutiveEmptySlotsWithPending,
+                                                                Supplier<Option<String>> firstChoice) {
+            consecutiveEmptySlots.set(consecutiveEmptySlotsWithPending);
+            firstChoiceBatchId.set(firstChoice);
+        }
 
         @Override public void recordApplyTimeout(NodeId nodeId) {
             applyTimeouts.incrementAndGet();
@@ -435,6 +489,8 @@ class RabiaEngineSlowApplyDiagnosticsTest {
 
         @Override public void recordSyncAttempt(NodeId nodeId, boolean success) {}
 
-        @Override public void updatePendingBatches(NodeId nodeId, int count) {}
+        @Override public void updatePendingBatches(NodeId nodeId, int count) {
+            pendingBatches.set(count);
+        }
     }
 }
