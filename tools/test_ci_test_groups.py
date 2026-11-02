@@ -131,6 +131,14 @@ class CiTestGroupsTest(unittest.TestCase):
         self.assertEqual(groups.module_seconds(reports), {"agg/b": 3.0})
 
 
+    def test_module_seconds_exits_naming_a_report_without_a_time(self):
+        reports = self.root / "reports"
+        write(reports / "agg/b/target/surefire-reports/TEST-x.ATest.xml", '<testsuite name="x.ATest" tests="1"/>')
+        with self.assertRaises(SystemExit) as raised:
+            groups.module_seconds(reports)
+        self.assertIn("TEST-x.ATest.xml: <testsuite> has no time attribute", str(raised.exception))
+
+
 class RepositoryGroupsTest(unittest.TestCase):
     def test_the_repository_grouping_is_sound(self):
         # guards the guard: the real reactor has over a hundred modules with tests, and node among them

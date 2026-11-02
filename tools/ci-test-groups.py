@@ -139,7 +139,10 @@ def module_seconds(report_dir):
         if "/target/" not in rel:
             continue
         module = rel.split("/target/")[0]
-        seconds[module] = seconds.get(module, 0.0) + float(ET.parse(report).getroot().get("time").replace(",", ""))
+        time = ET.parse(report).getroot().get("time")
+        if time is None:
+            sys.exit(f"{report}: <testsuite> has no time attribute; refusing to weigh its module at 0 s")
+        seconds[module] = seconds.get(module, 0.0) + float(time.replace(",", ""))
     return seconds
 
 
