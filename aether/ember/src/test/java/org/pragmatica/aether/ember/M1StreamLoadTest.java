@@ -122,6 +122,7 @@ class M1StreamLoadTest {
         var started = System.nanoTime();
 
         instruments.clear();
+        M1Instrument.ALL.clear();
         emit("{\"kind\":\"s7-arm\"," + header(arm) + ",\"jarSha256\":\"" + jarSha + "\",\"cores\":" + CORES + ",\"workers\":" + WORKERS + ",\"t\":" + T_SECONDS + "}");
         startCluster();
         try {
