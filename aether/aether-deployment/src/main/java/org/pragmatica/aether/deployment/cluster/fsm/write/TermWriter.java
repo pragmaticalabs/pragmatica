@@ -21,6 +21,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
+
 /// The deployment FSM's writer for one leadership term (#2584). Every consensus write of `cluster.fsm` goes through
 /// [#write] or one of the hierarchy writes, named by its [WriteSite].
 public final class TermWriter {
@@ -55,7 +56,8 @@ public final class TermWriter {
     /// applied, and the write fails as the site's [NotLeaderAction] says. The returned promise is otherwise the apply's
     /// own; the site attaches its existing success and failure handling to it.
     public <R> Promise<List<R>> write(WriteSite site, Fn0<List<KVCommand<AetherKey>>> build) {
-        return issuingLeader().fold(() -> notLeader(site), _ -> cluster.apply(build.apply()));
+        return issuingLeader().fold(() -> notLeader(site),
+                                    _ -> cluster.apply(build.apply()));
     }
 
     /// A conditional hierarchy put (the [WriteSite#CORE_DIRECTIVE] and [WriteSite#ACTIVATE_REISSUE] sites). Refused with
@@ -82,8 +84,7 @@ public final class TermWriter {
 
     private <R> Promise<List<R>> notLeader(WriteSite site) {
         return switch (site.notLeader()) {
-            case FAIL_NOT_LEADER, ABANDON_ROLLBACK -> FsmWriteError.NotLeader.FACTORY.apply(site, committedLeader())
-                                                                                     .promise();
+            case FAIL_NOT_LEADER, ABANDON_ROLLBACK -> FsmWriteError.NotLeader.FACTORY.apply(site, committedLeader()).promise();
             case INACTIVE_REFUSAL -> HierarchyStateWriter.Refusal.INACTIVE.promise();
         };
     }

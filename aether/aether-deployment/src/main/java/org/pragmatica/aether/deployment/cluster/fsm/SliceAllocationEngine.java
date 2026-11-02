@@ -144,7 +144,9 @@ record SliceAllocationEngine(Active active, List<NodeId> eligibleNodes) {
             return;
         }
 
-        current.stream().filter(key -> !eligible.contains(key.nodeId())).forEach(key -> active.issueUnloadCommand(WriteSite.UNLOAD_SCALE_DOWN, key));
+        current.stream()
+               .filter(key -> !eligible.contains(key.nodeId()))
+               .forEach(key -> active.issueUnloadCommand(WriteSite.UNLOAD_SCALE_DOWN, key));
     }
 
     private boolean hasNoAllocatableNodes(Artifact artifact) {
@@ -349,6 +351,8 @@ record SliceAllocationEngine(Active active, List<NodeId> eligibleNodes) {
             return;
         }
 
-        existingInstances.stream().skip(Math.max(0, activeCount - actualRemove)).forEach(key -> active.issueUnloadCommand(WriteSite.UNLOAD_SCALE_DOWN, key));
+        existingInstances.stream()
+                         .skip(Math.max(0, activeCount - actualRemove))
+                         .forEach(key -> active.issueUnloadCommand(WriteSite.UNLOAD_SCALE_DOWN, key));
     }
 }

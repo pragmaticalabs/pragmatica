@@ -15,6 +15,8 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
+
 
 /// The only holder of the consensus [ClusterNode] in the leader's deployment FSM (#2584). Every write the FSM issues
 /// goes through a [TermWriter] opened from it, so nothing else in `cluster.fsm` can reach the applier.
@@ -37,12 +39,12 @@ public final class FsmWriter {
     public static FsmWriter fsmWriter(ClusterNode<KVCommand<AetherKey>> cluster,
                                       KVStore<AetherKey, AetherValue> store,
                                       NodeId self) {
-        return new FsmWriter(cluster, store, self, HierarchyStateWriter.hierarchyStateWriter(() -> store.getTyped(LeaderKey.INSTANCE,
-                                                                                                                  LeaderValue.class)
-                                                                                                        .filter(value -> value.leader()
-                                                                                                                              .equals(self)),
-                                                                                             store::get,
-                                                                                             commands -> cluster.apply(commands)));
+        return new FsmWriter(cluster,
+                             store,
+                             self,
+                             HierarchyStateWriter.hierarchyStateWriter(() -> leaderNaming(store, self),
+                                                                       store::get,
+                                                                       commands -> cluster.apply(commands)));
     }
 
     /// The writer of one leadership term. `deactivated` is the term's own flag: once it reads true the term has
@@ -53,5 +55,12 @@ public final class FsmWriter {
                                      self,
                                      deactivated,
                                      hierarchy.whileActive(() -> !deactivated.getAsBoolean()));
+    }
+
+    /// The committed leader record, when it names `self`: the hierarchy writer's authority.
+    private static Option<LeaderValue> leaderNaming(KVStore<AetherKey, AetherValue> store, NodeId self) {
+        return store.getTyped(LeaderKey.INSTANCE, LeaderValue.class)
+                    .filter(value -> value.leader()
+                                          .equals(self));
     }
 }

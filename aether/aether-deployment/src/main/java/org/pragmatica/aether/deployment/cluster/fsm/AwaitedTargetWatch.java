@@ -151,7 +151,8 @@ final class AwaitedTargetWatch {
         log.info("Leader re-submits the SliceTarget put for {}: not committed after {} ms (#1109)",
                  artifact,
                  active.ctx().awaitedTargetBound().millis());
-        active.submitBatch(WriteSite.AWAITED_TARGET_RESUBMIT, List.of(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()),
+        active.submitBatch(WriteSite.AWAITED_TARGET_RESUBMIT,
+                           List.of(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()),
                                                        value)));
     }
 
