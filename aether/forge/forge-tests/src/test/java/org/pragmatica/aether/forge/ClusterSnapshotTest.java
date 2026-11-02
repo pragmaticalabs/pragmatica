@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Tag;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
@@ -31,6 +32,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ClusterSnapshotTest {
     private static final int MGMT_PORT = 6100;
 
+    // quarantine: #2562 PROBE ONLY for #2575's equivalence proof; never merge
+    @Tag("quarantine")
     @Test
     void unreachableHealthEndpoint_isNamedUnavailable_neverHealthy() {
         var node = new EmberCluster.NodeStatus("si-1", 6000, MGMT_PORT, EmberCluster.STATE_INACTIVE, false);

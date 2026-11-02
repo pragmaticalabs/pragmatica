@@ -17,6 +17,7 @@
 package org.pragmatica.consensus.rabia;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Tag;
 import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.StateMachine.Batch;
 
@@ -31,6 +32,8 @@ class BatchTest {
     private static final org.pragmatica.serialization.SliceCodec SERIALIZER =
         TestSerializers.stringCommandSerializer(TestCommand.class, TestCommand::value, TestCommand::new);
 
+    // quarantine: #2562 PROBE ONLY for #2575's equivalence proof; never merge
+    @Tag("quarantine")
     @Test
     void batch_creates_batch_with_commands() {
         var commands = List.of(new TestCommand("a"), new TestCommand("b"));

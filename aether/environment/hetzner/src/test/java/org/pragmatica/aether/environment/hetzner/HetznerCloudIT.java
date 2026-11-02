@@ -5,6 +5,7 @@
 package org.pragmatica.aether.environment.hetzner;
 
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
@@ -59,6 +60,8 @@ class HetznerCloudIT {
         provider = HetznerComputeProvider.hetznerComputeProvider(client, envConfig).unwrap();
     }
 
+    // quarantine: #2562 PROBE ONLY for #2575's equivalence proof; never merge
+    @Tag("quarantine")
     @Test
     @Order(1)
     void listInstances_returnsWithoutError() {

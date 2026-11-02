@@ -5,6 +5,7 @@
 package org.pragmatica.aether.ember;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.NodeId;
@@ -26,6 +27,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 ///    every other, and `EmberGenesisRecoveryTest` case (a) would fail with it).
 /// 4. A process is started under X: the restarted A and B refuse it, it exits identity-refused, and neither ever links to it.
 @PortBudget
+// quarantine: #2562 PROBE ONLY for #2575's equivalence proof; never merge
+@Tag("quarantine")
 class EmberAllHoldersRestartKeepRetirementTest {
     private final IdentityRestartHarness harness = new IdentityRestartHarness("ahr");
 
