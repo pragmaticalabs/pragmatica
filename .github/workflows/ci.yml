@@ -256,16 +256,17 @@ jobs:
           retention-days: 7
 
   # Ember's tests (#1643), split by class across runners. They are serial in one module and took 53 of build-and-test's
-  # 89 minutes. The shard count is the matrix list's length: add an entry to go from 3 shards to 4. The required check
-  # names are ember-shard-1 .. ember-shard-N.
+  # 89 minutes. The shard count is the matrix list's length: add an entry to go from 4 shards to 5. The required check
+  # names are ember-shard-1 .. ember-shard-N. Four shards, on weights regenerated from run 41371046891, plan about 19.6 min of
+  # tests each (3 shards on the old hand weights measured 23.3-29.2), so the job is about 22 min and fits 35 with headroom.
   ember-shard:
     name: ember-shard-${{ matrix.shard }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
     env:
       SHARDS: ${{ strategy.job-total }}
       SHARD: ${{ matrix.shard }}
@@ -296,7 +297,7 @@ jobs:
 
       - name: Run Ember tests (shard ${{ matrix.shard }} of ${{ strategy.job-total }})
         run: mvn test -B -pl aether/ember -Dtest="${{ steps.plan.outputs.classes }}" -Dsurefire.failIfNoSpecifiedTests=false
-        timeout-minutes: 40
+        timeout-minutes: 30
 
       # The plan-completed gate passes a run with zero tests; this fails one. Every class assigned to this shard must have reported.
       - name: Verify this shard ran its classes
