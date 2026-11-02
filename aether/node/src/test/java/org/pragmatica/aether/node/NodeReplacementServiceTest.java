@@ -237,6 +237,8 @@ class NodeReplacementServiceTest {
         wiring.service().begin(OLD_CORE, "").await();
         var coreId = recordIn(onlyTransaction(), OLD_CORE).replacement().id();
 
+        verify(ctm).nodeIsCloudBacked(NodeRole.WORKER, "hz");
+        verify(ctm).nodeIsCloudBacked(NodeRole.CORE, "local");
         assertThat(workerId).startsWith("aether-node-");
         assertThat(OperationId.forNode(cluster, workerId).isSuccess()).as("52 characters: fits").isTrue();
         assertThat(coreId).startsWith("aether-production-eu-node-");
