@@ -144,7 +144,9 @@ class RabiaMetricsCollectorTest {
         assertThat(collector.snapshot().counterMap().get("consensus_consecutive_empty_slots_with_pending").longValue())
             .as("the Prometheus vocabulary carries the same level")
             .isEqualTo(1_867L);
-        assertThat(collector.snapshotAndReset().firstChoiceBatchId()).isEqualTo(Option.some("batch-x"));
+        var reset = collector.snapshotAndReset();
+        assertThat(reset.consecutiveEmptySlotsWithPending()).isEqualTo(1_867L);
+        assertThat(reset.firstChoiceBatchId()).isEqualTo(Option.some("batch-x"));
         assertThat(collector.snapshot().consecutiveEmptySlotsWithPending()).as("a level is read, never reset").isEqualTo(1_867L);
     }
 
