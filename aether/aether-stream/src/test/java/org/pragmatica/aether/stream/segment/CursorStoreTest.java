@@ -6,6 +6,7 @@
 package org.pragmatica.aether.stream.segment;
 
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -606,6 +607,53 @@ class CursorStoreTest {
             var refName = CursorStore.buildRefName("my-group", "orders", 3);
 
             assertThat(refName).isEqualTo("cursors/my-group/orders/3");
+        }
+    }
+
+    /// #2590 P0.3: a stream destroyed on this node and re-created under the same name. The node's destroy is
+    /// [StreamFootprint#forget], which reclaims the refs of the life it served (`streams/`, `stream-floors/`); the local cursor
+    /// ref `cursors/…` is keyed by name only and no main-source path deletes it, so the new life resumes from the old life's cursor.
+    @Nested
+    class StreamRecreated {
+        private static final Epoch TENURE = Epoch.epoch(1L, 1L, 1L);
+
+        private StorageInstance footprintStorage;
+        private StreamFootprint footprint;
+        private CursorStore cursors;
+
+        @BeforeEach
+        void setUp() {
+            var metadataStore = MetadataStore.inMemoryMetadataStore("recreate-test");
+
+            footprintStorage = StorageInstance.storageInstance("recreate-test", List.of(MemoryTier.memoryTier(ONE_GB)), metadataStore);
+            footprint = StreamFootprint.streamFootprint(footprintStorage, metadataStore, new SegmentIndex());
+            cursors = cursorStore(footprintStorage);
+        }
+
+        private void destroyAndRecreate() {
+            footprint.adopt(STREAM, 1L).await();
+            cursors.commit(GROUP, STREAM, PARTITION, 500L, TENURE).await();
+            footprint.forget(STREAM).await();
+            footprint.adopt(STREAM, 2L).await();
+        }
+
+        @Test
+        void cursorStore_streamRecreatedSameName_localCursorStillApplied() {
+            destroyAndRecreate();
+
+            assertThat(cursors.fetch(GROUP, STREAM, PARTITION, TENURE).await())
+                    .as("#2590 P2 landed? If a local cursor of a replaced life is discarded now, enable `cursorStore_streamRecreatedSameName_localCursorDiscarded` and delete this tripwire")
+                    .isEqualTo(Result.success(Option.some(500L)));
+        }
+
+        @Disabled("#2590 P2: enable when a local cursor is applied only if its stream incarnation matches the current life (know 83efd39461 S1); delete the _localCursorStillApplied tripwire then")
+        @Test
+        void cursorStore_streamRecreatedSameName_localCursorDiscarded() {
+            destroyAndRecreate();
+
+            assertThat(cursors.fetch(GROUP, STREAM, PARTITION, TENURE).await())
+                    .as("the new life never resumes from the old life's local cursor")
+                    .isEqualTo(Result.success(Option.none()));
         }
     }
 }
