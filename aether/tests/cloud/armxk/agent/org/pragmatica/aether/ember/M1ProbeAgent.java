@@ -4,9 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.ember;
 
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
-
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.net.InetAddress;
@@ -31,6 +28,10 @@ import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
+
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
+
 
 /// The M-1 instrument across VMs (#2512, arm X): a `-javaagent` that installs [M1Instrument] (compiled from the SAME source file the
 /// in-JVM harness uses, `aether/ember/src/test/.../M1Instrument.java`) into a stock `aether-node.jar` process, and serves its counters on
@@ -74,6 +75,7 @@ public final class M1ProbeAgent {
         if (args == null) {
             return fallback;
         }
+
         for (var part : args.split(",")) {
             var kv = part.split("=", 2);
 
@@ -81,6 +83,7 @@ public final class M1ProbeAgent {
                 return kv[1].strip();
             }
         }
+
         return fallback;
     }
 
@@ -89,8 +92,10 @@ public final class M1ProbeAgent {
             serve(port);
         } catch (IOException e) {
             System.err.println("[m1probe] cannot bind 127.0.0.1:" + port + ": " + e);
+
             return;
         }
+
         var deadline = System.currentTimeMillis() + FIND_DEADLINE_MS;
 
         while (System.currentTimeMillis() < deadline) {
@@ -104,19 +109,24 @@ public final class M1ProbeAgent {
                     node = found;
                     status = "ok " + instrument.nodeId();
                     System.err.println("[m1probe] installed on " + instrument.nodeId() + ", serving 127.0.0.1:" + port);
+
                     return;
                 }
+
                 Thread.sleep(100);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
+
                 return;
             } catch (Throwable t) {
                 status = "failed " + t;
                 System.err.println("[m1probe] installation failed: " + t);
                 t.printStackTrace();
+
                 return;
             }
         }
+
         status = "failed no AetherNode reachable from a shutdown hook within " + FIND_DEADLINE_MS + " ms";
         System.err.println("[m1probe] " + status);
     }
@@ -132,8 +142,11 @@ public final class M1ProbeAgent {
         synchronized (hooksClass) {
             var map = (Map<Thread, Thread>) field.get(null);
 
-            hooks = map == null ? List.of() : new ArrayList<>(map.keySet());
+            hooks = map == null
+                    ? List.of()
+                    : new ArrayList<>(map.keySet());
         }
+
         for (var hook : hooks) {
             var task = taskOf(hook);
 
@@ -141,6 +154,7 @@ public final class M1ProbeAgent {
                 return candidate;
             }
         }
+
         return null;
     }
 
@@ -149,7 +163,9 @@ public final class M1ProbeAgent {
         try {
             var holder = readField(thread, Thread.class, "holder");
 
-            return holder == null ? null : readField(holder, holder.getClass(), "task");
+            return holder == null
+                   ? null
+                   : readField(holder, holder.getClass(), "task");
         } catch (NoSuchFieldException e) {
             return readField(thread, Thread.class, "target");
         }
@@ -159,11 +175,11 @@ public final class M1ProbeAgent {
         Field field = type.getDeclaredField(name);
 
         field.setAccessible(true);
+
         return field.get(target);
     }
 
     // ---- loopback server -----------------------------------------------------------------------------------------------------------
-
     private static void serve(int port) throws IOException {
         var server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), port), 16);
 
@@ -180,13 +196,18 @@ public final class M1ProbeAgent {
 
         if (current == null) {
             reply(exchange, 503, status + "\n");
+
             return;
         }
+
         var out = new StringBuilder();
 
         out.append("now.ms ").append(System.currentTimeMillis()).append('\n');
         out.append("node ").append(current.nodeId()).append('\n');
-        current.snapshot().forEach((name, value) -> out.append(name).append(' ').append(value).append('\n'));
+        current.snapshot().forEach((name, value) -> out.append(name)
+                                                       .append(' ')
+                                                       .append(value)
+                                                       .append('\n'));
         reply(exchange, out.toString());
     }
 
@@ -195,8 +216,10 @@ public final class M1ProbeAgent {
 
         if (current == null) {
             reply(exchange, 503, status + "\n");
+
             return;
         }
+
         var sinceMs = Long.parseLong(query(exchange, "since", "0"));
         var sinceNanos = baseNanos + (sinceMs - baseMs) * 1_000_000L;
         var last = new TreeMap<String, Long>();
@@ -205,7 +228,10 @@ public final class M1ProbeAgent {
         var out = new StringBuilder();
 
         out.append("now.ms ").append(System.currentTimeMillis()).append('\n');
-        last.forEach((op, ms) -> out.append(op).append(' ').append(ms).append('\n'));
+        last.forEach((op, ms) -> out.append(op)
+                                    .append(' ')
+                                    .append(ms)
+                                    .append('\n'));
         reply(exchange, out.toString());
     }
 
@@ -217,26 +243,46 @@ public final class M1ProbeAgent {
 
         if (current == null) {
             reply(exchange, 503, status + "\n");
+
             return;
         }
+
         var key = new CapacityReservationKey(new NodeId(query(exchange, "node", "")));
-        var value = new CapacityReservationValue("armxk", "", query(exchange, "role", "worker"), CapacityReservationPhase.OBSERVED);
+        var value = new CapacityReservationValue("armxk",
+                                                 "",
+                                                 query(exchange, "role", "worker"),
+                                                 CapacityReservationPhase.OBSERVED);
         var authority = current.kvStore().getTyped(LeaderKey.INSTANCE, LeaderValue.class);
 
         if (authority.isEmpty()) {
             reply(exchange, 409, "refused no committed leader\n");
+
             return;
         }
+
         var id = UUID.randomUUID().toString();
-        var transaction = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key, id, authority.unwrap(), List.of(),
+        var transaction = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                                                                                  id,
+                                                                                  authority.unwrap(),
+                                                                                  List.of(),
                                                                                   List.of(new KVCommand.Mutation<AetherKey, AetherValue>(key,
                                                                                                                                          Option.none(),
                                                                                                                                          Option.some(value))));
         var result = current.<Object> apply(List.of(transaction)).await(ADMIT_BOUND);
-        var accepted = result.map(list -> list.stream().anyMatch(o -> o instanceof KVCommand.TransactionResult r && r.transactionId().equals(id) && r.accepted()))
+        var accepted = result.map(list -> list.stream()
+                                              .anyMatch(o -> o instanceof KVCommand.TransactionResult r
+                                                             && r.transactionId()
+                                                                 .equals(id)
+                                                             && r.accepted()))
                              .or(false);
 
-        reply(exchange, accepted ? 200 : 409, (accepted ? "accepted" : "refused " + result) + "\n");
+        reply(exchange,
+              accepted
+              ? 200
+              : 409,
+              (accepted
+               ? "accepted"
+               : "refused " + result) + "\n");
     }
 
     private static long toMs(long nanos) {
@@ -249,6 +295,7 @@ public final class M1ProbeAgent {
         if (raw == null) {
             return fallback;
         }
+
         for (var part : raw.split("&")) {
             var kv = part.split("=", 2);
 
@@ -256,6 +303,7 @@ public final class M1ProbeAgent {
                 return URLDecoder.decode(kv[1], StandardCharsets.UTF_8);
             }
         }
+
         return fallback;
     }
 

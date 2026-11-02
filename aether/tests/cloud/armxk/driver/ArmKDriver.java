@@ -2,6 +2,7 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
+
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -11,6 +12,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
+
 
 /// Arm K load driver (#2512, q8 P6.1): closed-loop HTTP clients against `POST /api/v1/config`, one op = one CONFIG_SET over a rotating set
 /// of 16 keys with a constant-size value (the P6 pre-flight pins it at exactly one `ConfigKey` put per op). Runs on a NON-core host.
@@ -25,12 +27,15 @@ public final class ArmKDriver {
 
     public static void main(String[] args) throws Exception {
         var url = URI.create(args[0]);
-        var apiKey = java.nio.file.Files.readString(java.nio.file.Path.of(args[1])).strip().split(":", 2)[0];
+        var apiKey = java.nio.file.Files.readString(java.nio.file.Path.of(args[1])).strip().split(":", 2) [0];
         var concurrency = Integer.parseInt(args[2]);
         var warmupMs = Long.parseLong(args[3]) * 1000;
         var measureMs = Long.parseLong(args[4]) * 1000;
         var prefix = args[5];
-        var client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).version(HttpClient.Version.HTTP_1_1).build();
+        var client = HttpClient.newBuilder()
+                               .connectTimeout(Duration.ofSeconds(5))
+                               .version(HttpClient.Version.HTTP_1_1)
+                               .build();
         var start = System.currentTimeMillis();
         var measureFrom = start + warmupMs;
         var measureTo = measureFrom + measureMs;
@@ -40,11 +45,13 @@ public final class ArmKDriver {
         for (int i = 0; i < concurrency; i++) {
             workers.add(new Worker(client, url, apiKey, prefix, serial, measureFrom, measureTo));
         }
+
         var threads = workers.stream().map(w -> Thread.ofVirtual().start(w)).toList();
 
         for (var thread : threads) {
             thread.join();
         }
+
         long ok = 0, http = 0, timeout = 0, io = 0, body = 0;
         var latencies = new ArrayList<long[]>();
 
@@ -56,17 +63,32 @@ public final class ArmKDriver {
             body += w.bodyErrors;
             latencies.add(Arrays.copyOf(w.latencyMicros, w.count));
         }
+
         var all = latencies.stream().flatMapToLong(Arrays::stream).sorted().toArray();
-        System.out.println("{\"concurrency\":" + concurrency + ",\"measureStartMs\":" + measureFrom + ",\"measureEndMs\":" + measureTo
-                           + ",\"measureSeconds\":" + measureMs / 1000 + ",\"ok\":" + ok + ",\"opsPerSec\":" + String.format("%.2f", ok * 1000.0 / measureMs)
-                           + ",\"errors\":{\"http\":" + http + ",\"timeout\":" + timeout + ",\"io\":" + io + ",\"body\":" + body + "}"
-                           + ",\"p50Ms\":" + pct(all, 0.50) + ",\"p99Ms\":" + pct(all, 0.99) + ",\"maxMs\":" + pct(all, 1.0) + ",\"samples\":" + all.length + "}");
+
+        System.out.println("{\"concurrency\":" + concurrency
+                          + ",\"measureStartMs\":" + measureFrom
+                          + ",\"measureEndMs\":" + measureTo
+                          + ",\"measureSeconds\":" + measureMs / 1000
+                          + ",\"ok\":" + ok
+                          + ",\"opsPerSec\":" + String.format("%.2f", ok * 1000.0 / measureMs)
+                          + ",\"errors\":{\"http\":" + http
+                          + ",\"timeout\":" + timeout
+                          + ",\"io\":" + io
+                          + ",\"body\":" + body
+                          + "}"
+                          + ",\"p50Ms\":" + pct(all, 0.50)
+                          + ",\"p99Ms\":" + pct(all, 0.99)
+                          + ",\"maxMs\":" + pct(all, 1.0)
+                          + ",\"samples\":" + all.length
+                          + "}");
     }
 
     private static String pct(long[] sorted, double q) {
         if (sorted.length == 0) {
             return "null";
         }
+
         var index = Math.min(sorted.length - 1, (int) Math.ceil(q * sorted.length) - 1);
 
         return String.format("%.3f", sorted[Math.max(0, index)] / 1000.0);
@@ -84,7 +106,13 @@ public final class ArmKDriver {
         long[] latencyMicros = new long[1 << 12];
         int count;
 
-        Worker(HttpClient client, URI url, String apiKey, String prefix, AtomicLong serial, long measureFrom, long measureTo) {
+        Worker(HttpClient client,
+               URI url,
+               String apiKey,
+               String prefix,
+               AtomicLong serial,
+               long measureFrom,
+               long measureTo) {
             this.client = client;
             this.url = url;
             this.apiKey = apiKey;
@@ -98,7 +126,9 @@ public final class ArmKDriver {
         public void run() {
             while (System.currentTimeMillis() < measureTo) {
                 var n = serial.incrementAndGet();
-                var payload = "{\"key\":\"" + prefix + (n % KEYS) + "\",\"value\":\"v-" + String.format("%012d", n) + "\"}";
+                var payload = "{\"key\":\"" + prefix + (n % KEYS)
+                            + "\",\"value\":\"v-" + String.format("%012d", n)
+                            + "\"}";
                 var request = HttpRequest.newBuilder(url)
                                          .timeout(Duration.ofSeconds(10))
                                          .header("Content-Type", "application/json")
@@ -115,6 +145,7 @@ public final class ArmKDriver {
                     if (!counted || System.currentTimeMillis() > measureTo) {
                         continue;
                     }
+
                     if (response.statusCode() != 200) {
                         httpErrors++;
                     } else if (!response.body().contains("config_set")) {
@@ -133,6 +164,7 @@ public final class ArmKDriver {
                     }
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
+
                     return;
                 }
             }
@@ -142,6 +174,7 @@ public final class ArmKDriver {
             if (count == latencyMicros.length) {
                 latencyMicros = Arrays.copyOf(latencyMicros, count * 2);
             }
+
             latencyMicros[count++] = micros;
         }
     }
