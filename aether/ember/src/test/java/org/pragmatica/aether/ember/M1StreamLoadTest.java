@@ -234,7 +234,8 @@ class M1StreamLoadTest {
         var cores = new java.util.HashSet<String>();
 
         instruments.forEach(i -> cores.add(i.nodeId()));
-        return leader().kvStore().snapshot().keySet().stream()
+        // the snapshot also holds the leader record, which is not an AetherKey, so the key type is not trusted
+        return ((Map<?, ?>) leader().kvStore().snapshot()).keySet().stream()
                        .filter(k -> k instanceof AetherKey.NodeArtifactKey nk && nk.artifact().asString().contains(arm.artifactBase()))
                        .map(k -> ((AetherKey.NodeArtifactKey) k).nodeId().id())
                        .map(id -> id + (cores.contains(id) ? "(core)" : "(worker)"))
