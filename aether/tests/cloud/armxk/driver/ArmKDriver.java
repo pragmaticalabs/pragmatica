@@ -3,10 +3,14 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -27,7 +31,7 @@ public final class ArmKDriver {
 
     public static void main(String[] args) throws Exception {
         var url = URI.create(args[0]);
-        var apiKey = java.nio.file.Files.readString(java.nio.file.Path.of(args[1])).strip().split(":", 2) [0];
+        var apiKey = Files.readString(Path.of(args[1])).strip().split(":", 2) [0];
         var concurrency = Integer.parseInt(args[2]);
         var warmupMs = Long.parseLong(args[3]) * 1000;
         var measureMs = Long.parseLong(args[4]) * 1000;
@@ -157,11 +161,11 @@ public final class ArmKDriver {
                         ok++;
                         record(micros);
                     }
-                } catch (java.net.http.HttpTimeoutException e) {
+                } catch (HttpTimeoutException e) {
                     if (counted) {
                         timeouts++;
                     }
-                } catch (java.io.IOException e) {
+                } catch (IOException e) {
                     if (counted) {
                         ioErrors++;
                     }
