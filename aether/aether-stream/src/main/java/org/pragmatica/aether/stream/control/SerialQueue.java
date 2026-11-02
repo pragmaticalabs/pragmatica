@@ -36,8 +36,7 @@ final class SerialQueue {
     /// own promise with the throwable as the cause and the drainer goes on to the next task. A `VirtualMachineError` still
     /// propagates ([Result#lift] rethrows it).
     private static <T> Result<T> contained(Supplier<Result<T>> task) {
-        return Result.lift(Causes::fromThrowable, task::get)
-                     .flatMap(result -> result);
+        return Result.lift(Causes::fromThrowable, task::get).flatMap(result -> result);
     }
 
     @Contract
