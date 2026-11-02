@@ -811,10 +811,10 @@ public class RabiaEngine<C extends Command> {
 
     /// #2011: committed (batch id, correlation ids), so a delivery that trails its slot's Decision is not re-queued.
     private final CommittedBatchLedger committedLedger = new CommittedBatchLedger(CommittedBatchLedger.DEFAULT_CAPACITY);
+
     /// #2045: slots decided in a row without applying a batch while this voter held pending batches. A level that climbs
     /// without bound is the empty-slot livelock: the voters' first choices differ and no batch reaches a quorum.
     private final AtomicLong consecutiveEmptySlotsWithPending = new AtomicLong();
-
     private final Map<NodeId, SyncResponse<C>> syncResponses = new ConcurrentHashMap<>();
     /// Whether a sync round is open: a [SyncRequest] has gone out and the engine has not yet adopted a state from the answers. A
     /// request opens a round ([#openSyncRound]); an activation completes it and a quorum-loss pause invalidates it ([#closeSyncRound]).
@@ -1075,7 +1075,9 @@ public class RabiaEngine<C extends Command> {
         this.participationMarker = config.participationMarker().or(ParticipationMarker::unknown);
         this.metrics = Option.option(metrics).or(ConsensusMetrics.noop());
         this.metrics.registerOldestPendingBatchAgeProbe(self, this::oldestPendingBatchAgeMs);
-        this.metrics.registerProposalConvergenceProbes(self, consecutiveEmptySlotsWithPending::get, this::firstChoiceBatchId);
+        this.metrics.registerProposalConvergenceProbes(self,
+                                                       consecutiveEmptySlotsWithPending::get,
+                                                       this::firstChoiceBatchId);
         this.activationGated = activationGated;
         this.activationAuthorized = !activationGated;
         this.persistence = persistence;
@@ -1809,9 +1811,8 @@ public class RabiaEngine<C extends Command> {
 
     /// #2045: the batch this voter proposes when it opens or joins a slot ([#nextProposal]), none when nothing is pending.
     Option<String> firstChoiceBatchId() {
-        return Option.option(pendingBatches.firstEntry())
-                     .map(entry -> entry.getKey()
-                                        .id());
+        return Option.option(pendingBatches.firstEntry()).map(entry -> entry.getKey()
+                                                                            .id());
     }
 
     long consecutiveEmptySlotsWithPending() {
@@ -2179,7 +2180,8 @@ public class RabiaEngine<C extends Command> {
         committedLedger.record(batchCommitted.batchId(), batchCommitted.correlationIds());
         stripSatisfied(batchCommitted.batchId(), batchCommitted.correlationIds());
         failCorrelations(batchCommitted.correlationIds(),
-                         new ConsensusError.CommittedOutcomeUnknown(self, batchCommitted.batchId().id()));
+                         new ConsensusError.CommittedOutcomeUnknown(self,
+                                                                    batchCommitted.batchId().id()));
     }
 
     private void doHandleNewBatch(Batch<C> incoming) {
@@ -2203,7 +2205,9 @@ public class RabiaEngine<C extends Command> {
         committedLedger.committedOf(proposed)
                        .filter(_ -> !proposer.equals(self))
                        .onPresent(committed -> network.send(proposer,
-                                                            new BatchCommitted(self, proposed.id(), committed)));
+                                                            new BatchCommitted(self,
+                                                                               proposed.id(),
+                                                                               committed)));
         learnProposedBatch(proposed);
     }
 
@@ -3976,7 +3980,6 @@ public class RabiaEngine<C extends Command> {
             }
 
             noteSlotProgress(decision);
-
             phaseData.completedDecision(decision);
             if (decision.stateValue() == StateValue.V1) {
                 decision.reconfiguration().onPresent(command -> applyReconfiguration(phaseData.phase(), command));
@@ -3997,8 +4000,10 @@ public class RabiaEngine<C extends Command> {
                                                     decision.phase().successor().value());
         var decided = decision.value().correlationIds();
 
-        stripSatisfied(decision.value().id(), decided);
-        committedLedger.record(decision.value().id(), decided);
+        stripSatisfied(decision.value().id(),
+                       decided);
+        committedLedger.record(decision.value().id(),
+                               decided);
         for (var correlationId : decided) {
             Option.option(correlationMap.remove(correlationId)).onPresent(promise -> promise.succeed(results));
         }

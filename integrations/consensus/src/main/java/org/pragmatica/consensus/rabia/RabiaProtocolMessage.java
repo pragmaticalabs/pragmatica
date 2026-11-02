@@ -144,7 +144,6 @@ public sealed interface RabiaProtocolMessage extends ProtocolMessage {
         /// proposing it, and the voters that know refuse to learn it; without this answer the two never agree on a value
         /// again. The proposer records the ids and drops them from its queue. Not offline-buffered: a lost answer is
         /// re-sent on the next proposal of the same batch.
-        record BatchCommitted(NodeId sender, Batch.Id batchId, List<CorrelationId> correlationIds)
-            implements Asynchronous, org.pragmatica.consensus.net.NoOfflineBuffering {}
+        record BatchCommitted(NodeId sender, Batch.Id batchId, List<CorrelationId> correlationIds) implements Asynchronous, org.pragmatica.consensus.net.NoOfflineBuffering {}
     }
 }

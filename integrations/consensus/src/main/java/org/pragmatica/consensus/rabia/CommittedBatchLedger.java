@@ -72,7 +72,10 @@ final class CommittedBatchLedger {
     /// The correlation ids of `incoming` already committed under its batch id; empty when none are.
     synchronized Option<List<CorrelationId>> committedOf(Batch<?> incoming) {
         return Option.option(committed.get(incoming.id()))
-                     .map(known -> incoming.correlationIds().stream().filter(known::contains).toList())
+                     .map(known -> incoming.correlationIds()
+                                           .stream()
+                                           .filter(known::contains)
+                                           .toList())
                      .filter(ids -> !ids.isEmpty());
     }
 
