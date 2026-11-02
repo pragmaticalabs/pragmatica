@@ -14,6 +14,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -255,6 +256,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                   Set<Artifact> permanentlyFailed,
                   Set<NodeId> workerNodes,
                   Map<SliceNodeKey, Long> transitionalStateTimestamps,
+                  // #2579: when the leader first saw each slice LOADED. LOADED has no timeout, so it is not in
+                  // transitionalStateTimestamps; the reconcile backstop reads this. In-memory, rebuilt on a new leader.
+                  Map<SliceNodeKey, Long> loadedSince,
                   Map<Artifact, Integer> consecutiveImbalancedTicks,
                   // Per-SliceNodeKey WARN/DEBUG dedup for schema holds (#760 follow-up). In-memory
                   // only, never persisted — resets on leader failover. See #reportSchemaHold's
@@ -280,6 +284,15 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// The fallback source label for a joining worker whose membership `source` is absent or
         /// blank (worker-membership-spec D2).
         private static final String DEFAULT_SOURCE = "default";
+        /// #2579: a failed ACTIVATE write is re-checked after 5, 10, 20 and 40 s (the base mirrors the LOAD failure
+        /// path's 5 s re-reconcile). The four attempts end before the reconcile backstop's window opens.
+        private static final long ACTIVATE_RETRY_BASE_SECONDS = 5;
+        private static final int MAX_ACTIVATE_RETRIES = 4;
+        /// #2579: a slice committed LOADED this long with no ACTIVATE is re-issued by the reconcile backstop. The
+        /// activation timeout is ACTIVATING's: the budget a node has to activate once it is told to.
+        private static final long ACTIVATION_BACKSTOP_MS = SliceState.ACTIVATING.timeout()
+                                                                                .map(TimeSpan::millis)
+                                                                                .or(90_000L);
 
         // --- move-only extraction seams (package-private helpers operating on this Active) ---
         StuckTransitionalRemediator stuckRemediator() {
@@ -947,6 +960,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
             sliceStates.put(sliceKey, value.state());
             updateTransitionalTimestamp(sliceKey, value.state(), value.transitionedAt());
+            updateLoadedSince(sliceKey, value.state());
         }
 
         private void handleSchemaPending(String datasource) {
@@ -2001,6 +2015,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var previousState = sliceStates.put(sliceKey, state);
 
             updateTransitionalTimestamp(sliceKey, state, sliceNodeValue.transitionedAt());
+            updateLoadedSince(sliceKey, state);
             log.trace("Slice {} on {} state: {} -> {}",
                       sliceKey.artifact(),
                       sliceKey.nodeId(),
@@ -2644,6 +2659,12 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private void tryActivateIfDependenciesReady(SliceNodeKey sliceKey) {
+            tryActivateIfDependenciesReady(sliceKey, this::issueActivateCommand);
+        }
+
+        /// The hold and dependency checks, shared by the first ACTIVATE and by the #2579 re-issue: `activate` is the
+        /// write that runs once the slice is free to activate.
+        private void tryActivateIfDependenciesReady(SliceNodeKey sliceKey, Consumer<SliceNodeKey> activate) {
             var artifact = sliceKey.artifact();
             var blockingRecords = blockingSchemaRecords(sliceKey);
 
@@ -2658,14 +2679,14 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
             if (dependencies.isEmpty()) {
                 log.debug("Slice {} has no dependencies, activating immediately", artifact);
-                issueActivateCommand(sliceKey);
+                activate.accept(sliceKey);
 
                 return;
             }
 
             if (allDependenciesActive(dependencies)) {
                 log.debug("All {} dependencies of {} are ACTIVE, activating", dependencies.size(), artifact);
-                issueActivateCommand(sliceKey);
+                activate.accept(sliceKey);
             } else {
                 log.debug("Slice {} waiting for dependencies to become ACTIVE: {}",
                           artifact,
@@ -2771,19 +2792,119 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// between LOAD and LOADED) is UNLOADed instead of activated. Same predicate as the node-side
         /// gate and the orphan sweep, read from the committed store, never from `blueprints`.
         private void issueActivateCommand(SliceNodeKey sliceKey) {
-            if (!CommittedSliceTarget.permits(ctx.kvStore(), sliceKey.artifact())) {
-                log.warn("No committed SliceTarget names {} — issuing UNLOAD instead of ACTIVATE for {} (#1068)",
-                         sliceKey.artifact(),
-                         sliceKey.nodeId());
-                issueUnloadCommand(sliceKey);
-
+            if (unloadedForMissingTarget(sliceKey)) {
                 return;
             }
 
             log.debug("Issuing ACTIVATE command for {}", sliceKey);
-            applyStateWrite(sliceKey, SliceState.ACTIVATE).onFailure(cause -> log.error("Failed to issue ACTIVATE command for {}: {}",
-                                                                                        sliceKey,
-                                                                                        cause.message()));
+            applyStateWrite(sliceKey, SliceState.ACTIVATE).onFailure(cause -> onActivateWriteFailure(sliceKey, cause, 0));
+        }
+
+        private boolean unloadedForMissingTarget(SliceNodeKey sliceKey) {
+            if (CommittedSliceTarget.permits(ctx.kvStore(), sliceKey.artifact())) {
+                return false;
+            }
+
+            log.warn("No committed SliceTarget names {} — issuing UNLOAD instead of ACTIVATE for {} (#1068)",
+                     sliceKey.artifact(),
+                     sliceKey.nodeId());
+            issueUnloadCommand(sliceKey);
+
+            return true;
+        }
+
+        /// #2579 layer 1: a failed ACTIVATE write is not left until a leader change. LOADED is neither in progress nor
+        /// transitional, so neither reconcile nor the stuck remediator would act on it, and the slice would serve
+        /// nothing. A recheck is scheduled with exponential backoff. Past the last attempt the reconcile backstop
+        /// ([#reissueStrandedActivations]) still covers the slice.
+        private void onActivateWriteFailure(SliceNodeKey sliceKey, Cause cause, int attempt) {
+            log.error("Failed to issue ACTIVATE command for {} (attempt {}): {}", sliceKey, attempt + 1, cause.message());
+
+            if (attempt >= MAX_ACTIVATE_RETRIES) {
+                log.warn("ACTIVATE for {} not retried after {} attempts; the reconcile backstop re-issues it after {} ms in LOADED",
+                         sliceKey,
+                         attempt + 1,
+                         ACTIVATION_BACKSTOP_MS);
+
+                return;
+            }
+
+            SharedScheduler.schedule(() -> retryActivateIfStillLoaded(sliceKey, attempt + 1),
+                                     timeSpan(ACTIVATE_RETRY_BASE_SECONDS << attempt).seconds());
+        }
+
+        /// Re-reads the committed state, the authority: a write that timed out may still have applied. Only a slice
+        /// the KV-Store still holds LOADED is re-issued.
+        private void retryActivateIfStillLoaded(SliceNodeKey sliceKey, int attempt) {
+            if (deactivated.get()) {
+                log.debug("Suppressing ACTIVATE retry for {} - Active state deactivated", sliceKey);
+
+                return;
+            }
+
+            committedLoaded(sliceKey).onPresent(committed -> reissueWhenReady(sliceKey, committed, attempt))
+                                     .onEmpty(() -> log.debug("ACTIVATE retry for {} not needed: the committed state is no longer LOADED",
+                                                              sliceKey));
+        }
+
+        /// The committed node-artifact value for this slice, when it is LOADED.
+        private Option<NodeArtifactValue> committedLoaded(SliceNodeKey sliceKey) {
+            return ctx.kvStore()
+                      .get(NodeArtifactKey.nodeArtifactKey(sliceKey.nodeId(), sliceKey.artifact()))
+                      .filter(NodeArtifactValue.class::isInstance)
+                      .map(NodeArtifactValue.class::cast)
+                      .filter(value -> value.state() == SliceState.LOADED);
+        }
+
+        /// The re-issue passes the same schema-hold and dependency checks as the first ACTIVATE.
+        private void reissueWhenReady(SliceNodeKey sliceKey, NodeArtifactValue committedLoaded, int attempt) {
+            tryActivateIfDependenciesReady(sliceKey, key -> reissueActivateCommand(key, committedLoaded, attempt));
+        }
+
+        /// The re-issued ACTIVATE is a compare-and-set on the committed LOADED value that the recheck read. A plain
+        /// Put of a NodeArtifactValue is not merged, so an earlier ACTIVATE that applied late, followed by the node's
+        /// ACTIVATING, would otherwise be overwritten back to ACTIVATE. A refused or failed write takes the next
+        /// backoff step.
+        private void reissueActivateCommand(SliceNodeKey sliceKey, NodeArtifactValue committedLoaded, int attempt) {
+            if (unloadedForMissingTarget(sliceKey)) {
+                return;
+            }
+
+            log.info("Re-issuing ACTIVATE for {} (attempt {}): the committed state is still LOADED", sliceKey, attempt + 1);
+            hierarchyWriter().put(NodeArtifactKey.nodeArtifactKey(sliceKey.nodeId(), sliceKey.artifact()),
+                                  Option.<AetherValue>some(committedLoaded),
+                                  NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVATE, 0L))
+                             .onFailure(cause -> onActivateWriteFailure(sliceKey, cause, attempt));
+        }
+
+        /// #2579 layer 2, the backstop for any lost ACTIVATE, not only a failed write: a slice the leader has seen
+        /// LOADED for longer than the activation timeout, and that the KV-Store still holds LOADED, is re-issued
+        /// once per window. A slice held by a schema or a dependency stays held, because the re-issue runs the same
+        /// checks. A failed backstop write starts no retry chain; the next window covers it.
+        private void reissueStrandedActivations() {
+            var now = ctx.nowMs();
+
+            loadedSince.keySet()
+                       .removeIf(key -> sliceStates.get(key) != SliceState.LOADED);
+            loadedSince.entrySet()
+                       .stream()
+                       .filter(entry -> now - entry.getValue() > ACTIVATION_BACKSTOP_MS)
+                       .map(Map.Entry::getKey)
+                       .toList()
+                       .forEach(key -> reissueStranded(key, now));
+        }
+
+        private void reissueStranded(SliceNodeKey sliceKey, long now) {
+            loadedSince.put(sliceKey, now);
+            committedLoaded(sliceKey).onPresent(committed -> reissueWhenReady(sliceKey, committed, MAX_ACTIVATE_RETRIES));
+        }
+
+        private void updateLoadedSince(SliceNodeKey sliceKey, SliceState state) {
+            if (state == SliceState.LOADED) {
+                loadedSince.putIfAbsent(sliceKey, ctx.nowMs());
+            } else {
+                loadedSince.remove(sliceKey);
+            }
         }
 
         // Fire-and-forget LOAD: callers (allocation/reconcile sweeps, forEach state-mutators) ignore
@@ -3094,6 +3215,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             evaluateCommunityStates();
             sweepStaleEntries(true);
             detectStuckTransitionalStates();
+            reissueStrandedActivations();
             // A schema sweep does NOT belong here. It was added and reverted on 2026-08-31: sweeping
             // PENDING records on every reconcile re-dispatches a migration that is already running —
             // reconcile() is driven from many call sites, so three dispatches landed within two
