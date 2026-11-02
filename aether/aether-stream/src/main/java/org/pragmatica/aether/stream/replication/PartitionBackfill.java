@@ -220,10 +220,12 @@ public final class PartitionBackfill {
     /// empty or a NEXT flight holds it -- therefore updates no replica row, promotes nothing and acks nothing
     /// ([#updateWatermark], [#ackBackfillToOwner]).
     private final BooleanSupplier current;
+
     /// Test seams (#2574), on the shared instance: `joinWindowHook` runs after a call found a flight in the slot and before
     /// it marks its join; `releaseWindowHook` runs after a flight left the slot and before its re-run is decided. Each
     /// opens a window a concurrent call can land in, so the race guards there are pinned deterministically.
     private volatile Runnable joinWindowHook = () -> {};
+
     private volatile Runnable releaseWindowHook = () -> {};
 
     private PartitionBackfill(ReplicaRegistry registry,
