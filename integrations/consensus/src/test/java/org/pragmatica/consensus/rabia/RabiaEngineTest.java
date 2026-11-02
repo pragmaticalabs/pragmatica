@@ -187,6 +187,7 @@ class RabiaEngineTest {
         }
 
         @Test
+        @SuppressWarnings("unchecked")
         void identical_concurrent_submissions_each_complete_and_apply_once_per_submission() throws InterruptedException {
             // #958: the batch id is a content hash, so two callers submitting byte-identical
             // commands register the same id. Before the fix, registerBatch() replaced the first
@@ -241,7 +242,14 @@ class RabiaEngineTest {
 
             if (slotsCarryingIt == 2) {
                 awaitOwnPropose(new Phase(1));
-                target.processPropose(new Propose<>(NODE_2, new Phase(1), batches.get(1)));
+                // A peer proposes what it learned from this voter: the leftover, carrying only the undecided correlation id.
+                var leftover = network.getMessages()
+                                      .stream()
+                                      .filter(propose(new Phase(1), NODE_1))
+                                      .map(m -> ((Propose<TestCommand>) m).value())
+                                      .findFirst()
+                                      .orElseThrow();
+                target.processPropose(new Propose<>(NODE_2, new Phase(1), leftover));
                 awaitOwnVote1(new Phase(1));
                 target.processVoteRound1(new VoteRound1(NODE_2, new Phase(1), StateValue.V1));
                 target.processVoteRound1(new VoteRound1(NODE_3, new Phase(1), StateValue.V1));
