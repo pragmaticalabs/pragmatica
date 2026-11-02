@@ -11,7 +11,9 @@ import java.lang.annotation.Target;
 
 
 /// #2201 NT-24: the declared lifetime of one row of [PartitionState], and the methods that remove its entries. Read by
-/// reflection in a test, so the declaration cannot drift from the class without that test going red.
+/// reflection in `PartitionStateLifetimeDeclarationTest`, which goes red when a row lacks the declaration, sits in the
+/// sub-record of another lifetime, omits the stream purge, or names a removal method that does not exist. It does not check
+/// that the named methods are the only removal sites, or that each still removes the row.
 @Retention(RetentionPolicy.RUNTIME)
 @Target({ElementType.FIELD, ElementType.RECORD_COMPONENT})
 @interface PartitionLifetime {

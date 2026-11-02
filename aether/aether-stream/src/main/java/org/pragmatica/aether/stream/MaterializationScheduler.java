@@ -17,7 +17,9 @@ import org.pragmatica.lang.Contract;
 /// #2201 A-05 (spec 5.1): the materialization scheduling state of a [StreamPartitionManager], rows 20-28 of the spec table,
 /// for the manager's lifetime. Moved, not rewritten: the manager's reconcile tick ([StreamPartitionManager#reconcileReshuffle])
 /// reads and changes these exactly as before; each row stays individually concurrent, and none of them is per stream, so a
-/// removed stream's refs are purged lazily by the next tick, as before.
+/// removed stream's refs do not go with it. As before: the next tick drops them from the queues, the in-flight and
+/// held-unmaterialized sets and the slot tenure; the removal itself drops [#durableAtPreviousTick] (the manager's
+/// `forgetHeldBack`); nothing drops them from [#releaseCandidacy] (a PR-2a finding, not changed here).
 final class MaterializationScheduler {
     /// Partitions currently holding a reshuffle slot (materialize+backfill in flight). Membership set paired with the
     /// manager's reshuffle permits: `add` is the "acquire", `remove`+release is the "free". Swept each tick so a

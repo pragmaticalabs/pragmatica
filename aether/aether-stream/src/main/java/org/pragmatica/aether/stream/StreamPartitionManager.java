@@ -5275,7 +5275,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// [PartitionState] is dropped whole. That includes the quarantine marker [PartitionState.Standing#divergedAt], on every
     /// path (#1505 F2 for destroy; know `e0035a56ef` for config removal and the idle reaper): the life's records are deleted
     /// with it, so a marker left behind would fence the fresh log of a stream created again under the same name, which could
-    /// then never reach CAUGHT_UP.
+    /// then never reach CAUGHT_UP. What it drops is what was recorded before it ran: the entry-less writes ([PartitionState])
+    /// still record under the name afterwards, so one that lands after the removal (an owner's visible position, an epoch
+    /// verdict) is seen by a stream created again under the name `[unverified: whether such a late write is accepted after a
+    /// removal in a cluster; no test induces it]`.
     @Contract
     private void purgePartitionState(String streamName, String reason) {
         closeRefusedCuts(streamName, _ -> true, reason);
