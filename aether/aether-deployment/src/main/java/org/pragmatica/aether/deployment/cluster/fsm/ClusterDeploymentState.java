@@ -3572,6 +3572,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         ///
         /// Without a committed `LeaderValue` to authorize a transaction the rollback is applied as a
         /// plain batch, unfenced, as it was before #972, and says so.
+        ///
+        /// #2592 — the applier's fence only checks that a transaction carries the committed `LeaderValue`,
+        /// not that its submitter is the leader it names. A committed `LeaderValue` naming another node, or
+        /// this node after its term was deactivated, therefore issues no rollback at all.
         private void submitRollback(InFlightBlueprint inflight,
                                     java.util.function.Supplier<List<KVCommand<AetherKey>>> commands,
                                     Runnable onLanded,
@@ -3639,6 +3643,19 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                           Runnable onLanded,
                                           Runnable onAbandoned,
                                           int attempt) {
+            // onAbandoned, not onLanded: nothing was written, so the landed path's deallocations must not run; the
+            // abandoned path only releases this node's own bookkeeping.
+            if (!leader.leader().equals(ctx.self()) || deactivated.get()) {
+                log.info("ALL_OR_NOTHING: rollback of blueprint {} not issued — the committed leader record names {}, and"
+                        + " this node ({}) is not that leader or its term has ended",
+                         inflight.id().asString(),
+                         leader.leader(),
+                         ctx.self());
+                onAbandoned.run();
+
+                return Unit.unit();
+            }
+
             var transaction = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(AppBlueprintKey.appBlueprintKey(inflight.id()),
                                                                                       java.util.UUID.randomUUID()
                                                                                                     .toString(),

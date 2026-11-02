@@ -259,6 +259,25 @@ class AttemptBoundOutcomeTest {
         assertThat(outcomeAttempt(store, expanded.id())).isEqualTo(FIRST_ATTEMPT);
     }
 
+    /// #2592: a deposed leader has applied the NEW leader's `LeaderValue` but not yet run `onExit`. Its rollback
+    /// would carry the new leader's value, which the applier's equality fence accepts, so it must not be built at all.
+    @Test
+    void committedLeaderRecordNamesAnotherNode_noRollbackIsSubmitted() {
+        var store = freshStore();
+
+        store.process(store.createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(NODE_A, 2)))));
+        var node = new InterferingClusterNode(SELF, store);
+        var harness = leaderHarness(node, store, DeploymentAtomicity.ALL_OR_NOTHING);
+        var expanded = blueprint(3);
+
+        applyBlueprint(harness, store, expanded, FIRST_ATTEMPT, 1L);
+        exhaustRetryBudgetOn(harness, SELF, SLICE);
+
+        assertThat(node.transactions()).as("no fenced rollback carrying another node's leader record").isZero();
+        assertThat(committedBlueprint(store, expanded.id())).as("and no unfenced one either").isEqualTo(Option.some(expanded));
+        assertThat(outcomeStatusName(store, expanded.id())).isEqualTo(DeploymentOutcomeStatus.IN_PROGRESS.name());
+    }
+
     /// BEST_EFFORT merge: a FAILED left by an EARLIER attempt must not lend its failing slices to this
     /// attempt's record. Before attribution the merge read them as this apply's. RED at `40dfc0519`.
     @Test
