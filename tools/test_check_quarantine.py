@@ -72,6 +72,18 @@ class CheckQuarantineTest(unittest.TestCase):
         self._test("a", "BTest", "class BTest {\n    int x = 1; // #12\n    @Tag(\"quarantine\")\n    void t() {}\n}\n")
         self.assertEqual(len(quarantine.check(self.root)), 2)
 
+    def test_an_issue_number_in_an_annotation_string_is_not_a_reference(self):
+        self._test("a", "ATest", 'class ATest {\n    @DisplayName("#12 retries")\n    @Tag("quarantine")\n    void t() {}\n}\n')
+        self.assertEqual(len(quarantine.check(self.root)), 1)
+
+    def test_check_reports_pom_and_workflow_exclusion_problems_too(self):
+        write(self.root / "pom.xml", ROOT_POM.replace("Slow, quarantine", "Slow"))
+        write(self.root / ".github/workflows/ci.yml", CI.replace("Heavy,quarantine", "Heavy"))
+        self.assertEqual(quarantine.check(self.root), [
+            "pom.xml: maven-surefire-plugin <excludedGroups>${surefire.excludedGroups}</excludedGroups> resolves to 'Slow', "
+            "which does not exclude quarantine",
+            "ci.yml job forge-tests: -Dfailsafe.excludedGroups=Heavy does not exclude quarantine"])
+
     def test_a_closed_issue_fails_and_only_referenced_issues_are_looked_up(self):
         self._test("a", "ATest", "class ATest {\n    // quarantine: #5 and #6\n    @Tag(\"quarantine\")\n    void t() {}\n}\n")
         asked = []
