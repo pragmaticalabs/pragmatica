@@ -676,8 +676,12 @@ def armk_step(run, p, c, url, target, driver_host):
     await_cond(f"driver p{p} c{c} started", lambda: "armk-driver started" in run.sh(driver_host, f"cat {run.root}/armk-p{p}-c{c}.err 2>/dev/null",
                                                                                     check=False), 120, 0.5)
     sleep_s(k["warmupS"])
+    # Every reading must fall inside the driver's measured phase: the after-readings finish before the clients stop, or the window
+    # gains unloaded seconds (dry run 4: a reading 3 s past the end gave 0.87 commits per op at every c).
+    read_start = time.time()
     before = core_readings(run)
-    sleep_s(k["measureS"])
+    read_s = time.time() - read_start
+    sleep_s(k["measureS"] - 2 * read_s - 1)
     after = core_readings(run)
     await_cond(f"driver p{p} c{c} exit", lambda: run.sh(driver_host, f"cat {run.root}/armk-p{p}-c{c}.rc 2>/dev/null", check=False).strip(),
                120, 2)
@@ -689,7 +693,8 @@ def armk_step(run, p, c, url, target, driver_host):
     loads = {h: run.host_sample(h) for h in sorted({cc["host"] for cc in run.nodes("core")})}
     record = {"kind": "armk-step", "pass": p, "c": c, "target": target["id"], "driverHost": driver_host, "startUtc": utc(driver["measureStartMs"]),
               "endUtc": utc(driver["measureEndMs"]), "driver": driver, "cores": readings_delta(before, after), "coreLoadAfter": loads,
-              "readingsUtc": [utc(min(v["readMs"] for v in before.values())), utc(max(v["readMs"] for v in after.values()))]}
+              "readingsUtc": [utc(min(v["readMs"] for v in before.values())), utc(max(v["readMs"] for v in after.values()))],
+              "readSeconds": round(read_s, 2)}
     run.emit("armk", record)
     lead = record["cores"].get(target["id"], {})
     log(f"arm K p{p} c={c}: {driver['opsPerSec']} ops/s p50={driver['p50Ms']} p99={driver['p99Ms']} errors={driver['errors']} "
