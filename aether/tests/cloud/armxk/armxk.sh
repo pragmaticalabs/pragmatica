@@ -72,13 +72,14 @@ local_inventory() {
     # Dry run: 5 core "hosts" and 2 worker hosts that are all the same machine. Addresses are 127.0.0.1; ports are unique per node
     # (the orchestrator allocates a 10-port slot per node from portBase, below the 32768 ephemeral floor).
     local run_dir=$1 target=$2 key=$3
-    python3 - "$run_dir/inventory.json" "$target" "$key" "$run_dir" <<'PY'
+    # ARMXK_DRY_ROOT / ARMXK_DRY_PORT_BASE: a second dry run on the same host needs its own root (the dry run wipes it) and port band
+    python3 - "$run_dir/inventory.json" "$target" "$key" "$run_dir" "${ARMXK_DRY_ROOT:-/home/aether/work/cloudx-armxk-dry}" "${ARMXK_DRY_PORT_BASE:-26000}" <<'PY'
 import json, sys
-path, target, key, run_dir = sys.argv[1:]
+path, target, key, run_dir, root, port_base = sys.argv[1:]
 hosts = [{"name": f"core-host-{i}", "ssh": target, "addr": "127.0.0.1", "role": "core"} for i in range(1, 6)]
 hosts += [{"name": f"wh-{i}", "ssh": target, "addr": "127.0.0.1", "role": "worker"} for i in (1, 2)]
-inv = {"mode": "local", "sshKey": key, "remoteRoot": "/home/aether/work/cloudx-armxk-dry", "driverHost": "wh-1", "hosts": hosts,
-       "config": {"portBase": 26000, "workers": 6, "coreHeap": "512m", "workerHeap": "384m", "reps": 2,
+inv = {"mode": "local", "sshKey": key, "remoteRoot": root, "driverHost": "wh-1", "hosts": hosts,
+       "config": {"portBase": int(port_base), "workers": 6, "coreHeap": "512m", "workerHeap": "384m", "reps": 2,
                   "classes": ["s0", "s6", "s3", "s4"],
                   "timing": {"idleWindowMs": 15000, "minEventMs": 10000, "quietMs": 10000, "maxEventMs": 120000, "s0WindowMs": 20000,
                              "controlMinMs": 5000, "controlQuietMs": 5000, "restoreSettleMs": 15000, "admitTimeoutMs": 180000},
@@ -111,8 +112,9 @@ case "$CMD" in
         [ "${ARMXK_SPEND:-}" = yes ] || { echo "refusing: cloud-run creates billable servers; set ARMXK_SPEND=yes (CTO/owner only, via with-hcloud)" >&2; exit 2; }
         [ -n "${HCLOUD_TOKEN:-}" ] || { echo "refusing: no provider credential in this process (run through with-hcloud)" >&2; exit 2; }
         mkdir -p "$RUN_DIR"
+        # before `up`: a create or bootstrap that fails part-way leaves servers that only this trap deletes
+        trap 'bash "$HERE/lib/provision-hetzner.sh" down "$RUN_DIR" || echo "TEARDOWN FAILED for $RUN_DIR: delete the servers carrying the run label by hand" >&2' EXIT
         bash "$HERE/lib/provision-hetzner.sh" up "$RUN_DIR"
-        trap 'bash "$HERE/lib/provision-hetzner.sh" down "$RUN_DIR"' EXIT
         stage "$RUN_DIR" "$BUILD_HOST" "$CHECKOUT" "$RUN_DIR/ssh/armxk-key"
         python3 "$HERE/lib/armxk.py" run-all --run-dir "$RUN_DIR"
         python3 "$HERE/lib/armxk.py" pull --run-dir "$RUN_DIR" ;;

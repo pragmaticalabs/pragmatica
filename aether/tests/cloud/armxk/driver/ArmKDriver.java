@@ -59,7 +59,7 @@ public final class ArmKDriver {
             thread.join();
         }
 
-        long ok = 0, http = 0, timeout = 0, io = 0, body = 0;
+        long ok = 0, http = 0, timeout = 0, io = 0, body = 0, okAll = 0, failedAll = 0;
         var latencies = new ArrayList<long[]>();
 
         for (var w : workers) {
@@ -68,6 +68,8 @@ public final class ArmKDriver {
             timeout += w.timeouts;
             io += w.ioErrors;
             body += w.bodyErrors;
+            okAll += w.okAll;
+            failedAll += w.failedAll;
             latencies.add(Arrays.copyOf(w.latencyMicros, w.count));
         }
 
@@ -88,6 +90,8 @@ public final class ArmKDriver {
                           + ",\"p99Ms\":" + pct(all, 0.99)
                           + ",\"maxMs\":" + pct(all, 1.0)
                           + ",\"samples\":" + all.length
+                          + ",\"okAll\":" + okAll
+                          + ",\"failedAll\":" + failedAll
                           + "}");
     }
 
@@ -110,6 +114,9 @@ public final class ArmKDriver {
         private final long measureFrom;
         private final long measureTo;
         long ok, httpErrors, timeouts, ioErrors, bodyErrors;
+        /// Every phase, warm-up and window edges included: the exact op count the orchestrator compares with the commits it brackets around
+        /// the whole run. A failed op (timeout, I/O, refused) may still have committed, so it widens the bound rather than counting as 0.
+        long okAll, failedAll;
         long[] latencyMicros = new long[1 << 12];
         int count;
 
@@ -149,6 +156,12 @@ public final class ArmKDriver {
                     var response = client.send(request, HttpResponse.BodyHandlers.ofString());
                     var micros = (System.nanoTime() - sent) / 1000;
 
+                    if (response.statusCode() == 200 && response.body().contains("config_set")) {
+                        okAll++;
+                    } else {
+                        failedAll++;
+                    }
+
                     if (!counted || System.currentTimeMillis() > measureTo) {
                         continue;
                     }
@@ -162,10 +175,12 @@ public final class ArmKDriver {
                         record(micros);
                     }
                 } catch (HttpTimeoutException e) {
+                    failedAll++;
                     if (counted) {
                         timeouts++;
                     }
                 } catch (IOException e) {
+                    failedAll++;
                     if (counted) {
                         ioErrors++;
                     }

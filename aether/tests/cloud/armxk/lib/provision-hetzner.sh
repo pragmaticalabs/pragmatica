@@ -7,8 +7,10 @@
 #   check  passes only when the project's server count equals the baseline read before `up` (any label, so an unlabelled
 #          replacement still fails it)
 #
-# Topology (env, defaults per q6 §7.4 / q8 P6): ARMXK_CORE_TYPE=ccx13, ARMXK_WORKER_TYPE=cpx62, ARMXK_WORKER_HOSTS=15, ARMXK_WORKERS=100,
-# ARMXK_LOCATION=nbg1 (the product pages list CPX62/CCX in NBG1 and HEL1 only), ARMXK_HOURS=3, and the project limits
+# Topology (env; defaults are the CTO's #2560 rulings of 2026-11-02): ARMXK_CORE_TYPE=ccx23 (a guess at a realistic minimum core;
+# every capacity number is reported as "at ccx23"), ARMXK_WORKER_TYPE=cpx62, ARMXK_WORKER_HOSTS=7 (inside the recorded 120 shared
+# vCPU), ARMXK_WORKERS=100 (15/15/14/14/14/14/14 across the 7 hosts), ARMXK_LOCATION=nbg1 (the product pages list CPX62/CCX in NBG1 and
+# HEL1 only), ARMXK_HOURS=4 (a 3 h run plus a 1 h margin), and the project limits
 # ARMXK_LIMIT_INSTANCES / _SHARED_VCPU / _DEDICATED_VCPU (defaults are the last recorded values; the CTO reads the console).
 set -euo pipefail
 OP=${1:?up|down|check}; RUN_DIR=${2:?run-dir}
@@ -19,15 +21,18 @@ source "$CLOUD_DIR/lib/cloud-driver.sh"
 RUN_ID=$(basename "$RUN_DIR" | tr -c 'a-zA-Z0-9-\n' '-' | tr 'A-Z' 'a-z' | cut -c1-40)
 LABEL="aether-cluster=armxk-${RUN_ID}"
 NET="armxk-${RUN_ID}-net"; KEY_NAME="armxk-${RUN_ID}-key"
-CORE_TYPE=${ARMXK_CORE_TYPE:-ccx13}; WORKER_TYPE=${ARMXK_WORKER_TYPE:-cpx62}
-WORKER_HOSTS=${ARMXK_WORKER_HOSTS:-15}; WORKERS=${ARMXK_WORKERS:-100}
-LOCATION=${ARMXK_LOCATION:-nbg1}; HOURS=${ARMXK_HOURS:-3}
+CORE_TYPE=${ARMXK_CORE_TYPE:-ccx23}; WORKER_TYPE=${ARMXK_WORKER_TYPE:-cpx62}
+WORKER_HOSTS=${ARMXK_WORKER_HOSTS:-7}; WORKERS=${ARMXK_WORKERS:-100}
+LOCATION=${ARMXK_LOCATION:-nbg1}; HOURS=${ARMXK_HOURS:-4}
 log() { echo "[$(date -u +%H:%M:%SZ)] provision: $*"; }
 
 check() {
     local baseline now
+    mkdir -p "$RUN_DIR/evidence"
+    # `up` writes the baseline before its first create, so a run with no baseline created nothing
+    [ -f "$RUN_DIR/server-baseline" ] || { log "no baseline: provisioning stopped before its first create"; return 0; }
     baseline=$(cat "$RUN_DIR/server-baseline")
-    now=$(driver_server_count_all)
+    now=$(driver_server_count_all) || { log "TEARDOWN NOT VERIFIED: the project's server count could not be read"; return 1; }
     echo "{\"utc\":\"$(date -u +%FT%TZ)\",\"baseline\":$baseline,\"now\":$now,\"label\":\"$LABEL\",\"labelled\":$(driver_server_count_by_label "$LABEL")}" >> "$RUN_DIR/evidence/teardown-check.jsonl"
     if [ "$now" != "$baseline" ]; then
         log "TEARDOWN NOT COMPLETE: $now servers in the project, baseline $baseline"; driver_show_servers_by_label "$LABEL" || true; return 1

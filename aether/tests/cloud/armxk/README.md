@@ -26,7 +26,7 @@ the same instrument runs inside each core process:
 | Reading | Path |
 |---|---|
 | mutations by family, leader transactions accepted/refused, slots, batches, commands | `agent/M1ProbeAgent.java`, a `-javaagent` loaded into the stock `aether-node.jar`. `agent/build-agent.sh` compiles it **together with the checkout's own** `aether/ember/src/test/java/org/pragmatica/aether/ember/M1Instrument.java`, so the cloud and the in-JVM harness count with one source. Served on `127.0.0.1:<agent port>` (`/m1/snapshot`, `/m1/ops`). |
-| decisions, proposals, round-1/round-2 votes, pending batches | `GET /api/v1/metrics/comprehensive` → `consensus` (`RabiaMetricsCollector`, `aether-metrics/.../RabiaMetricsCollector.java:24-145`; counters are monotonic, `snapshotAndReset` has no caller) |
+| decisions, proposals, round-1/round-2 votes, pending batches | `GET /api/v1/metrics/comprehensive` → `consensus` (`RabiaMetricsCollector`, `aether-metrics/.../RabiaMetricsCollector.java:24-145`; counters are monotonic, `snapshotAndReset` has no caller; `syncFailureCount` is never incremented, `RabiaEngine` records only successful syncs, so its 0 is not evidence) |
 | load, CPU, RSS per host | `lib/node.sh sample` (`/proc/stat`, `/proc/loadavg`, `/proc/<pid>/status`) |
 
 There is no production endpoint with per-family mutation counts: the Management API routes
@@ -68,7 +68,11 @@ VMs. Only `lib/provision-hetzner.sh` calls the provider.
 
 ## Topology
 
-- 5 cores, one per VM (`core-host-1..5`), started before any worker.
+- 5 cores, one per VM (`core-host-1..5`), ccx23 (4 dedicated vCPU). That is a guess at a realistic minimum core, so every capacity
+  number is reported as "at ccx23".
+- 7 worker hosts, cpx62 (112 shared vCPU, inside the recorded 120), carrying N = 100 workers (15/15/14/14/14/14/14). N per class:
+  arm K 0 (before any worker); S0 100; S6a 100 instances on 100 workers, S6c 5 on the cores; S3 100 at the start of each window
+  (99 during it, restored after); S4 100 workers, 5 cores at the start (4 during the window).
 - Arm K runs first: the driver (`driver/ArmKDriver.java`) on worker host `wh-1`, before its workers start; never on a core.
 - Workers several per host on the worker hosts, round-robin, admitted as above; the community policy is committed through
   `POST /api/v1/cluster/config` (max size 25 at N ≥ 50, else 5, as M-1).
@@ -87,7 +91,9 @@ per-core delta and its spread. Placement for `s6a` is set by `POST /api/v1/scale
 
 Arm K: c ∈ {1, 4, 16, 64, 256}, 15 s warm-up, 60 s measured, then a 20 s c=0 control after every step; 3 passes, pass 2 reversed.
 Readings of every core bracket the measured 60 s (`armk.jsonl`: Δdecisions/Δproposals/Δvotes, Δ`put:ConfigKey` and so commits per op,
-pending batches, the driver's ops/s, p50/p99 and errors). The summary row computes the plateau (< 5 % growth per doubling or p99 > 1 s).
+pending batches, the driver's ops/s, p50/p99 and errors). Commits per op (k) is exact: the target core's `put:ConfigKey` over the whole driver run against the
+driver's `okAll`, inside the bound [`okAll`, `okAll + failedAll`] (a timed-out op may still commit); the rate ratio over the 60 s window
+mixes two windows and is recorded only as `commitsPerOpRateRatio`. The summary row computes the plateau (< 5 % growth per doubling or p99 > 1 s).
 
 Evidence goes to `<run-dir>/evidence/*.jsonl`; host logs and samples are pulled to `<run-dir>/evidence/pull-<step>/` after every
 step and on failure.
@@ -95,5 +101,7 @@ step and on failure.
 ## Cost
 
 `armxk.sh estimate` prices the topology from the list prices recorded in `lib/estimate.py` (with the date and pages they were read
-from) and checks it against the project limits. It never calls the API. `cloud-run` refuses to provision on any estimate problem, and
+from) and checks it against the project limits. It never calls the API. Default: 5 ccx23 + 7 cpx62 = EUR 2.1567/h; a 3 h run
+plus a 1 h margin bills 4 h = EUR 8.63. The arm K load generator is worker host `wh-1` before its workers start (q8 P6.1), so it adds
+no server; a separate cpx62 load generator would add EUR 0.2091/h. `cloud-run` refuses to provision on any estimate problem, and
 refuses each step whose billed hours (every started hour, per server) would cross the cap.

@@ -55,11 +55,11 @@ def estimate(core_type, cores, worker_type, worker_hosts, hours, cap_usd, usd_pe
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--core-type", default="ccx13")
+    ap.add_argument("--core-type", default="ccx23")
     ap.add_argument("--cores", type=int, default=5)
     ap.add_argument("--worker-type", default="cpx62")
-    ap.add_argument("--worker-hosts", type=int, default=15)
-    ap.add_argument("--hours", type=float, default=3.0)
+    ap.add_argument("--worker-hosts", type=int, default=7)
+    ap.add_argument("--hours", type=float, default=4.0)  # a 3 h run plus a 1 h margin
     ap.add_argument("--cap-usd", type=float, default=30.0)
     # [unverified: exchange rate not read from a source; pass the day's rate]
     ap.add_argument("--usd-per-eur", type=float, default=1.16)

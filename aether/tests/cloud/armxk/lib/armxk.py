@@ -660,9 +660,10 @@ def armk(run):
         raise HarnessError("the arm K driver must not run on a core host")
     target = run.node(run.leader())
     url = f"http://{target['addr']}:{target['mport']}/api/v1/config"
+    # one sampler per machine: in a dry run the five core "hosts" are one machine, and five samplers sharing one pid file leaked four
+    core_hosts = sorted({run.hosts[c["host"]]["ssh"]: c["host"] for c in run.nodes("core")}.values())
     sampler = (f"nohup bash -c 'while :; do bash {run.root}/lib/node.sh sample {run.root} >> {run.root}/samples-armk.log; sleep 4; done' "
                f">/dev/null 2>&1 & echo $! > {run.root}/sampler.pid")
-    core_hosts = sorted({c["host"] for c in run.nodes("core")})
     for h in core_hosts:
         run.sh(h, sampler)
     try:
@@ -682,6 +683,8 @@ def armk_step(run, p, c, url, target, driver_host):
     k = run.cfg["armK"]
     cmd = (f"cd {run.root} && java driver/ArmKDriver.java {url} {run.root}/secrets/api-keys {c} {k['warmupS']} {k['measureS']} "
            f"armk.p{p}.c{c}. > {run.root}/armk-p{p}-c{c}.json 2> {run.root}/armk-p{p}-c{c}.err; echo $? > {run.root}/armk-p{p}-c{c}.rc")
+    # The exact bracket: the target's commits over the WHOLE driver run against every op the driver sent, so no window edge enters k.
+    bracket_before = run.snapshot(target)
     run.sh(driver_host, f"rm -f {run.root}/armk-p{p}-c{c}.*; nohup bash -c {shlex.quote(cmd)} >/dev/null 2>&1 &")
     await_cond(f"driver p{p} c{c} started", lambda: "armk-driver started" in run.sh(driver_host, f"cat {run.root}/armk-p{p}-c{c}.err 2>/dev/null",
                                                                                     check=False), 120, 0.5)
@@ -700,11 +703,18 @@ def armk_step(run, p, c, url, target, driver_host):
     if rc != "0" or not result:
         raise HarnessError(f"arm K driver p{p} c{c} rc={rc}: {run.sh(driver_host, f'tail -5 {run.root}/armk-p{p}-c{c}.err', check=False)}")
     driver = json.loads(result)
+    sleep_s(5)  # a timed-out op may still commit after the client gave up
+    bracket_put = run.snapshot(target).get("put:ConfigKey", 0) - bracket_before.get("put:ConfigKey", 0)
+    exact = {"putConfigKey": bracket_put, "okAll": driver["okAll"], "failedAll": driver["failedAll"],
+             # every ok op committed once, and at most every failed op also committed: k == 1 exactly iff the count is in this range
+             "bound": [driver["okAll"], driver["okAll"] + driver["failedAll"]],
+             "commitsPerOp": bracket_put / driver["okAll"] if driver["okAll"] else None}
+    exact["withinBound"] = exact["bound"][0] <= bracket_put <= exact["bound"][1]
     loads = {h: run.host_sample(h) for h in sorted({cc["host"] for cc in run.nodes("core")})}
     record = {"kind": "armk-step", "pass": p, "c": c, "target": target["id"], "driverHost": driver_host, "startUtc": utc(driver["measureStartMs"]),
               "endUtc": utc(driver["measureEndMs"]), "driver": driver, "cores": readings_delta(before, after), "coreLoadAfter": loads,
               "readingsUtc": [utc(min(v["readMs"] for v in before.values())), utc(max(v["readMs"] for v in after.values()))],
-              "readSeconds": round(read_s, 2)}
+              "readSeconds": round(read_s, 2), "exact": exact}
     run.emit("armk", record)
     lead = record["cores"].get(target["id"], {})
     log(f"arm K p{p} c={c}: {driver['opsPerSec']} ops/s p50={driver['p50Ms']} p99={driver['p99Ms']} errors={driver['errors']} "
@@ -740,7 +750,9 @@ def summarize_armk(run):
                           "commitsPerSec": lead.get("d_putConfigKey", 0) / secs,
                           # a ratio of RATES: the core readings bracket the measured phase from outside, so their window is a few
                           # seconds wider than the driver's; counts over the two windows are not comparable, rates are
-                          "commitsPerOp": (lead.get("d_putConfigKey", 0) / secs) / float(r["driver"]["opsPerSec"]) if ok else None})
+                          "commitsPerOpRateRatio": (lead.get("d_putConfigKey", 0) / secs) / float(r["driver"]["opsPerSec"]) if ok else None,
+                          # k: exact counts over the whole driver run (r["exact"]); the rate ratio above mixes two windows and is not k
+                          "commitsPerOp": r["exact"]["commitsPerOp"], "commitsPerOpWithinBound": r["exact"]["withinBound"]})
         plateau = None
         for prev, cur in zip(table, table[1:]):
             grow = (float(cur["opsPerSec"]) - float(prev["opsPerSec"])) / max(float(prev["opsPerSec"]), 1e-9)
