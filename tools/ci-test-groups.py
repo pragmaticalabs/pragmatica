@@ -112,7 +112,8 @@ def check(root=ROOT, groups_file=GROUPS, ci_file=CI):
 
 
 def group_modules(group, rows):
-    return [m for o, m in rows if o == group]
+    """A test group's modules; a `job:` owner is not a group, so it names none."""
+    return [] if group.startswith("job:") else [m for o, m in rows if o == group]
 
 
 def verify_reports(report_dir, rows):

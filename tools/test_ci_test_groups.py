@@ -154,6 +154,39 @@ class RepositoryGroupsTest(unittest.TestCase):
         self.assertIn("python3 -B tools/ci-test-groups.py verify-reports reports", ci)
 
 
+    def _cli(self, *argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            groups.main(list(argv))
+        return out.getvalue().strip()
+
+    def test_the_ci_group_modules_command_lists_only_its_group(self):
+        rows = groups.read_groups()
+        for group in ("g1", "g2", "g3", "g4"):
+            self.assertEqual(self._cli("modules", "--group", group).split(","), [m for o, m in rows if o == group])
+        self.assertEqual(self._cli("modules", "--group", "g1"), "aether/node")
+        with self.assertRaises(SystemExit):
+            self._cli("modules", "--group", "job:ember-shard")  # not a group: its module is the shard job's
+        with self.assertRaises(SystemExit):
+            self._cli("modules", "--group", "g9")
+
+    def test_exactly_one_group_runs_the_standalone_examples_build(self):
+        answers = {g: self._cli("has-examples", "--group", g) for g in ("g1", "g2", "g3", "g4")}
+        self.assertEqual(sorted(answers.values()), ["no", "no", "no", "yes"], answers)
+
+    def test_the_aggregate_fails_unless_every_needed_job_passed(self):
+        job = groups.CI.read_text().split("\n  build-and-test:\n", 1)[1].split("\n  forge-tests:\n", 1)[0]
+        self.assertIn("    if: always()\n", job)  # without it a failed group SKIPS the required check, which passes
+        self.assertIn('[ "${{ needs.static-gates.result }}" = success ] && [ "${{ needs.test-group.result }}" = success ]', job)
+
+    def test_the_group_job_keeps_build_and_tests_test_flags(self):
+        job = groups.CI.read_text().split("\n  test-group:\n", 1)[1].split("\n  build-and-test:\n", 1)[0]
+        self.assertIn("-Dember.skipTests=true -Dconsensus.skipTests=true -Dpostgres-async.skipTests=false", job)
+        self.assertIn("if: steps.plan.outputs.examples == 'yes'\n        run: mvn verify -B -f examples/pom.xml", job)
+        self.assertIn("test-group-${{ matrix.group }}.txt\n            **/target/surefire-reports/*.xml", job)
+        self.assertIn("TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX: mirror.gcr.io/", job)
+
+
 class CompareTestcasesTest(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
