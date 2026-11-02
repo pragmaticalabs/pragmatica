@@ -569,7 +569,8 @@ public sealed interface TopologyAssembly {
         var managementServerRef = in.managementServerRef();
         var membershipConfig = in.membershipConfig();
         var presenceSampler = in.presenceSampler();
-        // The ONE place the cluster supplier is read: both replacement-id sites below use this scoped one, never the plain supplier.
+        // The reconciler (core replacements) reads this scoped supplier; the replacement wiring takes the plain one and chooses the
+        // shape per node from the source of the node being replaced (NodeReplacementWiring.replacementIdPrefix).
         var replacementIdScope = idScope(clusterTopologyManager, in.clusterNameSupplier());
         var membershipFsm = in.membershipFsm();
         var defer = in.defer();

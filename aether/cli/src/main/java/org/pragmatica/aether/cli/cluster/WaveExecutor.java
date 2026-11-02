@@ -329,7 +329,8 @@ public final class WaveExecutor {
     /// with that name ([ComputeProvider#honoursOperationId], Hetzner today); on any other provider a late-landing original plus a re-issue
     /// would be two live servers for one node id, so there the remainder mints fresh ids as before (v-g1 F2).
     private static Supplier<String> idsFor(ComputeProvider compute, ApplyRecorder recorder) {
-        // cloud ids carry no cluster (the server name `<cluster>-<nodeId>` does): a re-issued id is a bare node id too
+        // freshly minted cloud ids carry no cluster (the server name `<cluster>-<nodeId>` does); a re-issued id is the ledger row's own,
+        // so a row minted before the flag day keeps the old shape and, past an 11-character cluster, is refused typed before any create
         var minted = WaveNodeProvisioning.cloudMintedIds();
 
         return compute.honoursOperationId()
