@@ -999,8 +999,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var peer = peers.get(nodeId);
 
         firstObservedMissingMs.remove(nodeId);
-        endBackpressureEpisodes(nodeId);
         if (peer == null) {
+            endBackpressureEpisodes(nodeId);
             log.debug("departurePermanent for {} suppressed: peer absent (no transition)", nodeId);
 
             return;
@@ -1016,6 +1016,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // first call; a repeated departurePermanent() finds the peer already REMOVED and
         // records nothing — no duplicate PeerDisconnected flood, no REMOVED→REMOVED journal noise.
         peer.authoritativeRemove(System.nanoTime()).onPresent(this::closeDroppedConnection);
+        // After REMOVED, not before: a write racing this departure re-checks REMOVED after counting (see
+        // countBackpressuredWrite), so its episode is dropped by whichever of the two runs second.
+        endBackpressureEpisodes(nodeId);
         var clientRef = client;
 
         if (clientRef != null) {
@@ -2600,13 +2603,27 @@ public class QuicClusterNetwork implements ClusterNetwork {
         };
     }
 
+    /// Counts inside `compute`, under the same bin lock `remove` takes, so a summary never misses a write counted
+    /// before it. A write captured before its peer's departure can run after `departurePermanent` closed the peer's
+    /// episodes; the REMOVED re-check drops the episode it just opened, which no later event would close.
     private void countBackpressuredWrite(NodeId peerId, StreamType streamType) {
-        var writes = backpressureEpisodes.computeIfAbsent(new BackpressureLane(peerId, streamType),
-                                                          lane -> openBackpressureEpisode(lane))
+        var writes = backpressureEpisodes.compute(new BackpressureLane(peerId, streamType),
+                                                  (lane, open) -> countWrite(open == null
+                                                                             ? openBackpressureEpisode(lane)
+                                                                             : open))
                                          .writes()
-                                         .incrementAndGet();
+                                         .get();
 
         log.debug("Backpressure on peer {} lane {}: write {} of this episode", peerId, streamType, writes);
+        if (isPeerRemoved(peerId)) {
+            closeBackpressureEpisode(peerId, streamType);
+        }
+    }
+
+    private static BackpressureEpisode countWrite(BackpressureEpisode episode) {
+        episode.writes().incrementAndGet();
+
+        return episode;
     }
 
     private BackpressureEpisode openBackpressureEpisode(BackpressureLane lane) {
@@ -2624,6 +2641,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
             return;
         }
 
+        closeBackpressureEpisode(peerId, streamType);
+    }
+
+    /// No `isEmpty` shortcut here: the map's size is updated after a new entry is visible, so the shortcut can miss
+    /// an episode opened concurrently, and departure and channel close are the only events that would close it.
+    private void closeBackpressureEpisode(NodeId peerId, StreamType streamType) {
         Option.option(backpressureEpisodes.remove(new BackpressureLane(peerId, streamType)))
               .onPresent(episode -> log.info("Backpressure on peer {} lane {} cleared: {} write(s) found it unwritable over {} ms",
                                              peerId,
@@ -2635,7 +2658,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// Closes every open episode of a peer whose channel closed or who departed, each with its summary line.
     private void endBackpressureEpisodes(NodeId peerId) {
         Stream.of(StreamType.values())
-              .forEach(streamType -> endBackpressureEpisode(peerId, streamType));
+              .forEach(streamType -> closeBackpressureEpisode(peerId, streamType));
+    }
+
+    /// Package-private test seam: the number of open backpressure episodes, so tests can show an entry is gone.
+    int openBackpressureEpisodesForTests() {
+        return backpressureEpisodes.size();
     }
 
     /// Package-private test seam — drives `writeIfWritable` directly so regression tests can

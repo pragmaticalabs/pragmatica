@@ -21,7 +21,10 @@ import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.regex.Pattern;
 
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.DefaultChannelPromise;
@@ -63,6 +66,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.withSettings;
 import static org.pragmatica.lang.Unit.unit;
 
 /// Regression coverage for the consensus-send backpressure fix.
@@ -543,6 +547,196 @@ class QuicConsensusBackpressureTest {
 
                 assertSummaryOf(capture, WRITES);
             }
+        }
+
+        /// The summary reports how long the lane stayed unwritable, measured from the write that opened the episode.
+        @Test
+        void summary_reportsTheEpisodeDuration() {
+            var network = network();
+
+            try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+                blockWrites(network, blockedChannel(), 1);
+                parkMillis(60);
+                network.writeIfWritableForTest(writable(), payload(), PEER, StreamType.METRICS);
+
+                assertThat(capture.messages(Level.INFO)).filteredOn(message -> message.contains("cleared"))
+                                                        .singleElement()
+                                                        .satisfies(message -> assertThat(durationMillis(message))
+                                                            .as("the episode lasted at least the 60 ms parked, and not since the epoch")
+                                                            .isBetween(50L, 10_000L));
+            }
+        }
+
+        /// The usual departure: a peer the transport holds state for is driven to REMOVED, and its episode closes.
+        @Test
+        void departedPeerWithState_closesItsEpisode() {
+            var blocked = blockedChannel();
+            var network = network();
+            network.seedPeerForTests(PEER, PeerState.peerState(PEER, System.nanoTime()));
+
+            try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+                blockWrites(network, blocked, WRITES);
+
+                network.departurePermanent(PEER);
+
+                assertSummaryOf(capture, WRITES);
+                assertThat(network.openBackpressureEpisodesForTests()).isZero();
+            }
+        }
+
+        /// A write that captured its stream before its peer departed can run after `departurePermanent` closed the
+        /// peer's episodes. The episode it opens must not stay: a REMOVED peer gets no later departure or close.
+        @Test
+        void aWriteAfterDeparture_leavesNoEpisodeOpen() {
+            var network = network();
+            network.seedPeerForTests(PEER, PeerState.peerState(PEER, System.nanoTime()));
+
+            network.departurePermanent(PEER);
+            network.writeIfWritableForTest(blockedChannel(), payload(), PEER, StreamType.METRICS);
+
+            assertThat(network.openBackpressureEpisodesForTests()).as("no episode is kept for a REMOVED peer").isZero();
+        }
+
+        /// The same with the write and the departure racing: whichever runs second must drop the episode.
+        @Test
+        void writesRacingDeparture_leaveNoEpisodeOpen() {
+            var network = network();
+            var blocked = stubOnlyBlockedChannel();
+
+            try (var _ = LogCapture.capture(LOGGER, Level.ERROR, false)) {
+                for (int round = 0; round < RACE_ROUNDS; round++) {
+                    var peer = new NodeId("racer-" + round);
+                    network.seedPeerForTests(peer, PeerState.peerState(peer, System.nanoTime()));
+                    race(RACE_WRITERS,
+                         departed -> {
+                             while (!departed.get()) {
+                                 network.writeIfWritableForTest(blocked, payload(), peer, StreamType.METRICS);
+                             }
+                         },
+                         departed -> {
+                             network.departurePermanent(peer);
+                             departed.set(true);
+                         });
+                }
+            }
+
+            assertThat(network.openBackpressureEpisodesForTests()).as("episodes left open for REMOVED peers").isZero();
+        }
+
+        /// Writes counted while another thread closes the episode are reported by exactly one summary each.
+        @Test
+        void concurrentCloses_neverLoseACountedWrite() {
+            var network = network();
+            var blocked = stubOnlyBlockedChannel();
+            var writable = stubOnlyWritable();
+            var blockedWrites = new AtomicLong();
+            var reported = new AtomicLong();
+
+            try (var _ = LogCapture.capture(LOGGER,
+                                            Level.INFO,
+                                            false,
+                                            event -> reported.addAndGet(clearedWrites(event.getMessage().getFormattedMessage())))) {
+                race(RACE_WRITERS,
+                     _ -> {
+                         for (int i = 0; i < COUNT_WRITES; i++) {
+                             network.writeIfWritableForTest(blocked, payload(), PEER, StreamType.METRICS);
+                             blockedWrites.incrementAndGet();
+                         }
+                     },
+                     done -> {
+                         while (!done.get()) {
+                             network.writeIfWritableForTest(writable, payload(), PEER, StreamType.METRICS);
+                         }
+                     });
+                network.writeIfWritableForTest(writable, payload(), PEER, StreamType.METRICS);
+            }
+
+            assertThat(reported.get()).as("writes reported by summaries, of %d backpressured", blockedWrites.get())
+                                      .isEqualTo(blockedWrites.get());
+        }
+
+        private static final int RACE_ROUNDS = 300;
+        private static final int RACE_WRITERS = 4;
+        private static final int COUNT_WRITES = 20_000;
+        private static final Pattern CLEARED = Pattern.compile("cleared: (\\d+) write\\(s\\) found it unwritable over (\\d+) ms");
+
+        /// Runs `writers` threads and one `other` thread from a spin barrier. `other` gets a flag it may set to stop
+        /// the writers; when the writers finish first the flag is set for `other`. Both sides are bounded by a deadline.
+        private static void race(int writers,
+                                 java.util.function.Consumer<AtomicBoolean> writer,
+                                 java.util.function.Consumer<AtomicBoolean> other) {
+            var flag = new AtomicBoolean();
+            var ready = new AtomicInteger();
+            var deadline = System.nanoTime() + TimeSpan.timeSpan(20).seconds().nanos();
+            var threads = new ArrayList<Thread>();
+
+            for (int i = 0; i < writers; i++) {
+                threads.add(Thread.ofPlatform().start(() -> {
+                    spinUntilReady(ready, writers + 1, deadline);
+                    writer.accept(flag);
+                }));
+            }
+
+            var otherThread = Thread.ofPlatform().start(() -> {
+                spinUntilReady(ready, writers + 1, deadline);
+                other.accept(flag);
+            });
+
+            threads.forEach(QuicConsensusBackpressureTest.BackpressureLogEpisodes::joinQuietly);
+            flag.set(true);
+            joinQuietly(otherThread);
+        }
+
+        private static void spinUntilReady(AtomicInteger ready, int parties, long deadline) {
+            ready.incrementAndGet();
+            while (ready.get() < parties && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+        }
+
+        private static void joinQuietly(Thread thread) {
+            try {
+                thread.join(java.time.Duration.ofSeconds(20));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        private static long clearedWrites(String message) {
+            var matcher = CLEARED.matcher(message);
+
+            return matcher.find() ? Long.parseLong(matcher.group(1)) : 0L;
+        }
+
+        private static long durationMillis(String message) {
+            var matcher = CLEARED.matcher(message);
+
+            return matcher.find() ? Long.parseLong(matcher.group(2)) : -1L;
+        }
+
+        private static void parkMillis(long millis) {
+            var until = System.nanoTime() + TimeSpan.timeSpan(millis).millis().nanos();
+            while (System.nanoTime() < until) {
+                java.util.concurrent.locks.LockSupport.parkNanos(until - System.nanoTime());
+            }
+        }
+
+        private static QuicStreamChannel stubOnlyWritable() {
+            var ch = mock(QuicStreamChannel.class, withSettings().stubOnly());
+            var future = mock(ChannelFuture.class, withSettings().stubOnly());
+            when(future.addListener(any())).thenReturn(future);
+            when(ch.writeAndFlush(any())).thenReturn(future);
+            when(ch.isWritable()).thenReturn(true);
+
+            return ch;
+        }
+
+        /// Records no invocations: millions of calls from racing threads would otherwise be kept by the mock.
+        private static QuicStreamChannel stubOnlyBlockedChannel() {
+            var blocked = mock(QuicStreamChannel.class, withSettings().stubOnly());
+            when(blocked.isWritable()).thenReturn(false);
+
+            return blocked;
         }
 
         private static QuicStreamChannel blockedChannel() {
