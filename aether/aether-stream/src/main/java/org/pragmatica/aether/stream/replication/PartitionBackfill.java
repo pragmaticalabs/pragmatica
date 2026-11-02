@@ -220,6 +220,11 @@ public final class PartitionBackfill {
     /// empty or a NEXT flight holds it -- therefore updates no replica row, promotes nothing and acks nothing
     /// ([#updateWatermark], [#ackBackfillToOwner]).
     private final BooleanSupplier current;
+    /// Test seams (#2574), on the shared instance: `joinWindowHook` runs after a call found a flight in the slot and before
+    /// it marks its join; `releaseWindowHook` runs after a flight left the slot and before its re-run is decided. Each
+    /// opens a window a concurrent call can land in, so the race guards there are pinned deterministically.
+    private volatile Runnable joinWindowHook = () -> {};
+    private volatile Runnable releaseWindowHook = () -> {};
 
     private PartitionBackfill(ReplicaRegistry registry,
                               AlignedRecovery partitionRecovery,
@@ -575,6 +580,8 @@ public final class PartitionBackfill {
     /// Joins `running`, marking it so its failure re-runs the backfill. A flight that already left the slot no longer
     /// honours a join, so the call starts over and either joins the partition's next flight or starts one.
     private Promise<Long> join(Flight running, String streamName, int partition) {
+        joinWindowHook.run();
+
         return running.markJoined()
                ? running.result()
                : backfill(streamName, partition);
@@ -667,6 +674,7 @@ public final class PartitionBackfill {
     @Contract
     private void release(PartitionKey key, Flight flight, boolean failed) {
         inFlight.remove(key, flight);
+        releaseWindowHook.run();
         if (flight.land() && failed) {
             rerun(key);
         }
@@ -680,6 +688,16 @@ public final class PartitionBackfill {
                   key.partition(),
                   wait);
         SharedScheduler.schedule(() -> release(key, flight, true), wait);
+    }
+
+    @Contract
+    void joinWindowHook(Runnable hook) {
+        this.joinWindowHook = hook;
+    }
+
+    @Contract
+    void releaseWindowHook(Runnable hook) {
+        this.releaseWindowHook = hook;
     }
 
     /// #2574 F2: the one re-run of a failed joined flight. It never joins: if a call already took the slot, that flight

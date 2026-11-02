@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 
@@ -254,6 +255,55 @@ class PartitionBackfillJoinedRerunTest {
             }
 
             return pulls.size();
+        }
+    }
+
+    /// The race guards, pinned through the backfill's test seams.
+    @Nested
+    class Races {
+        /// A call finds a flight in the slot, and the flight is released before the call marks its join: the call must not
+        /// join a flight that already left (its trigger would be swallowed, the #2574 bug), so it starts over and pulls.
+        @Test
+        void join_racingTheFlightsRelease_startsOver_andPulls() {
+            var backfill = sourceBackfill();
+            var first = backfill.backfill(STREAM, PARTITION);
+            var raced = new AtomicBoolean();
+
+            backfill.joinWindowHook(() -> releaseFirstOnce(raced, first));
+            var late = backfill.backfill(STREAM, PARTITION);
+
+            assertThat(pulls).as("the late call started a flight of its own").hasSize(2);
+            assertThat(late).as("it did not take the released flight's result").isNotSameAs(first);
+        }
+
+        /// The failed joined flight left the slot and another call took it before the re-run was decided: that flight
+        /// serves the trigger, and the re-run must not start beside it (two concurrent pulls of one partition, #1638).
+        @Test
+        void rerun_whenAnotherCallTookTheSlot_doesNotStartBesideIt() {
+            var backfill = sourceBackfill();
+            var first = backfill.backfill(STREAM, PARTITION);
+
+            backfill.backfill(STREAM, PARTITION);
+            backfill.releaseWindowHook(() -> takeSlotOnce(backfill));
+            pulls.getFirst().fail(StreamForwardError.General.READ_FORWARD_TIMEOUT);
+
+            assertThat(first.await(AWAIT).isFailure()).isTrue();
+            assertThat(pulls).as("the call that took the slot pulled; no re-run beside it").hasSize(2);
+        }
+
+        private void releaseFirstOnce(AtomicBoolean raced, Promise<Long> first) {
+            if (raced.compareAndSet(false, true)) {
+                pulls.getFirst().fail(StreamForwardError.General.READ_FORWARD_TIMEOUT);
+                first.await(AWAIT);
+            }
+        }
+
+        private final AtomicBoolean taken = new AtomicBoolean();
+
+        private void takeSlotOnce(PartitionBackfill backfill) {
+            if (taken.compareAndSet(false, true)) {
+                backfill.backfill(STREAM, PARTITION);
+            }
         }
     }
 
