@@ -13,6 +13,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Option;
@@ -48,10 +50,12 @@ public final class TermWriter {
         return new TermWriter(cluster, store, self, deactivated, hierarchy);
     }
 
-    /// Builds the site's commands and applies them. The returned promise is the apply's own; the site attaches its
-    /// existing success and failure handling to it.
+    /// Builds the site's commands and applies them, only while the committed leader record names this node and the
+    /// term is live (design §2.2 point 3a, generalised from #2592's rollback guard). Otherwise nothing is built or
+    /// applied, and the write fails as the site's [NotLeaderAction] says. The returned promise is otherwise the apply's
+    /// own; the site attaches its existing success and failure handling to it.
     public <R> Promise<List<R>> write(WriteSite site, Fn0<List<KVCommand<AetherKey>>> build) {
-        return cluster.apply(build.apply());
+        return issuingLeader().fold(() -> notLeader(site), _ -> cluster.apply(build.apply()));
     }
 
     /// A conditional hierarchy put (the [WriteSite#CORE_DIRECTIVE] and [WriteSite#ACTIVATE_REISSUE] sites). Refused with
@@ -64,5 +68,28 @@ public final class TermWriter {
     public Promise<Unit> hierarchyCommit(List<KVCommand.Mutation<AetherKey, AetherValue>> mutations,
                                          List<KVCommand.ReadWitness<AetherKey>> guards) {
         return hierarchy.commit(mutations, guards);
+    }
+
+    private Option<LeaderValue> issuingLeader() {
+        return store.getTyped(LeaderKey.INSTANCE, LeaderValue.class)
+                    .filter(this::namesThisLiveTerm);
+    }
+
+    private boolean namesThisLiveTerm(LeaderValue value) {
+        return value.leader()
+                    .equals(self) && !deactivated.getAsBoolean();
+    }
+
+    private <R> Promise<List<R>> notLeader(WriteSite site) {
+        return switch (site.notLeader()) {
+            case FAIL_NOT_LEADER, ABANDON_ROLLBACK -> FsmWriteError.NotLeader.FACTORY.apply(site, committedLeader())
+                                                                                     .promise();
+            case INACTIVE_REFUSAL -> HierarchyStateWriter.Refusal.INACTIVE.promise();
+        };
+    }
+
+    private Option<NodeId> committedLeader() {
+        return store.getTyped(LeaderKey.INSTANCE, LeaderValue.class)
+                    .map(LeaderValue::leader);
     }
 }

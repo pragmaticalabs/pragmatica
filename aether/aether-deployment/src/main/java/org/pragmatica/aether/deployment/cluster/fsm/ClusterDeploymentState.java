@@ -52,6 +52,8 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Vers
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.WorkerJoinReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeDrainingReported;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.WorkerLeaveReceived;
+import org.pragmatica.aether.deployment.cluster.fsm.write.FsmWriteError;
+import org.pragmatica.aether.deployment.cluster.fsm.write.NotLeaderAction;
 import org.pragmatica.aether.deployment.cluster.fsm.write.TermWriter;
 import org.pragmatica.aether.deployment.cluster.fsm.write.WriteSite;
 import org.pragmatica.aether.deployment.schema.SchemaEvent.ActivationBlocked;
@@ -3751,7 +3753,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                      inflight.id().asString());
             termWriter.write(WriteSite.ROLLBACK_UNFENCED, () -> batch)
                       .onSuccess(_ -> onLanded.run())
-               .onFailure(cause -> abandonRollback(inflight, cause, batch, onAbandoned));
+               .onFailure(cause -> rollbackRefused(inflight, cause, batch, onAbandoned));
 
             return Unit.unit();
         }
@@ -3764,19 +3766,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                           Runnable onLanded,
                                           Runnable onAbandoned,
                                           int attempt) {
-            // onAbandoned, not onLanded: nothing was written, so the landed path's deallocations must not run; the
-            // abandoned path only releases this node's own bookkeeping.
-            if (!leader.leader().equals(ctx.self()) || deactivated.get()) {
-                log.info("ALL_OR_NOTHING: rollback of blueprint {} not issued — the committed leader record names {}, and"
-                        + " this node ({}) is not that leader or its term has ended",
-                         inflight.id().asString(),
-                         leader.leader(),
-                         ctx.self());
-                onAbandoned.run();
-
-                return Unit.unit();
-            }
-
             var transaction = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(AppBlueprintKey.appBlueprintKey(inflight.id()),
                                                                                       java.util.UUID.randomUUID()
                                                                                                     .toString(),
@@ -3789,7 +3778,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
             termWriter.write(WriteSite.ROLLBACK_FENCED, () -> submitted)
                       .onSuccess(_ -> confirmRollback(inflight, rolledBack, commands, onLanded, onAbandoned, attempt))
-               .onFailure(cause -> abandonRollback(inflight, cause, submitted, onAbandoned));
+               .onFailure(cause -> rollbackRefused(inflight, cause, submitted, onAbandoned));
 
             return Unit.unit();
         }
@@ -3830,6 +3819,43 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             }
 
             submitRollback(inflight, commands, onLanded, onAbandoned, attempt + 1);
+        }
+
+        /// #2592, generalised by #2584: [TermWriter] issues no rollback unless the committed leader record names this
+        /// node and its term is live. A rollback site refused that way runs `onAbandoned`, not `onLanded` (nothing was
+        /// written, so the landed path's deallocations must not run), and schedules no failure reconcile: the term is
+        /// ending, and the next leader re-derives what is derivable.
+        private void rollbackRefused(InFlightBlueprint inflight,
+                                     Cause cause,
+                                     List<KVCommand<AetherKey>> submitted,
+                                     Runnable onAbandoned) {
+            switch (cause) {
+                case FsmWriteError.NotLeader notLeader when notLeader.site()
+                                                                    .notLeader() == NotLeaderAction.ABANDON_ROLLBACK -> rollbackNotIssued(inflight,
+                                                                                                                                         notLeader,
+                                                                                                                                         onAbandoned);
+                default -> abandonRollback(inflight, cause, submitted, onAbandoned);
+            }
+        }
+
+        /// Without a committed leader record the unfenced rollback can no longer be issued at all (#2584 P0): the
+        /// precondition needs a record naming this node. It is logged at WARN, and P2 removes the unfenced branch.
+        private void rollbackNotIssued(InFlightBlueprint inflight, FsmWriteError.NotLeader notLeader, Runnable onAbandoned) {
+            if (notLeader.site() == WriteSite.ROLLBACK_UNFENCED) {
+                log.warn("ALL_OR_NOTHING: rollback of blueprint {} not issued — there is no committed leader record naming"
+                        + " this node ({}) to issue it under",
+                         inflight.id().asString(),
+                         ctx.self());
+            } else {
+                log.info("ALL_OR_NOTHING: rollback of blueprint {} not issued — the committed leader record names {}, and"
+                        + " this node ({}) is not that leader or its term has ended",
+                         inflight.id().asString(),
+                         notLeader.committedLeader()
+                                  .map(NodeId::id)
+                                  .or("no node"),
+                         ctx.self());
+            }
+            onAbandoned.run();
         }
 
         private void abandonRollback(InFlightBlueprint inflight,
