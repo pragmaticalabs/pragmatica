@@ -226,6 +226,93 @@ class ActivateWriteRecoveryTest {
         assertThat(committedState()).isEqualTo(Option.some(SliceState.LOADED));
     }
 
+    /// A slice undeployed while its ACTIVATE retry waits out the backoff ends UNLOADed and is never re-issued ACTIVATE.
+    /// The reconcile that follows the undeploy unloads it before the retry runs, so the retry's re-read of the
+    /// committed state is what stops it here; the re-issue's own SliceTarget check (#1068) is not reached by this test.
+    @Test
+    void failedActivateWrite_ofASliceUndeployedDuringTheBackoff_isUnloadedNotReissued() {
+        cluster.sabotageActivatePuts(1, Sabotage.FAIL_UNAPPLIED);
+
+        harness.dispatch(new Activate());
+        kvStore.remove(SliceTargetKey.sliceTargetKey(SLICE_BASE));
+
+        await().atMost(Duration.ofSeconds(20))
+               .until(() -> committedState().equals(Option.some(SliceState.UNLOAD)));
+        assertThat(cluster.activateTransactions()).as("an undeployed slice is never re-issued ACTIVATE").isEmpty();
+    }
+
+    /// The backstop fires once per window, even when its re-issue is lost, and a lost backstop re-issue starts no
+    /// backoff chain: under a backpressured lane it adds one write per stranded slice per window, not one per reconcile.
+    @Test
+    void lostBackstopReissue_isReissuedOncePerWindow_withoutABackoffChain() {
+        cluster.sabotageActivatePuts(1, Sabotage.LOST);
+        cluster.loseActivateTransactions();
+        harness.dispatch(new Activate());
+
+        clock.addAndGet(BACKSTOP_MS + 1);
+        activeState().reconcile();
+        activeState().reconcile();
+
+        assertThat(cluster.activateTransactions()).as("two reconciles in one window re-issue once").hasSize(1);
+        await().during(Duration.ofSeconds(7))
+               .atMost(Duration.ofSeconds(9))
+               .until(() -> cluster.activateTransactions().size() == 1);
+
+        clock.addAndGet(BACKSTOP_MS + 1);
+        activeState().reconcile();
+
+        assertThat(cluster.activateTransactions()).as("control: the next window re-issues again").hasSize(2);
+    }
+
+    /// A failed re-issue takes the next backoff step: the chain does not stop at the first refused compare-and-set.
+    @Test
+    void failedReissue_isRetriedAtTheNextBackoffStep() {
+        cluster.sabotageActivatePuts(1, Sabotage.FAIL_UNAPPLIED);
+        cluster.loseActivateTransactions();
+
+        harness.dispatch(new Activate());
+
+        await().atMost(Duration.ofSeconds(25))
+               .until(() -> cluster.activateTransactions().size() >= 2);
+    }
+
+    /// The backstop window opens at the FIRST observation of LOADED: a later LOADED observation does not restart it.
+    @Test
+    void lostActivateWrite_backstopWindow_isNotRestartedByARepeatedLoadedObservation() {
+        kvStore.remove(ARTIFACT_KEY);
+        harness.dispatch(new Activate());
+        cluster.sabotageActivatePuts(2, Sabotage.LOST);
+        kvStore.put(ARTIFACT_KEY, LOADED);
+
+        harness.dispatch(new NodeArtifactPutReceived(new ValuePut<>(new KVCommand.Put<>(ARTIFACT_KEY, LOADED), Option.none())));
+        clock.addAndGet(BACKSTOP_MS / 2);
+        harness.dispatch(new NodeArtifactPutReceived(new ValuePut<>(new KVCommand.Put<>(ARTIFACT_KEY, LOADED), Option.none())));
+        clock.addAndGet(BACKSTOP_MS / 2 + 1);
+        activeState().reconcile();
+
+        assertThat(committedState()).isEqualTo(Option.some(SliceState.ACTIVATE));
+    }
+
+    /// The retry backoff is bounded and jittered: 5, 10, 20, 40 s, each within +-20%, and none after the fourth.
+    @Test
+    void activateRetryDelay_doublesFromFiveSeconds_withTwentyPercentJitter_andStopsAfterFourRetries() {
+        for (var attempt = 0; attempt < 4; attempt++) {
+            var baseMs = 5_000L << attempt;
+
+            assertThat(retryDelayMs(attempt, 0.0)).as("lowest jitter, attempt %d", attempt).isEqualTo(baseMs * 8 / 10);
+            assertThat(retryDelayMs(attempt, 0.5)).as("mid jitter, attempt %d", attempt).isEqualTo(baseMs);
+            assertThat(retryDelayMs(attempt, 0.999_999)).as("highest jitter, attempt %d", attempt)
+                                                        .isBetween(baseMs * 12 / 10 - 1, baseMs * 12 / 10);
+        }
+        assertThat(ClusterDeploymentState.Active.activateRetryDelay(4, () -> 0.5)).isEqualTo(Option.none());
+    }
+
+    private static long retryDelayMs(int attempt, double random) {
+        return ClusterDeploymentState.Active.activateRetryDelay(attempt, () -> random)
+                                            .map(TimeSpan::millis)
+                                            .or(-1L);
+    }
+
     private Option<SliceState> committedState() {
         return kvStore.get(ARTIFACT_KEY)
                       .filter(NodeArtifactValue.class::isInstance)
@@ -317,6 +404,7 @@ class ActivateWriteRecoveryTest {
         private volatile Sabotage sabotage = Sabotage.LOST;
         private volatile Option<SliceState> moveOn = Option.none();
         private volatile boolean movedOn;
+        private volatile boolean loseTransactions;
 
         SabotagingClusterNode(NodeId self, InMemoryKvStore kvStore) {
             this.self = self;
@@ -331,6 +419,11 @@ class ActivateWriteRecoveryTest {
         /// The next ACTIVATE write after the sabotaged ones, plain or compare-and-set, first finds the node moved on.
         void moveOnBeforeNextActivateWrite(SliceState state) {
             moveOn = Option.some(state);
+        }
+
+        /// Every ACTIVATE compare-and-set from now on reports no result and never applies.
+        void loseActivateTransactions() {
+            loseTransactions = true;
         }
 
         boolean movedOn() {
@@ -364,6 +457,10 @@ class ActivateWriteRecoveryTest {
                 if (toSabotage.getAndUpdate(n -> Math.max(0, n - 1)) > 0) {
                     return sabotaged(batch);
                 }
+            }
+
+            if (loseTransactions && isActivateTransaction(batch)) {
+                return Promise.success(List.of());
             }
 
             if (isActivatePut(batch) || isActivateTransaction(batch)) {

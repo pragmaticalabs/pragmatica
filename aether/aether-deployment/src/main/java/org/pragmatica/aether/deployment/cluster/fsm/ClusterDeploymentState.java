@@ -12,9 +12,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import java.util.function.DoubleSupplier;
 import java.util.stream.Collectors;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -284,8 +286,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// The fallback source label for a joining worker whose membership `source` is absent or
         /// blank (worker-membership-spec D2).
         private static final String DEFAULT_SOURCE = "default";
-        /// #2579: a failed ACTIVATE write is re-checked after 5, 10, 20 and 40 s (the base mirrors the LOAD failure
-        /// path's 5 s re-reconcile). The four attempts end before the reconcile backstop's window opens.
+        /// #2579: a failed ACTIVATE write is re-checked after 5, 10, 20 and 40 s, each +-20% jittered (the base mirrors
+        /// the LOAD failure path's 5 s re-reconcile). The four attempts end by the time the reconcile backstop's window
+        /// opens; an overlap is harmless, because both re-issues are compare-and-sets on the same LOADED value.
         private static final long ACTIVATE_RETRY_BASE_SECONDS = 5;
         private static final int MAX_ACTIVATE_RETRIES = 4;
 
@@ -2820,17 +2823,28 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// ([#reissueStrandedActivations]) still covers the slice.
         private void onActivateWriteFailure(SliceNodeKey sliceKey, Cause cause, int attempt) {
             log.error("Failed to issue ACTIVATE command for {} (attempt {}): {}", sliceKey, attempt + 1, cause.message());
-            if (attempt >= MAX_ACTIVATE_RETRIES) {
-                log.warn("ACTIVATE for {} not retried after {} attempts; the reconcile backstop re-issues it after {} ms in LOADED",
-                         sliceKey,
-                         attempt + 1,
-                         ACTIVATION_BACKSTOP_MS);
+            activateRetryDelay(attempt,
+                               () -> ThreadLocalRandom.current().nextDouble()).onPresent(delay -> SharedScheduler.schedule(() -> retryActivateIfStillLoaded(sliceKey,
+                                                                                                                                                            attempt + 1),
+                                                                                                                           delay))
+                              .onEmpty(() -> log.warn("ACTIVATE for {} not retried after {} attempts; the reconcile backstop re-issues it after {} ms in LOADED",
+                                                      sliceKey,
+                                                      attempt + 1,
+                                                      ACTIVATION_BACKSTOP_MS));
+        }
 
-                return;
+        /// The delay before ACTIVATE retry `attempt + 1`, none past the last. The +-20% jitter (the 89e17399a9 shape)
+        /// keeps slices whose writes failed together, as they do under one backpressured lane, from re-issuing in
+        /// lockstep against the recovering lane.
+        static Option<TimeSpan> activateRetryDelay(int attempt, DoubleSupplier random) {
+            if (attempt >= MAX_ACTIVATE_RETRIES) {
+                return Option.none();
             }
 
-            SharedScheduler.schedule(() -> retryActivateIfStillLoaded(sliceKey, attempt + 1),
-                                     timeSpan(ACTIVATE_RETRY_BASE_SECONDS << attempt).seconds());
+            return Option.some(timeSpan(JitterUtil.applyJitter((ACTIVATE_RETRY_BASE_SECONDS << attempt) * 1000L,
+                                                               JitterUtil.LIGHT_MIN_FACTOR,
+                                                               JitterUtil.LIGHT_MAX_FACTOR,
+                                                               random)).millis());
         }
 
         /// Re-reads the committed state, the authority: a write that timed out may still have applied. Only a slice
