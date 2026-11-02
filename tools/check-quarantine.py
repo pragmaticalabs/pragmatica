@@ -17,7 +17,11 @@ check fails on:
     and annotation lines directly above it (a `///` doc comment or a comment without the word never counts);
   - a non-canonical spelling (`@Tag("Quarantine")`, `@Tag(value = "quarantine")`): the guard and the exclusions match
     the canonical form only, so a variant would be a quarantine nobody checks;
-  - a surefire or failsafe `<excludedGroups>` in any pom.xml, or an `excludedGroups=` override in a ci.yml job other than
+  - a "quarantine" string literal in any .java outside a one-line tag (a constant, `@Tag(Q)`, a tag split across lines)
+    or a tag on an `@interface` or abstract class: JUnit still excludes such a test from the required jobs, but this scan never sees it,
+    so the quarantine job never selects its module and the test runs in no job at all;
+  - a surefire or failsafe `<excludedGroups>` in any pom.xml, any definition of a `*.excludedGroups` property (a child's
+    overrides the root's `surefire.excludedGroups` for every plugin it inherits), or an `excludedGroups=` override in a ci.yml job other than
     `quarantine`, that does not exclude `quarantine`: that job would run, and gate on, the quarantined tests;
   - a root or aether pluginManagement failsafe configuration without an `<excludedGroups>`: failsafe excludes nothing
     by default, so every module inheriting it would run quarantined ITs in its required job.
@@ -32,8 +36,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 TAG = '@Tag("quarantine")'
-ANY_SPELLING = re.compile(r'@Tag\s*\(\s*(?:value\s*=\s*)?"quarantine"\s*\)', re.IGNORECASE)
-ISSUE = re.compile(r"#(\d+)")
+ANY_SPELLING = re.compile(r'@(?:[\w.]+\.)?Tag\s*\(\s*(?:value\s*=\s*)?"quarantine"\s*\)', re.IGNORECASE)
+LITERAL = re.compile(r'"quarantine"', re.IGNORECASE)
+# An issue of this repository: `#123`, never `other/repo#123`, which the lookup would read as this repository's #123.
+ISSUE = re.compile(r"(?<![\w/.-])#(\d+)")
 # The reference comment: `// quarantine: #<issue> <why>`. Only a `//` comment that says "quarantine" counts, never a `///`
 # doc comment: the lines above a class carry its documentation, whose issue numbers have nothing to do with the tag.
 REFERENCE = re.compile(r"(?<!/)//(?!/)\s*quarantine\b(.*)", re.IGNORECASE)
@@ -44,12 +50,12 @@ PLUGIN = re.compile(r"<plugin>\s*<groupId>org\.apache\.maven\.plugins</groupId>\
 FAILSAFE_PARENTS = ("pom.xml", "aether/pom.xml")
 
 
-def test_sources(root=None):
-    """Every .java under a src/test directory, build output and VCS internals pruned."""
+def test_sources(root=None, tests_only=True):
+    """Every .java under a src/test directory (or anywhere), build output and VCS internals pruned."""
     root = root or ROOT
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in PRUNED]
-        if "/src/test/" in f"{dirpath}/".replace(os.sep, "/"):
+        if not tests_only or "/src/test/" in f"{dirpath}/".replace(os.sep, "/"):
             for name in filenames:
                 if name.endswith(".java"):
                     yield Path(dirpath) / name
@@ -72,6 +78,28 @@ def tags(root=None):
             issues = sorted({int(n) for text in context for ref in REFERENCE.findall(text) for n in ISSUE.findall(ref)})
             found.append((path, i + 1, issues, TAG in line))
     return found
+
+
+def hidden_problems(root=None):
+    """Quarantines this scan cannot see: excluded by JUnit everywhere, selected by the quarantine job nowhere."""
+    root = root or ROOT
+    problems = []
+    for path in sorted(test_sources(root, tests_only=False)):
+        lines = path.read_text(errors="replace").splitlines()
+        rel = path.relative_to(root).as_posix()
+        for i, line in enumerate(lines):
+            where = f"{rel}:{i + 1}"
+            if ANY_SPELLING.search(line):
+                j = i
+                while j + 1 < len(lines) and lines[j].strip().startswith(("//", "@")) and "@interface" not in lines[j]:
+                    j += 1
+                if re.search(r"@interface\b|\babstract\s+class\b", lines[j]):
+                    problems.append(f"{where}: a quarantine tag on an annotation type or an abstract class is invisible "
+                                    f"where it is used or inherited; write {TAG} on each test")
+            elif LITERAL.search(line) and not line.strip().startswith(("//", "*")):
+                problems.append(f"{where}: a \"quarantine\" literal outside a one-line {TAG} hides a quarantine from this "
+                                f"guard and from the quarantine job; write {TAG} on one line")
+    return problems
 
 
 def _properties(pom_text):
@@ -108,6 +136,13 @@ def exclusion_problems(root=None):
                 if not _excludes_quarantine(resolved):
                     problems.append(f"{rel}: maven-{kind}-plugin <excludedGroups>{value}</excludedGroups> resolves to "
                                     f"'{resolved}', which does not exclude quarantine")
+        # Every definition of an exclusion property, in <properties> or a profile's: a child's <surefire.excludedGroups>
+        # overrides the root's, and the inherited plugin then resolves it in that child, where no plugin names it.
+        for name, value in re.findall(r"<([\w.-]+\.excludedGroups)>([^<]*)</\1>", text):
+            resolved = _resolve(value, props, root_props)
+            if not _excludes_quarantine(resolved):
+                problems.append(f"{rel}: property <{name}>{value}</{name}> resolves to '{resolved}', which does not "
+                                f"exclude quarantine")
     for rel in FAILSAFE_PARENTS:
         text = re.sub(r"<!--.*?-->", "", (root / rel).read_text(), flags=re.S)
         managed = re.search(r"<pluginManagement>(.*?)</pluginManagement>", text, re.S)
@@ -140,7 +175,9 @@ def open_issue(repo, number):
                                               **({"Authorization": f"Bearer {os.environ['GH_TOKEN']}"}
                                                  if os.environ.get("GH_TOKEN") else {})})
     with urllib.request.urlopen(request, timeout=30) as response:
-        return json.load(response).get("state") == "open"
+        body = json.load(response)
+    # /issues/{n} answers for pull requests too: an open PR is not the open issue that tracks a quarantine
+    return body.get("state") == "open" and "pull_request" not in body
 
 
 def check(root=None, ci_file=None):
@@ -154,6 +191,7 @@ def check(root=None, ci_file=None):
         if not issues:
             problems.append(f"{where}: a quarantine tag needs its open issue: `// quarantine: #<issue> <why>` on the "
                             f"line above it")
+    problems += hidden_problems(root)
     problems += exclusion_problems(root)
     problems += workflow_problems((ci_file or root / ".github/workflows/ci.yml").read_text())
     return problems

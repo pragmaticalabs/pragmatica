@@ -1,6 +1,7 @@
 import contextlib
 import importlib.util
 import io
+import json
 import re
 import shutil
 import tempfile
@@ -96,6 +97,8 @@ class CheckQuarantineTest(unittest.TestCase):
         self.assertEqual(quarantine.check(self.root), [
             "pom.xml: maven-surefire-plugin <excludedGroups>${surefire.excludedGroups}</excludedGroups> resolves to 'Slow', "
             "which does not exclude quarantine",
+            "pom.xml: property <surefire.excludedGroups>Slow</surefire.excludedGroups> resolves to 'Slow', which does not "
+            "exclude quarantine",
             "ci.yml job forge-tests: -Dfailsafe.excludedGroups=Heavy does not exclude quarantine"])
 
     def test_a_closed_issue_is_an_online_problem_and_only_referenced_issues_are_looked_up(self):
@@ -111,6 +114,59 @@ class CheckQuarantineTest(unittest.TestCase):
         self._test("a", "ATest", "class ATest {\n    // quarantine: #5\n    @Tag(value = \"Quarantine\")\n    void t() {}\n}\n")
         self.assertEqual(quarantine.check(self.root), ['a/src/test/java/x/ATest.java:3: write the quarantine tag exactly as '
                                                        '@Tag("quarantine")'])
+
+    def test_a_tag_the_scan_cannot_see_fails(self):
+        # v-2575: each of these is excluded by JUnit from the required jobs, yet tags() missed it, so `modules` never
+        # selected its module and the test ran in no job (shown with surefire on cloudbb-d1); an abstract base's tag is
+        # inherited by subclasses that may live in another module (a test-jar)
+        self._test("a", "ConstTest", 'class ConstTest {\n    static final String Q = "quarantine";\n    // quarantine: #5\n'
+                                     '    @Tag(Q)\n    @Test void t() {}\n}\n')
+        self._test("a", "SplitTest", 'class SplitTest {\n    // quarantine: #5\n    @Tag(\n        "quarantine")\n'
+                                     '    @Test void t() {}\n}\n')
+        self._test("a", "FqnTest", 'class FqnTest {\n    // quarantine: #5\n    @org.junit.jupiter.api.Tag("quarantine")\n'
+                                   '    @Test void t() {}\n}\n')
+        self._test("a", "Quarantined", '// quarantine: #5\n@Tag("quarantine")\n@Retention(RUNTIME)\npublic @interface Quarantined {}\n')
+        self._test("a", "BaseTest", '// quarantine: #5\n@Tag("quarantine")\npublic abstract class BaseTest { @Test void t() {} }\n')
+        write(self.root / "lib/src/main/java/x/Tags.java", 'interface Tags { String QUARANTINE = "Quarantine"; }\n')
+        self.assertEqual(quarantine.check(self.root), [
+            "a/src/test/java/x/FqnTest.java:3: write the quarantine tag exactly as @Tag(\"quarantine\")",
+            "a/src/test/java/x/BaseTest.java:2: a quarantine tag on an annotation type or an abstract class is invisible "
+            "where it is used or inherited; write @Tag(\"quarantine\") on each test",
+            "a/src/test/java/x/ConstTest.java:2: a \"quarantine\" literal outside a one-line @Tag(\"quarantine\") hides a "
+            "quarantine from this guard and from the quarantine job; write @Tag(\"quarantine\") on one line",
+            "a/src/test/java/x/Quarantined.java:2: a quarantine tag on an annotation type or an abstract class is invisible "
+            "where it is used or inherited; write @Tag(\"quarantine\") on each test",
+            "a/src/test/java/x/SplitTest.java:4: a \"quarantine\" literal outside a one-line @Tag(\"quarantine\") hides a "
+            "quarantine from this guard and from the quarantine job; write @Tag(\"quarantine\") on one line",
+            "lib/src/main/java/x/Tags.java:1: a \"quarantine\" literal outside a one-line @Tag(\"quarantine\") hides a "
+            "quarantine from this guard and from the quarantine job; write @Tag(\"quarantine\") on one line"])
+
+    def test_a_quarantine_literal_in_documentation_or_a_tags_container_is_not_hidden(self):
+        write(self.root / "lib/src/main/java/x/Doc.java", '/// demotes a quarantined partition ("quarantine").\nclass Doc {}\n')
+        self._test("a", "ATest", 'class ATest {\n    // quarantine: #5\n    @Tags({@Tag("quarantine"), @Tag("Slow")})\n'
+                                 '    @Test void t() {}\n}\n')
+        self.assertEqual(quarantine.check(self.root), [])
+
+    def test_another_repositorys_issue_is_not_this_repositorys(self):
+        # v-2575: `other/repo#12` was looked up as this repository's #12
+        self._test("a", "ATest", "class ATest {\n    // quarantine: other-org/other-repo#12\n    @Tag(\"quarantine\")\n"
+                                 "    void t() {}\n}\n")
+        self.assertEqual([issues for _, _, issues, _ in quarantine.tags(self.root)], [[]])
+        self._test("a", "ATest", "class ATest {\n    // quarantine: #12 (was other-org/other-repo#7)\n    @Tag(\"quarantine\")\n"
+                                 "    void t() {}\n}\n")
+        self.assertEqual([issues for _, _, issues, _ in quarantine.tags(self.root)], [[12]])
+
+    def test_an_open_pull_request_is_not_an_open_issue(self):
+        # v-2575: GitHub's /issues/{n} answers for pull requests too
+        def answering(body):
+            return mock.patch.object(quarantine.urllib.request, "urlopen",
+                                     lambda request, timeout: io.BytesIO(json.dumps(body).encode()))
+        with answering({"state": "open"}):
+            self.assertTrue(quarantine.open_issue("o/r", 1))
+        with answering({"state": "open", "pull_request": {"url": "u"}}):
+            self.assertFalse(quarantine.open_issue("o/r", 1))
+        with answering({"state": "closed"}):
+            self.assertFalse(quarantine.open_issue("o/r", 1))
 
     def test_build_output_is_not_scanned(self):
         write(self.root / "a/target/src/test/java/ATest.java", "@Tag(\"quarantine\") class ATest {}")
@@ -128,7 +184,21 @@ class CheckQuarantineTest(unittest.TestCase):
                                        "</plugins></build></project>")  # resolves through the root's property: passes
         self.assertEqual(quarantine.exclusion_problems(self.root), [
             "m/pom.xml: maven-surefire-plugin <excludedGroups>${heavyDb.excludedGroups}</excludedGroups> resolves to "
-            "'heavy-db', which does not exclude quarantine"])
+            "'heavy-db', which does not exclude quarantine",
+            "m/pom.xml: property <heavyDb.excludedGroups>heavy-db</heavyDb.excludedGroups> resolves to 'heavy-db', which "
+            "does not exclude quarantine"])
+
+    def test_a_child_property_overriding_the_inherited_exclusion_fails(self):
+        # v-2575: the inherited profile plugin resolves ${surefire.excludedGroups} in the child, where no plugin names it
+        write(self.root / "m/pom.xml", "<project><properties><surefire.excludedGroups>Infinite, Slow</surefire.excludedGroups>"
+                                       "</properties></project>")
+        write(self.root / "n/pom.xml", "<project><profiles><profile><properties><failsafe.excludedGroups>Heavy"
+                                       "</failsafe.excludedGroups></properties></profile></profiles></project>")
+        self.assertEqual(quarantine.exclusion_problems(self.root), [
+            "m/pom.xml: property <surefire.excludedGroups>Infinite, Slow</surefire.excludedGroups> resolves to "
+            "'Infinite, Slow', which does not exclude quarantine",
+            "n/pom.xml: property <failsafe.excludedGroups>Heavy</failsafe.excludedGroups> resolves to 'Heavy', which does "
+            "not exclude quarantine"])
 
     def test_a_group_named_like_quarantine_is_not_quarantine(self):
         write(self.root / "m/pom.xml", "<project><build><plugins><plugin><groupId>org.apache.maven.plugins</groupId>"
