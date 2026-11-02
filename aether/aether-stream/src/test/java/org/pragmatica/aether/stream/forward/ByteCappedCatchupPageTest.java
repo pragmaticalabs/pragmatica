@@ -31,6 +31,7 @@ import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
 
 import java.util.List;
+import org.pragmatica.aether.stream.replication.AcceptingReplicationTransport;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -122,7 +123,7 @@ class ByteCappedCatchupPageTest {
         return partitionBackfill(registry,
                                  replica.alignedRecovery(),
                                  forwardCatchupTransport(client, 100),
-                                 (_, message) -> replication.handleAck((ReplicateAck) message),
+                                 AcceptingReplicationTransport.accepting((_, message) -> replication.handleAck((ReplicateAck) message)),
                                  (_, _, _) -> Promise.success(ownerRing().headOffset()),
                                  (s, p) -> replica.nextExpectedOffset(s, p) - 1,
                                  NEW_PEER,

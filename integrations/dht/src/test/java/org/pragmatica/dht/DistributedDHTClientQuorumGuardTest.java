@@ -26,6 +26,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.consensus.net.WriteOutcome;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -136,9 +138,11 @@ class DistributedDHTClientQuorumGuardTest {
         }
 
         @Override
-        public void send(NodeId target, ProtocolMessage message) {
+        public Promise<WriteOutcome> send(NodeId target, ProtocolMessage message) {
             sendCount++;
             recordPut(target, message);
+
+            return Promise.success(new WriteOutcome.Sent(target));
         }
 
         private void recordPut(NodeId target, ProtocolMessage message) {

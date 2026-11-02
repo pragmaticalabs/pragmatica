@@ -48,6 +48,7 @@ import org.assertj.core.api.SoftAssertions;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.stream.replication.AcceptingReplicationTransport;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -426,7 +427,7 @@ class HonestPublishOutcomeTest {
 
         registry.registerReplica(STREAM, PARTITION, SELF);
 
-        return replicationManager(SELF, registry, (_, _) -> {});
+        return replicationManager(SELF, registry, AcceptingReplicationTransport.accepting((_, _) -> {}));
     }
 
     /// The real replication manager over a registry holding the owner and ONE peer whose confirmed
@@ -438,7 +439,7 @@ class HonestPublishOutcomeTest {
         registry.registerReplica(STREAM, PARTITION, PEER);
         registry.updateWatermark(STREAM, PARTITION, PEER, 0L);
 
-        return replicationManager(SELF, registry, (_, _) -> {});
+        return replicationManager(SELF, registry, AcceptingReplicationTransport.accepting((_, _) -> {}));
     }
 
     private static StreamPartitionManager ringOnlyManager(ReplicationManager replication) {

@@ -29,6 +29,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.aether.node.AcceptingTransports;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.node.StreamEntityLogSubstrate.streamEntityLogSubstrate;
@@ -69,11 +70,11 @@ class EntityCutInvalidatesFoldTest {
         replicaManager = StreamPartitionManager.streamPartitionManager(64L * 1024 * 1024);
         replicaManager.placementRoleSupplier((_, _) -> org.pragmatica.aether.stream.replication.ReplicaSetController.Role.REPLICA);
         var ownerReplication = new ReplicationManager[1];
-        ReplicationTransport ackTransport = (target, message) -> {
+        ReplicationTransport ackTransport = AcceptingTransports.acceptingReplication((target, message) -> {
             if (message instanceof ReplicationMessage.ReplicateAck ack && acksReachOwner.get()) {
                 ownerReplication[0].handleAck(ack);
             }
-        };
+        });
         var receive = ReplicationReceiveHandler.replicationReceiveHandler(REPLICA,
                                                                           replicaManager::appendRecovered,
                                                                           replicaManager::nextExpectedOffset,
@@ -82,13 +83,13 @@ class EntityCutInvalidatesFoldTest {
                                                                           replicaManager::syncReplicated);
 
         receive.commitSink(replicaManager::commitAdvanced);
-        ReplicationTransport toReplica = (target, message) -> {
+        ReplicationTransport toReplica = AcceptingTransports.acceptingReplication((target, message) -> {
             switch (message) {
                 case ReplicationMessage.ReplicateEvents events -> receive.onReplicateEvents(events);
                 case ReplicationMessage.CommitAdvance advance when announcementsReachReplica.get() -> receive.onCommitAdvance(advance);
                 default -> {}
             }
-        };
+        });
 
         ownerReplication[0] = replicationManager(OWNER, registry, toReplica);
         ownerManager = StreamPartitionManager.streamPartitionManager(64L * 1024 * 1024, EvictionListener.NOOP, ownerReplication[0]);

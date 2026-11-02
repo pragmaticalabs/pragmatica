@@ -12,7 +12,7 @@ package org.pragmatica.consensus.net;
 import org.pragmatica.consensus.NodeId;
 
 
-/// Synchronous outcome of a per-peer message dispatch from [ClusterNetwork.sendOutcome].
+/// Synchronous outcome of a per-peer message dispatch from [ClusterNetwork.send].
 ///
 /// Replaces the prior fire-and-forget `Unit` semantics for callers that need to react
 /// immediately to transient or permanent transport failures (notably the DHT quorum

@@ -108,7 +108,7 @@ class AwaitReplicationRaceTest {
             var fired = new AtomicReference<Runnable>();
             var manager = new DefaultReplicationManager(OWNER,
                                                         registry,
-                                                        (_, _) -> {},
+                                                        AcceptingReplicationTransport.accepting((_, _) -> {}),
                                                         () -> {},
                                                         capturingTimer(fired));
 
@@ -162,7 +162,7 @@ class AwaitReplicationRaceTest {
         void awaitReplication_cancelsTimer_whenAckCompletesWaiterBeforeTimerIsArmed() {
             var managerRef = new AtomicReference<DefaultReplicationManager>();
             Fn2<ScheduledFuture<?>, Runnable, TimeSpan> ackWhileArming = (task, _) -> ackThenSchedule(managerRef, task);
-            var manager = new DefaultReplicationManager(OWNER, registry, (_, _) -> {}, () -> {}, ackWhileArming);
+            var manager = new DefaultReplicationManager(OWNER, registry, AcceptingReplicationTransport.accepting((_, _) -> {}), () -> {}, ackWhileArming);
 
             managerRef.set(manager);
             var pending = manager.awaitReplication(STREAM, P1, OFFSET, 1);
@@ -183,7 +183,7 @@ class AwaitReplicationRaceTest {
     }
 
     private DefaultReplicationManager manager(Runnable betweenSteps) {
-        return new DefaultReplicationManager(OWNER, registry, (_, _) -> {}, betweenSteps, recordingTimer());
+        return new DefaultReplicationManager(OWNER, registry, AcceptingReplicationTransport.accepting((_, _) -> {}), betweenSteps, recordingTimer());
     }
 
     /// Schedules far in the future (never fires during a test) and records the handle, so a test can

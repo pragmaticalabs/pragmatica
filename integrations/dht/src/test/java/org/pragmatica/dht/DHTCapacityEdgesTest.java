@@ -44,7 +44,7 @@ class DHTCapacityEdgesTest {
         var config = new DHTConfig(nodes, quorum, quorum, timeSpan(timeoutMillis).millis());
         var node = dhtNode(LOCAL, memoryStorageEngine(), ring, config);
 
-        return distributedDHTClient(node, (target, message) -> sent.add(new Sent(target, message)), config);
+        return distributedDHTClient(node, AcceptingNetwork.accepting((target, message) -> sent.add(new Sent(target, message))), config);
     }
 
     private Sent requestTo(String replica) {

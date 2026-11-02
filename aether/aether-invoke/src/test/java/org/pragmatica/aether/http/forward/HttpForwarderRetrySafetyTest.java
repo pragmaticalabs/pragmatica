@@ -277,7 +277,7 @@ class HttpForwarderRetrySafetyTest {
 
         void disconnect(NodeId node) {connected.remove(node);}
 
-        @Override public <M extends ProtocolMessage> Promise<WriteOutcome> sendOutcome(NodeId nodeId, M message, TimeSpan offlineTtl) {
+        @Override public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
             var request = (HttpForwardRequest) message;
 
             requests.add(request);
@@ -286,8 +286,8 @@ class HttpForwarderRetrySafetyTest {
             return Promise.success(outcome);
         }
 
-        @Override public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
-            throw new AssertionError("a forward must go through sendOutcome");
+        @Override public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
+            throw new AssertionError("a forward must go through the TTL-bounded send");
         }
 
         @Override public <M extends ProtocolMessage> Unit broadcast(M message) {return unit();}

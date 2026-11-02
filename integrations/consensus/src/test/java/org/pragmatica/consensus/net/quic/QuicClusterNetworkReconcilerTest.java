@@ -669,16 +669,16 @@ class QuicClusterNetworkReconcilerTest {
     /// #1973: the same unicast to a null-state member, but a NoOfflineBuffering frame (an entity owner-forward): not buffered,
     /// reported ConnectionDead (not sent), so it can never be delivered after the caller was told it was not.
     @Test
-    void sendOutcome_toNullMemberPeer_noOfflineBufferingFrame_isNotBuffered_andReportsNotSent() {
+    void send_toNullMemberPeer_noOfflineBufferingFrame_isNotBuffered_andReportsNotSent() {
         var self = new NodeId("zzz-self");
         var member = new NodeId("aaa-member");
         var peerInfo = NodeInfo.nodeInfo(member, addressOf("127.0.0.1", 1));
         var stub = countingTopology(self, List.of(peerInfo), Set.of(self, member));
         var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
 
-        var outcome = network.sendOutcome(member, new UnbufferedStubMessage(self)).await(AWAIT_TIMEOUT);
+        var outcome = network.send(member, new UnbufferedStubMessage(self)).await(AWAIT_TIMEOUT);
 
-        outcome.onFailure(cause -> fail("sendOutcome should resolve: " + cause.message()))
+        outcome.onFailure(cause -> fail("send should resolve: " + cause.message()))
                .onSuccess(result -> assertThat(result).isInstanceOf(WriteOutcome.ConnectionDead.class));
         assertThat(network.offlineBufferSizeForTests(member)).as("nothing held for a late delivery").isZero();
     }
@@ -691,8 +691,8 @@ class QuicClusterNetworkReconcilerTest {
     }
 
     @Test
-    void sendOutcome_toNullMemberPeer_buffersAndReportsSent() {
-        // #491: the outcome-tracking sendOutcome variant must ALSO buffer (not NoPeerState-drop) a unicast to
+    void send_toNullMemberPeer_buffersAndReportsSent() {
+        // #491: the outcome-reporting send must ALSO buffer (not NoPeerState-drop) a unicast to
         // a null-state member, and report Sent per the offline-buffer convention so the DHT caller treats it
         // as enqueued for eventual delivery.
         var self = new NodeId("zzz-self");
@@ -701,14 +701,14 @@ class QuicClusterNetworkReconcilerTest {
         var stub = countingTopology(self, List.of(peerInfo), Set.of(self, member));
         var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
 
-        var outcome = network.sendOutcome(member, stubProtocolMessage(self)).await(AWAIT_TIMEOUT);
+        var outcome = network.send(member, stubProtocolMessage(self)).await(AWAIT_TIMEOUT);
 
-        outcome.onFailure(cause -> fail("sendOutcome should resolve: " + cause.message()))
+        outcome.onFailure(cause -> fail("send should resolve: " + cause.message()))
                .onSuccess(result -> assertThat(result)
-                   .as("#491: sendOutcome to a null-state member buffers and reports Sent")
+                   .as("#491: send to a null-state member buffers and reports Sent")
                    .isInstanceOf(WriteOutcome.Sent.class));
         assertThat(network.offlineBufferSizeForTests(member))
-            .as("the sendOutcome message is buffered in the member's offline buffer")
+            .as("the sent message is buffered in the member's offline buffer")
             .isEqualTo(1);
     }
 

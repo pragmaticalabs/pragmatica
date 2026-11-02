@@ -22,6 +22,7 @@ import org.pragmatica.lang.Option;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import org.pragmatica.aether.stream.replication.AcceptingReplicationTransport;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -234,7 +235,7 @@ class ReadCommittedStreamTest {
             var registry = registryWithPeers();
             var sent = new CopyOnWriteArrayList<ReplicationMessage.CommitAdvance>();
             var senders = new CopyOnWriteArrayList<Thread>();
-            var replication = replicationManager(SELF, registry, (target, message) -> record(sent, senders, target, message));
+            var replication = replicationManager(SELF, registry, AcceptingReplicationTransport.accepting((target, message) -> record(sent, senders, target, message)));
 
             manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication);
             manager.ownerEpochSource((_, _) -> EPOCH_2);
@@ -263,7 +264,7 @@ class ReadCommittedStreamTest {
         void aLostAnnouncement_isRepairedByTheRepeat_andNothingIsExposedBeforeIt() throws Exception {
             var registry = registryWithPeers();
             var sent = new CopyOnWriteArrayList<ReplicationMessage.CommitAdvance>();
-            var replication = replicationManager(SELF, registry, (target, message) -> record(sent, new CopyOnWriteArrayList<>(), target, message));
+            var replication = replicationManager(SELF, registry, AcceptingReplicationTransport.accepting((target, message) -> record(sent, new CopyOnWriteArrayList<>(), target, message)));
             var ownerSide = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication);
 
             try (var _ = new AutoCloseableManager(ownerSide)) {
@@ -332,7 +333,7 @@ class ReadCommittedStreamTest {
         void aReplicaAnnouncesNothing_andAnOwnerWithNothingVisibleRepeatsNothing() throws Exception {
             var sent = new CopyOnWriteArrayList<ReplicationMessage.CommitAdvance>();
             var senders = new CopyOnWriteArrayList<Thread>();
-            var replication = replicationManager(SELF, registryWithPeers(), (target, message) -> record(sent, senders, target, message));
+            var replication = replicationManager(SELF, registryWithPeers(), AcceptingReplicationTransport.accepting((target, message) -> record(sent, senders, target, message)));
 
             manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication);
             manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);

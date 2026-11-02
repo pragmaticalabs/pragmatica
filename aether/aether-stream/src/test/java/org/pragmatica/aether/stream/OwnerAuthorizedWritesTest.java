@@ -33,6 +33,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Function;
+import org.pragmatica.aether.stream.replication.AcceptingReplicationTransport;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.slice.StreamConfig.streamConfig;
@@ -318,7 +319,7 @@ class OwnerAuthorizedWritesTest {
 
             registry.registerReplica(STREAM, PARTITION, SELF);
 
-            return replicationManager(SELF, registry, (_, _) -> {});
+            return replicationManager(SELF, registry, AcceptingReplicationTransport.accepting((_, _) -> {}));
         }
 
         private StreamConfig minSyncTwoConfig() {

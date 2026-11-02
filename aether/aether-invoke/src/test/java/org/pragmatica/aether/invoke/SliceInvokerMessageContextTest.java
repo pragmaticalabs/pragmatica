@@ -21,6 +21,8 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.consensus.net.WriteOutcome;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -118,9 +120,9 @@ class SliceInvokerMessageContextTest {
         private final AtomicInteger sends = new AtomicInteger();
 
         @Override
-        public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
             sends.incrementAndGet();
-            return unit();
+            return Promise.success(new WriteOutcome.Sent(nodeId));
         }
     }
 

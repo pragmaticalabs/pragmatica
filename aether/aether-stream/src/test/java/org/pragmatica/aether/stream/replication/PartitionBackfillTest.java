@@ -329,7 +329,7 @@ class PartitionBackfillTest {
             var backfill = partitionBackfill(registry,
                                              recovery,
                                              gated,
-                                             (_, message) -> acks.add(message),
+                                             AcceptingReplicationTransport.accepting((_, message) -> acks.add(message)),
                                              SELF,
                                              TimeSpan.timeSpan(500).millis());
 
@@ -2869,7 +2869,7 @@ class PartitionBackfillTest {
             registry.registerReplica(STREAM, PARTITION, NON_OWNER); // self, SYNCING@-1
 
             var sent = new AtomicReference<SentMessage>();
-            ReplicationTransport capturing = (target, message) -> sent.set(new SentMessage(target, message));
+            ReplicationTransport capturing = AcceptingReplicationTransport.accepting((target, message) -> sent.set(new SentMessage(target, message)));
             var backfill = partitionBackfill(registry,
                                              recovery,
                                              ownerSource(OWNER, 2L, eventsFrom(2, 14)), // owner holds 2..15

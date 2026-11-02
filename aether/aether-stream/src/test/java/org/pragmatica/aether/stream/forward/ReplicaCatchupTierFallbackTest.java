@@ -67,6 +67,7 @@ import static org.pragmatica.aether.stream.replication.ReplicationReceiveHandler
 import static org.pragmatica.aether.stream.segment.StorageSegmentSink.storageSegmentSink;
 import static org.pragmatica.aether.stream.segment.TieredStreamReader.tieredStreamReader;
 import org.pragmatica.storage.AppendLog;
+import org.pragmatica.aether.stream.replication.AcceptingReplicationTransport;
 
 /// #1383: a replacement replica's catch-up read is served from the owner's ring, or from the owner's tier for a
 /// prefix the ring has evicted but the tier retains, bounded by the APPENDED head. Before the fix the owner's
@@ -175,7 +176,7 @@ class ReplicaCatchupTierFallbackTest {
         var receiver = replicationReceiveHandler(NEW_PEER,
                                                  replica::appendRecovered,
                                                  replica::nextExpectedOffset,
-                                                 (_, message) -> acks.add(message),
+                                                 AcceptingReplicationTransport.accepting((_, message) -> acks.add(message)),
                                                  (stream, partition) -> gaps.add(stream + "/" + partition));
 
         publish(1);
@@ -459,7 +460,7 @@ class ReplicaCatchupTierFallbackTest {
         return partitionBackfill(registry,
                                  replica.alignedRecovery(),
                                  forwardCatchupTransport(client, 100),
-                                 this::deliverAckToOwner,
+                                 AcceptingReplicationTransport.accepting(this::deliverAckToOwner),
                                  (_, _, _) -> Promise.success(ownerRing().headOffset()),
                                  (stream, partition) -> replica.nextExpectedOffset(stream, partition) - 1,
                                  NEW_PEER,

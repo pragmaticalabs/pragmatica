@@ -45,16 +45,15 @@ class DistributedDHTClientDerivedReplyTest {
             ring.addNode(new NodeId("replica-" + i));
         }
         DHTNetwork network = new DHTNetwork() {
-            @Override
-            public void send(NodeId nodeId, ProtocolMessage message) {
+            private void capture(NodeId nodeId, ProtocolMessage message) {
                 if (message instanceof DHTMessage.GetRequest request) {
                     gets.add(request);
                 }
             }
 
             @Override
-            public Promise<WriteOutcome> sendOutcome(NodeId target, ProtocolMessage message) {
-                send(target, message);
+            public Promise<WriteOutcome> send(NodeId target, ProtocolMessage message) {
+                capture(target, message);
                 return Promise.success(new WriteOutcome.Sent(target));
             }
         };
