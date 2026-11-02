@@ -12,8 +12,8 @@ import org.pragmatica.serialization.Codec;
 /// stale election (computed against an old view) carries a sequence at or below the committed
 /// one and is rejected deterministically on every replica. The fence is the generic [EpochBearing]
 /// one: the `viewSequence` is the epoch, and every election MINTS it ([#mintsEpoch()]), so an equal
-/// sequence is refused, and a `Remove` needs a strictly greater `LeaderValue` witness. It holds only
-/// under the `LeaderKey` ([#fencedUnder(Object)]), and its refusals are not stale-epoch refusals
+/// sequence is refused, and a `Remove` needs a strictly greater `LeaderValue` witness. Like every
+/// `EpochBearing` value it is fenced under any key, and its refusals are not stale-epoch refusals
 /// ([#reportsStaleRefusal()]): a losing concurrent election is normal, not a lagging epoch source.
 ///
 /// `viewSequence` is baseline-anchored, not a per-attempt counter (see
@@ -36,12 +36,6 @@ public record LeaderValue(NodeId leader, long viewSequence) implements EpochBear
     @Override
     public boolean mintsEpoch() {
         return true;
-    }
-
-    /// The leader fence holds only under the `LeaderKey`, the one key a `LeaderValue` is written to.
-    @Override
-    public boolean fencedUnder(Object key) {
-        return key instanceof LeaderKey;
     }
 
     /// A refused election is a lost race, which is normal, so it is neither counted nor logged.

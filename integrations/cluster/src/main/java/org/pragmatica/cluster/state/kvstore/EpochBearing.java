@@ -5,7 +5,7 @@ package org.pragmatica.cluster.state.kvstore;
 ///
 /// This is the CP-plane half of the single-writer ownership fence (#345, piece 1a). It began as a
 /// generalization of the `LeaderKey` compare-and-put on `viewSequence`, and now carries it: [LeaderValue]
-/// is itself `EpochBearing` (minting, fenced under the `LeaderKey` only). It fences ANY epoch-bearing
+/// is itself `EpochBearing` (minting). It fences ANY epoch-bearing
 /// value (governor announcement, DHT partition ownership). When a `Put` whose new AND existing committed value are both
 /// `EpochBearing`, the applier rejects the write iff the incoming epoch is STRICTLY older than the
 /// committed one (a deposed governor/owner cannot commit an OLD epoch over a newer one).
@@ -46,12 +46,6 @@ public interface EpochBearing<E extends Comparable<E>> {
     /// under the epoch it resumed with, a governor reannouncement) keep the equal-or-newer rule.
     default boolean mintsEpoch() {
         return false;
-    }
-
-    /// Whether this value is fenced when committed under `key`. Every value is, unless it belongs to one
-    /// key only: the [LeaderValue] fence holds under the `LeaderKey` alone, as it always has.
-    default boolean fencedUnder(Object key) {
-        return true;
     }
 
     /// Whether the applier counts and WARNs a refusal of this write (`KVStore#staleEpochRefusals`). A

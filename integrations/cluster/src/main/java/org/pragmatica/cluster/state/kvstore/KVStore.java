@@ -600,11 +600,10 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     /// Ownership/governance epoch fence (#345 piece 1a) over ANY [EpochBearing] value (governor announcement,
-    /// DHT partition ownership, and the H4 leader fence: a [LeaderValue] mints its `viewSequence` and is fenced
-    /// under the `LeaderKey` only, so a stale or equal election is refused, mutates nothing and emits NO
-    /// notification — a stale leader is never observed by the election FSMs). The committed value decides
-    /// whether it is fenced under the key ([EpochBearing#fencedUnder]), and epochs of different kinds are
-    /// never compared: a mismatched kind is not stale ([#sameEpochKind]). When BOTH the incoming
+    /// DHT partition ownership, and the H4 leader fence: a [LeaderValue] mints its `viewSequence`, so a stale
+    /// or equal election is refused, mutates nothing and emits NO notification — a stale leader is never
+    /// observed by the election FSMs). Epochs of different kinds are never compared: a mismatched kind is not
+    /// stale ([#sameEpochKind]). When BOTH the incoming
     /// and the currently-committed value under the key are `EpochBearing`, the write is rejected iff
     /// its epoch is STRICTLY older than the committed one — a deposed governor/owner cannot commit an
     /// OLD epoch over a newer one. A first write (no committed value) and any non-`EpochBearing`
@@ -649,7 +648,6 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private boolean staleEpochWrite(K key, Object incoming) {
         return incoming instanceof EpochBearing<?> in
                && storage.get(key) instanceof EpochBearing<?> stored
-               && stored.fencedUnder(key)
                && sameEpochKind(in, stored)
                && incomingEpochIsStale(in, stored);
     }
@@ -755,8 +753,8 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     /// The delete-side committed-state fence (#379) — STRICTER than the `Put` fence by design. A
-    /// `Remove` of a key whose COMMITTED value is fenced (an [EpochBearing] value fenced under that key —
-    /// every one, except a [LeaderValue] anywhere but the `LeaderKey`) is rejected — applied to nothing, NO
+    /// `Remove` of a key whose COMMITTED value is fenced (any [EpochBearing] value, the [LeaderValue]
+    /// included) is rejected — applied to nothing, NO
     /// `ValueRemove` emitted — UNLESS it carries a witness that is (a) present, (b) the SAME fenced kind as
     /// the committed value (an `EpochBearing` witness whose epoch is of the same class, so a `LeaderValue`
     /// for the `LeaderKey`; see [#sameEpochKind]), and (c) current
@@ -778,8 +776,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
 
         return switch (storage.get(key)) {
             case OwnerFenced<?, ?> committed -> !newerOwnerWitness(committed, remove.witness());
-            case EpochBearing<?> committed when committed.fencedUnder(key) -> !currentEpochWitness(committed,
-                                                                                                   remove.witness());
+            case EpochBearing<?> committed -> !currentEpochWitness(committed, remove.witness());
             case WitnessedRemoval committed -> !remove.witness().map(committed::equals).or(false);
             case null, default -> false;
         };

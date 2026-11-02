@@ -25,10 +25,10 @@ import static org.pragmatica.cluster.state.kvstore.LeaderValue.leaderValue;
 /// row names the committed value, the command, and its outcome: APPLIED (a notification is emitted),
 /// REFUSED (nothing changes, no notification) or THROWS (the applier let an exception escape). The rows
 /// cover `Put` and `Remove` at a lower, equal and higher `viewSequence`, the witness cases, and every
-/// cross-kind combination of a `LeaderValue` with another `EpochBearing` or a plain value, including a
-/// `LeaderValue` committed under a key other than the `LeaderKey`, where it was never fenced. A refused leader
-/// write is never counted as a stale-epoch refusal. Two non-leader epoch kinds under one key are pinned
-/// separately ([KVStoreEpochKindMismatchTest]): there the outcome is a deliberate change.
+/// cross-kind combination of a `LeaderValue` with another `EpochBearing` or a plain value. A refused leader
+/// write is never counted as a stale-epoch refusal. The two deliberate changes are pinned separately: two
+/// non-leader epoch kinds under one key ([KVStoreEpochKindMismatchTest]) and a `LeaderValue` under a key other
+/// than the `LeaderKey` ([KVStoreLeaderValueOffKeyTest]).
 class KVStoreLeaderFenceMatrixTest {
     enum Outcome {
         APPLIED,
@@ -229,20 +229,6 @@ class KVStoreLeaderFenceMatrixTest {
             seed(OWNED, COMMITTED_OWNED);
 
             assertThat(remove(OWNED, Option.some(leaderValue(NODE_B, 9L)))).isEqualTo(Outcome.REFUSED);
-        }
-
-        @Test
-        void lowerLeaderValuePut_underOtherKey_applied() {
-            seed(OWNED, COMMITTED_LEADER);
-
-            assertThat(put(OWNED, leaderValue(NODE_B, 4L))).isEqualTo(Outcome.APPLIED);
-        }
-
-        @Test
-        void witnesslessRemove_ofLeaderValueUnderOtherKey_applied() {
-            seed(OWNED, COMMITTED_LEADER);
-
-            assertThat(remove(OWNED, Option.none())).isEqualTo(Outcome.APPLIED);
         }
     }
 }
