@@ -59,6 +59,10 @@ def main(argv=None):
         sides[label] = cases
         print(f"{label}: {files} report file(s), {sum(cases.values())} testcase element(s), {len(cases)} distinct, "
               f"{sum(1 for k in cases.elements() if k[3])} skipped; tests= attribute sum {attribute}", file=sys.stderr)
+    # #2566's first equivalence run compared a directory with itself and printed "equal": a side inside the other is no proof
+    old_dir, new_dir = (Path(d).resolve() for d in argv)
+    if old_dir == new_dir or old_dir in new_dir.parents or new_dir in old_dir.parents:
+        sys.exit(f"old {old_dir} and new {new_dir} overlap: download each run into its own directory")
     diff = compare(sides["old"], sides["new"])
     per_module = Counter(key[0] for key, _, _ in diff)
     for module, n in sorted(per_module.items()):

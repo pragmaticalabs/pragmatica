@@ -281,6 +281,12 @@ class CompareTestcasesTest(unittest.TestCase):
         failure, _ = self._run()
         self.assertIn("old: no TEST-*.xml under", failure)
 
+    def test_a_side_compared_with_itself_or_its_own_subdirectory_is_refused(self):
+        for old, new in ((self.old, self.old), (self.root, self.old), (self.old, self.root)):
+            self.old, self.new = old, new
+            failure, _ = self._run("--module", "m")
+            self.assertIn("overlap: download each run into its own directory", failure or "")
+
     def test_an_empty_side_is_refused(self):
         shutil.rmtree(self.new)
         self.new.mkdir()
