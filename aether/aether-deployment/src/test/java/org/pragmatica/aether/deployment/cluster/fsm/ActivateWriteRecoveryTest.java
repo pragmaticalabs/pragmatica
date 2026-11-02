@@ -19,6 +19,7 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
@@ -34,6 +35,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
@@ -163,6 +165,25 @@ class ActivateWriteRecoveryTest {
         assertThat(committedState()).isEqualTo(Option.some(SliceState.ACTIVATE));
         assertThat(cluster.activateTransactions()).singleElement()
                                                   .satisfies(mutation -> assertThat(mutation.expected()).isEqualTo(Option.some(LOADED)));
+    }
+
+    /// Layer 2 for a slice the leader sees reach LOADED while it is already active, not at its rebuild: the window
+    /// starts at that observation.
+    @Test
+    void lostActivateWrite_ofASliceObservedLoadedLive_isReissuedByReconcile() {
+        kvStore.remove(ARTIFACT_KEY);
+        harness.dispatch(new Activate());
+        cluster.sabotageActivatePuts(1, Sabotage.LOST);
+
+        kvStore.put(ARTIFACT_KEY, LOADED);
+        harness.dispatch(new NodeArtifactPutReceived(new ValuePut<>(new KVCommand.Put<>(ARTIFACT_KEY, LOADED), Option.none())));
+
+        assertThat(cluster.activatePuts()).as("control: the live LOADED observation issued the (lost) ACTIVATE").isEqualTo(1);
+
+        clock.addAndGet(BACKSTOP_MS + 1);
+        activeState().reconcile();
+
+        assertThat(committedState()).isEqualTo(Option.some(SliceState.ACTIVATE));
     }
 
     /// Layer 2 keeps a slice held by its own blueprint's FAILED migration held: the re-issue runs the same gate.
@@ -356,6 +377,10 @@ class ActivateWriteRecoveryTest {
 
         void put(AetherKey key, AetherValue value) {
             process(createBatch(List.of(new KVCommand.Put<>(key, value))));
+        }
+
+        void remove(AetherKey key) {
+            process(createBatch(List.of(new KVCommand.Remove<>(key))));
         }
 
         @SuppressWarnings({"unchecked", "rawtypes"})
