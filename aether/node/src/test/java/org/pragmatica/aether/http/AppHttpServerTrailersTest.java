@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
@@ -59,6 +60,7 @@ import static org.pragmatica.lang.Unit.unit;
 /// The ingress test pins `toHttpRequestContext`, the one conversion both the local dispatch and the forward use, over
 /// a real HTTP/1.1 chunked request. The forward test pins the other hop: the production node codec carries the
 /// trailers, and the host dispatches the decoded request with them.
+@Timeout(60)
 class AppHttpServerTrailersTest {
     private static final NodeId SELF_NODE = NodeId.nodeId("trailers-host").unwrap();
     private static final NodeId SENDER_NODE = NodeId.nodeId("trailers-ingress").unwrap();
