@@ -99,6 +99,7 @@ QuicPeerConnectionLaneOwnershipTest 1  # measured at run 41371046891
 QuicReceiptFloorWiringTest 1  # measured at run 41371046891
 QuicReconnectObservationControlTest 5  # measured at run 41371046891
 QuicRefusalTotalsTest 1  # measured at run 41371046891
+QuicSendReturnsOutcomeTest 1  # not measured: added by hand with the class (#2583 P1); test_consensus_shard requires a weight per class but one
 QuicServerPortExclusiveTest 11  # measured at run 41371046891
 QuicSimultaneousDialLaneTest 88  # measured at run 41371046891
 QuicSupersedeObservationTest 1  # measured at run 41371046891
