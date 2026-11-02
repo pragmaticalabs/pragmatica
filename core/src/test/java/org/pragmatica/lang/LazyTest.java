@@ -17,6 +17,7 @@
 package org.pragmatica.lang;
 
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -33,6 +34,8 @@ class LazyTest {
 
     @Nested
     class LazyFactory {
+        // quarantine: #2562 PROBE ONLY for #2575's equivalence proof; never merge
+        @Tag("quarantine")
         @Test
         void lazy_isNotComputedInitially() {
             var counter = new AtomicInteger(0);

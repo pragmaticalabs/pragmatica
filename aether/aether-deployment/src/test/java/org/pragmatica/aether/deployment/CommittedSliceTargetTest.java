@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment;
 
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
@@ -42,6 +43,8 @@ class CommittedSliceTargetTest {
         kvStore = new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
     }
 
+    // quarantine: #2562 PROBE ONLY for #2575's equivalence proof; never merge
+    @Tag("quarantine")
     @Test
     void absentTarget_permitsNothing() {
         assertThat(CommittedSliceTarget.permits(kvStore, BASE.withVersion(V1))).isFalse();

@@ -10,6 +10,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Tag;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -19,6 +20,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// directly and could not see it; these tests start from wire bytes decoded by the real
 /// `ErrorResponseDecoder`, so the field order of the whole mapping is what they pin.
 class ErrorResponseWireMappingTest {
+    // quarantine: #2562 PROBE ONLY for #2575's equivalence proof; never merge
+    @Tag("quarantine")
     @Test
     void asServerResponse_carriesSqlstateAsCodeAndSeverityAsLevel_fromWire() {
         var response = decode("ERROR", "23505", "duplicate key value").asServerResponse();

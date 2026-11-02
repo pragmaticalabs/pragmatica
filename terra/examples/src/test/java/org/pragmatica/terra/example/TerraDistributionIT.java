@@ -14,6 +14,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 import java.util.zip.ZipFile;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.io.TempDir;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -36,6 +37,8 @@ class TerraDistributionIT {
         } finally { process.destroyForcibly().waitFor(5, TimeUnit.SECONDS); }
     }
 
+    // quarantine: #2562 PROBE ONLY for #2575's equivalence proof; never merge
+    @Tag("quarantine")
     @Test void check_extractedDistribution_validatesWithoutOpeningListener() throws Exception {
         var bundle = extract();
         var output = directory.resolve("check.log");
