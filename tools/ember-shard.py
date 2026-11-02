@@ -41,7 +41,7 @@ TEST_DIR, WEIGHTS, BUDGET_SECONDS = MODULES["ember"]
 TEST_NAME = re.compile(r"^(Test.*|.*Test|.*Tests|.*TestCase)$")
 # A top-level class tag in the root pom's surefire.excludedGroups: surefire selects the class and then runs nothing, so it
 # writes no report and a shard assigned it would fail --verify for a class that correctly did not run.
-EXCLUDED_CLASS_TAG = re.compile(r'^@Tag\("(Infinite|Slow|Benchmark|S3)"\)', re.MULTILINE)
+EXCLUDED_CLASS_TAG = re.compile(r'^@Tag\("(Infinite|Slow|Benchmark|S3|quarantine)"\)', re.MULTILINE)
 # A class with none of these is a fixture that only matches the name pattern (Test*): it writes no report either.
 HAS_TESTS = re.compile(r"@(Test|ParameterizedTest|RepeatedTest|TestFactory|TestTemplate)\b")
 
