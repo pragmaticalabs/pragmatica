@@ -34,9 +34,7 @@ final class SerialQueue {
     @Contract
     private void startDrainer() {
         if (draining.compareAndSet(false, true)) {
-            Thread.ofVirtual()
-                  .name("control-log-queue")
-                  .start(this::drain);
+            Thread.ofVirtual().name("control-log-queue").start(this::drain);
         }
     }
 
@@ -47,6 +45,7 @@ final class SerialQueue {
         for (var next = tasks.poll(); next != null; next = tasks.poll()) {
             next.run();
         }
+
         draining.set(false);
         if (!tasks.isEmpty()) {
             startDrainer();

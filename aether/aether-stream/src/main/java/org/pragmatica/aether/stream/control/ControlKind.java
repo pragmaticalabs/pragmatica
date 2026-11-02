@@ -27,9 +27,7 @@ public sealed interface ControlKind {
     enum Builtin implements ControlKind {
         CARRY,
         TOMBSTONE;
-
         private static final Map<String, Builtin> BY_NAME = Map.of(CARRY.name(), CARRY, TOMBSTONE.name(), TOMBSTONE);
-
         static Option<Builtin> byName(String name) {
             return Option.option(BY_NAME.get(name));
         }

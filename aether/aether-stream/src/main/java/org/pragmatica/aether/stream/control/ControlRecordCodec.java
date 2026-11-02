@@ -21,14 +21,12 @@ import org.pragmatica.lang.Result;
 /// UTF-8), the hlc (i64), the payload (i32 length, bytes). Pre-GA, nodes of different versions do not share a log.
 public sealed interface ControlRecordCodec {
     byte[] TAG = {(byte) 0xC7, 'C', 'T', 'L'};
+
     byte VERSION = 1;
 
     static byte[] encode(ControlRecord record) {
-        var kind = record.kind()
-                         .name()
-                         .getBytes(StandardCharsets.UTF_8);
-        var key = record.key()
-                        .getBytes(StandardCharsets.UTF_8);
+        var kind = record.kind().name().getBytes(StandardCharsets.UTF_8);
+        var key = record.key().getBytes(StandardCharsets.UTF_8);
         var payload = record.payload();
         var buffer = ByteBuffer.allocate(TAG.length + 1 + 2 + kind.length + 4 + key.length + 8 + 4 + payload.length);
 
@@ -95,9 +93,9 @@ public sealed interface ControlRecordCodec {
         var payloadLength = buffer.getInt();
 
         if (payloadLength < 0 || buffer.remaining() != payloadLength) {
-            return ControlLogError.MalformedRecord.FACTORY.apply("payload length " + payloadLength + " does not match the "
-                                                                 + buffer.remaining() + " bytes left")
-                                                   .result();
+            return ControlLogError.MalformedRecord.FACTORY.apply("payload length " + payloadLength
+                                                                + " does not match the " + buffer.remaining()
+                                                                + " bytes left").result();
         }
 
         var payload = new byte[payloadLength];

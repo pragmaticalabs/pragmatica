@@ -3666,16 +3666,12 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                      int partition,
                                                      List<byte[]> payloads,
                                                      long timestamp) {
-        return controlRun(streamName,
-                          partition,
-                          payloads,
-                          timestamp,
-                          confirmationFactorFor(streamName) - 1).fold(cause -> recoverControlRun(cause,
-                                                                                                 streamName,
-                                                                                                 partition,
-                                                                                                 payloads,
-                                                                                                 timestamp),
-                                                                       Result::success);
+        return controlRun(streamName, partition, payloads, timestamp, confirmationFactorFor(streamName) - 1).fold(cause -> recoverControlRun(cause,
+                                                                                                                                             streamName,
+                                                                                                                                             partition,
+                                                                                                                                             payloads,
+                                                                                                                                             timestamp),
+                                                                                                                  Result::success);
     }
 
     private Result<ControlRunAppend> recoverControlRun(Cause cause,
@@ -3716,7 +3712,10 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                 timestamp,
                                                                                 ownerEpoch,
                                                                                 minAcks))
-                                        .map(logged -> controlRunAppend(streamName, partition, payloads.size(), logged));
+                                        .map(logged -> controlRunAppend(streamName,
+                                                                        partition,
+                                                                        payloads.size(),
+                                                                        logged));
     }
 
     /// The run's fsync, marking the run durable here once it resolves, as [#admittedBatch] does after its await.
@@ -3724,7 +3723,9 @@ public final class StreamPartitionManager implements AutoCloseable {
         return new ControlRunAppend(logged.offset() - count + 1,
                                     logged.offset(),
                                     logged.durable()
-                                          .onSuccess(_ -> ownerDurable(streamName, partition, logged.offset())));
+                                          .onSuccess(_ -> ownerDurable(streamName,
+                                                                       partition,
+                                                                       logged.offset())));
     }
 
     /// Admitted storage run without single-event fallback: a caller retains per-event outcomes when

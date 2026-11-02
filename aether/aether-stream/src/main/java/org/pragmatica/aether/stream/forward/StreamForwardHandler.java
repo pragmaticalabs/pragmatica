@@ -567,26 +567,22 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     public void onControlAppendForward(ControlAppendForward request) {
         controlLog.map(owner -> owner.appendAsOwner(request.streamName(),
                                                     request.partition(),
-                                                    request.records()
-                                                           .stream()
-                                                           .map(ControlRecordDto::toRecord)
-                                                           .toList()))
+                                                    request.records().stream().map(ControlRecordDto::toRecord).toList()))
                   .or(() -> Promise.success(unavailable(request)))
                   .onSuccess(outcomes -> sendControlResponse(request, outcomes))
-                  .onFailure(cause -> sendControlResponse(request, unknownOutcomes(request, cause)));
+                  .onFailure(cause -> sendControlResponse(request,
+                                                          unknownOutcomes(request, cause)));
     }
 
     private static List<ControlOutcome> unavailable(ControlAppendForward request) {
-        return Collections.nCopies(request.records()
-                                          .size(),
+        return Collections.nCopies(request.records().size(),
                                    ControlOutcome.IndexUnavailable.INDEX_UNAVAILABLE);
     }
 
     /// Recovery: design-out -- [ControlLog#appendAsOwner] resolves every record to an outcome and never fails the batch;
     /// were it to, each record's outcome is unknown (it may have been appended), never a refusal.
     private static List<ControlOutcome> unknownOutcomes(ControlAppendForward request, Cause cause) {
-        return Collections.nCopies(request.records()
-                                          .size(),
+        return Collections.nCopies(request.records().size(),
                                    new ControlOutcome.OutcomeUnknown(cause));
     }
 

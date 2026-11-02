@@ -35,17 +35,18 @@ public interface ControlLog extends CarryForward {
     /// The key's latest COMMITTED record on this node, [Option#none] when the valid index holds none. Fails with
     /// [ControlLogError.General#INDEX_UNAVAILABLE] while the index is not valid: an invalid index is never read as empty.
     Result<Option<IndexedRecord>> latest(String streamName, int partition, String key);
-
     /// The retention floor of `(streamName, partition)`: see [ControlRetentionFloor].
     long deletableThroughOffset(String streamName, int partition);
-
     /// What the partition manager tells this log: bind with `StreamPartitionManager#partitionLogEvents`.
     PartitionLogEvents events();
 
     /// Where an append for a partition owned elsewhere goes: the forwarded batch-append.
     @FunctionalInterface
     interface RemoteAppend {
-        Promise<List<ControlOutcome>> append(NodeId owner, String streamName, int partition, List<ControlRecord> records);
+        Promise<List<ControlOutcome>> append(NodeId owner,
+                                             String streamName,
+                                             int partition,
+                                             List<ControlRecord> records);
     }
 
     /// The committed owner of a partition as this node sees it, [Option#none] when unknown.
@@ -55,8 +56,15 @@ public interface ControlLog extends CarryForward {
     }
 
     /// A control log that never forwards: every append runs here as the owner.
-    static ControlLog controlLog(ControlPartitionLog partitionLog, ControlKind.Admissions admissions, MirrorView mirror) {
-        return new DefaultControlLog(partitionLog, admissions, mirror, Option.none(), (_, _) -> Option.none(), Option.none());
+    static ControlLog controlLog(ControlPartitionLog partitionLog,
+                                 ControlKind.Admissions admissions,
+                                 MirrorView mirror) {
+        return new DefaultControlLog(partitionLog,
+                                     admissions,
+                                     mirror,
+                                     Option.none(),
+                                     (_, _) -> Option.none(),
+                                     Option.none());
     }
 
     /// A control log that forwards an append to a remote owner through `remote`.

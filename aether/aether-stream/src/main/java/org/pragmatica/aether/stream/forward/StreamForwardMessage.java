@@ -449,9 +449,7 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
     }
 
     /// #2590 P1: the owner's answer to a [ControlAppendForward], one outcome per forwarded record, in order.
-    record ControlAppendForwardResponse(NodeId sender,
-                                        String correlationId,
-                                        List<ControlOutcomeDto> outcomes) implements StreamForwardMessage {
+    record ControlAppendForwardResponse(NodeId sender, String correlationId, List<ControlOutcomeDto> outcomes) implements StreamForwardMessage {
         public ControlAppendForwardResponse {
             outcomes = List.copyOf(outcomes);
         }

@@ -28,11 +28,11 @@ public record ControlOutcomeDto(Kind kind, long offset, String message, boolean 
         return switch (outcome) {
             case ControlOutcome.Admitted(var offset) -> new ControlOutcomeDto(Kind.ADMITTED, offset, "", false);
             case ControlOutcome.Refused(var cause) -> new ControlOutcomeDto(Kind.REFUSED,
-                                                                            -1L,
+                                                                            - 1L,
                                                                             cause.message(),
                                                                             outcome.isLocalOnly());
             case ControlOutcome.OutcomeUnknown(var cause) -> new ControlOutcomeDto(Kind.OUTCOME_UNKNOWN,
-                                                                                   -1L,
+                                                                                   - 1L,
                                                                                    cause.message(),
                                                                                    true);
             case ControlOutcome.IndexUnavailable _ -> new ControlOutcomeDto(Kind.INDEX_UNAVAILABLE, -1L, "", true);
@@ -46,8 +46,7 @@ public record ControlOutcomeDto(Kind kind, long offset, String message, boolean 
             case OUTCOME_UNKNOWN -> new ControlOutcome.OutcomeUnknown(new StreamForwardError.RemotePublishFailed(message));
             case INDEX_UNAVAILABLE -> ControlOutcome.IndexUnavailable.INDEX_UNAVAILABLE;
             // An outcome this node cannot read is never an acknowledgement: the record may have been appended.
-            case UNKNOWN -> new ControlOutcome.OutcomeUnknown(new StreamForwardError.RemotePublishFailed("an outcome kind this node does not know: "
-                                                                                                      + message));
+            case UNKNOWN -> new ControlOutcome.OutcomeUnknown(new StreamForwardError.RemotePublishFailed("an outcome kind this node does not know: " + message));
         };
     }
 }

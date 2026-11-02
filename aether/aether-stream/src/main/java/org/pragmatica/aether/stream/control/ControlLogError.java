@@ -19,13 +19,10 @@ public sealed interface ControlLogError extends Cause {
         INDEX_UNAVAILABLE("The control index of this partition is not valid yet; retry"),
         FORWARD_UNSUPPORTED("This node's forward client cannot forward a control append"),
         FORWARD_TIMEOUT("The forwarded control append was not answered in time; its outcome is unknown");
-
         private final String message;
-
         General(String message) {
             this.message = message;
         }
-
         @Override
         public String message() {
             return message;
@@ -54,6 +51,6 @@ public sealed interface ControlLogError extends Cause {
     /// The owner refused a forwarded record. Only the owner's text and its retryable classification cross the wire.
     record RemoteRefused(Boolean retryable, String reason, String message) implements ControlLogError {
         public static final Fn2<RemoteRefused, Boolean, String> FACTORY = Causes.forTwoValues("The owner refused the control record (retryable: %s): %s",
-                                                                                             RemoteRefused::new);
+                                                                                              RemoteRefused::new);
     }
 }

@@ -777,8 +777,7 @@ class ManagementServerImpl implements ManagementServer {
     /// #2590: consumer progress's load on consensus, cumulative since boot -- the batches the cursor command writer proposed
     /// and their commands by key class. The S7 arms compare them before and after progress moves off consensus.
     private void registerConsensusBatchMetrics() {
-        var counters = nodeSupplier.get()
-                                   .consensusBatchCounters();
+        var counters = nodeSupplier.get().consensusBatchCounters();
         Supplier<Number> batches = counters::batches;
 
         observability.gauge("aether.consensus.cursor.batches", batches);
@@ -788,8 +787,7 @@ class ManagementServerImpl implements ManagementServer {
             observability.gauge("aether.consensus.cursor.commands",
                                 commands,
                                 "class",
-                                keyClass.name()
-                                        .toLowerCase(Locale.ROOT));
+                                keyClass.name().toLowerCase(Locale.ROOT));
         }
     }
 

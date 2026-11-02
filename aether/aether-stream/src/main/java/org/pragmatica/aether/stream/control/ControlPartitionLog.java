@@ -30,28 +30,20 @@ public interface ControlPartitionLog {
     /// The confirmation barrier for `lastOffset`, with the confirmation factor read NOW, after the append (#1391: an owner
     /// that materialized the stream inside the append would otherwise use the 0 it reported before).
     Promise<Unit> awaitConfirmed(String streamName, int partition, long lastOffset);
-
     /// Appended records of the retained log from `fromOffset`, the ring and below it the sealed tier.
     Promise<List<RawEvent>> read(String streamName, int partition, long fromOffset, int maxEvents);
-
     /// Appended records the ring holds from `fromOffset`; the committed feed reads only recent records.
     Result<List<RawEvent>> readRing(String streamName, int partition, long fromOffset, int maxEvents);
-
     /// The oldest offset this node retains for the partition: where an index rebuild starts.
     long retainedFrom(String streamName, int partition);
-
     /// The highest appended offset, `-1` when nothing is.
     long head(String streamName, int partition);
-
     /// How far this node knows the partition to be committed ([StreamPartitionManager#committedThrough]).
     long committedThrough(String streamName, int partition);
-
     /// The ownership epoch an owner append is stamped with now; a change of it is a change of owner.
     Epoch ownerEpoch(String streamName, int partition);
-
     /// The change counter of the committed in-sync set, `0` when the ownership record has none.
     long isrVersion(String streamName, int partition);
-
     /// The identity of the ring serving the partition here, [Option#none] when none is materialized. A new one is a new
     /// materialization, and the index over the old one no longer describes it.
     Option<Long> ringIncarnation(String streamName, int partition);

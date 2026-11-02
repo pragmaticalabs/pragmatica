@@ -83,8 +83,8 @@ public final class ConsensusBatchCounters {
     private static KeyClass cursorClass(KVCommand<AetherKey> command) {
         return switch (command) {
             case KVCommand.Put<AetherKey, ?> put when put.value() instanceof StreamCursorCheckpointValue value && value.rewind() -> KeyClass.REWIND;
-            case KVCommand.Put<AetherKey, ?> _ -> KeyClass.CURSOR_PUT;
-            case KVCommand.Noop<AetherKey> _ -> KeyClass.CURSOR_NOOP;
+            case KVCommand.Put<AetherKey, ?>_ -> KeyClass.CURSOR_PUT;
+            case KVCommand.Noop<AetherKey>_ -> KeyClass.CURSOR_NOOP;
             default -> KeyClass.OTHER;
         };
     }

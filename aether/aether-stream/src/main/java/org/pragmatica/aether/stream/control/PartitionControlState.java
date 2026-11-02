@@ -134,9 +134,9 @@ final class PartitionControlState {
     private volatile Option<Long> builtOnRing = none();
     private volatile Option<Epoch> builtAsOwnerAt = none();
     /// Test seam: runs inside an append task after every record of the batch was judged and before the run is appended.
-    private volatile Runnable admissionProbe = () -> {};
+    private volatile Runnable admissionProbe = PartitionControlState::noProbe;
     /// Test seam: runs inside the committed transfer after a record entered the index and before it leaves the tail.
-    private volatile LongConsumer transferProbe = _ -> {};
+    private volatile LongConsumer transferProbe = PartitionControlState::noOffsetProbe;
 
     PartitionControlState(String streamName,
                           int partition,
@@ -151,7 +151,6 @@ final class PartitionControlState {
     }
 
     // ---- the operations (any thread) ----
-
     /// The owner append of a client batch: admission and the run append as one queue task, then the fsync and the
     /// confirmation barrier awaited OUTSIDE the queue, then the committed transfer queued again.
     Promise<List<ControlOutcome>> append(List<ControlRecord> records) {
@@ -185,10 +184,7 @@ final class PartitionControlState {
             return -1L;
         }
 
-        var oldest = index.values()
-                          .stream()
-                          .mapToLong(IndexedRecord::offset)
-                          .min();
+        var oldest = index.values().stream().mapToLong(IndexedRecord::offset).min();
 
         return oldest.isPresent()
                ? oldest.getAsLong() - 1
@@ -207,14 +203,15 @@ final class PartitionControlState {
     synchronized void truncated(long keepThrough) {
         generation.incrementAndGet();
         phase = Phase.INVALID;
-        log.info("Control index of {}[{}] invalidated by a suffix truncation through {}", streamName, partition, keepThrough);
+        log.info("Control index of {}[{}] invalidated by a suffix truncation through {}",
+                 streamName,
+                 partition,
+                 keepThrough);
     }
 
     // ---- queue tasks ----
-
     private Result<Staged> admitAndAppend(List<ControlRecord> records) {
         appendItems.incrementAndGet();
-
         if (!admissionReady()) {
             return Result.success(Staged.unavailable(records.size()));
         }
@@ -250,9 +247,14 @@ final class PartitionControlState {
                                 Map<String, Option<ControlRecord>> overlay) {
         return admissions.admissionFor(kind)
                          .toResult(ControlLogError.UnknownKind.FACTORY.apply(kind.name()))
-                         .flatMap(admission -> admission.admit(viewLatest(record.key(), overlay), record, mirror))
+                         .flatMap(admission -> admission.admit(viewLatest(record.key(),
+                                                                          overlay),
+                                                               record,
+                                                               mirror))
                          .fold(cause -> new Decision.Decided(new Refused(cause)),
-                               _ -> admit(record, some(record), overlay));
+                               _ -> admit(record,
+                                          some(record),
+                                          overlay));
     }
 
     private static Decision admit(ControlRecord record,
@@ -269,17 +271,21 @@ final class PartitionControlState {
         return overlay.containsKey(key)
                ? overlay.get(key)
                : newestInTail(key).map(PartitionControlState::heldBy)
-                                  .or(() -> option(index.get(key)).map(IndexedRecord::record));
+                             .or(() -> committedLatest(key));
+    }
+
+    private Option<ControlRecord> committedLatest(String key) {
+        return option(index.get(key)).map(IndexedRecord::record);
     }
 
     private Option<Map.Entry<Long, ControlRecord>> newestInTail(String key) {
-        return Option.from(tail.descendingMap()
-                               .entrySet()
-                               .stream()
-                               .filter(entry -> entry.getValue()
-                                                     .key()
-                                                     .equals(key))
-                               .findFirst());
+        return Option.from(tail.descendingMap().entrySet().stream().filter(entry -> isOfKey(entry, key)).findFirst());
+    }
+
+    private static boolean isOfKey(Map.Entry<Long, ControlRecord> entry, String key) {
+        return entry.getValue()
+                    .key()
+                    .equals(key);
     }
 
     private static Option<ControlRecord> heldBy(Map.Entry<Long, ControlRecord> entry) {
@@ -293,18 +299,13 @@ final class PartitionControlState {
     }
 
     private static Result<ControlRecord> carried(ControlRecord carry) {
-        return ControlRecordCodec.decode(carry.payload())
-                                 .flatMap(decoded -> decoded.toResult(ControlLogError.MalformedRecord.FACTORY.apply("a CARRY whose payload is not a control record")));
+        return ControlRecordCodec.decode(carry.payload()).flatMap(decoded -> decoded.toResult(ControlLogError.MalformedRecord.FACTORY.apply("a CARRY whose payload is not a control record")));
     }
 
     /// Appends every admitted record as ONE run and puts it in the tail at its offset. A refusal of the run refuses each
     /// admitted record with the substrate's cause; nothing was appended.
     private Staged appendAdmitted(List<Decision> decisions) {
-        var admitted = decisions.stream()
-                                .flatMap(decision -> decision instanceof Decision.Admit(var record)
-                                                     ? Stream.of(record)
-                                                     : Stream.<ControlRecord> empty())
-                                .toList();
+        var admitted = decisions.stream().flatMap(PartitionControlState::admittedRecord).toList();
 
         if (admitted.isEmpty()) {
             return new Staged(finalSlots(decisions), none());
@@ -314,14 +315,19 @@ final class PartitionControlState {
                                         run -> new Staged(appendedSlots(decisions, run), some(run)));
     }
 
+    private static Stream<ControlRecord> admittedRecord(Decision decision) {
+        return switch (decision) {
+            case Decision.Admit(var record) -> Stream.of(record);
+            case Decision.Decided _ -> Stream.empty();
+        };
+    }
+
     private Result<ControlRunAppend> appendRun(List<ControlRecord> records) {
         runAppends.incrementAndGet();
 
         return partitionLog.appendRun(streamName,
                                       partition,
-                                      records.stream()
-                                             .map(ControlRecordCodec::encode)
-                                             .toList(),
+                                      records.stream().map(ControlRecordCodec::encode).toList(),
                                       System.currentTimeMillis())
                            .onSuccess(run -> enterTail(run, records));
     }
@@ -331,6 +337,7 @@ final class PartitionControlState {
         for (var i = 0; i < records.size(); i++) {
             tail.put(run.firstOffset() + i, records.get(i));
         }
+
         accountedThrough = Math.max(accountedThrough, run.lastOffset());
     }
 
@@ -387,23 +394,21 @@ final class PartitionControlState {
     /// A candidate is carried only if it is still its key's latest record in the admitted view (N1): a newer record in the
     /// tail already moves the floor, and a CARRY appended after it would make the index regress to the older value.
     private List<Decision> carryDecisions(long belowOffset) {
-        return index.values()
-                    .stream()
-                    .filter(indexed -> indexed.offset() < belowOffset)
-                    .sorted(Comparator.comparingLong(IndexedRecord::offset))
-                    .map(this::carryDecision)
-                    .toList();
+        var candidates = index.values()
+                              .stream()
+                              .filter(indexed -> indexed.offset() < belowOffset)
+                              .sorted(Comparator.comparingLong(IndexedRecord::offset));
+
+        return candidates.map(this::carryDecision)
+                         .toList();
     }
 
     private Decision carryDecision(IndexedRecord indexed) {
-        return newestInTail(indexed.record()
-                                   .key()).isEmpty()
+        return newestInTail(indexed.record().key()).isEmpty()
                ? new Decision.Admit(ControlRecord.controlRecord(ControlKind.Builtin.CARRY,
-                                                                indexed.record()
-                                                                       .key(),
+                                                                indexed.record().key(),
                                                                 ControlRecordCodec.encode(indexed.record()),
-                                                                indexed.record()
-                                                                       .hlc()))
+                                                                indexed.record().hlc()))
                : new Decision.Decided(new Refused(ControlLogError.General.CARRY_SUPERSEDED));
     }
 
@@ -421,9 +426,8 @@ final class PartitionControlState {
         }
 
         return readRing(appliedThrough + 1, to).flatMap(PartitionControlState::decodeAll)
-                                               .flatMap(records -> transfer(records, to))
-                                               .fold(cause -> invalidated(cause, unit()),
-                                                     Result::success);
+                       .flatMap(records -> transfer(records, to))
+                       .recover(this::invalidatedUnit);
     }
 
     private Result<Unit> transfer(List<Logged> records, long to) {
@@ -437,6 +441,7 @@ final class PartitionControlState {
             transferProbe.accept(logged.offset());
             tail.remove(logged.offset());
         }
+
         appliedThrough = to;
         accountedThrough = Math.max(accountedThrough, to);
 
@@ -445,7 +450,8 @@ final class PartitionControlState {
 
     private Result<Unit> applyToIndex(Logged logged) {
         return logged.record()
-                     .map(record -> applyToIndex(logged.offset(), record))
+                     .map(record -> applyToIndex(logged.offset(),
+                                                 record))
                      .or(Result::unitResult);
     }
 
@@ -479,14 +485,15 @@ final class PartitionControlState {
         }
 
         return readRing(accountedThrough + 1, head).flatMap(PartitionControlState::decodeAll)
-                                                  .map(records -> intoTail(records, head));
+                       .map(records -> intoTail(records, head));
     }
 
     private Unit intoTail(List<Logged> records, long head) {
         records.stream()
                .filter(logged -> logged.offset() > appliedThrough)
                .forEach(logged -> logged.record()
-                                        .onPresent(record -> tail.put(logged.offset(), record)));
+                                        .onPresent(record -> tail.put(logged.offset(),
+                                                                      record)));
         accountedThrough = head;
 
         return unit();
@@ -495,35 +502,43 @@ final class PartitionControlState {
     /// Recovery: FER, design-out of a wrong answer -- a failed read or an undecodable record leaves the state INVALID
     /// (answers [IndexUnavailable], floor `-1`) and the next read or admission rebuilds from the log; `value` is what the
     /// caller is told meanwhile.
-    private <T> Result<T> invalidated(Cause cause, T value) {
+    private <T> T invalidated(Cause cause, T value) {
         invalidate();
         log.warn("Control index of {}[{}] invalidated: {}", streamName, partition, cause.message());
 
-        return Result.success(value);
+        return value;
+    }
+
+    private Unit invalidatedUnit(Cause cause) {
+        return invalidated(cause, unit());
     }
 
     private Result<Staged> unavailableAfter(Cause cause, int count) {
-        return invalidated(cause, Staged.unavailable(count));
+        return Result.success(invalidated(cause, Staged.unavailable(count)));
     }
 
     // ---- confirmation, outside the queue ----
-
     private Promise<List<ControlOutcome>> confirm(Staged staged) {
         return staged.run()
-                     .map(run -> awaitRun(run).fold(confirmed -> Promise.success(staged.outcomes(confirmed))))
+                     .map(run -> confirmedOutcomes(staged, run))
                      .or(() -> Promise.success(staged.outcomes(Result.unitResult())));
+    }
+
+    private Promise<List<ControlOutcome>> confirmedOutcomes(Staged staged, ControlRunAppend run) {
+        return awaitRun(run).fold(confirmed -> Promise.success(staged.outcomes(confirmed)));
     }
 
     /// The fsync, then the barrier with the confirmation factor read now, then the transfer queued. A failure of either
     /// wait leaves the run in the tail (N3): it was appended and replicated, and may still commit.
     private Promise<Unit> awaitRun(ControlRunAppend run) {
         return run.durable()
-                  .flatMap(_ -> partitionLog.awaitConfirmed(streamName, partition, run.lastOffset()))
+                  .flatMap(_ -> partitionLog.awaitConfirmed(streamName,
+                                                            partition,
+                                                            run.lastOffset()))
                   .flatMap(_ -> queue.submit(() -> advance(run.lastOffset())));
     }
 
     // ---- validity and rebuild ----
-
     private boolean indexValid() {
         return phase == Phase.VALID && builtOnRing.equals(partitionLog.ringIncarnation(streamName, partition));
     }
@@ -614,13 +629,11 @@ final class PartitionControlState {
 
         return read.flatMap(PartitionControlState::decodeAll)
                    .flatMap(records -> installRecords(target, records))
-                   .fold(cause -> invalidated(cause, unit()),
-                         Result::success);
+                   .recover(this::invalidatedUnit);
     }
 
     private Result<Unit> installRecords(RebuildTarget target, List<Logged> records) {
-        if (!target.ring()
-                   .equals(partitionLog.ringIncarnation(streamName, partition))) {
+        if (!target.ring().equals(partitionLog.ringIncarnation(streamName, partition))) {
             return ControlLogError.General.INDEX_UNAVAILABLE.result();
         }
 
@@ -635,6 +648,7 @@ final class PartitionControlState {
                 return placed;
             }
         }
+
         appliedThrough = committedThrough;
         accountedThrough = target.asOwner()
                            ? target.head()
@@ -651,23 +665,22 @@ final class PartitionControlState {
         }
 
         if (target.asOwner()) {
-            logged.record()
-                  .onPresent(record -> tail.put(logged.offset(), record));
+            logged.record().onPresent(record -> tail.put(logged.offset(), record));
         }
 
         return Result.unitResult();
     }
 
     // ---- reading the log ----
-
     /// A decoded record of the log at its offset: [Option#none] for an event that is not a control record.
     record Logged(long offset, Option<ControlRecord> record) {}
 
     private static Result<List<Logged>> decodeAll(List<RawEvent> events) {
-        return Result.allOf(events.stream()
-                                  .map(event -> ControlRecordCodec.decode(event.data())
-                                                                  .map(record -> new Logged(event.offset(), record)))
-                                  .toList());
+        return Result.allOf(events.stream().map(PartitionControlState::decoded).toList());
+    }
+
+    private static Result<Logged> decoded(RawEvent event) {
+        return ControlRecordCodec.decode(event.data()).map(record -> new Logged(event.offset(), record));
     }
 
     /// `[from, to]` of the retained log, paged, every page continuing exactly where the last ended.
@@ -678,15 +691,17 @@ final class PartitionControlState {
     }
 
     private Promise<List<RawEvent>> readPage(long next, long to, List<RawEvent> soFar) {
-        return partitionLog.read(streamName, partition, next, (int) Math.min(PAGE, to - next + 1))
+        return partitionLog.read(streamName,
+                                 partition,
+                                 next,
+                                 (int) Math.min(PAGE, to - next + 1))
                            .flatMap(page -> contiguous(next, page, to).async())
                            .flatMap(page -> nextPage(page, to, soFar));
     }
 
     private Promise<List<RawEvent>> nextPage(List<RawEvent> page, long to, List<RawEvent> soFar) {
         var all = concat(soFar, page);
-        var last = page.getLast()
-                       .offset();
+        var last = page.getLast().offset();
 
         return last >= to
                ? Promise.success(all)
@@ -696,29 +711,29 @@ final class PartitionControlState {
     /// The ring's `[from, to]`, synchronously, paged and contiguous: the committed feed and the tail sync read records
     /// the ring still holds.
     private Result<List<RawEvent>> readRing(long from, long to) {
-        var all = new ArrayList<RawEvent>();
+        return readRingFrom(from, to, List.of());
+    }
 
-        for (var next = from; next <= to; ) {
-            var page = partitionLog.readRing(streamName, partition, next, (int) Math.min(PAGE, to - next + 1))
-                                   .flatMap(events -> contiguous(from + all.size(), events, to));
-
-            if (page.isFailure()) {
-                return page;
-            }
-
-            page.onSuccess(all::addAll);
-            next = from + all.size();
+    private Result<List<RawEvent>> readRingFrom(long next, long to, List<RawEvent> soFar) {
+        if (next > to) {
+            return Result.success(soFar);
         }
 
-        return Result.success(List.copyOf(all));
+        return partitionLog.readRing(streamName,
+                                     partition,
+                                     next,
+                                     (int) Math.min(PAGE, to - next + 1))
+                           .flatMap(events -> contiguous(next, events, to))
+                           .flatMap(page -> readRingFrom(next + page.size(),
+                                                         to,
+                                                         concat(soFar, page)));
     }
 
     /// The page must start at `expected` and continue without a gap; it is trimmed to `to`. An empty page below `to` is a
     /// hole too: the retained log does not hold the offset.
     private static Result<List<RawEvent>> contiguous(long expected, List<RawEvent> page, long to) {
         if (page.isEmpty()) {
-            return ControlLogError.IndexHole.FACTORY.apply(expected, -1L)
-                                                    .result();
+            return ControlLogError.IndexHole.FACTORY.apply(expected, -1L).result();
         }
 
         var kept = new ArrayList<RawEvent>(page.size());
@@ -729,7 +744,8 @@ final class PartitionControlState {
             }
 
             if (event.offset() != expected + kept.size()) {
-                return ControlLogError.IndexHole.FACTORY.apply(expected + kept.size(), event.offset())
+                return ControlLogError.IndexHole.FACTORY.apply(expected + kept.size(),
+                                                               event.offset())
                                                         .result();
             }
 
@@ -749,6 +765,9 @@ final class PartitionControlState {
     }
 
     // ---- test seams ----
+    private static void noProbe() {}
+
+    private static void noOffsetProbe(long offset) {}
 
     @Contract
     void admissionProbe(Runnable probe) {

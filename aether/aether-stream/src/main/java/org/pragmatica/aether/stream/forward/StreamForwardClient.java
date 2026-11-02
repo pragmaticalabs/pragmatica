@@ -271,6 +271,7 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
     private final ConcurrentHashMap<String, Promise<Long>> pendingRequests = new ConcurrentHashMap<>();
 
     private final ConcurrentHashMap<String, Promise<ReadForwardResult>> pendingReads = new ConcurrentHashMap<>();
+
     private final ConcurrentHashMap<String, PendingControl> pendingControl = new ConcurrentHashMap<>();
 
     /// A forwarded control batch awaiting its answer, and how many records it carried.
@@ -459,8 +460,8 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
                : unknownControlOutcomes(pending.count(),
                                         new StreamForwardError.RemotePublishFailed("answered " + response.outcomes()
                                                                                                          .size()
-                                                                                   + " outcomes for " + pending.count()
-                                                                                   + " records"));
+                                                                                  + " outcomes for " + pending.count()
+                                                                                  + " records"));
     }
 
     private static List<ControlOutcome> unknownControlOutcomes(int count, Cause cause) {

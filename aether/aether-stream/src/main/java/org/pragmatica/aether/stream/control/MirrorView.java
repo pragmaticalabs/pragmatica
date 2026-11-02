@@ -13,6 +13,5 @@ import org.pragmatica.lang.Option;
 @FunctionalInterface
 public interface MirrorView {
     Option<byte[]> read(String key);
-
     MirrorView EMPTY = _ -> Option.none();
 }

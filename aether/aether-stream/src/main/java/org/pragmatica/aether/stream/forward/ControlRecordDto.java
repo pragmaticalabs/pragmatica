@@ -19,8 +19,7 @@ public record ControlRecordDto(String kind, String key, byte[] payload, long hlc
     }
 
     public static ControlRecordDto fromRecord(ControlRecord record) {
-        return new ControlRecordDto(record.kind()
-                                          .name(),
+        return new ControlRecordDto(record.kind().name(),
                                     record.key(),
                                     record.payload(),
                                     record.hlc());
