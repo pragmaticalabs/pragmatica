@@ -52,7 +52,8 @@ record StaleEntryCleaner(Active active) {
         if (!commands.isEmpty()) {
             log.debug("Cleaning up {} stale node-routes entries", commands.size());
             active.termWriter()
-                  .write(WriteSite.STALE_NODE_ROUTES, () -> commands)
+                  .write(WriteSite.STALE_NODE_ROUTES,
+                         () -> commands)
                   .onFailure(cause -> log.error("Failed to clean up stale node routes: {}",
                                                 cause.message()));
         }
@@ -87,7 +88,8 @@ record StaleEntryCleaner(Active active) {
         if (!commands.isEmpty()) {
             log.info("Cleaning up {} stale topic subscription/publisher rows", commands.size());
             active.termWriter()
-                  .write(WriteSite.STALE_TOPIC_ROWS, () -> commands)
+                  .write(WriteSite.STALE_TOPIC_ROWS,
+                         () -> commands)
                   .onFailure(cause -> log.error("Failed to clean up stale topic rows: {}",
                                                 cause.message()));
         }
@@ -142,7 +144,8 @@ record StaleEntryCleaner(Active active) {
 
         log.info("Cleaning up {} stale slice entries", staleKeys.size());
         active.termWriter()
-              .write(WriteSite.STALE_SLICE_ENTRIES, () -> commands)
+              .write(WriteSite.STALE_SLICE_ENTRIES,
+                     () -> commands)
               .onFailure(cause -> log.error("Failed to clean up stale slice entries: {}",
                                             cause.message()));
     }
@@ -168,7 +171,8 @@ record StaleEntryCleaner(Active active) {
 
         log.info("Cleaning up {} stale node-artifact entries", staleKeys.size());
         active.termWriter()
-              .write(WriteSite.STALE_NODE_ARTIFACTS, () -> commands)
+              .write(WriteSite.STALE_NODE_ARTIFACTS,
+                     () -> commands)
               .onFailure(cause -> log.error("Failed to clean up stale node-artifact entries: {}",
                                             cause.message()));
     }

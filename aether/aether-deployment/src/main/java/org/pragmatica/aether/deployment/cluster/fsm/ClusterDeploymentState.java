@@ -735,10 +735,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                 value.attemptCount());
             // The lock is NOT removed here (#806): this runs only for an EXPIRED lock, which the next
             // acquire takes over, and a bare Remove of a `WitnessedRemoval` value is refused anyway.
-            termWriter.write(WriteSite.SCHEMA_STALLED_RESET, () -> stalledMigrationReset(versionKey, value, updated))
+            termWriter.write(WriteSite.SCHEMA_STALLED_RESET,
+                             () -> stalledMigrationReset(versionKey, value, updated))
                       .onFailure(cause -> log.error("Failed to reset stalled migration for '{}': {}",
-                                             datasourceName,
-                                             cause.message()));
+                                                    datasourceName,
+                                                    cause.message()));
         }
 
         /// #2584: the reset is a mutation guarded on the MIGRATING record it read, so the applier refuses it if the record
@@ -747,15 +748,16 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private List<KVCommand<AetherKey>> stalledMigrationReset(SchemaVersionKey versionKey,
                                                                  SchemaVersionValue read,
                                                                  SchemaVersionValue updated) {
-            var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(versionKey, Option.some(read), Option.some(updated));
+            var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(versionKey,
+                                                                          Option.some(read),
+                                                                          Option.some(updated));
 
             return committedLeader().map(leader -> List.<KVCommand<AetherKey>> of(new KVCommand.LeaderTransaction<>(versionKey,
-                                                                                                                   UUID.randomUUID()
-                                                                                                                       .toString(),
-                                                                                                                   leader,
-                                                                                                                   List.of(),
-                                                                                                                   List.of(mutation))))
-                                    .or(List.of());
+                                                                                                                    UUID.randomUUID().toString(),
+                                                                                                                    leader,
+                                                                                                                    List.of(),
+                                                                                                                    List.of(mutation))))
+                                  .or(List.of());
         }
 
         private void triggerLoadedSliceActivation() {
@@ -1412,22 +1414,23 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
             termWriter.hierarchyPut(key, before, directive)
                       .onFailure(cause -> log.warn("Activation refused for {}: {}",
-                                                        targetNode,
-                                                        cause.message()));
+                                                   targetNode,
+                                                   cause.message()));
         }
 
         private void submitActivationCommands(NodeId targetNode,
                                               String transactionId,
                                               List<KVCommand<AetherKey>> commands) {
-            termWriter.<Object> write(WriteSite.WORKER_ASSIGNMENT, () -> commands)
-               .onSuccess(results -> results.stream()
-                                            .filter(KVCommand.TransactionResult.class::isInstance)
-                                            .map(KVCommand.TransactionResult.class::cast)
-                                            .filter(result -> result.transactionId()
-                                                                    .equals(transactionId))
-                                            .forEach(result -> settleAssignment(targetNode,
-                                                                                result.accepted())))
-               .onFailure(cause -> commitLost(targetNode, cause));
+            termWriter.<Object> write(WriteSite.WORKER_ASSIGNMENT,
+                                      () -> commands)
+                      .onSuccess(results -> results.stream()
+                                                   .filter(KVCommand.TransactionResult.class::isInstance)
+                                                   .map(KVCommand.TransactionResult.class::cast)
+                                                   .filter(result -> result.transactionId()
+                                                                           .equals(transactionId))
+                                                   .forEach(result -> settleAssignment(targetNode,
+                                                                                       result.accepted())))
+                      .onFailure(cause -> commitLost(targetNode, cause));
         }
 
         private void commitLost(NodeId targetNode, Cause cause) {
@@ -1563,10 +1566,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                      artifactKeysToRemove.size(),
                      sliceKeysToRemove.size(),
                      nodeRouteCommands.size());
-            termWriter.write(WriteSite.DECOMMISSION_FOOTPRINT, () -> consensusCommands)
+            termWriter.write(WriteSite.DECOMMISSION_FOOTPRINT,
+                             () -> consensusCommands)
                       .onFailure(cause -> log.error("Snapshot-delta cleanup for {} failed: {}",
-                                             departedNode,
-                                             cause.message()));
+                                                    departedNode,
+                                                    cause.message()));
         }
 
         private void processActivationDirectivePut(NodeId nodeId, String role) {
@@ -2256,9 +2260,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                     int attempt) {
             var command = List.<KVCommand<AetherKey>> of(bestEffortFailureCommand(blueprintId, artifact, failureReason));
 
-            termWriter.write(WriteSite.BEST_EFFORT_FAILURE_OUTCOME, () -> command)
+            termWriter.write(WriteSite.BEST_EFFORT_FAILURE_OUTCOME,
+                             () -> command)
                       .onSuccess(_ -> confirmBestEffortFailureOutcome(blueprintId, artifact, failureReason, attempt))
-               .onFailure(cause -> handleBatchFailure(cause, command));
+                      .onFailure(cause -> handleBatchFailure(cause, command));
         }
 
         private void confirmBestEffortFailureOutcome(BlueprintId blueprintId,
@@ -2788,8 +2793,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
             log.debug("Issuing ACTIVATE command for {}", sliceKey);
             applyStateWrite(WriteSite.ACTIVATE, sliceKey, SliceState.ACTIVATE).onFailure(cause -> log.error("Failed to issue ACTIVATE command for {}: {}",
-                                                                                        sliceKey,
-                                                                                        cause.message()));
+                                                                                                            sliceKey,
+                                                                                                            cause.message()));
         }
 
         // Fire-and-forget LOAD: callers (allocation/reconcile sweeps, forEach state-mutators) ignore
@@ -2800,9 +2805,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var timestamp = ctx.nowMs();
 
             applyStateWrite(WriteSite.LOAD, sliceKey, SliceState.LOAD).withSuccess(_ -> ctx.router()
-                                                                           .route(DeploymentStarted.deploymentStarted(sliceKey.artifact(),
-                                                                                                                      sliceKey.nodeId(),
-                                                                                                                      timestamp)))
+                                                                                           .route(DeploymentStarted.deploymentStarted(sliceKey.artifact(),
+                                                                                                                                      sliceKey.nodeId(),
+                                                                                                                                      timestamp)))
                            .onFailure(cause -> handleSliceNodeWriteFailure(sliceKey, cause));
         }
 
@@ -2812,8 +2817,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         void issueUnloadCommand(WriteSite site, SliceNodeKey sliceKey) {
             log.debug("Issuing UNLOAD command for {}", sliceKey);
             applyStateWrite(site, sliceKey, SliceState.UNLOAD).onFailure(cause -> log.error("Failed to issue UNLOAD command for {}: {}",
-                                                                                      sliceKey,
-                                                                                      cause.message()));
+                                                                                            sliceKey,
+                                                                                            cause.message()));
         }
 
         private Promise<Unit> applyStateWrite(WriteSite site, SliceNodeKey sliceKey, SliceState state) {
@@ -2825,7 +2830,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                    NodeArtifactValue.nodeArtifactValue(state,
                                                                                                        transitionedAt));
 
-            return termWriter.write(site, () -> List.of(putArtifact))
+            return termWriter.write(site,
+                                    () -> List.of(putArtifact))
                              .mapToUnit();
         }
 
@@ -2836,10 +2842,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             KVCommand<AetherKey> removeArtifact = new KVCommand.Remove<>(NodeArtifactKey.nodeArtifactKey(sliceKey.nodeId(),
                                                                                                          sliceKey.artifact()));
 
-            termWriter.write(site, () -> List.of(removeArtifact))
+            termWriter.write(site,
+                             () -> List.of(removeArtifact))
                       .onFailure(cause -> log.error("Failed to remove node-artifact-key for {}: {}",
-                                             sliceKey,
-                                             cause.message()));
+                                                    sliceKey,
+                                                    cause.message()));
         }
 
         @Contract
@@ -2903,9 +2910,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                      removedNode);
 
             return applyFootprintRemoval(consensusCommands).flatMap(_ -> termWriter.hierarchyCommit(List.of(new KVCommand.Mutation<>(directiveKey,
-                                                                                                                                   previousDirective,
-                                                                                                                                   Option.none())),
-                                                                                                  List.of()))
+                                                                                                                                     previousDirective,
+                                                                                                                                     Option.none())),
+                                                                                                    List.of()))
                                         .onFailure(cause -> log.error("Failed to remove keys for departed node {}: {}",
                                                                       removedNode,
                                                                       cause.message()));
@@ -2918,7 +2925,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private Promise<Unit> applyFootprintRemoval(List<KVCommand<AetherKey>> commands) {
             return commands.isEmpty()
                    ? Promise.unitPromise()
-                   : termWriter.<Object> write(WriteSite.DEPARTURE_FOOTPRINT, () -> commands)
+                   : termWriter.<Object> write(WriteSite.DEPARTURE_FOOTPRINT,
+                                               () -> commands)
                                .mapToUnit();
         }
 
@@ -3132,15 +3140,16 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                         CommunityValue.class,
                         (key, value) -> collectCommunityTransition(batch, key, value));
             if (!batch.isEmpty()) {
-                termWriter.<Object> write(WriteSite.COMMUNITY_TRANSITIONS, () -> batch)
-                   .onSuccess(results -> results.stream()
-                                                .filter(KVCommand.TransactionResult.class::isInstance)
-                                                .map(KVCommand.TransactionResult.class::cast)
-                                                .filter(result -> !result.accepted())
-                                                .forEach(_ -> log.debug("Community state transition conflicted; next reconciliation will re-evaluate")))
-                   .onFailure(cause -> log.error("Failed to apply {} community state transition(s): {}",
-                                                 batch.size(),
-                                                 cause.message()));
+                termWriter.<Object> write(WriteSite.COMMUNITY_TRANSITIONS,
+                                          () -> batch)
+                          .onSuccess(results -> results.stream()
+                                                       .filter(KVCommand.TransactionResult.class::isInstance)
+                                                       .map(KVCommand.TransactionResult.class::cast)
+                                                       .filter(result -> !result.accepted())
+                                                       .forEach(_ -> log.debug("Community state transition conflicted; next reconciliation will re-evaluate")))
+                          .onFailure(cause -> log.error("Failed to apply {} community state transition(s): {}",
+                                                        batch.size(),
+                                                        cause.message()));
             }
         }
 
@@ -3421,9 +3430,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var value = DeploymentOutcomeValue.succeeded(ctx.nowMs(), nextOutcomeVersion(key), attemptId);
             var command = List.<KVCommand<AetherKey>> of(new KVCommand.Put<>(key, value));
 
-            termWriter.write(WriteSite.SUCCEEDED_OUTCOME, () -> command)
+            termWriter.write(WriteSite.SUCCEEDED_OUTCOME,
+                             () -> command)
                       .onSuccess(_ -> confirmSucceededOutcome(blueprintId, attemptId, attempt))
-               .onFailure(cause -> handleSucceededOutcomeWriteFailure(blueprintId, cause, command));
+                      .onFailure(cause -> handleSucceededOutcomeWriteFailure(blueprintId, cause, command));
         }
 
         private void confirmSucceededOutcome(BlueprintId blueprintId, String attemptId, int attempt) {
@@ -3628,9 +3638,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             log.warn("ALL_OR_NOTHING: no committed leader record to fence the rollback of blueprint {} with — applying it"
                     + " unfenced, so a publish of the same id racing it can be undone by it",
                      inflight.id().asString());
-            termWriter.write(WriteSite.ROLLBACK_UNFENCED, () -> batch)
+            termWriter.write(WriteSite.ROLLBACK_UNFENCED,
+                             () -> batch)
                       .onSuccess(_ -> onLanded.run())
-               .onFailure(cause -> rollbackRefused(inflight, cause, batch, onAbandoned));
+                      .onFailure(cause -> rollbackRefused(inflight, cause, batch, onAbandoned));
 
             return Unit.unit();
         }
@@ -3653,9 +3664,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                                            .toList());
             var submitted = List.<KVCommand<AetherKey>> of(transaction);
 
-            termWriter.write(WriteSite.ROLLBACK_FENCED, () -> submitted)
+            termWriter.write(WriteSite.ROLLBACK_FENCED,
+                             () -> submitted)
                       .onSuccess(_ -> confirmRollback(inflight, rolledBack, commands, onLanded, onAbandoned, attempt))
-               .onFailure(cause -> rollbackRefused(inflight, cause, submitted, onAbandoned));
+                      .onFailure(cause -> rollbackRefused(inflight, cause, submitted, onAbandoned));
 
             return Unit.unit();
         }
@@ -3707,17 +3719,18 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                      List<KVCommand<AetherKey>> submitted,
                                      Runnable onAbandoned) {
             switch (cause) {
-                case FsmWriteError.NotLeader notLeader when notLeader.site()
-                                                                    .notLeader() == NotLeaderAction.ABANDON_ROLLBACK -> rollbackNotIssued(inflight,
-                                                                                                                                         notLeader,
-                                                                                                                                         onAbandoned);
+                case FsmWriteError.NotLeader notLeader when notLeader.site().notLeader() == NotLeaderAction.ABANDON_ROLLBACK -> rollbackNotIssued(inflight,
+                                                                                                                                                  notLeader,
+                                                                                                                                                  onAbandoned);
                 default -> abandonRollback(inflight, cause, submitted, onAbandoned);
             }
         }
 
         /// Without a committed leader record the unfenced rollback can no longer be issued at all (#2584 P0): the
         /// precondition needs a record naming this node. It is logged at WARN, and P2 removes the unfenced branch.
-        private void rollbackNotIssued(InFlightBlueprint inflight, FsmWriteError.NotLeader notLeader, Runnable onAbandoned) {
+        private void rollbackNotIssued(InFlightBlueprint inflight,
+                                       FsmWriteError.NotLeader notLeader,
+                                       Runnable onAbandoned) {
             if (notLeader.site() == WriteSite.ROLLBACK_UNFENCED) {
                 log.warn("ALL_OR_NOTHING: rollback of blueprint {} not issued — there is no committed leader record naming"
                         + " this node ({}) to issue it under",
@@ -3727,11 +3740,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 log.info("ALL_OR_NOTHING: rollback of blueprint {} not issued — the committed leader record names {}, and"
                         + " this node ({}) is not that leader or its term has ended",
                          inflight.id().asString(),
-                         notLeader.committedLeader()
-                                  .map(NodeId::id)
-                                  .or("no node"),
+                         notLeader.committedLeader().map(NodeId::id).or("no node"),
                          ctx.self());
             }
+
             onAbandoned.run();
         }
 

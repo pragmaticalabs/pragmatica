@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.cluster.fsm.write;
 
 import java.util.Set;
 
+
 /// Every leader-issued write of the deployment FSM, one constant per write site (#2584, design §1a/§1b). A site declares
 /// its [Route], what it does when [TermWriter] refuses it as not the leader, and the [Mechanism]s by which it converges.
 public enum WriteSite {
@@ -71,25 +72,20 @@ public enum WriteSite {
     STALE_SLICE_ENTRIES(Route.PASS, NotLeaderAction.FAIL_NOT_LEADER, Mechanism.NOT_LEADER),
     /// D24: the stale node-artifact cleanup.
     STALE_NODE_ARTIFACTS(Route.PASS, NotLeaderAction.FAIL_NOT_LEADER, Mechanism.NOT_LEADER);
-
     private final Route route;
     private final NotLeaderAction notLeader;
     private final Set<Mechanism> mechanisms;
-
     WriteSite(Route route, NotLeaderAction notLeader, Mechanism... mechanisms) {
         this.route = route;
         this.notLeader = notLeader;
         this.mechanisms = Set.of(mechanisms);
     }
-
     public Route route() {
         return route;
     }
-
     public NotLeaderAction notLeader() {
         return notLeader;
     }
-
     public Set<Mechanism> mechanisms() {
         return mechanisms;
     }
