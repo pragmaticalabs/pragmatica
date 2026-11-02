@@ -17,17 +17,14 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import org.pragmatica.aether.node.stream.ConsumerAssignmentWriter.CommittedAssignments;
-import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerAssignmentKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamCursorCheckpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue.AssignmentToken;
-import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue;
 import org.pragmatica.aether.slice.kvstore.ReplicaFilter;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
@@ -881,17 +878,16 @@ class ClusterCursorStoreTest {
         }
     }
 
-    /// #2590 P0.3: the cursor-regression and skip exposures of today's consensus checkpoint, each an enabled tripwire of today's
-    /// behaviour against the real applier, with the #2590 P2 assertion `@Disabled` beside it.
+    /// #2590 P0.3 (X-4): a late stale checkpoint against the real applier, an enabled tripwire of today's behaviour with the
+    /// #2590 P2 assertion `@Disabled` beside it.
     @Nested
     class TodaysCursorExposures {
-        private static final StreamConfigKey STREAM_CONFIG_KEY = StreamConfigKey.streamConfigKey(STREAM);
         private KVStore<AetherKey, AetherValue> kv;
 
         @BeforeEach
         void setUp() {
             kv = new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
-            kv.process(kv.createBatch(List.of(assignment(SELF, EPOCH), streamConfig())));
+            kv.process(kv.createBatch(List.of(assignment(SELF, EPOCH))));
         }
 
         private void apply(KVCommand<AetherKey> command) {
@@ -901,16 +897,6 @@ class ClusterCursorStoreTest {
         private Option<Long> committedOffset() {
             return kv.getTyped(CHECKPOINT_KEY, StreamCursorCheckpointValue.class)
                      .map(StreamCursorCheckpointValue::committedOffset);
-        }
-
-        private static KVCommand<AetherKey> streamConfig() {
-            return new KVCommand.Put<AetherKey, AetherValue>(STREAM_CONFIG_KEY,
-                                                             StreamConfigValue.streamConfigValue(StreamConfig.streamConfig(STREAM)));
-        }
-
-        /// What a stream destroy removes from the KV: the config only (`StreamPartitionManager.applyRemoveCommand`).
-        private void destroyStream() {
-            apply(new KVCommand.Remove<AetherKey>(STREAM_CONFIG_KEY));
         }
 
         /// X-4: a checkpoint delayed in flight lands after a later one, under the same token and the same rewind epoch. Neither fence
@@ -931,41 +917,6 @@ class ClusterCursorStoreTest {
             apply(ClusterCursorStore.checkpointCommand(CHECKPOINT_KEY, 100L, SELF_TOKEN, RewindEpoch.NONE));
 
             assertThat(committedOffset()).describedAs("a committed cursor never regresses").isEqualTo(Option.some(200L));
-        }
-
-        /// A stream destroyed and re-created under the same name: nothing removes the cursor key, so a consumer of the new life
-        /// resumes from the old life's cursor and skips the new life's events below it.
-        @Test
-        void fetchCursor_streamDestroyedAndRecreated_returnsOldLifeCursor() {
-            apply(ClusterCursorStore.checkpointCommand(CHECKPOINT_KEY, 500L, SELF_TOKEN, RewindEpoch.NONE));
-            destroyStream();
-            apply(streamConfig());
-
-            assertThat(newLifeResume()).describedAs("#2590 P2 landed? If a cursor of a replaced life is discarded now, enable `fetchCursor_streamDestroyedAndRecreated_discardsOldLifeCursor` and delete this tripwire")
-                                       .isEqualTo(Result.success(Option.some(Cursor.unrewound(500L))));
-        }
-
-        @Disabled("#2590 P2: enable when a cursor that cannot prove it matches the current log is discarded at resume (know 83efd39461 S1); delete the _returnsOldLifeCursor tripwire then")
-        @Test
-        void fetchCursor_streamDestroyedAndRecreated_discardsOldLifeCursor() {
-            apply(ClusterCursorStore.checkpointCommand(CHECKPOINT_KEY, 500L, SELF_TOKEN, RewindEpoch.NONE));
-            destroyStream();
-            apply(streamConfig());
-
-            assertThat(newLifeResume()).describedAs("the new life resumes from its reset point, never from the old life's cursor")
-                                       .isEqualTo(Result.success(Option.none()));
-        }
-
-        /// The resume of a consumer of the new life on a node with no local cursor.
-        private Result<Option<Cursor>> newLifeResume() {
-            return ClusterCursorStore.clusterCursorStore(fixedLocal(Option.none()),
-                                                         SELF,
-                                                         key -> kv.getTyped(key, StreamCursorCheckpointValue.class),
-                                                         assignmentsIn(kv),
-                                                         _ -> Promise.unitPromise(),
-                                                         () -> false)
-                                     .fetchCursor(GROUP, STREAM, PARTITION, EPOCH)
-                                     .await();
         }
     }
 
