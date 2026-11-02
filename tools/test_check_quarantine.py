@@ -86,6 +86,9 @@ class CheckQuarantineTest(unittest.TestCase):
         self._test("a", "ATest", "/// Covers the retirement ledger (#2429).\n// Quarantine: #2562 times out\n@PortBudget\n"
                                  "@Tag(\"quarantine\")\nclass ATest { @Test void t() {} }\n")
         self.assertEqual([issues for _, _, issues, _ in quarantine.tags(self.root)], [[2562]])
+        # documentation that happens to say "quarantine" is still documentation
+        self._test("a", "ATest", "/// quarantine history: released from #2429\n@Tag(\"quarantine\")\nclass ATest { @Test void t() {} }\n")
+        self.assertEqual([issues for _, _, issues, _ in quarantine.tags(self.root)], [[]])
 
     def test_check_reports_pom_and_workflow_exclusion_problems_too(self):
         write(self.root / "pom.xml", ROOT_POM.replace("Slow, quarantine", "Slow"))
