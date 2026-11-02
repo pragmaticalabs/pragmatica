@@ -56,7 +56,7 @@ class CheckQuarantineTest(unittest.TestCase):
     def test_a_tag_with_its_issue_above_or_on_its_line_passes_and_names_its_module(self):
         self._test("a", "ATest", "class ATest {\n    // quarantine: #2562 times out on a loaded runner\n    @Test\n"
                                  "    @Tag(\"quarantine\")\n    void t() {}\n}\n")
-        self._test("agg/b", "BTest", "@Tag(\"quarantine\") // #77, the whole class flakes\nclass BTest { @Test void t() {} }\n")
+        self._test("agg/b", "BTest", "@Tag(\"quarantine\") // quarantine #77, the whole class flakes\nclass BTest { @Test void t() {} }\n")
         self.assertEqual(quarantine.check(self.root), [])
         self.assertEqual([(p.name, line, issues) for p, line, issues, _ in quarantine.tags(self.root)],
                          [("ATest.java", 4, [2562]), ("BTest.java", 1, [77])])
@@ -77,6 +77,16 @@ class CheckQuarantineTest(unittest.TestCase):
         self._test("a", "ATest", 'class ATest {\n    @DisplayName("#12 retries")\n    @Tag("quarantine")\n    void t() {}\n}\n')
         self.assertEqual(len(quarantine.check(self.root)), 1)
 
+    def test_only_a_quarantine_comment_counts_never_a_doc_comment_or_another_comment(self):
+        # probe run 41427514255: a class's `///` documentation cited #2429, and the guard took it for the tag's issue
+        self._test("a", "ATest", "/// Covers the retirement ledger (#2429).\n// see #12 for the history\n@PortBudget\n"
+                                 "@Tag(\"quarantine\")\nclass ATest { @Test void t() {} }\n")
+        self.assertEqual([issues for _, _, issues, _ in quarantine.tags(self.root)], [[]])
+        self.assertEqual(len(quarantine.check(self.root)), 1)
+        self._test("a", "ATest", "/// Covers the retirement ledger (#2429).\n// Quarantine: #2562 times out\n@PortBudget\n"
+                                 "@Tag(\"quarantine\")\nclass ATest { @Test void t() {} }\n")
+        self.assertEqual([issues for _, _, issues, _ in quarantine.tags(self.root)], [[2562]])
+
     def test_check_reports_pom_and_workflow_exclusion_problems_too(self):
         write(self.root / "pom.xml", ROOT_POM.replace("Slow, quarantine", "Slow"))
         write(self.root / ".github/workflows/ci.yml", CI.replace("Heavy,quarantine", "Heavy"))
@@ -95,7 +105,7 @@ class CheckQuarantineTest(unittest.TestCase):
         self.assertEqual(quarantine.check(self.root), [])  # the gating check never asks about issue state
 
     def test_a_non_canonical_spelling_fails(self):
-        self._test("a", "ATest", "class ATest {\n    // #5\n    @Tag(value = \"Quarantine\")\n    void t() {}\n}\n")
+        self._test("a", "ATest", "class ATest {\n    // quarantine: #5\n    @Tag(value = \"Quarantine\")\n    void t() {}\n}\n")
         self.assertEqual(quarantine.check(self.root), ['a/src/test/java/x/ATest.java:3: write the quarantine tag exactly as '
                                                        '@Tag("quarantine")'])
 
@@ -158,7 +168,7 @@ class CheckQuarantineTest(unittest.TestCase):
 
     def test_the_gating_check_passes_when_the_api_is_down(self):
         # static-gates is required: an unreachable GitHub must not be able to fail it
-        self._test("a", "ATest", "class ATest {\n    // #9\n    @Tag(\"quarantine\")\n    void t() {}\n}\n")
+        self._test("a", "ATest", "class ATest {\n    // quarantine: #9\n    @Tag(\"quarantine\")\n    void t() {}\n}\n")
         def unreachable(repo, number):
             raise urllib.error.URLError("api.github.com unreachable")
         with mock.patch.object(quarantine, "open_issue", unreachable):
@@ -167,7 +177,7 @@ class CheckQuarantineTest(unittest.TestCase):
         self.assertIn("quarantine: 1 tag(s) in 1 module(s), 0 problem(s)", err)
 
     def test_the_issues_cli_fails_on_a_closed_issue(self):
-        self._test("a", "ATest", "class ATest {\n    // #9\n    @Tag(\"quarantine\")\n    void t() {}\n}\n")
+        self._test("a", "ATest", "class ATest {\n    // quarantine: #9\n    @Tag(\"quarantine\")\n    void t() {}\n}\n")
         with mock.patch.object(quarantine, "open_issue", lambda repo, n: repo == "o/r" and n != 9):
             failure, _ = self._cli("issues", "--repo", "o/r")
         self.assertIn("#9 is not an open issue", failure)
@@ -177,7 +187,7 @@ class CheckQuarantineTest(unittest.TestCase):
         self.assertIn("quarantine: 1 tag(s), 1 issue reference(s), 0 closed", err)
 
     def test_the_issues_cli_reports_an_api_error_as_could_not_look_never_as_a_pass(self):
-        self._test("a", "ATest", "class ATest {\n    // #9\n    @Tag(\"quarantine\")\n    void t() {}\n}\n")
+        self._test("a", "ATest", "class ATest {\n    // quarantine: #9\n    @Tag(\"quarantine\")\n    void t() {}\n}\n")
         def unreachable(repo, number):
             raise urllib.error.HTTPError("u", 503, "Service Unavailable", None, None)
         with mock.patch.object(quarantine, "open_issue", unreachable):
@@ -188,7 +198,7 @@ class CheckQuarantineTest(unittest.TestCase):
         out = io.StringIO()
         with mock.patch.object(quarantine, "ROOT", self.root), contextlib.redirect_stdout(out):
             quarantine.main(["modules"])
-            self._test("agg/b", "BTest", "// #3\n@Tag(\"quarantine\")\nclass BTest {}\n")
+            self._test("agg/b", "BTest", "// quarantine: #3\n@Tag(\"quarantine\")\nclass BTest {}\n")
             quarantine.main(["modules"])
         self.assertEqual(out.getvalue(), "\nagg/b\n")
 

@@ -13,8 +13,8 @@ required job excludes the tag; the non-required `quarantine` job in ci.yml runs 
 there is reported as "could not look", never as a pass, and never reaches a required check.
 
 check fails on:
-  - a quarantine tag with no issue reference (`#<number>`) in a `//` comment on its own line or in the comment and
-    annotation lines directly above it;
+  - a quarantine tag with no reference comment, `// quarantine: #<issue> <why>`, on its own line or among the comment
+    and annotation lines directly above it (a `///` doc comment or a comment without the word never counts);
   - a non-canonical spelling (`@Tag("Quarantine")`, `@Tag(value = "quarantine")`): the guard and the exclusions match
     the canonical form only, so a variant would be a quarantine nobody checks;
   - a surefire or failsafe `<excludedGroups>` in any pom.xml, or an `excludedGroups=` override in a ci.yml job other than
@@ -34,6 +34,9 @@ ROOT = Path(__file__).resolve().parent.parent
 TAG = '@Tag("quarantine")'
 ANY_SPELLING = re.compile(r'@Tag\s*\(\s*(?:value\s*=\s*)?"quarantine"\s*\)', re.IGNORECASE)
 ISSUE = re.compile(r"#(\d+)")
+# The reference comment: `// quarantine: #<issue> <why>`. Only a `//` comment that says "quarantine" counts, never a `///`
+# doc comment: the lines above a class carry its documentation, whose issue numbers have nothing to do with the tag.
+REFERENCE = re.compile(r"//(?!/)\s*quarantine\b(.*)", re.IGNORECASE)
 PRUNED = {"target", ".git", ".m2-local", "node_modules"}
 PLUGIN = re.compile(r"<plugin>\s*<groupId>org\.apache\.maven\.plugins</groupId>\s*"
                     r"<artifactId>maven-(surefire|failsafe)-plugin</artifactId>(.*?)</plugin>", re.S)
@@ -66,7 +69,7 @@ def tags(root=None):
             while j >= 0 and lines[j].strip().startswith(("//", "@")):  # the comment and annotation lines directly above
                 context.append(lines[j])
                 j -= 1
-            issues = sorted({int(n) for text in context if "//" in text for n in ISSUE.findall(text[text.index("//"):])})
+            issues = sorted({int(n) for text in context for ref in REFERENCE.findall(text) for n in ISSUE.findall(ref)})
             found.append((path, i + 1, issues, TAG in line))
     return found
 
