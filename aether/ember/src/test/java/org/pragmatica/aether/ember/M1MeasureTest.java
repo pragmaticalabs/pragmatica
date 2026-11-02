@@ -91,6 +91,7 @@ class M1MeasureTest {
     private final Set<String> idleOps = ConcurrentHashMap.newKeySet();
     private PrintWriter out;
     private int controlSerial;
+    private boolean floodFound;
 
     @AfterEach
     void tearDown() {
@@ -540,12 +541,49 @@ class M1MeasureTest {
             if ("s6d".equals(cls)) {
                 deploy(run);
                 settleLoose("s6d deployed", 40_000, 400_000);
+                var slotsBefore = instruments.getFirst().snapshot().getOrDefault("engine.slots", 0L);
+
                 emitS6(run, measure("s6d-undeploy", rep, Set.of(), () -> undeploy(run), MIN_EVENT_MS, QUIET_MS), false);
+                if (Boolean.getBoolean("m1.stopOnFlood")) {
+                    undeploySettleAndStopIfFlood(slotsBefore, cls, rep);
+                }
+                if (floodFound) {
+                    return;
+                }
             } else {
                 emitS6(run, measure(cls + "-deploy(" + run.placement + ",instances=" + run.instances + ")", rep, Set.of(), () -> deploy(run), MIN_EVENT_MS, QUIET_MS), true);
                 undeploy(run);
                 settleLoose("s6 undeployed", 40_000, 400_000);
+                drainCapture("tail", cls, rep);
             }
+        }
+    }
+
+    /// Per live core: the engine's pending batches, the age of the oldest on that core's own clock, and its phase; read twice 10 s apart after every S6d rep (the reps that did not flood are the control).
+    private void probeEngines(String cls, int rep, int reading, boolean flooded, long slots) {
+        var probes = instruments.stream().filter(i -> coreIds.contains(i.nodeId())).map(M1Instrument::engineProbe).collect(Collectors.joining(",", "[", "]"));
+
+        emit("{\"kind\":\"engine-probe\"," + header() + ",\"class\":\"" + cls + "\",\"rep\":" + rep + ",\"reading\":" + reading + ",\"flooded\":" + flooded + ",\"repSlots\":" + slots + ",\"load\":\"" + loadavg() + "\",\"cores\":" + probes + "}");
+    }
+
+    /// Capture runs: the first S6d rep whose window plus tail committed more than `m1.floodSlots` (default 3000) slots ends the run; the reps before it are the controls.
+    private void undeploySettleAndStopIfFlood(long slotsBefore, String cls, int rep) {
+        settleLoose("s6d tail", 40_000, 400_000);
+        drainCapture("tail", cls, rep);
+        var slots = instruments.getFirst().snapshot().getOrDefault("engine.slots", 0L) - slotsBefore;
+
+        log("s6d rep " + rep + " slots over window+tail: " + slots);
+        var flooded = slots > Long.getLong("m1.floodSlots", 3_000L);
+
+        for (int reading = 1; reading <= 2; reading++) {
+            probeEngines(cls, rep, reading, flooded, slots);
+            if (reading == 1) {
+                sleep(10_000);
+            }
+        }
+        if (slots > Long.getLong("m1.floodSlots", 3_000L)) {
+            emit("{\"kind\":\"flood-found\"," + header() + ",\"rep\":" + rep + ",\"slots\":" + slots + "}");
+            floodFound = true;
         }
     }
 
@@ -598,6 +636,7 @@ class M1MeasureTest {
     }
 
     private void undeploy(S6Run run) {
+        M1Instrument.anchor();
         run.membersAtStart = memberIds();
         run.leaderAtStart = cluster.currentLeader().or("none");
         var deleted = send("DELETE", "/api/v1/blueprints/" + run.blueprintId, "application/json", "");
@@ -635,6 +674,19 @@ class M1MeasureTest {
 
     private Set<String> memberIds() {
         return cluster.allNodes().stream().map(n -> n.self().id()).collect(Collectors.toCollection(java.util.TreeSet::new));
+    }
+
+    /// Opt-in (`-Dm1.capture=true`): per live core, the Noop submitters and slot openers captured since the previous drain, offsets relative to the undeploy request.
+    private void drainCapture(String phase, String cls, int rep) {
+        if (!M1Instrument.CAPTURE) {
+            return;
+        }
+        for (var instrument : instruments) {
+            if (coreIds.contains(instrument.nodeId())) {
+                emit("{\"kind\":\"capture\"," + header() + ",\"phase\":\"" + phase + "\",\"class\":\"" + cls + "\",\"rep\":" + rep + ",\"core\":\"" + instrument.nodeId()
+                     + "\",\"anchorUtc\":\"" + M1Instrument.anchorUtc() + "\",\"buckets5s\":" + instrument.drainSlotBuckets() + ",\"sources\":" + instrument.drainSources(40) + "}");
+            }
+        }
     }
 
     private void emitS6(S6Run run, Map<String, Long> raw, boolean deploy) {
@@ -814,6 +866,7 @@ class M1MeasureTest {
         var t1 = System.nanoTime();
         var after = refs.stream().map(M1Instrument::snapshot).toList();
         var idleAfter = idleWindow(refs, IDLE_WINDOW_MS);
+        drainCapture("window+idleAfter", cls, rep);
         var lastOffsetMs = lastNonIdleOffsetMs(refs.getFirst(), t0);
         var loadEnd = loadavg();
         var directivesEnd = directives();
