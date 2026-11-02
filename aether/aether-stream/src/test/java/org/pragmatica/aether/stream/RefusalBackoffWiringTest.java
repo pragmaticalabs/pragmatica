@@ -41,17 +41,26 @@ class RefusalBackoffWiringTest {
     private static final NodeId PEER = new NodeId("peer");
     private static final String STREAM = "orders";
 
-    /// Answers in order: refuse, refuse, refuse, sent (a timeout-free failure that is not a refusal), refuse, ... and
-    /// records when each read arrived.
+    /// Answers in order: refuse, refuse, refuse, a SENT read, refuse, ... and records when each read arrived. The sent read
+    /// either succeeds (`sentSucceeds`) or fails with a cause that is not a refusal: both mean the frame was sent.
     private static final class Script {
+        private final boolean sentSucceeds;
         private final List<Long> readsAtNanos = new CopyOnWriteArrayList<>();
 
-        <T> Promise<T> next() {
+        private Script(boolean sentSucceeds) {
+            this.sentSucceeds = sentSucceeds;
+        }
+
+        <T> Promise<T> next(T answer) {
             readsAtNanos.add(System.nanoTime());
 
-            return readsAtNanos.size() == 4
-                   ? StreamError.General.PARTITION_NOT_LOCAL.promise()
-                   : StreamForwardError.ForwardNotSent.FACTORY.apply(new WriteOutcome.BackpressureRefused(PEER)).promise();
+            if (readsAtNanos.size() != 4) {
+                return StreamForwardError.ForwardNotSent.FACTORY.apply(new WriteOutcome.BackpressureRefused(PEER)).promise();
+            }
+
+            return sentSucceeds
+                   ? Promise.success(answer)
+                   : StreamError.General.PARTITION_NOT_LOCAL.promise();
         }
 
         long gapMs(int from, int to) {
@@ -60,8 +69,16 @@ class RefusalBackoffWiringTest {
     }
 
     @Test
-    void consumer_holdsAfterRefusals_andResetsOnceAReadIsSent() {
-        var script = new Script();
+    void consumer_holdsAfterRefusals_andResetsOnceAReadSucceeds() {
+        consumerHoldsAndResets(new Script(true));
+    }
+
+    @Test
+    void consumer_holdsAfterRefusals_andResetsOnceAReadFailsWithoutARefusal() {
+        consumerHoldsAndResets(new Script(false));
+    }
+
+    private static void consumerHoldsAndResets(Script script) {
         var manager = StreamPartitionManager.streamPartitionManager();
 
         manager.createStream(StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 60_000), "earliest"));
@@ -85,17 +102,26 @@ class RefusalBackoffWiringTest {
     }
 
     @Test
-    void ownerActivationGate_holdsAfterRefusedProbes_andResetsOnceAProbeIsSent() {
-        var script = new Script();
+    void ownerActivationGate_holdsAfterRefusedProbes_andResetsOnceAProbeAnswers() {
+        gateHoldsAndResets(new Script(true));
+    }
+
+    @Test
+    void ownerActivationGate_holdsAfterRefusedProbes_andResetsOnceAProbeFailsWithoutARefusal() {
+        gateHoldsAndResets(new Script(false));
+    }
+
+    private static void gateHoldsAndResets(Script script) {
         var record = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(SELF, Epoch.epoch(0L, 1L, 0), 1L, HlcTimestamp.ZERO);
         var gate = OwnerActivation.ownerActivation(SELF,
                                                    (_, _) -> Option.some(record),
                                                    (_, _) -> true,
                                                    Option.none(),
                                                    () -> List.of(SELF, PEER),
-                                                   (_, _, _) -> script.<Long>next(),
+                                                   (_, _, _) -> script.next(5L),
                                                    (_, _) -> -1L,
-                                                   (_, _, _, tail) -> Promise.success(tail),
+                                                   // the answered probe names a peer ahead whose catch-up fails, so the gate stays un-activated and keeps probing
+                                                   (_, _, _, _) -> StreamError.General.PARTITION_NOT_LOCAL.<Long>promise(),
                                                    () -> true,
                                                    (_, _, _, from, to) -> Promise.success(LongStream.rangeClosed(from, to)
                                                                                                     .mapToObj(offset -> OffHeapRingBuffer.RawEvent.rawEvent(offset,
@@ -122,12 +148,12 @@ class RefusalBackoffWiringTest {
         return new StreamConsumerRuntime.PartitionReader() {
             @Override
             public Promise<List<OffHeapRingBuffer.RawEvent>> read(String stream, int partition, long from, int max) {
-                return script.next();
+                return script.next(List.of());
             }
 
             @Override
             public Promise<StreamPartitionManager.EpochRead> readFrom(String stream, int partition, long from, int max, Epoch epoch) {
-                return script.next();
+                return script.next(new StreamPartitionManager.EpochRead(List.of(), epoch));
             }
         };
     }
