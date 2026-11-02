@@ -1263,11 +1263,22 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// refused -- exactly as an escaped pass parks it: triggers meanwhile only mark it dirty, and the park's end re-drives it.
     @Contract
     private void parkAfterRefusal(ConsumerKey key, ConsumerState state, TimeSpan hold) {
+        var untilMs = clockMs.getAsLong() + hold.millis();
+
         state.adjustPollInterval(false);
-        state.escapeBackoffUntil(clockMs.getAsLong() + hold.millis());
+        state.escapeBackoffUntil(untilMs);
         state.finishDrain();
         if (!state.isCancelled() && !closed.get()) {
-            escapeScheduler.schedule(() -> resumeAfterEscapeBackoff(key, state), hold);
+            escapeScheduler.schedule(() -> resumeAfterRefusalPark(key, state, untilMs), hold);
+        }
+    }
+
+    /// Ends THIS park only. A scheduler that wakes late finds that a poll tick already ran a pass once the park expired by
+    /// the clock, and that the pass may have parked again; clearing that newer park would let the next pass re-read at once.
+    @Contract
+    private void resumeAfterRefusalPark(ConsumerKey key, ConsumerState state, long untilMs) {
+        if (state.endEscapeBackoff(untilMs)) {
+            requestDrain(key, state);
         }
     }
 
@@ -2588,6 +2599,11 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         @Contract
         void escapeBackoffUntil(long untilMs) {
             escapeBackoffUntilMs.set(untilMs);
+        }
+
+        /// Ends the backoff that runs until `untilMs`; false when a newer one replaced it.
+        boolean endEscapeBackoff(long untilMs) {
+            return escapeBackoffUntilMs.compareAndSet(untilMs, 0L);
         }
 
         boolean inEscapeBackoff(long nowMs) {
