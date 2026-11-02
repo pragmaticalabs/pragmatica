@@ -269,10 +269,13 @@ class SliceStoreConfigWatchLifecycleTest {
     /// a new load. The eviction used to be an independent action that could run after the caller had resumed:
     /// [#aThrowingCodecOfAnAlreadyRegisteredSlice_isAFailedLoad_notAThrowOutOfComputeIfAbsent_andALaterLoadWorks]
     /// failed in CI on exactly this check, with the key present when checked and gone when printed. Repeated
-    /// because the old order lost only some of the races.
+    /// because the old order lost only some of the races. The location fails on another thread, as a real load does:
+    /// an already-failed promise runs even an independent action inline, which hides the race.
     @Test
     void aFailedLoad_hasLeftTheMap_byTheTimeItsFailureIsSeen() {
-        var failing = storeOver(art -> Causes.cause("no location for " + art.asString()).promise());
+        var failing = storeOver(art -> Promise.<Location>promise(pending -> Thread.ofVirtual()
+                                                                                 .start(() -> pending.fail(Causes.cause("no location for "
+                                                                                                                       + art.asString())))));
 
         for (int attempt = 0; attempt < FAILED_LOAD_ATTEMPTS; attempt++) {
             var loaded = failing.loadSlice(X).await();
