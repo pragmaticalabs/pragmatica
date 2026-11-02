@@ -1,6 +1,7 @@
 import contextlib
 import importlib.util
 import io
+import re
 import shutil
 import tempfile
 import unittest
@@ -10,6 +11,13 @@ from unittest import mock
 _spec = importlib.util.spec_from_file_location("ember_shard", Path(__file__).with_name("ember-shard.py"))
 shard = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(shard)
+CI = Path(__file__).resolve().parent.parent / ".github/workflows/ci.yml"
+
+
+def matrix_shards():
+    """The ember-shard job's matrix length, read from ci.yml: the plan CI actually runs."""
+    job = re.search(r"^  ember-shard:\n(.*?)(?=^  \S|\Z)", CI.read_text(), re.MULTILINE | re.DOTALL).group(1)
+    return len(re.search(r"shard: \[([^\]]*)\]", job).group(1).split(","))
 
 
 class EmberShardTest(unittest.TestCase):
@@ -51,9 +59,18 @@ class EmberShardTest(unittest.TestCase):
             self.assertEqual(shard.read_weights(w), {"ATest": 13, "BTest": 2})
 
     def test_current_split_is_within_the_budget_and_balanced(self):
-        totals = [b["total"] for b in shard.assign(self.classes, self.weights, 3)]
+        self.assertEqual(matrix_shards(), 4)  # guards the guard: the plan below is the one ci.yml runs
+        totals = [b["total"] for b in shard.assign(self.classes, self.weights, matrix_shards())]
         self.assertLess(max(totals), shard.BUDGET_SECONDS)
         self.assertLess(max(totals) - min(totals), 0.1 * max(totals))
+
+    def test_the_budget_leaves_the_test_step_its_headroom(self):
+        # BUDGET_SECONDS = (job timeout - ~2.5 min setup) / 1.3; the test step's own timeout must sit above the budget
+        job = re.search(r"^  ember-shard:\n(.*?)(?=^  \S|\Z)", CI.read_text(), re.MULTILINE | re.DOTALL).group(1)
+        job_minutes = int(re.search(r"^    timeout-minutes: (\d+)", job, re.MULTILINE).group(1))
+        step_minutes = int(re.search(r"- name: Run Ember tests.*?timeout-minutes: (\d+)", job, re.DOTALL).group(1))
+        self.assertEqual(shard.BUDGET_SECONDS, int((job_minutes - 2.5) * 60 / 1.3))
+        self.assertGreater(step_minutes * 60, shard.BUDGET_SECONDS)
 
     def _plan(self, budget, weights_text, *extra, index=1):
         """main() over a synthetic module: three cluster-sized classes plus `extra`, the given weights and budget."""

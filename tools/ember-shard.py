@@ -19,7 +19,7 @@ regenerate from a CI run's own reports with tools/regen-shard-weights.py rather 
 The default is a percentile, not the maximum, because at 8d4c507347 the maximum (Ember's 624 s class) made one new class
 a predicted overrun of a plan that had 104 s of headroom. The cost: a new class slower than the percentile is under-predicted until
 the next regeneration, and the only margin for that error is the slack between a budget and its step timeout (Ember:
-1920 s against the test step's 40 min, 480 s).
+1500 s against the test step's 30 min, 300 s).
 """
 import argparse
 import math
@@ -31,14 +31,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 # module -> (test source dir, weights file, shard budget in seconds)
 MODULES = {
-    "ember": (ROOT / "aether/ember/src/test/java", ROOT / "tools/ember-shard-weights.txt", 1920),
+    # job timeout 35 min - ~2.5 min setup, / 1.3 headroom: 1500. Four shards plan about 1180 s each (regenerated weights).
+    "ember": (ROOT / "aether/ember/src/test/java", ROOT / "tools/ember-shard-weights.txt", 1500),
     # job timeout 30 min - ~4 min setup (bootstrap + upstream install), / 1.3 headroom, rounded down.
     "consensus": (ROOT / "integrations/consensus/src/test/java", ROOT / "tools/consensus-shard-weights.txt", 1200),
 }
 TEST_DIR, WEIGHTS, BUDGET_SECONDS = MODULES["ember"]
 # surefire's default includes, minus *IT (the root pom excludes it from surefire)
 TEST_NAME = re.compile(r"^(Test.*|.*Test|.*Tests|.*TestCase)$")
-# Ember's shard budget (MODULES): job timeout 45 min - ~2.5 min setup, / 1.3 headroom, rounded down.
 # A top-level class tag in the root pom's surefire.excludedGroups: surefire selects the class and then runs nothing, so it
 # writes no report and a shard assigned it would fail --verify for a class that correctly did not run.
 EXCLUDED_CLASS_TAG = re.compile(r'^@Tag\("(Infinite|Slow|Benchmark|S3)"\)', re.MULTILINE)
