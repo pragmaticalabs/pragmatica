@@ -14,6 +14,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.jar.Attributes;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
@@ -284,6 +285,38 @@ class SliceStoreConfigWatchLifecycleTest {
             assertThat(failing.entries()).as("attempt %d: no failed entry once the failure is seen", attempt)
                                          .doesNotContainKey(X);
         }
+    }
+
+    /// #2571: a failed load's eviction removes that load only. Two callers wait on one load; the first one's own
+    /// dependent step retries at once, which starts a NEW load under the same key before the second caller's eviction
+    /// runs. Evicting by key alone took the retry's in-flight load out of the map. Single-threaded and deterministic:
+    /// the waiters' dependent steps run in attach order on the thread that fails the location.
+    @Test
+    void aSecondWaitersEviction_leavesTheRetrysNewLoadInTheMap() {
+        var firstLocation = Promise.<Location>promise();
+        var lookups = new AtomicInteger();
+        var shared = storeOver(_ -> lookups.getAndIncrement() == 0
+                                    ? firstLocation
+                                    : Promise.<Location>promise());
+        var retry = new AtomicReference<Promise<SliceStore.LoadedSlice>>();
+        var first = shared.loadSlice(X)
+                          .fold(result -> {
+                                    retry.set(shared.loadSlice(X));
+
+                                    return result.async();
+                                });
+        var second = shared.loadSlice(X);
+
+        await().atMost(Duration.ofSeconds(10)).until(() -> lookups.get() == 1);
+        firstLocation.fail(Causes.cause("no location for " + X.asString()));
+
+        assertThat(first.await().isFailure()).as("control: the shared load failed").isTrue();
+        assertThat(second.await().isFailure()).as("control: both waiters saw the failure").isTrue();
+        assertThat(retry.get()).as("control: the retry ran").isNotNull();
+        assertThat(retry.get().isResolved()).as("the retry started a new load instead of getting the failed one back")
+                                            .isFalse();
+        assertThat(shared.entries()).as("the second waiter's eviction left the retry's new load in the map")
+                                    .containsKey(X);
     }
 
     private sliceStore storeOver(Repository source) {
