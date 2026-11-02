@@ -15,8 +15,15 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                               int reshuffleConcurrency,
                               long caughtUpMaxLagOffsets,
                               long segmentDiskMaxBytes,
+                              long dhtSegmentMaxBytes,
                               TimeSpan isrLagMax,
-                              TimeSpan promotionEscapeAfter) {
+                              TimeSpan promotionEscapeAfter,
+                              long sealRunBytes,
+                              int sealRunEvents,
+                              TimeSpan sealRunAge,
+                              long sealMergeBytes,
+                              long maxMemoryBytes,
+                              long sealPendingCapBytes) {
     public static final long DEFAULT_MAX_READ_RESPONSE_BYTES = 28L * 1024 * 1024;
     /// How many partitions one node may hold in materialize+backfill at once (`reshuffle_concurrency`).
     /// One-at-a-time starves a large reshuffle; unbounded floods backfill. Was a hard-coded constant with
@@ -56,6 +63,13 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
     /// holding its stream segments at boot. Disk size is a fact about the node, not cluster policy -- the
     /// previous hard-coded 4 GiB wedged long-lived nodes whatever their real disk.
     public static final long DERIVE_SEGMENT_DISK_MAX_BYTES = 0L;
+    /// `dht_segment_max_bytes` unset (#2258): the node caps the live bytes of `stream-segments` its DHT engine holds at
+    /// [#DHT_SEGMENT_MAX_BYTES_FLOOR] or a quarter of its maximum heap, whichever is larger (128 MiB on the shipped
+    /// `-Xmx512m` launchers). THE DEFAULT IS A GUESS (spec 3.2 item 7); what would settle it is the measured heap one block costs
+    /// the engine, beside the heap the node's other DHT prefixes and tombstones hold.
+    public static final long DERIVE_DHT_SEGMENT_MAX_BYTES = 0L;
+    /// The smallest derived `dht_segment_max_bytes`: 64 MiB.
+    public static final long DHT_SEGMENT_MAX_BYTES_FLOOR = 64L * 1024 * 1024;
     /// #1730 `isr_lag_max`: how long an in-sync replica may stay behind the owner's head before the owner asks for it
     /// to leave the partition's ISR (Kafka's `replica.lag.time.max.ms`). A LIVENESS knob only: the ISR changes only
     /// by a committed write, and a confirmation waits for every committed ISR member, so no value of it can make an
@@ -69,6 +83,32 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
     /// plus WAL replay) must not be escaped past, or divergence becomes routine on staggered restarts. THE DEFAULT IS A GUESS (the
     /// owner's, 2026-10-09); what would settle it is the measured boot spread of a cold restart.
     public static final TimeSpan DEFAULT_PROMOTION_ESCAPE_AFTER = timeSpan(120).seconds();
+    /// #2201 C-02 (spec 4.2) `seal_run_bytes`: the segment sealer seals a partition's run of evicted events once its queued
+    /// bytes reach this. With `seal_run_events` and `seal_run_age`, whichever is reached first. ALL FOUR SEALER DEFAULTS ARE
+    /// GUESSES (spec 4.3); what would settle them is the seal rate and WAL size trend of the workload-1 baseline run.
+    public static final long DEFAULT_SEAL_RUN_BYTES = 1024 * 1024L;
+    /// `seal_run_events`: ... or once its queued events reach this (bounds the decode of a block of tiny events).
+    public static final int DEFAULT_SEAL_RUN_EVENTS = 4096;
+    /// `seal_run_age`: ... or once its oldest queued event has waited this long. Without a WAL this is also how much longer
+    /// an acknowledged event can be lost to a crash before its seal.
+    public static final TimeSpan DEFAULT_SEAL_RUN_AGE = timeSpan(5).seconds();
+    /// `seal_merge_bytes`: the cap on one block when a backlog has queued behind an in-flight seal.
+    public static final long DEFAULT_SEAL_MERGE_BYTES = 4 * 1024 * 1024L;
+    /// `max_memory_bytes` unset (#2201 C-03, spec 4.4): the node derives its off-heap stream memory budget from the physical
+    /// memory of its host ([#derivedMaxMemoryBytes]). The `STREAM_MAX_MEMORY_BYTES` environment variable overrides both.
+    public static final long DERIVE_MAX_MEMORY_BYTES = 0L;
+    /// The smallest derived `max_memory_bytes`: 128 MiB, the budget every node had before the key existed.
+    public static final long MIN_DERIVED_MAX_MEMORY_BYTES = 128 * 1024 * 1024L;
+    /// The largest derived `max_memory_bytes`: 1 GiB. THE FORMULA IS A GUESS (spec 4.4 item 2): one eighth of physical memory,
+    /// clamped to [128 MiB, 1 GiB]; the spec's envelope (six SME workloads at peak need about 526 MiB per node) is a SIZING
+    /// assumption for how much ring growth the budget should afford, not a mechanism that holds rings to a window.
+    public static final long MAX_DERIVED_MAX_MEMORY_BYTES = 1024 * 1024 * 1024L;
+    /// `seal_pending_cap_bytes` unset: the cap on the sealer's heap copies of evicted, not yet sealed events is derived from
+    /// the off-heap budget ([#effectiveSealPendingCapBytes]).
+    public static final long DERIVE_SEAL_PENDING_CAP_BYTES = 0L;
+    /// The largest derived `seal_pending_cap_bytes`: 256 MiB. A GUESS (spec 4.4 item 3): it decouples the heap the sealer may
+    /// hold from the off-heap budget, so raising the budget does not raise the heap exposure past this.
+    public static final long MAX_DERIVED_SEAL_PENDING_CAP_BYTES = 256 * 1024 * 1024L;
 
     /// The default `LINEARIZABLE`-read mechanism (spec §8.1): the no-op consensus round (#345 item
     /// 1e-a). The alternative `lease` mechanism is rejected at config parse until validated.
@@ -98,8 +138,15 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    DEFAULT_RESHUFFLE_CONCURRENCY,
                                    DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS,
                                    DERIVE_SEGMENT_DISK_MAX_BYTES,
+                                   DERIVE_DHT_SEGMENT_MAX_BYTES,
                                    DEFAULT_ISR_LAG_MAX,
-                                   DEFAULT_PROMOTION_ESCAPE_AFTER);
+                                   DEFAULT_PROMOTION_ESCAPE_AFTER,
+                                   DEFAULT_SEAL_RUN_BYTES,
+                                   DEFAULT_SEAL_RUN_EVENTS,
+                                   DEFAULT_SEAL_RUN_AGE,
+                                   DEFAULT_SEAL_MERGE_BYTES,
+                                   DERIVE_MAX_MEMORY_BYTES,
+                                   DERIVE_SEAL_PENDING_CAP_BYTES);
     }
 
     public static StreamingConfig streamingConfig(TimeSpan publishForwardTimeout,
@@ -112,8 +159,15 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    DEFAULT_RESHUFFLE_CONCURRENCY,
                                    DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS,
                                    DERIVE_SEGMENT_DISK_MAX_BYTES,
+                                   DERIVE_DHT_SEGMENT_MAX_BYTES,
                                    DEFAULT_ISR_LAG_MAX,
-                                   DEFAULT_PROMOTION_ESCAPE_AFTER);
+                                   DEFAULT_PROMOTION_ESCAPE_AFTER,
+                                   DEFAULT_SEAL_RUN_BYTES,
+                                   DEFAULT_SEAL_RUN_EVENTS,
+                                   DEFAULT_SEAL_RUN_AGE,
+                                   DEFAULT_SEAL_MERGE_BYTES,
+                                   DERIVE_MAX_MEMORY_BYTES,
+                                   DERIVE_SEAL_PENDING_CAP_BYTES);
     }
 
     public static StreamingConfig streamingConfig(TimeSpan publishForwardTimeout,
@@ -127,8 +181,15 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    DEFAULT_RESHUFFLE_CONCURRENCY,
                                    DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS,
                                    DERIVE_SEGMENT_DISK_MAX_BYTES,
+                                   DERIVE_DHT_SEGMENT_MAX_BYTES,
                                    DEFAULT_ISR_LAG_MAX,
-                                   DEFAULT_PROMOTION_ESCAPE_AFTER);
+                                   DEFAULT_PROMOTION_ESCAPE_AFTER,
+                                   DEFAULT_SEAL_RUN_BYTES,
+                                   DEFAULT_SEAL_RUN_EVENTS,
+                                   DEFAULT_SEAL_RUN_AGE,
+                                   DEFAULT_SEAL_MERGE_BYTES,
+                                   DERIVE_MAX_MEMORY_BYTES,
+                                   DERIVE_SEAL_PENDING_CAP_BYTES);
     }
 
     public static StreamingConfig streamingConfig(TimeSpan publishForwardTimeout,
@@ -143,8 +204,15 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    reshuffleConcurrency,
                                    DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS,
                                    DERIVE_SEGMENT_DISK_MAX_BYTES,
+                                   DERIVE_DHT_SEGMENT_MAX_BYTES,
                                    DEFAULT_ISR_LAG_MAX,
-                                   DEFAULT_PROMOTION_ESCAPE_AFTER);
+                                   DEFAULT_PROMOTION_ESCAPE_AFTER,
+                                   DEFAULT_SEAL_RUN_BYTES,
+                                   DEFAULT_SEAL_RUN_EVENTS,
+                                   DEFAULT_SEAL_RUN_AGE,
+                                   DEFAULT_SEAL_MERGE_BYTES,
+                                   DERIVE_MAX_MEMORY_BYTES,
+                                   DERIVE_SEAL_PENDING_CAP_BYTES);
     }
 
     public static StreamingConfig streamingConfig(TimeSpan publishForwardTimeout,
@@ -160,8 +228,15 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    reshuffleConcurrency,
                                    caughtUpMaxLagOffsets,
                                    DERIVE_SEGMENT_DISK_MAX_BYTES,
+                                   DERIVE_DHT_SEGMENT_MAX_BYTES,
                                    DEFAULT_ISR_LAG_MAX,
-                                   DEFAULT_PROMOTION_ESCAPE_AFTER);
+                                   DEFAULT_PROMOTION_ESCAPE_AFTER,
+                                   DEFAULT_SEAL_RUN_BYTES,
+                                   DEFAULT_SEAL_RUN_EVENTS,
+                                   DEFAULT_SEAL_RUN_AGE,
+                                   DEFAULT_SEAL_MERGE_BYTES,
+                                   DERIVE_MAX_MEMORY_BYTES,
+                                   DERIVE_SEAL_PENDING_CAP_BYTES);
     }
 
     /// The same streaming config with the streams disk-tier cap set (`segment_disk_max_bytes`, #1604);
@@ -174,8 +249,44 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    reshuffleConcurrency,
                                    caughtUpMaxLagOffsets,
                                    segmentDiskMaxBytes,
+                                   dhtSegmentMaxBytes,
                                    isrLagMax,
-                                   promotionEscapeAfter);
+                                   promotionEscapeAfter,
+                                   sealRunBytes,
+                                   sealRunEvents,
+                                   sealRunAge,
+                                   sealMergeBytes,
+                                   maxMemoryBytes,
+                                   sealPendingCapBytes);
+    }
+
+    /// The same streaming config with the cap on this node's DHT bytes of `stream-segments` set (`dht_segment_max_bytes`,
+    /// #2258); [#DERIVE_DHT_SEGMENT_MAX_BYTES] derives it from the heap.
+    public StreamingConfig withDhtSegmentMaxBytes(long dhtSegmentMaxBytes) {
+        return new StreamingConfig(publishForwardTimeout,
+                                   readForwardTimeout,
+                                   maxReadResponseBytes,
+                                   readLinearization,
+                                   reshuffleConcurrency,
+                                   caughtUpMaxLagOffsets,
+                                   segmentDiskMaxBytes,
+                                   dhtSegmentMaxBytes,
+                                   isrLagMax,
+                                   promotionEscapeAfter,
+                                   sealRunBytes,
+                                   sealRunEvents,
+                                   sealRunAge,
+                                   sealMergeBytes,
+                                   maxMemoryBytes,
+                                   sealPendingCapBytes);
+    }
+
+    /// The cap on the live bytes of `stream-segments` in this node's DHT engine: the configured value, or when it is
+    /// [#DERIVE_DHT_SEGMENT_MAX_BYTES] the larger of [#DHT_SEGMENT_MAX_BYTES_FLOOR] and a quarter of `maxHeapBytes`.
+    public long effectiveDhtSegmentMaxBytes(long maxHeapBytes) {
+        return dhtSegmentMaxBytes == DERIVE_DHT_SEGMENT_MAX_BYTES
+               ? Math.max(DHT_SEGMENT_MAX_BYTES_FLOOR, maxHeapBytes / 4)
+               : dhtSegmentMaxBytes;
     }
 
     /// The same streaming config with the ISR lag bound set (`isr_lag_max`, #1730).
@@ -187,8 +298,15 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    reshuffleConcurrency,
                                    caughtUpMaxLagOffsets,
                                    segmentDiskMaxBytes,
+                                   dhtSegmentMaxBytes,
                                    isrLagMax,
-                                   promotionEscapeAfter);
+                                   promotionEscapeAfter,
+                                   sealRunBytes,
+                                   sealRunEvents,
+                                   sealRunAge,
+                                   sealMergeBytes,
+                                   maxMemoryBytes,
+                                   sealPendingCapBytes);
     }
 
     /// The same streaming config with the promotion escape bound set (`promotion_escape_after`, #2080).
@@ -200,8 +318,73 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    reshuffleConcurrency,
                                    caughtUpMaxLagOffsets,
                                    segmentDiskMaxBytes,
+                                   dhtSegmentMaxBytes,
                                    isrLagMax,
-                                   promotionEscapeAfter);
+                                   promotionEscapeAfter,
+                                   sealRunBytes,
+                                   sealRunEvents,
+                                   sealRunAge,
+                                   sealMergeBytes,
+                                   maxMemoryBytes,
+                                   sealPendingCapBytes);
+    }
+
+    /// The same streaming config with the run-forming sealer's thresholds set (`seal_run_bytes`, `seal_run_events`,
+    /// `seal_run_age`, `seal_merge_bytes`; #2201 C-02).
+    public StreamingConfig withSealRun(long sealRunBytes, int sealRunEvents, TimeSpan sealRunAge, long sealMergeBytes) {
+        return new StreamingConfig(publishForwardTimeout,
+                                   readForwardTimeout,
+                                   maxReadResponseBytes,
+                                   readLinearization,
+                                   reshuffleConcurrency,
+                                   caughtUpMaxLagOffsets,
+                                   segmentDiskMaxBytes,
+                                   dhtSegmentMaxBytes,
+                                   isrLagMax,
+                                   promotionEscapeAfter,
+                                   sealRunBytes,
+                                   sealRunEvents,
+                                   sealRunAge,
+                                   sealMergeBytes,
+                                   maxMemoryBytes,
+                                   sealPendingCapBytes);
+    }
+
+    /// The same streaming config with the off-heap stream memory budget and the sealer's pending-seal heap cap set
+    /// (`max_memory_bytes`, `seal_pending_cap_bytes`; #2201 C-03); [#DERIVE_MAX_MEMORY_BYTES] and
+    /// [#DERIVE_SEAL_PENDING_CAP_BYTES] derive them.
+    public StreamingConfig withMemoryBudget(long maxMemoryBytes, long sealPendingCapBytes) {
+        return new StreamingConfig(publishForwardTimeout,
+                                   readForwardTimeout,
+                                   maxReadResponseBytes,
+                                   readLinearization,
+                                   reshuffleConcurrency,
+                                   caughtUpMaxLagOffsets,
+                                   segmentDiskMaxBytes,
+                                   dhtSegmentMaxBytes,
+                                   isrLagMax,
+                                   promotionEscapeAfter,
+                                   sealRunBytes,
+                                   sealRunEvents,
+                                   sealRunAge,
+                                   sealMergeBytes,
+                                   maxMemoryBytes,
+                                   sealPendingCapBytes);
+    }
+
+    /// The off-heap stream memory budget a node derives when `max_memory_bytes` is unset: one eighth of `totalMemoryBytes`
+    /// (the host's physical memory, as the JVM sees it inside a container), clamped to
+    /// [[#MIN_DERIVED_MAX_MEMORY_BYTES], [#MAX_DERIVED_MAX_MEMORY_BYTES]].
+    public static long derivedMaxMemoryBytes(long totalMemoryBytes) {
+        return Math.clamp(totalMemoryBytes / 8, MIN_DERIVED_MAX_MEMORY_BYTES, MAX_DERIVED_MAX_MEMORY_BYTES);
+    }
+
+    /// The sealer's pending-seal heap cap: the configured value, or when it is [#DERIVE_SEAL_PENDING_CAP_BYTES] the smaller
+    /// of `maxMemoryBytes` (the node's resolved off-heap budget) and [#MAX_DERIVED_SEAL_PENDING_CAP_BYTES].
+    public long effectiveSealPendingCapBytes(long maxMemoryBytes) {
+        return sealPendingCapBytes == DERIVE_SEAL_PENDING_CAP_BYTES
+               ? Math.min(maxMemoryBytes, MAX_DERIVED_SEAL_PENDING_CAP_BYTES)
+               : sealPendingCapBytes;
     }
 
     /// The owner activation gate's alarm bound (#1555 item 8): two SWIM suspect windows. The promotion escape bound may not be below it.
@@ -219,8 +402,15 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    reshuffleConcurrency,
                                    caughtUpMaxLagOffsets,
                                    segmentDiskMaxBytes,
+                                   dhtSegmentMaxBytes,
                                    isrLagMax,
-                                   promotionEscapeAfter);
+                                   promotionEscapeAfter,
+                                   sealRunBytes,
+                                   sealRunEvents,
+                                   sealRunAge,
+                                   sealMergeBytes,
+                                   maxMemoryBytes,
+                                   sealPendingCapBytes);
     }
 
     /// Bounded wait for a caught-up source to appear before a cold-start replica self-promotes. Derived

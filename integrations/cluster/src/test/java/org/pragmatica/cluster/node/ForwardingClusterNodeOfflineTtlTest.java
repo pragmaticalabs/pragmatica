@@ -56,6 +56,25 @@ class ForwardingClusterNodeOfflineTtlTest {
         assertThat(pending.isResolved()).as("the caller is still waiting: the lifetime is its wait, not an early failure").isFalse();
     }
 
+    /// Red when: `forwardApplyTimeout()` reports a value other than the wait `apply` actually uses, so a worker's write
+    /// timers sized from it (deployment spec R-3.4.4, G-6) would not outlast the forwarder's own timeout.
+    @Test
+    void forwardApplyTimeout_isTheWaitApplyHandsOver() {
+        var bounded = new CopyOnWriteArrayList<Sent>();
+        var underlying = mock(ClusterNode.class);
+        when(underlying.self()).thenReturn(SELF);
+        @SuppressWarnings("unchecked")
+        var node = ForwardingClusterNode.<Cmd>forwardingClusterNode(underlying, recording(bounded, new CopyOnWriteArrayList<>()), Set.of(CORE));
+
+        node.apply(List.of(new Cmd("put")));
+
+        assertThat(bounded).hasSize(1);
+        assertThat(ForwardingClusterNode.forwardApplyTimeout()
+                                        .millis()).isEqualTo(bounded.getFirst()
+                                                                    .lifetime()
+                                                                    .millis());
+    }
+
     private static ClusterNetwork recording(List<Sent> bounded, List<ProtocolMessage> plain) {
         return new ClusterNetwork() {
             @Override

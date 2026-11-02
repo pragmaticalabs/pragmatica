@@ -130,14 +130,28 @@ public class RabiaEngine<C extends Command> {
         return Result.success(Unit.unit());
     }
 
-    public org.pragmatica.lang.Unit authorizePassiveClient() {
-        passiveClientReady = passiveClient;
+    public boolean isPassiveClientReady() {
+        return passiveClient && passiveClientReady;
+    }
+
+    /// The worker-replica readiness seam (W-OBS W3, I-W6): sets AND clears the flag [#isPassiveClientReady] reports, from the single readiness
+    /// computation, so a worker that loses its feed stops reporting ready. Writes no `engineState`.
+    /// Ignored on an engine that is not a passive client.
+    public org.pragmatica.lang.Unit setPassiveClientReady(boolean ready) {
+        passiveClientReady = passiveClient && ready;
 
         return org.pragmatica.lang.Unit.unit();
     }
 
-    public boolean isPassiveClientReady() {
-        return passiveClient && passiveClientReady;
+    /// A passive client installs its state from the replica feed, never through [#applyRestoredState], so the post-restore listeners
+    /// ([#onStateRestored]) would never fire on a worker. The feed client calls this after each snapshot install. Writes no `engineState`;
+    /// a no-op on an engine that is not a passive client.
+    public org.pragmatica.lang.Unit completePassiveRestore() {
+        if (passiveClient) {
+            notifyStateRestored();
+        }
+
+        return org.pragmatica.lang.Unit.unit();
     }
 
     /// The installed voter configuration: epoch plus complete roster. Changes only through
@@ -609,6 +623,34 @@ public class RabiaEngine<C extends Command> {
                             .map(ClusterConfig::members)
                             .onSuccess(installRouting)
                             .mapToUnit();
+    }
+
+    /// A passive client never applies a §4 command and does no sync, so its roster would stay at genesis for its whole life (#2543).
+    /// This installs the electorate a core reported through the worker directory, and only that: refused unless this engine is a
+    /// passive client; a roster of an older epoch, or the one already installed, changes nothing; a different roster at the SAME
+    /// epoch is refused (the rule [#eligibleSyncResponse] applies); a strictly newer epoch is installed and the voter listeners
+    /// notified. Phases, ballots and `observerMode` are never touched.
+    public synchronized Result<Unit> installPassiveVoters(VoterConfiguration configuration) {
+        if (!passiveClient) {
+            return ReconfigurationError.NOT_PASSIVE_CLIENT.result();
+        }
+
+        return configuration.epoch() > voterEpoch()
+               ? installReportedVoters(configuration)
+               : checkAgainstHeldVoters(configuration);
+    }
+
+    private Result<Unit> installReportedVoters(VoterConfiguration configuration) {
+        installVoters(configuration);
+
+        return Result.success(Unit.unit());
+    }
+
+    private Result<Unit> checkAgainstHeldVoters(VoterConfiguration configuration) {
+        return configuration.epoch() == voterEpoch() && !voters.map(configuration::equals)
+                                                               .or(false)
+               ? ReconfigurationError.INCOMPATIBLE_EPOCH.result()
+               : Result.success(Unit.unit());
     }
 
     public Option<VoterConfiguration> voterConfiguration() {

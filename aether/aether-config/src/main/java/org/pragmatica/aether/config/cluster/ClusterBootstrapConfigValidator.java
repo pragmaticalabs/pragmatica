@@ -16,6 +16,7 @@ import org.pragmatica.aether.config.ConsensusTierBounds;
 import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.aether.config.JwksUrl;
 import org.pragmatica.aether.config.SecurityMode;
+import org.pragmatica.aether.environment.OperationId;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -50,6 +51,7 @@ public final class ClusterBootstrapConfigValidator {
         validateClusterLevel(config, errors);
         validateCoreTopology(config, errors);
         validateSources(config, errors);
+        validateClusterNameFitsServerNames(config, errors);
         validateSshHostsUniqueAcrossSources(config, errors);
         validatePortDistinctness(config, errors);
         validateAutoHealDisableHonesty(config, errors);
@@ -278,6 +280,46 @@ public final class ClusterBootstrapConfigValidator {
         if (maxUnavailable > limit) {
             errors.add("REQ-3.3.7: maxUnavailable " + maxUnavailable
                       + " must be <= (derivedCoreCount - 1) / 2 = " + limit);
+        }
+    }
+
+    /// PF-36 (G1-a): a Hetzner server is named `<cluster>-<nodeId>` (the operation id), at most 63 characters. The budget is computed from
+    /// the configuration: the cluster name, one hyphen, and the longest node id the configured Hetzner sources and roles can be given
+    /// ([OperationId#longestMintedIdLength]: the cluster-bearing minted id, the CTM worker id, the bootstrap id). Refused here, before
+    /// any node, with the numbers; never truncated: a shortened name would no longer be the one a later lookup searches.
+    private static void validateClusterNameFitsServerNames(ClusterBootstrapConfig config, List<String> errors) {
+        var cluster = config.cluster().name().value();
+        var worst = new String[]{"", ""};
+        var worstLength = 0;
+
+        for (var entry : config.sources().entrySet()) {
+            if (entry.getValue().provider().filter(provider -> provider == CloudProviderName.HETZNER).isEmpty()) {
+                continue;
+            }
+
+            for (var role : entry.getValue().roles().keySet()) {
+                var length = OperationId.operationIdLength(cluster.length(), entry.getKey(), role.value());
+
+                if (length > worstLength) {
+                    worstLength = length;
+                    worst = new String[]{entry.getKey(), role.value()};
+                }
+            }
+        }
+
+        if (worstLength > OperationId.MAX_LENGTH) {
+            errors.add("PF-36: Cluster name '" + cluster
+                      + "' (" + cluster.length()
+                      + " characters) is too long for source '" + worst[0]
+                      + "' role '" + worst[1]
+                      + "': a Hetzner server is named '<cluster>-<node id>' and the longest node id this pool can be given is " + OperationId.longestMintedIdLength(cluster.length(),
+                                                                                                                                                                    worst[0],
+                                                                                                                                                                    worst[1])
+                      + " characters, so the name is " + worstLength
+                      + " characters, over the limit of " + OperationId.MAX_LENGTH
+                      + ". The longest cluster name this pool allows is " + OperationId.longestClusterNameFor(worst[0],
+                                                                                                              worst[1])
+                      + " characters. Use a shorter cluster name or shorter source and role names.");
         }
     }
 

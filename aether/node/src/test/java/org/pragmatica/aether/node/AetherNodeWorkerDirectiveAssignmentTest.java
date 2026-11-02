@@ -32,6 +32,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageRouter;
 import org.slf4j.LoggerFactory;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -59,6 +60,20 @@ class AetherNodeWorkerDirectiveAssignmentTest {
         verify(detector).markAssigned();
     }
 
+    /// I-W6 (W4): the activation directive no longer touches the engine's readiness; it is set and cleared from `ReplicaReadiness` only. It still
+    /// switches the node to forwarding mode. Mutation: restore a readiness call (`setPassiveClientReady(true)`) in `activateWorkerMode`.
+    @Test
+    @SuppressWarnings("unchecked")
+    void handleActivationDirective_workerDirectiveForThisWorker_leavesTheEngineReadinessAlone() {
+        RabiaNode<KVCommand<AetherKey>> cluster = Mockito.mock(RabiaNode.class);
+        SwitchableClusterNode<KVCommand<AetherKey>> switchable = Mockito.mock(SwitchableClusterNode.class);
+
+        handle(SELF, ActivationDirectiveValue.worker("c-0", ""), cluster, switchable);
+
+        verify(switchable).switchTo(Mockito.any());
+        Mockito.verifyNoInteractions(cluster);
+    }
+
     @Test
     void handleActivationDirective_directiveForAnotherNode_doesNotRelease() {
         handle(OTHER, ActivationDirectiveValue.worker("c-0", ""));
@@ -75,6 +90,11 @@ class AetherNodeWorkerDirectiveAssignmentTest {
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     private void handle(NodeId target, ActivationDirectiveValue value) {
+        handle(target, value, Mockito.mock(RabiaNode.class), Mockito.mock(SwitchableClusterNode.class));
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private void handle(NodeId target, ActivationDirectiveValue value, RabiaNode cluster, SwitchableClusterNode switchable) {
         var config = Mockito.mock(AetherNodeConfig.class);
 
         when(config.self()).thenReturn(SELF);
@@ -85,8 +105,8 @@ class AetherNodeWorkerDirectiveAssignmentTest {
 
         WorkerHierarchyAssembly.handleActivationDirective(put,
                                              SELF,
-                                             Mockito.mock(RabiaNode.class),
-                                             Mockito.mock(SwitchableClusterNode.class),
+                                             cluster,
+                                             switchable,
                                              Mockito.mock(ForwardingClusterNode.class),
                                              config,
                                              MessageRouter.DelegateRouter.delegate(),

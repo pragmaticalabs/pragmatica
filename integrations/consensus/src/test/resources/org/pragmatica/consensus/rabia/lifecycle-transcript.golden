@@ -1,0 +1,138 @@
+matrix/COLD/ACTIVE mode=Syncing events=[] msgs=[SyncRequest] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/COLD/PASSIVE mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/COLD/AUTHORIZE_ACTIVATION mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/COLD/AUTHORIZE_OBSERVATION mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/COLD/SYNC_TICK mode=Syncing events=[] msgs=[SyncRequest] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/COLD/SYNC_ANSWERS mode=Idle events=[ConsensusActive] msgs=[] completions=[0] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/COLD/DECISION_CURRENT mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/COLD/DECISION_FAR_FUTURE mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/COLD/PROPOSE_CURRENT mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/COLD/PROPOSE_FAR_FUTURE mode=Syncing events=[] msgs=[SyncRequest] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/COLD/STOP mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/GATED/ACTIVE mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/GATED/PASSIVE mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/GATED/AUTHORIZE_ACTIVATION mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/GATED/AUTHORIZE_OBSERVATION mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/GATED/SYNC_TICK mode=Syncing events=[] msgs=[SyncRequest] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/GATED/SYNC_ANSWERS mode=Idle events=[ConsensusActive] msgs=[] completions=[0] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/GATED/DECISION_CURRENT mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/GATED/DECISION_FAR_FUTURE mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/GATED/PROPOSE_CURRENT mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/GATED/PROPOSE_FAR_FUTURE mode=Syncing events=[] msgs=[SyncRequest] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/GATED/STOP mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/GATED_HELD/ACTIVE mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/GATED_HELD/PASSIVE mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/GATED_HELD/AUTHORIZE_ACTIVATION mode=Syncing events=[] msgs=[SyncRequest] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/GATED_HELD/AUTHORIZE_OBSERVATION mode=Syncing events=[] msgs=[SyncRequest] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/GATED_HELD/SYNC_TICK mode=Syncing events=[] msgs=[SyncRequest] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/GATED_HELD/SYNC_ANSWERS mode=Idle events=[ConsensusActive] msgs=[] completions=[0] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/GATED_HELD/DECISION_CURRENT mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/GATED_HELD/DECISION_FAR_FUTURE mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/GATED_HELD/PROPOSE_CURRENT mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/GATED_HELD/PROPOSE_FAR_FUTURE mode=Syncing events=[] msgs=[SyncRequest] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/GATED_HELD/STOP mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/SYNCING/ACTIVE mode=Syncing events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/SYNCING/PASSIVE mode=Paused events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/SYNCING/AUTHORIZE_ACTIVATION mode=Syncing events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/SYNCING/AUTHORIZE_OBSERVATION mode=Syncing events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/SYNCING/SYNC_TICK mode=Syncing events=[] msgs=[SyncRequest] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/SYNCING/SYNC_ANSWERS mode=Idle events=[ConsensusActive] msgs=[] completions=[0] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/SYNCING/DECISION_CURRENT mode=Syncing events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/SYNCING/DECISION_FAR_FUTURE mode=Syncing events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/SYNCING/PROPOSE_CURRENT mode=Syncing events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/SYNCING/PROPOSE_FAR_FUTURE mode=Syncing events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/SYNCING/STOP mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/IDLE/ACTIVE mode=Idle events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/IDLE/PASSIVE mode=Paused events=[ConsensusPassive] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/IDLE/AUTHORIZE_ACTIVATION mode=Idle events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/IDLE/AUTHORIZE_OBSERVATION mode=Idle events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/IDLE/SYNC_TICK mode=Idle events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/IDLE/SYNC_ANSWERS mode=Idle events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/IDLE/DECISION_CURRENT mode=Idle events=[] msgs=[] completions=[1] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/IDLE/DECISION_FAR_FUTURE mode=Syncing events=[ConsensusPassive] msgs=[SyncRequest] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/IDLE/PROPOSE_CURRENT mode=InPhase events=[] msgs=[Propose, VoteRound1] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/IDLE/PROPOSE_FAR_FUTURE mode=Syncing events=[ConsensusPassive] msgs=[SyncRequest] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/IDLE/STOP mode=Stopped events=[ConsensusPassive] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/IN_PHASE/ACTIVE mode=InPhase events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/IN_PHASE/PASSIVE mode=Paused events=[ConsensusPassive] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/IN_PHASE/AUTHORIZE_ACTIVATION mode=InPhase events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/IN_PHASE/AUTHORIZE_OBSERVATION mode=InPhase events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/IN_PHASE/SYNC_TICK mode=InPhase events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/IN_PHASE/SYNC_ANSWERS mode=InPhase events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/IN_PHASE/DECISION_CURRENT mode=InPhase events=[] msgs=[Propose] completions=[1] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/IN_PHASE/DECISION_FAR_FUTURE mode=Syncing events=[ConsensusPassive] msgs=[SyncRequest] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/IN_PHASE/PROPOSE_CURRENT mode=InPhase events=[] msgs=[VoteRound1] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/IN_PHASE/PROPOSE_FAR_FUTURE mode=Syncing events=[ConsensusPassive] msgs=[SyncRequest] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/IN_PHASE/STOP mode=Stopped events=[ConsensusPassive] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/OBSERVING/ACTIVE mode=Syncing events=[ConsensusPassive] msgs=[SyncRequest] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/OBSERVING/PASSIVE mode=Paused events=[ConsensusPassive] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/OBSERVING/AUTHORIZE_ACTIVATION mode=Idle events=[ConsensusActive] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/OBSERVING/AUTHORIZE_OBSERVATION mode=Observing events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/OBSERVING/SYNC_TICK mode=Observing events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/OBSERVING/SYNC_ANSWERS mode=Observing events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/OBSERVING/DECISION_CURRENT mode=Observing events=[] msgs=[] completions=[1] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/OBSERVING/DECISION_FAR_FUTURE mode=Syncing events=[ConsensusPassive] msgs=[SyncRequest] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/OBSERVING/PROPOSE_CURRENT mode=Observing events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/OBSERVING/PROPOSE_FAR_FUTURE mode=Syncing events=[ConsensusPassive] msgs=[SyncRequest] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/OBSERVING/STOP mode=Stopped events=[ConsensusPassive] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/PAUSED_ACTIVE/ACTIVE mode=Idle events=[ConsensusActive] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/PAUSED_ACTIVE/PASSIVE mode=Paused events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/PAUSED_ACTIVE/AUTHORIZE_ACTIVATION mode=Paused events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/PAUSED_ACTIVE/AUTHORIZE_OBSERVATION mode=Paused events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/PAUSED_ACTIVE/SYNC_TICK mode=Paused events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/PAUSED_ACTIVE/SYNC_ANSWERS mode=Paused events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/PAUSED_ACTIVE/DECISION_CURRENT mode=Paused events=[] msgs=[] completions=[1] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/PAUSED_ACTIVE/DECISION_FAR_FUTURE mode=Paused events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/PAUSED_ACTIVE/PROPOSE_CURRENT mode=Paused events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/PAUSED_ACTIVE/PROPOSE_FAR_FUTURE mode=Syncing events=[] msgs=[SyncRequest] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/PAUSED_ACTIVE/STOP mode=Stopped events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/PAUSED_SYNCING/ACTIVE mode=Idle events=[ConsensusActive] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/PAUSED_SYNCING/PASSIVE mode=Paused events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/PAUSED_SYNCING/AUTHORIZE_ACTIVATION mode=Paused events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/PAUSED_SYNCING/AUTHORIZE_OBSERVATION mode=Paused events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/PAUSED_SYNCING/SYNC_TICK mode=Paused events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/PAUSED_SYNCING/SYNC_ANSWERS mode=Paused events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/PAUSED_SYNCING/DECISION_CURRENT mode=Paused events=[] msgs=[] completions=[1] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/PAUSED_SYNCING/DECISION_FAR_FUTURE mode=Paused events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/PAUSED_SYNCING/PROPOSE_CURRENT mode=Paused events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/PAUSED_SYNCING/PROPOSE_FAR_FUTURE mode=Syncing events=[] msgs=[SyncRequest] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/PAUSED_SYNCING/STOP mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/PAUSED_OBSERVING/ACTIVE mode=Observing events=[ConsensusObserving] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/PAUSED_OBSERVING/PASSIVE mode=Paused events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/PAUSED_OBSERVING/AUTHORIZE_ACTIVATION mode=Paused events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/PAUSED_OBSERVING/AUTHORIZE_OBSERVATION mode=Paused events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/PAUSED_OBSERVING/SYNC_TICK mode=Paused events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/PAUSED_OBSERVING/SYNC_ANSWERS mode=Paused events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/PAUSED_OBSERVING/DECISION_CURRENT mode=Paused events=[] msgs=[] completions=[1] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/PAUSED_OBSERVING/DECISION_FAR_FUTURE mode=Paused events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/PAUSED_OBSERVING/PROPOSE_CURRENT mode=Paused events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/PAUSED_OBSERVING/PROPOSE_FAR_FUTURE mode=Syncing events=[] msgs=[SyncRequest] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/PAUSED_OBSERVING/STOP mode=Stopped events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
+matrix/TERMINATED/ACTIVE mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/TERMINATED/PASSIVE mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/TERMINATED/AUTHORIZE_ACTIVATION mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/TERMINATED/AUTHORIZE_OBSERVATION mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/TERMINATED/SYNC_TICK mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/TERMINATED/SYNC_ANSWERS mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/TERMINATED/DECISION_CURRENT mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/TERMINATED/DECISION_FAR_FUTURE mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/TERMINATED/PROPOSE_CURRENT mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/TERMINATED/PROPOSE_FAR_FUTURE mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/TERMINATED/STOP mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+named/restore-ok-nonempty-snapshot mode=Idle events=[ConsensusActive] msgs=[SyncRequest] completions=[10] start=resolved marker=1 replays=1 hooks=1 restores=1
+named/restore-ok-empty-snapshot mode=Idle events=[ConsensusActive] msgs=[SyncRequest] completions=[0] start=resolved marker=1 replays=1 hooks=1 restores=0
+named/restore-persist-fails-fences mode=Syncing events=[] msgs=[SyncRequest] completions=[10, 10, 10, 10] start=pending marker=0 replays=0 hooks=0 restores=4
+named/restore-refused-participation-then-pause-resume mode=Idle events=[ConsensusActive] msgs=[SyncRequest] completions=[10, 10] start=pending marker=2 replays=1 hooks=1 restores=2
+named/restore-undecodable-snapshot-three-rounds mode=Syncing events=[] msgs=[SyncRequest, SyncRequest, SyncRequest, SyncRequest] completions=[] start=pending marker=0 replays=0 hooks=0 restores=6
+named/observer-restore-then-promotion mode=Idle events=[ConsensusObserving, ConsensusActive] msgs=[SyncRequest] completions=[10] start=resolved marker=1 replays=1 hooks=1 restores=1
+named/voter-demoted-by-roster-removal mode=Observing events=[ConsensusActive, ConsensusDemoted] msgs=[SyncRequest] completions=[0, 1] start=resolved marker=1 replays=1 hooks=1 restores=0
+named/demoted-observer-pause-resume mode=Observing events=[ConsensusActive, ConsensusDemoted, ConsensusPassive, ConsensusObserving] msgs=[SyncRequest] completions=[0, 1] start=resolved marker=1 replays=1 hooks=1 restores=0
+named/roster-observer-pause-resume mode=Observing events=[ConsensusActive, ConsensusPassive, ConsensusObserving] msgs=[SyncRequest] completions=[0] start=resolved marker=1 replays=1 hooks=1 restores=0
+named/gated-observing-held-notification-then-authorize mode=Syncing events=[ConsensusObserving, ConsensusPassive] msgs=[SyncRequest, SyncRequest] completions=[0] start=resolved marker=1 replays=1 hooks=1 restores=0
+named/gated-held-then-authorized mode=Syncing events=[] msgs=[SyncRequest] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+named/stopped-cold-unsolicited-sync-answers mode=Idle events=[ConsensusActive] msgs=[] completions=[0] start=resolved marker=1 replays=1 hooks=1 restores=0
+named/idle-completed-slot-by-decision mode=Idle events=[ConsensusActive] msgs=[SyncRequest] completions=[0, 1] start=resolved marker=1 replays=1 hooks=1 restores=0
+named/paused-applies-current-decision-stays-paused mode=Paused events=[ConsensusActive, ConsensusPassive] msgs=[SyncRequest] completions=[0, 1] start=resolved marker=1 replays=1 hooks=1 restores=0
+named/paused-far-future-decision-is-buffered mode=Paused events=[ConsensusActive, ConsensusPassive] msgs=[SyncRequest] completions=[0] start=resolved marker=1 replays=1 hooks=1 restores=0
+named/genesis-agreed-forms-epoch-zero mode=Syncing events=[] msgs=[SyncRequest, GenesisAnnouncement, GenesisAnnouncement, SyncRequest] completions=[] start=none marker=0 replays=0 hooks=0 restores=0 voters=Some(VoterConfiguration[epoch=0, roster=ClusterConfig[members=[NodeId[id=node-2], NodeId[id=node-4], NodeId[id=node-5]]]]) joined=false pending=false
+named/genesis-joins-formed-electorate mode=Syncing events=[] msgs=[SyncRequest, GenesisAnnouncement, GenesisAnnouncement, GenesisAnnouncement, GenesisAnnouncement, GenesisAnnouncement, SyncRequest] completions=[] start=none marker=0 replays=0 hooks=0 restores=0 voters=Some(VoterConfiguration[epoch=1, roster=ClusterConfig[members=[NodeId[id=node-1], NodeId[id=node-2], NodeId[id=node-3]]]]) joined=true pending=false

@@ -251,6 +251,7 @@ final class InMemoryMetadataStore implements MetadataStore {
     public void restoreRefs(Map<String, BlockId> newRefs) {
         refs.clear();
         refs.putAll(newRefs);
+        newRefs.values().forEach(id -> lifecycle.computeIfPresent(id, (_, record) -> record.withoutSharedDelete()));
         epoch.incrementAndGet();
     }
 

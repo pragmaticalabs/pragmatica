@@ -20,14 +20,15 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_GOS
 /// publishes it through consensus; running nodes adopt it live. ADMIN-only. The response carries key
 /// ids, never the key.
 ///
-/// Two limits an operator must know before invoking this, both stated in SECURITY.md. The FIRST
+/// Limits an operator must know before invoking this, stated in SECURITY.md. The FIRST
 /// rotation carries no decrypt overlap — there is no prior record to carry — so boot-key ciphertext
-/// is rejected the moment it lands; later rotations carry the previous key. And a rotated cluster
-/// **cannot grow until an operator acts**: a node booting afterwards holds only the
-/// `cluster_secret`-derived key, cannot complete SWIM in either direction, and therefore never
-/// reaches the consensus replay that would deliver the cluster key. Auto-heal replacements and
-/// scale-up nodes are included. Existing running nodes are unaffected.
-@Command(name = "rotate-gossip-key", description = "Rotate the SWIM gossip encryption key in place (ADMIN; after a suspected cluster_secret or gossip-key leak)")
+/// is rejected the moment it lands; later rotations carry the previous key. A node booting
+/// afterwards holds only the `cluster_secret`-derived key, so its gossip is rejected both ways until
+/// the consensus replay of the rotation record hands it the cluster key; it dials the cores it
+/// was configured with itself, so this normally takes seconds (#1200), and the seeds raise `gossip-key-unknown-from-peer`
+/// meanwhile. And rotation protects only against a leaked gossip key: a holder of `cluster_secret`
+/// is still admitted and replays the record (#2474).
+@Command(name = "rotate-gossip-key", description = "Rotate the SWIM gossip encryption key in place (ADMIN; after a suspected gossip-key leak)")
 @SuppressWarnings("JBCT-RET-01")
 class ClusterRotateGossipKeyCommand implements Callable<Integer> {
     @CommandLine.ParentCommand

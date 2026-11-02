@@ -23,6 +23,9 @@ import java.util.Set;
 /// this node holds no reference and no authority over it, and any copy it keeps in a tier is a cache. Such a
 /// record has refCount 0 yet is never orphaned ([#isOrphaned]), so [StorageGarbageCollector] leaves it alone;
 /// the first reference credited to it ([#withRefCountIncremented]) turns it into an ordinary record.
+/// @param sharedDelete the authority the last released reference carried over a cluster-shared tier ([SharedDelete]);
+/// set only on the transition from referenced to orphaned, and reset to [SharedDelete#NONE] by any re-credit, so a block
+/// referenced again is never deleted on a stale authority.
 public record BlockLifecycle(BlockId blockId,
                              Set<TierLevel> presentIn,
                              int refCount,
@@ -30,12 +33,33 @@ public record BlockLifecycle(BlockId blockId,
                              long createdAt,
                              @Deprecated int accessCount,
                              long orphanedAt,
-                             boolean cacheOnly) {
+                             boolean cacheOnly,
+                             SharedDelete sharedDelete) {
     /// Defensive copy — ensure immutability of the tier set.
     public BlockLifecycle {
         presentIn = presentIn.isEmpty()
                     ? EnumSet.noneOf(TierLevel.class)
                     : EnumSet.copyOf(presentIn);
+    }
+
+    /// A record with no shared-delete authority: the shape every record had before [#sharedDelete] existed.
+    public BlockLifecycle(BlockId blockId,
+                          Set<TierLevel> presentIn,
+                          int refCount,
+                          long lastAccessedAt,
+                          long createdAt,
+                          int accessCount,
+                          long orphanedAt,
+                          boolean cacheOnly) {
+        this(blockId,
+             presentIn,
+             refCount,
+             lastAccessedAt,
+             createdAt,
+             accessCount,
+             orphanedAt,
+             cacheOnly,
+             SharedDelete.NONE);
     }
 
     /// A record that is not a cache marker: the shape every record had before [#cacheOnly] existed.
@@ -100,6 +124,28 @@ public record BlockLifecycle(BlockId blockId,
     }
 
     /// Reconstruction factory for the current snapshot format, which also carries the cache-only marker.
+    /// Reconstruction factory for the snapshot format that also carries the shared-delete authority (#2258).
+    public static BlockLifecycle blockLifecycle(BlockId blockId,
+                                                Set<TierLevel> presentIn,
+                                                int refCount,
+                                                long lastAccessedAt,
+                                                long createdAt,
+                                                int accessCount,
+                                                long orphanedAt,
+                                                boolean cacheOnly,
+                                                SharedDelete sharedDelete) {
+        return new BlockLifecycle(blockId,
+                                  presentIn,
+                                  refCount,
+                                  lastAccessedAt,
+                                  createdAt,
+                                  accessCount,
+                                  orphanedAt,
+                                  cacheOnly,
+                                  sharedDelete);
+    }
+
+    /// Reconstruction factory for the snapshot format that carries the cache-only marker and no shared-delete authority.
     public static BlockLifecycle blockLifecycle(BlockId blockId,
                                                 Set<TierLevel> presentIn,
                                                 int refCount,
@@ -130,7 +176,8 @@ public record BlockLifecycle(BlockId blockId,
                                   createdAt,
                                   accessCount,
                                   orphanedAt,
-                                  cacheOnly);
+                                  cacheOnly,
+                                  sharedDelete);
     }
 
     public BlockLifecycle withTierRemoved(TierLevel tier) {
@@ -145,12 +192,14 @@ public record BlockLifecycle(BlockId blockId,
                                   createdAt,
                                   accessCount,
                                   orphanedAt,
-                                  cacheOnly);
+                                  cacheOnly,
+                                  sharedDelete);
     }
 
     /// Increments refCount. Resurrecting an orphaned block (refCount was already <=0) clears
-    /// orphanedAt -- it is referenced again and must drop out of GC's orphan-grace filter. A cache-only
-    /// marker stops being one: a node that credits a reference to the block now owns it.
+    /// orphanedAt -- it is referenced again and must drop out of GC's orphan-grace filter -- and its shared-delete
+    /// authority with it (#2258): a block referenced again is never deleted on the authority of a release that came before.
+    /// A cache-only marker stops being one: a node that credits a reference to the block now owns it.
     public BlockLifecycle withRefCountIncremented() {
         var resurrected = refCount <= 0
                           ? 0L
@@ -163,7 +212,8 @@ public record BlockLifecycle(BlockId blockId,
                                   createdAt,
                                   accessCount,
                                   resurrected,
-                                  false);
+                                  false,
+                                  SharedDelete.NONE);
     }
 
     /// [#withRefCountIncremented] for a record this node owns; a cache-only marker comes back unchanged,
@@ -188,7 +238,8 @@ public record BlockLifecycle(BlockId blockId,
                                   createdAt,
                                   accessCount,
                                   orphanedAt,
-                                  cacheOnly);
+                                  cacheOnly,
+                                  sharedDelete);
     }
 
     /// Decrements refCount (floored at 0). Stamps orphanedAt with the current instant only on the
@@ -196,10 +247,16 @@ public record BlockLifecycle(BlockId blockId,
     /// leaves orphanedAt where it was -- it does not get a later, more-generous grace start every
     /// time something redundantly decrements an already-dead block.
     public BlockLifecycle withRefCountDecremented() {
+        return withRefCountDecremented(SharedDelete.NONE);
+    }
+
+    /// [#withRefCountDecremented()] by a release carrying `authority` (#2258): recorded only when this release orphans the
+    /// block. A release that leaves another reference standing records nothing, so a block two refs on this node name is
+    /// never deleted everywhere on the authority of one of them; a redundant release of an already-orphaned block keeps the
+    /// authority it was orphaned with.
+    public BlockLifecycle withRefCountDecremented(SharedDelete authority) {
         var newRefCount = Math.max(0, refCount - 1);
-        var newOrphanedAt = newRefCount <= 0 && refCount > 0
-                            ? System.currentTimeMillis()
-                            : orphanedAt;
+        var orphans = newRefCount <= 0 && refCount > 0;
 
         return new BlockLifecycle(blockId,
                                   presentIn,
@@ -207,8 +264,30 @@ public record BlockLifecycle(BlockId blockId,
                                   lastAccessedAt,
                                   createdAt,
                                   accessCount,
-                                  newOrphanedAt,
-                                  cacheOnly);
+                                  orphans
+                                  ? System.currentTimeMillis()
+                                  : orphanedAt,
+                                  cacheOnly,
+                                  orphans
+                                  ? authority
+                                  : sharedDelete);
+    }
+
+    /// This record without shared-delete authority -- what a restore makes of an orphan record that a restored reference
+    /// names (#2258, review R32D-13): the snapshot captures records before references, so a re-credit between the two
+    /// captures can leave a flagged "orphan" that a reference names.
+    public BlockLifecycle withoutSharedDelete() {
+        return sharedDelete == SharedDelete.NONE
+               ? this
+               : new BlockLifecycle(blockId,
+                                    presentIn,
+                                    refCount,
+                                    lastAccessedAt,
+                                    createdAt,
+                                    accessCount,
+                                    orphanedAt,
+                                    cacheOnly,
+                                    SharedDelete.NONE);
     }
 
     /// Not used by any reader: reads are recorded in [AccessTracker], never in the record.
@@ -221,7 +300,8 @@ public record BlockLifecycle(BlockId blockId,
                                   createdAt,
                                   accessCount + 1,
                                   orphanedAt,
-                                  cacheOnly);
+                                  cacheOnly,
+                                  sharedDelete);
     }
 
     /// Unreferenced and therefore collectable. A cache-only marker is unreferenced by construction but is

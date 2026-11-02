@@ -1,0 +1,129 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
+package org.pragmatica.aether.cli.cluster;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
+import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.lang.Option;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
+
+class ApplyRecorderTest {
+    private static final ClusterName CLUSTER = ClusterName.clusterName("recorder-test").unwrap();
+    private static final String ACTION = "AddRole|eu|worker|->1";
+
+    @RegisterExtension
+    final LedgerDirExtension ledger = new LedgerDirExtension();
+
+    private ApplyRecorder started() {
+        return ledger.recorder(CLUSTER, List.of(ACTION));
+    }
+
+    @Test
+    void theWriteDisciplineRunsInOrder_andEachStepHookFiresAfterItsDurableWrite() {
+        var recorder = ledger.recorder(CLUSTER, List.of(ACTION));
+        var seen = new ArrayList<String>();
+
+        ApplyRecorder.stepHook = step -> seen.add(step + ":" + ledger.ledger(CLUSTER).resources().stream().map(row -> row.state().name()).toList());
+
+        recorder.intend("n-1", "docker").unwrap();
+        recorder.providerAnswered();
+        recorder.created("n-1", "srv-1").unwrap();
+        recorder.terminating("n-1").unwrap();
+        recorder.terminated("n-1").unwrap();
+        recorder.finishAction().unwrap();
+
+        assertThat(seen).containsExactly("S1:[INTENDED]",
+                                         "S2:[INTENDED]",
+                                         "S3:[CREATED]",
+                                         "S6:[TERMINATING]",
+                                         "S7:[TERMINATED]",
+                                         "S5:[TERMINATED]");
+    }
+
+    @Test
+    void transitions_keepTheServerIdTheCreatedRowRecorded() {
+        var recorder = started();
+
+        recorder.intend("n-1", "hetzner").unwrap();
+        recorder.created("n-1", "srv-9").unwrap();
+        recorder.terminating("n-1").unwrap();
+        recorder.terminateFailed("n-1").unwrap();
+
+        assertThat(ledger.ledger(CLUSTER).resources()).singleElement().satisfies(row -> {
+            assertThat(row.state()).isEqualTo(ApplyResource.State.TERMINATE_FAILED);
+            assertThat(row.serverId().or("")).isEqualTo("srv-9");
+            assertThat(row.provider()).isEqualTo("hetzner");
+            assertThat(row.actionKey()).isEqualTo(ACTION);
+        });
+    }
+
+    @Test
+    void aTransitionForAnUnknownNode_isATypedFailure_andWritesNothing() {
+        var recorder = started();
+        var before = ledger.ledger(CLUSTER);
+
+        recorder.created("ghost", "srv-1").onSuccess(_ -> fail("no row, no transition"))
+                .onFailure(cause -> assertThat(cause.message()).contains("no row for node ghost"));
+
+        assertThat(ledger.ledger(CLUSTER)).isEqualTo(before);
+    }
+
+    @Test
+    void aFailedWrite_leavesTheInMemoryViewAtTheLastDurableState_andDoesNotFireTheHook() {
+        var recorder = started();
+        var hookFired = new AtomicInteger();
+        var original = ApplyLedger.tempWriter;
+
+        recorder.intend("n-1", "docker").unwrap();
+        ApplyRecorder.stepHook = _ -> hookFired.incrementAndGet();
+        ApplyLedger.tempWriter = (temp, content) -> {
+            throw new java.io.IOException("No space left on device (test cause)");
+        };
+
+        try {
+            recorder.created("n-1", "srv-1").onSuccess(_ -> fail("the write failed"));
+        } finally {
+            ApplyLedger.tempWriter = original;
+        }
+
+        assertThat(recorder.snapshot().resources()).singleElement().extracting(ApplyResource::state).isEqualTo(ApplyResource.State.INTENDED);
+        assertThat(hookFired.get()).as("a step that was not written did not happen").isZero();
+    }
+
+    @Test
+    void recordedFor_countsTheNodesThatExist_notTheOnesThatDoNot() {
+        started();
+
+        var rows = ledger.ledger(CLUSTER);
+
+        for (var state : ApplyResource.State.values()) {
+            rows = rows.withNode(ApplyResource.applyResource(ACTION, "n-" + state, "hetzner", Option.some("srv-" + state), state));
+        }
+
+        ApplyState.save(rows).unwrap();
+
+        var fresh = ApplyRecorder.applyRecorder(ledger.ledger(CLUSTER));
+
+        assertThat(fresh.recordedFor(ACTION)).as("CREATED, JOINED and ADOPTED count; INTENDED, TERMINATING, TERMINATE_FAILED, TERMINATED, ABSENT and GONE do not").isEqualTo(3);
+        assertThat(fresh.recordedFor("another action")).isZero();
+        assertThat(fresh.statusOf("unknown")).isEqualTo(ApplyAction.Status.PENDING);
+    }
+
+    @Test
+    void beginAndFinishAction_markOnlyThatAction() {
+        var recorder = ledger.recorder(CLUSTER, List.of(ACTION, "other"));
+
+        recorder.finishAction().unwrap();
+
+        assertThat(ledger.ledger(CLUSTER).actions()).extracting(ApplyAction::status)
+                                                    .containsExactly(ApplyAction.Status.DONE, ApplyAction.Status.PENDING);
+    }
+}

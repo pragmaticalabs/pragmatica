@@ -45,7 +45,7 @@ class FloatingIpProviderRoundTripTest {
     @Test
     void applyState_roundTrip_preservesEachProvider() {
         for (var provider : PROVIDERS) {
-            var state = ApplyState.initialState(CLUSTER, "h", "2026-10-18T00:00:00Z").withResource(floatingIp(provider));
+            var state = ApplyStateFixtures.state(CLUSTER).withResource(floatingIp(provider));
 
             ApplyState.fromJson(ApplyState.toJson(state))
                       .onFailure(cause -> fail(cause.message()))

@@ -213,6 +213,17 @@ sealed interface S3SharedTier {
                                             .map(source -> " <- " + chainMessage(source))
                                             .or("");
         }
+
+        /// Terminal wins over the origin's classification: a verdict is never also "worth retrying".
+        @Override
+        public boolean isTerminal() {
+            return true;
+        }
+
+        @Override
+        public boolean isTransient() {
+            return false;
+        }
     }
 
     record unused() implements S3SharedTier {}

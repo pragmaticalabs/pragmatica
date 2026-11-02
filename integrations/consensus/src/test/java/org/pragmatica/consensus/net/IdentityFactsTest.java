@@ -163,6 +163,16 @@ class IdentityFactsTest {
         assertThat(IdentityFacts.identityFacts().covers(IdentityFacts.terminated(node("x"), "TOKEN_CONFLICT"))).isFalse();
     }
 
+    @Test
+    void toWire_fromWire_roundTripsEveryFact_andTheEmptySet() {
+        var facts = IdentityFacts.terminated(node("ember-1"), "TOKEN_CONFLICT")
+                                 .merge(IdentityFacts.terminated(node("tab\tand space"), "OPERATOR"));
+
+        assertThat(IdentityFacts.fromWire(facts.toWire())).isEqualTo(facts);
+        assertThat(facts.toWire()).containsEntry("ember-1", "TOKEN_CONFLICT").hasSize(2);
+        assertThat(IdentityFacts.fromWire(IdentityFacts.identityFacts().toWire()).isEmpty()).isTrue();
+    }
+
     private static IdentityFacts randomFacts(Random random) {
         var facts = IdentityFacts.identityFacts();
         var size = random.nextInt(6);

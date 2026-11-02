@@ -90,8 +90,24 @@ public sealed interface Causes {
         return new transientCause(message);
     }
 
+    /// A cause with a message and an optional source. It reports its source's classification, as a [Cause.Wrapped] does
+    /// (JBCT M7-c): [Cause#isTerminal()] and [Cause#isTransient()] answer what the source answers, `false` with no source,
+    /// so the bare tier does not silently drop a classification the source carries. A failure whose own classification
+    /// matters is a `Cause.Wrapped` record that overrides it, not this.
     static Cause cause(String message, Option<Cause> source) {
         record simpleCause(String message, Option<Cause> source) implements SimpleCause {
+            @Override
+            public boolean isTerminal() {
+                return source.map(Cause::isTerminal)
+                             .or(false);
+            }
+
+            @Override
+            public boolean isTransient() {
+                return source.map(Cause::isTransient)
+                             .or(false);
+            }
+
             @Override
             public String toString() {
                 return completeMessage();

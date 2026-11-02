@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.ClusterConfigError;
@@ -27,6 +28,7 @@ import org.pragmatica.aether.environment.ProvisionedNode;
 import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
@@ -41,9 +43,19 @@ public final class WaveExecutor {
 
     public static Result<ApplyResult> execute(DiffPlan plan,
                                               ClusterBootstrapConfig stored,
-                                              ClusterBootstrapConfig desired) {
+                                              ClusterBootstrapConfig desired,
+                                              ApplyRecorder recorder) {
+        return ApplyLabels.requireMintable(desired.cluster().name(),
+                                           recorder.applyId())
+                          .flatMap(_ -> executeWaves(plan, stored, desired, recorder));
+    }
+
+    private static Result<ApplyResult> executeWaves(DiffPlan plan,
+                                                    ClusterBootstrapConfig stored,
+                                                    ClusterBootstrapConfig desired,
+                                                    ApplyRecorder recorder) {
         var managementPort = desired.operations().ports().management();
-        var created = new CreatedNodes();
+        var created = new CreatedNodes(recorder);
 
         return executeAdditions(plan.additions(),
                                 desired,
@@ -66,7 +78,12 @@ public final class WaveExecutor {
         var totalAdded = 0;
 
         for (var action : additions) {
-            var result = executeAddition(action, desired, created);
+            var result = decideActor(action, desired, created).flatMap(actor -> asAction(action,
+                                                                                         created,
+                                                                                         () -> executeAddition(action,
+                                                                                                               desired,
+                                                                                                               created,
+                                                                                                               actor)));
 
             if (result.isFailure()) {
                 return result;
@@ -78,15 +95,51 @@ public final class WaveExecutor {
         return success(totalAdded);
     }
 
+    /// An action is bracketed in the ledger: IN_PROGRESS before its first step, DONE after its last (spec 4.2 S0, S5).
+    /// A failed action stays IN_PROGRESS: a re-run re-checks its rows and never re-creates a recorded node.
+    private static Result<Integer> asAction(DiffAction action,
+                                            CreatedNodes created,
+                                            java.util.function.Supplier<Result<Integer>> body) {
+        var recorder = created.recorder();
+        var key = ApplyAction.actionKey(action);
+        // A resumed apply never redoes an action its ledger marks DONE.
+        if (recorder.statusOf(key) == ApplyAction.Status.DONE) {
+            return success(recorder.recordedFor(key));
+        }
+
+        return recorder.beginAction(key)
+                       .flatMap(_ -> body.get())
+                       .flatMap(count -> recorder.finishAction()
+                                                 .map(_ -> count));
+    }
+
     private static Result<Integer> executeAddition(DiffAction action,
                                                    ClusterBootstrapConfig desired,
-                                                   CreatedNodes created) {
+                                                   CreatedNodes created,
+                                                   PoolAuthority.Actor actor) {
         return switch (action) {
             case DiffAction.AddSource a -> logNewSource(a.sourceName());
-            case DiffAction.AddRole a -> provisionRole(a.sourceName(), a.role(), a.count(), desired, created);
-            case DiffAction.ScaleUp a -> provisionScaleUp(a.sourceName(), a.role(), a.from(), a.to(), desired, created);
+            case DiffAction.AddRole a -> provisionRole(a.sourceName(),
+                                                       a.role(),
+                                                       Math.max(0, a.count() - recorded(action, created)),
+                                                       desired,
+                                                       created,
+                                                       actor);
+            case DiffAction.ScaleUp a -> provisionScaleUp(a.sourceName(),
+                                                          a.role(),
+                                                          Math.min(a.to(), a.from() + recorded(action, created)),
+                                                          a.to(),
+                                                          desired,
+                                                          created,
+                                                          actor);
             default -> success(0);
         };
+    }
+
+    /// Nodes of this action an earlier run already created and recorded: a resumed action creates only the remainder.
+    private static int recorded(DiffAction action, CreatedNodes created) {
+        return created.recorder()
+                      .recordedFor(ApplyAction.actionKey(action));
     }
 
     private static Result<Integer> logNewSource(SourceName sourceName) {
@@ -99,14 +152,16 @@ public final class WaveExecutor {
                                                  NodeRole role,
                                                  int count,
                                                  ClusterBootstrapConfig desired,
-                                                 CreatedNodes created) {
+                                                 CreatedNodes created,
+                                                 PoolAuthority.Actor actor) {
         return lookupSource(sourceName,
-                            desired.sources()).flatMap(source -> dispatchProvision(sourceName,
-                                                                                   source,
-                                                                                   role,
-                                                                                   count,
-                                                                                   desired,
-                                                                                   created))
+                            desired.sources()).flatMap(source -> gatedProvision(sourceName,
+                                                                                source,
+                                                                                role,
+                                                                                count,
+                                                                                desired,
+                                                                                created,
+                                                                                actor))
                            .map(nodes -> logAndCount("+",
                                                      sourceName
                                                     + "." + role.value()
@@ -120,12 +175,13 @@ public final class WaveExecutor {
                                                     int from,
                                                     int to,
                                                     ClusterBootstrapConfig desired,
-                                                    CreatedNodes created) {
+                                                    CreatedNodes created,
+                                                    PoolAuthority.Actor actor) {
         var delta = to - from;
 
         return lookupSource(sourceName,
                             desired.sources()).flatMap(source -> rejectSshScaleUp(source, sourceName))
-                           .flatMap(source -> dispatchProvision(sourceName, source, role, delta, desired, created))
+                           .flatMap(source -> gatedProvision(sourceName, source, role, delta, desired, created, actor))
                            .map(nodes -> logAndCount("~",
                                                      sourceName
                                                     + "." + role.value()
@@ -140,24 +196,108 @@ public final class WaveExecutor {
                : success(source);
     }
 
+    /// The pool authority [PoolGate] asks; a test replaces it. Reprovisioning (replace-before-retire) is NOT gated: it must create the
+    /// replacement before it drains the old node, and a deferral would drain without one.
+    static volatile PoolAuthority poolAuthority = ClusterPoolAuthority.production();
+
+    /// G1-g: who decides for the pool of a scale-up or add-role, asked BEFORE the action is bracketed in the ledger, so a refusal leaves the
+    /// ledger exactly as it was. A DONE action (a resumed one) is not asked again, and an action that is no scale-up or add-role has no pool.
+    private static Result<PoolAuthority.Actor> decideActor(DiffAction action,
+                                                           ClusterBootstrapConfig desired,
+                                                           CreatedNodes created) {
+        return created.recorder()
+                      .statusOf(ApplyAction.actionKey(action)) == ApplyAction.Status.DONE
+               ? success(PoolAuthority.Actor.APPLY)
+               : poolOf(action, desired, created).fold(() -> success(PoolAuthority.Actor.APPLY),
+                                                       pool -> PoolGate.decide(poolAuthority, pool));
+    }
+
+    private static Option<PoolGate.Pool> poolOf(DiffAction action,
+                                                ClusterBootstrapConfig desired,
+                                                CreatedNodes created) {
+        return switch (action) {
+            case DiffAction.AddRole a -> poolIn(a.sourceName(),
+                                                a.role(),
+                                                Math.max(0, a.count() - recorded(action, created)),
+                                                desired);
+            case DiffAction.ScaleUp a -> poolIn(a.sourceName(),
+                                                a.role(),
+                                                a.to() - Math.min(a.to(), a.from() + recorded(action, created)),
+                                                desired);
+            default -> Option.none();
+        };
+    }
+
+    private static Option<PoolGate.Pool> poolIn(SourceName sourceName,
+                                                NodeRole role,
+                                                int missing,
+                                                ClusterBootstrapConfig desired) {
+        return lookupSource(sourceName,
+                            desired.sources()).option()
+                           .map(source -> poolFor(sourceName, source, role, missing, desired));
+    }
+
+    private static PoolGate.Pool poolFor(SourceName sourceName,
+                                         SourceProfile source,
+                                         NodeRole role,
+                                         int missing,
+                                         ClusterBootstrapConfig desired) {
+        return new PoolGate.Pool(sourceName.value(),
+                                 source.type(),
+                                 role,
+                                 missing,
+                                 wantedIn(source, role),
+                                 wantedInRole(desired, role));
+    }
+
+    /// Scale-up and add-role create nodes only when apply is the pool's decider; with the leader's auto-heal filling the pool they create nothing
+    /// and wait for the leader to converge.
+    private static Result<List<ProvisionedNode>> gatedProvision(SourceName sourceName,
+                                                                SourceProfile source,
+                                                                NodeRole role,
+                                                                int count,
+                                                                ClusterBootstrapConfig desired,
+                                                                CreatedNodes created,
+                                                                PoolAuthority.Actor actor) {
+        return PoolGate.carryOut(actor,
+                                 poolAuthority,
+                                 poolFor(sourceName, source, role, count, desired),
+                                 message -> logAction("~", message),
+                                 () -> dispatchProvision(sourceName, source, role, count, desired, created));
+    }
+
+    private static int wantedIn(SourceProfile source, NodeRole role) {
+        return option(source.roles().get(role)).flatMap(RoleSubTable::count)
+                     .or(0);
+    }
+
+    private static int wantedInRole(ClusterBootstrapConfig desired, NodeRole role) {
+        return desired.sources()
+                      .values()
+                      .stream()
+                      .mapToInt(source -> wantedIn(source, role))
+                      .sum();
+    }
+
     private static Result<List<ProvisionedNode>> dispatchProvision(SourceName sourceName,
                                                                    SourceProfile source,
                                                                    NodeRole role,
                                                                    int count,
                                                                    ClusterBootstrapConfig desired,
                                                                    CreatedNodes created) {
-        return provisionBySourceType(sourceName, source, role, count, desired).onSuccess(nodes -> created.record(nodes,
-                                                                                                                 source));
+        return provisionBySourceType(sourceName, source, role, count, desired, created.recorder()).onSuccess(nodes -> created.record(nodes,
+                                                                                                                                     source));
     }
 
     static Result<List<ProvisionedNode>> provisionBySourceType(SourceName sourceName,
                                                                SourceProfile source,
                                                                NodeRole role,
                                                                int count,
-                                                               ClusterBootstrapConfig desired) {
+                                                               ClusterBootstrapConfig desired,
+                                                               ApplyRecorder recorder) {
         return switch (source.type()) {
-            case CLOUD -> resolveCloudAndProvision(source, role, count, desired);
-            case DOCKER -> resolveDockerAndProvision(sourceName, role, count, source, desired);
+            case CLOUD -> resolveCloudAndProvision(source, role, count, desired, recorder);
+            case DOCKER -> resolveDockerAndProvision(sourceName, role, count, source, desired, recorder);
             case FORGE -> forgeProvisionPlaceholder(sourceName, role, count);
             case SSH -> sshProvisionPlaceholder(sourceName, role, source);
         };
@@ -169,7 +309,8 @@ public final class WaveExecutor {
     private static Result<List<ProvisionedNode>> resolveCloudAndProvision(SourceProfile source,
                                                                           NodeRole role,
                                                                           int count,
-                                                                          ClusterBootstrapConfig desired) {
+                                                                          ClusterBootstrapConfig desired,
+                                                                          ApplyRecorder recorder) {
         var clusterName = desired.cluster().name();
 
         return WaveNodeProvisioning.resolveJoinInputs(clusterName).flatMap(inputs -> ProviderResolver.resolveCloudCompute(source).flatMap(compute -> provisionCloudNodes(compute,
@@ -177,78 +318,114 @@ public final class WaveExecutor {
                                                                                                                                                                          source,
                                                                                                                                                                          role,
                                                                                                                                                                          count,
-                                                                                                                                                                         inputs)));
+                                                                                                                                                                         inputs,
+                                                                                                                                                                         recorder)));
     }
 
     /// The CLOUD wave provisioning itself, with the provider and the join inputs already resolved. Package-private
     /// so a test drives the real composition — minted ids, rendered user-data, optional zone — against a fake
     /// provider.
+    /// The ids a cloud action asks for. The same-name re-issue of an ABSENT row is safe only where the provider refuses a second server
+    /// with that name ([ComputeProvider#honoursOperationId], Hetzner today); on any other provider a late-landing original plus a re-issue
+    /// would be two live servers for one node id, so there the remainder mints fresh ids as before (v-g1 F2).
+    private static Supplier<String> idsFor(ComputeProvider compute,
+                                           ApplyRecorder recorder,
+                                           ClusterBootstrapConfig desired) {
+        var minted = WaveNodeProvisioning.mintedIds(desired.cluster().name());
+
+        return compute.honoursOperationId()
+               ? WaveNodeProvisioning.reissuedThenMinted(recorder, minted)
+               : minted;
+    }
+
     static Result<List<ProvisionedNode>> provisionCloudNodes(ComputeProvider compute,
                                                              ClusterBootstrapConfig desired,
                                                              SourceProfile source,
                                                              NodeRole role,
                                                              int count,
-                                                             WaveNodeProvisioning.JoinInputs inputs) {
+                                                             WaveNodeProvisioning.JoinInputs inputs,
+                                                             ApplyRecorder recorder) {
         return WaveNodeProvisioning.provisionCloud(compute,
                                                    desired,
                                                    source,
                                                    role,
                                                    count,
                                                    inputs,
-                                                   WaveNodeProvisioning.mintedIds(desired.cluster().name()));
+                                                   idsFor(compute, recorder, desired),
+                                                   recorder);
     }
 
     private static Result<List<ProvisionedNode>> resolveDockerAndProvision(SourceName sourceName,
                                                                            NodeRole role,
                                                                            int count,
                                                                            SourceProfile source,
-                                                                           ClusterBootstrapConfig desired) {
+                                                                           ClusterBootstrapConfig desired,
+                                                                           ApplyRecorder recorder) {
         var image = NodeUserDataRenderer.pinnedImageFor(desired, source, role);
+        var cluster = desired.cluster().name();
 
-        return ProviderResolver.resolveDockerCompute(source, image).flatMap(compute -> provisionViaCompute(compute,
-                                                                                                           sourceName,
-                                                                                                           role,
-                                                                                                           count,
-                                                                                                           source,
-                                                                                                           desired.cluster()
-                                                                                                                  .name()));
+        return ProviderResolver.resolveDockerComputeForCluster(source, image, cluster).flatMap(compute -> provisionViaCompute(compute,
+                                                                                                                              sourceName,
+                                                                                                                              role,
+                                                                                                                              count,
+                                                                                                                              source,
+                                                                                                                              cluster,
+                                                                                                                              recorder));
     }
 
-    @SuppressWarnings("JBCT-EX-01")
-    private static Result<List<ProvisionedNode>> provisionViaCompute(ComputeProvider compute,
-                                                                     SourceName sourceName,
-                                                                     NodeRole role,
-                                                                     int count,
-                                                                     SourceProfile source,
-                                                                     ClusterName clusterName) {
+    /// One create per node, ids minted BEFORE the call (the container name is the node id), each recorded write-ahead
+    /// like a cloud VM: a group call would mint the ids inside the provider layer, after the point where the intent row
+    /// has to exist. The spec is the group path's spec for the same node id, plus the apply labels.
+    static Result<List<ProvisionedNode>> provisionViaCompute(ComputeProvider compute,
+                                                             SourceName sourceName,
+                                                             NodeRole role,
+                                                             int count,
+                                                             SourceProfile source,
+                                                             ClusterName clusterName,
+                                                             ApplyRecorder recorder) {
         var instanceType = option(source.roles().get(role)).flatMap(rt -> rt.instanceType()).or("default");
         var zone = source.zone().or("default");
-        // #442 v2b — carry the real cluster name in the group tags so `CloudProviderSupport.toContext`
-        // seeds `ProvisionContext.clusterName()`, and the provider stamps `aether-cluster=<real>` on
-        // the VM. Mirrors `BootstrapPhaseProvision.provisionRoleGroup`. Without this the tags were
-        // empty and the label fell back to the provider config / env / "unknown", breaking the
-        // harness's label-scoped cloud enumeration on scale/reprovision-provisioned nodes.
-        var group = NodeGroupConfig.nodeGroupConfig(sourceName,
-                                                    role.value(),
-                                                    count,
-                                                    instanceType,
-                                                    zone,
-                                                    provisionTags(clusterName, sourceName, role));
+        var tags = provisionTags(clusterName, sourceName, role, recorder.applyId());
+        // #442 v2b — the group carries the real cluster name so the provider stamps `aether-cluster=<real>` on the node.
+        var group = NodeGroupConfig.nodeGroupConfig(sourceName, role.value(), count, instanceType, zone, tags);
+        var nodeIds = WaveNodeProvisioning.mintedIds(clusterName);
+        var nodes = new ArrayList<ProvisionedNode>();
 
-        return CloudProviderSupport.provisionVia(compute, group).await();
+        for (int i = 0; i < count; i++) {
+            var nodeId = nodeIds.get();
+            var provisioned = CloudProviderSupport.provisionSpecFor(group, nodeId, tags).flatMap(spec -> WaveNodeProvisioning.createRecorded(compute,
+                                                                                                                                             spec,
+                                                                                                                                             nodeId,
+                                                                                                                                             WaveNodeProvisioning.providerName(source),
+                                                                                                                                             recorder,
+                                                                                                                                             WaveNodeProvisioning::filteredListing));
+
+            if (provisioned.isFailure()) {
+                return provisioned.map(_ -> List.<ProvisionedNode> of());
+            }
+
+            var _ = provisioned.onSuccess(nodes::add);
+        }
+
+        return success(List.copyOf(nodes));
     }
 
     /// #442 v2b — the native metadata tags a provisioned VM must carry so the harness's label-scoped
     /// cloud enumeration can find and reap it. `aether-cluster` is the load-bearing one: it seeds
     /// `ProvisionContext.clusterName()` via `CloudProviderSupport.toContext`, which the provider
     /// stamps onto the VM. Package-private so the wiring test asserts it directly.
-    static Map<String, String> provisionTags(ClusterName clusterName, SourceName sourceName, NodeRole role) {
+    static Map<String, String> provisionTags(ClusterName clusterName,
+                                             SourceName sourceName,
+                                             NodeRole role,
+                                             String applyId) {
         return Map.of("aether-cluster",
                       clusterName.value(),
                       "aether-source",
                       sourceName.value(),
                       "aether-role",
-                      role.value());
+                      role.value(),
+                      WaveNodeProvisioning.APPLY_LABEL,
+                      applyId);
     }
 
     private static Result<List<ProvisionedNode>> forgeProvisionPlaceholder(SourceName sourceName,
@@ -299,7 +476,7 @@ public final class WaveExecutor {
         var totalModified = 0;
 
         for (var action : modifications) {
-            var result = executeModification(action, stored, desired, created);
+            var result = asAction(action, created, () -> executeModification(action, stored, desired, created));
 
             if (result.isFailure()) {
                 return result;
@@ -728,6 +905,15 @@ public final class WaveExecutor {
     /// in-process placeholder. A DOCKER node is a local container, not billed and not reported.
     static final class CreatedNodes {
         private final List<WaveNodeProvisioning.CreatedNode> nodes = new ArrayList<>();
+        private final ApplyRecorder recorder;
+
+        CreatedNodes(ApplyRecorder recorder) {
+            this.recorder = recorder;
+        }
+
+        ApplyRecorder recorder() {
+            return recorder;
+        }
 
         Unit record(List<ProvisionedNode> provisioned, SourceProfile source) {
             if (source.type() == SourceType.CLOUD) {

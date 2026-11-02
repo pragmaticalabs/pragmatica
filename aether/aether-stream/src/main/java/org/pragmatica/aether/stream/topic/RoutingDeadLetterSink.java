@@ -39,7 +39,7 @@ public record RoutingDeadLetterSink(DeadLetterHandler topicSink, DeadLetterHandl
     }
 
     @Override
-    public List<DeadLetterEntry> read(String streamName, int maxCount) {
+    public Promise<List<DeadLetterEntry>> read(String streamName, int maxCount) {
         return sinkFor(streamName).read(streamName, maxCount);
     }
 

@@ -7,6 +7,7 @@ package org.pragmatica.aether.worker.governor;
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -21,16 +22,24 @@ import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/// A submission whose outcome never arrives would park `await()` for good: the timeout turns that into a red test.
+@Timeout(value = 10, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
 class GovernorAuthorityTest {
+    private static final TimeSpan UNBATCHED = TimeSpan.timeSpan(60).seconds();
+    private static final TimeSpan BOUND = TimeSpan.timeSpan(5).seconds();
     private static final NodeId CORE = new NodeId("core");
     private static final NodeId A = new NodeId("worker-a");
     private static final NodeId B = new NodeId("worker-b");
@@ -41,19 +50,25 @@ class GovernorAuthorityTest {
         @Override public <T> T read(ByteBuf buffer) { return null; }
     });
     private final AtomicReference<List<NodeId>> members = new AtomicReference<>(List.of(A, B));
+    private final AtomicInteger commits = new AtomicInteger();
     private final AtomicReference<Runnable> beforeApply = new AtomicReference<>(() -> {});
+    private final AtomicBoolean failNext = new AtomicBoolean();
     private final ClusterNode<KVCommand<AetherKey>> cluster = new ClusterNode<>() {
         @Override public NodeId self() { return CORE; }
         @Override public TopologyManager topologyManager() { return null; }
         @Override public Promise<Unit> start() { return Promise.success(Unit.unit()); }
         @Override public Promise<Unit> stop() { return Promise.success(Unit.unit()); }
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
+            commits.incrementAndGet();
+            if (failNext.getAndSet(false)) {
+                return Causes.cause("submission lost").promise();
+            }
             beforeApply.getAndSet(() -> {}).run();
             return Promise.success(store.process(store.createBatch(commands)));
         }
     };
     private final GovernorAuthority authority = GovernorAuthority.governorAuthority(CORE, cluster, store,
-        () -> true, _ -> members.get(), _ -> true, () -> Epoch.ZERO, HlcClock.hlcClock(CORE));
+        () -> true, _ -> members.get(), _ -> true, () -> Epoch.ZERO, HlcClock.hlcClock(CORE), UNBATCHED, 1);
 
     @BeforeEach
     void seedCommunity() {
@@ -69,7 +84,11 @@ class GovernorAuthorityTest {
     }
 
     private GovernorAuthorityMessage.Response request(NodeId worker, long expected) {
-        return authority.handle(new GovernorAuthorityMessage.Request(worker, "c", 1, expected, "host:9000")).await().unwrap();
+        return authority.handle(new GovernorAuthorityMessage.Request(worker, "c", 1, expected, "host:9000", false)).await().unwrap();
+    }
+
+    private GovernorAuthorityMessage.Response refresh(NodeId worker, long expected) {
+        return authority.handle(new GovernorAuthorityMessage.Request(worker, "c", 1, expected, "host:9000", true)).await().unwrap();
     }
 
     @Test
@@ -108,7 +127,7 @@ class GovernorAuthorityTest {
         leader(CORE, 1);
         var incumbent = request(A, 0).authority().unwrap();
         beforeApply.set(() -> leader(new NodeId("replacement-core"), 2));
-        assertThat(request(A, incumbent.communityTerm()).authority().isEmpty()).isTrue();
+        assertThat(refresh(A, incumbent.communityTerm()).authority().isEmpty()).isTrue();
         assertThat(store.getTyped(KEY, GovernorAnnouncementValue.class).unwrap()).isEqualTo(incumbent);
     }
 
@@ -169,5 +188,167 @@ class GovernorAuthorityTest {
         leader(CORE, 1);
         members.set(List.of());
         assertThat(request(A, 0).authority().isEmpty()).isTrue();
+    }
+
+    /// #2542: a SWIM edge re-nominates the sitting governor with nothing changed; the committed value is already that
+    /// announcement, so nothing is committed and the committed value (timestamp included) stays as it was.
+    @Test
+    void unchangedAnnouncement_edgeRequest_commitsNothing() {
+        leader(CORE, 1);
+        var granted = request(A, 0).authority().unwrap();
+        var commitsAfterGrant = commits.get();
+
+        var answered = request(A, granted.communityTerm()).authority().unwrap();
+
+        assertThat(commits.get()).as("an unchanged announcement must not reach consensus").isEqualTo(commitsAfterGrant);
+        assertThat(answered).as("the reply carries the committed value").isEqualTo(granted);
+        assertThat(store.getTyped(KEY, GovernorAnnouncementValue.class).unwrap()).isEqualTo(granted);
+    }
+
+    /// Control for the test above: a change of roster is still committed, with the term kept.
+    @Test
+    void changedRoster_edgeRequest_isCommitted() {
+        leader(CORE, 1);
+        var granted = request(A, 0).authority().unwrap();
+        var commitsAfterGrant = commits.get();
+        members.set(List.of(A));
+
+        var answered = request(A, granted.communityTerm()).authority().unwrap();
+
+        assertThat(commits.get()).isEqualTo(commitsAfterGrant + 1);
+        assertThat(answered.members()).containsExactly(A);
+        assertThat(answered.communityTerm()).isEqualTo(granted.communityTerm());
+    }
+
+    /// Control: a changed address is a change.
+    @Test
+    void changedAddress_edgeRequest_isCommitted() {
+        leader(CORE, 1);
+        var granted = request(A, 0).authority().unwrap();
+        var commitsAfterGrant = commits.get();
+
+        var answered = authority.handle(new GovernorAuthorityMessage.Request(A, "c", 1, granted.communityTerm(), "moved:9000", false)).await().unwrap().authority().unwrap();
+
+        assertThat(commits.get()).isEqualTo(commitsAfterGrant + 1);
+        assertThat(answered.tcpAddress()).isEqualTo("moved:9000");
+    }
+
+    /// The re-announce timer is the liveness refresh: the same unchanged announcement is committed again, with only its
+    /// timestamp new, so the committed `announcedAt` (and the Put the core's freshness window reads) keeps moving.
+    @Test
+    void unchangedAnnouncement_refreshRequest_isCommittedWithANewTimestamp() throws InterruptedException {
+        leader(CORE, 1);
+        var granted = request(A, 0).authority().unwrap();
+        var commitsAfterGrant = commits.get();
+
+        Thread.sleep(5);
+        var answered = refresh(A, granted.communityTerm()).authority().unwrap();
+
+        assertThat(commits.get()).isEqualTo(commitsAfterGrant + 1);
+        assertThat(answered.announcedAt()).isGreaterThan(granted.announcedAt());
+        assertThat(answered.unchangedFrom(granted)).as("nothing but the timestamp moved").isTrue();
+    }
+
+    /// The core's epoch is a generation counter that ticks every second; an announcement that differs only by a newer one is
+    /// not a change (#2542), and a refresh carries the newer one.
+    @Test
+    void newerCoreEpoch_edgeRequestCommitsNothing_refreshCarriesIt() {
+        var epoch = new AtomicReference<>(Epoch.ZERO);
+        var observing = GovernorAuthority.governorAuthority(CORE, cluster, store, () -> true, _ -> members.get(), _ -> true, epoch::get, HlcClock.hlcClock(CORE), UNBATCHED, 1);
+        leader(CORE, 1);
+        var granted = observing.handle(new GovernorAuthorityMessage.Request(A, "c", 1, 0, "host:9000", false)).await().unwrap().authority().unwrap();
+        var commitsAfterGrant = commits.get();
+
+        epoch.set(Epoch.epoch(0L, 1L, 0));
+        var edge = observing.handle(new GovernorAuthorityMessage.Request(A, "c", 1, granted.communityTerm(), "host:9000", false)).await().unwrap().authority().unwrap();
+
+        assertThat(commits.get()).isEqualTo(commitsAfterGrant);
+        assertThat(edge.observedCoreEpoch()).isEqualTo(Epoch.ZERO);
+
+        var refreshed = observing.handle(new GovernorAuthorityMessage.Request(A, "c", 1, granted.communityTerm(), "host:9000", true)).await().unwrap().authority().unwrap();
+
+        assertThat(commits.get()).isEqualTo(commitsAfterGrant + 1);
+        assertThat(refreshed.observedCoreEpoch()).isEqualTo(Epoch.epoch(0L, 1L, 0));
+    }
+
+    /// Core-initiated recovery names another governor, so it commits; it asks for the refresh itself.
+    @Test
+    void recoveryNamingTheSittingGovernor_isCommitted() {
+        leader(CORE, 1);
+        var granted = request(A, 0).authority().unwrap();
+        var commitsAfterGrant = commits.get();
+
+        authority.reconcile("c", A, granted.communityTerm(), "host:9000").await().unwrap();
+
+        assertThat(commits.get()).isEqualTo(commitsAfterGrant + 1);
+    }
+
+    /// #2542, the batch rule: the announcements of two communities that fall in one window reach the log as ONE
+    /// submission, and each still gets its own grant (the transactions are accepted one by one).
+    @Test
+    void twoCommunitiesInOneWindow_areOneSubmission_eachGranted() {
+        var other = new NodeId("worker-d");
+        store.process(store.createBatch(List.of(
+            new KVCommand.Put<>(AetherKey.CommunityKey.communityKey("d"), AetherValue.CommunityValue.communityValue("", "WORKER", 1)),
+            new KVCommand.Put<>(AetherKey.ActivationDirectiveKey.activationDirectiveKey(other), AetherValue.ActivationDirectiveValue.worker("d", "")))));
+        var batched = GovernorAuthority.governorAuthority(CORE, cluster, store, () -> true,
+            community -> community.equals("d") ? List.of(other) : members.get(), _ -> true, () -> Epoch.ZERO, HlcClock.hlcClock(CORE),
+            TimeSpan.timeSpan(60).seconds(), 2);
+        leader(CORE, 1);
+
+        var first = batched.handle(new GovernorAuthorityMessage.Request(A, "c", 1, 0, "host:9000", false));
+        var second = batched.handle(new GovernorAuthorityMessage.Request(other, "d", 2, 0, "host:9001", false));
+
+        assertThat(first.await().unwrap().authority().unwrap().governorId()).isEqualTo(A);
+        assertThat(second.await().unwrap().authority().unwrap().governorId()).isEqualTo(other);
+        assertThat(commits.get()).as("one command list for both communities").isEqualTo(1);
+    }
+
+    /// The plain factory is the one the core is wired with, so it carries the production window: a grant is held for
+    /// the window instead of being submitted on the calling thread, and is still answered once the window closes.
+    @Test
+    void defaultFactory_holdsAGrantForTheWindow_thenSubmitsIt() {
+        var core = GovernorAuthority.governorAuthority(CORE, cluster, store, () -> true, _ -> members.get(), _ -> true,
+            () -> Epoch.ZERO, HlcClock.hlcClock(CORE));
+        leader(CORE, 1);
+
+        var pending = core.handle(new GovernorAuthorityMessage.Request(A, "c", 1, 0, "host:9000", false));
+
+        assertThat(commits.get()).as("nothing is submitted before the window closes").isZero();
+        assertThat(pending.await(BOUND).unwrap().authority().unwrap().governorId()).isEqualTo(A);
+        assertThat(commits.get()).isEqualTo(1);
+    }
+
+    /// Leadership moves while a grant waits in the window: the old leader's transaction is refused at apply, and its
+    /// waiter is answered (no grant) rather than left waiting.
+    @Test
+    void leadershipChangesWhileTheGrantWaitsInTheWindow_isRefusedAndAnswered() {
+        var batched = GovernorAuthority.governorAuthority(CORE, cluster, store, () -> true, _ -> members.get(), _ -> true,
+            () -> Epoch.ZERO, HlcClock.hlcClock(CORE), TimeSpan.timeSpan(300).millis(), 16);
+        leader(CORE, 1);
+
+        var pending = batched.handle(new GovernorAuthorityMessage.Request(A, "c", 1, 0, "host:9000", false));
+        leader(new NodeId("replacement-core"), 2);
+
+        assertThat(pending.await(BOUND).unwrap().authority().isEmpty()).isTrue();
+        assertThat(store.get(KEY).isEmpty()).isTrue();
+    }
+
+    /// A submission that fails (the core stopping, a lost forward) fails its own waiters and leaves the next window
+    /// working.
+    @Test
+    void failedSubmission_failsItsWaiters_andTheNextWindowStillCommits() {
+        var batched = GovernorAuthority.governorAuthority(CORE, cluster, store, () -> true, _ -> members.get(), _ -> true,
+            () -> Epoch.ZERO, HlcClock.hlcClock(CORE), TimeSpan.timeSpan(50).millis(), 16);
+        leader(CORE, 1);
+        failNext.set(true);
+
+        var lost = batched.handle(new GovernorAuthorityMessage.Request(A, "c", 1, 0, "host:9000", false)).await(BOUND);
+
+        assertThat(lost.isFailure()).isTrue();
+        assertThat(store.get(KEY).isEmpty()).isTrue();
+        var retried = batched.handle(new GovernorAuthorityMessage.Request(A, "c", 2, 0, "host:9000", false)).await(BOUND);
+
+        assertThat(retried.unwrap().authority().unwrap().governorId()).isEqualTo(A);
     }
 }

@@ -158,15 +158,26 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         return ReconfigurationError.NOT_PASSIVE_CLIENT.result();
     }
 
-    default org.pragmatica.lang.Unit authorizePassiveClient() {
-        return org.pragmatica.lang.Unit.unit();
-    }
-
     default boolean isPassiveClientReady() {
         return false;
     }
 
+    /// Sets and clears the readiness [#isPassiveClientReady] reports (W-OBS W3); the replica readiness computation is the only caller.
+    default org.pragmatica.lang.Unit setPassiveClientReady(boolean ready) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// Fires the post-restore listeners ([#onStateRestored]) after a worker installed its replica snapshot (W-OBS W3).
+    default org.pragmatica.lang.Unit completePassiveRestore() {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
     default Result<Unit> installPassiveCoreDirectory(List<NodeId> members) {
+        return ReconfigurationError.NOT_PASSIVE_CLIENT.result();
+    }
+
+    /// Installs the electorate a core reported to this passive client (#2543); refused on any other node.
+    default Result<Unit> installPassiveVoters(VoterConfiguration configuration) {
         return ReconfigurationError.NOT_PASSIVE_CLIENT.result();
     }
 
@@ -777,20 +788,28 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             }
 
             @Override
-            public org.pragmatica.lang.Unit authorizePassiveClient() {
-                consensus().authorizePassiveClient();
-
-                return org.pragmatica.lang.Unit.unit();
-            }
-
-            @Override
             public boolean isPassiveClientReady() {
                 return consensus().isPassiveClientReady();
             }
 
             @Override
+            public org.pragmatica.lang.Unit setPassiveClientReady(boolean ready) {
+                return consensus().setPassiveClientReady(ready);
+            }
+
+            @Override
+            public org.pragmatica.lang.Unit completePassiveRestore() {
+                return consensus().completePassiveRestore();
+            }
+
+            @Override
             public Result<Unit> installPassiveCoreDirectory(List<NodeId> members) {
                 return consensus().installPassiveCoreDirectory(members, leaderManager()::installPassiveCoreDirectory);
+            }
+
+            @Override
+            public Result<Unit> installPassiveVoters(VoterConfiguration configuration) {
+                return consensus().installPassiveVoters(configuration);
             }
 
             @Override

@@ -103,6 +103,27 @@ class ReplicaFilterTripwireTest {
                                      .doesNotContainAnyElementsOf(keys.values());
     }
 
+    /// O3-1: `NodeIdentityKey` is classified as `CapacityReservationKey` is (q4 7.1.2): the projection gives it no scope, and the filter does not EXCLUDE
+    /// it. A scope moves what a worker selects, so a GLOBAL or per-node scope on the record would ship every node record to every worker.
+    @Test
+    void nodeIdentityKey_entersNoWorkerScope_likeTheReservationItReplaces() {
+        var index = WorkerMetadataIndex.workerMetadataIndex();
+        var control = new AetherKey.LogLevelKey("org.example");
+
+        index.put(control, OPAQUE);
+        var before = index.revision();
+        var identity = new AetherKey.NodeIdentityKey(CORE);
+        var reservation = new AetherKey.CapacityReservationKey(CORE);
+
+        index.put(identity, OPAQUE);
+        index.put(reservation, OPAQUE);
+
+        assertThat(workerView(index)).as("control: a scoped key reaches the worker").contains(control);
+        assertThat(index.revision()).as("neither record moves a scope revision").isEqualTo(before);
+        assertThat(workerView(index)).as("neither record is in a worker scope").doesNotContain(identity, reservation);
+        assertThat(ReplicaFilter.replicaFilter().excludes(identity)).as("INCLUDED, as the reservation is").isEqualTo(ReplicaFilter.replicaFilter().excludes(reservation)).isFalse();
+    }
+
     @Disabled("enable at W3/W4 (worker replica): when the worker holds a full replica minus the exclusion set, re-point workerView at the filtered replica")
     @Test
     void replicaHoldsEveryKeyOutsideTheFilter_andNoneInsideIt() {
@@ -212,10 +233,10 @@ class ReplicaFilterTripwireTest {
     }
 
     /// TW-O15, the full classification: every `AetherKey` class in the sealed hierarchy, not a sample, is classified, and the EXCLUDE set is
-    /// exactly the stream cursor checkpoints and the cluster configuration. Mutation: move any other class (say `SliceTargetKey`) to EXCLUDE,
+    /// exactly the stream cursor checkpoints, the cluster configuration and the five deployment-rewrite keys (EXCLUDED until P3-D). Mutation: move any other class (say `SliceTargetKey`) to EXCLUDE,
     /// and the set has a third member.
     @Test
-    void everyAetherKeyClass_isIncluded_exceptTheStreamCursorCheckpointsAndTheClusterConfiguration() {
+    void everyAetherKeyClass_isIncluded_exceptTheCheckpointsTheConfigurationAndTheDeploymentRewriteKeys() {
         var classes = everyAetherKeyClass();
         var excluded = classes.stream()
                               .filter(keyClass -> ReplicaFilter.replicaFilter().excludes(instanceOf(keyClass)))
@@ -226,7 +247,7 @@ class ReplicaFilterTripwireTest {
                            .hasSizeGreaterThan(60)
                            .extracting(Class::getSimpleName)
                            .containsAll(unscopedKeys().keySet());
-        assertThat(excluded).as("the EXCLUDE set, over every AetherKey class").containsExactlyInAnyOrder("StreamCursorCheckpointKey", "ClusterConfigKey");
+        assertThat(excluded).as("the EXCLUDE set, over every AetherKey class").containsExactlyInAnyOrder("StreamCursorCheckpointKey", "ClusterConfigKey", "SliceDesiredKey", "SliceObservedKey", "DeploymentApplyKey", "ArtifactJudgmentKey", "NodeDepartureKey");
     }
 
     /// The ring's byte measure sizes a key by `asString()` (R-07). `StructuredKey` gives a default for key families with no canonical text;

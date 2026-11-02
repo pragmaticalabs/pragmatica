@@ -117,12 +117,30 @@ public interface Cause {
     ///
     /// `source()` uses [Option#option] rather than [Option#some] deliberately: `some(null)` wraps a
     /// null without complaint, and a present-but-null source is strictly worse than an absent one.
+    ///
+    /// The wrapper reports its origin's classification: [#isTerminal()] and [#isTransient()] answer what the origin answers
+    /// (`false` when there is no origin). A wrapper that needs a different answer overrides explicitly, as one that wraps an
+    /// operation whose outcome is unknown must: that classification is the store's to get right, and a wrapper that
+    /// inherits "transient" from a timeout would be retried by a transient-only policy. A wrapper that also implements
+    /// [Terminal] or [Transient] must say which answer wins, by overriding (the compiler requires it).
     interface Wrapped extends Cause {
         Cause origin();
 
         @Override
         default Option<Cause> source() {
             return Option.option(origin());
+        }
+
+        @Override
+        default boolean isTerminal() {
+            return source().map(Cause::isTerminal)
+                         .or(false);
+        }
+
+        @Override
+        default boolean isTransient() {
+            return source().map(Cause::isTransient)
+                         .or(false);
         }
     }
 }

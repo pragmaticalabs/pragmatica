@@ -12,8 +12,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn3;
 import org.pragmatica.lang.Option;
@@ -64,6 +66,9 @@ public record GitBackupRepository(Path dir,
 
     private static final String REMOTE_NAME = "origin";
     private static final String REMOTE_REF = "refs/remotes/" + REMOTE_NAME + "/";
+
+    private static final Pattern REJECTION_STATUS = Pattern.compile("^!\\t[^\\t]*\\t(\\[rejected\\]|\\[remote rejected\\] \\((failed to update ref|reference already exists|incorrect old value provided|reference does not exist)\\))",
+                                                                    Pattern.MULTILINE);
 
     public static GitBackupRepository gitBackupRepository(Path dir,
                                                           Option<String> remote,
@@ -197,6 +202,13 @@ public record GitBackupRepository(Path dir,
                                              : Option.none());
     }
 
+    /// The commit the fetched remote head names, absent when the remote has no such branch (call [#fetchRemoteHead] first).
+    public Result<Option<String>> remoteHeadCommit() {
+        return exitStatus("rev-parse", "--verify", "--quiet", REMOTE_REF + branch).flatMap(status -> status == 0
+                                                                                                     ? commitOf(REMOTE_REF + branch).map(Option::some)
+                                                                                                     : success(Option.none()));
+    }
+
     /// The commit `ref` names.
     public Result<String> commitOf(String ref) {
         return git("rev-parse", "--verify", ref + "^{commit}").map(String::strip);
@@ -276,8 +288,23 @@ public record GitBackupRepository(Path dir,
                                                         .result();
     }
 
-    private static boolean isRejection(String output) {
-        return output.contains("[rejected]") || output.contains("non-fast-forward") || output.contains("fetch first");
+    /// A remote that moved between our read of its head and our push answers with git's porcelain status line `!<TAB>ref<TAB>…`. Only that line
+    /// counts: the same words in a hook's `remote:` message, or a `[remote rejected]` for another reason, are a refusal and stay a failure. A
+    /// rejection that repeats against a head that did not move (a stale ref lock) is told apart by the caller.
+    ///
+    /// The lost-race reasons, by git's own sources (receive-pack runs on the SERVER, so the client's version does not matter; the server's does):
+    /// - `[rejected]` (any reason): the client's own check against the advertised refs (`remote.c`, `send-pack.c`), e.g. `(fetch first)`, `(non-fast-forward)`.
+    /// - `(failed to update ref)`: `builtin/receive-pack.c` `execute_commands_non_atomic`, git 2.43 to 2.50 (v2.43.0 line 1862), for ANY failure of the ref
+    ///   transaction's commit, a lost race and a held ref lock included.
+    /// - git 2.51 and later (commit 9d2962a7c, "receive-pack: use batched reference updates") report the per-ref reason `ref_transaction_error_msg()`
+    ///   (`refs.c`, v2.56.0 line 3542), of which a concurrent ref update produces three: `(reference already exists)` (`REF_TRANSACTION_ERROR_CREATE_EXISTS`:
+    ///   the ref was created meanwhile, or its lock file is held; `refs/files-backend.c` `lock_raw_ref` and `check_old_oid`), `(incorrect old value provided)`
+    ///   (`REF_TRANSACTION_ERROR_INCORRECT_OLD_VALUE`: the ref moved) and `(reference does not exist)` (`REF_TRANSACTION_ERROR_NONEXISTENT_REF`: it was deleted).
+    /// - Not races, so refusals: `refname conflict`, `invalid new value provided`, `expected symref but found regular ref`,
+    ///   `reference conflict due to case-insensitive filesystem`, `unknown failure`, `failed to update refs` (the whole commit failed, git 2.51+),
+    ///   `atomic transaction failed` (`--atomic`, not used), and every hook or policy reason (`pre-receive hook declined`, `hook declined`, `deny …`).
+    static boolean isRejection(String output) {
+        return REJECTION_STATUS.matcher(output).find();
     }
 
     /// Run git and succeed with its output only on exit 0.
@@ -333,9 +360,20 @@ public record GitBackupRepository(Path dir,
         return Result.lift(GitBackupRepository::unavailable,
                            () -> process.waitFor(timeout.millis(),
                                                  TimeUnit.MILLISECONDS))
+                     .onFailure(_ -> abandon(process))
                      .map(finished -> finished
                                       ? completed(process, output)
                                       : timedOut(process));
+    }
+
+    /// The wait ended in an interruption (the stop's deadline): kill git and whatever it started, and leave the interrupt visible to the caller. On a
+    /// local remote the server side is among the children, so nothing in flight lands afterwards. Over a network a push the server has already received
+    /// can still land; that is harmless, a fast-forward of the node's own decided state. What is guaranteed is that no git of ours outlives the stop.
+    @Contract
+    private static void abandon(Process process) {
+        process.descendants().forEach(ProcessHandle::destroyForcibly);
+        process.destroyForcibly();
+        Thread.currentThread().interrupt();
     }
 
     private GitResult completed(Process process, FutureTask<String> output) {

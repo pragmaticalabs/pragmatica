@@ -22,7 +22,9 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -115,9 +117,16 @@ public class DynamicConfigManager {
         appliedListeners.add(listener);
     }
 
+    /// Runs on the KV applier thread, which holds `KVStore.mutationLock`. Every listener call is total: a listener
+    /// that throws is logged and the next one still runs, and nothing surfaces in the KV router's dispatch (the
+    /// overlay write this follows has already happened). A `VirtualMachineError` is rethrown by `Result.lift`.
     private void notifyApplied(String key) {
         for (var listener : appliedListeners) {
-            listener.accept(key);
+            Result.lift(Causes::fromThrowable,
+                        () -> listener.accept(key))
+                  .onFailure(cause -> log.error("Config applied-listener failed for {}: {}",
+                                                key,
+                                                cause.message()));
         }
     }
 
@@ -128,7 +137,7 @@ public class DynamicConfigManager {
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(configKey, configValue);
 
         return clusterNode.<Unit> apply(List.of(command))
-                          .map(_ -> applyClusterConfig(key, value))
+                          .map(_ -> reportConfigSet(key, value))
                           .onFailure(cause -> log.error("Failed to persist config {}: {}",
                                                         key,
                                                         cause.message()));
@@ -141,7 +150,7 @@ public class DynamicConfigManager {
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(configKey, configValue);
 
         return clusterNode.<Unit> apply(List.of(command))
-                          .map(_ -> applyNodeConfig(key, value, nodeId))
+                          .map(_ -> reportNodeConfigSet(key, value, nodeId))
                           .onFailure(cause -> log.error("Failed to persist node config {} for {}: {}",
                                                         key,
                                                         nodeId.id(),
@@ -154,7 +163,7 @@ public class DynamicConfigManager {
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(configKey);
 
         return clusterNode.<Unit> apply(List.of(command))
-                          .map(_ -> removeClusterConfig(key))
+                          .map(_ -> reportConfigRemoved(key))
                           .onFailure(cause -> log.error("Failed to persist config removal {}: {}",
                                                         key,
                                                         cause.message()));
@@ -166,7 +175,7 @@ public class DynamicConfigManager {
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(configKey);
 
         return clusterNode.<Unit> apply(List.of(command))
-                          .map(_ -> removeNodeScopedConfig(key, nodeId))
+                          .map(_ -> reportNodeConfigRemoved(key, nodeId))
                           .onFailure(cause -> log.error("Failed to persist node config removal {} for {}: {}",
                                                         key,
                                                         nodeId.id(),
@@ -185,35 +194,28 @@ public class DynamicConfigManager {
         return mapToJson(provider.overlayMap());
     }
 
-    private Unit applyClusterConfig(String key, String value) {
-        provider.put(key, value);
+    // The overlay is written only by the commit's own onConfigPut/onConfigRemove (inside KVStore.mutate, before the
+    // apply promise resolves). These continuations used to write it a second time, after the fact, which could
+    // resurrect a value a later commit had already replaced - silently, without notifying any listener.
+    private Unit reportConfigSet(String key, String value) {
         log.info("Config set and persisted: {}={}", key, redactIfSensitive(key, value));
 
         return Unit.unit();
     }
 
-    private Unit applyNodeConfig(String key, String value, NodeId nodeId) {
-        if (nodeId.equals(self)) {
-            provider.put(key, value);
-        }
-
+    private Unit reportNodeConfigSet(String key, String value, NodeId nodeId) {
         log.info("Node config set and persisted: {}={} for node {}", key, redactIfSensitive(key, value), nodeId.id());
 
         return Unit.unit();
     }
 
-    private Unit removeClusterConfig(String key) {
-        provider.remove(key);
+    private Unit reportConfigRemoved(String key) {
         log.info("Config removed and persisted: {}", key);
 
         return Unit.unit();
     }
 
-    private Unit removeNodeScopedConfig(String key, NodeId nodeId) {
-        if (nodeId.equals(self)) {
-            provider.remove(key);
-        }
-
+    private Unit reportNodeConfigRemoved(String key, NodeId nodeId) {
         log.info("Node config removed and persisted: {} for node {}", key, nodeId.id());
 
         return Unit.unit();

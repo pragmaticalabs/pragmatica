@@ -7,10 +7,13 @@ import java.util.List;
 
 import org.pragmatica.aether.api.DynamicConfigManager;
 import org.pragmatica.aether.deployment.config.ConfigNotificationManager;
+import org.pragmatica.aether.deployment.config.DefaultConfigChangeFeed;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
+import org.pragmatica.aether.slice.ConfigChangeFeed;
 
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 
@@ -52,5 +55,28 @@ class ConfigChangePushLivenessTest {
                                                                                                       java.util.function.Consumer.class))),
                    "#381: DynamicConfigManager.onApplied must be registered by production code "
                    + "(AetherNode.collectRouteEntries), or the KV change never leaves the overlay provider");
+    }
+
+    /// #774: the `Watched`/`Live` feed is fed by the applier (`DynamicConfigManager.onApplied(feed::publish)` in
+    /// `AetherNode`) and released by the slice unload (`SliceStore.unloadEntry` -> `ConfigChangeFeed.releaseAll`).
+    /// A negative control rides along: `holdsFeedLock` is a test seam with no production caller, so a scan that
+    /// cannot tell a dead method from a live one would pass the two assertions above for the wrong reason.
+    @Test
+    void configFeedIsPublishedToAndReleasedThroughProductionCode() throws Exception {
+        assertCorpusIsComplete();
+
+        var reachability = BytecodeReachability.scan(PRODUCTION_ROOTS);
+
+        assertTrue(reachability.isReachable(MethodRef.of(DefaultConfigChangeFeed.class.getDeclaredMethod("publish", String.class))),
+                   "#774: DefaultConfigChangeFeed.publish must be registered as a DynamicConfigManager applied-listener "
+                   + "by AetherNode, or Watched/Live never see a change");
+        assertTrue(reachability.isReachable(MethodRef.of(ConfigChangeFeed.class.getDeclaredMethod("releaseAll", String.class))),
+                   "#774: ConfigChangeFeed.releaseAll must be called by SliceStore.unloadEntry, or an unloaded slice's "
+                   + "subscriptions outlive it");
+        assertTrue(reachability.isReachable(MethodRef.of(DefaultConfigChangeFeed.class.getDeclaredMethod("shutdown"))),
+                   "#774: DefaultConfigChangeFeed.shutdown must be called by the node's stop sequence, or a stopped node "
+                   + "leaves delivery threads running against torn-down resources");
+        assertFalse(reachability.isReachable(MethodRef.of(DefaultConfigChangeFeed.class.getDeclaredMethod("holdsFeedLock"))),
+                    "negative control: a test-only seam has no production caller; if this is 'reachable' the scan proves nothing");
     }
 }

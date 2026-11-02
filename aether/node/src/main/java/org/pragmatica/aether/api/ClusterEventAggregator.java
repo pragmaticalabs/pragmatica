@@ -12,6 +12,7 @@ import java.util.Set;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Stream;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
@@ -52,8 +53,8 @@ import org.pragmatica.aether.api.ClusterEvent.SliceFailure;
 import org.pragmatica.aether.api.ClusterEvent.StreamMemoryExceeded;
 import org.pragmatica.aether.controller.ScalingEvent;
 import org.pragmatica.aether.controller.RollbackEvent;
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
+import org.pragmatica.aether.metrics.deployment.ReconciliationAdjustment;
 import org.pragmatica.aether.slice.StreamAccess.PartitionInfo;
 import org.pragmatica.aether.slice.StreamAccess.StreamEvent;
 import org.pragmatica.aether.slice.StreamAccess.StreamMetadata;
@@ -70,6 +71,9 @@ import org.pragmatica.aether.slice.stream.FrameworkStreamPublisher;
 import org.pragmatica.aether.slice.stream.SystemStreams;
 import org.pragmatica.aether.stream.StreamPartitionManager.Exhaustion;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
@@ -200,6 +204,27 @@ public final class ClusterEventAggregator {
     /// A recovery is published exactly when its key is here, so it never appears without the warning it closes and is
     /// never throttled away from one an operator saw. Bounded by the (code, subject) pairs the node can raise.
     private final Set<String> openRecoverable = ConcurrentHashMap.newKeySet();
+
+    /// The codes whose subject is an UNAUTHENTICATED value, and which therefore get the cap below. Any other recoverable code keeps every subject
+    /// it raises: dropping a legitimate operator event is the worse failure, and only these subjects can be forged.
+    private static final Set<OperatorWarningCode> SPOOFABLE_SUBJECT_CODES = Set.of(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER);
+
+    /// The most open-or-pending marks the aggregator holds for the spoofable-subject codes (#1200). The set above is "bounded by the (code, subject)
+    /// pairs the node can raise", an assumption a code whose subject is an UNAUTHENTICATED value (a UDP source address) breaks: spoofed
+    /// subjects never send the recovery, so their marks stay open for ever and every one of them is also an event in the retained ring. A
+    /// new subject beyond the cap is dropped here (counted in [#openCapDropped]); the condition is already in the node log. Subjects that
+    /// are already open keep their recovery.
+    static final int MAX_OPEN_RECOVERABLE_PER_CODE = 256;
+    /// How long an open mark of a spoofable-subject code is held with no recovery (#1200): ten of the observer's report windows. Spoofed subjects
+    /// never recover, so without an expiry they would hold their slots for ever and, once the cap was reached, a REAL stranded sender would raise
+    /// nothing. Its recovery, if it comes later, is not published; its throttle window (60 s, far shorter) is left to the idle eviction.
+    static final long SPOOFABLE_OPEN_TTL_MS = 600_000L;
+
+    private final java.util.concurrent.atomic.AtomicLong openCapDropped = new java.util.concurrent.atomic.AtomicLong();
+
+    /// Open marks of the spoofable codes, oldest first, with the time each was opened. Guarded by itself.
+    private final java.util.LinkedHashMap<String, Long> spoofableOpenSince = new java.util.LinkedHashMap<>();
+
     /// Warnings with a recovery that are admitted but not yet in the log, each holding the recovery that arrived meanwhile.
     /// Recoveries raised during snapshot/resync replay, by the key of the warning they close, released after it (#752).
     private final ConcurrentHashMap<String, ClusterEvent> replayHeldRecoveries = new ConcurrentHashMap<>();
@@ -311,6 +336,19 @@ public final class ClusterEventAggregator {
     /// #1653 round 2: stamps each event with `details.eventId` so a redelivered copy is recognised on read.
     private final ClusterEventIdentity identity = ClusterEventIdentity.clusterEventIdentity();
     private volatile int lastReadDuplicates;
+    /// #1671 (I-35): the owner named by the committed `StreamPartitionOwnershipKey` of the cluster-events partition, as of the
+    /// last KV notification this node processed. Notifications are dispatched in commit order, so when a handler runs for
+    /// index i this is the record at i (a read of the live store could already be ahead of i).
+    private final AtomicReference<Option<NodeId>> committedOwner = new AtomicReference<>(Option.none());
+    /// The committed record read from the store, for a node that has not yet seen an ownership notification (it joined or
+    /// restarted after the last one). Bound by `AetherNode`; unbound it names nothing.
+    private volatile Supplier<Option<NodeId>> committedOwnerLookup = Option::none;
+    /// The leader named by the committed `LeaderKey`, as of the last KV notification this node processed: the deterministic
+    /// stand-in for the owner while the partition has no ownership record. In commit order like [#committedOwner].
+    private final AtomicReference<Option<NodeId>> committedLeader = new AtomicReference<>(Option.none());
+    /// The committed leader read from the store, for a node that has not yet seen a leader notification. Bound by `AetherNode`.
+    private volatile Supplier<Option<NodeId>> committedLeaderLookup = Option::none;
+    private final AtomicLong committedEmitsPassed = new AtomicLong();
     /// #1653: cluster-events ownership changes applied on this node; the event feed re-anchors when it moves.
     private final AtomicLong ownershipChanges = new AtomicLong();
     private volatile long lastEventsFrom = -1;
@@ -606,6 +644,80 @@ public final class ClusterEventAggregator {
         publishSafely(event);
     }
 
+    /// Binds the sources the committed gate of [#emitCommitted] reads when no notification of that kind has been seen on this
+    /// node: the ownership record and the leader record, as they stand in the store.
+    @Contract
+    public void bindCommittedOwnerSources(Supplier<Option<NodeId>> committedOwnerLookup,
+                                          Supplier<Option<NodeId>> committedLeaderLookup) {
+        this.committedOwnerLookup = committedOwnerLookup;
+        this.committedLeaderLookup = committedLeaderLookup;
+    }
+
+    /// #1671: the committed leader, from the `LeaderKey` notification. Commit order, like the ownership record.
+    @Contract
+    public void onLeaderCommitted(ValuePut<?, ?> put) {
+        if (put.cause().key() instanceof LeaderKey && put.cause().value() instanceof LeaderValue leader) {
+            committedLeader.set(Option.some(leader.leader()));
+        }
+    }
+
+    /// #1671 (I-35): emit for a fact DERIVED FROM A COMMITTED KV NOTIFICATION. Exactly one node passes per KV index, because
+    /// the decision is made from state every node holds identically at that index, not from a node-local view that can lag it:
+    /// the owner named by the committed ownership record of the cluster-events partition at this notification; with no record,
+    /// the leader named by the committed `LeaderKey` at this notification. Neither side of a handover can pass twice or not at
+    /// all. (The installed voter configuration is NOT used: a lagging node adopts a newer one ahead of its KV apply, so two nodes
+    /// can hold different rosters at one index.)
+    ///
+    /// **Limit: a record that names a dead owner.** The gate is strictly the record, with no liveness fallback and no queue: from
+    /// the owner's death until the next ownership record (or, with no record, the next leader record) every surviving node
+    /// suppresses the facts it derives, logged at DEBUG as "not owner". [unverified: window length]. The node-local gate it
+    /// replaces had the same dependence, since the stream publish also needs the new owner.
+    ///
+    /// Only the facts raised from a KV notification use this. Facts raised from anywhere else ([#emit]: ISR transitions,
+    /// connections, access denials, scaling) keep the node-local gate and its residual duplicate or drop; config and blueprint
+    /// events are single-origin API facts, #2503. With none of the sources available (an unbound aggregator, as in unit
+    /// harnesses) it behaves as [#emit].
+    @Contract
+    public void emitCommitted(ClusterEvent event) {
+        if (replayingCheck.getAsBoolean()) {
+            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing side-effect emit of {}",
+                      event);
+
+            return;
+        }
+
+        if (!passesCommittedGate()) {
+            suppressUnowned(event);
+
+            return;
+        }
+
+        committedEmitsPassed.incrementAndGet();
+        publishSafely(event);
+    }
+
+    /// Test seam (#1671): how many facts the committed gate has let through on this node. Counted at the gate, so a test of the wiring
+    /// does not depend on the stream landing the event.
+    public long committedEmitsPassed() {
+        return committedEmitsPassed.get();
+    }
+
+    private boolean passesCommittedGate() {
+        return committedOwner.get()
+                             .orElse(committedOwnerLookup)
+                             .orElse(this::committedLeaderNow)
+                             .map(selfNode::equals)
+                             .or(ownerCheck::getAsBoolean);
+    }
+
+    /// No committed ownership record: the committed leader stands in for the owner. With no leader record either, nothing in the
+    /// committed state decides, and the node-local gate is the answer (false while ownership is unresolvable, which
+    /// [#suppressUnowned] then reports).
+    private Option<NodeId> committedLeaderNow() {
+        return committedLeader.get()
+                              .orElse(committedLeaderLookup);
+    }
+
     /// Split the owner-gate's two falses (#957) so the loud one is actually loud.
     ///
     /// **Another node owns** — the steady state on every non-owner, once per emit per tick. The event
@@ -761,8 +873,18 @@ public final class ClusterEventAggregator {
     @Contract
     public void onStreamPartitionOwnershipPut(ValuePut<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> put) {
         if (isClusterEventsPartition(put.cause().key())) {
+            committedOwner.set(Option.some(put.cause().value().owner()));
             ownershipChanges.incrementAndGet();
             redelivery.redeliver(true);
+        }
+    }
+
+    /// #1671: the committed record is gone (a snapshot install synthesises a removal for a vanished key), so no owner is recorded
+    /// any more and the gate falls to the stored record, then the leader.
+    @Contract
+    public void onStreamPartitionOwnershipRemove(ValueRemove<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> remove) {
+        if (isClusterEventsPartition(remove.cause().key())) {
+            committedOwner.set(Option.none());
         }
     }
 
@@ -867,6 +989,21 @@ public final class ClusterEventAggregator {
     }
 
     private void onCondition(OperatorWarning warning, String key) {
+        var spoofable = SPOOFABLE_SUBJECT_CODES.contains(warning.code());
+
+        if (spoofable) {
+            expireSpoofableMarks();
+        }
+
+        if (spoofable && overOpenCap(key)) {
+            openCapDropped.incrementAndGet();
+            LOG.debug("ClusterEventAggregator: dropping OperatorWarning {} for {}: {} recoverable warnings of this code are already open",
+                      warning.code().code(),
+                      warning.subject(),
+                      MAX_OPEN_RECOVERABLE_PER_CODE);
+
+            return;
+        }
         // A recurrence makes a repair still held from replay stale: the tick must not publish it behind the new condition.
         replayHeldRecoveries.remove(key);
         var window = admit(operatorWarningThrottle, key);
@@ -895,6 +1032,41 @@ public final class ClusterEventAggregator {
             deliverRecoverable(event, key, window);
         } else {
             redelivery.deliver(stampedOrAsIs(event), () -> shortenWindow(key, window));
+        }
+
+        if (spoofable) {
+            noteSpoofableOpen(key);
+        }
+    }
+
+    private void noteSpoofableOpen(String key) {
+        synchronized (spoofableOpenSince) {
+            spoofableOpenSince.putIfAbsent(key,
+                                           hlcClock.now().physicalMillis());
+        }
+    }
+
+    /// Drops the marks that recovered (they left the open sets) and those opened more than [#SPOOFABLE_OPEN_TTL_MS] ago, oldest first, from every
+    /// structure that holds them, freeing their slots.
+    private void expireSpoofableMarks() {
+        var cutoff = hlcClock.now().physicalMillis() - SPOOFABLE_OPEN_TTL_MS;
+
+        synchronized (spoofableOpenSince) {
+            spoofableOpenSince.keySet()
+                              .removeIf(mark -> !openRecoverable.contains(mark) && !awaitingDelivery.containsKey(mark));
+            var iterator = spoofableOpenSince.entrySet().iterator();
+
+            while (iterator.hasNext()) {
+                var mark = iterator.next();
+
+                if (mark.getValue() >= cutoff) {
+                    return;
+                }
+
+                iterator.remove();
+                openRecoverable.remove(mark.getKey());
+                awaitingDelivery.remove(mark.getKey());
+            }
         }
     }
 
@@ -1031,6 +1203,23 @@ public final class ClusterEventAggregator {
 
     public int trackedScheduledOutcomes() {
         return scheduledOutcomes.size();
+    }
+
+    /// Whether `key` is a NEW subject of a spoofable code and [#MAX_OPEN_RECOVERABLE_PER_CODE] marks of those codes are already open or pending.
+    private boolean overOpenCap(String key) {
+        synchronized (spoofableOpenSince) {
+            return spoofableOpenSince.size() >= MAX_OPEN_RECOVERABLE_PER_CODE && !spoofableOpenSince.containsKey(key);
+        }
+    }
+
+    /// Recoverable warnings dropped because their code already had [#MAX_OPEN_RECOVERABLE_PER_CODE] open ones (observability).
+    public long openCapDropped() {
+        return openCapDropped.get();
+    }
+
+    /// Open (published, unrecovered) recoverable warnings currently held (observability).
+    public int openRecoverableCount() {
+        return openRecoverable.size();
     }
 
     /// Operator-warning throttle keys currently held (observability for #1617 R3).
@@ -1512,7 +1701,7 @@ public final class ClusterEventAggregator {
                                                   event.cause().key().communityId(),
                                                   event.oldValue(),
                                                   event.cause().value())
-                                .forEach(this::emit);
+                                .forEach(this::emitCommitted);
     }
 
     /// #1652 — community roster joins and leaves, projected from the committed `GovernorAnnouncementValue`
@@ -1523,7 +1712,7 @@ public final class ClusterEventAggregator {
                                                event.cause().key().communityId(),
                                                event.oldValue(),
                                                event.cause().value())
-                                .forEach(this::emit);
+                                .forEach(this::emitCommitted);
     }
 
     @Contract
@@ -1546,10 +1735,10 @@ public final class ClusterEventAggregator {
     @Contract
     private void handleDeploymentStarted(String trackingKey, String artifact, String nodeId) {
         deploymentStartTimes.put(trackingKey, System.currentTimeMillis());
-        emit(new DeploymentStarted(hlcClock.now(),
-                                   Severity.INFO,
-                                   "Deploying " + artifact + " to " + nodeId,
-                                   Map.of("artifact", artifact, "nodeId", nodeId)));
+        emitCommitted(new DeploymentStarted(hlcClock.now(),
+                                            Severity.INFO,
+                                            "Deploying " + artifact + " to " + nodeId,
+                                            Map.of("artifact", artifact, "nodeId", nodeId)));
     }
 
     @Contract
@@ -1558,10 +1747,11 @@ public final class ClusterEventAggregator {
         var durationSuffix = durationMs.map(ms -> " in " + formatDuration(ms)).or("");
         var nodeReadySuffix = buildNodeReadySuffix(nodeId);
 
-        emit(new DeploymentCompleted(hlcClock.now(),
-                                     Severity.INFO,
-                                     "Deployed " + artifact + " on " + nodeId + durationSuffix + nodeReadySuffix,
-                                     buildCompletedMetadata(artifact, nodeId, durationMs)));
+        emitCommitted(new DeploymentCompleted(hlcClock.now(),
+                                              Severity.INFO,
+                                              "Deployed " + artifact
+                                             + " on " + nodeId + durationSuffix + nodeReadySuffix,
+                                              buildCompletedMetadata(artifact, nodeId, durationMs)));
     }
 
     @Contract
@@ -1570,10 +1760,12 @@ public final class ClusterEventAggregator {
         var durationSuffix = durationMs.map(ms -> " after " + formatDuration(ms)).or("");
         var reason = value.failureReason().or("unknown");
 
-        emit(new DeploymentFailed(hlcClock.now(),
-                                  Severity.WARNING,
-                                  "Deployment of " + artifact + " failed on " + nodeId + durationSuffix + ": " + reason,
-                                  buildFailedMetadata(artifact, nodeId, reason, durationMs)));
+        emitCommitted(new DeploymentFailed(hlcClock.now(),
+                                           Severity.WARNING,
+                                           "Deployment of " + artifact
+                                          + " failed on " + nodeId + durationSuffix
+                                          + ": " + reason,
+                                           buildFailedMetadata(artifact, nodeId, reason, durationMs)));
     }
 
     /// #1573: every committed automatic rollback, CRITICAL, with its evidence. Leader-gated
@@ -1678,7 +1870,7 @@ public final class ClusterEventAggregator {
     }
 
     @Contract
-    public void onReconciliationAdjustment(ClusterDeploymentManager.ReconciliationAdjustment event) {
+    public void onReconciliationAdjustment(ReconciliationAdjustment event) {
         var scalingUp = event.currentInstances() < event.desiredInstances();
         var direction = scalingUp
                         ? "up"

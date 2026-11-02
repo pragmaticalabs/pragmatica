@@ -18,6 +18,9 @@ import org.slf4j.LoggerFactory;
 /// N alike. (Round-1 of #280 applied the policy to the first failure only and then handed the
 /// budget to a loop that stops solely on `isTerminal()`, so a business verdict on attempt two was
 /// re-driven — review of #1088, B1.) `max_attempts` counts calls at the method, the first included.
+///
+/// The method is re-driven, so it must be idempotent (see [RetryOn]): a transient failure such as a timeout does not say
+/// the work was not done, and a retry of a non-idempotent write repeats it.
 public record RetryMethodInterceptor(Retry retry, RetryOn retryOn) implements MethodInterceptor {
     private static final Logger log = LoggerFactory.getLogger(RetryMethodInterceptor.class);
 

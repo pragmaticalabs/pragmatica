@@ -379,7 +379,7 @@ Ring Buffer (capacity = N events or T time or S bytes):
 
 | Mode | Configuration | Eviction Trigger | Behavior |
 |------|--------------|------------------|----------|
-| **Time** | `retention_value = "5m"` | Event age exceeds duration | Periodic sweep removes events older than `now - duration`. Check interval: `min(duration / 10, 1s)`. |
+| **Time** | `retention_value = "5m"` | Event age exceeds duration | A node tick every 60 s (PR-0c) removes events older than `now - duration` from the ring and hands them to the sealer; before PR-0c no sweep ran and the ring kept events until capacity pressure. Granularity is the tick, not `duration / 10`. |
 | **Count** | `retention_value = 100000` | Buffer exceeds N events | Oldest event evicted on each new append beyond capacity. |
 | **Size** | `retention_value = "512MB"` | Total partition memory exceeds limit | Oldest events evicted until memory is under limit. Checked on each append. |
 

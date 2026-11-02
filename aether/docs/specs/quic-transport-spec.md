@@ -191,6 +191,8 @@ Same protocol, different transport:
 5. Responder sends Hello back on same stream
 6. Connection registered in `peerLinks`
 
+Both Hellos also carry `retirements` (#2429): the NodeIds the sender has retired, offered only by a sender whose identity ledger is loaded and not wiped. A non-wiped receiver unions them into its own ledger, forced to disk, BEFORE it admits the sender. A wiped receiver keeps each offer of a distinct configured seat durably beside its ledger, and leaves its wiped state (writing the union, forced to disk) when the seats that offered are a majority of the other configured core seats and at least one is not the sender of the Hello in hand; that sender is answered as unavailable and judged on its redial against the merged ledger.
+
 The Hello timeout (15s) remains. Duplicate connection detection is eliminated by NodeId ordering rule.
 
 ### 3.6 TLS — Always On

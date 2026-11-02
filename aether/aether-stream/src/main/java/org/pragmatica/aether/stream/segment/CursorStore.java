@@ -13,6 +13,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.StorageInstance;
+import org.pragmatica.storage.TierScope;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -74,12 +75,17 @@ public final class CursorStore implements ConsumerCursorStore {
     /// GC-eligible blocks generally: #801 (a concurrent deduplicating put can resurrect a block between
     /// GC's orphan scan and its delete step) and #802 (a block demoted to the DHT alone drops out of
     /// every node's local GC candidate set, with no cluster-wide reclamation process).
+    ///
+    /// #2258 (spec 3.2 item 5): a cursor is a fact of this node -- its ref lives only in this node's metadata, so a copy
+    /// of its block on the cluster-shared tier is unreachable -- so every commit writes node-private tiers only
+    /// ([TierScope#PRIVATE]), and its displaced block is collected by the ordinary private-tier GC. With no private durable
+    /// tier the write falls back to every tier, today's cost.
     @Override
     public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
         var refName = buildRefName(consumerGroup, streamName, partition);
         var payload = encodeOffset(offset);
 
-        return storage.replaceRef(refName, payload)
+        return storage.replaceRef(refName, payload, TierScope.PRIVATE)
                       .map(_ -> CommitOutcome.persisted())
                       .onSuccess(_ -> logCommit(consumerGroup, streamName, partition, offset));
     }
@@ -124,7 +130,8 @@ public final class CursorStore implements ConsumerCursorStore {
         var refName = buildRefName(consumerGroup, streamName, partition);
 
         return storage.replaceRef(refName,
-                                  encodeOwnedCursor(offset, assignmentEpoch, rewindEpoch, ownerEpoch))
+                                  encodeOwnedCursor(offset, assignmentEpoch, rewindEpoch, ownerEpoch),
+                                  TierScope.PRIVATE)
                       .map(_ -> CommitOutcome.persisted())
                       .onSuccess(_ -> logCommit(consumerGroup, streamName, partition, offset, rewindEpoch));
     }

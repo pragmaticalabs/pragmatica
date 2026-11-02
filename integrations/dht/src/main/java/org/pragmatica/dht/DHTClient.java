@@ -112,6 +112,18 @@ public interface DHTClient {
         return partitionFor(key.getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
+    /// This node's live bytes of the keys under `prefix` and the cap that refuses a client put to them (#2258, spec 3.2
+    /// item 7). They are per-node numbers, not the cluster's. A client with no local engine answers `(0, Long.MAX_VALUE)`.
+    default LocalUsage localUsage(String prefix) {
+        return LocalUsage.UNKNOWN;
+    }
+
+    /// A node's local usage of a prefix: live value bytes held and the cap on them.
+    record LocalUsage(long usedBytes, long maxBytes) {
+        /// What a client without a local engine reports: nothing held, no cap.
+        public static final LocalUsage UNKNOWN = new LocalUsage(0L, Long.MAX_VALUE);
+    }
+
     /// Create a scoped client that uses a different configuration.
     /// The scoped client shares the same ring, storage, and network but uses the specified config
     /// for quorum calculations and replication factor.

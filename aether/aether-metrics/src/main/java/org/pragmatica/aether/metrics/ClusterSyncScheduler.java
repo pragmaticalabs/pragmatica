@@ -20,6 +20,7 @@ import org.pragmatica.aether.metrics.fsm.ClusterSyncState;
 import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.cluster.metrics.ClusterDirectory.DhtReplication;
+import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
 import org.pragmatica.cluster.metrics.PeerHealthObservation;
 import org.pragmatica.cluster.metrics.PeerObservationBuffer;
@@ -34,6 +35,7 @@ import org.pragmatica.consensus.topology.MembershipDecision.NodeJoining;
 import org.pragmatica.consensus.topology.MembershipDecision.NodeRemoved;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -97,7 +99,9 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
     /// W-OBS: wires the leader's cluster directory content (the addressed nodes and the DHT replication). Forwarded into the
     /// `ClusterSyncContext`. Default no-op for test doubles that carry no directory.
     @Contract
-    default void setDirectorySources(Supplier<List<NodeInfo>> nodes, Supplier<Result<DhtReplication>> dhtReplication) {}
+    default void setDirectorySources(Supplier<List<NodeInfo>> nodes,
+                                     Supplier<Result<DhtReplication>> dhtReplication,
+                                     Supplier<Option<VoterConfiguration>> voters) {}
 
     /// Full cluster metrics are delivered only to eligible core consumers.
     @Contract
@@ -433,8 +437,10 @@ final class ClusterSyncSchedulerAdapter implements ClusterSyncScheduler {
 
     @Override
     @Contract
-    public void setDirectorySources(Supplier<List<NodeInfo>> nodes, Supplier<Result<DhtReplication>> dhtReplication) {
-        context.setDirectorySources(nodes, dhtReplication);
+    public void setDirectorySources(Supplier<List<NodeInfo>> nodes,
+                                    Supplier<Result<DhtReplication>> dhtReplication,
+                                    Supplier<Option<VoterConfiguration>> voters) {
+        context.setDirectorySources(nodes, dhtReplication, voters);
     }
 
     @Override

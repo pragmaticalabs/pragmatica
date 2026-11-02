@@ -1,0 +1,2 @@
+### Changed (2026-10-29 — #2153: the sealed floor a checkpoint writer records was pinned only incidentally)
+- The sealed floor that `StreamEntityLogSubstrate.lineageAt` records, and the rule that `lineageHolds` accepts a claim without comparing only at or below that recorded floor, are now pinned by their own test (`StreamEntityLogSubstrateLineageFloorTest`). Test-only: no behaviour changes. A mutation that treated claims up to `floor + 5` as floor-sealed was previously killed only by an unrelated test. [verified: `StreamEntityLogSubstrateLineageFloorTest`]

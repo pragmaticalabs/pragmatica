@@ -47,10 +47,10 @@ final class InMemoryDeadLetterHandler implements DeadLetterHandler {
     }
 
     @Override
-    public List<DeadLetterEntry> read(String streamName, int maxCount) {
-        return option(entries.get(streamName)).map(list -> list.stream()
-                                                               .limit(maxCount)
-                                                               .toList())
-                     .or(List.of());
+    public Promise<List<DeadLetterEntry>> read(String streamName, int maxCount) {
+        return Promise.success(option(entries.get(streamName)).map(list -> list.stream()
+                                                                               .limit(maxCount)
+                                                                               .toList())
+                                     .or(List.of()));
     }
 }

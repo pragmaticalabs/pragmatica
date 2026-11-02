@@ -8,6 +8,8 @@ package org.pragmatica.aether.stream.forward;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.stream.segment.SealerThresholds;
+import org.pragmatica.aether.stream.segment.SegmentSealer;
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
@@ -62,7 +64,6 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Replic
 import static org.pragmatica.aether.stream.replication.ReplicationState.CAUGHT_UP;
 import static org.pragmatica.aether.stream.replication.ReplicationState.SYNCING;
 import static org.pragmatica.aether.stream.replication.ReplicationReceiveHandler.replicationReceiveHandler;
-import static org.pragmatica.aether.stream.segment.SegmentSealer.segmentSealer;
 import static org.pragmatica.aether.stream.segment.StorageSegmentSink.storageSegmentSink;
 import static org.pragmatica.aether.stream.segment.TieredStreamReader.tieredStreamReader;
 import org.pragmatica.storage.AppendLog;
@@ -450,5 +451,11 @@ class GateSealedPeerRelaxationTest {
                 delegate.seal(heldSegments.get(call), heldLogs.get(call)).onResult(outcome::resolve);
             }
         }
+    }
+
+    /// One sealed segment per eviction, sealed at once (the sealer before runs, #2201 C-02): this fixture waits for each
+    /// evicted offset to be sealed, which the run-forming defaults would hold for up to `seal_run_age`.
+    private static SegmentSealer segmentSealer(SegmentSink sink) {
+        return SegmentSealer.segmentSealer(sink, SegmentSealer.DEFAULT_PENDING_CAP_BYTES, SealerThresholds.immediate());
     }
 }

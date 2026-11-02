@@ -732,6 +732,8 @@ class DurableProjectionRebuildTest {
 
     private List<DeadLetterEntry> deadLettersForGroup() {
         return deadLetters.read(TOPIC_STREAM, 100)
+                          .await()
+                          .unwrap()
                           .stream()
                           .filter(entry -> entry.failingGroup()
                                                 .equals(GROUP))

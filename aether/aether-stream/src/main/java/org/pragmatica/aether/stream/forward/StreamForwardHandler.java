@@ -227,16 +227,17 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                && !request.linearizable();
     }
 
-    /// Validated by [StreamPartitionManager#readServing(String, int, long, int, Epoch)]: the cursor is checked against the
-    /// committed epoch starts before a single event is served, and the answer carries the epoch it was served under.
-    /// A cursor that belongs to a replaced lineage is answered with the typed divergence.
+    /// Validated by [StreamPartitionManager#readServingTiered]: the cursor is checked against the committed epoch starts
+    /// before a single event is served, and the answer carries the epoch it was served under. A cursor that belongs to a
+    /// replaced lineage is answered with the typed divergence; a cursor below the ring tail is served from the sealed tier
+    /// (#2201 C-16), and the tier's refusals (`SealInFlight`, `CursorExpired`, `SealedRangeMissing`) cross the wire as typed
+    /// read refusals.
     private void serveConsumerRead(ReadForward request) {
-        partitionManager.readServing(request.streamName(),
-                                     request.partition(),
-                                     request.fromOffset(),
-                                     request.maxEvents(),
-                                     request.consumerEpoch())
-                        .async()
+        partitionManager.readServingTiered(request.streamName(),
+                                           request.partition(),
+                                           request.fromOffset(),
+                                           request.maxEvents(),
+                                           request.consumerEpoch())
                         .onSuccess(read -> sendReadSuccess(request,
                                                            read.events(),
                                                            read.ownerEpoch()))

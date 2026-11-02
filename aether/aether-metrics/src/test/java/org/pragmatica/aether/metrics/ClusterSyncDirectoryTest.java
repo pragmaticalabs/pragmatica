@@ -107,7 +107,7 @@ class ClusterSyncDirectoryTest {
         @Test
         void anEqualPair_isNotInstalledAgain() {
             var first = directory(1, 5, 0, 3);
-            var sameVersionOtherContent = new org.pragmatica.cluster.metrics.ClusterDirectory(3, 1, 5, 0, List.of(), first.dhtReplication());
+            var sameVersionOtherContent = new org.pragmatica.cluster.metrics.ClusterDirectory(3, 1, 5, 0, List.of(), first.dhtReplication(), Option.none());
 
             member.onClusterSyncPong(pong(CORE, first.version(), Option.some(first)));
             member.onClusterSyncPong(pong(CORE, first.version(), Option.some(sameVersionOtherContent)));

@@ -197,6 +197,8 @@ class AetherNodeDhtReplicationTest {
 
         assertThat(node.config().readQuorum()).as("settled: R_new").isEqualTo(2);
         assertThat(node.replicationChangeSettling()).isFalse();
+        assertThat(settlement.openChanges).as("#2545: the projection names the open change while unsettled, none once settled")
+                                          .containsExactly(DHTNode.NO_CHANGE, 3L, DHTNode.NO_CHANGE);
     }
 
     /// #1777 (CTO ruling R2 / Q4): the bare `DHTClient` extension — what idempotency resolves — is the REPLICATED DHT at
@@ -235,10 +237,17 @@ class AetherNodeDhtReplicationTest {
     /// Records what a node reports as applied; the rest of the settlement is not under test here.
     static final class RecordingSettlement implements DhtReplicationSettlement {
         final java.util.List<Long> applied = new java.util.ArrayList<>();
+        final java.util.List<Long> openChanges = new java.util.ArrayList<>();
 
         @Override
         public void applied(long configVersion) {
             applied.add(configVersion);
+        }
+
+        @Override
+        public void applied(long configVersion, long openChangeVersion) {
+            openChanges.add(openChangeVersion);
+            applied(configVersion);
         }
 
         @Override

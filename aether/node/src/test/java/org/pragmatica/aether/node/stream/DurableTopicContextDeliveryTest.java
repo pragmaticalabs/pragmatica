@@ -342,6 +342,8 @@ class DurableTopicContextDeliveryTest {
         var group = DurableGroupIdentity.groupId(ARTIFACT, method);
 
         return deadLetters.read(TOPIC_STREAM, 100)
+                          .await()
+                          .unwrap()
                           .stream()
                           .filter(entry -> entry.failingGroup()
                                                 .equals(group))
@@ -376,6 +378,8 @@ class DurableTopicContextDeliveryTest {
 
         while (System.currentTimeMillis() < deadline) {
             var now = contextualAttempts.get() * 1000L + deadLetters.read(TOPIC_STREAM, 100)
+                                                                     .await()
+                                                                     .unwrap()
                                                                      .size() + bareSeen.size() * 100_000L;
 
             if (now != last) {

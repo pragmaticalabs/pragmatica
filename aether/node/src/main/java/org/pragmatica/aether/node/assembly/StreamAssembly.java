@@ -49,6 +49,7 @@ import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.node.StreamFailoverAnnouncer;
 import org.pragmatica.aether.node.StreamIsrAnnouncer;
 import org.pragmatica.aether.node.StreamLineageAnnouncer;
+import org.pragmatica.aether.node.StreamMemoryBudget;
 import org.pragmatica.aether.node.projection.CommitWitness;
 import org.pragmatica.aether.node.projection.PartitionBounds;
 import org.pragmatica.aether.node.projection.ProjectionAwareCursorStore;
@@ -121,9 +122,11 @@ import org.pragmatica.aether.stream.replication.WatermarkTracker;
 import org.pragmatica.aether.stream.segment.CursorStore;
 import org.pragmatica.aether.stream.segment.RefDurability;
 import org.pragmatica.aether.stream.segment.RetentionEnforcer;
+import org.pragmatica.aether.stream.segment.SealerThresholds;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.SegmentReader;
 import org.pragmatica.aether.stream.segment.SegmentSealer;
+import org.pragmatica.aether.stream.segment.SharedSegmentCollection;
 import org.pragmatica.aether.stream.segment.StorageSegmentSink;
 import org.pragmatica.aether.stream.segment.StreamFootprint;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
@@ -162,6 +165,8 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.storage.AppendLog;
+import org.pragmatica.storage.SharedDelete;
+import org.pragmatica.storage.StorageGarbageCollector;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
@@ -171,6 +176,7 @@ import static org.pragmatica.aether.node.AetherNode.DEFAULT_STREAM_RETENTION_MS;
 import static org.pragmatica.aether.node.AetherNode.ISR_MONITOR_INTERVAL;
 import static org.pragmatica.aether.node.AetherNode.LOG;
 import static org.pragmatica.aether.node.AetherNode.RETENTION_INVARIANT_CHECK_INTERVAL;
+import static org.pragmatica.aether.node.AetherNode.RING_AGE_TICK_INTERVAL;
 import static org.pragmatica.aether.node.AetherNode.STREAM_BACKFILL_REDRIVE_INTERVAL;
 import static org.pragmatica.aether.node.AetherNode.STREAM_CATCHUP_BATCH_SIZE;
 import static org.pragmatica.aether.node.AetherNode.STREAM_CONSUMER_RECONCILE_INTERVAL;
@@ -196,6 +202,7 @@ public sealed interface StreamAssembly {
                                    SliceCodec nodeCodec,
                                    OwnershipEpochHighWater ownershipEpochHighWater,
                                    ClusterEventsLimits clusterEventsLimits,
+                                   StreamMemoryBudget streamMemoryBudget,
                                    StorageFactory.StorageSetup streamStorageSetup,
                                    AtomicReference<ReplicaSetController> clusterEventsControllerRef,
                                    String clusterEventsStreamName,
@@ -227,6 +234,14 @@ public sealed interface StreamAssembly {
                                     StreamForwardClient streamForwardClient) {}
 
     /// The replica registry, the replication manager and transport, the partition manager with its segment index and stores, the ISR announcer and the forward client.
+    /// The run-forming sealer's thresholds, as the node's `[streaming] seal_*` keys set them (#2201 C-02).
+    static SealerThresholds sealerThresholds(StreamingConfig streaming) {
+        return SealerThresholds.sealerThresholds(streaming.sealRunBytes(),
+                                                 streaming.sealRunEvents(),
+                                                 streaming.sealRunAge(),
+                                                 streaming.sealMergeBytes());
+    }
+
     static StreamReplicationOutputs streamReplication(StreamReplicationInputs in) {
         var config = in.config();
         var delegateRouter = in.delegateRouter();
@@ -241,7 +256,7 @@ public sealed interface StreamAssembly {
         var eventAggregator = in.eventAggregator();
         var operatorWarningSink = in.operatorWarningSink();
         var allEntries = in.allEntries();
-        var streamMaxMemoryBytes = resolveStreamMaxMemoryBytes();
+        var streamMaxMemoryBytes = in.streamMemoryBudget().maxMemoryBytes();
         // A6: activate replication. The replica registry (populated by the A2 ReplicaSetController from
         // HRW placement) and a network-backed ReplicationTransport are constructed here — ahead of the
         // StreamPartitionManager — so SPM can be given a REAL DefaultReplicationManager instead of
@@ -285,6 +300,10 @@ public sealed interface StreamAssembly {
         // append re-populates the index.
         streamSegmentIndex.rebuildFromRefs(streamStorageSetup.metadataStore());
         var streamStorage = streamStorageSetup.instance();
+        // #2258 (spec 3.2 item 6): the refs a crash left at or below a durable reclaim floor are released now (rebuild did not
+        // install them); StorageFactory gave the instance its identification predicate.
+        streamSegmentIndex.drainReclaimedBelowFloor()
+                          .forEach(refName -> streamStorage.deleteRef(refName, SharedDelete.IF_IDENTIFIED));
         // A4/A5: per-node durable cursor store + tiered reader over the same disk-backed stream storage;
         // registered as SPI extensions below so StreamAccessFactory persists consumer offsets and serves
         // post-restart reads from sealed cold segments.
@@ -298,18 +317,21 @@ public sealed interface StreamAssembly {
         var streamOwnerEpochSource = KvStreamOwnerEpochSource.kvStreamOwnerEpochSource(kvStore);
         // #1730 phase 2 (B11): the owner counts a replica's confirmation only under the committed epoch now in force.
         streamReplicationManager.ownerEpochs(streamOwnerEpochSource);
-        // #1234: the sealer retains each evicted segment until storage has it; those copies are capped at the
-        // node's stream memory budget, and only past that cap are appends refused (SEALING_BEHIND).
+        // #1234: the sealer retains each evicted segment until storage has it; those copies are capped (#2201 C-03: at
+        // `[streaming] seal_pending_cap_bytes`, by default the smaller of the stream memory budget and 256 MiB), and only past
+        // that cap are appends refused (SEALING_BEHIND).
         // #1345: WAL truncation is bounded by the refs in the latest metadata snapshot ON DISK — the watermark
         // the `rebuildFromRefs` above would compute at the next boot — never by the live index, which runs
         // ahead of disk by every seal since that snapshot (STREAM_SNAPSHOT_* in StorageFactory bound the lag).
         // #1240: the entity log substrate asks the same sealer which evicted offsets are still in flight.
         // #1441: a partition WITHOUT a WAL has nothing above that snapshot but the refs, so its seals force a
         // snapshot before they resolve; boot's rebuilt floor then covers every completed seal on both paths.
+        // #2201 C-02: evictions are sealed in runs, by the `[streaming] seal_*` thresholds.
         var streamSegmentSealer = SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(streamStorage,
                                                                                                     streamSegmentIndex,
                                                                                                     RefDurability.snapshotted(streamStorageSetup.snapshotManager())),
-                                                              streamMaxMemoryBytes);
+                                                              in.streamMemoryBudget().sealPendingCapBytes(),
+                                                              sealerThresholds(config.streaming()));
         var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes,
                                                                                    streamSegmentSealer,
                                                                                    streamReplicationManager,
@@ -333,6 +355,9 @@ public sealed interface StreamAssembly {
         // gate and cold-restart detection raise and read.
         streamPartitionManager.partitionFlags(PartitionFlags.kvPartitionFlags(clusterNode, kvStore, nodeCodec));
         streamPartitionManager.operatorWarnings(operatorWarningSink);
+        // Know 73fd8d9759: a graceful stop that cannot seal what the sealer holds within its bound is reported to this node's sink.
+        streamSegmentSealer.operatorWarnings(operatorWarningSink,
+                                             config.self().id());
         // #1730 phase 2: a durable cut whose repair is not settled within twelve backfill redrive ticks is reported anyway.
         streamPartitionManager.repairReportBound(TimeSpan.timeSpan(STREAM_BACKFILL_REDRIVE_INTERVAL.millis() * 12L).millis());
         // `[streaming] reshuffle_concurrency` — set BEFORE any materialization, since it replaces the permit
@@ -426,8 +451,11 @@ public sealed interface StreamAssembly {
         var streamSegmentTierPressure = SegmentTierPressure.localDiskOf(streamStorage);
 
         streamPartitionManager.segmentTierPressure(streamSegmentTierPressure);
+        // #2201 Q6 = B: each stream's own committed retention policy rules its sealed tier; a stream this node has not
+        // applied a committed config for is withheld, and one that declares no dimension keeps the node default age.
         var streamRetentionEnforcer = RetentionEnforcer.retentionEnforcer(streamStorage,
                                                                           streamSegmentIndex,
+                                                                          streamPartitionManager::committedRetention,
                                                                           DEFAULT_STREAM_RETENTION_MS,
                                                                           (stream, partition) -> entityRetentionFloor(kvStore,
                                                                                                                       stream,
@@ -436,6 +464,16 @@ public sealed interface StreamAssembly {
                                                                           streamStorageSetup.garbageCollector(),
                                                                           streamSegmentReader,
                                                                           streamSegmentTierPressure);
+        // #2201 3.2 item 6: every node runs its own retention over its own segments, from node start to node stop
+        // (AetherNode's stop path closes it); it is no longer pinned to the leader by StreamingCoordinator.
+        // #2258: the released segments' blocks are deleted from every tier by their own bounded run, started and closed
+        // with the enforcer.
+        streamRetentionEnforcer.sharedCollection(SharedSegmentCollection.sharedSegmentCollection(streamStorageSetup.garbageCollector(),
+                                                                                                 streamStorageSetup.snapshotManager(),
+                                                                                                 StorageGarbageCollector.SharedDeleteLimits.DEFAULT));
+        streamRetentionEnforcer.operatorWarnings(operatorWarningSink,
+                                                 config.self().id());
+        streamRetentionEnforcer.start();
         // A6: streamReplicaRegistry is created earlier (above StreamPartitionManager) so it can be
         // shared with the now-active DefaultReplicationManager. The same registry instance is the one
         // the A2 ReplicaSetController populates from HRW placement.
@@ -811,6 +849,10 @@ public sealed interface StreamAssembly {
         streamPartitionManager.ownershipRecords((stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
                                                                                                                                                 partition),
                                                                                         StreamPartitionOwnershipValue.class));
+        // #2201 C-16: a consumer read below the ring tail is served from the sealed tier (StreamPartitionManager.readServingTiered,
+        // the validated read of StreamReadRouter and of the owner's forward handler). Unbound, every consumer behind the ring
+        // would be moved to the ring tail; EmberConsumerPathTripwireTest#tierFallbackSeam_isBoundOnEveryBootedNode pins it.
+        streamPartitionManager.tieredReader(streamTieredReader);
         ownerActivation.promotionEscapeAfter(streamingConfig.promotionEscapeAfter());
         // #1937: the promoted owner's backfill refuses for a peer's oversized event too, and reports it the way the gate does.
         // #2080: its cold-start contest proceeds past unreachable co-replicas only for a node the COMMITTED in-sync set names, and
@@ -873,6 +915,9 @@ public sealed interface StreamAssembly {
         // Initial reconcile once membership is available; serialized on the controller executor, so
         // this is a safe no-op until the topology observer reports core members.
         streamReplicaSetController.reconcile();
+        // #2201 A-14: every seam of the manager is bound by now (the last ones above); a safety-relevant seam still at its
+        // permissive default on a node with a WAL is named at ERROR (and counted by `aether.streams.seams.unbound.safety`).
+        streamPartitionManager.reportUnboundSafetySeams();
         // #932: one thread each per node, both daemon and neither closed on stop — nine of each survived a
         // nine-node stop. The controller's close() is shutdownNow on the executor it owns; the backfill
         // executor is this method's own. Controller first: its reconcile is what submits to the backfill.
@@ -936,6 +981,10 @@ public sealed interface StreamAssembly {
         // tick is a cheap sweep of materialized partitions over empty queues.
         defer.accept(() -> SharedScheduler.scheduleAtFixedRate(streamPartitionManager::reconcileReshuffle,
                                                                STREAM_RESHUFFLE_RECONCILE_INTERVAL));
+        // PR-0c ring age tick: events older than the stream's declared max age leave the ring for the sealer
+        // (entity rings and streams with no declared age are skipped inside the tick).
+        defer.accept(() -> SharedScheduler.scheduleAtFixedRate(streamPartitionManager::evictRingsByAge,
+                                                               RING_AGE_TICK_INTERVAL));
 
         return Unit.unit();
     }
@@ -1212,7 +1261,6 @@ public sealed interface StreamAssembly {
         resourceProviderSetup.spiProvider()
                              .onPresent(spi -> spi.registerExtension(ProjectionNodeSupport.class, projectionNodeSupport));
         var streamingCoordinator = StreamingCoordinator.streamingCoordinator(streamFailoverHandler,
-                                                                             streamRetentionEnforcer,
                                                                              streamPartitionManager,
                                                                              streamWatermarkTracker,
                                                                              streamSegmentIndex,
@@ -1909,13 +1957,6 @@ public sealed interface StreamAssembly {
         } else {
             storageAdapter.deactivate();
         }
-    }
-
-    private static long resolveStreamMaxMemoryBytes() {
-        return Option.option(System.getenv("STREAM_MAX_MEMORY_BYTES"))
-                     .filter(s -> !s.isBlank())
-                     .flatMap(s -> Result.lift(() -> Long.parseLong(s)).option())
-                     .or(128 * 1024 * 1024L);
     }
 
     private static StreamForwardTransport createStreamForwardTransport(ClusterNetwork network) {

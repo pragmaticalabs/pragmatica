@@ -13,6 +13,13 @@ import org.pragmatica.lang.Cause;
 /// lives on the cause — [Cause.Transient] says "worth retrying", [Cause.Terminal] says "never" —
 /// and the policy says what to do with the unclassified rest, which is what every business
 /// failure is.
+///
+/// **Idempotency.** A retry policy re-drives the method, and a failure can mean the work was done: a timeout on an INSERT
+/// or a publish says nothing about whether the row or the event is already there. A [Cause.Wrapped] reports its origin's
+/// classification, so a wrapper around a timeout is transient unless its type says otherwise, and a [#TRANSIENT] policy on a
+/// method that is not idempotent then re-drives a write whose outcome is unknown. Use a retry policy only on an idempotent
+/// method (or one that carries its own deduplication key), and give a cause that reports an unknown outcome an explicit
+/// non-transient classification, as `PublishOutcomeUnknown` does.
 public enum RetryOn {
     /// Retry only causes that declare themselves transient. The default: an unclassified failure
     /// is returned after the first attempt, so a method that is not idempotent is never re-driven

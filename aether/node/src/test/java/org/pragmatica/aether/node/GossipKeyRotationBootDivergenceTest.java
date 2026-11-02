@@ -31,9 +31,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// replacement's accept set is exactly the KV record's `{currentKeyId, previousKeyId}`, so the
 /// derived keyId leaves it.
 ///
-/// These tests assert the CURRENT (defective) behaviour, deliberately: they are a tripwire, not a
-/// specification. They RED the moment a joiner-key-delivery mechanism lands, and the failure
-/// message says what to do. A `@Disabled` test would sit forgotten instead.
+/// These tests assert the encryptor-level divergence, deliberately: they are a tripwire, not a
+/// specification. They RED if the derived key is ever accepted again after a rotation, which #683
+/// exists to prevent. They pin the divergence only: that a booting node recovers through the consensus
+/// replay of the rotation record is pinned by `EmberGossipKeyRotatedJoinTest` (#1200).
 ///
 /// Both sides are built independently through the real production factories — never hand-fed an
 /// expected outcome — so the assertions can falsify the premise rather than restate it.
@@ -56,9 +57,10 @@ class GossipKeyRotationBootDivergenceTest {
 
         assertThat(cluster.decrypt(datagram).isSuccess())
                 .as("""
-                    #683 TRIPWIRE: a rotated cluster cannot decrypt a later-booting node's gossip, so \
-                    SWIM never discovers it. If this is now TRUE the joiner-key-delivery mechanism has \
-                    landed — delete this test and pin the new behaviour instead.""")
+                    #683 TRIPWIRE: a rotated cluster cannot decrypt the gossip of a node holding only the \
+                    derived key, so SWIM does not discover it until its consensus replay completes (#1200). \
+                    If this is now TRUE the derived key is accepted again after a rotation, which #683 \
+                    exists to prevent.""")
                 .isFalse();
     }
 
@@ -75,9 +77,10 @@ class GossipKeyRotationBootDivergenceTest {
 
         assertThat(joiner.decrypt(reply).isSuccess())
                 .as("""
-                    #683 TRIPWIRE: a later-booting node cannot decrypt the rotated cluster's replies, \
-                    so it receives no SWIM discovery and never reaches the consensus sync that would \
-                    deliver the KV record. If this is now TRUE the delivery mechanism has landed.""")
+                    #683 TRIPWIRE: a later-booting node holding only the derived key cannot decrypt the \
+                    rotated cluster's replies. This is the window before the consensus replay of the KV \
+                    record hands it the cluster key (about a second on an in-JVM cluster, #1200), not a \
+                    deadlock. If this is now TRUE the derived key is accepted again after a rotation.""")
                 .isFalse();
     }
 
