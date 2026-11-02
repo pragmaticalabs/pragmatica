@@ -4,13 +4,17 @@
 A flaky test is tagged `@Tag("quarantine")`, on the method, or on the class only when the whole class flakes. Every
 required job excludes the tag; the non-required `quarantine` job in ci.yml runs exactly the tagged tests on every push.
 
-  check-quarantine.py check [--repo OWNER/NAME]   every tag names an open issue; every exclusion carries the tag
-  check-quarantine.py modules                     the modules holding a quarantined test, comma-separated (may be empty)
+  check-quarantine.py check                    offline: every tag cites an issue; every exclusion carries the tag
+  check-quarantine.py issues --repo OWNER/NAME  online: every cited issue is still open (GitHub API, GH_TOKEN)
+  check-quarantine.py modules                  the modules holding a quarantined test, comma-separated (may be empty)
+
+`check` gates (static-gates, required) and reads nothing but the checkout, so GitHub's availability cannot fail it.
+`issues` runs in the non-required quarantine job: a tag citing a closed issue turns that job red, and an API error
+there is reported as "could not look", never as a pass, and never reaches a required check.
 
 check fails on:
   - a quarantine tag with no issue reference (`#<number>`) in a `//` comment on its own line or in the comment and
     annotation lines directly above it;
-  - with --repo (CI passes it, with GH_TOKEN), a referenced issue that is not open;
   - a non-canonical spelling (`@Tag("Quarantine")`, `@Tag(value = "quarantine")`): the guard and the exclusions match
     the canonical form only, so a variant would be a quarantine nobody checks;
   - a surefire or failsafe `<excludedGroups>` in any pom.xml, or an `excludedGroups=` override in a ci.yml job other than
@@ -136,7 +140,8 @@ def open_issue(repo, number):
         return json.load(response).get("state") == "open"
 
 
-def check(root=None, ci_file=None, is_open=None):
+def check(root=None, ci_file=None):
+    """The offline problems: they depend on the checkout alone, so a required job may gate on them."""
     root = root or ROOT
     problems = []
     for path, line, issues, canonical in tags(root):
@@ -146,13 +151,20 @@ def check(root=None, ci_file=None, is_open=None):
         if not issues:
             problems.append(f"{where}: a quarantine tag needs its open issue: `// quarantine: #<issue> <why>` on the "
                             f"line above it")
-        elif is_open is not None:
-            for number in issues:
-                if not is_open(number):
-                    problems.append(f"{where}: #{number} is not an open issue; fix the test and remove the tag, or "
-                                    f"cite the open issue that tracks it")
     problems += exclusion_problems(root)
     problems += workflow_problems((ci_file or root / ".github/workflows/ci.yml").read_text())
+    return problems
+
+
+def closed_issue_problems(is_open, root=None):
+    """The online problem: a tag citing an issue that is no longer open. Only the non-required quarantine job asks."""
+    root = root or ROOT
+    problems = []
+    for path, line, issues, _ in tags(root):
+        for number in issues:
+            if not is_open(number):
+                problems.append(f"{path.relative_to(root).as_posix()}:{line}: #{number} is not an open issue; fix the "
+                                f"test and remove the tag, or cite the open issue that tracks it")
     return problems
 
 
@@ -169,16 +181,25 @@ def quarantined_modules(root=None):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="command", required=True)
-    sub.add_parser("check").add_argument("--repo", help="check each referenced issue is open (GitHub API, GH_TOKEN)")
+    sub.add_parser("check")
+    sub.add_parser("issues").add_argument("--repo", required=True, help="OWNER/NAME of the issue tracker")
     sub.add_parser("modules")
     args = ap.parse_args(argv)
     if args.command == "modules":
         print(",".join(quarantined_modules()))
         return
     found = tags()
-    problems = check(is_open=(lambda n: open_issue(args.repo, n)) if args.repo else None)
-    print(f"quarantine: {len(found)} tag(s) in {len(quarantined_modules())} module(s), {len(problems)} problem(s)"
-          f"{'' if args.repo else ' (issue state not checked: no --repo)'}", file=sys.stderr)
+    if args.command == "issues":
+        try:
+            problems = closed_issue_problems(lambda n: open_issue(args.repo, n))
+        except OSError as e:  # URLError and HTTPError are OSErrors: the API did not answer, so nothing was looked at
+            sys.exit(f"quarantine: could not look up the cited issues ({e}); this job reports, it does not gate")
+        print(f"quarantine: {len(found)} tag(s), {sum(len(i) for _, _, i, _ in found)} issue reference(s), "
+              f"{len(problems)} closed", file=sys.stderr)
+    else:
+        problems = check()
+        print(f"quarantine: {len(found)} tag(s) in {len(quarantined_modules())} module(s), {len(problems)} problem(s)",
+              file=sys.stderr)
     if problems:
         sys.exit("\n".join(problems))
 

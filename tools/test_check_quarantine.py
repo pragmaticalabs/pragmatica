@@ -5,6 +5,7 @@ import re
 import shutil
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -84,13 +85,14 @@ class CheckQuarantineTest(unittest.TestCase):
             "which does not exclude quarantine",
             "ci.yml job forge-tests: -Dfailsafe.excludedGroups=Heavy does not exclude quarantine"])
 
-    def test_a_closed_issue_fails_and_only_referenced_issues_are_looked_up(self):
+    def test_a_closed_issue_is_an_online_problem_and_only_referenced_issues_are_looked_up(self):
         self._test("a", "ATest", "class ATest {\n    // quarantine: #5 and #6\n    @Tag(\"quarantine\")\n    void t() {}\n}\n")
         asked = []
-        problems = quarantine.check(self.root, is_open=lambda n: asked.append(n) or n == 5)
+        problems = quarantine.closed_issue_problems(lambda n: asked.append(n) or n == 5, self.root)
         self.assertEqual(asked, [5, 6])
         self.assertEqual(problems, ["a/src/test/java/x/ATest.java:3: #6 is not an open issue; fix the test and remove the "
                                     "tag, or cite the open issue that tracks it"])
+        self.assertEqual(quarantine.check(self.root), [])  # the gating check never asks about issue state
 
     def test_a_non_canonical_spelling_fails(self):
         self._test("a", "ATest", "class ATest {\n    // #5\n    @Tag(value = \"Quarantine\")\n    void t() {}\n}\n")
@@ -145,13 +147,42 @@ class CheckQuarantineTest(unittest.TestCase):
                 quarantine.main(["check"])
         self.assertIn("a quarantine tag needs its open issue", str(raised.exception))
 
-    def test_the_check_cli_with_a_repo_looks_each_issue_up(self):
+    def _cli(self, *argv):
+        err = io.StringIO()
+        with mock.patch.object(quarantine, "ROOT", self.root), contextlib.redirect_stderr(err):
+            try:
+                quarantine.main(list(argv))
+                return None, err.getvalue()
+            except SystemExit as e:
+                return str(e), err.getvalue()
+
+    def test_the_gating_check_passes_when_the_api_is_down(self):
+        # static-gates is required: an unreachable GitHub must not be able to fail it
         self._test("a", "ATest", "class ATest {\n    // #9\n    @Tag(\"quarantine\")\n    void t() {}\n}\n")
-        with mock.patch.object(quarantine, "ROOT", self.root), mock.patch.object(quarantine, "open_issue",
-                                                                                 lambda repo, n: repo == "o/r" and n != 9), \
-                contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
-            quarantine.main(["check", "--repo", "o/r"])
-        self.assertIn("#9 is not an open issue", str(raised.exception))
+        def unreachable(repo, number):
+            raise urllib.error.URLError("api.github.com unreachable")
+        with mock.patch.object(quarantine, "open_issue", unreachable):
+            failure, err = self._cli("check")
+        self.assertIsNone(failure)
+        self.assertIn("quarantine: 1 tag(s) in 1 module(s), 0 problem(s)", err)
+
+    def test_the_issues_cli_fails_on_a_closed_issue(self):
+        self._test("a", "ATest", "class ATest {\n    // #9\n    @Tag(\"quarantine\")\n    void t() {}\n}\n")
+        with mock.patch.object(quarantine, "open_issue", lambda repo, n: repo == "o/r" and n != 9):
+            failure, _ = self._cli("issues", "--repo", "o/r")
+        self.assertIn("#9 is not an open issue", failure)
+        with mock.patch.object(quarantine, "open_issue", lambda repo, n: repo == "o/r"):
+            failure, err = self._cli("issues", "--repo", "o/r")
+        self.assertIsNone(failure)
+        self.assertIn("quarantine: 1 tag(s), 1 issue reference(s), 0 closed", err)
+
+    def test_the_issues_cli_reports_an_api_error_as_could_not_look_never_as_a_pass(self):
+        self._test("a", "ATest", "class ATest {\n    // #9\n    @Tag(\"quarantine\")\n    void t() {}\n}\n")
+        def unreachable(repo, number):
+            raise urllib.error.HTTPError("u", 503, "Service Unavailable", None, None)
+        with mock.patch.object(quarantine, "open_issue", unreachable):
+            failure, _ = self._cli("issues", "--repo", "o/r")
+        self.assertIn("could not look up the cited issues", failure)
 
     def test_the_modules_cli_prints_the_tagged_modules_or_nothing(self):
         out = io.StringIO()
@@ -185,8 +216,16 @@ class RepositoryQuarantineTest(unittest.TestCase):
             self.assertIn(flag, job)
         self.assertIn('modules=$(python3 -B tools/check-quarantine.py modules)', job)
 
-    def test_static_gates_runs_the_guard_against_live_issue_state(self):
-        self.assertIn('python3 -B tools/check-quarantine.py check --repo "${{ github.repository }}"', self._job("static-gates"))
+    def test_static_gates_runs_the_offline_guard_and_the_quarantine_job_the_issue_lookup(self):
+        static = self._job("static-gates")
+        self.assertIn("python3 -B tools/check-quarantine.py check\n", static)
+        self.assertNotIn("check-quarantine.py issues", static)  # an API lookup there could fail a required check
+        self.assertNotIn("GH_TOKEN", static)
+        job = self._job("quarantine")
+        step = job.split("- name: Every quarantine tag cites an open issue\n", 1)[1]
+        self.assertTrue(step.startswith("        if: always()\n"))  # runs after the tests, even when they failed
+        self.assertIn('run: python3 -B tools/check-quarantine.py issues --repo "${{ github.repository }}"', step)
+        self.assertNotIn("continue-on-error", job)  # a closed issue must turn this job red
 
 
 if __name__ == "__main__":
