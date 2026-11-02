@@ -5,6 +5,7 @@
 package org.pragmatica.aether.stream.replication;
 
 import java.util.List;
+import java.util.function.Supplier;
 
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -54,6 +55,40 @@ class IsrOwnershipWriterTest {
             assertThat(record.owner()).isEqualTo(A);
             assertThat(record.isr()).containsExactly(A, B, C);
             assertThat(record.isrVersion()).isEqualTo(1L);
+        }
+    }
+
+    /// #2594: a deposed leader still holds its local leader flag but has applied the new leader's record. A write carrying
+    /// that record passes the applier's equality fence, so the production writer is authorized only by its own record.
+    @Nested
+    class LeaderFence {
+        @Test
+        void decide_committedLeaderIsAnotherNode_writesNothing() {
+            var fenced = writer(List.of(A, B, C, D),
+                                (_, _, owner) -> List.of(owner, B, C),
+                                StreamPartitionOwnershipWriter.ownCommittedLeader(() -> Option.some(new LeaderValue(B, 2L)), A, () -> true));
+
+            assertThat(fenced.decide(STREAM, PARTITION, Option.none(), A, GENERATION).isEmpty()).isTrue();
+        }
+
+        /// Control: the same decision under this node's own record writes, so the refusal above is the fence.
+        @Test
+        void decide_committedLeaderIsThisNode_writes() {
+            var fenced = writer(List.of(A, B, C, D),
+                                (_, _, owner) -> List.of(owner, B, C),
+                                StreamPartitionOwnershipWriter.ownCommittedLeader(() -> Option.some(LEADER), A, () -> true));
+
+            assertThat(fenced.decide(STREAM, PARTITION, Option.none(), A, GENERATION).isPresent()).isTrue();
+        }
+
+        /// The record names this node, but its term has ended: `decide` is reachable without the writer's own leader gate.
+        @Test
+        void decide_ownRecordAfterLeadershipEnded_writesNothing() {
+            var fenced = writer(List.of(A, B, C, D),
+                                (_, _, owner) -> List.of(owner, B, C),
+                                StreamPartitionOwnershipWriter.ownCommittedLeader(() -> Option.some(LEADER), A, () -> false));
+
+            assertThat(fenced.decide(STREAM, PARTITION, Option.none(), A, GENERATION).isEmpty()).isTrue();
         }
     }
 
@@ -309,6 +344,10 @@ class IsrOwnershipWriterTest {
     }
 
     private static IsrOwnershipWriter writer(List<NodeId> live, InitialIsr initialIsr) {
+        return writer(live, initialIsr, () -> Option.some(LEADER));
+    }
+
+    private static IsrOwnershipWriter writer(List<NodeId> live, InitialIsr initialIsr, Supplier<Option<LeaderValue>> committedLeader) {
         return new IsrOwnershipWriter(() -> true,
                                       () -> GENERATION,
                                       HlcClock.hlcClock(A),
@@ -325,7 +364,7 @@ class IsrOwnershipWriterTest {
                                               return initialIsr.of(stream, partition, owner);
                                           }
                                       },
-                                      () -> Option.some(LEADER));
+                                      committedLeader);
     }
 
     @FunctionalInterface

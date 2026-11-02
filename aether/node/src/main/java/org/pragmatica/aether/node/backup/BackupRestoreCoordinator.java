@@ -42,6 +42,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -97,6 +98,7 @@ public final class BackupRestoreCoordinator {
     /// (`OutboundMessageLimit.MAX_FRAME_BYTES`); a quarter of it leaves room for the batch envelope.
     static final long CHUNK_BYTES = 8L * 1024 * 1024;
 
+    private final NodeId self;
     private final KVStore<AetherKey, AetherValue> kvStore;
     private final Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier;
     private final Option<Source> source;
@@ -133,6 +135,7 @@ public final class BackupRestoreCoordinator {
 
         enum General implements RestoreError {
             NO_COMMITTED_LEADER("no committed leader to authorize the restore transaction yet"),
+            NOT_THE_COMMITTED_LEADER("the committed leader record names another node, or this node no longer leads"),
             NOTHING_TO_RESUME("an interrupted restore is recorded, but this leader has no [backup] to resume it from"),
             BACKUP_VANISHED("an interrupted restore is recorded, but the backup it was reading is gone");
             private final String message;
@@ -146,11 +149,13 @@ public final class BackupRestoreCoordinator {
         }
     }
 
-    private BackupRestoreCoordinator(KVStore<AetherKey, AetherValue> kvStore,
+    private BackupRestoreCoordinator(NodeId self,
+                                     KVStore<AetherKey, AetherValue> kvStore,
                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
                                      Option<Source> source,
                                      BackupWarning.Sink warnings,
                                      RetryScheduler scheduler) {
+        this.self = self;
         this.kvStore = kvStore;
         this.applier = applier;
         this.source = source;
@@ -161,11 +166,17 @@ public final class BackupRestoreCoordinator {
     /// The production coordinator: the node's warning sink and the process-wide scheduler. A backup with no remote
     /// is announced here, once, because its restore source is only the local repository of whichever node
     /// leads the cold start.
-    public static BackupRestoreCoordinator backupRestoreCoordinator(KVStore<AetherKey, AetherValue> kvStore,
+    public static BackupRestoreCoordinator backupRestoreCoordinator(NodeId self,
+                                                                    KVStore<AetherKey, AetherValue> kvStore,
                                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
                                                                     Option<Source> source,
                                                                     BackupWarning.Sink warnings) {
-        var coordinator = new BackupRestoreCoordinator(kvStore, applier, source, warnings, SharedScheduler::schedule);
+        var coordinator = new BackupRestoreCoordinator(self,
+                                                       kvStore,
+                                                       applier,
+                                                       source,
+                                                       warnings,
+                                                       SharedScheduler::schedule);
 
         source.filter(present -> !present.service()
                                          .repository()
@@ -176,12 +187,13 @@ public final class BackupRestoreCoordinator {
     }
 
     /// Test factory with explicit warning sink and scheduler seams.
-    static BackupRestoreCoordinator backupRestoreCoordinator(KVStore<AetherKey, AetherValue> kvStore,
+    static BackupRestoreCoordinator backupRestoreCoordinator(NodeId self,
+                                                             KVStore<AetherKey, AetherValue> kvStore,
                                                              Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
                                                              Option<Source> source,
                                                              BackupWarning.Sink warnings,
                                                              RetryScheduler scheduler) {
-        return new BackupRestoreCoordinator(kvStore, applier, source, warnings, scheduler);
+        return new BackupRestoreCoordinator(self, kvStore, applier, source, warnings, scheduler);
     }
 
     @Contract
@@ -667,9 +679,14 @@ public final class BackupRestoreCoordinator {
         return new KVCommand.ReadWitness<>(BackupRestoreKey.backupRestoreKey(), Option.some(marker));
     }
 
+    /// #2594: every restore write is a leader write, so it is issued only under this node's own committed record while
+    /// it leads.
     private Result<LeaderValue> leaderValue() {
         return kvStore.getTyped(LeaderKey.INSTANCE, LeaderValue.class)
-                      .toResult(RestoreError.General.NO_COMMITTED_LEADER);
+                      .toResult(RestoreError.General.NO_COMMITTED_LEADER)
+                      .filter(RestoreError.General.NOT_THE_COMMITTED_LEADER,
+                              value -> value.leader()
+                                            .equals(self) && leader.get());
     }
 
     // --- retry skeleton (same shape as ClusterIncarnationRegistrar) ---
