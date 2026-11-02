@@ -16,6 +16,7 @@ import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.stream.PublishOutcome;
 import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.io.TimeSpan;
@@ -54,6 +55,8 @@ class EmberStreamFloorHeadroomTest {
     private static final long QUIESCE_MS = 10_000L;
     private static final long ALLOCATION_QUIESCE_MS = 30_000L;
     private static final long SETTLE_BUDGET_MS = 120_000L;
+    private static final long OWNER_ACCEPTS_BUDGET_MS = 60_000L;
+    private static final long REFUSED_BATCH_PAUSE_MS = 200L;
     private static final List<String> FILLS = List.of("f106a", "f106b");
     private static final String LATE = "late106";
 
@@ -84,7 +87,8 @@ class EmberStreamFloorHeadroomTest {
             FILLS.forEach(this::fill);
             StreamTripwireSupport.awaitUntil(() -> allocated().stream().allMatch(bytes -> bytes > GROWTH_SHARE - SEGMENT),
                                              SETTLE_BUDGET_MS,
-                                             "precondition: every node's rings took the growth share");
+                                             "precondition: every node's rings took the growth share (allocated per node when the wait began: "
+                                             + allocated() + ")");
             awaitAllocationsQuiesced();
 
             StreamTripwireSupport.createStream(cluster.allNodes().getFirst(),
@@ -110,7 +114,7 @@ class EmberStreamFloorHeadroomTest {
     }
 
     /// Creates `stream` (one partition, a ring far larger than the budget) and publishes [#FILL_BYTES_PER_STREAM] through its
-    /// owner, in batches.
+    /// owner, in batches, starting once the owner accepts writes ([#awaitOwnerAcceptsWrites]).
     private void fill(String stream) {
         var key = engineKey(stream);
 
@@ -121,10 +125,34 @@ class EmberStreamFloorHeadroomTest {
         var router = StreamTripwireSupport.component(cluster.getNode(record.owner().id()).unwrap(), "streamWriteRouter", StreamWriteRouter.class);
         var batches = FILL_BYTES_PER_STREAM / ((long) PAYLOAD * BATCH);
 
-        for (var batch = 0; batch < batches; batch++) {
+        awaitOwnerAcceptsWrites(stream, router);
+
+        for (var batch = 1; batch < batches; batch++) {
             var outcome = router.publishBatch(key, 0, payloads(), System.currentTimeMillis()).await(PUBLISH_BOUND);
 
             assertThat(outcome.isSuccess()).as("%s batch %d: %s", stream, batch, outcome).isTrue();
+        }
+    }
+
+    /// #2562: the full ISR is committed before the owner is activated, and until then the owner refuses every event with
+    /// `OwnerNotActivated` inside a batch promise that still succeeds. A fill sent in that window appended nothing, so the
+    /// precondition could never hold. The first batch is sent again until the owner publishes all of it, and counts as batch 0.
+    private void awaitOwnerAcceptsWrites(String stream, StreamWriteRouter router) {
+        var deadline = System.currentTimeMillis() + OWNER_ACCEPTS_BUDGET_MS;
+
+        while (true) {
+            var outcome = router.publishBatch(engineKey(stream), 0, payloads(), System.currentTimeMillis()).await(PUBLISH_BOUND);
+
+            assertThat(outcome.isSuccess()).as("%s first batch: %s", stream, outcome).isTrue();
+            if (outcome.unwrap().stream().allMatch(PublishOutcome.Published.class::isInstance)) {
+                return;
+            }
+            assertThat(System.currentTimeMillis()).as("%s: the owner published no whole batch within %d ms; last: %s",
+                                                      stream,
+                                                      OWNER_ACCEPTS_BUDGET_MS,
+                                                      outcome.unwrap().getFirst())
+                                                  .isLessThan(deadline);
+            sleepQuietly(REFUSED_BATCH_PAUSE_MS);
         }
     }
 
