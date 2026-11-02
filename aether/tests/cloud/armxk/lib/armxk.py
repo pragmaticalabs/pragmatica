@@ -188,8 +188,27 @@ class Run:
         out = self.sh(core["host"], f"curl -s -m 10 -w '\\n%{{http_code}}' 'http://127.0.0.1:{core['agent']}{path}'", check=False)
         text, _, code = out.rpartition("\n")
         if code.strip() != "200":
-            raise HarnessError(f"agent {path} on {core['id']}: HTTP {code.strip()} {text[:200]!r} (a dead counting path is an error, never a zero)")
+            raise HarnessError(f"agent {path} on {core['id']}: HTTP {code.strip()} {text[:200]!r} (a dead counting path is an error, never a zero)"
+                               f"{self.death_note(core)}")
         return text
+
+    def death_note(self, n):
+        """Why a node that should be alive is not answering: its process is gone, and whether its log ends in an OutOfMemoryError
+        (the nodes run with -XX:+ExitOnOutOfMemoryError, so an OOM is a process exit)."""
+        out = self.sh(n["host"], f"bash {self.root}/lib/node.sh pid {self.root} {n['id']} >/dev/null && echo alive || "
+                                 f"echo dead $(grep -ac OutOfMemoryError {self.root}/nodes/{n['id']}/node.log)", check=False).split()
+        if not out or out[0] == "alive":
+            return ""
+        oom = len(out) > 1 and out[1] != "0"
+        return f"; node {n['id']} process is gone{' after an OutOfMemoryError' if oom else ''}"
+
+    def check_cores(self):
+        """Every core the harness believes alive must have a live process; a dead one (an OOM above all) aborts the run, so the caller's
+        failure path pulls the evidence and the cloud run's EXIT trap tears down."""
+        for n in self.nodes("core"):
+            note = self.death_note(n)
+            if note:
+                raise HarnessError(f"core died{note}; aborting the run")
 
     def snapshot(self, core):
         values = {}
@@ -858,19 +877,38 @@ def spend_check(run, next_minutes):
 STEPS = {"control": (control_class, 6), "s0": (s0_class, 20), "s3": (s3_class, 25), "s4": (s4_class, 30), "s6": (s6_class, 45)}
 
 
+def storm_count(run):
+    path = run.dir / "evidence" / "storm.jsonl"
+    return sum(1 for _ in open(path)) if path.exists() else 0
+
+
+def run_class(run, name, fn, minutes):
+    """One class, with the CTO's 2026-11-02 rules: cores are checked alive before and after (a dead core aborts), the evidence is pulled,
+    and a class whose windows flagged an idle STORM is run ONCE more (the flagged windows keep their records and holder dumps)."""
+    for attempt in (1, 2):
+        run.check_cores()
+        spend_check(run, minutes)
+        storms_before = storm_count(run)
+        fn(run)
+        run.check_cores()
+        pull_evidence(run, name if attempt == 1 else f"{name}-rerun")
+        flagged = storm_count(run) - storms_before
+        if not flagged:
+            return attempt
+        run.emit("lifecycle", {"kind": "storm-rerun" if attempt == 1 else "storm-after-rerun", "class": name, "attempt": attempt,
+                               "stormWindows": flagged, "utc": utc()})
+        log(f"{name}: {flagged} STORM window(s) on attempt {attempt}{'; running the class once more' if attempt == 1 else ''}")
+    return 2
+
+
 def run_all(run):
     cores_up(run)
-    spend_check(run, 60)
-    control_class(run)
-    spend_check(run, 40)
-    armk(run)
-    pull_evidence(run, "armk")
+    run_class(run, "control", control_class, 60)
+    run_class(run, "armk", armk, 40)
     workers_up(run)
     for name in run.cfg["classes"]:
         fn, minutes = STEPS[name]
-        spend_check(run, minutes)
-        fn(run)
-        pull_evidence(run, name)
+        run_class(run, name, fn, minutes)
 
 
 def main():

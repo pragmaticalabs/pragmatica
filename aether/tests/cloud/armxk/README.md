@@ -110,7 +110,11 @@ holds a pending batch at the window's end. That is the empty-slot storm dry7 rec
 a batch one core keeps proposing while the other voters refuse to learn it (oss `wave3/inv-idle-spin.md`). Each condition alone is
 normal: write-free windows run a few slots, and loaded windows hold pending batches. On a flag the harness dumps, from every core that
 holds a pending batch, the head of the engine's pending map (`/m1/pending`: count, head id, command count, timestamp), writes
-`evidence/storm.jsonl` and logs `STORM`. The rule is pinned by `lib/test_storm.py` (`python3 lib/test_storm.py`); no CI job runs it.
+`evidence/storm.jsonl` and logs `STORM`. Run rules (CTO, 2026-11-02): a class with a STORM-flagged window is run **once** more (its flagged windows and holder dumps
+stay in the evidence; a second flag is recorded as `storm-after-rerun`, never a third run). Every core must be alive before and after
+each class: a dead core, an OutOfMemoryError exit above all (nodes run with `-XX:+ExitOnOutOfMemoryError`), aborts the run; the failure
+path pulls the evidence first and the cloud run's EXIT trap then tears down. The rules are pinned by `lib/test_storm.py`
+(`python3 lib/test_storm.py`); no CI job runs it.
 
 ## Cost
 
