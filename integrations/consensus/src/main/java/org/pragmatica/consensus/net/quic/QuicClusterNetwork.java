@@ -144,6 +144,18 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     private static final long DROP_WARN_INTERVAL_NANOS = 30_000_000_000L;
 
+    /// #2580: one open backpressure episode per (peer, lane). The first write that finds the lane unwritable opens
+    /// it with one WARN; later ones only count. The first write that finds the lane writable again closes it with one
+    /// INFO summary. Logging every backpressured write was measured at 785,923 WARN lines in 4.5 minutes, the log
+    /// volume landing exactly when the cluster is overloaded (CI run 41243342645). An episode also closes when the
+    /// peer's bound channel closes or the peer departs: worker NodeIds are new per incarnation, so an entry kept for a
+    /// gone peer would grow the map without bound over a long uptime.
+    private final Map<BackpressureLane, BackpressureEpisode> backpressureEpisodes = new ConcurrentHashMap<>();
+
+    private record BackpressureLane(NodeId peerId, StreamType streamType) {}
+
+    private record BackpressureEpisode(long startedNanos, AtomicLong writes) {}
+
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
     /// #1461: set by the first `stop()`, whether or not the network had started, and never cleared. A stop that
     /// arrived before `startOnPort` used to be a silent no-op (its CAS on `isRunning` failed), and the later start
@@ -988,6 +1000,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
         firstObservedMissingMs.remove(nodeId);
         if (peer == null) {
+            endBackpressureEpisodes(nodeId);
             log.debug("departurePermanent for {} suppressed: peer absent (no transition)", nodeId);
 
             return;
@@ -1003,6 +1016,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // first call; a repeated departurePermanent() finds the peer already REMOVED and
         // records nothing — no duplicate PeerDisconnected flood, no REMOVED→REMOVED journal noise.
         peer.authoritativeRemove(System.nanoTime()).onPresent(this::closeDroppedConnection);
+        // After REMOVED, not before: a write racing this departure re-checks REMOVED after counting (see
+        // countBackpressuredWrite), so its episode is dropped by whichever of the two runs second.
+        endBackpressureEpisodes(nodeId);
         var clientRef = client;
 
         if (clientRef != null) {
@@ -2543,6 +2559,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                          StreamType streamType,
                                          Option<QuicPeerConnection> resendVia) {
         if (ch.isWritable()) {
+            endBackpressureEpisode(peerId, streamType);
             quicMetrics.onMessageSent();
             quicMetrics.onBytesSent(bytes.length);
             trackedWrite(ch, streamType, bytes).addListener(future -> onLaneWriteResult(future,
@@ -2574,8 +2591,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
         //  - Everything else (KV / METRICS / INVOKE / FORWARD / CONTROL / SYNC): UNCHANGED
         //    fast-fail BackpressureRefused.
         // Backpressure entry: name the lane so a stalled stream is identifiable in the logs.
-        // One concise line per backpressure entry (per-retry logging stays at debug below).
-        log.warn("Backpressure on peer {} lane {} (isWritable={})", peerId, streamType, ch.isWritable());
+        // One WARN per backpressure entry, not per write (#2580); per-write and per-retry logging stay at debug.
+        countBackpressuredWrite(peerId, streamType);
 
         return switch (streamType) {
             case CONSENSUS -> retryBackpressuredWrite(ch, bytes, peerId, streamType);
@@ -2584,6 +2601,69 @@ public class QuicClusterNetwork implements ClusterNetwork {
                         : refuseBackpressured(peerId, streamType);
             default -> refuseBackpressured(peerId, streamType);
         };
+    }
+
+    /// Counts inside `compute`, under the same bin lock `remove` takes, so a summary never misses a write counted
+    /// before it. A write captured before its peer's departure can run after `departurePermanent` closed the peer's
+    /// episodes; the REMOVED re-check drops the episode it just opened, which no later event would close.
+    private void countBackpressuredWrite(NodeId peerId, StreamType streamType) {
+        var writes = backpressureEpisodes.compute(new BackpressureLane(peerId, streamType),
+                                                  (lane, open) -> countWrite(open == null
+                                                                             ? openBackpressureEpisode(lane)
+                                                                             : open))
+                                         .writes()
+                                         .get();
+
+        log.debug("Backpressure on peer {} lane {}: write {} of this episode", peerId, streamType, writes);
+        if (isPeerRemoved(peerId)) {
+            closeBackpressureEpisode(peerId, streamType);
+        }
+    }
+
+    private static BackpressureEpisode countWrite(BackpressureEpisode episode) {
+        episode.writes().incrementAndGet();
+
+        return episode;
+    }
+
+    private BackpressureEpisode openBackpressureEpisode(BackpressureLane lane) {
+        log.warn("Backpressure on peer {} lane {} (isWritable=false): entered; further writes are counted until it clears",
+                 lane.peerId(),
+                 lane.streamType());
+
+        return new BackpressureEpisode(System.nanoTime(), new AtomicLong());
+    }
+
+    /// Closes the (peer, lane) episode, if one is open, with one summary line. The `isEmpty` check keeps the
+    /// writable hot path to a single read while no lane is backpressured.
+    private void endBackpressureEpisode(NodeId peerId, StreamType streamType) {
+        if (backpressureEpisodes.isEmpty()) {
+            return;
+        }
+
+        closeBackpressureEpisode(peerId, streamType);
+    }
+
+    /// No `isEmpty` shortcut here: the map's size is updated after a new entry is visible, so the shortcut can miss
+    /// an episode opened concurrently, and departure and channel close are the only events that would close it.
+    private void closeBackpressureEpisode(NodeId peerId, StreamType streamType) {
+        Option.option(backpressureEpisodes.remove(new BackpressureLane(peerId, streamType)))
+              .onPresent(episode -> log.info("Backpressure on peer {} lane {} cleared: {} write(s) found it unwritable over {} ms",
+                                             peerId,
+                                             streamType,
+                                             episode.writes().get(),
+                                             TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - episode.startedNanos())));
+    }
+
+    /// Closes every open episode of a peer whose channel closed or who departed, each with its summary line.
+    private void endBackpressureEpisodes(NodeId peerId) {
+        Stream.of(StreamType.values())
+              .forEach(streamType -> closeBackpressureEpisode(peerId, streamType));
+    }
+
+    /// Package-private test seam: the number of open backpressure episodes, so tests can show an entry is gone.
+    int openBackpressureEpisodesForTests() {
+        return backpressureEpisodes.size();
     }
 
     /// Package-private test seam — drives `writeIfWritable` directly so regression tests can
@@ -2790,6 +2870,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var state = peers.get(peerId);
 
         if (state == null) {
+            endBackpressureEpisodes(peerId);
+
             return;
         }
         // Reference equality on the wrapper: adopt-newer (`attachOverConnected`) binds a
@@ -2799,6 +2881,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // loop, no double-close (`evictStaleConnection` guards its own `.close()` on `isActive()`).
         if (state.activeConnection().map(current -> current == closed).or(false)) {
             log.info("QUIC channel to {} closed — evicting (event-driven) so the reconciler re-dials", peerId);
+            endBackpressureEpisodes(peerId);
             evictStaleConnection(peerId, closed);
         }
     }
