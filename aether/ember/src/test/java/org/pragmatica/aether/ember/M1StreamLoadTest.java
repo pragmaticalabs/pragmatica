@@ -127,6 +127,8 @@ class M1StreamLoadTest {
         try {
             deploy(arm);
             long attachS = awaitAttached(arm);
+
+            emit("{\"kind\":\"s7-attached\"," + header(arm) + ",\"attachSeconds\":" + attachS + ",\"subscriptionsByNode\":" + attachedByNode() + ",\"sliceHosts\":\"" + sliceHosts(arm) + "\"}");
             var producer = new Producer(arm);
             var thread = new Thread(producer, "s7-producer");
 
@@ -215,6 +217,30 @@ class M1StreamLoadTest {
         return (System.nanoTime() - start) / 1_000_000_000L;
     }
 
+    /// Which node holds how many attached subscriptions, with its role (core or worker): where the consumers (and so the checkpoint writers) actually run.
+    private String attachedByNode() {
+        var cores = new java.util.HashSet<String>();
+
+        instruments.forEach(i -> cores.add(i.nodeId()));
+        return cluster.status().nodes().stream().map(n -> {
+            var matcher = ATTACHED.matcher(send("GET", n.mgmtPort(), "/api/v1/streams/declarative-consumers", "application/json", ""));
+
+            return "\"" + n.id() + (cores.contains(n.id()) ? "(core)" : "(worker)") + "\":" + (matcher.find() ? matcher.group(1) : "0");
+        }).collect(Collectors.joining(",", "{", "}"));
+    }
+
+    /// The nodes whose NodeArtifactKey for this arm's slice exists in the leader's store.
+    private String sliceHosts(Arm arm) {
+        var cores = new java.util.HashSet<String>();
+
+        instruments.forEach(i -> cores.add(i.nodeId()));
+        return leader().kvStore().snapshot().keySet().stream()
+                       .filter(k -> k instanceof AetherKey.NodeArtifactKey nk && nk.artifact().asString().contains(arm.artifactBase()))
+                       .map(k -> ((AetherKey.NodeArtifactKey) k).nodeId().id())
+                       .map(id -> id + (cores.contains(id) ? "(core)" : "(worker)"))
+                       .sorted().collect(Collectors.joining(" "));
+    }
+
     private int attached() {
         return cluster.status().nodes().stream().mapToInt(n -> {
             var matcher = ATTACHED.matcher(send("GET", n.mgmtPort(), "/api/v1/streams/declarative-consumers", "application/json", ""));
@@ -252,7 +278,9 @@ class M1StreamLoadTest {
         row.put("tx", delta.getOrDefault("tx.accepted", 0L));
         row.put("putTotal", delta.getOrDefault("put.total", 0L));
         row.put("expectedCheckpointsPerSec", arm.g() * arm.p() / T_SECONDS);
-        emit("{\"kind\":\"s7-window\"," + header(arm) + "," + json(row) + ",\"families\":" + familiesJson(delta) + "}");
+        var engines = instruments.stream().map(M1Instrument::engineProbe).collect(Collectors.joining(",", "[", "]"));
+
+        emit("{\"kind\":\"s7-window\"," + header(arm) + "," + json(row) + ",\"families\":" + familiesJson(delta) + ",\"engines\":" + engines + "}");
         return row;
     }
 
