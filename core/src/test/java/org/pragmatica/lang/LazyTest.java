@@ -34,7 +34,7 @@ class LazyTest {
 
     @Nested
     class LazyFactory {
-        // quarantine: #2562 PROBE ONLY for #2575's equivalence proof; never merge
+        // quarantine: #2563 PROBE ONLY: #2563 is CLOSED, so the quarantine job must go red; never merge
         @Tag("quarantine")
         @Test
         void lazy_isNotComputedInitially() {
