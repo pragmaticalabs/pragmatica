@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import io.netty.channel.ChannelFuture;
 import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicStreamChannel;
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -49,6 +50,7 @@ import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -416,6 +418,77 @@ class QuicConsensusBackpressureTest {
             assertThat(network.broadcastTargetsForTests())
                 .as("null supplier restores the topology-backed mandatory default, not an unfiltered path")
                 .containsExactly(IN_VIEW);
+        }
+    }
+
+    /// #2580: the backpressure WARN fires once per (peer, lane) episode, not once per write. CI run 41243342645 logged
+    /// it 785,923 times in 4.5 minutes, one line per backpressured write. METRICS is used so no retry is scheduled:
+    /// the lane only decides what happens to the write, the logging is lane-independent.
+    @Nested
+    class BackpressureLogEpisodes {
+        private static final String LOGGER = "org.pragmatica.consensus.net.quic.QuicClusterNetwork";
+        private static final int WRITES = 50;
+
+        @Test
+        void manyBackpressuredWrites_logOneEntryWarn_andTheFirstWritableWriteOneSummary() {
+            var blocked = mock(QuicStreamChannel.class);
+            when(blocked.isWritable()).thenReturn(false);
+            var network = network();
+
+            try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+                for (int i = 0; i < WRITES; i++) {
+                    network.writeIfWritableForTest(blocked, payload(), PEER, StreamType.METRICS);
+                }
+
+                assertThat(entryWarns(capture)).as("%d backpressured writes on one lane: exactly one entry WARN", WRITES)
+                                               .hasSize(1);
+
+                network.writeIfWritableForTest(writable(), payload(), PEER, StreamType.METRICS);
+
+                assertThat(capture.messages(Level.INFO)).as("the first writable write closes the episode with one summary")
+                                                        .filteredOn(message -> message.contains("cleared"))
+                                                        .singleElement()
+                                                        .satisfies(message -> assertThat(message).contains(WRITES + " write(s)"));
+
+                network.writeIfWritableForTest(blocked, payload(), PEER, StreamType.METRICS);
+
+                assertThat(entryWarns(capture)).as("a backpressure after the summary is a new episode").hasSize(2);
+            }
+        }
+
+        @Test
+        void episodes_areKeptPerPeerAndLane() {
+            var blocked = mock(QuicStreamChannel.class);
+            when(blocked.isWritable()).thenReturn(false);
+            var network = network();
+            var otherPeer = new NodeId("peer-2");
+
+            try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+                for (int i = 0; i < WRITES; i++) {
+                    network.writeIfWritableForTest(blocked, payload(), PEER, StreamType.METRICS);
+                    network.writeIfWritableForTest(blocked, payload(), PEER, StreamType.FORWARD);
+                    network.writeIfWritableForTest(blocked, payload(), otherPeer, StreamType.METRICS);
+                }
+
+                assertThat(entryWarns(capture)).as("three (peer, lane) pairs: three entry WARNs").hasSize(3);
+            }
+        }
+
+        private static List<String> entryWarns(LogCapture capture) {
+            return capture.messages(Level.WARN)
+                          .stream()
+                          .filter(message -> message.startsWith("Backpressure on peer"))
+                          .toList();
+        }
+
+        private static QuicStreamChannel writable() {
+            var ch = mock(QuicStreamChannel.class);
+            var future = mock(ChannelFuture.class);
+            when(future.addListener(any())).thenReturn(future);
+            when(ch.writeAndFlush(any())).thenReturn(future);
+            when(ch.isWritable()).thenReturn(true);
+
+            return ch;
         }
     }
 

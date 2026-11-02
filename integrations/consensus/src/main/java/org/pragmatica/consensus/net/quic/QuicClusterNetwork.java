@@ -144,6 +144,18 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     private static final long DROP_WARN_INTERVAL_NANOS = 30_000_000_000L;
 
+    /// #2580: one open backpressure episode per (peer, lane). The first write that finds the lane unwritable opens
+    /// it with one WARN; later ones only count. The first write that finds the lane writable again closes it with one
+    /// INFO summary. Logging every backpressured write was measured at 785,923 WARN lines in 4.5 minutes, the log
+    /// volume landing exactly when the cluster is overloaded (CI run 41243342645). Residual, stated: an episode of a
+    /// peer that never takes a writable write again (a departed peer) stays open; the map holds at most one entry per
+    /// (peer, lane) ever backpressured.
+    private final Map<BackpressureLane, BackpressureEpisode> backpressureEpisodes = new ConcurrentHashMap<>();
+
+    private record BackpressureLane(NodeId peerId, StreamType streamType) {}
+
+    private record BackpressureEpisode(long startedNanos, AtomicLong writes) {}
+
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
     /// #1461: set by the first `stop()`, whether or not the network had started, and never cleared. A stop that
     /// arrived before `startOnPort` used to be a silent no-op (its CAS on `isRunning` failed), and the later start
@@ -2543,6 +2555,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                          StreamType streamType,
                                          Option<QuicPeerConnection> resendVia) {
         if (ch.isWritable()) {
+            endBackpressureEpisode(peerId, streamType);
             quicMetrics.onMessageSent();
             quicMetrics.onBytesSent(bytes.length);
             trackedWrite(ch, streamType, bytes).addListener(future -> onLaneWriteResult(future,
@@ -2574,8 +2587,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
         //  - Everything else (KV / METRICS / INVOKE / FORWARD / CONTROL / SYNC): UNCHANGED
         //    fast-fail BackpressureRefused.
         // Backpressure entry: name the lane so a stalled stream is identifiable in the logs.
-        // One concise line per backpressure entry (per-retry logging stays at debug below).
-        log.warn("Backpressure on peer {} lane {} (isWritable={})", peerId, streamType, ch.isWritable());
+        // One WARN per backpressure entry, not per write (#2580); per-write and per-retry logging stay at debug.
+        countBackpressuredWrite(peerId, streamType);
 
         return switch (streamType) {
             case CONSENSUS -> retryBackpressuredWrite(ch, bytes, peerId, streamType);
@@ -2584,6 +2597,38 @@ public class QuicClusterNetwork implements ClusterNetwork {
                         : refuseBackpressured(peerId, streamType);
             default -> refuseBackpressured(peerId, streamType);
         };
+    }
+
+    private void countBackpressuredWrite(NodeId peerId, StreamType streamType) {
+        var writes = backpressureEpisodes.computeIfAbsent(new BackpressureLane(peerId, streamType),
+                                                          lane -> openBackpressureEpisode(lane))
+                                         .writes()
+                                         .incrementAndGet();
+
+        log.debug("Backpressure on peer {} lane {}: write {} of this episode", peerId, streamType, writes);
+    }
+
+    private BackpressureEpisode openBackpressureEpisode(BackpressureLane lane) {
+        log.warn("Backpressure on peer {} lane {} (isWritable=false): entered; further writes are counted until it clears",
+                 lane.peerId(),
+                 lane.streamType());
+
+        return new BackpressureEpisode(System.nanoTime(), new AtomicLong());
+    }
+
+    /// Closes the (peer, lane) episode, if one is open, with one summary line. The `isEmpty` check keeps the
+    /// writable hot path to a single read while no lane is backpressured.
+    private void endBackpressureEpisode(NodeId peerId, StreamType streamType) {
+        if (backpressureEpisodes.isEmpty()) {
+            return;
+        }
+
+        Option.option(backpressureEpisodes.remove(new BackpressureLane(peerId, streamType)))
+              .onPresent(episode -> log.info("Backpressure on peer {} lane {} cleared: {} write(s) found it unwritable over {} ms",
+                                             peerId,
+                                             streamType,
+                                             episode.writes().get(),
+                                             TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - episode.startedNanos())));
     }
 
     /// Package-private test seam — drives `writeIfWritable` directly so regression tests can
