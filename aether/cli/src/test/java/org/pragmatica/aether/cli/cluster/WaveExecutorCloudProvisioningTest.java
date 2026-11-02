@@ -143,7 +143,7 @@ class WaveExecutorCloudProvisioningTest {
 
         assertThat(new HashSet<>(ids)).as("#1027: every provisioned node gets a fresh id").hasSize(4);
         assertThat(ids).as("#1027: never the id of a live member").doesNotContainAnyElementsOf(LIVE_MEMBER_IDS);
-        assertThat(ids).allMatch(id -> id.startsWith("aether-prod-cluster-node-"), "the CTM id scheme");
+        assertThat(ids).allMatch(id -> id.matches("aether-node-[0-9a-hjkmnp-tv-z]{26}"), "the cloud id scheme: no cluster in the id (G1 flag day)");
     }
 
     /// #1027: a reprovision (one node) gets a fresh id too, and the SAME id is in the context and in the user-data

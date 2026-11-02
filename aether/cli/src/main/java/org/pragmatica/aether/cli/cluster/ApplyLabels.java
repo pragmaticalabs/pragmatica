@@ -5,6 +5,8 @@ package org.pragmatica.aether.cli.cluster;
 
 import java.util.regex.Pattern;
 
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
+import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -38,11 +40,30 @@ final class ApplyLabels {
     /// Plan time: every label value the apply will MINT, the node ids included, must be a safe label value, checked before
     /// the first create. A cluster name whose minted node ids exceed the providers' 63-character label limit would otherwise
     /// create nodes and then wedge every later lookup of them (`--resume`), so the whole apply is refused up front.
-    static Result<Unit> requireMintable(ClusterName cluster, String applyId) {
-        return requireSafe(cluster, applyId).flatMap(_ -> requireMintedNodeIdSafe(cluster));
+    ///
+    /// Only the shape the apply actually mints is sampled. A DOCKER source mints `aether-<cluster>-node-<ulid>`, which carries the
+    /// cluster and can overflow; a cloud source mints `aether-node-<ulid>` (38 characters whatever the cluster), which cannot, and its
+    /// server-name budget is PF-36's.
+    static Result<Unit> requireMintable(ClusterBootstrapConfig desired, String applyId) {
+        var cluster = desired.cluster().name();
+
+        return requireSafe(cluster, applyId).flatMap(_ -> requireMintedNodeIdSafe(desired, cluster));
     }
 
-    private static Result<Unit> requireMintedNodeIdSafe(ClusterName cluster) {
+    private static Result<Unit> requireMintedNodeIdSafe(ClusterBootstrapConfig desired, ClusterName cluster) {
+        return mintsDockerIds(desired)
+               ? requireDockerNodeIdSafe(cluster)
+               : Result.unitResult();
+    }
+
+    private static boolean mintsDockerIds(ClusterBootstrapConfig desired) {
+        return desired.sources()
+                      .values()
+                      .stream()
+                      .anyMatch(source -> source.type() == SourceType.DOCKER);
+    }
+
+    private static Result<Unit> requireDockerNodeIdSafe(ClusterName cluster) {
         var sample = WaveNodeProvisioning.mintedIds(cluster).get();
 
         return SAFE.matcher(sample).matches()

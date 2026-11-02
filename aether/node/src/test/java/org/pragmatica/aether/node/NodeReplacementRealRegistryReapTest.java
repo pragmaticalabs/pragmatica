@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.cluster.CapacityControlledLifecycle;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
@@ -77,6 +78,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///   provider call;
 /// - a provider-backed source whose listing fails, or lists nothing it ever listed, is never read as gone, and one that lists the
 ///   instance is terminated and confirmed.
+@Timeout(120)
 class NodeReplacementRealRegistryReapTest {
     private static final String CONFIG = """
         config_version = "1.0.0"
@@ -163,7 +165,7 @@ class NodeReplacementRealRegistryReapTest {
                                                                              ctm,
                                                                              node -> Promise.success(NodeReplacementWiring.DrainOutcome.admitted()),
                                                                              node -> false,
-                                                                             () -> "fresh",
+                                                                             Option::none,
                                                                              node -> false,
                                                                              java.util.Set::of,
                                                                              () -> 10,

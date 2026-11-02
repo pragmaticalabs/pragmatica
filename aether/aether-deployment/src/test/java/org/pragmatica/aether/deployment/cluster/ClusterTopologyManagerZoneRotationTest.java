@@ -31,6 +31,8 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -42,6 +44,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -54,6 +57,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// immediately on any other (non-retryable) error, fail when all zones are exhausted, and degrade to
 /// a single (unpinned) attempt when no cloud zones are configured — so a zone running out of capacity
 /// during a replacement no longer wedges the cluster's heal.
+@Timeout(120)
 class ClusterTopologyManagerZoneRotationTest {
     /// RFC-0017 C1 — desired topology replaced the core-only scalar; tests that only care about a
     /// core count build a single-source entry.
@@ -190,6 +194,112 @@ class ClusterTopologyManagerZoneRotationTest {
         assertThat(outcome.isSuccess()).isEqualTo(!ambiguous);
         outcome.onSuccess(disposition -> assertThat(disposition).isInstanceOf(ProvisionDisposition.Dispatched.class));
         manager.deactivate();
+    }
+
+    /// Node ids: cloud ids carry no cluster, Docker ids do. Which a replacement gets follows the source that backs the core.
+    @Nested
+    class CoreBackingForNodeIds {
+        private static final String DOCKER_TOML = MULTI_ZONE_TOML.replace("type = \"cloud\"", "type = \"docker\"");
+
+        @Test
+        void coresAreCloudBacked_whenACloudSourceDeclaresTheCore() {
+            clusterStore.seedToml(MULTI_ZONE_TOML);
+
+            assertThat(ctm.coresAreCloudBacked()).isTrue();
+        }
+
+        @Test
+        void coresAreCloudBacked_isFalseForADockerCore() {
+            clusterStore.seedToml(DOCKER_TOML);
+
+            assertThat(DOCKER_TOML).contains("type = \"docker\"");
+            assertThat(org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser.parse(DOCKER_TOML).isSuccess()).as("the config parses, so the answer is about the source type").isTrue();
+            assertThat(ctm.coresAreCloudBacked()).isFalse();
+        }
+
+        @Test
+        void coresAreCloudBacked_isFalseWithoutAParsedConfiguration() {
+            clusterStore.seedBootstrapSeed();
+
+            assertThat(ctm.coresAreCloudBacked()).isFalse();
+        }
+
+        /// A Docker core and a Hetzner worker pool in one cluster: the shape follows the source of the node being replaced.
+        private static final String HYBRID_TOML = """
+                config_version = "1.0.0"
+
+                [cluster]
+                name = "production-eu"
+                version = "1.0.0"
+
+                [source.local]
+                type = "docker"
+
+                [source.local.core]
+                count = 3
+
+                [source.hz]
+                type = "cloud"
+                provider = "hetzner"
+                credentials = "hcloud-token"
+                region = "eu-central"
+
+                [source.hz.worker]
+                count = 2
+                """;
+
+        @Test
+        void nodeIsCloudBacked_hybridCluster_followsTheSourceOfTheNodeBeingReplaced() {
+            clusterStore.seedToml(HYBRID_TOML);
+
+            assertThat(org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser.parse(HYBRID_TOML).isSuccess()).as("the hybrid config parses").isTrue();
+            assertThat(ctm.nodeIsCloudBacked(NodeRole.WORKER, "hz")).as("a Hetzner worker is cloud-shaped").isTrue();
+            assertThat(ctm.nodeIsCloudBacked(NodeRole.CORE, "local")).as("a Docker core keeps the cluster").isFalse();
+            assertThat(ctm.coresAreCloudBacked()).as("the core pool is Docker, though a worker pool is cloud").isFalse();
+        }
+
+        @Test
+        void nodeIsCloudBacked_blankOrUnknownSource_fallsBackToTheFirstCloudSourceDeclaringTheRole() {
+            clusterStore.seedToml(HYBRID_TOML);
+
+            assertThat(ctm.nodeIsCloudBacked(NodeRole.WORKER, "")).isTrue();
+            assertThat(ctm.nodeIsCloudBacked(NodeRole.WORKER, "no-such-source")).isTrue();
+            assertThat(ctm.nodeIsCloudBacked(NodeRole.CORE, "")).isFalse();
+        }
+
+        /// A Docker source that declares WORKER while a cloud source declares it too: a node of the Docker source stays Docker-shaped. The
+        /// named source decides; the fall back to the first cloud source for the role is only for a blank or unknown name.
+        private static final String DOCKER_AND_CLOUD_WORKERS_TOML = HYBRID_TOML.replace("[source.hz]", "[source.local.worker]\ncount = 1\n\n[source.hz]");
+
+        @Test
+        void nodeIsCloudBacked_namedDockerSourceDeclaringTheSameRoleAsACloudSource_staysDockerShaped() {
+            clusterStore.seedToml(DOCKER_AND_CLOUD_WORKERS_TOML);
+
+            assertThat(org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser.parse(DOCKER_AND_CLOUD_WORKERS_TOML).isSuccess()).as("the config parses").isTrue();
+            assertThat(ctm.nodeIsCloudBacked(NodeRole.WORKER, "local")).as("the named source is Docker").isFalse();
+            assertThat(ctm.nodeIsCloudBacked(NodeRole.WORKER, "hz")).as("the named source is cloud").isTrue();
+            assertThat(ctm.nodeIsCloudBacked(NodeRole.WORKER, "")).as("blank: first cloud source declaring the role").isTrue();
+        }
+
+        @Test
+        void nodeIsCloudBacked_unparseableConfiguration_isFalse() {
+            clusterStore.seedToml("this is [not a cluster configuration");
+
+            assertThat(org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser.parse("this is [not a cluster configuration").isSuccess()).as("the config does not parse").isFalse();
+            assertThat(ctm.nodeIsCloudBacked(NodeRole.WORKER, "hz")).isFalse();
+            assertThat(ctm.coresAreCloudBacked()).isFalse();
+        }
+
+        /// The interface default (an implementation that knows no configuration) answers Docker-shaped, never cloud.
+        @Test
+        void nodeIsCloudBacked_interfaceDefault_isFalse() {
+            var defaults = (ClusterTopologyManager) Proxy.newProxyInstance(ClusterTopologyManager.class.getClassLoader(),
+                                                                          new Class<?>[]{ClusterTopologyManager.class},
+                                                                          (proxy, method, args) -> InvocationHandler.invokeDefault(proxy, method, args));
+
+            assertThat(defaults.nodeIsCloudBacked(NodeRole.WORKER, "hz")).isFalse();
+            assertThat(defaults.coresAreCloudBacked()).isFalse();
+        }
     }
 
     @Nested

@@ -569,7 +569,8 @@ public sealed interface TopologyAssembly {
         var managementServerRef = in.managementServerRef();
         var membershipConfig = in.membershipConfig();
         var presenceSampler = in.presenceSampler();
-        var clusterNameSupplier = in.clusterNameSupplier();
+        // The ONE place the cluster supplier is read: both replacement-id sites below use this scoped one, never the plain supplier.
+        var replacementIdScope = idScope(clusterTopologyManager, in.clusterNameSupplier());
         var membershipFsm = in.membershipFsm();
         var defer = in.defer();
         var leaderReconciler = LeaderReconciler.leaderReconciler(membershipConfig,
@@ -578,7 +579,7 @@ public sealed interface TopologyAssembly {
                                                                  configuredCoreCountSupplier,
                                                                  leaderTerm::committedTerm,
                                                                  clusterTopologyManager,
-                                                                 clusterNameSupplier,
+                                                                 replacementIdScope,
                                                                  TimeSource.system(),
                                                                  SharedScheduler::schedule);
 
@@ -636,7 +637,7 @@ public sealed interface TopologyAssembly {
                                                                                             id -> managementServerRef.get()
                                                                                                                      .map(server -> server.replacementDrainUnderWay(id))
                                                                                                                      .or(false),
-                                                                                            () -> ProvisionContext.coreNodeNamePrefix(clusterNameSupplier.get()),
+                                                                                            in.clusterNameSupplier(),
                                                                                             id -> dhtNode.ring()
                                                                                                          .nodes()
                                                                                                          .contains(id),
@@ -992,4 +993,14 @@ public sealed interface TopologyAssembly {
     }
 
     record unused() implements TopologyAssembly {}
+
+    /// The cluster that scopes the node ids a replacement is minted with. Empty when the committed configuration backs the core with a
+    /// CLOUD source: cloud ids carry no cluster (`aether-node-<ulid>`), the server name `<cluster>-<nodeId>` does. Docker keeps it
+    /// (`aether-<cluster>-node-<ulid>`), because a container name is unique per daemon and several clusters share one.
+    static Supplier<Option<ClusterName>> idScope(ClusterTopologyManager manager,
+                                                 Supplier<Option<ClusterName>> clusterName) {
+        return () -> manager.coresAreCloudBacked()
+                     ? Option.none()
+                     : clusterName.get();
+    }
 }

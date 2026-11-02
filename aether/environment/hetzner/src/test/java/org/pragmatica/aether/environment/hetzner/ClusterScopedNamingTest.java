@@ -66,18 +66,18 @@ class ClusterScopedNamingTest {
     }
 
     @Test
-    void mintedCoreIds_areScopedToo_andFitUpToTheLongestClusterName() {
+    void mintedCloudIds_areScopedToo_andFitUpToTheLongestClusterName() {
         var longest = "a".repeat(org.pragmatica.aether.environment.OperationId.longestClusterNameForMintedIds());
-        var id = ProvisionContext.mintNodeId(ClusterName.maybeClusterName(longest));
+        var id = ProvisionContext.mintCloudNodeId();
 
         assertThat(provider.provision(spec(longest, id)).await().isSuccess()).isTrue();
-        assertThat(project.servers().getFirst().name()).isEqualTo(longest + "-" + id).hasSizeLessThanOrEqualTo(63);
+        assertThat(project.servers().getFirst().name()).isEqualTo(longest + "-" + id).hasSize(63);
     }
 
     @Test
     void aClusterNameTooLongForTheScopedId_isRefusedTypedWithZeroCreates_neverTruncated() {
         var tooLong = "a".repeat(org.pragmatica.aether.environment.OperationId.longestClusterNameForMintedIds() + 1);
-        var id = ProvisionContext.mintNodeId(ClusterName.maybeClusterName(tooLong));
+        var id = ProvisionContext.mintCloudNodeId();
 
         assertThat(provider.provision(spec(tooLong, id)).await().isFailure()).isTrue();
         assertThat(project.createRequests).isEmpty();

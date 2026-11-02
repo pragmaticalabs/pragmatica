@@ -45,7 +45,7 @@ public final class WaveExecutor {
                                               ClusterBootstrapConfig stored,
                                               ClusterBootstrapConfig desired,
                                               ApplyRecorder recorder) {
-        return ApplyLabels.requireMintable(desired.cluster().name(),
+        return ApplyLabels.requireMintable(desired,
                                            recorder.applyId())
                           .flatMap(_ -> executeWaves(plan, stored, desired, recorder));
     }
@@ -328,10 +328,9 @@ public final class WaveExecutor {
     /// The ids a cloud action asks for. The same-name re-issue of an ABSENT row is safe only where the provider refuses a second server
     /// with that name ([ComputeProvider#honoursOperationId], Hetzner today); on any other provider a late-landing original plus a re-issue
     /// would be two live servers for one node id, so there the remainder mints fresh ids as before (v-g1 F2).
-    private static Supplier<String> idsFor(ComputeProvider compute,
-                                           ApplyRecorder recorder,
-                                           ClusterBootstrapConfig desired) {
-        var minted = WaveNodeProvisioning.mintedIds(desired.cluster().name());
+    private static Supplier<String> idsFor(ComputeProvider compute, ApplyRecorder recorder) {
+        // cloud ids carry no cluster (the server name `<cluster>-<nodeId>` does): a re-issued id is a bare node id too
+        var minted = WaveNodeProvisioning.cloudMintedIds();
 
         return compute.honoursOperationId()
                ? WaveNodeProvisioning.reissuedThenMinted(recorder, minted)
@@ -351,7 +350,7 @@ public final class WaveExecutor {
                                                    role,
                                                    count,
                                                    inputs,
-                                                   idsFor(compute, recorder, desired),
+                                                   idsFor(compute, recorder),
                                                    recorder);
     }
 
