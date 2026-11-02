@@ -776,8 +776,14 @@ class ManagementServerImpl implements ManagementServer {
 
     /// #2590: consumer progress's load on consensus, cumulative since boot -- the batches the cursor command writer proposed
     /// and their commands by key class. The S7 arms compare them before and after progress moves off consensus.
+    /// The node is an adapter boundary here: a node double (a Mockito mock) answers `null` for an accessor it does not stub,
+    /// and a missing instrument must not stop the management server from starting.
+    @Contract
     private void registerConsensusBatchMetrics() {
-        var counters = nodeSupplier.get().consensusBatchCounters();
+        Option.option(nodeSupplier.get().consensusBatchCounters()).onPresent(this::registerConsensusBatchGauges);
+    }
+
+    private void registerConsensusBatchGauges(ConsensusBatchCounters counters) {
         Supplier<Number> batches = counters::batches;
 
         observability.gauge("aether.consensus.cursor.batches", batches);
