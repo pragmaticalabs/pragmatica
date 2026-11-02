@@ -12,6 +12,7 @@ import java.util.function.Supplier;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
 
 /// One partition's serial queue (#2590 P1, N1): tasks run one at a time, in submission order, on a drainer thread, never
@@ -25,10 +26,18 @@ final class SerialQueue {
     <T> Promise<T> submit(Supplier<Result<T>> task) {
         Promise<T> promise = Promise.promise();
 
-        tasks.add(() -> promise.resolve(task.get()));
+        tasks.add(() -> promise.resolve(contained(task)));
         startDrainer();
 
         return promise;
+    }
+
+    /// Recovery: design-out of a wedged queue -- a task returns its failures, so one that throws is a defect; it fails its
+    /// own promise with the throwable as the cause and the drainer goes on to the next task. A `VirtualMachineError` still
+    /// propagates ([Result#lift] rethrows it).
+    private static <T> Result<T> contained(Supplier<Result<T>> task) {
+        return Result.lift(Causes::fromThrowable, task::get)
+                     .flatMap(result -> result);
     }
 
     @Contract
