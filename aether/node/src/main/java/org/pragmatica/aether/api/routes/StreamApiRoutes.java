@@ -924,8 +924,7 @@ public final class StreamApiRoutes implements RouteSource {
     }
 
     private static boolean isPreAppendRefusal(Cause cause) {
-        return cause instanceof StreamForwardError.RemotePublishRetryable || cause instanceof StreamForwardError.ForwardNotSent
-               || StreamForwardHandler.isRetryable(cause);
+        return cause instanceof StreamForwardError.RemotePublishRetryable || cause instanceof StreamForwardError.ForwardNotSent || StreamForwardHandler.isRetryable(cause);
     }
 
     /// #524 guard: an out-of-range `partition` on a Management-API publish must fail 4xx naming the

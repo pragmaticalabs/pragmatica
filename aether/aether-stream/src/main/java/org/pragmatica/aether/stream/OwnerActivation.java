@@ -696,8 +696,10 @@ public final class OwnerActivation {
     /// #2574: an attempt that falls inside a refusal's wait ([#refusedUntilNanos]) runs no gate; it is re-driven at the
     /// wait's end instead, so a refusing lane is probed no more often than the probe's silent wait used to probe it.
     private void attempt(String stream, int partition, TimeSpan backoff) {
-        refusalWaitLeft(PartitionKey.partitionKey(stream, partition)).onEmpty(() -> activateOrRedrive(stream, partition, backoff))
-                                                                     .onPresent(left -> deferPastRefusal(stream, partition, backoff, left));
+        refusalWaitLeft(PartitionKey.partitionKey(stream, partition)).onEmpty(() -> activateOrRedrive(stream,
+                                                                                                      partition,
+                                                                                                      backoff))
+                       .onPresent(left -> deferPastRefusal(stream, partition, backoff, left));
     }
 
     private void activateOrRedrive(String stream, int partition, TimeSpan backoff) {
@@ -722,10 +724,12 @@ public final class OwnerActivation {
     @Contract
     private void noteRefusals(PartitionKey key, List<Result<PeerWatermark>> results) {
         results.stream()
-               .flatMap(result -> result.fold(StreamForwardError::refusalRetryAfter, _ -> Option.<TimeSpan> none())
+               .flatMap(result -> result.fold(StreamForwardError::refusalRetryAfter,
+                                              _ -> Option.<TimeSpan> none())
                                         .stream())
                .max(Comparator.naturalOrder())
-               .ifPresent(wait -> refusedUntilNanos.put(key, System.nanoTime() + wait.nanos()));
+               .ifPresent(wait -> refusedUntilNanos.put(key,
+                                                        System.nanoTime() + wait.nanos()));
     }
 
     private void redrive(String stream, int partition, TimeSpan backoff, Cause cause) {

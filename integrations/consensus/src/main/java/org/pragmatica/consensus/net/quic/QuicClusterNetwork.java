@@ -338,7 +338,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
         if (!outboundRefusalFilter.test(peerId, message)) {
             return false;
         }
-        log.warn("Outbound fault filter refused {} to peer {} (simulated backpressure)", message.getClass().getSimpleName(), peerId);
+
+        log.warn("Outbound fault filter refused {} to peer {} (simulated backpressure)",
+                 message.getClass().getSimpleName(),
+                 peerId);
 
         return true;
     }

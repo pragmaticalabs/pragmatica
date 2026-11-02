@@ -1267,7 +1267,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         state.escapeBackoffUntil(clockMs.getAsLong() + parkMs);
         state.finishDrain();
         if (!state.isCancelled() && !closed.get()) {
-            escapeScheduler.schedule(() -> resumeAfterEscapeBackoff(key, state), TimeSpan.timeSpan(parkMs).millis());
+            escapeScheduler.schedule(() -> resumeAfterEscapeBackoff(key, state),
+                                     TimeSpan.timeSpan(parkMs).millis());
         }
     }
 
@@ -2225,9 +2226,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// than the silent wait re-sent to it.
     static long deadLetterRetryDelayMs(int attempt, Cause cause) {
         return Math.max(computeBackoff(attempt),
-                        StreamForwardError.refusalRetryAfter(cause)
-                                          .map(TimeSpan::millis)
-                                          .or(0L));
+                        StreamForwardError.refusalRetryAfter(cause).map(TimeSpan::millis).or(0L));
     }
 
     private static long computeBackoff(int attempt) {

@@ -658,6 +658,7 @@ public final class PartitionBackfill {
         } else {
             release(key, flight, result.isFailure());
         }
+
         flight.result().resolve(result);
     }
 
@@ -674,7 +675,10 @@ public final class PartitionBackfill {
     /// #2574 F1: the refused flight stays in the slot until `wait` has passed, then is released as a failed flight.
     @Contract
     private void holdSlot(PartitionKey key, Flight flight, TimeSpan wait) {
-        log.debug("Backfill of {}[{}] was refused by the transport; its slot is held for {}", key.streamName(), key.partition(), wait);
+        log.debug("Backfill of {}[{}] was refused by the transport; its slot is held for {}",
+                  key.streamName(),
+                  key.partition(),
+                  wait);
         SharedScheduler.schedule(() -> release(key, flight, true), wait);
     }
 
@@ -685,7 +689,9 @@ public final class PartitionBackfill {
         var flight = Flight.flight(true);
 
         if (inFlight.putIfAbsent(key, flight) == null) {
-            log.debug("Backfill of {}[{}] re-runs once: a call joined the flight that failed", key.streamName(), key.partition());
+            log.debug("Backfill of {}[{}] re-runs once: a call joined the flight that failed",
+                      key.streamName(),
+                      key.partition());
             fly(key, flight, key.streamName(), key.partition());
         }
     }

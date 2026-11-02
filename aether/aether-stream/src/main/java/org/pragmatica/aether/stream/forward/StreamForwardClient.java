@@ -380,7 +380,9 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
         // detached: nothing chains on the outcome; the refusal resolves the caller's promise through the pending-entry
         // removal, which races the response and the timeout safely (whichever removes the entry resolves it).
         transport.sendOutcome(target, message, readWait)
-                 .onSuccess(outcome -> failReadIfRefused(outcome, message.correlationId(), readWait));
+                 .onSuccess(outcome -> failReadIfRefused(outcome,
+                                                         message.correlationId(),
+                                                         readWait));
         log.trace("Sent ReadForward to {} for {}[{}] fromOffset={} maxEvents={} correlationId={} preference={}",
                   target,
                   message.streamName(),
