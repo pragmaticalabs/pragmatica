@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
@@ -59,6 +60,7 @@ import static org.pragmatica.lang.Unit.unit;
 /// The ingress test pins `toHttpRequestContext`, the one conversion both the local dispatch and the forward use, over
 /// a real HTTP/1.1 chunked request. The forward test pins the other hop: the production node codec carries the
 /// trailers, and the host dispatches the decoded request with them.
+@Timeout(60)
 class AppHttpServerTrailersTest {
     private static final NodeId SELF_NODE = NodeId.nodeId("trailers-host").unwrap();
     private static final NodeId SENDER_NODE = NodeId.nodeId("trailers-ingress").unwrap();
@@ -75,12 +77,14 @@ class AppHttpServerTrailersTest {
         router = new CapturingRouter();
     }
 
+    /// #2565: the listener binds port 0 and the test reads back the port it really bound. A port probed free and bound
+    /// later could be lost in between under load, and the discarded start failure then surfaced as "Connection refused".
     @Test
     void chunkedRequest_withTrailers_reachesTheLocalSliceWithThem() throws IOException {
-        var port = ClusterTestPorts.freeTcpAndUdpPort();
-        var server = server(port, Option.none());
+        var server = server(0, Option.none());
 
-        server.start().await();
+        TlsProbe.requireStarted(server.start().await(), "app listener");
+        var port = TlsProbe.requireBoundPort(server.boundPort(), "app listener");
         try {
             var status = exchange(port,
                                   "POST /api/upload HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n"
