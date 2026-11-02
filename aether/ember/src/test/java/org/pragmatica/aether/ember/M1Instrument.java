@@ -111,6 +111,7 @@ final class M1Instrument {
     @SuppressWarnings({"unchecked", "rawtypes"})
     static M1Instrument install(AetherNode node) throws ReflectiveOperationException {
         var instrument = new M1Instrument(node.self().id());
+        ALL.add(instrument);
         var store = node.kvStore();
 
         instrument.store = store;
@@ -152,6 +153,8 @@ final class M1Instrument {
     private final AtomicLong slotSerial = new AtomicLong();
     private final AtomicLong noopSerial = new AtomicLong();
     private Object engineRef;
+    /// Every installed instrument, so a dump can ask the OTHER cores' ledgers about this core's pending batches.
+    static final java.util.List<M1Instrument> ALL = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     /// Test-only dump of this core's pending batches (reflection on `pendingBatches`, `committedLedger`): the first-choice id (the batch this voter proposes), and per
     /// pending batch its id, correlation ids, the command classes and keys inside, and whether the committed-batch ledger knows the id and ALL of its correlation ids.
@@ -186,12 +189,33 @@ final class M1Instrument {
 
                 rows.add("{\"id\":\"" + esc(entry.getKey()) + "\",\"nCorrelationIds\":" + ids.size() + ",\"correlationIds\":\"" + esc(ids.stream().limit(5).toList())
                          + "\",\"commands\":\"" + esc(commands.stream().limit(6).map(M1Instrument::commandSummary).toList()) + "\",\"nCommands\":" + commands.size()
-                         + ",\"ledgerKnowsId\":" + (known != null) + ",\"ledgerKnowsAllCorrelationIds\":" + (known != null && known.containsAll(ids)) + "}");
+                         + ",\"ledgerKnowsId\":" + (known != null) + ",\"ledgerKnowsAllCorrelationIds\":" + (known != null && known.containsAll(ids))
+                         + ",\"otherCoresLedgerKnowsAll\":\"" + ALL.stream().filter(i -> i != this).filter(i -> i.ledgerKnows(entry.getKey(), ids)).map(i -> i.nodeId).toList() + "\"}");
             }
             return "{\"core\":\"" + nodeId + "\",\"firstChoice\":\"" + (pending.isEmpty() ? "none" : esc(pending.getFirst().getKey())) + "\",\"pendingBatches\":" + pending.size()
                    + ",\"ledgerSize\":" + committed.size() + ",\"pending\":" + rows.stream().collect(java.util.stream.Collectors.joining(",", "[", "]")) + "}";
         } catch (ReflectiveOperationException | RuntimeException e) {
             return "{\"core\":\"" + nodeId + "\",\"error\":\"" + e.getClass().getSimpleName() + "\"}";
+        }
+    }
+
+    /// Whether THIS core's committed-batch ledger holds `batchId` and every one of `correlationIds` (by reflection; a copy taken under the ledger's monitor).
+    boolean ledgerKnows(Object batchId, java.util.List<?> correlationIds) {
+        try {
+            var ledgerField = engineRef.getClass().getDeclaredField("committedLedger");
+
+            ledgerField.setAccessible(true);
+            var ledger = ledgerField.get(engineRef);
+            var committedField = ledger.getClass().getDeclaredField("committed");
+
+            committedField.setAccessible(true);
+            synchronized (ledger) {
+                var known = ((java.util.Map<?, ?>) committedField.get(ledger)).get(batchId);
+
+                return known != null && ((java.util.Set<?>) known).containsAll(correlationIds);
+            }
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return false;
         }
     }
 
