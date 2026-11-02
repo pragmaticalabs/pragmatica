@@ -288,6 +288,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// path's 5 s re-reconcile). The four attempts end before the reconcile backstop's window opens.
         private static final long ACTIVATE_RETRY_BASE_SECONDS = 5;
         private static final int MAX_ACTIVATE_RETRIES = 4;
+
         /// #2579: a slice committed LOADED this long with no ACTIVATE is re-issued by the reconcile backstop. The
         /// activation timeout is ACTIVATING's: the budget a node has to activate once it is told to.
         private static final long ACTIVATION_BACKSTOP_MS = SliceState.ACTIVATING.timeout()
@@ -2819,7 +2820,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// ([#reissueStrandedActivations]) still covers the slice.
         private void onActivateWriteFailure(SliceNodeKey sliceKey, Cause cause, int attempt) {
             log.error("Failed to issue ACTIVATE command for {} (attempt {}): {}", sliceKey, attempt + 1, cause.message());
-
             if (attempt >= MAX_ACTIVATE_RETRIES) {
                 log.warn("ACTIVATE for {} not retried after {} attempts; the reconcile backstop re-issues it after {} ms in LOADED",
                          sliceKey,
@@ -2843,14 +2843,15 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             }
 
             committedLoaded(sliceKey).onPresent(committed -> reissueWhenReady(sliceKey, committed, attempt))
-                                     .onEmpty(() -> log.debug("ACTIVATE retry for {} not needed: the committed state is no longer LOADED",
-                                                              sliceKey));
+                           .onEmpty(() -> log.debug("ACTIVATE retry for {} not needed: the committed state is no longer LOADED",
+                                                    sliceKey));
         }
 
         /// The committed node-artifact value for this slice, when it is LOADED.
         private Option<NodeArtifactValue> committedLoaded(SliceNodeKey sliceKey) {
             return ctx.kvStore()
-                      .get(NodeArtifactKey.nodeArtifactKey(sliceKey.nodeId(), sliceKey.artifact()))
+                      .get(NodeArtifactKey.nodeArtifactKey(sliceKey.nodeId(),
+                                                           sliceKey.artifact()))
                       .filter(NodeArtifactValue.class::isInstance)
                       .map(NodeArtifactValue.class::cast)
                       .filter(value -> value.state() == SliceState.LOADED);
@@ -2870,11 +2871,14 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 return;
             }
 
-            log.info("Re-issuing ACTIVATE for {} (attempt {}): the committed state is still LOADED", sliceKey, attempt + 1);
-            hierarchyWriter().put(NodeArtifactKey.nodeArtifactKey(sliceKey.nodeId(), sliceKey.artifact()),
-                                  Option.<AetherValue>some(committedLoaded),
+            log.info("Re-issuing ACTIVATE for {} (attempt {}): the committed state is still LOADED",
+                     sliceKey,
+                     attempt + 1);
+            hierarchyWriter().put(NodeArtifactKey.nodeArtifactKey(sliceKey.nodeId(),
+                                                                  sliceKey.artifact()),
+                                  Option.<AetherValue> some(committedLoaded),
                                   NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVATE, 0L))
-                             .onFailure(cause -> onActivateWriteFailure(sliceKey, cause, attempt));
+                           .onFailure(cause -> onActivateWriteFailure(sliceKey, cause, attempt));
         }
 
         /// #2579 layer 2, the backstop for any lost ACTIVATE, not only a failed write: a slice the leader has seen
@@ -2884,8 +2888,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private void reissueStrandedActivations() {
             var now = ctx.nowMs();
 
-            loadedSince.keySet()
-                       .removeIf(key -> sliceStates.get(key) != SliceState.LOADED);
+            loadedSince.keySet().removeIf(key -> sliceStates.get(key) != SliceState.LOADED);
             loadedSince.entrySet()
                        .stream()
                        .filter(entry -> now - entry.getValue() > ACTIVATION_BACKSTOP_MS)
