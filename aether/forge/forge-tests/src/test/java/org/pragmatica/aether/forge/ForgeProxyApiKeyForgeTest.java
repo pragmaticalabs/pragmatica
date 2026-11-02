@@ -104,8 +104,9 @@ class ForgeProxyApiKeyForgeTest {
     /// #1881: a JDK client's selector thread ends once its client is unreachable and collected, so a count of threads
     /// whose clients nothing references races the GC. Every counted client is therefore held strongly until it is
     /// counted: the poller under test by a reachability fence, the per-fetch control pollers in a list. The poller is
-    /// also awaited until it can poll at all, as [#forgeEventPoll_carriesTheOperatorKey_andReadsTheTimeline] does, so
-    /// the bound is not measured against a management API that is not serving yet.
+    /// also awaited until it can poll at all, as [#forgeEventPoll_carriesTheOperatorKey_andReadsTheTimeline] does:
+    /// right after leader election the management server answers, but the event stream behind `/api/v1/events` can
+    /// still be promoting, so the first read may fail transiently.
     @Test
     void forgeEventPoll_reusesOneClient_acrossPolls() {
         var port = cluster.getLeaderManagementPort().unwrap();
