@@ -11,6 +11,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -751,12 +752,27 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                 value.attemptCount());
             // The lock is NOT removed here (#806): this runs only for an EXPIRED lock, which the next
             // acquire takes over, and a bare Remove of a `WitnessedRemoval` value is refused anyway.
-            var commands = List.<KVCommand<AetherKey>> of(new KVCommand.Put<>(versionKey, updated));
-
-            termWriter.write(WriteSite.SCHEMA_STALLED_RESET, () -> commands)
+            termWriter.write(WriteSite.SCHEMA_STALLED_RESET, () -> stalledMigrationReset(versionKey, value, updated))
                       .onFailure(cause -> log.error("Failed to reset stalled migration for '{}': {}",
                                              datasourceName,
                                              cause.message()));
+        }
+
+        /// #2584: the reset is a mutation guarded on the MIGRATING record it read, so the applier refuses it if the record
+        /// moved since (a migration that completed or failed meanwhile keeps its status). [TermWriter] has checked that
+        /// the committed leader record names this node before this builds, so the transaction carries that record.
+        private List<KVCommand<AetherKey>> stalledMigrationReset(SchemaVersionKey versionKey,
+                                                                 SchemaVersionValue read,
+                                                                 SchemaVersionValue updated) {
+            var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(versionKey, Option.some(read), Option.some(updated));
+
+            return committedLeader().map(leader -> List.<KVCommand<AetherKey>> of(new KVCommand.LeaderTransaction<>(versionKey,
+                                                                                                                   UUID.randomUUID()
+                                                                                                                       .toString(),
+                                                                                                                   leader,
+                                                                                                                   List.of(),
+                                                                                                                   List.of(mutation))))
+                                    .or(List.of());
         }
 
         private void triggerLoadedSliceActivation() {
