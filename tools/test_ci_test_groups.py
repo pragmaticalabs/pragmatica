@@ -66,6 +66,14 @@ class CiTestGroupsTest(unittest.TestCase):
         self.groups.write_text(rows)
         return groups.check(self.root, self.groups, self.ci)
 
+    def test_a_module_whose_every_class_is_quarantined_has_no_tests(self):
+        # a required job runs nothing there and the module writes no report, so `check` must stop listing it
+        write(self.root / "a/src/test/java/ATest.java", '// quarantine: #1\n@Tag("quarantine")\nclass ATest { @Test void t() {} }')
+        self.assertNotIn("a", groups.modules_with_tests(self.root))
+        write(self.root / "a/src/test/java/ATest.java", 'class ATest {\n    // quarantine: #1\n    @Tag("quarantine")\n'
+                                                         '    @Test void t() {}\n}')
+        self.assertIn("a", groups.modules_with_tests(self.root))  # a method-level tag leaves the class's other tests
+
     def test_a_root_with_tests_needs_an_owner_too(self):
         write(self.root / "src/test/java/ATest.java", TEST)
         self.assertIn("", groups.modules_with_tests(self.root))
