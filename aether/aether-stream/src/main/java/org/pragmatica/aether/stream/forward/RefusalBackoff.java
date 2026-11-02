@@ -11,6 +11,7 @@ import java.util.function.DoubleSupplier;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.io.TimeSpan;
 
+
 /// The hold a caller keeps after a forward read the transport refused ([StreamForwardError.ForwardNotSent], #2574), per key
 /// (CTO ruling, know 89e17399a9). A refused read fails at once, where it used to wait out its 2 s read timeout, so a caller
 /// that re-reads on its own trigger (a gap trigger per received batch, a 50 ms consumer poll, a gate run per owner action)
@@ -28,6 +29,7 @@ public final class RefusalBackoff<K> {
     public static final TimeSpan FIRST_HOLD = TimeSpan.timeSpan(250).millis();
     public static final TimeSpan MAX_HOLD = TimeSpan.timeSpan(4).seconds();
     public static final double JITTER = 0.2;
+
     /// The longest hold any key can be given: the cap with the full upward jitter.
     public static final TimeSpan LONGEST_HOLD = TimeSpan.timeSpan(Math.round(MAX_HOLD.nanos() * (1.0 + JITTER))).nanos();
 
@@ -40,8 +42,7 @@ public final class RefusalBackoff<K> {
 
     /// The production backoff, jittered from the thread-local random source.
     public static <K> RefusalBackoff<K> refusalBackoff() {
-        return refusalBackoff(() -> ThreadLocalRandom.current()
-                                                     .nextDouble());
+        return refusalBackoff(() -> ThreadLocalRandom.current().nextDouble());
     }
 
     /// A backoff whose jitter draws from `unitRandom` (uniform in [0, 1)); a seeded source makes it repeatable in tests.

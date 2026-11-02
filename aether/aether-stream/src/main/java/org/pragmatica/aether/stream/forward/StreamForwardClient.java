@@ -376,7 +376,8 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
         // detached: nothing chains on the outcome; the failure resolves the caller's promise through the pending-entry
         // removal, which races the response and the timeout safely (whichever removes the entry resolves it).
         transport.sendOutcome(target, message, readWait)
-                 .onSuccess(outcome -> failReadIfNotSent(outcome, message.correlationId()));
+                 .onSuccess(outcome -> failReadIfNotSent(outcome,
+                                                         message.correlationId()));
         log.trace("Sent ReadForward to {} for {}[{}] fromOffset={} maxEvents={} correlationId={} preference={}",
                   target,
                   message.streamName(),
@@ -475,8 +476,7 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
     private static Option<Cause> notSentCause(WriteOutcome outcome) {
         return switch (outcome) {
             case WriteOutcome.Sent _ -> Option.none();
-            case WriteOutcome.BackpressureRefused _, WriteOutcome.ConnectionDead _, WriteOutcome.NoPeerState _ ->
-                Option.some(StreamForwardError.ForwardNotSent.FACTORY.apply(outcome));
+            case WriteOutcome.BackpressureRefused _, WriteOutcome.ConnectionDead _, WriteOutcome.NoPeerState _ -> Option.some(StreamForwardError.ForwardNotSent.FACTORY.apply(outcome));
             case WriteOutcome.EncodeFailed _ -> Option.some(StreamForwardError.ForwardNotEncoded.FACTORY.apply(outcome));
         };
     }

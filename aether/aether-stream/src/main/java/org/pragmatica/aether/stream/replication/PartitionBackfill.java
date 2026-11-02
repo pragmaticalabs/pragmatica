@@ -228,6 +228,7 @@ public final class PartitionBackfill {
     private volatile Runnable joinWindowHook = () -> {};
 
     private volatile Runnable releaseWindowHook = () -> {};
+
     /// #2574 F1: the per-partition hold a refused flight keeps its slot for ([RefusalBackoff]); shared by every run.
     private final RefusalBackoff<PartitionKey> refusalBackoff;
 

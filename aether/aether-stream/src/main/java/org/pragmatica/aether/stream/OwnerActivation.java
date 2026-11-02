@@ -731,11 +731,15 @@ public final class OwnerActivation {
     /// run's refused peers starts the partition's wait (see [#refusedUntilNanos]). `results` are in `peers` order.
     @Contract
     private void noteRefusals(PartitionKey key, List<NodeId> peers, List<Result<PeerWatermark>> results) {
-        IntStream.range(0, Math.min(peers.size(), results.size()))
-                 .mapToObj(index -> peerHold(peers.get(index), results.get(index)))
+        IntStream.range(0,
+                        Math.min(peers.size(),
+                                 results.size()))
+                 .mapToObj(index -> peerHold(peers.get(index),
+                                             results.get(index)))
                  .flatMap(Option::stream)
                  .max(Comparator.naturalOrder())
-                 .ifPresent(hold -> refusedUntilNanos.put(key, System.nanoTime() + hold.nanos()));
+                 .ifPresent(hold -> refusedUntilNanos.put(key,
+                                                          System.nanoTime() + hold.nanos()));
     }
 
     private Option<TimeSpan> peerHold(NodeId peer, Result<PeerWatermark> result) {
