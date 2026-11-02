@@ -147,9 +147,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// #2580: one open backpressure episode per (peer, lane). The first write that finds the lane unwritable opens
     /// it with one WARN; later ones only count. The first write that finds the lane writable again closes it with one
     /// INFO summary. Logging every backpressured write was measured at 785,923 WARN lines in 4.5 minutes, the log
-    /// volume landing exactly when the cluster is overloaded (CI run 41243342645). Residual, stated: an episode of a
-    /// peer that never takes a writable write again (a departed peer) stays open; the map holds at most one entry per
-    /// (peer, lane) ever backpressured.
+    /// volume landing exactly when the cluster is overloaded (CI run 41243342645). An episode also closes when the
+    /// peer's bound channel closes or the peer departs: worker NodeIds are new per incarnation, so an entry kept for a
+    /// gone peer would grow the map without bound over a long uptime.
     private final Map<BackpressureLane, BackpressureEpisode> backpressureEpisodes = new ConcurrentHashMap<>();
 
     private record BackpressureLane(NodeId peerId, StreamType streamType) {}
@@ -999,6 +999,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var peer = peers.get(nodeId);
 
         firstObservedMissingMs.remove(nodeId);
+        endBackpressureEpisodes(nodeId);
         if (peer == null) {
             log.debug("departurePermanent for {} suppressed: peer absent (no transition)", nodeId);
 
@@ -2631,6 +2632,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                              TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - episode.startedNanos())));
     }
 
+    /// Closes every open episode of a peer whose channel closed or who departed, each with its summary line.
+    private void endBackpressureEpisodes(NodeId peerId) {
+        Stream.of(StreamType.values())
+              .forEach(streamType -> endBackpressureEpisode(peerId, streamType));
+    }
+
     /// Package-private test seam — drives `writeIfWritable` directly so regression tests can
     /// assert the per-stream backpressure branch (CONSENSUS retry vs. fast-fail refusal)
     /// without standing up a full QUIC handshake.
@@ -2835,6 +2842,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var state = peers.get(peerId);
 
         if (state == null) {
+            endBackpressureEpisodes(peerId);
+
             return;
         }
         // Reference equality on the wrapper: adopt-newer (`attachOverConnected`) binds a
@@ -2844,6 +2853,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // loop, no double-close (`evictStaleConnection` guards its own `.close()` on `isActive()`).
         if (state.activeConnection().map(current -> current == closed).or(false)) {
             log.info("QUIC channel to {} closed — evicting (event-driven) so the reconciler re-dials", peerId);
+            endBackpressureEpisodes(peerId);
             evictStaleConnection(peerId, closed);
         }
     }

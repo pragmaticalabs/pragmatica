@@ -24,8 +24,11 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import io.netty.channel.ChannelFuture;
+import io.netty.channel.DefaultChannelPromise;
+import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicStreamChannel;
+import io.netty.util.concurrent.ImmediateEventExecutor;
 import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -472,6 +475,75 @@ class QuicConsensusBackpressureTest {
 
                 assertThat(entryWarns(capture)).as("three (peer, lane) pairs: three entry WARNs").hasSize(3);
             }
+        }
+
+        /// A departed peer's open episode is closed with its summary and its entry dropped: worker NodeIds are new per
+        /// incarnation, so a kept entry would grow the map without bound under churn. The proof the entry is gone is
+        /// that the next backpressured write opens a NEW episode.
+        @Test
+        void departedPeer_closesItsEpisode_andDropsTheEntry() {
+            var blocked = blockedChannel();
+            var network = network();
+
+            try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+                blockWrites(network, blocked, WRITES);
+
+                network.departurePermanent(PEER);
+
+                assertSummaryOf(capture, WRITES);
+                network.writeIfWritableForTest(blocked, payload(), PEER, StreamType.METRICS);
+                assertThat(entryWarns(capture)).as("the departed peer's entry was dropped: a later write opens a new episode")
+                                               .hasSize(2);
+            }
+        }
+
+        /// The same through the event-driven close path: the peer's bound QUIC channel closes.
+        @Test
+        void closedChannel_closesThePeersEpisode_andDropsTheEntry() {
+            var blocked = blockedChannel();
+            var network = network();
+            var chan = mock(QuicChannel.class);
+            var closeFuture = new DefaultChannelPromise(chan, ImmediateEventExecutor.INSTANCE);
+            when(chan.isActive()).thenReturn(true);
+            when(chan.closeFuture()).thenReturn(closeFuture);
+            var connection = QuicPeerConnection.quicPeerConnection(PEER, chan);
+            var attachedAt = System.nanoTime();
+            var state = PeerState.peerState(PEER, attachedAt);
+            state.beginConnecting(attachedAt);
+            state.attach(connection, attachedAt);
+            network.seedPeerForTests(PEER, state);
+            network.registerCloseListenerForTests(PEER, connection);
+
+            try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+                blockWrites(network, blocked, WRITES);
+
+                closeFuture.setSuccess();
+
+                assertSummaryOf(capture, WRITES);
+                network.writeIfWritableForTest(blocked, payload(), PEER, StreamType.METRICS);
+                assertThat(entryWarns(capture)).as("the closed channel's entry was dropped: a later write opens a new episode")
+                                               .hasSize(2);
+            }
+        }
+
+        private static QuicStreamChannel blockedChannel() {
+            var blocked = mock(QuicStreamChannel.class);
+            when(blocked.isWritable()).thenReturn(false);
+
+            return blocked;
+        }
+
+        private static void blockWrites(QuicClusterNetwork network, QuicStreamChannel blocked, int writes) {
+            for (int i = 0; i < writes; i++) {
+                network.writeIfWritableForTest(blocked, payload(), PEER, StreamType.METRICS);
+            }
+        }
+
+        private static void assertSummaryOf(LogCapture capture, int writes) {
+            assertThat(capture.messages(Level.INFO)).as("the episode is closed with one summary")
+                                                    .filteredOn(message -> message.contains("cleared"))
+                                                    .singleElement()
+                                                    .satisfies(message -> assertThat(message).contains(writes + " write(s)"));
         }
 
         private static List<String> entryWarns(LogCapture capture) {
