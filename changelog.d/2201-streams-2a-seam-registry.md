@@ -1,0 +1,2 @@
+### Added (2026-11-01 — #2201 PR-2a: a registry of the stream partition manager's late-bound seams)
+- **Seam registry.** The stream partition manager records which of its 19 late-bound seams the wiring bound; on a node configured with a WAL, a safety-relevant seam still at its permissive default is logged at ERROR at boot and counted by the `aether.streams.seams.unbound.safety` gauge (0 on a correctly wired node). Which seams count as safety-relevant is a judgement, stated in `StreamSeam`. `[verified: StreamSeamRegistryTest (unit)]`

@@ -915,6 +915,9 @@ public sealed interface StreamAssembly {
         // Initial reconcile once membership is available; serialized on the controller executor, so
         // this is a safe no-op until the topology observer reports core members.
         streamReplicaSetController.reconcile();
+        // #2201 A-14: every seam of the manager is bound by now (the last ones above); a safety-relevant seam still at its
+        // permissive default on a node with a WAL is named at ERROR (and counted by `aether.streams.seams.unbound.safety`).
+        streamPartitionManager.reportUnboundSafetySeams();
         // #932: one thread each per node, both daemon and neither closed on stop — nine of each survived a
         // nine-node stop. The controller's close() is shutdownNow on the executor it owns; the backfill
         // executor is this method's own. Controller first: its reconcile is what submits to the backfill.

@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
@@ -18,7 +19,6 @@ import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -202,13 +202,21 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// for every `(stream, partition)` — the always-materialize behavior that preserves the pre-seam
     /// semantics exactly. `AetherNode` late-binds the real [ReplicaSetController#roleFor].
     private static final PlacementRoleSupplier ALWAYS_OWNER = (_, _) -> ReplicaSetController.Role.OWNER;
+    /// The owner-epoch source the factories without one default to; any other source a caller passes counts as bound
+    /// ([StreamSeam#OWNER_EPOCH_SOURCE]).
+    private static final StreamOwnerEpochSource ZERO_EPOCHS = StreamOwnerEpochSource.zero();
 
-    private final ConcurrentHashMap<String, StreamEntry> streams = new ConcurrentHashMap<>();
-    /// #1564 (R8): the config of every `StreamConfigKey` Put this node has APPLIED, by stream name — the committed
-    /// value exactly as KV holds it, independent of whether (or with which factors) a local entry exists. A local
-    /// entry can lag or differ: a native-OOM hydrate leaves none, and [#adoptIfMoreDurable] keeps a stronger local
-    /// config over a weaker committed one.
-    private final ConcurrentHashMap<String, StreamConfig> appliedConfigs = new ConcurrentHashMap<>();
+    /// #2201 A-05 (spec 5.1, rulings Q3/Q4): the stream registry: the entries, the applied configs, the deferred repair reports,
+    /// the orphaned-WAL sets and each stream's per-partition state ([PartitionState]).
+    private final StreamEntries entries = StreamEntries.streamEntries();
+    /// The registry's entry map ([StreamEntries#streams]), the same object under the name existing tests reach by reflection
+    /// (`StreamPartitionVisibilityTest`), so PR-2a changes no existing test beyond imports.
+    private final ConcurrentHashMap<String, StreamEntry> streams = entries.streams();
+    /// #2201 A-05: the materialization scheduling state, rows 20-28 of the spec table.
+    private final MaterializationScheduler scheduler = MaterializationScheduler.materializationScheduler();
+    /// #2201 A-14 (spec 5.1 target, bullet 4): the late-bound seams this manager's wiring has bound. Each setter registers its
+    /// seam; the owner-epoch source registers when it is handed to the constructor by a caller rather than defaulted.
+    private final Set<StreamSeam> boundSeams = ConcurrentHashMap.newKeySet();
     private final AtomicLong totalAllocatedBytes = new AtomicLong(0);
     /// #2201 C-03 (spec 4.4 item 4): moved by every return of bytes to the pool ([#release]: a stream destroyed, a ring closed
     /// or released, a reservation handed back), so a ring frozen by a refused growth knows budget may have been freed since.
@@ -235,16 +243,6 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// fsync-durable in that WAL. The replica-receive path (`appendRecovered`) writes the same WAL and
     /// makes it durable at [#syncReplicated] (#634 item 1, #1244).
     private final Option<AppendLog.Opener> logs;
-    /// The latest replicated WAL write per `(stream, partition)` key (#1244): what [#syncReplicated]
-    /// commits, and the offset it then makes visible (#1235). Updated inside the partition's ordered append
-    /// section, so it always holds the highest offset written.
-    private final ConcurrentHashMap<String, ReplicatedWrite> lastReplicatedWalWrite = new ConcurrentHashMap<>();
-    /// #1505 F2: per partition, the lowest offset at which this replica was found to hold a DIVERGENT entry. Read
-    /// and written only inside the partition's ordered append section ([OffHeapRingBuffer#appendOrderedAt]).
-    /// Kept for the life of this manager, so it survives a ring release and rebuild. It does NOT survive a
-    /// process restart: persisting it would be a new persisted-state format, tracked as #1513. Cleared
-    /// only when the stream is destroyed.
-    private final ConcurrentHashMap<PartitionRef, Long> divergedAt = new ConcurrentHashMap<>();
     /// #1505 R3: serialises RECORDING a divergence ([PartitionQuarantine#recordDivergence], called inside a ring's
     /// ordered section) against a self-promotion and its completion ack ([#quarantineView]). A promotion that runs
     /// under it either completes before the divergence is recorded, or sees the record and refuses; no ack can
@@ -253,13 +251,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final Object quarantineLock = new Object();
     /// #1596: the durable partition flag, late-bound ([#partitionFlags(PartitionFlags)]).
     private volatile Option<PartitionFlags> partitionFlags = none();
-    /// #1730 phase 2: replica partitions whose recovered tail has not been verified against the committed owner yet. Such
-    /// a copy may hold a lineage the owner never had (an ex-owner's unacknowledged records), so nothing it recovered is
-    /// visible to a read served here until [#markVerified] covers it; its own appends do not drag it into view either.
-    private final Set<String> unverifiedReplicas = ConcurrentHashMap.newKeySet();
-    /// The cause of the cut refusal last reported per partition (#2084), so a repair retried against the same obstacle reports nothing more.
-    private final Map<PartitionRef, String> refusedCuts = new ConcurrentHashMap<>();
-    /// Raise-before-resolve (#2004) for [#refusedCuts]: recording a refusal and raising it, and removing it and resolving it, each happen
+    /// Raise-before-resolve (#2004) for [PartitionState.RepairEpisode#refusedCuts]: recording a refusal and raising it, and removing it and resolving it, each happen
     /// under this monitor, so a close that lands while the refusal is being raised waits for it and delivers [refused, resumed], never
     /// [resumed, refused] (which the aggregator drops, leaving the warning open). These race in production: the refusal is raised on the
     /// repair path (a backfill thread), the close from the reconcile tick that releases the replica or the thread that destroys the stream. A leaf
@@ -283,30 +275,15 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// #2201 C-16: the sealed tier a validated consumer read falls back to below the ring tail, late-bound
     /// ([#tieredReader(TieredStreamReader)]); none until wired, and then such a read answers `CursorExpired` at the ring tail.
     private volatile Option<TieredStreamReader> tieredReader = Option.none();
-    /// #1596: the reasons this process has already raised, `stream#partition#kind#evidence`, so a condition met on
-    /// every append raises one transaction, not one per append. A raise that fails is forgotten and retried at the
-    /// next occurrence.
-    private final Set<String> raisedLocally = ConcurrentHashMap.newKeySet();
-    /// Per partition: the committed owner epoch this copy last judged itself against, and whether it may serve and
-    /// acknowledge at and above that epoch's start ([#unverifiedFrom]).
-    private final ConcurrentHashMap<String, EpochTrust> epochTrust = new ConcurrentHashMap<>();
     /// Where a committed epoch began, when the cluster records it (the epoch-validated fetch does, #1873). Until then every
     /// offset counts as at or above the start: a copy that holds anything is doubted until it has been compared.
     private volatile EpochStartSource epochStarts = (_, _, _) -> none();
 
-    private record EpochTrust(Epoch epoch, boolean verified) {}
+    /// A copy's verdict on an epoch ([PartitionState.Standing#epochTrust]).
+    record EpochTrust(Epoch epoch, boolean verified) {}
 
-    /// #2087: the highest owner-visible offset this REPLICA has been told of, per partition, with the owner epoch it was
-    /// reported under ([#commitAdvanced]). A replica exposes to a consumer read no more than the minimum of this and what
-    /// it holds, so no read path serves an offset a failover could still replace. Absent means nothing is known: nothing
-    /// is exposed until the owner reports. A newer epoch replaces the entry, even with a lower value; an older one is ignored.
-    private final ConcurrentHashMap<String, CommittedMark> replicaCommitted = new ConcurrentHashMap<>();
-
-    private record CommittedMark(Epoch epoch, long through) {}
-
-    /// #2087: how far a replica's unverified tail has been compared with the committed owner ([#markVerified]); only
-    /// meaningful while the partition is in [#unverifiedReplicas]. A verified prefix is exposed up to the owner's report.
-    private final ConcurrentHashMap<String, Long> verifiedPrefix = new ConcurrentHashMap<>();
+    /// The owner's reported visible position ([PartitionState.Standing#replicaCommitted]).
+    record CommittedMark(Epoch epoch, long through) {}
 
     /// The offset the owner of `epoch` began writing at.
     @FunctionalInterface
@@ -314,44 +291,18 @@ public final class StreamPartitionManager implements AutoCloseable {
         Option<Long> startOf(String streamName, int partition, Epoch epoch);
     }
 
-    /// The offsets at which a PROVENANCE comparison found this copy divergent (N13), while the partition stays quarantined for
-    /// it. The durable flag is raised only if the divergence is not repaired ([#flagUnrepaired]): a repair removes the entry.
-    private final ConcurrentHashMap<PartitionRef, Long> provenanceMismatchAt = new ConcurrentHashMap<>();
-    /// What the repair in progress of a partition has discarded so far; reported once when it settles ([#settleRepair]).
-    private final ConcurrentHashMap<PartitionRef, TailCut> pendingCuts = new ConcurrentHashMap<>();
-    /// The range already reported while its repair was unsettled ([#repairReportBound]); the settled report follows only if the
-    /// range grew.
-    private final ConcurrentHashMap<PartitionRef, TailCut> reportedUnsettled = new ConcurrentHashMap<>();
     private volatile Option<TimeSpan> repairReportBound = Option.none();
-    /// The repair a pending cut belongs to: bumped when a partition's first cut of a repair is made, so a timer scheduled for an
-    /// earlier repair, which settled, never reports a newer one.
-    private final ConcurrentHashMap<PartitionRef, Long> repairGenerationOf = new ConcurrentHashMap<>();
 
     private final java.util.concurrent.atomic.AtomicLong repairGeneration = new java.util.concurrent.atomic.AtomicLong();
-
-    /// Reports of repairs a previous process left unsettled that were found before the operator-warning sink was wired; made
-    /// when it is.
-    private final java.util.concurrent.CopyOnWriteArrayList<Runnable> deferredReports = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     private volatile boolean operatorWarningsBound = false;
 
     /// Know 3b01e624f1: the WAL directories (`<stream>@<incarnation>`) under the log root as they were when the first stream life was adopted,
     /// i.e. at startup, before this process created any. Read once: the directories of this process's own lives are not in it.
     private final Lazy<List<String>> walDirectoriesAtStart = Lazy.lazy(this::scanWalDirectories);
-    /// The WAL directories already reported as orphaned by this process: one event per directory, however many streams adopt after it.
-    private final Set<String> orphanedWalReported = ConcurrentHashMap.newKeySet();
-    /// The lives announced as released ([#raiseReleasedLives]): the startup snapshot still lists them, and must not announce them again.
-    private final Set<String> releasedOrphans = ConcurrentHashMap.newKeySet();
-    /// #1638 F1: the catch-up installs recorded but not yet settled, per partition ([#installProvenance]). Each
-    /// partition's list is also that partition's lock serialising recording an install against trimming one, so a trim
-    /// never drops an entry a pending install has just recorded or skipped; partitions never wait on each other's
-    /// sidecar fsyncs (#1638 N2). Lock order: a partition's list → its log's write lock, never the reverse. One list per
-    /// partition that ever caught up here, kept for the manager's lifetime.
-    private final Map<PartitionRef, List<InstalledSlice>> pendingInstalls = new ConcurrentHashMap<>();
 
     private static final long DURABLE_WATERMARK_TTL_NANOS = 10_000_000_000L;
 
-    private final Map<PartitionRef, CachedWatermark> durableWatermarks = new ConcurrentHashMap<>();
     /// Bumped on every ring install and release; a watermark read that started before a bump is never cached, so a
     /// slow read cannot put a pre-install value back after the drop.
     private final AtomicLong watermarkGeneration = new AtomicLong();
@@ -366,8 +317,6 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// See [DurableSealedOffsetSource]. The production wiring derives it from the latest metadata snapshot on
     /// disk; the standalone/test factories treat their single source as durable.
     private final DurableSealedOffsetSource durableSealedOffset;
-    /// Durable bound each WAL-backed partition saw at the previous truncation tick — see [#noteHeldBack].
-    private final ConcurrentHashMap<String, Long> durableAtPreviousTick = new ConcurrentHashMap<>();
     /// See [#walReclamationHeldBackTicks]. Written only by the truncation tick.
     private volatile long walReclamationHeldBackTicks;
     private volatile Consumer<Exhaustion> exhaustionSink = NOOP_SINK;
@@ -457,51 +406,12 @@ public final class StreamPartitionManager implements AutoCloseable {
     private volatile Semaphore reshuffleSlots = new Semaphore(RESHUFFLE_CONCURRENCY);
     /// See [#segmentTierPressure(SegmentTierPressure)].
     private volatile SegmentTierPressure segmentTierPressure = SegmentTierPressure.NONE;
-
     /// The reshuffle-slot limit in force. Reported by [org.pragmatica.aether.stream.StreamError.ReshufflePaced]
     /// so the operator-facing message states the ACTUAL bound rather than a compile-time constant.
     private volatile int reshuffleConcurrency = RESHUFFLE_CONCURRENCY;
 
-    /// Partitions currently holding a reshuffle slot (materialize+backfill in flight). Membership set paired
-    /// with {@link #reshuffleSlots}: `add` is the "acquire", `remove`+release is the "free". Swept each tick
-    /// so a completed/lost partition frees its slot.
-    private final Set<PartitionRef> inFlightMaterializations = ConcurrentHashMap.newKeySet();
-    /// System-stream reshuffle queue (drains FIRST — owner decision 2026-07-05). Refs enqueued when no slot
-    /// is free; dequeued on the reconcile tick as slots free.
-    private final Deque<PartitionRef> systemMaterializeQueue = new ConcurrentLinkedDeque<>();
-    /// App-stream reshuffle queue (drains AFTER the system queue, FIFO). A queued app partition proceeds only
-    /// when a slot AND off-heap budget headroom both exist (budget-AND).
-    private final Deque<PartitionRef> appMaterializeQueue = new ConcurrentLinkedDeque<>();
-    /// Dedup set across both queues + a fast "is queued" membership test — a repeat materialize request for an
-    /// already-queued partition is a no-op (idempotent, like the lazy-materialize path itself).
-    private final Set<PartitionRef> queuedMaterializations = ConcurrentHashMap.newKeySet();
-    /// First reconcile tick at which each partition was seen held (role OWNER/REPLICA) but unmaterialized (#1805).
-    /// DIAGNOSTIC only — it times the WARN; the re-drive itself is level-triggered over the live state
-    /// ([#redriveHeldUnmaterialized]) and needs no memory of past refusals. The queues above are TRANSIENT work
-    /// lists (a stale-purge at role NONE or a failed drain removes the entry) and every producer of a materialize
-    /// attempt is edge-triggered (the registry-add edge behind `onBecameReplica`, an owner append), so a partition
-    /// whose queue entry was lost used to stay held-but-not-materialized forever. The clock restarts when the role
-    /// goes NONE; entries are removed when the ring exists or the stream is gone.
-    private final Map<PartitionRef, Long> heldUnmaterializedSince = new ConcurrentHashMap<>();
     /// WARNs raised for partitions held-but-unmaterialized past [#HELD_UNMATERIALIZED_WARN_TICKS] since boot.
     private final AtomicLong heldUnmaterializedWarnings = new AtomicLong(0);
-
-    /// Reconcile tick at which each in-flight partition ACQUIRED its slot — the input to starvation
-    /// preemption ([#preemptStalledSlots]). Removed when the slot is freed or preempted.
-    private final Map<PartitionRef, Long> slotAcquiredTick = new ConcurrentHashMap<>();
-
-    /// Partitions whose backfill is still running but which no longer hold a reshuffle slot, because they
-    /// were preempted for starving the queue. Load-bearing for permit accounting, NOT bookkeeping: slot
-    /// acquisition is idempotent VIA {@link #inFlightMaterializations} membership ("a ref already in flight
-    /// returns true without a second permit"), so a preempted ref that re-entered the acquire path would take
-    /// a SECOND permit and only ever release one — leaking the pool empty. A ref listed here reports its slot
-    /// as already held and never takes another.
-    private final Set<PartitionRef> preemptedSlots = ConcurrentHashMap.newKeySet();
-
-    /// Release candidacy (#265 increment 5): a materialized partition whose role went NONE maps to the
-    /// reconcile tick at which candidacy started. Debounced (survive [#RELEASE_DEBOUNCE_TICKS] ticks) then
-    /// gated (catch-up + owner) before release. A role regained removes the entry (flap cancel).
-    private final ConcurrentHashMap<PartitionRef, Long> releaseCandidacy = new ConcurrentHashMap<>();
 
     /// Monotonic reconcile-tick counter driving the debounce (one increment per {@link #reconcileReshuffle}).
     private final AtomicLong reconcileTick = new AtomicLong(0);
@@ -531,6 +441,10 @@ public final class StreamPartitionManager implements AutoCloseable {
         this.clusterNode = clusterNode;
         this.epochHighWater = epochHighWater;
         this.ownerEpochSource = ownerEpochSource;
+        if (ownerEpochSource != ZERO_EPOCHS) {
+            boundSeams.add(StreamSeam.OWNER_EPOCH_SOURCE);
+        }
+
         this.logs = logs;
         this.lastSealedOffset = lastSealedOffset;
         this.durableSealedOffset = durableSealedOffset;
@@ -548,7 +462,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           ReplicationManager.NONE,
                                           Option.none(),
                                           Option.none(),
-                                          StreamOwnerEpochSource.zero(),
+                                          ZERO_EPOCHS,
                                           Option.none(),
                                           LastSealedOffsetSource.none(),
                                           DurableSealedOffsetSource.none());
@@ -560,7 +474,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           ReplicationManager.NONE,
                                           Option.none(),
                                           Option.none(),
-                                          StreamOwnerEpochSource.zero(),
+                                          ZERO_EPOCHS,
                                           Option.none(),
                                           LastSealedOffsetSource.none(),
                                           DurableSealedOffsetSource.none());
@@ -572,7 +486,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           ReplicationManager.NONE,
                                           Option.none(),
                                           Option.none(),
-                                          StreamOwnerEpochSource.zero(),
+                                          ZERO_EPOCHS,
                                           Option.none(),
                                           LastSealedOffsetSource.none(),
                                           DurableSealedOffsetSource.none());
@@ -586,7 +500,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           replicationManager,
                                           Option.none(),
                                           Option.none(),
-                                          StreamOwnerEpochSource.zero(),
+                                          ZERO_EPOCHS,
                                           Option.none(),
                                           LastSealedOffsetSource.none(),
                                           DurableSealedOffsetSource.none());
@@ -602,7 +516,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           ReplicationManager.NONE,
                                           Option.none(),
                                           Option.none(),
-                                          StreamOwnerEpochSource.zero(),
+                                          ZERO_EPOCHS,
                                           logs,
                                           lastSealedOffset,
                                           DurableSealedOffsetSource.same(lastSealedOffset));
@@ -617,7 +531,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           replicationManager,
                                           Option.some(clusterNode),
                                           Option.none(),
-                                          StreamOwnerEpochSource.zero(),
+                                          ZERO_EPOCHS,
                                           Option.none(),
                                           LastSealedOffsetSource.none(),
                                           DurableSealedOffsetSource.none());
@@ -674,7 +588,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           ReplicationManager.NONE,
                                           Option.none(),
                                           Option.none(),
-                                          StreamOwnerEpochSource.zero(),
+                                          ZERO_EPOCHS,
                                           walBaseDir.map(AppendLog.Opener::directory),
                                           lastSealedOffset,
                                           DurableSealedOffsetSource.same(lastSealedOffset));
@@ -707,7 +621,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           ReplicationManager.NONE,
                                           Option.none(),
                                           Option.none(),
-                                          StreamOwnerEpochSource.zero(),
+                                          ZERO_EPOCHS,
                                           walBaseDir.map(AppendLog.Opener::directory),
                                           lastSealedOffset,
                                           durableSealedOffset);
@@ -728,7 +642,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           replicationManager,
                                           Option.none(),
                                           Option.none(),
-                                          StreamOwnerEpochSource.zero(),
+                                          ZERO_EPOCHS,
                                           walBaseDir.map(AppendLog.Opener::directory),
                                           lastSealedOffset,
                                           DurableSealedOffsetSource.same(lastSealedOffset));
@@ -741,7 +655,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           ReplicationManager.NONE,
                                           Option.some(clusterNode),
                                           Option.none(),
-                                          StreamOwnerEpochSource.zero(),
+                                          ZERO_EPOCHS,
                                           Option.none(),
                                           LastSealedOffsetSource.none(),
                                           DurableSealedOffsetSource.none());
@@ -823,7 +737,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Value key for a single `(stream, partition)` arc — the map/set key for the reshuffle in-flight set,
     /// materialization queues, and release candidacy (#265 increment 5). Record equality gives correct
     /// hashing without a hand-rolled key.
-    private record PartitionRef(String streamName, int partition) {}
+    record PartitionRef(String streamName, int partition) {}
 
     public long totalAllocatedBytes() {
         return totalAllocatedBytes.get();
@@ -844,6 +758,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void exhaustionSink(Consumer<Exhaustion> sink) {
         this.exhaustionSink = sink;
+        boundSeams.add(StreamSeam.EXHAUSTION_SINK);
     }
 
     /// Late-bind the placement-role supplier (#265 increment 1). `AetherNode` wires this to
@@ -853,11 +768,12 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void placementRoleSupplier(PlacementRoleSupplier supplier) {
         this.placementRoleSupplier = supplier;
+        boundSeams.add(StreamSeam.PLACEMENT_ROLE_SUPPLIER);
     }
 
     /// Set the reshuffle-slot limit (`[streaming] reshuffle_concurrency`). Set ONCE at wiring, before any
     /// materialization: it replaces the permit pool wholesale, so calling it with slots in flight would
-    /// desynchronise permits from {@link #inFlightMaterializations}. A value below 1 is ignored — a zero
+    /// desynchronise permits from [MaterializationScheduler#inFlightMaterializations]. A value below 1 is ignored — a zero
     /// limit would stall every REPLICA materialization permanently, and silently accepting it here would
     /// reproduce the starvation this bound is meant to pace. `ConfigValidator` rejects it up front so the
     /// operator sees the error rather than this defensive floor.
@@ -871,6 +787,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         this.reshuffleConcurrency = limit;
         this.reshuffleSlots = new Semaphore(limit);
+        boundSeams.add(StreamSeam.RESHUFFLE_CONCURRENCY);
     }
 
     /// Late-bind the cluster-size source for the aggregate partition guard (#265 increment 4). `AetherNode`    /// wires this to the topology observer's live count (the SAME source [ReplicaSetController] uses for HRW
@@ -880,6 +797,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void clusterSizeSupplier(IntSupplier supplier) {
         this.clusterSizeSupplier = supplier;
+        boundSeams.add(StreamSeam.CLUSTER_SIZE_SUPPLIER);
     }
 
     /// Late-bind the replica catch-up source (#265 increment 5). `AetherNode` wires this to the
@@ -889,6 +807,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void replicaCatchupSource(ReplicaCatchupSource source) {
         this.catchupSource = source;
+        boundSeams.add(StreamSeam.CATCHUP_SOURCE);
     }
 
     /// Late-bind the committed-ownership release guard (#265 increment 5). `AetherNode` wires this to the
@@ -898,6 +817,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void ownerReleaseGuard(OwnerReleaseGuard guard) {
         this.ownerReleaseGuard = guard;
+        boundSeams.add(StreamSeam.OWNER_RELEASE_GUARD);
     }
 
     /// Late-bind the committed-ownership write admission (#1230). `AetherNode` wires this to the committed
@@ -907,12 +827,14 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void ownerWriteAdmission(OwnerWriteAdmission admission) {
         this.ownerWriteAdmission = admission;
+        boundSeams.add(StreamSeam.OWNER_WRITE_ADMISSION);
     }
 
     /// Late-bind the owner promotion gate (#1555). Set once at wiring.
     @Contract
     public void ownerServeGate(OwnerServeGate gate) {
         this.ownerServeGate = gate;
+        boundSeams.add(StreamSeam.OWNER_SERVE_GATE);
     }
 
     /// Late-bind the owner of this node's per-stream durable refs (#1278 review): a destroyed stream drops its sealed
@@ -921,12 +843,14 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void streamFootprint(StreamFootprint footprint) {
         this.streamFootprint = footprint;
+        boundSeams.add(StreamSeam.STREAM_FOOTPRINT);
     }
 
     /// Late-bind the owner promotion block source (#1555). Set once at wiring.
     @Contract
     public void ownerBlockSource(OwnerBlockSource source) {
         this.ownerBlockSource = source;
+        boundSeams.add(StreamSeam.OWNER_BLOCK_SOURCE);
     }
 
     /// Why this node's owner promotion of `(streamName, partition)` waits for an operator (#1555), if it does.
@@ -956,12 +880,14 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void ownerEpochSource(StreamOwnerEpochSource source) {
         this.ownerEpochSource = source;
+        boundSeams.add(StreamSeam.OWNER_EPOCH_SOURCE);
     }
 
     /// Late-bind where committed epochs began ([EpochStartSource]). Set once at wiring.
     @Contract
     public void epochStarts(EpochStartSource source) {
         this.epochStarts = source;
+        boundSeams.add(StreamSeam.EPOCH_STARTS);
     }
 
     /// B5 (#1730 phase 2): a copy that is not the owner serves what it holds at and above the start of the committed epoch only
@@ -1004,12 +930,13 @@ public final class StreamPartitionManager implements AutoCloseable {
     private boolean trusted(String streamName, int partition, Epoch epoch, long start) {
         var head = resolvePartitionBuffer(streamName, partition).map(OffHeapRingBuffer::headOffset).or(-1L);
 
-        return epochTrust.compute(partitionKeyOf(streamName, partition),
-                                  (_, known) -> known != null && known.epoch()
-                                                                      .equals(epoch)
-                                                ? known
-                                                : new EpochTrust(epoch, head < start))
-                         .verified();
+        return standing(streamName).epochTrust()
+                       .compute(partition,
+                                (_, known) -> known != null && known.epoch()
+                                                                    .equals(epoch)
+                                              ? known
+                                              : new EpochTrust(epoch, head < start))
+                       .verified();
     }
 
     /// Whether this node may acknowledge to the owner what it holds ([#unverifiedFrom]).
@@ -1021,11 +948,12 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// meanwhile is not verified by a compare against the earlier one).
     @Contract
     public void markVerifiedForEpoch(String streamName, int partition, Epoch epoch) {
-        epochTrust.compute(partitionKeyOf(streamName, partition),
-                           (_, known) -> known != null && known.epoch()
-                                                               .isStrictlyAfter(epoch)
-                                         ? known
-                                         : new EpochTrust(epoch, true));
+        standing(streamName).epochTrust()
+                .compute(partition,
+                         (_, known) -> known != null && known.epoch()
+                                                             .isStrictlyAfter(epoch)
+                                       ? known
+                                       : new EpochTrust(epoch, true));
     }
 
     /// What a validated consumer read returns: the events and the owner epoch they were served under (#1730 phase 2 /
@@ -1141,6 +1069,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void tieredReader(TieredStreamReader reader) {
         this.tieredReader = Option.some(reader);
+        boundSeams.add(StreamSeam.TIERED_READER);
     }
 
     /// Whether [#tieredReader(TieredStreamReader)] was bound: a node-level wiring check (#2201 C-16, NT-04), since an unbound
@@ -1164,6 +1093,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void ownershipRecords(OwnerActivation.OwnershipRecordSource source) {
         this.ownershipRecords = source;
+        boundSeams.add(StreamSeam.OWNERSHIP_RECORDS);
     }
 
     private Result<Unit> ownerRoleGate(String streamName, int partition) {
@@ -1181,6 +1111,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void committedConfigSource(CommittedConfigSource source) {
         this.committedConfigSource = source;
+        boundSeams.add(StreamSeam.COMMITTED_CONFIG_SOURCE);
     }
 
     /// Late-bind the durable partition flag (#1596). `AetherNode` wires the KV-backed one. Until then -- and in
@@ -1189,6 +1120,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void partitionFlags(PartitionFlags flags) {
         this.partitionFlags = some(flags);
+        boundSeams.add(StreamSeam.PARTITION_FLAGS);
     }
 
     /// Late-bind the operator-warning sink (#1730 phase 2). `AetherNode` wires the cluster one; unit and Forge managers
@@ -1196,9 +1128,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void operatorWarnings(OperatorWarningSink sink) {
         this.operatorWarnings = sink;
+        boundSeams.add(StreamSeam.OPERATOR_WARNINGS);
         operatorWarningsBound = true;
-        deferredReports.forEach(Runnable::run);
-        deferredReports.clear();
+        entries.deferredReports().forEach(Runnable::run);
+        entries.deferredReports().clear();
     }
 
     /// Atomically reserve `bytes` against the shared pool. Returns true iff the reservation fit under
@@ -1293,7 +1226,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// a stream whose committed factors differ is refused ([ReplicationFactorsError.ChangedOnLiveResource], R8): a
     /// live resource's replication policy is not changed in place, and keeping the old one silently would leave
     /// the operator believing the new one holds. "Committed" is the value this node has APPLIED from KV
-    /// ([#appliedConfigs]), else a locally committed entry — so a node that never materialized the stream, or holds
+    /// ([StreamEntries#appliedConfigs]), else a locally committed entry — so a node that never materialized the stream, or holds
     /// it uncommitted, refuses rather than publishing its own factors over the committed ones; equal factors
     /// proceed and re-publish the identical value. Not covered: two nodes declaring different factors for a stream
     /// neither has yet seen committed — the later `Put` wins in KV (no compare-and-set exists for non-leader
@@ -1321,8 +1254,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private Option<StreamConfig> committedConfigOf(String streamName) {
-        return option(appliedConfigs.get(streamName)).orElse(() -> option(streams.get(streamName)).filter(StreamEntry::isCommitted)
-                                                                         .map(StreamEntry::config));
+        return option(entries.appliedConfigs().get(streamName)).orElse(() -> option(streams.get(streamName)).filter(StreamEntry::isCommitted)
+                                                                                   .map(StreamEntry::config));
     }
 
     private Result<Unit> createStream(StreamConfig config, CommitMode commitMode) {
@@ -1334,8 +1267,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// config, never re-proposed. Only a name with no applied life (never created, or destroyed here) gets a fresh
     /// proposal, which always carries a newly minted incarnation.
     private Result<Unit> createAbsentStream(StreamConfig config, CommitMode commitMode) {
-        return option(appliedConfigs.get(config.name())).fold(() -> createFreshStream(config, commitMode),
-                                                              committed -> adoptCommittedLife(committed, commitMode));
+        return option(entries.appliedConfigs().get(config.name())).fold(() -> createFreshStream(config, commitMode),
+                                                                        committed -> adoptCommittedLife(committed,
+                                                                                                        commitMode));
     }
 
     /// A hydration that built no entry (native OOM, WAL refusal) has already been flagged; the caller may retry.
@@ -1560,20 +1494,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// #1278 (ruling C): the destroyed life stops being this node's applied life at once, not when the asynchronous
     /// removal comes back, so a create that follows proposes a NEW life instead of adopting the one being removed.
     public Result<Unit> destroyStream(String streamName) {
-        appliedConfigs.remove(streamName);
+        entries.appliedConfigs().remove(streamName);
 
         return option(streams.remove(streamName)).toResult(new StreamError.StreamNotFound(streamName))
                      .flatMap(this::closeAndRelease)
-                     .onSuccess(_ -> forgetQuarantine(streamName))
                      .onSuccess(_ -> publishStreamConfigRemoval(streamName));
-    }
-
-    /// A destroyed stream takes its partitions' quarantine with it (#1505 F2): a stream later created under the
-    /// same name starts with fresh rings and must not inherit a divergence it never had.
-    @Contract
-    private void forgetQuarantine(String streamName) {
-        divergedAt.keySet().removeIf(ref -> ref.streamName()
-                                               .equals(streamName));
     }
 
     @Contract
@@ -1625,8 +1550,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// a notification. The entry is latched committed only when its committed config applies here
     /// ([#commitOwnLife]); a different applied life means another create won, which is a duplicate create.
     private Result<Unit> proposalOutcome(StreamConfig config, StreamEntry entry) {
-        return option(appliedConfigs.get(config.name())).filter(applied -> applied.incarnation() != entry.config()
-                                                                                                         .incarnation())
+        return option(entries.appliedConfigs().get(config.name())).filter(applied -> applied.incarnation() != entry.config()
+                                                                                                                   .incarnation())
                      .fold(() -> success(unit()),
                            _ -> StreamError.General.STREAM_ALREADY_EXISTS.result());
     }
@@ -1733,7 +1658,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         var streamName = put.cause().key().streamName();
         var config = put.cause().value().config();
 
-        appliedConfigs.put(streamName, config);
+        entries.appliedConfigs().put(streamName, config);
         streams.compute(streamName, (_, existing) -> reconcileCommittedConfig(config, existing));
     }
 
@@ -1793,6 +1718,9 @@ public final class StreamPartitionManager implements AutoCloseable {
             releaseEntry(local);
             local.deleteWals();
         }
+        // Know 548514c110 Q1 / d9cd07cda1: the committed life inherits none of the per-partition state recorded under the
+        // name while the replaced life was local. Purged before the hydrate, which records the committed life's own.
+        purgePartitionState(committed.name(), "the stream's local life was replaced by its committed life");
 
         return hydrateEntry(committed);
     }
@@ -1885,7 +1813,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     public void onStreamConfigRemove(ValueRemove<StreamConfigKey, StreamConfigValue> remove) {
         var streamName = remove.cause().key().streamName();
 
-        appliedConfigs.remove(streamName);
+        entries.appliedConfigs().remove(streamName);
         removeAndReleaseIfPresent(streamName);
     }
 
@@ -2337,9 +2265,10 @@ public final class StreamPartitionManager implements AutoCloseable {
             return;
         }
 
-        replicaCommitted.merge(partitionKeyOf(streamName, partition),
-                               new CommittedMark(ownerEpoch, through),
-                               StreamPartitionManager::newerMark);
+        standing(streamName).replicaCommitted()
+                .merge(partition,
+                       new CommittedMark(ownerEpoch, through),
+                       StreamPartitionManager::newerMark);
         resolvePartitionBuffer(streamName, partition).onSuccess(ring -> exposeReplicaCommitted(streamName,
                                                                                                partition,
                                                                                                ring));
@@ -2350,12 +2279,14 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// position carries over: what was acknowledged under the earlier lineage stays acknowledged.
     @Contract
     private void noteBatchEpoch(String streamName, int partition, Epoch epoch) {
-        replicaCommitted.merge(partitionKeyOf(streamName, partition),
-                               new CommittedMark(epoch, -1L),
-                               (known, batch) -> batch.epoch()
-                                                      .isStrictlyAfter(known.epoch())
-                                                 ? new CommittedMark(batch.epoch(), known.through())
-                                                 : known);
+        standing(streamName).replicaCommitted()
+                .merge(partition,
+                       new CommittedMark(epoch, -1L),
+                       (known, batch) -> batch.epoch()
+                                              .isStrictlyAfter(known.epoch())
+                                         ? new CommittedMark(batch.epoch(),
+                                                             known.through())
+                                         : known);
     }
 
     private static CommittedMark newerMark(CommittedMark known, CommittedMark reported) {
@@ -2370,22 +2301,29 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private long committedMarkThrough(String streamName, int partition) {
-        return option(replicaCommitted.get(partitionKeyOf(streamName, partition))).map(CommittedMark::through)
-                     .or(-1L);
+        return existingStanding(streamName).flatMap(standing -> option(standing.replicaCommitted().get(partition)))
+                               .map(CommittedMark::through)
+                               .or(-1L);
     }
 
     /// A replica's visible position: what it holds durably, no further than the owner has reported visible, and not
-    /// into a tail it has not compared with the committed owner ([#unverifiedReplicas]). The epoch trust
+    /// into a tail it has not compared with the committed owner ([PartitionState.Standing#unverifiedReplicas]). The epoch trust
     /// ([#unverifiedFrom]) stays where it was, at the read ([#servedIfVerified]): it is evaluated lazily at the first read
     /// after the committed epoch advances, and evaluating it here, on the append path, would fix its answer earlier.
     @Contract
     private void exposeReplicaCommitted(String streamName, int partition, OffHeapRingBuffer ring) {
-        var key = partitionKeyOf(streamName, partition);
         var limit = Math.min(ring.durableOffset(), committedMarkThrough(streamName, partition));
 
-        ring.advanceVisible(unverifiedReplicas.contains(key)
-                            ? Math.min(limit, verifiedPrefix.getOrDefault(key, -1L))
-                            : limit);
+        ring.advanceVisible(unverifiedLimit(streamName, partition, limit));
+    }
+
+    /// `limit`, lowered to the verified prefix while the copy's recovered tail is unverified.
+    private long unverifiedLimit(String streamName, int partition, long limit) {
+        return existingStanding(streamName).filter(standing -> standing.unverifiedReplicas()
+                                                                       .contains(partition))
+                               .map(standing -> Math.min(limit,
+                                                         standing.verifiedPrefix().getOrDefault(partition, -1L)))
+                               .or(limit);
     }
 
     /// A REPLICA that recovered a tail keeps it invisible until [#markVerified] (#1730 phase 2): before, "its OWN
@@ -2394,7 +2332,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void holdRecoveredTailUntilVerified(String streamName, int partition, OffHeapRingBuffer ring) {
         if (ring.durableOffset() >= 0) {
-            unverifiedReplicas.add(partitionKeyOf(streamName, partition));
+            standing(streamName).unverifiedReplicas().add(partition);
         }
     }
 
@@ -2411,10 +2349,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private void exposeVerified(String streamName, int partition, OffHeapRingBuffer ring, long offset) {
-        var key = partitionKeyOf(streamName, partition);
+        var standing = standing(streamName);
         var replica = placementRoleSupplier.roleFor(streamName, partition) == Role.REPLICA;
 
-        verifiedPrefix.merge(key, offset, Math::max);
+        standing.verifiedPrefix().merge(partition, offset, Math::max);
         if (replica) {
             exposeReplicaCommitted(streamName, partition, ring);
         } else {
@@ -2423,8 +2361,8 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
 
         if (offset >= ring.headOffset()) {
-            unverifiedReplicas.remove(key);
-            verifiedPrefix.remove(key);
+            standing.unverifiedReplicas().remove(partition);
+            standing.verifiedPrefix().remove(partition);
         }
     }
 
@@ -2538,7 +2476,85 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// The lowest offset at which `(streamName, partition)` holds a divergent entry on this replica (#1505 F2), or
     /// [Option#none] when the partition is not quarantined.
     public Option<Long> quarantinedAt(String streamName, int partition) {
-        return option(divergedAt.get(new PartitionRef(streamName, partition)));
+        return existingStanding(streamName).flatMap(standing -> option(standing.divergedAt().get(partition)));
+    }
+
+    /// The per-partition state of `streamName` ([StreamEntries#partitionState]), created on first use: what a writer reaches.
+    private PartitionState partitionState(String streamName) {
+        return entries.partitionState(streamName);
+    }
+
+    private PartitionState.Standing standing(String streamName) {
+        return partitionState(streamName).standing();
+    }
+
+    private PartitionState.RingScoped ringScoped(String streamName) {
+        return partitionState(streamName).ringScoped();
+    }
+
+    private PartitionState.RepairEpisode repairEpisode(String streamName) {
+        return partitionState(streamName).repairEpisode();
+    }
+
+    /// The standing state of `streamName` if any was recorded: what a reader reaches, so a lookup never creates state.
+    private Option<PartitionState.Standing> existingStanding(String streamName) {
+        return entries.existingPartitionState(streamName)
+                      .map(PartitionState::standing);
+    }
+
+    private Option<PartitionState.RingScoped> existingRingScoped(String streamName) {
+        return entries.existingPartitionState(streamName)
+                      .map(PartitionState::ringScoped);
+    }
+
+    private Option<PartitionState.RepairEpisode> existingRepairEpisode(String streamName) {
+        return entries.existingPartitionState(streamName)
+                      .map(PartitionState::repairEpisode);
+    }
+
+    /// #2201 NT-23: the names of the per-partition rows (spec 5.1 rows 4-19) that hold an entry for `(streamName, partition)` on
+    /// this node, for tests that pin what a removed, re-created or replaced stream carries over. Read-only.
+    Set<String> heldPartitionRows(String streamName, int partition) {
+        return entries.existingPartitionState(streamName)
+                      .map(state -> state.heldRows(partition))
+                      .or(Set.of());
+    }
+
+    /// #2201 A-14 (spec 5.1 target, bullet 4): the late-bound seams still at their default on this manager, in declaration
+    /// order.
+    public List<StreamSeam> unboundSeams() {
+        return Arrays.stream(StreamSeam.values())
+                     .filter(seam -> !boundSeams.contains(seam))
+                     .toList();
+    }
+
+    /// #2201 A-14: how many safety-relevant seams ([StreamSeam#safetyRelevant]) are still at their default on a manager
+    /// that keeps a WAL; `0` on one that keeps none, whose durability is not claimed in the first place. The value of the
+    /// node gauge `aether.streams.seams.unbound.safety`.
+    public int unboundSafetySeamCount() {
+        return unboundSafetySeams().size();
+    }
+
+    /// #2201 A-14: the boot check. On a node configured with a WAL, every safety-relevant seam still at its default is named
+    /// at ERROR: its default lets this node act as an owner, admit writes or release a ring with no committed state behind
+    /// it. Logged once per call; the wiring calls it once, after it has bound every seam.
+    @Contract
+    public void reportUnboundSafetySeams() {
+        var unbound = unboundSafetySeams();
+
+        if (!unbound.isEmpty()) {
+            log.error("Stream partition manager keeps a WAL but {} safety-relevant seam(s) are still at their permissive default: {}",
+                      unbound.size(),
+                      unbound);
+        }
+    }
+
+    private List<StreamSeam> unboundSafetySeams() {
+        return logs.isPresent()
+               ? unboundSeams().stream()
+                             .filter(StreamSeam::safetyRelevant)
+                             .toList()
+               : List.of();
     }
 
     /// The incarnation of the ring serving `(streamName, partition)` on this node, or [Option#none] when none is built
@@ -2628,7 +2644,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                  cause.message());
         if (cause instanceof StreamError.RepairPreserveFailed || cause instanceof StreamError.RepairWitnessFailed) {
             synchronized (refusedCutOrder) {
-                var previous = refusedCuts.put(ref, cause.message());
+                var previous = repairEpisode(streamName).refusedCuts().put(partition, cause.message());
 
                 if (!cause.message().equals(previous)) {
                     refusalWindowHook.run();
@@ -2651,14 +2667,25 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// destroyed or reaped): the warning is closed with the paired recovery so that no operator warning outlives its subject. The
     /// quarantine that went with the ring takes the obstacle with it; a node that hosts the partition again starts a new episode.
     @Contract
-    private void closeRefusedCuts(java.util.function.Predicate<PartitionRef> scope, String reason) {
-        refusedCuts.keySet().stream().filter(scope).toList().forEach(ref -> closeRefusedCut(ref, reason));
+    private void closeRefusedCuts(String streamName, IntPredicate partitions, String reason) {
+        existingRepairEpisode(streamName).map(episode -> refusedPartitions(episode, partitions))
+                             .or(List.of())
+                             .forEach(partition -> closeRefusedCut(new PartitionRef(streamName, partition),
+                                                                   reason));
+    }
+
+    private static List<Integer> refusedPartitions(PartitionState.RepairEpisode episode, IntPredicate partitions) {
+        return episode.refusedCuts()
+                      .keySet()
+                      .stream()
+                      .filter(partitions::test)
+                      .toList();
     }
 
     @Contract
     private void closeRefusedCut(PartitionRef ref, String reason) {
         synchronized (refusedCutOrder) {
-            if (refusedCuts.remove(ref) != null) {
+            if (repairEpisode(ref.streamName()).refusedCuts().remove(ref.partition()) != null) {
                 OperatorWarnings.raise(log,
                                        operatorWarnings,
                                        OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED,
@@ -2674,7 +2701,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void cutResumed(String streamName, int partition, PartitionRef ref) {
         synchronized (refusedCutOrder) {
-            if (refusedCuts.remove(ref) != null) {
+            if (repairEpisode(streamName).refusedCuts().remove(partition) != null) {
                 OperatorWarnings.raise(log,
                                        operatorWarnings,
                                        OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED,
@@ -2882,7 +2909,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         return wal.map(appendLog -> writeWitness(streamName,
                                                  partition,
                                                  appendLog,
-                                                 option(pendingCuts.get(new PartitionRef(streamName, partition))).map(earlier -> earlier.then(prospective))
+                                                 option(repairEpisode(streamName).pendingCuts().get(partition)).map(earlier -> earlier.then(prospective))
                                                        .or(prospective)))
                   .or(Result.unitResult());
     }
@@ -2891,10 +2918,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// far, or nothing), so a restart never reports a loss that did not occur.
     @Contract
     private void restoreWitness(String streamName, int partition, Option<AppendLog> wal) {
-        wal.onPresent(appendLog -> option(pendingCuts.get(new PartitionRef(streamName, partition))).onPresent(earlier -> writeWitness(streamName,
-                                                                                                                                      partition,
-                                                                                                                                      appendLog,
-                                                                                                                                      earlier))
+        wal.onPresent(appendLog -> option(repairEpisode(streamName).pendingCuts().get(partition)).onPresent(earlier -> writeWitness(streamName,
+                                                                                                                                    partition,
+                                                                                                                                    appendLog,
+                                                                                                                                    earlier))
                                          .onEmpty(() -> deletePendingCut(pendingCutFile(appendLog))));
     }
 
@@ -2909,51 +2936,50 @@ public final class StreamPartitionManager implements AutoCloseable {
                : new StreamError.RepairNotAuthorized(streamName, partition, divergedAtOffset).<Unit> result();
     }
 
-    /// How many times the log of each partition has been cut (#2087 B4-cut), by [#forgetCutState] -- the single exit of the only suffix
-    /// truncation ([OffHeapRingBuffer#truncateSuffix] through the divergent-tail repair). Anything folded from the log before a cut may hold
-    /// records the cut removed, so a derived view (the durable-entity fold) compares this with the value it was built under.
-    private final ConcurrentHashMap<String, Long> cutGenerations = new ConcurrentHashMap<>();
-
     /// The identity of the partition's log content, for anything derived from it (#2087 B4-cut): it changes when the ring is replaced (a
     /// re-created stream, a re-materialization) and across every cut, and it is ODD while a cut is in progress -- from before the ring
     /// shrinks until after -- so a view built, or checked, in that window never matches. A view is valid only if it was built under an EVEN
     /// value equal to the current one.
     public long cutGeneration(String streamName, int partition) {
-        var cuts = cutGenerations.getOrDefault(partitionKeyOf(streamName, partition), 0L);
+        var cuts = existingStanding(streamName).map(standing -> standing.cutGenerations()
+                                                                        .getOrDefault(partition, 0L))
+                                   .or(0L);
 
         return resolvePartitionBuffer(streamName, partition).map(ring -> (ring.incarnation() << 24) + cuts)
                                      .or(-1L << 24);
     }
 
-    /// The cut currently open on each partition (#2087): begun inside the ring's ordered section, closed after the ring shrank or on ANY other
-    /// exit. The token makes the close idempotent and keeps it from closing a LATER cut: a close that arrives after another cut began finds a
-    /// different token and does nothing.
-    private final ConcurrentHashMap<String, Object> openCuts = new ConcurrentHashMap<>();
-
+    /// A cut opens on the partition (#2087, [PartitionState.RingScoped#openCuts]) and its cut generation turns odd
+    /// ([PartitionState.Standing#cutGenerations]): the single exit of the only suffix truncation
+    /// ([OffHeapRingBuffer#truncateSuffix] through the divergent-tail repair) is [#endCut].
     @Contract
     void beginCut(String streamName, int partition, Object token) {
-        var key = partitionKeyOf(streamName, partition);
+        var state = partitionState(streamName);
 
-        openCuts.put(key, token);
-        cutGenerations.compute(key,
-                               (_, count) -> count == null
-                                             ? 1L
-                                             : (count & 1L) == 1L
-                                               ? count
-                                               : count + 1L);
+        state.ringScoped().openCuts().put(partition, token);
+        state.standing()
+             .cutGenerations()
+             .compute(partition,
+                      (_, count) -> count == null
+                                    ? 1L
+                                    : (count & 1L) == 1L
+                                      ? count
+                                      : count + 1L);
     }
 
     @Contract
     void endCut(String streamName, int partition, Object token) {
-        var key = partitionKeyOf(streamName, partition);
+        var state = partitionState(streamName);
 
-        if (openCuts.remove(key, token)) {
-            cutGenerations.compute(key,
-                                   (_, count) -> count == null
-                                                 ? 0L
-                                                 : (count & 1L) == 1L
-                                                   ? count + 1L
-                                                   : count);
+        if (state.ringScoped().openCuts().remove(partition, token)) {
+            state.standing()
+                 .cutGenerations()
+                 .compute(partition,
+                          (_, count) -> count == null
+                                        ? 0L
+                                        : (count & 1L) == 1L
+                                          ? count + 1L
+                                          : count);
         }
     }
 
@@ -2962,23 +2988,27 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// still pointed at it would expose, as durable and visible, offsets the cut removed.
     @Contract
     private void forgetCutState(String streamName, int partition, PartitionRef ref, long divergedAtOffset, long keep) {
+        var standing = standing(streamName);
+
         synchronized (quarantineLock) {
-            divergedAt.remove(ref, divergedAtOffset);
-            provenanceMismatchAt.remove(ref);
+            standing.divergedAt().remove(partition, divergedAtOffset);
+            standing.provenanceMismatchAt().remove(partition);
         }
         // What remains is the prefix this copy shares with its sender: verified by construction.
-        unverifiedReplicas.remove(partitionKeyOf(streamName, partition));
-        verifiedPrefix.remove(partitionKeyOf(streamName, partition));
+        standing.unverifiedReplicas().remove(partition);
+        standing.verifiedPrefix().remove(partition);
         // The owner's reported position above the cut described records that no longer exist here (#2087): what is appended
         // at those offsets next is the new lineage, visible only once the owner reports it.
-        replicaCommitted.computeIfPresent(partitionKeyOf(streamName, partition),
-                                          (_, mark) -> mark.through() > keep
-                                                       ? new CommittedMark(mark.epoch(), keep)
-                                                       : mark);
-        lastReplicatedWalWrite.computeIfPresent(partitionKeyOf(streamName, partition),
-                                                (_, write) -> write.offset() > keep
-                                                              ? null
-                                                              : write);
+        standing.replicaCommitted()
+                .computeIfPresent(partition,
+                                  (_, mark) -> mark.through() > keep
+                                               ? new CommittedMark(mark.epoch(),
+                                                                   keep)
+                                               : mark);
+        standing.lastReplicatedWalWrite().computeIfPresent(partition,
+                                                           (_, write) -> write.offset() > keep
+                                                                         ? null
+                                                                         : write);
     }
 
     /// A cut is routine for a stream that confirms with replicas (what it removed was never acknowledged: an
@@ -2989,9 +3019,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     private void reportCut(String streamName, int partition, TailCut cut) {
         if (cut.removed() > 0) {
             var ref = new PartitionRef(streamName, partition);
-            var first = !pendingCuts.containsKey(ref);
+            var pendingCuts = repairEpisode(streamName).pendingCuts();
+            var first = !pendingCuts.containsKey(partition);
 
-            pendingCuts.merge(ref, cut, TailCut::then);
+            pendingCuts.merge(partition, cut, TailCut::then);
             if (first) {
                 scheduleUnsettledReport(streamName, partition, repairGeneration.incrementAndGet(), ref);
             }
@@ -3066,7 +3097,8 @@ public final class StreamPartitionManager implements AutoCloseable {
             if (operatorWarningsBound) {
                 report.run();
             } else {
-                deferredReports.add(report);
+                entries.deferredReports()
+                       .add(report);
             }
         }));
     }
@@ -3110,11 +3142,15 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// by the old owner alone and it is only logged.
     @Contract
     private void settleRepair(String streamName, int partition) {
-        var ref = new PartitionRef(streamName, partition);
+        existingRepairEpisode(streamName).onPresent(episode -> settleRepairIn(episode, streamName, partition));
+    }
 
-        repairGenerationOf.remove(ref);
-        option(pendingCuts.remove(ref)).onPresent(cut -> {
-            var earlier = reportedUnsettled.remove(ref);
+    @Contract
+    private void settleRepairIn(PartitionState.RepairEpisode episode, String streamName, int partition) {
+        episode.repairGenerationOf().remove(partition);
+        option(episode.pendingCuts().remove(partition)).onPresent(cut -> {
+            var earlier = episode.reportedUnsettled()
+                                 .remove(partition);
 
             if (earlier == null || cut.removed() > earlier.removed()) {
                 reportCut(streamName, partition, cut, confirmationFactorFor(streamName), true);
@@ -3132,11 +3168,12 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void repairReportBound(TimeSpan bound) {
         this.repairReportBound = Option.some(bound);
+        boundSeams.add(StreamSeam.REPAIR_REPORT_BOUND);
     }
 
     @Contract
     private void scheduleUnsettledReport(String streamName, int partition, long generation, PartitionRef ref) {
-        repairGenerationOf.put(ref, generation);
+        repairEpisode(streamName).repairGenerationOf().put(partition, generation);
         repairReportBound.onPresent(bound -> SharedScheduler.schedule(() -> reportUnsettled(streamName,
                                                                                             partition,
                                                                                             generation),
@@ -3145,12 +3182,24 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     @Contract
     private void reportUnsettled(String streamName, int partition, long generation) {
-        var ref = new PartitionRef(streamName, partition);
+        existingRepairEpisode(streamName).onPresent(episode -> reportUnsettledIn(episode,
+                                                                                 streamName,
+                                                                                 partition,
+                                                                                 generation));
+    }
 
-        option(pendingCuts.get(ref)).filter(_ -> Long.valueOf(generation).equals(repairGenerationOf.get(ref)))
-              .filter(_ -> !reportedUnsettled.containsKey(ref))
+    @Contract
+    private void reportUnsettledIn(PartitionState.RepairEpisode episode,
+                                   String streamName,
+                                   int partition,
+                                   long generation) {
+        option(episode.pendingCuts().get(partition)).filter(_ -> Long.valueOf(generation).equals(episode.repairGenerationOf()
+                                                                                                        .get(partition)))
+              .filter(_ -> !episode.reportedUnsettled()
+                                   .containsKey(partition))
               .onPresent(cut -> {
-                             reportedUnsettled.put(ref, cut);
+                             episode.reportedUnsettled()
+                                    .put(partition, cut);
                              reportCut(streamName,
                                        partition,
                                        cut,
@@ -3200,11 +3249,12 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// the repair resolves never gets here, so an ordinary failover raises no flag and blocks nothing.
     @Contract
     private void flagUnrepaired(String streamName, int partition) {
-        option(provenanceMismatchAt.get(new PartitionRef(streamName, partition))).onPresent(offset -> raiseOnce(streamName,
-                                                                                                                partition,
-                                                                                                                PartitionRecoveryReasonKind.MARKED_DIVERGED,
-                                                                                                                "N13: this copy's owner-epoch provenance differs from its catch-up source's at offset " + offset
-                                                                                                               + " and the divergence could not be repaired"));
+        existingStanding(streamName).flatMap(standing -> option(standing.provenanceMismatchAt().get(partition)))
+                        .onPresent(offset -> raiseOnce(streamName,
+                                                       partition,
+                                                       PartitionRecoveryReasonKind.MARKED_DIVERGED,
+                                                       "N13: this copy's owner-epoch provenance differs from its catch-up source's at offset " + offset
+                                                      + " and the divergence could not be repaired"));
     }
 
     /// The epoch the records at and above `offset` on this copy were written under, from its owner-epoch history; none for a
@@ -3308,6 +3358,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void segmentTierPressure(SegmentTierPressure pressure) {
         this.segmentTierPressure = pressure;
+        boundSeams.add(StreamSeam.SEGMENT_TIER_PRESSURE);
     }
 
     /// The owner-side pre-checks — epoch fence, then `admission` (owner admission and replica floor, #1230/#1236)
@@ -3437,7 +3488,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// flag wired the reason is logged at ERROR and left to the local fence.
     @Contract
     private void raiseOnce(String streamName, int partition, PartitionRecoveryReasonKind kind, String evidence) {
-        if (raisedLocally.add(streamName + "#" + partition + "#" + kind + "#" + evidence)) {
+        if (standing(streamName).raisedLocally().add(partition + "#" + kind + "#" + evidence)) {
             partitionFlags.onEmpty(() -> log.error("Partition {}[{}] needs the durable flag {} ({}), but no partition flag is wired here",
                                                    streamName,
                                                    partition,
@@ -3467,7 +3518,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                              PartitionRecoveryReasonKind kind,
                              String evidence,
                              Cause cause) {
-        raisedLocally.remove(streamName + "#" + partition + "#" + kind + "#" + evidence);
+        existingStanding(streamName).onPresent(standing -> standing.raisedLocally()
+                                                                   .remove(partition + "#" + kind + "#" + evidence));
         log.warn("Partition {}[{}]: raising {} on the durable flag failed, retried at its next occurrence: {}",
                  streamName,
                  partition,
@@ -3894,7 +3946,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                            .onSuccess(_ -> entry.updateActivity());
     }
 
-    /// The [OffHeapRingBuffer.DivergenceFence] of one partition, backed by [#divergedAt]. The ring calls it inside
+    /// The [OffHeapRingBuffer.DivergenceFence] of one partition, backed by [PartitionState.Standing#divergedAt]. The ring calls it inside
     /// the ordered section, so recording a divergence and refusing the next offer cannot race.
     private final class PartitionQuarantine implements OffHeapRingBuffer.DivergenceFence {
         private final PartitionRef ref;
@@ -3905,7 +3957,9 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         @Override
         public long divergedAt() {
-            return divergedAt.getOrDefault(ref, -1L);
+            return standing(ref.streamName()).divergedAt()
+                           .getOrDefault(ref.partition(),
+                                         - 1L);
         }
 
         /// Logged at ERROR once per partition: the first divergence quarantines it, a lower one only lowers the
@@ -3919,7 +3973,9 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
 
         private void recordLocked(long offset) {
-            if (divergedAt.putIfAbsent(ref, offset) == null) {
+            var divergedAt = standing(ref.streamName()).divergedAt();
+
+            if (divergedAt.putIfAbsent(ref.partition(), offset) == null) {
                 quarantinedPartitionsSinceBoot.incrementAndGet();
                 log.error("Replica partition {}[{}] QUARANTINED: offset {} holds an event that differs from the one its sender "
                          + "offered. Nothing at or past it is acked, and this node never promotes the partition CAUGHT_UP. "
@@ -3933,7 +3989,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                 return;
             }
 
-            divergedAt.merge(ref, offset, Math::min);
+            divergedAt.merge(ref.partition(), offset, Math::min);
         }
     }
 
@@ -3993,8 +4049,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// before the close-time fsync has run.
     @Contract
     private void forgetReplicatedWrites(String streamName, int partition, Option<AppendLog> wal) {
-        wal.onPresent(released -> lastReplicatedWalWrite.computeIfPresent(partitionKeyOf(streamName, partition),
-                                                                          (_, write) -> unlessWrittenTo(write, released)));
+        wal.onPresent(released -> standing(streamName).lastReplicatedWalWrite()
+                                          .computeIfPresent(partition,
+                                                            (_, write) -> unlessWrittenTo(write, released)));
     }
 
     /// [java.util.Map#computeIfPresent] contract: `null` removes the entry.
@@ -4006,7 +4063,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private void recordReplicatedWrite(String streamName, int partition, ReplicatedWrite write) {
-        lastReplicatedWalWrite.put(partitionKeyOf(streamName, partition), write);
+        standing(streamName).lastReplicatedWalWrite().put(partition, write);
     }
 
     /// The durability barrier for replicated records: ONE group commit covering every WAL frame
@@ -4018,10 +4075,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// WAL-less deployments (legacy, Forge, the explicit non-durable opt-in) resolve immediately — the ack
     /// then means exactly what it meant before the WAL existed.
     public Promise<Unit> syncReplicated(String streamName, int partition) {
-        return option(lastReplicatedWalWrite.get(partitionKeyOf(streamName, partition))).map(write -> commitAndExpose(streamName,
-                                                                                                                      partition,
-                                                                                                                      write))
-                     .or(Promise::unitPromise);
+        return existingStanding(streamName).flatMap(standing -> option(standing.lastReplicatedWalWrite().get(partition)))
+                               .map(write -> commitAndExpose(streamName, partition, write))
+                               .or(Promise::unitPromise);
     }
 
     /// [Promise#withSuccess] runs the advance as a step of the barrier promise, not as a detached completion
@@ -4045,7 +4101,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// `[design intent — unverified: reachable only through a ring/WAL head mismatch such as a frozen-ring
     /// drop during recovery (#1233); no test induces it]`. The entry is forgotten when its WAL is released
     /// ([#forgetReplicatedWrites]), so a rebuilt partition's first barrier never targets a closed WAL.
-    private record ReplicatedWrite(AppendLog wal, long offset, Result<Long> writeSeq) {
+    record ReplicatedWrite(AppendLog wal, long offset, Result<Long> writeSeq) {
         Promise<Unit> commit() {
             return writeSeq.async()
                            .flatMap(wal::commit);
@@ -4380,7 +4436,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     private Result<Unit> quarantineMismatch(String streamName, int partition, long offset) {
         new PartitionQuarantine(streamName, partition).recordDivergence(offset);
-        provenanceMismatchAt.merge(new PartitionRef(streamName, partition), offset, Math::min);
+        standing(streamName).provenanceMismatchAt().merge(partition, offset, Math::min);
 
         return new StreamError.ProvenanceMismatch(streamName, partition, offset).result();
     }
@@ -4389,7 +4445,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// same key, same start -- is skipped, so re-installing a page (a retry after a failed apply, an overlapping pull)
     /// is idempotent. The first refusal stops the install and drops what it had recorded, as a failed apply would.
     ///
-    /// #1638 F1: recording and registering the install happen under the partition's [#pendingInstalls] list, as does
+    /// #1638 F1: recording and registering the install happen under the partition's [PartitionState.Standing#pendingInstalls] list, as does
     /// every trim, so a trim always sees every install that has recorded or skipped an entry it might drop.
     private Result<InstalledSlice> recordClaimed(AppendLog wal,
                                                  String streamName,
@@ -4455,7 +4511,9 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// The partition's pending installs, and its lock; read and changed only while holding it.
     private List<InstalledSlice> pending(PartitionRef ref) {
-        return pendingInstalls.computeIfAbsent(ref, _ -> new ArrayList<>());
+        return standing(ref.streamName()).pendingInstalls()
+                       .computeIfAbsent(ref.partition(),
+                                        _ -> new ArrayList<>());
     }
 
     /// One catch-up's install of a source slice (#1638 F1): the entries it `recorded`, and every entry of its range it
@@ -4629,10 +4687,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     private Option<Long> durableWatermark(String streamName, int partition) {
         var ref = new PartitionRef(streamName, partition);
         var now = System.nanoTime();
-        var cached = durableWatermarks.get(ref);
+        var fresh = existingRingScoped(streamName).flatMap(rings -> option(rings.durableWatermarks().get(partition)))
+                                      .filter(cached -> now - cached.atNanos() < DURABLE_WATERMARK_TTL_NANOS);
 
-        if (cached != null && now - cached.atNanos() < DURABLE_WATERMARK_TTL_NANOS) {
-            return Option.some(cached.watermark());
+        if (fresh.isPresent()) {
+            return fresh.map(CachedWatermark::watermark);
         }
 
         var generation = watermarkGeneration.get();
@@ -4647,19 +4706,20 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// runs after the removal sees the bump and does nothing, and one that ran before it is removed.
     @Contract
     private void cacheUnlessSuperseded(PartitionRef ref, CachedWatermark value, long generation) {
-        durableWatermarks.compute(ref,
-                                  (_, current) -> watermarkGeneration.get() == generation
-                                                  ? value
-                                                  : current);
+        ringScoped(ref.streamName()).durableWatermarks()
+                  .compute(ref.partition(),
+                           (_, current) -> watermarkGeneration.get() == generation
+                                           ? value
+                                           : current);
     }
 
     @Contract
     private void dropDurableWatermark(PartitionRef ref) {
         watermarkGeneration.incrementAndGet();
-        durableWatermarks.remove(ref);
+        ringScoped(ref.streamName()).durableWatermarks().remove(ref.partition());
     }
 
-    private record CachedWatermark(long watermark, long atNanos) {}
+    record CachedWatermark(long watermark, long atNanos) {}
 
     private Option<Long> readDurableWatermark(String streamName, int partition) {
         return logs.fold(() -> Option.some(lastSealedOffset.lastSealedOffset(streamName, partition)),
@@ -4724,9 +4784,11 @@ public final class StreamPartitionManager implements AutoCloseable {
                                      currentSlots,
                                      headroom,
                                      overCeiling,
-                                     releaseCandidacy.size(),
+                                     scheduler.releaseCandidacy().size(),
                                      releasedSinceBoot.get(),
-                                     (long)(systemMaterializeQueue.size() + appMaterializeQueue.size()),
+                                     (long)(scheduler.systemMaterializeQueue()
+                                                     .size() + scheduler.appMaterializeQueue()
+                                                                        .size()),
                                      streamViews);
     }
 
@@ -5060,7 +5122,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                               long durableBase,
                               List<HeldBackPartition> heldBack) {
         var live = lastSealedOffset.lastSealedOffset(streamName, partition);
-        var previous = durableAtPreviousTick.put(partitionKeyOf(streamName, partition), durableBase);
+        var previous = scheduler.durableAtPreviousTick().put(partitionKeyOf(streamName, partition), durableBase);
 
         if (live > durableBase && previous != null && previous == durableBase) {
             heldBack.add(HeldBackPartition.heldBackPartition(streamName,
@@ -5115,14 +5177,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     public void close() {
         streams.values().forEach(StreamEntry::close);
         streams.clear();
-        durableAtPreviousTick.clear();
+        scheduler.clearOnClose();
         totalAllocatedBytes.set(0);
-        inFlightMaterializations.clear();
-        systemMaterializeQueue.clear();
-        appMaterializeQueue.clear();
-        queuedMaterializations.clear();
-        heldUnmaterializedSince.clear();
-        releaseCandidacy.clear();
         // #642: this manager owns the replication manager, and the batcher underneath it arms a
         // one-shot flush per batch (#1246) on the process-wide SharedScheduler. Nothing else called its
         // close(), so a stopped node kept flushing replication batches at its peers.
@@ -5206,11 +5262,27 @@ public final class StreamPartitionManager implements AutoCloseable {
         evictionListener.onStreamDeleted(entry.config().name());
         forgetHeldBack(entry);
         forgetFootprint(entry.config().name());
-        closeRefusedCuts(ref -> ref.streamName()
-                                   .equals(entry.config().name()),
-                         "the stream is gone from this node");
+        purgePartitionState(entry.config().name(),
+                            "the stream is gone from this node");
 
         return success(unit());
+    }
+
+    /// #2201 I-20 (know `d9cd07cda1`, S1): a life that ends takes its per-partition state (spec 5.1 rows 4-19) with it, so a
+    /// stream created again under the same name inherits nothing from it. Runs on every stream-removal path through
+    /// [#closeAndRelease], and when a committed life replaces this node's losing proposal ([#replaceLosingLife]). An open
+    /// cut refusal is closed first, with `reason`, so its operator warning is resolved rather than dropped; then the stream's
+    /// [PartitionState] is dropped whole. That includes the quarantine marker [PartitionState.Standing#divergedAt], on every
+    /// path (#1505 F2 for destroy; know `e0035a56ef` for config removal and the idle reaper): the life's records are deleted
+    /// with it, so a marker left behind would fence the fresh log of a stream created again under the same name, which could
+    /// then never reach CAUGHT_UP. What it drops is what was recorded before it ran: the entry-less writes ([PartitionState])
+    /// still record under the name afterwards, so one that lands after the removal (an owner's visible position, an epoch
+    /// verdict) is seen by a stream created again under the name `[unverified: whether such a late write is accepted after a
+    /// removal in a cluster; no test induces it]`.
+    @Contract
+    private void purgePartitionState(String streamName, String reason) {
+        closeRefusedCuts(streamName, _ -> true, reason);
+        entries.purgePartitionState(streamName);
     }
 
     /// A destroyed stream stops being served and its life's durable refs are reclaimed (#1278 review). Best-effort:
@@ -5259,10 +5331,12 @@ public final class StreamPartitionManager implements AutoCloseable {
         java.util.stream.Stream.concat(sealed.keySet().stream(),
                                        walLives.stream())
                                .distinct()
-                               .filter(life -> !releasedOrphans.contains(SegmentIndex.durableName(config.name(),
-                                                                                                  life)))
-                               .filter(life -> orphanedWalReported.add(SegmentIndex.durableName(config.name(),
-                                                                                                life)))
+                               .filter(life -> !entries.releasedOrphans()
+                                                       .contains(SegmentIndex.durableName(config.name(),
+                                                                                          life)))
+                               .filter(life -> entries.orphanedWalReported()
+                                                      .add(SegmentIndex.durableName(config.name(),
+                                                                                    life)))
                                .forEach(life -> raiseOrphanedLife(config,
                                                                   life,
                                                                   sealed.getOrDefault(life, 0L),
@@ -5308,7 +5382,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         if (operatorWarningsBound) {
             report.run();
         } else {
-            deferredReports.add(report);
+            entries.deferredReports().add(report);
         }
     }
 
@@ -5329,8 +5403,9 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         open.stream()
             .filter(life -> life == config.incarnation() || isReleased(life, sealed, walLives))
-            .filter(life -> orphanedWalReported.remove(SegmentIndex.durableName(config.name(),
-                                                                                life)))
+            .filter(life -> entries.orphanedWalReported()
+                                   .remove(SegmentIndex.durableName(config.name(),
+                                                                    life)))
             .forEach(life -> raiseReleasedLife(config, life));
     }
 
@@ -5350,19 +5425,20 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private List<Long> openOrphanedLives(StreamConfig config) {
-        return orphanedWalReported.stream()
-                                  .map(SegmentIndex.DurableName::parse)
-                                  .filter(life -> life.streamName()
-                                                      .equals(config.name()))
-                                  .map(SegmentIndex.DurableName::incarnation)
-                                  .toList();
+        return entries.orphanedWalReported()
+                      .stream()
+                      .map(SegmentIndex.DurableName::parse)
+                      .filter(life -> life.streamName()
+                                          .equals(config.name()))
+                      .map(SegmentIndex.DurableName::incarnation)
+                      .toList();
     }
 
     @Contract
     private void raiseReleasedLife(StreamConfig config, long life) {
         var durable = SegmentIndex.durableName(config.name(), life);
 
-        releasedOrphans.add(durable);
+        entries.releasedOrphans().add(durable);
         raiseOrDefer(() -> OperatorWarnings.raise(log,
                                                   operatorWarnings,
                                                   OperatorWarningCode.STORAGE_STREAM_WAL_RELEASED,
@@ -5424,8 +5500,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void forgetHeldBack(StreamEntry entry) {
         for (int partition = 0; partition < entry.declaredPartitions(); partition++) {
-            durableAtPreviousTick.remove(partitionKeyOf(entry.config().name(),
-                                                        partition));
+            scheduler.durableAtPreviousTick().remove(partitionKeyOf(entry.config().name(),
+                                                                    partition));
         }
     }
 
@@ -5654,36 +5730,36 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Idempotent: a ref already in flight (its slot held) returns true without a second permit; a
     /// membership-add that cannot get a permit is rolled back so the ref is not falsely counted.
     private boolean tryAcquireReshuffleSlot(PartitionRef ref) {
-        if (preemptedSlots.contains(ref)) {
+        if (scheduler.preemptedSlots().contains(ref)) {
             return true;
         }
 
-        if (!inFlightMaterializations.add(ref)) {
+        if (!scheduler.inFlightMaterializations().add(ref)) {
             return true;
         }
 
         if (reshuffleSlots.tryAcquire()) {
-            slotAcquiredTick.put(ref, reconcileTick.get());
+            scheduler.slotAcquiredTick().put(ref, reconcileTick.get());
 
             return true;
         }
 
-        inFlightMaterializations.remove(ref);
+        scheduler.inFlightMaterializations().remove(ref);
 
         return false;
     }
 
     @Contract
     private void freeReshuffleSlot(PartitionRef ref) {
-        slotAcquiredTick.remove(ref);
-        preemptedSlots.remove(ref);
-        if (inFlightMaterializations.remove(ref)) {
+        scheduler.slotAcquiredTick().remove(ref);
+        scheduler.preemptedSlots().remove(ref);
+        if (scheduler.inFlightMaterializations().remove(ref)) {
             reshuffleSlots.release();
         }
     }
 
     /// Enqueue a slot-starved materialization (system queue drains FIRST — owner decision 2026-07-05).
-    /// Deduped across both queues via {@link #queuedMaterializations}; a repeat request for an already-queued
+    /// Deduped across both queues via [MaterializationScheduler#queuedMaterializations]; a repeat request for an already-queued
     /// partition is a no-op. Returns the named {@link StreamError.ReshufflePaced} so the caller retries
     /// (reconcile hook next tick / owner-append client retry), never forwards.
     private Result<OffHeapRingBuffer> enqueueMaterialize(PartitionRef ref, boolean system) {
@@ -5694,10 +5770,10 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     @Contract
     private void queueMaterialization(PartitionRef ref, boolean system) {
-        if (queuedMaterializations.add(ref)) {
+        if (scheduler.queuedMaterializations().add(ref)) {
             (system
-             ? systemMaterializeQueue
-             : appMaterializeQueue).add(ref);
+             ? scheduler.systemMaterializeQueue()
+             : scheduler.appMaterializeQueue()).add(ref);
         }
     }
 
@@ -5735,7 +5811,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         var tick = reconcileTick.get();
 
         streams.forEach((name, entry) -> redriveStream(name, entry, tick));
-        heldUnmaterializedSince.keySet().removeIf(ref -> !awaitsMaterialize(ref));
+        scheduler.heldUnmaterializedSince().keySet().removeIf(ref -> !awaitsMaterialize(ref));
     }
 
     @Contract
@@ -5751,12 +5827,12 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void redrivePartition(PartitionRef ref, long tick) {
         if (shouldMaterialize(ref.streamName(), ref.partition())) {
-            var since = heldUnmaterializedSince.computeIfAbsent(ref, _ -> tick);
+            var since = scheduler.heldUnmaterializedSince().computeIfAbsent(ref, _ -> tick);
 
             queueIfBudgetFits(ref);
             warnIfStalled(ref, tick - since);
         } else {
-            heldUnmaterializedSince.remove(ref);
+            scheduler.heldUnmaterializedSince().remove(ref);
         }
     }
 
@@ -5767,10 +5843,10 @@ public final class StreamPartitionManager implements AutoCloseable {
                      .or(false);
     }
 
-    /// A non-system partition whose floor does not fit the off-heap budget NOW is not queued: it would sit at the
-    /// app-class FIFO head, where the budget-AND ([#headCanProceed]) stops the whole class and starves every
-    /// fitting partition behind it, owners included. It is re-checked next tick, so it is queued the tick budget
-    /// frees. The drain keeps its head-of-line ordering unchanged (minimal change).
+    /// A non-system partition whose floor does not fit the off-heap budget NOW is not queued: it is re-checked next tick,
+    /// so it is queued the tick budget frees (v1809 p5). Since #1811 the drain skips a queued ref that no longer fits
+    /// ([#nextDrainable]), so this no longer guards the class against a blocked head; it keeps a ref that never fitted out
+    /// of the queue.
     @Contract
     private void queueIfBudgetFits(PartitionRef ref) {
         var system = isSystemStream(ref.streamName());
@@ -5789,7 +5865,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                      ref.partition(),
                      ticksRefused,
                      reshuffleConcurrency,
-                     queuedMaterializations.size());
+                     scheduler.queuedMaterializations().size());
         }
     }
 
@@ -5821,37 +5897,41 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// pacing that this bound exists to preserve is untouched.
     @Contract
     private void preemptStalledSlots() {
-        if (queuedMaterializations.isEmpty()) {
+        if (scheduler.queuedMaterializations().isEmpty()) {
             return;
         }
 
         var tick = reconcileTick.get();
 
-        Set.copyOf(inFlightMaterializations)
+        Set.copyOf(scheduler.inFlightMaterializations())
            .stream()
-           .filter(ref -> tick - slotAcquiredTick.getOrDefault(ref, tick) >= RESHUFFLE_SLOT_MAX_TICKS)
+           .filter(ref -> tick - scheduler.slotAcquiredTick()
+                                          .getOrDefault(ref, tick) >= RESHUFFLE_SLOT_MAX_TICKS)
            .forEach(this::preemptReshuffleSlot);
     }
 
     @Contract
     private void preemptReshuffleSlot(PartitionRef ref) {
-        if (!inFlightMaterializations.remove(ref)) {
+        if (!scheduler.inFlightMaterializations().remove(ref)) {
             return;
         }
 
-        slotAcquiredTick.remove(ref);
-        preemptedSlots.add(ref);
+        scheduler.slotAcquiredTick().remove(ref);
+        scheduler.preemptedSlots().add(ref);
         reshuffleSlots.release();
         log.warn("Preempted reshuffle slot for {}[{}] after {} reconcile ticks — backfill continues but no longer counts against reshuffle concurrency ({} partitions were queued behind it)",
                  ref.streamName(),
                  ref.partition(),
                  RESHUFFLE_SLOT_MAX_TICKS,
-                 queuedMaterializations.size());
+                 scheduler.queuedMaterializations().size());
     }
 
     private void freeCompletedSlots() {
-        Set.copyOf(inFlightMaterializations).forEach(this::freeSlotIfComplete);
-        Set.copyOf(preemptedSlots).stream().filter(this::slotComplete).forEach(preemptedSlots::remove);
+        Set.copyOf(scheduler.inFlightMaterializations()).forEach(this::freeSlotIfComplete);
+        Set.copyOf(scheduler.preemptedSlots())
+           .stream()
+           .filter(this::slotComplete)
+           .forEach(scheduler.preemptedSlots()::remove);
     }
 
     @Contract
@@ -5896,12 +5976,12 @@ public final class StreamPartitionManager implements AutoCloseable {
         var ref = new PartitionRef(name, partition);
 
         if (placementRoleSupplier.roleFor(name, partition) != Role.NONE) {
-            releaseCandidacy.remove(ref);
+            scheduler.releaseCandidacy().remove(ref);
 
             return;
         }
 
-        var since = releaseCandidacy.putIfAbsent(ref, reconcileTick.get());
+        var since = scheduler.releaseCandidacy().putIfAbsent(ref, reconcileTick.get());
 
         if (since == null || reconcileTick.get() - since < RELEASE_DEBOUNCE_TICKS) {
             return;
@@ -5957,8 +6037,10 @@ public final class StreamPartitionManager implements AutoCloseable {
         release(controlBytes);
         mp.close();
         forgetReplicatedWrites(ref.streamName(), ref.partition(), mp.wal());
-        releaseCandidacy.remove(ref);
-        closeRefusedCuts(ref::equals, "this node no longer hosts the partition's replica");
+        scheduler.releaseCandidacy().remove(ref);
+        closeRefusedCuts(ref.streamName(),
+                         partition -> partition == ref.partition(),
+                         "this node no longer hosts the partition's replica");
         freeReshuffleSlot(ref);
         dropDurableWatermark(ref);
         releasedSinceBoot.incrementAndGet();
@@ -5969,12 +6051,13 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     /// Drain queued materializations as slots free (#265 increment 5): the system queue FIRST (owner decision
-    /// 2026-07-05 — cluster-critical streams never wait behind app-stream pressure), then the app queue FIFO.
-    /// Each class purges stale heads (stream gone / no longer held / already materialized) and then, while a
-    /// slot is free and the head can proceed (app: budget headroom too — the budget-AND), dequeues + materializes.
+    /// 2026-07-05 — cluster-critical streams never wait behind app-stream pressure), then the app queue in FIFO order.
+    /// Each class purges stale refs (stream gone / no longer held / already materialized) and then, while a slot is free,
+    /// dequeues and materializes the first queued ref that can proceed (app: budget headroom too — the budget-AND),
+    /// skipping, not stopping at, any ahead of it that cannot (#1811).
     private void drainMaterializeQueue() {
-        drainClass(systemMaterializeQueue, true);
-        drainClass(appMaterializeQueue, false);
+        drainClass(scheduler.systemMaterializeQueue(), true);
+        drainClass(scheduler.appMaterializeQueue(), false);
     }
 
     @Contract
@@ -5988,20 +6071,27 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
     }
 
-    /// Materialize the next drainable queued ref, if its budget-AND allows. False when nothing proceeded.
+    /// Materialize the next drainable queued ref. False when nothing proceeded.
     private boolean drainOne(Deque<PartitionRef> queue, boolean system) {
-        return nextDrainable(queue).filter(ref -> headCanProceed(ref, system))
-                            .filter(queue::remove)
+        return nextDrainable(queue, system).filter(queue::remove)
                             .onPresent(this::materializeQueued)
                             .isPresent();
     }
 
-    /// First queued ref that needs no slot or has one free. With a free permit that is the FIFO head; with none
-    /// it is the first partition that has since become OWNER — an owner materialize is never paced
-    /// ([#buildAndInstall]), so it must not wait behind replica backfills for a permit it will not take (#1805).
-    private Option<PartitionRef> nextDrainable(Deque<PartitionRef> queue) {
+    /// First queued ref, in FIFO order, that needs no slot or has one free (with no free permit, the first partition that has
+    /// since become OWNER: an owner materialize is never paced ([#buildAndInstall]), so it must not wait behind replica
+    /// backfills for a permit it will not take, #1805) AND passes the budget-AND ([#headCanProceed]).
+    ///
+    /// #1811 (spec 14.3 item 1): skip-not-block. A ref whose floor no longer fits the budget is skipped, not waited on: the
+    /// first ref in the class that fits is taken. A skipped ref is not moved: it keeps its position, so the next pass
+    /// offers it first, and it is admitted as soon as it fits. There is deliberately no reservation for a ref skipped
+    /// repeatedly (#1811 asks for skip-not-block only; a reservation would bring back a bounded head-of-line block).
+    /// L-20: a large ref can therefore wait while smaller partitions behind it are admitted; its wait is bounded only by
+    /// budget being released, never by a skip count.
+    private Option<PartitionRef> nextDrainable(Deque<PartitionRef> queue, boolean system) {
         return queue.stream()
                     .filter(this::slotAvailableFor)
+                    .filter(ref -> headCanProceed(ref, system))
                     .findFirst()
                     .map(Option::some)
                     .orElseGet(Option::none);
@@ -6021,7 +6111,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         var stale = !drainEligible(ref);
 
         if (stale) {
-            queuedMaterializations.remove(ref);
+            scheduler.queuedMaterializations().remove(ref);
         }
 
         return stale;
@@ -6037,9 +6127,9 @@ public final class StreamPartitionManager implements AutoCloseable {
                     .isEmpty() && shouldMaterialize(ref.streamName(), ref.partition());
     }
 
-    /// A queued head may materialize when a slot is free (the caller's guard) and — for an APP stream — the
+    /// A queued ref may materialize when a slot is free (the caller's guard) and — for an APP stream — the
     /// pool has headroom for its floor (the budget-AND; a system stream bypasses this and oversubscribes if
-    /// needed). App head-of-line: a FIFO head that cannot get budget blocks its class, preserving order.
+    /// needed). An app ref that cannot get budget is skipped, not waited on (#1811, [#nextDrainable]).
     private boolean headCanProceed(PartitionRef head, boolean system) {
         return system || availableBytes() >= floorFor(head);
     }
@@ -6051,7 +6141,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     @Contract
     private void materializeQueued(PartitionRef ref) {
-        queuedMaterializations.remove(ref);
+        scheduler.queuedMaterializations().remove(ref);
         materializePartition(ref.streamName(), ref.partition()).onFailure(cause -> log.debug("Queued materialize of {}[{}] did not complete this tick: {}",
                                                                                              ref.streamName(),
                                                                                              ref.partition(),
