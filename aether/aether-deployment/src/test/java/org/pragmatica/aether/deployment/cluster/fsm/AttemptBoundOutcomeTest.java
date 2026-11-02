@@ -278,6 +278,47 @@ class AttemptBoundOutcomeTest {
         assertThat(outcomeStatusName(store, expanded.id())).isEqualTo(DeploymentOutcomeStatus.IN_PROGRESS.name());
     }
 
+    /// #2592 on the restore path: the abandoned rollback must run `onAbandoned`, which releases this node's
+    /// restore bookkeeping, and not `onLanded`, which would deallocate the slices it never rolled back.
+    @Test
+    void committedLeaderRecordNamesAnotherNode_abandonedRestoreReleasesItsBookkeeping() {
+        var store = freshStore();
+
+        store.process(store.createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(NODE_A, 2)))));
+        var node = new InterferingClusterNode(SELF, store);
+        var harness = leaderHarness(node, store, DeploymentAtomicity.ALL_OR_NOTHING);
+        var first = blueprint(3);
+        var second = blueprint(2);
+
+        applyBlueprint(harness, store, first, FIRST_ATTEMPT, 1L);
+        applyBlueprint(harness, store, second, SECOND_ATTEMPT, 2L);
+        exhaustRetryBudgetOn(harness, SELF, SLICE);
+
+        assertThat(activeState(harness).permanentlyFailed()).as("precondition: the failure reached the rollback").contains(SLICE);
+        assertThat(node.transactions()).as("no fenced restore carrying another node's leader record").isZero();
+        assertThat(committedAttempt(store, second.id())).as("the republish is left committed").isEqualTo(Option.some(SECOND_ATTEMPT));
+        assertThat(activeState(harness).restoringBlueprints()).as("onAbandoned released the restore marker").doesNotContain(first.id());
+    }
+
+    /// #2592, the guard's second clause: the committed `LeaderValue` still names this node, but its term has
+    /// ended (`onExit` ran) while a failure was still on its way to the rollback. The record passes the
+    /// applier's fence until the new leader's record commits, so the ended term must not build the transaction.
+    @Test
+    void committedLeaderRecordNamesSelfButTermHasEnded_noRollbackIsSubmitted() {
+        var store = storeWithLeader();
+        var node = new InterferingClusterNode(SELF, store);
+        var harness = leaderHarness(node, store, DeploymentAtomicity.ALL_OR_NOTHING);
+        var expanded = blueprint(3);
+
+        applyBlueprint(harness, store, expanded, FIRST_ATTEMPT, 1L);
+        activeState(harness).onExit();
+        exhaustRetryBudgetOn(harness, SELF, SLICE);
+
+        assertThat(activeState(harness).permanentlyFailed()).as("precondition: the failure reached the rollback").contains(SLICE);
+        assertThat(node.transactions()).as("no fenced rollback from an ended term").isZero();
+        assertThat(committedBlueprint(store, expanded.id())).as("and no unfenced one either").isEqualTo(Option.some(expanded));
+    }
+
     /// BEST_EFFORT merge: a FAILED left by an EARLIER attempt must not lend its failing slices to this
     /// attempt's record. Before attribution the merge read them as this apply's. RED at `40dfc0519`.
     @Test
