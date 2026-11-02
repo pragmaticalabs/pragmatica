@@ -245,16 +245,16 @@ public sealed interface StreamAssembly {
 
     /// The network-backed replication transport: each send returns the cluster network's own outcome, and the
     /// caller-wait overload reaches the network's TTL-bounded send (#1996, #2583 P1).
-    static ReplicationTransport replicationTransport(ClusterNetwork network) {
+    static ReplicationTransport replicationTransport(ClusterNetwork replicationNetwork) {
         return new ReplicationTransport() {
             @Override
             public Promise<WriteOutcome> send(NodeId target, ReplicationMessage message) {
-                return network.send(target, message);
+                return replicationNetwork.send(target, message);
             }
 
             @Override
             public Promise<WriteOutcome> send(NodeId target, ReplicationMessage message, TimeSpan callerWait) {
-                return network.send(target, message, callerWait);
+                return replicationNetwork.send(target, message, callerWait);
             }
         };
     }
