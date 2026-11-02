@@ -130,6 +130,11 @@ class EmberReplicaRelayTest {
     /// dropping them also drops its core contact, and the core-absence fence (10 s) drains it. The extra worker is therefore started without waiting
     /// for its join (the join is what took seconds); the control is a count of directory-bearing pongs dropped after the cores' directory moved; and the
     /// extra worker is awaited only after the member has caught up and its filter is lifted.
+    ///
+    /// The catch-up target is the cores' directory at the control point, not their current one (#2510). The governor relays what it heard on its own
+    /// last core pong, so its member is a pong round behind the cores; while the directory keeps moving (observed: one version per second for 11 s
+    /// under load), "equal to the cores now" never holds, every core pong still carries a directory and is dropped, and the fence drains the member
+    /// while it is in fact following its governor version by version.
     private void phaseTwoAMemberHearsTheDirectoryFromItsGovernorAlone() {
         var member = workers.stream().filter(id -> !isGovernor(id)).findFirst().orElseThrow();
         var governor = governorOf(communityOf.get(member)).unwrap();
@@ -147,9 +152,11 @@ class EmberReplicaRelayTest {
         await("the member has been offered the moved directory CONTROL_DROPS times and dropped it", () -> dropped.get() >= droppedBefore + CONTROL_DROPS);
         assertThat(directory(member).unwrap().version()).as("control: with every directory-bearing pong dropped the member's directory does not move").isEqualTo(held);
 
+        var target = directory(anyFollowerCore()).unwrap().version();
+
         allowed.set(sender -> sender.equals(governor));
-        await("the member catches up to the cores' directory through its governor's pong alone",
-              () -> directory(member).map(d -> d.version()).equals(directory(anyFollowerCore()).map(d -> d.version())));
+        await("the member reaches the cores' directory of the control point through its governor's pong alone",
+              () -> directory(member).filter(d -> !target.isStrictlyAfter(d.version())).isPresent());
         assertThat(directory(member).unwrap().version().isStrictlyAfter(held)).isTrue();
         node(member).setInboundFaultFilter((_, _) -> true);
         register(extra.await(START_BOUND).unwrap().id());
