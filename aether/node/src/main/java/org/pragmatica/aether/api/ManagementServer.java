@@ -763,9 +763,12 @@ class ManagementServerImpl implements ManagementServer {
         var spm = nodeSupplier.get().streamPartitionManager();
         Supplier<Number> usedBytes = spm::totalAllocatedBytes;
         Supplier<Number> usedRatio = () -> computeStreamMemoryRatio(spm);
+        // #2201 A-14: safety-relevant seams still at their default on a node with a WAL; anything but 0 is a wiring defect.
+        Supplier<Number> unboundSafetySeams = spm::unboundSafetySeamCount;
 
         observability.gauge("aether.streams.memory.used.bytes", usedBytes);
         observability.gauge("aether.streams.memory.used.ratio", usedRatio);
+        observability.gauge("aether.streams.seams.unbound.safety", unboundSafetySeams);
     }
 
     /// Promotion of each storage instance that promotes (an inert one has nothing to report), cumulative since boot, read

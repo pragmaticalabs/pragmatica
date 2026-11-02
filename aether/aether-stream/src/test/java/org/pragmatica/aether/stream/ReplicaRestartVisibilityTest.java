@@ -116,6 +116,22 @@ class ReplicaRestartVisibilityTest {
         assertThat(offsets()).containsExactly(0L, 1L, 2L, 3L, 4L, 5L);
     }
 
+    /// #2201 PR-2a author pre-check: verified exactly through the head (not beyond it, as above with 99), the copy leaves the
+    /// unverified set, so a later append the owner reports is visible past the verified offset. Mutation: keeping the partition
+    /// in `unverifiedReplicas` (and its verified prefix) once the head is covered caps visibility at offset 4 and turns this red.
+    @Test
+    void markVerified_throughTheHead_endsTheUnverifiedState_soLaterAppendsBecomeVisible() {
+        ownerWithPartiallyAckedTail();
+        restart(Role.REPLICA);
+
+        manager.markVerified(STREAM, PARTITION, PUBLISHED - 1L);
+        manager.appendRecovered(STREAM, PARTITION, 5L, "owner-5".getBytes(UTF_8), 5L, org.pragmatica.aether.slice.generation.Epoch.ZERO).unwrap();
+        manager.syncReplicated(STREAM, PARTITION).await();
+        manager.commitAdvanced(STREAM, PARTITION, 5L, org.pragmatica.aether.slice.generation.Epoch.ZERO);
+
+        assertThat(offsets()).as("offset 5 is past the verified offset 4, and visible").containsExactly(0L, 1L, 2L, 3L, 4L, 5L);
+    }
+
     /// A repair keeps the prefix the copy shares with its sender, which is verified by construction: the owner's
     /// records appended after the cut are visible together with it, without a further verification.
     @Test
