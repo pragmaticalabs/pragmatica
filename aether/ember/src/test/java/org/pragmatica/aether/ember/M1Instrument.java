@@ -240,6 +240,9 @@ final class M1Instrument {
             var kind = command.getClass().getSimpleName();
 
             add("cmd." + kind, 1);
+            if (command instanceof KVCommand.Noop<?> barrier) {
+                add("cmd.Noop:" + barrier.key().getClass().getSimpleName(), 1);
+            }
             if (command instanceof KVCommand.LeaderTransaction<?, ?> tx) {
                 var accepted = results != null && i < results.size()
                                && results.get(i) instanceof KVCommand.TransactionResult outcome && outcome.accepted();
