@@ -6,6 +6,7 @@
 package org.pragmatica.aether.stream.segment;
 
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -93,6 +94,40 @@ class CursorStoreTest {
 
             assertThat(store.fetch(GROUP, STREAM, PARTITION).await())
                     .isEqualTo(Result.success(Option.some(42L)));
+        }
+    }
+
+    /// #2590 (moved from P0.3 to P1): a stream destroyed and re-created under the same name. The node-local cursor ref
+    /// `cursors/<group>/<stream>/<partition>` survives: no main-source path deletes by the `cursors/` prefix (the grep over
+    /// `aether/**/src/main/**/*.java` finds only the constant in [CursorStore]), so the new stream's consumer is positioned
+    /// by the old life's offset. The fixture's destroy does what production's does to node storage: nothing. P2 carries the
+    /// stream incarnation in the cursor and discards one that does not match.
+    @Nested
+    class StreamRecreate {
+        /// Production's destroy and re-create touch no cursor ref.
+        private void destroyAndRecreate() {}
+
+        private Result<Option<Long>> fetchAfterRecreate() {
+            store.commit(GROUP, STREAM, PARTITION, 42L).await();
+            destroyAndRecreate();
+
+            return store.fetch(GROUP, STREAM, PARTITION).await();
+        }
+
+        /// Tripwire, enabled: asserts today's behaviour.
+        @Test
+        void cursorStore_streamRecreatedSameName_localCursorStillApplied() {
+            assertThat(fetchAfterRecreate()).describedAs("#2590 tripwire: the old life's local cursor is no longer returned after the stream "
+                                                         + "was re-created. If #2590 P2 has landed, enable cursorStore_streamRecreatedSameName_localCursorDiscarded "
+                                                         + "and delete this tripwire.")
+                                            .isEqualTo(Result.success(Option.some(42L)));
+        }
+
+        @Disabled("#2590 P2: a local cursor carries the stream incarnation; one from another life is discarded")
+        @Test
+        void cursorStore_streamRecreatedSameName_localCursorDiscarded() {
+            assertThat(fetchAfterRecreate()).describedAs("a local cursor of the destroyed stream must not position the new one")
+                                            .isEqualTo(Result.success(Option.none()));
         }
     }
 

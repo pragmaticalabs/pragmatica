@@ -128,6 +128,7 @@ import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.node.projection.ProjectionNodeSupport;
+import org.pragmatica.aether.node.stream.ConsensusBatchCounters;
 import org.pragmatica.aether.node.stream.StreamConsumerManager;
 import org.pragmatica.aether.node.stream.StreamConsumerRegistry;
 import org.pragmatica.aether.stream.StreamPartitionManager;
@@ -1575,6 +1576,7 @@ public interface AetherNode extends ManageableNode {
                           DeploymentMap deploymentMap,
                           ClusterEventAggregator eventAggregator,
                           StreamPartitionManager streamPartitionManager,
+                          ConsensusBatchCounters consensusBatchCounters,
                           SegmentIndex streamSegmentIndex,
                           StreamReadRouter streamReadRouter,
                           StreamWriteRouter streamWriteRouter,
@@ -3234,6 +3236,7 @@ public interface AetherNode extends ManageableNode {
         var streamConsumerRuntime = streamServingOut.streamConsumerRuntime();
         var streamConsumerManager = streamServingOut.streamConsumerManager();
         var projectionNodeSupport = streamServingOut.projectionNodeSupport();
+        var consensusBatchCounters = streamServingOut.consensusBatchCounters();
 
         ClusterEventsAssembly.systemStreamRegistrar(new ClusterEventsAssembly.SystemStreamRegistrarInputs(kvStore,
                                                                                                           alertManager,
@@ -3356,6 +3359,7 @@ public interface AetherNode extends ManageableNode {
                                   deploymentMap,
                                   eventAggregator,
                                   streamPartitionManager,
+                                  consensusBatchCounters,
                                   streamSegmentIndex,
                                   streamReadRouter,
                                   streamWriteRouter,
@@ -3516,6 +3520,7 @@ public interface AetherNode extends ManageableNode {
                                                                             deploymentMap,
                                                                             eventAggregator,
                                                                             streamPartitionManager,
+                                                                            consensusBatchCounters,
                                                                             streamSegmentIndex,
                                                                             streamReadRouter,
                                                                             streamWriteRouter,

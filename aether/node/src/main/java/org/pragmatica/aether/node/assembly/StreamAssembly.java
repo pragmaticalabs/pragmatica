@@ -56,6 +56,7 @@ import org.pragmatica.aether.node.projection.ProjectionAwareCursorStore;
 import org.pragmatica.aether.node.projection.ProjectionNodeSupport;
 import org.pragmatica.aether.node.projection.ProjectionRegistry;
 import org.pragmatica.aether.node.stream.ClusterCursorStore;
+import org.pragmatica.aether.node.stream.ConsensusBatchCounters;
 import org.pragmatica.aether.node.stream.ConsumerAssignmentWriter;
 import org.pragmatica.aether.node.stream.StreamConsumerManager;
 import org.pragmatica.aether.node.stream.StreamConsumerRegistry;
@@ -1034,7 +1035,8 @@ public sealed interface StreamAssembly {
                                 StreamReadRouter streamReadRouter,
                                 StreamConsumerRuntime streamConsumerRuntime,
                                 StreamConsumerManager streamConsumerManager,
-                                ProjectionNodeSupport projectionNodeSupport) {}
+                                ProjectionNodeSupport projectionNodeSupport,
+                                ConsensusBatchCounters consensusBatchCounters) {}
 
     /// The committed owner source, the linearizable owner serve pipeline, the forward handler and read router, the consumer and projection machinery and the streaming coordinator.
     static StreamServingOutputs streamServing(StreamServingInputs in) {
@@ -1154,8 +1156,10 @@ public sealed interface StreamAssembly {
         var projectionRegistry = ProjectionRegistry.projectionRegistry(topicSubscriptionRegistry::allSubscriptions);
         Fn1<Option<AetherValue.StreamCursorCheckpointValue>, AetherKey.StreamCursorCheckpointKey> committedCursorReader = cursorKey -> kvStore.getTyped(cursorKey,
                                                                                                                                                         AetherValue.StreamCursorCheckpointValue.class);
-        Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> cursorCommandWriter = commands -> switchableCluster.apply(commands)
-                                                                                                          .mapToUnit();
+        // #2590 (P0.4 instrument, moved to P1): the consensus load of consumer progress by key class, read by the S7 arms.
+        var consensusBatchCounters = ConsensusBatchCounters.consensusBatchCounters();
+        Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> cursorCommandWriter = consensusBatchCounters.counting(commands -> switchableCluster.apply(commands)
+                                                                                                                                          .mapToUnit());
         var streamClusterCursorStore = ProjectionAwareCursorStore.projectionAwareCursorStore(ClusterCursorStore.clusterCursorStore(streamCursorStore,
                                                                                                                                    config.self(),
                                                                                                                                    committedCursorReader,
@@ -1279,7 +1283,8 @@ public sealed interface StreamAssembly {
                                         streamReadRouter,
                                         streamConsumerRuntime,
                                         streamConsumerManager,
-                                        projectionNodeSupport);
+                                        projectionNodeSupport,
+                                        consensusBatchCounters);
     }
 
     /// What `streamWriteRouter` reads from the assembly built so far.

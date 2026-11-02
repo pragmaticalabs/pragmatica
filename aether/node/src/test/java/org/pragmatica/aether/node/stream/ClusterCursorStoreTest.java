@@ -6,6 +6,8 @@ package org.pragmatica.aether.node.stream;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -772,6 +774,53 @@ class ClusterCursorStoreTest {
 
             assertThat(outcome).describedAs("the core admitted the checkpoint and the forwarded batch's ordered results prove it, so the commit is Persisted without any mirror; got %s", outcome)
                                .isEqualTo(Result.success(CommitOutcome.persisted()));
+        }
+    }
+
+    /// #2590 (moved from P0.3 to P1): a consumed stream destroyed and re-created under the same name. Nothing removes its
+    /// cluster cursor today -- review R2.2a found 35 `Remove` sites and none for `StreamCursorCheckpointKey` -- so the new
+    /// stream's consumer resumes from the old life's offset and skips `[0, offset)` of the new log. The fixture's destroy
+    /// does what production's does: it removes the stream's config key, nothing else. P2 carries the stream incarnation
+    /// in every persisted cursor and discards one that does not match.
+    @Nested
+    class StreamRecreate {
+        private final Map<AetherKey, AetherValue> committed = new ConcurrentHashMap<>();
+
+        @BeforeEach
+        void setUp() {
+            committed.put(CHECKPOINT_KEY, checkpoint(70L, SELF_TOKEN));
+        }
+
+        /// Production's destroy removes the stream's config key, which this fixture does not hold, and no cursor key.
+        private void destroyAndRecreate() {}
+
+        private Option<Long> fetchAfterRecreate() {
+            destroyAndRecreate();
+            var store = storeWith(fixedLocal(Option.none()),
+                                  key -> Option.option(committed.get(key))
+                                               .map(StreamCursorCheckpointValue.class::cast),
+                                  _ -> Promise.unitPromise());
+
+            return store.fetch(GROUP, STREAM, PARTITION, EPOCH)
+                        .await()
+                        .onFailure(cause -> Assertions.fail(cause.message()))
+                        .or(Option.none());
+        }
+
+        /// Tripwire, enabled: asserts today's behaviour.
+        @Test
+        void fetchCursor_streamDestroyedAndRecreated_returnsOldLifeCursor() {
+            assertThat(fetchAfterRecreate()).describedAs("#2590 tripwire: the old life's cursor is no longer returned after the stream was "
+                                                         + "re-created. If #2590 P2 has landed, enable fetchCursor_streamDestroyedAndRecreated_discardsOldLifeCursor "
+                                                         + "and delete this tripwire.")
+                                            .isEqualTo(Option.some(70L));
+        }
+
+        @Disabled("#2590 P2: a persisted cursor carries the stream incarnation; one from another life is discarded")
+        @Test
+        void fetchCursor_streamDestroyedAndRecreated_discardsOldLifeCursor() {
+            assertThat(fetchAfterRecreate()).describedAs("a cursor of the destroyed stream must not position the new one")
+                                            .isEqualTo(Option.none());
         }
     }
 
