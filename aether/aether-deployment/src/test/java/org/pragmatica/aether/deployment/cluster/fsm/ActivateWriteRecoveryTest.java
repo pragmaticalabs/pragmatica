@@ -146,6 +146,31 @@ class ActivateWriteRecoveryTest {
                .until(() -> cluster.activateTransactions().isEmpty());
     }
 
+    /// The compare-and-set pin: the node moves on (to ACTIVE, or to UNLOADING) after the recheck read LOADED and before
+    /// the re-issue applies. The re-issue is refused and the moved-on state stands. A plain write instead of the
+    /// compare-and-set would set the slice back to ACTIVATE.
+    @Test
+    void lateReissue_cannotSetAnActiveSliceBackToActivate() {
+        assertLateReissueLeaves(SliceState.ACTIVE);
+    }
+
+    @Test
+    void lateReissue_cannotSetAnUnloadingSliceBackToActivate() {
+        assertLateReissueLeaves(SliceState.UNLOADING);
+    }
+
+    private void assertLateReissueLeaves(SliceState movedOn) {
+        cluster.sabotageActivatePuts(1, Sabotage.FAIL_UNAPPLIED);
+        cluster.moveOnBeforeNextActivateWrite(movedOn);
+
+        harness.dispatch(new Activate());
+
+        await().atMost(Duration.ofSeconds(20))
+               .until(() -> cluster.movedOn());
+        assertThat(committedState()).as("a late re-issue leaves the moved-on %s in place", movedOn)
+                                    .isEqualTo(Option.some(movedOn));
+    }
+
     /// Layer 2: the ACTIVATE write reports success but is lost. Within the activation timeout the backstop waits; past
     /// it, one reconcile re-issues ACTIVATE. RED at rc5: LOADED is live to reconcile and not transitional to the
     /// stuck remediator.
@@ -290,6 +315,8 @@ class ActivateWriteRecoveryTest {
         private final AtomicInteger activatePuts = new AtomicInteger();
         private final List<KVCommand.Mutation<AetherKey, AetherValue>> activateMutations = Collections.synchronizedList(new ArrayList<>());
         private volatile Sabotage sabotage = Sabotage.LOST;
+        private volatile Option<SliceState> moveOn = Option.none();
+        private volatile boolean movedOn;
 
         SabotagingClusterNode(NodeId self, InMemoryKvStore kvStore) {
             this.self = self;
@@ -299,6 +326,15 @@ class ActivateWriteRecoveryTest {
         void sabotageActivatePuts(int count, Sabotage how) {
             sabotage = how;
             toSabotage.set(count);
+        }
+
+        /// The next ACTIVATE write after the sabotaged ones, plain or compare-and-set, first finds the node moved on.
+        void moveOnBeforeNextActivateWrite(SliceState state) {
+            moveOn = Option.some(state);
+        }
+
+        boolean movedOn() {
+            return movedOn;
         }
 
         int activatePuts() {
@@ -330,6 +366,10 @@ class ActivateWriteRecoveryTest {
                 }
             }
 
+            if (isActivatePut(batch) || isActivateTransaction(batch)) {
+                return Promise.success(applyAfterMoveOn(batch));
+            }
+
             return Promise.success(kvStore.process(kvStore.createBatch(batch)));
         }
 
@@ -345,6 +385,28 @@ class ActivateWriteRecoveryTest {
             kvStore.process(kvStore.createBatch(batch));
 
             return Causes.cause("simulated ACTIVATE write timeout after apply").promise();
+        }
+
+        /// The node moves on first, then the ACTIVATE write applies; `movedOn` is raised only after the write has
+        /// applied, so a test that waits on it reads the state the write left.
+        private <R> List<R> applyAfterMoveOn(List<KVCommand<AetherKey>> batch) {
+            var pending = moveOn;
+
+            moveOn = Option.none();
+            pending.onPresent(state -> kvStore.put(ARTIFACT_KEY, NodeArtifactValue.nodeArtifactValue(state, 0L)));
+            List<R> results = kvStore.process(kvStore.createBatch(batch));
+
+            movedOn = movedOn || pending.isPresent();
+
+            return results;
+        }
+
+        private static boolean isActivateTransaction(List<KVCommand<AetherKey>> batch) {
+            return batch.stream()
+                        .anyMatch(command -> command instanceof KVCommand.LeaderTransaction<?, ?> transaction
+                                             && transaction.mutations()
+                                                           .stream()
+                                                           .anyMatch(mutation -> mutation.key().equals(ARTIFACT_KEY)));
         }
 
         private static boolean isActivatePut(List<KVCommand<AetherKey>> batch) {
