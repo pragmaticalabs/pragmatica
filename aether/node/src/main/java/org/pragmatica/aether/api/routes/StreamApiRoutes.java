@@ -904,6 +904,10 @@ public final class StreamApiRoutes implements RouteSource {
     /// publish with the retryable response for, and a publish this node serves as the owner uses the same predicate, so
     /// a refusal answers the same status on both paths. It includes the transient capacity refusals (`ReshufflePaced`,
     /// `MaterializeBudgetExceeded`, `STREAM_MEMORY_EXCEEDED`, `SEALING_BEHIND`, `SEGMENT_TIER_FULL`; #1980).
+    ///
+    /// #2574: a forward to the owner that this node's transport refused before writing ([StreamForwardError.ForwardNotSent])
+    /// never reached the owner, so nothing was appended: it is on the list too. Before #2574 that refusal waited out the
+    /// publish timeout and answered "outcome unknown".
     static Cause retryableRefusal(String streamName, Cause cause) {
         return isPreAppendRefusal(cause)
                ? new ManagementServerError.PublishRetryable(streamName, cause)
@@ -920,7 +924,8 @@ public final class StreamApiRoutes implements RouteSource {
     }
 
     private static boolean isPreAppendRefusal(Cause cause) {
-        return cause instanceof StreamForwardError.RemotePublishRetryable || StreamForwardHandler.isRetryable(cause);
+        return cause instanceof StreamForwardError.RemotePublishRetryable || cause instanceof StreamForwardError.ForwardNotSent
+               || StreamForwardHandler.isRetryable(cause);
     }
 
     /// #524 guard: an out-of-range `partition` on a Management-API publish must fail 4xx naming the

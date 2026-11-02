@@ -147,6 +147,7 @@ import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.hlc.HlcClock;
@@ -1959,7 +1960,9 @@ public sealed interface StreamAssembly {
         }
     }
 
-    private static StreamForwardTransport createStreamForwardTransport(ClusterNetwork network) {
+    /// Package-private so the wiring is pinnable (#2574): `sendOutcome` must reach the network's tracked write, or a
+    /// refused forward silently waits out its timeout again.
+    static StreamForwardTransport createStreamForwardTransport(ClusterNetwork network) {
         return new StreamForwardTransport() {
             @Contract
             @Override
@@ -1971,6 +1974,13 @@ public sealed interface StreamAssembly {
             @Override
             public void send(NodeId target, StreamForwardMessage message, TimeSpan callerWait) {
                 network.send(target, message, callerWait);
+            }
+
+            /// #2574: the QUIC transport's tracked write, so a request frame refused on a backpressured FORWARD lane fails
+            /// its read or publish at once instead of waiting out the caller's wait.
+            @Override
+            public Promise<WriteOutcome> sendOutcome(NodeId target, StreamForwardMessage message, TimeSpan callerWait) {
+                return network.sendOutcome(target, message, callerWait);
             }
         };
     }

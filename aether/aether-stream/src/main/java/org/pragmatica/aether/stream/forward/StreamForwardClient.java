@@ -18,6 +18,7 @@ import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.VisibleBounds;
 import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -289,8 +290,12 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
         SharedScheduler.schedule(() -> timeoutRequest(correlationId), publishWait);
         var message = publishForward(selfNodeId, correlationId, streamName, partition, payload, timestamp, systemWriter);
         // The frame must not outlive the wait that just started (#1996): delivered later it would publish an event
-        // whose caller was already told the outcome is unknown.
-        transport.send(governorId, message, publishWait);
+        // whose caller was already told the outcome is unknown. A frame refused before it left (#2574) was provably not
+        // applied, so the publish fails at once with a transient cause, never "outcome unknown" at the timeout.
+        // detached: nothing chains on the outcome; the refusal resolves the caller's promise through the pending-entry
+        // removal, which races the response and the timeout safely (whichever removes the entry resolves it).
+        transport.sendOutcome(governorId, message, publishWait)
+                 .onSuccess(outcome -> failPublishIfRefused(outcome, correlationId, publishWait));
         log.trace("Sent PublishForward to {} for {}[{}] correlationId={}",
                   governorId,
                   streamName,
@@ -371,7 +376,11 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
         var readWait = Deadline.current().bounded(readTimeout);
 
         SharedScheduler.schedule(() -> timeoutRead(message.correlationId()), readWait);
-        transport.send(target, message, readWait);
+        // #2574: a read refused before it left fails at once; its scheduled timeout then finds no pending entry.
+        // detached: nothing chains on the outcome; the refusal resolves the caller's promise through the pending-entry
+        // removal, which races the response and the timeout safely (whichever removes the entry resolves it).
+        transport.sendOutcome(target, message, readWait)
+                 .onSuccess(outcome -> failReadIfRefused(outcome, message.correlationId(), readWait));
         log.trace("Sent ReadForward to {} for {}[{}] fromOffset={} maxEvents={} correlationId={} preference={}",
                   target,
                   message.streamName(),
@@ -460,6 +469,34 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
             metrics.recordTimeout();
             promise.resolve(READ_FORWARD_TIMEOUT.result());
         });
+    }
+
+    /// #2574: only a refusal before write proves the frame never left (the `ClusterNetwork.sendOutcome` contract). `Sent` and
+    /// `ConnectionDead` keep the request waiting: a frame reported under either may still be delivered from the offline
+    /// buffer, and a publish failed as "not sent" while it may still land would invite a duplicate append.
+    private static boolean isRefusedBeforeWrite(WriteOutcome outcome) {
+        return switch (outcome) {
+            case WriteOutcome.BackpressureRefused _, WriteOutcome.NoPeerState _, WriteOutcome.EncodeFailed _ -> true;
+            case WriteOutcome.Sent _, WriteOutcome.ConnectionDead _ -> false;
+        };
+    }
+
+    private void failPublishIfRefused(WriteOutcome outcome, String correlationId, TimeSpan callerWait) {
+        if (isRefusedBeforeWrite(outcome)) {
+            option(pendingRequests.remove(correlationId)).onPresent(promise -> refuse(promise, outcome, callerWait));
+        }
+    }
+
+    private void failReadIfRefused(WriteOutcome outcome, String correlationId, TimeSpan callerWait) {
+        if (isRefusedBeforeWrite(outcome)) {
+            option(pendingReads.remove(correlationId)).onPresent(promise -> refuse(promise, outcome, callerWait));
+        }
+    }
+
+    /// The refusal carries the wait the request would have spent on its answer, so a retrying caller paces itself by it.
+    private static <T> void refuse(Promise<T> promise, WriteOutcome outcome, TimeSpan callerWait) {
+        log.debug("Stream forward refused before write: {}", outcome);
+        promise.resolve(StreamForwardError.ForwardNotSent.FACTORY.apply(outcome, callerWait).result());
     }
 
     private static void logOrphanedPublishResponse(PublishForwardResponse response) {

@@ -18,6 +18,7 @@ import java.util.function.LongSupplier;
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.ConsumerConfig.ErrorStrategy;
 import org.pragmatica.aether.stream.consumer.TransactionalCursorCommit;
+import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
@@ -1217,6 +1218,14 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         }
 
         logPollFailure(key, cause);
+        var refusalWait = StreamForwardError.refusalRetryAfter(cause);
+
+        if (refusalWait.isPresent()) {
+            parkAfterRefusal(key, state, refusalWait.unwrap());
+
+            return;
+        }
+
         releaseDrain(key, state);
         if (state.pushBuffer().isPresent() && !state.isCancelled() && !closed.get()) {
             SharedScheduler.schedule(() -> requestDrain(key, state),
@@ -1241,6 +1250,24 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         if (!state.isCancelled() && !closed.get()) {
             escapeScheduler.schedule(() -> resumeAfterEscapeBackoff(key, state),
                                      TimeSpan.timeSpan(delayMs).millis());
+        }
+    }
+
+    /// #2574: a read the transport refused before it left (FORWARD-lane backpressure) fails at once, where it used to
+    /// wait out the read timeout, and the poll tick (50 ms at most) or the next append would re-read at once on the
+    /// congested lane. The loop is parked instead for the refusal's own wait -- the read timeout the read would have
+    /// spent waiting -- plus the poll interval a failed pass waits anyway, exactly as an escaped pass parks it: triggers
+    /// meanwhile only mark it dirty, and the park's end re-drives it. So a refusing lane is read no more often than the
+    /// silent wait used to read it.
+    @Contract
+    private void parkAfterRefusal(ConsumerKey key, ConsumerState state, TimeSpan wait) {
+        state.adjustPollInterval(false);
+        var parkMs = wait.millis() + state.currentPollMs.get();
+
+        state.escapeBackoffUntil(clockMs.getAsLong() + parkMs);
+        state.finishDrain();
+        if (!state.isCancelled() && !closed.get()) {
+            escapeScheduler.schedule(() -> resumeAfterEscapeBackoff(key, state), TimeSpan.timeSpan(parkMs).millis());
         }
     }
 
@@ -2190,7 +2217,17 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                                                    errorMessage,
                                                                    attemptCount,
                                                                    appendAttempt + 1),
-                                 TimeSpan.timeSpan(computeBackoff(cappedAttempt)).millis());
+                                 TimeSpan.timeSpan(deadLetterRetryDelayMs(cappedAttempt, cause)).millis());
+    }
+
+    /// #2574: a dead-letter publish the transport refused before it left fails at once, where it used to wait out the
+    /// publish timeout; its retry waits at least that refusal's own wait, so the congested lane is not re-sent to sooner
+    /// than the silent wait re-sent to it.
+    static long deadLetterRetryDelayMs(int attempt, Cause cause) {
+        return Math.max(computeBackoff(attempt),
+                        StreamForwardError.refusalRetryAfter(cause)
+                                          .map(TimeSpan::millis)
+                                          .or(0L));
     }
 
     private static long computeBackoff(int attempt) {

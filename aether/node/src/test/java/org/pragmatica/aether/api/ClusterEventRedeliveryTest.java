@@ -104,6 +104,32 @@ class ClusterEventRedeliveryTest {
         assertThat(redelivery.retried()).isZero();
     }
 
+    /// #2574: a publish the transport refused before it left fails at once (it used to wait out the publish timeout), so the
+    /// next attempt waits at least the refusal's own wait, on the first failure and on every later one; the initial 1 s
+    /// backoff alone would re-send to the congested lane sooner than the silent wait did. Red without `pacedAfter`.
+    @Test
+    void redeliver_afterATransportRefusal_waitsTheRefusalsWait_notJustTheBackoff() {
+        var wait = org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds();
+        Cause refused = StreamForwardError.ForwardNotSent.FACTORY.apply(new org.pragmatica.consensus.net.WriteOutcome.BackpressureRefused(new NodeId("owner")),
+                                                                        wait);
+
+        fail(3, refused);
+        redelivery.deliver(event("refused"));
+
+        advanceAndRedeliver(ClusterEventRedelivery.INITIAL_BACKOFF_MS);
+        assertThat(redelivery.retried()).as("the 1 s backoff has passed, the 5 s refusal wait has not").isZero();
+
+        advanceAndRedeliver(wait.millis() - ClusterEventRedelivery.INITIAL_BACKOFF_MS);
+        assertThat(redelivery.retried()).as("due once the refusal's wait has passed").isEqualTo(1L);
+
+        advanceAndRedeliver(2 * ClusterEventRedelivery.INITIAL_BACKOFF_MS);
+        assertThat(redelivery.retried()).as("the retry was refused again: its 2 s backoff has passed, the wait has not").isEqualTo(1L);
+
+        advanceAndRedeliver(wait.millis());
+        assertThat(redelivery.retried()).isEqualTo(2L);
+        assertThat(redelivery.waiting()).as("held, never dropped: the refusal is transient").isEqualTo(1);
+    }
+
     /// An owner change re-sends every waiting event at once, not on its backoff.
     @Test
     void redeliverAll_ownerChanged_resendsBeforeTheBackoff() {
