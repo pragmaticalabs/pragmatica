@@ -75,12 +75,14 @@ class AppHttpServerTrailersTest {
         router = new CapturingRouter();
     }
 
+    /// #2565: the listener binds port 0 and the test reads back the port it really bound. A port probed free and bound
+    /// later could be lost in between under load, and the discarded start failure then surfaced as "Connection refused".
     @Test
     void chunkedRequest_withTrailers_reachesTheLocalSliceWithThem() throws IOException {
-        var port = ClusterTestPorts.freeTcpAndUdpPort();
-        var server = server(port, Option.none());
+        var server = server(0, Option.none());
 
-        server.start().await();
+        TlsProbe.requireStarted(server.start().await(), "app listener");
+        var port = TlsProbe.requireBoundPort(server.boundPort(), "app listener");
         try {
             var status = exchange(port,
                                   "POST /api/upload HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n"
