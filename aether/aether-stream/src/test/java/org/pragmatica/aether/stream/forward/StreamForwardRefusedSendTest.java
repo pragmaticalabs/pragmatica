@@ -7,15 +7,12 @@ package org.pragmatica.aether.stream.forward;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
-import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
 import org.pragmatica.consensus.NodeId;
@@ -25,29 +22,32 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.Deadline;
+import org.pragmatica.messaging.StreamType;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.stream.forward.StreamForwardClient.streamForwardClient;
 
-/// #2574 F1: a forward request whose frame the transport refused before it left fails AT ONCE with the transient
-/// [StreamForwardError.ForwardNotSent], not at the read or publish timeout. Only a refusal before write proves the frame
-/// never left; `Sent` and `ConnectionDead` keep the request waiting (a ConnectionDead frame may still be delivered from
-/// the offline buffer). Red before #2574: every request below waited out its timeout.
-@Timeout(value = 30, unit = TimeUnit.SECONDS)
+/// #2574 F1 (CTO, know de7d2783de): a forward READ whose frame the transport did not send fails AT ONCE, not at its read
+/// timeout. Refused under backpressure, a dead connection or no peer state is the transient
+/// [StreamForwardError.ForwardNotSent] every re-reading caller backs off on; an encode failure is the hard
+/// [StreamForwardError.ForwardNotEncoded]; `Sent` keeps the read waiting. Red before #2574: every read waited out its
+/// timeout. Publishes are out of this change's scope (a follow-up) and are not tested here.
+@Timeout(value = 60, unit = TimeUnit.SECONDS)
 class StreamForwardRefusedSendTest {
     private static final NodeId SELF = NodeId.randomNodeId();
     private static final NodeId OWNER = NodeId.randomNodeId();
     private static final String STREAM = "events";
     private static final TimeSpan LONG_WAIT = TimeSpan.timeSpan(20).seconds();
     private static final TimeSpan SHORT_WAIT = TimeSpan.timeSpan(300).millis();
-    /// Far below either configured wait: the refusal is answered on the sending thread.
+    /// Far below the configured wait: the outcome is answered on the sending thread.
     private static final long FAST_MILLIS = 1_000L;
 
-    /// A transport whose every send reports `outcome` and delivers nothing; counts the frames handed to it.
+    /// A transport whose every send reports `outcome` and delivers nothing; records the frames handed to it.
     private static class OutcomeTransport implements StreamForwardTransport {
         private final WriteOutcome outcome;
-        private final AtomicInteger sends = new AtomicInteger();
+        final List<StreamForwardMessage> frames = new CopyOnWriteArrayList<>();
 
         private OutcomeTransport(WriteOutcome outcome) {
             this.outcome = outcome;
@@ -55,21 +55,21 @@ class StreamForwardRefusedSendTest {
 
         @Override
         public void send(NodeId target, StreamForwardMessage message) {
-            sends.incrementAndGet();
+            frames.add(message);
         }
 
         @Override
         public Promise<WriteOutcome> sendOutcome(NodeId target, StreamForwardMessage message, TimeSpan callerWait) {
-            sends.incrementAndGet();
+            frames.add(message);
 
             return Promise.success(outcome);
         }
     }
 
-    private static List<WriteOutcome> refusals() {
+    private static List<WriteOutcome> notSent() {
         return List.of(new WriteOutcome.BackpressureRefused(OWNER),
-                       new WriteOutcome.NoPeerState(OWNER),
-                       new WriteOutcome.EncodeFailed(OWNER, "ReadForward"));
+                       new WriteOutcome.ConnectionDead(OWNER),
+                       new WriteOutcome.NoPeerState(OWNER));
     }
 
     private static StreamForwardClient client(StreamForwardTransport transport, TimeSpan wait) {
@@ -85,76 +85,61 @@ class StreamForwardRefusedSendTest {
 
     private record Timed<T>(Result<T> result, long millis) {}
 
-    private static void assertRefusedFast(Timed<?> timed, WriteOutcome outcome) {
-        assertThat(timed.millis()).as("a refused send fails at once, not at the 20 s wait (%s)", outcome)
+    private static void assertNotSentFast(Timed<?> timed, WriteOutcome outcome) {
+        assertThat(timed.millis()).as("a read that was not sent fails at once, not at the 20 s wait (%s)", outcome)
                                   .isLessThan(FAST_MILLIS);
-        assertThat(timed.result().isFailure()).as("a refused send fails (%s)", outcome).isTrue();
         timed.result()
-             .onFailure(cause -> assertForwardNotSent(cause, outcome));
+             .onSuccess(_ -> Assertions.fail("a read that was not sent cannot succeed"))
+             .onFailure(cause -> assertTransientNotSent(cause, outcome));
     }
 
-    private static void assertForwardNotSent(Cause cause, WriteOutcome outcome) {
+    private static void assertTransientNotSent(Cause cause, WriteOutcome outcome) {
         assertThat(cause).isInstanceOfSatisfying(StreamForwardError.ForwardNotSent.class,
-                                                 notSent -> assertNotSent(notSent, outcome));
-        assertThat(cause.isTransient()).as("the refusal is a transient cause a paced retry may outlive").isTrue();
-        assertThat(StreamForwardError.refusalRetryAfter(cause)).as("a retrying caller reads the wait from the cause")
-                                                               .isEqualTo(Option.some(LONG_WAIT));
+                                                 notSent -> assertThat(notSent.outcome()).isEqualTo(outcome));
+        assertThat(cause.isTransient()).as("a transient cause every re-reading caller backs off on").isTrue();
+        assertThat(StreamForwardError.isRefusal(cause)).as("the backoff predicate recognises it").isTrue();
     }
 
-    /// The refusal names its outcome and carries the wait the request would have spent on its answer (the 20 s configured
-    /// wait, no ambient deadline here), which a retrying caller keeps before sending again.
-    private static void assertNotSent(StreamForwardError.ForwardNotSent notSent, WriteOutcome outcome) {
-        assertThat(notSent.outcome()).isEqualTo(outcome);
-        assertThat(notSent.retryAfter()).isEqualTo(LONG_WAIT);
-    }
-
+    /// Each of the three outcomes that mean "not sent, may work later" maps to the transient refusal, on every read path.
     @Nested
-    class ReadsFailAtOnce {
+    class NotSentReadsFailAtOnce {
         @Test
-        void readRemoteCatchup_refusedSend_failsWithinMillis_withForwardNotSent() {
-            refusals().forEach(outcome -> assertRefusedFast(timed(() -> client(new OutcomeTransport(outcome), LONG_WAIT)
+        void readRemoteCatchup_notSent_failsWithinMillis_withForwardNotSent() {
+            notSent().forEach(outcome -> assertNotSentFast(timed(() -> client(new OutcomeTransport(outcome), LONG_WAIT)
                                                                                      .readRemoteCatchup(OWNER, STREAM, 0, 0L, 16)),
-                                                            outcome));
+                                                           outcome));
         }
 
         @Test
-        void readRemote_refusedSend_failsWithinMillis_withForwardNotSent() {
-            refusals().forEach(outcome -> assertRefusedFast(timed(() -> client(new OutcomeTransport(outcome), LONG_WAIT)
+        void readRemote_notSent_failsWithinMillis_withForwardNotSent() {
+            notSent().forEach(outcome -> assertNotSentFast(timed(() -> client(new OutcomeTransport(outcome), LONG_WAIT)
                                                                                      .readRemote(OWNER, STREAM, 0, 0L, 16)),
-                                                            outcome));
+                                                           outcome));
         }
 
         @Test
-        void readRemoteValidated_refusedSend_failsWithinMillis_withForwardNotSent() {
-            refusals().forEach(outcome -> assertRefusedFast(timed(() -> client(new OutcomeTransport(outcome), LONG_WAIT)
+        void readRemoteValidated_notSent_failsWithinMillis_withForwardNotSent() {
+            notSent().forEach(outcome -> assertNotSentFast(timed(() -> client(new OutcomeTransport(outcome), LONG_WAIT)
                                                                                      .readRemoteValidated(OWNER, STREAM, 0, 0L, 16, Epoch.ZERO)),
-                                                            outcome));
+                                                           outcome));
         }
 
+        /// The activation gate's ring-tail peer query rides the same read path.
         @Test
-        void ringTailRemote_refusedSend_failsWithinMillis_withForwardNotSent() {
+        void ringTailRemote_notSent_failsWithinMillis_withForwardNotSent() {
             var outcome = new WriteOutcome.BackpressureRefused(OWNER);
 
-            assertRefusedFast(timed(() -> client(new OutcomeTransport(outcome), LONG_WAIT).ringTailRemote(OWNER, STREAM, 0)),
+            assertNotSentFast(timed(() -> client(new OutcomeTransport(outcome), LONG_WAIT).ringTailRemote(OWNER, STREAM, 0)),
                               outcome);
         }
 
-        /// The refusal removed the pending entry: a response that arrives afterwards finds nothing and resolves nothing.
+        /// The failure removed the pending entry: a response that arrives afterwards finds nothing and resolves nothing.
         @Test
-        void readRemoteCatchup_refusedSend_lateResponseIsOrphaned() {
-            var outcome = new WriteOutcome.BackpressureRefused(OWNER);
-            var captured = new AtomicReference<StreamForwardMessage>();
-            StreamForwardTransport capturing = new OutcomeTransport(outcome) {
-                @Override
-                public Promise<WriteOutcome> sendOutcome(NodeId target, StreamForwardMessage message, TimeSpan callerWait) {
-                    captured.set(message);
-
-                    return super.sendOutcome(target, message, callerWait);
-                }
-            };
-            var forwardClient = client(capturing, LONG_WAIT);
+        void readRemoteCatchup_notSent_lateResponseIsOrphaned() {
+            var transport = new OutcomeTransport(new WriteOutcome.BackpressureRefused(OWNER));
+            var forwardClient = client(transport, LONG_WAIT);
             var read = forwardClient.readRemoteCatchup(OWNER, STREAM, 0, 0L, 16);
-            var correlationId = ((StreamForwardMessage.ReadForward) captured.get()).correlationId();
+            var correlationId = ((StreamForwardMessage.ReadForward) transport.frames.getFirst()).correlationId();
 
             forwardClient.onReadForwardResponse(ReadForwardResponse.successResponse(OWNER, correlationId, List.of()));
 
@@ -163,91 +148,77 @@ class StreamForwardRefusedSendTest {
         }
     }
 
+    /// An encode failure is a hard error: nothing was written and no retry can change it, so it is not the transient refusal
+    /// callers back off and retry on.
     @Nested
-    class PublishFailsAtOnce {
-        /// A refused publish was provably not applied, so it is the transient ForwardNotSent, never "outcome unknown".
+    class EncodeFailureIsHard {
         @Test
-        void publishRemote_refusedSend_failsWithinMillis_withForwardNotSent_notOutcomeUnknown() {
-            refusals().forEach(outcome -> assertRefusedFast(timed(() -> client(new OutcomeTransport(outcome), LONG_WAIT)
-                                                                                     .publishRemote(OWNER, STREAM, 0, new byte[]{1}, 1L)),
-                                                            outcome));
+        void readRemoteCatchup_encodeFailed_failsAtOnce_withATerminalForwardNotEncoded() {
+            var outcome = new WriteOutcome.EncodeFailed(OWNER, "ReadForward");
+            var timed = timed(() -> client(new OutcomeTransport(outcome), LONG_WAIT).readRemoteCatchup(OWNER, STREAM, 0, 0L, 16));
+
+            assertThat(timed.millis()).isLessThan(FAST_MILLIS);
+            timed.result()
+                 .onSuccess(_ -> Assertions.fail("a read that could not be encoded cannot succeed"))
+                 .onFailure(cause -> assertHardEncodeFailure(cause, outcome));
         }
 
-        @Test
-        void publishRemote_systemWriter_refusedSend_failsWithinMillis_withForwardNotSent() {
-            var outcome = new WriteOutcome.BackpressureRefused(OWNER);
-
-            assertRefusedFast(timed(() -> client(new OutcomeTransport(outcome), LONG_WAIT).publishRemote(OWNER,
-                                                                                                          STREAM,
-                                                                                                          0,
-                                                                                                          new byte[]{1},
-                                                                                                          1L,
-                                                                                                          true)),
-                              outcome);
+        private static void assertHardEncodeFailure(Cause cause, WriteOutcome outcome) {
+            assertThat(cause).isInstanceOfSatisfying(StreamForwardError.ForwardNotEncoded.class,
+                                                     notEncoded -> assertThat(notEncoded.outcome()).isEqualTo(outcome));
+            assertThat(cause.isTerminal()).as("no retry can change an encode failure").isTrue();
+            assertThat(cause.isTransient()).isFalse();
+            assertThat(StreamForwardError.isRefusal(cause)).as("not the refusal callers back off and retry on").isFalse();
         }
     }
 
-    /// A frame reported `Sent` or `ConnectionDead` may still be delivered, so the request keeps waiting for its answer:
-    /// it resolves at its wait, as before #2574.
+    /// A frame reported `Sent` is waiting for its answer: the read resolves at its wait, as before #2574.
     @Nested
-    class MayBeDeliveredKeepsWaiting {
+    class SentKeepsWaiting {
         @Test
-        void readRemoteCatchup_connectionDeadOrSent_waitsForTheTimeout() {
-            List.<WriteOutcome> of(new WriteOutcome.ConnectionDead(OWNER), new WriteOutcome.Sent(OWNER))
-                .forEach(outcome -> assertWaitedOut(timed(() -> client(new OutcomeTransport(outcome), SHORT_WAIT)
-                                                                          .readRemoteCatchup(OWNER, STREAM, 0, 0L, 16)),
-                                                    outcome));
-        }
-
-        @Test
-        void publishRemote_connectionDead_isOutcomeUnknownAtTheTimeout() {
-            var timed = timed(() -> client(new OutcomeTransport(new WriteOutcome.ConnectionDead(OWNER)), SHORT_WAIT)
-                                         .publishRemote(OWNER, STREAM, 0, new byte[]{1}, 1L));
+        void readRemoteCatchup_sent_waitsForTheTimeout() {
+            var timed = timed(() -> client(new OutcomeTransport(new WriteOutcome.Sent(OWNER)), SHORT_WAIT)
+                                          .readRemoteCatchup(OWNER, STREAM, 0, 0L, 16));
 
             assertThat(timed.millis()).as("waited for the answer").isGreaterThanOrEqualTo(250L);
-            timed.result()
-                 .onSuccess(_ -> Assertions.fail("an unanswered publish cannot succeed"))
-                 .onFailure(cause -> assertThat(cause).isInstanceOf(PublishOutcomeUnknown.class));
-        }
-
-        private static void assertWaitedOut(Timed<?> timed, WriteOutcome outcome) {
-            assertThat(timed.millis()).as("waited for the answer (%s)", outcome).isGreaterThanOrEqualTo(250L);
             timed.result()
                  .onSuccess(_ -> Assertions.fail("an unanswered read cannot succeed"))
                  .onFailure(cause -> assertThat(cause).isEqualTo(StreamForwardError.General.READ_FORWARD_TIMEOUT));
         }
     }
 
-    /// The wait a refused request carries is the caller's wait, capped by the ambient deadline like the wait itself.
+    /// #2574 lane pin, the message side: the forward read rides the FORWARD lane -- the lane `QuicClusterNetwork` refuses at
+    /// its watermark with BackpressureRefused (pinned on the transport side in `QuicConsensusBackpressureTest`), and the one
+    /// `sendOutcome` dispatches on exactly as `send` does.
     @Nested
-    class RetryAfterIsTheCallersWait {
+    class Lane {
         @Test
-        void readRemoteCatchup_refusedUnderAnAmbientBudget_carriesTheBudgetedWait() {
-            var outcome = new WriteOutcome.BackpressureRefused(OWNER);
-            var result = Deadline.runWith(Deadline.fromWireMillis(800),
-                                          () -> client(new OutcomeTransport(outcome), LONG_WAIT).readRemoteCatchup(OWNER, STREAM, 0, 0L, 16))
-                                 .await(TimeSpan.timeSpan(5).seconds());
+        void readForward_ridesTheForwardLane() {
+            var transport = new OutcomeTransport(new WriteOutcome.BackpressureRefused(OWNER));
 
-            result.onSuccess(_ -> Assertions.fail("a refused read cannot succeed"))
-                  .onFailure(cause -> assertThat(StreamForwardError.refusalRetryAfter(cause)
-                                                                   .map(TimeSpan::millis)
-                                                                   .or(-1L)).as("bounded by the 800 ms budget, not the 20 s configured wait")
-                                                                            .isBetween(1L, 800L));
-        }
+            client(transport, LONG_WAIT).readRemoteCatchup(OWNER, STREAM, 0, 0L, 16);
 
-        /// The cause chain is searched: a refusal wrapped by an outer cause still paces the caller; any other cause does not.
-        @Test
-        void refusalRetryAfter_findsAWrappedRefusal_andNothingElse() {
-            var refusal = StreamForwardError.ForwardNotSent.FACTORY.apply(new WriteOutcome.BackpressureRefused(OWNER), SHORT_WAIT);
-            Cause wrapped = org.pragmatica.lang.utils.Causes.cause("outer", Option.some(refusal));
-
-            assertThat(StreamForwardError.refusalRetryAfter(wrapped)).isEqualTo(Option.some(SHORT_WAIT));
-            assertThat(StreamForwardError.refusalRetryAfter(StreamForwardError.General.READ_FORWARD_TIMEOUT)).isEqualTo(Option.none());
+            assertThat(transport.frames).singleElement()
+                                        .satisfies(frame -> assertThat(frame.streamType()).isEqualTo(StreamType.FORWARD));
         }
     }
 
-    /// The default `sendOutcome` (a transport that does not track writes) sends through `send` with the caller's wait
-    /// and reports `Sent`: it never claims a frame was not sent.
+    /// The backoff predicate searches the cause chain: a refusal wrapped by an outer cause still paces its caller; any other
+    /// cause does not.
+    @Nested
+    class RefusalPredicate {
+        @Test
+        void isRefusal_findsAWrappedRefusal_andNothingElse() {
+            var refusal = StreamForwardError.ForwardNotSent.FACTORY.apply(new WriteOutcome.BackpressureRefused(OWNER));
+            Cause wrapped = Causes.cause("outer", Option.some(refusal));
+
+            assertThat(StreamForwardError.isRefusal(wrapped)).isTrue();
+            assertThat(StreamForwardError.isRefusal(StreamForwardError.General.READ_FORWARD_TIMEOUT)).isFalse();
+        }
+    }
+
+    /// The default `sendOutcome` (a transport that does not track writes) sends through `send` with the caller's wait and
+    /// reports `Sent`: it never claims a frame was not sent, so the read waits for its answer.
     @Nested
     class DefaultTransportOutcome {
         @Test

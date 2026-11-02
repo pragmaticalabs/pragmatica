@@ -14,7 +14,6 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -34,9 +33,11 @@ import static org.pragmatica.aether.stream.replication.PartitionBackfill.partiti
 import static org.pragmatica.aether.stream.replication.ReplicaRegistry.replicaRegistry;
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.CatchupResponse.catchupResponse;
 
-/// #2574 F2: a backfill call that joins a flight which then FAILS re-runs the backfill once, bounded: once, never a loop.
-/// The join is the offset-0 gap trigger; the flight it joined is the catch-up read that left before offset 0 existed and
-/// was refused or lost. Before #2574 the joined trigger was swallowed and nothing pulled until the 5 s redrive.
+/// #2574 F2 (know 26daff40e3): a backfill flight's landing re-runs once when a call JOINED it after it began, whatever the
+/// landing -- failed or succeeded, an empty success included. The join is the offset-0 gap trigger; the flight it joined is
+/// the catch-up read that left before offset 0 existed, or was refused or lost. A landing with no joiner never re-runs, so
+/// re-runs chain only while real triggers keep joining. Before #2574 the joined trigger was swallowed and nothing pulled
+/// until the 5 s redrive. #2574 F1 (know 89e17399a9): a refused flight holds its slot for the partition's refusal hold.
 @Timeout(value = 60, unit = TimeUnit.SECONDS)
 class PartitionBackfillJoinedRerunTest {
     private static final String STREAM = "orders";
@@ -48,6 +49,8 @@ class PartitionBackfillJoinedRerunTest {
     private ReplicaRegistry registry;
     private AlignedRecovery recovery;
     private CopyOnWriteArrayList<Promise<ReplicationMessage.CatchupResponse>> pulls;
+    /// The request of each pull, in the order the pulls were issued.
+    private CopyOnWriteArrayList<ReplicationMessage.CatchupRequest> rerunRequests;
 
     @BeforeEach
     void setUp() {
@@ -57,13 +60,15 @@ class PartitionBackfillJoinedRerunTest {
         manager.createStream(StreamConfig.streamConfig(STREAM));
         recovery = manager.alignedRecovery();
         pulls = new CopyOnWriteArrayList<>();
+        rerunRequests = new CopyOnWriteArrayList<>();
     }
 
     /// Every pull is held until the test answers it; `pulls` lists them in the order they were issued.
     private CatchupTransport gated() {
-        return (_, _) -> {
+        return (_, request) -> {
             var response = Promise.<ReplicationMessage.CatchupResponse>promise();
 
+            rerunRequests.add(request);
             pulls.add(response);
 
             return response;
@@ -78,12 +83,13 @@ class PartitionBackfillJoinedRerunTest {
         return partitionBackfill(registry, recovery, gated(), SELF);
     }
 
+    /// #2574 F2 (know 26daff40e3): a landing with a late joiner re-runs once, whatever the landing.
     @Nested
     class JoinedFailedFlight {
-        /// The brief's case: flight #1 never answers, a second call joins, flight #1 lands READ_FORWARD_TIMEOUT -> a second
-        /// pull is issued, exactly once. A further joiner on the re-run, which fails again, starts no third pull.
+        /// Flight #1 never answers, a second call joins, flight #1 lands READ_FORWARD_TIMEOUT -> exactly one more pull. The
+        /// re-run, with no joiner of its own, lands failed too and starts nothing: no loop without new triggers.
         @Test
-        void joinedFlight_landsWithReadForwardTimeout_rerunsExactlyOnce_andTheRerunDoesNotLoop() {
+        void joinedFlight_landsWithReadForwardTimeout_rerunsExactlyOnce_andAnUnjoinedRerunDoesNotLoop() {
             var backfill = sourceBackfill();
             var first = backfill.backfill(STREAM, PARTITION);
             var joined = backfill.backfill(STREAM, PARTITION);
@@ -94,20 +100,33 @@ class PartitionBackfillJoinedRerunTest {
 
             assertThat(first.await(AWAIT).isFailure()).isTrue();
             assertThat(joined.await(AWAIT).isFailure()).as("the joiner resolves with the flight it joined").isTrue();
-            assertThat(pulls).as("the failed joined flight re-ran once").hasSize(2);
-
-            var joinedRerun = backfill.backfill(STREAM, PARTITION);
-
-            assertThat(pulls).as("a call during the re-run joins it").hasSize(2);
+            assertThat(pulls).as("the failed joined flight re-ran exactly once").hasSize(2);
 
             pulls.get(1).fail(StreamForwardError.General.READ_FORWARD_TIMEOUT);
+            sleep(100L);
 
-            assertThat(joinedRerun.await(AWAIT).isFailure()).isTrue();
-            assertThat(pulls).as("a joined re-run that fails does not re-run again: once, never a loop").hasSize(2);
+            assertThat(pulls).as("the re-run had no joiner: it does not re-run, never a loop").hasSize(2);
 
             backfill.backfill(STREAM, PARTITION);
 
             assertThat(pulls).as("the slot is free afterwards: a later call pulls").hasSize(3);
+        }
+
+        /// Re-runs chain only while real triggers keep joining: a joiner of the re-run earns one more pull.
+        @Test
+        void rerunWithAJoinerOfItsOwn_landing_rerunsOnceMore() {
+            var backfill = sourceBackfill();
+
+            backfill.backfill(STREAM, PARTITION);
+            backfill.backfill(STREAM, PARTITION);
+            pulls.getFirst().fail(StreamForwardError.General.READ_FORWARD_TIMEOUT);
+            assertThat(awaitPulls(2)).isEqualTo(2);
+            backfill.backfill(STREAM, PARTITION);
+            pulls.get(1).fail(StreamForwardError.General.READ_FORWARD_TIMEOUT);
+
+            assertThat(awaitPulls(3)).as("the re-run's own joiner earns one more pull").isEqualTo(3);
+            sleep(100L);
+            assertThat(pulls).hasSize(3);
         }
 
         /// The re-run pulls the data the joined trigger reported and lands it.
@@ -152,19 +171,21 @@ class PartitionBackfillJoinedRerunTest {
         reactionMade.countDown();
     }
 
-    /// #2574 F1: a flight that fails on a transport refusal ([StreamForwardError.ForwardNotSent]) delivers its failure at
-    /// once but keeps the slot for the refusal's wait, so the gap triggers arriving meanwhile pull nothing (as they did
-    /// while the silent 2 s wait held the slot), and the trigger is still honoured by one re-run when the wait ends.
+    /// #2574 F1 (know 89e17399a9): a flight that fails on a transport refusal ([StreamForwardError.ForwardNotSent])
+    /// delivers its failure at once but keeps the slot for the partition's refusal hold (250 ms doubling to 4 s, +-20%),
+    /// so the gap triggers arriving meanwhile pull nothing, and the trigger is honoured by one re-run when the hold ends.
     @Nested
     class RefusedFlightHoldsItsSlot {
-        private static final TimeSpan REFUSAL_WAIT = TimeSpan.timeSpan(400).millis();
+        /// The first hold's jittered range.
+        private static final long FIRST_HOLD_MIN_MS = 200L;
+        private static final long FIRST_HOLD_MAX_MS = 300L;
 
         private static StreamForwardError.ForwardNotSent refusal() {
-            return StreamForwardError.ForwardNotSent.FACTORY.apply(new WriteOutcome.BackpressureRefused(SOURCE), REFUSAL_WAIT);
+            return StreamForwardError.ForwardNotSent.FACTORY.apply(new WriteOutcome.BackpressureRefused(SOURCE));
         }
 
         @Test
-        void refusedFlight_failsAtOnce_triggersDuringTheWaitPullNothing_thenOneRerun() {
+        void refusedFlight_failsAtOnce_triggersDuringTheHoldPullNothing_thenOneRerunAfterTheFirstHold() {
             var backfill = sourceBackfill();
             var startedAt = System.nanoTime();
             var first = backfill.backfill(STREAM, PARTITION);
@@ -172,22 +193,21 @@ class PartitionBackfillJoinedRerunTest {
             pulls.getFirst().fail(refusal());
 
             assertThat(first.await(AWAIT).isFailure()).isTrue();
-            assertThat((System.nanoTime() - startedAt) / 1_000_000L).as("the failure is delivered at once, not after the wait")
-                                                                     .isLessThan(REFUSAL_WAIT.millis());
+            assertThat(elapsedMs(startedAt)).as("the failure is delivered at once, not after the hold").isLessThan(FIRST_HOLD_MIN_MS);
 
-            for (var trigger = 0; trigger < 20; trigger++) {
-                assertThat(backfill.backfill(STREAM, PARTITION).await(AWAIT).isFailure()).as("a trigger during the wait joins")
+            for (var trigger = 0; trigger < 10; trigger++) {
+                assertThat(backfill.backfill(STREAM, PARTITION).await(AWAIT).isFailure()).as("a trigger during the hold joins")
                                                                                          .isTrue();
             }
 
-            assertThat(pulls).as("no trigger pulled during the refusal's wait").hasSize(1);
-            assertThat(awaitPulls(2)).as("the wait's end re-ran the joined backfill once").isEqualTo(2);
-            assertThat((System.nanoTime() - startedAt) / 1_000_000L).as("not before the wait ended")
-                                                                     .isGreaterThanOrEqualTo(REFUSAL_WAIT.millis());
+            assertThat(pulls).as("no trigger pulled during the hold").hasSize(1);
+            assertThat(awaitPulls(2)).as("the hold's end re-ran the joined backfill once").isEqualTo(2);
+            assertThat(elapsedMs(startedAt)).as("the first hold: 250 ms +-20%, not the 2 s read timeout")
+                                            .isBetween(FIRST_HOLD_MIN_MS, FIRST_HOLD_MAX_MS + 150L);
         }
 
-        /// A call that joined while the read was still in flight is honoured too: the refusal holds the slot and the
-        /// wait's end re-runs once.
+        /// A call that joined while the read was still in flight is honoured too: the refusal holds the slot and the hold's
+        /// end re-runs once.
         @Test
         void flightJoinedBeforeItsRefusal_holdsTheSlot_thenOneRerun() {
             var backfill = sourceBackfill();
@@ -197,18 +217,18 @@ class PartitionBackfillJoinedRerunTest {
             pulls.getFirst().fail(refusal());
 
             assertThat(first.await(AWAIT).isFailure()).isTrue();
-            assertThat(pulls).as("held: nothing pulls before the wait's end").hasSize(1);
-            assertThat(awaitPulls(2)).as("the earlier joiner's trigger re-ran at the wait's end").isEqualTo(2);
+            assertThat(pulls).as("held: nothing pulls before the hold's end").hasSize(1);
+            assertThat(awaitPulls(2)).as("the earlier joiner's trigger re-ran at the hold's end").isEqualTo(2);
         }
 
         @Test
-        void refusedFlight_withoutAJoiner_releasesTheSlotAtTheWaitsEnd_withoutARerun() {
+        void refusedFlight_withoutAJoiner_releasesTheSlotAtTheHoldsEnd_withoutARerun() {
             var backfill = sourceBackfill();
             var first = backfill.backfill(STREAM, PARTITION);
 
             pulls.getFirst().fail(refusal());
             assertThat(first.await(AWAIT).isFailure()).isTrue();
-            sleep(REFUSAL_WAIT.millis() + 300L);
+            sleep(FIRST_HOLD_MAX_MS + 200L);
 
             assertThat(pulls).as("nothing joined, so nothing re-ran").hasSize(1);
 
@@ -217,21 +237,46 @@ class PartitionBackfillJoinedRerunTest {
             assertThat(pulls).as("the slot was released: a later call pulls").hasSize(2);
         }
 
-        /// The bound still holds under a lane that keeps refusing: the re-run is refused too, holds the slot in turn, and its
-        /// joiners start no third pull; one pull per refusal wait.
+        /// A lane that keeps refusing doubles the hold: the joined re-run, refused again, holds about 500 ms before its own
+        /// joiner's re-run.
         @Test
-        void refusedRerun_joinedAndRefusedAgain_doesNotRerunAgain() {
+        void refusedAgain_holdsDoubled() {
             var backfill = sourceBackfill();
 
             backfill.backfill(STREAM, PARTITION);
+            backfill.backfill(STREAM, PARTITION);
             pulls.getFirst().fail(refusal());
-            backfill.backfill(STREAM, PARTITION);
             assertThat(awaitPulls(2)).isEqualTo(2);
-            pulls.get(1).fail(refusal());
             backfill.backfill(STREAM, PARTITION);
-            sleep(REFUSAL_WAIT.millis() + 300L);
+            var refusedAgainAt = System.nanoTime();
 
-            assertThat(pulls).as("a refused re-run that was joined does not re-run again").hasSize(2);
+            pulls.get(1).fail(refusal());
+
+            assertThat(awaitPulls(3)).isEqualTo(3);
+            assertThat(elapsedMs(refusedAgainAt)).as("the second consecutive hold: 500 ms +-20%").isGreaterThanOrEqualTo(400L);
+        }
+
+        /// Reset on Sent: a flight that lands without a refusal (its read was sent) resets the partition's hold, so the next
+        /// refusal holds the first 250 ms again, not the doubled 500 ms.
+        @Test
+        void sentLanding_resetsTheHold() {
+            var backfill = sourceBackfill();
+
+            backfill.backfill(STREAM, PARTITION);
+            backfill.backfill(STREAM, PARTITION);
+            pulls.getFirst().fail(refusal());
+            assertThat(awaitPulls(2)).isEqualTo(2);
+            pulls.get(1).fail(StreamForwardError.General.READ_FORWARD_TIMEOUT);
+            sleep(50L);
+            backfill.backfill(STREAM, PARTITION);
+            assertThat(pulls).hasSize(3);
+            backfill.backfill(STREAM, PARTITION);
+            var refusedAt = System.nanoTime();
+
+            pulls.get(2).fail(refusal());
+
+            assertThat(awaitPulls(4)).isEqualTo(4);
+            assertThat(elapsedMs(refusedAt)).as("reset to the first hold, not doubled").isLessThan(FIRST_HOLD_MAX_MS + 80L);
         }
 
         /// Only a refusal holds the slot: a flight that fails any other way releases it at once.
@@ -247,14 +292,8 @@ class PartitionBackfillJoinedRerunTest {
             assertThat(pulls).as("the next call pulled at once").hasSize(2);
         }
 
-        private int awaitPulls(int expected) {
-            var deadline = System.currentTimeMillis() + 5_000L;
-
-            while (pulls.size() < expected && System.currentTimeMillis() < deadline) {
-                sleep(10L);
-            }
-
-            return pulls.size();
+        private long elapsedMs(long since) {
+            return (System.nanoTime() - since) / 1_000_000L;
         }
     }
 
@@ -307,12 +346,23 @@ class PartitionBackfillJoinedRerunTest {
         }
     }
 
+    private int awaitPulls(int expected) {
+        var deadline = System.currentTimeMillis() + 5_000L;
+
+        while (pulls.size() < expected && System.currentTimeMillis() < deadline) {
+            sleep(5L);
+        }
+
+        return pulls.size();
+    }
+
     private static void sleep(long millis) {
         LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(millis));
     }
 
+    /// Pin (1): a landing with no joiner never re-runs, failed or succeeded.
     @Nested
-    class NoRerun {
+    class NoJoinerNoRerun {
         @Test
         void unjoinedFlight_landsFailed_doesNotRerun() {
             var backfill = sourceBackfill();
@@ -321,11 +371,28 @@ class PartitionBackfillJoinedRerunTest {
             pulls.getFirst().fail(StreamForwardError.General.READ_FORWARD_TIMEOUT);
 
             assertThat(only.await(AWAIT).isFailure()).isTrue();
+            sleep(100L);
             assertThat(pulls).as("no call joined: nothing to honour").hasSize(1);
         }
 
         @Test
-        void joinedFlight_succeeds_doesNotRerun() {
+        void unjoinedFlight_succeeds_doesNotRerun() {
+            var backfill = sourceBackfill();
+            var only = backfill.backfill(STREAM, PARTITION);
+
+            pulls.getFirst().succeed(responseOf(0, 5));
+
+            assertThat(only.await(AWAIT).isSuccess()).isTrue();
+            sleep(100L);
+            assertThat(pulls).as("no call joined: nothing to honour").hasSize(1);
+        }
+    }
+
+    @Nested
+    class JoinedLanding {
+        /// A joined flight that SUCCEEDED re-runs once too (know 26daff40e3): the joiner's demand is newer than the flight.
+        @Test
+        void joinedFlight_succeeds_rerunsOnce() {
             var backfill = sourceBackfill();
             var first = backfill.backfill(STREAM, PARTITION);
 
@@ -333,11 +400,11 @@ class PartitionBackfillJoinedRerunTest {
             pulls.getFirst().succeed(responseOf(0, 5));
 
             assertThat(first.await(AWAIT).isSuccess()).isTrue();
-            assertThat(pulls).as("a joined flight that succeeded is not re-run").hasSize(1);
+            assertThat(awaitPulls(2)).as("the joined success re-ran once").isEqualTo(2);
         }
 
-        /// The re-run never joins: a call that took the slot between the failed flight's removal and the re-run serves the
-        /// trigger. Here the joiner reacts to the failure by calling again, which joins the re-run instead of adding a pull.
+        /// A call reacting to the joined flight's failure joins the re-run instead of pulling itself; that join earns the
+        /// re-run one more pull, and nothing after it.
         @Test
         void joinedFlight_failed_aCallReactingToTheFailureJoinsTheRerun() throws InterruptedException {
             var backfill = sourceBackfill();
@@ -355,18 +422,19 @@ class PartitionBackfillJoinedRerunTest {
             pulls.get(1).fail(StreamForwardError.General.READ_FORWARD_TIMEOUT);
 
             assertThat(reacted.await(AWAIT).isFailure()).as("the reacting call joined the re-run and shares its result").isTrue();
-            assertThat(pulls).as("the reacting call added no pull of its own").hasSize(2);
+            assertThat(awaitPulls(3)).as("the reaction's join earned the re-run one more pull").isEqualTo(3);
+            pulls.get(2).fail(StreamForwardError.General.READ_FORWARD_TIMEOUT);
+            sleep(100L);
+            assertThat(pulls).as("no joiner after that: no further pull").hasSize(3);
         }
     }
 
-    /// The case the ruling leaves open (sent to the CTO): a joined flight that SUCCEEDS EMPTY. Its read reached the owner
-    /// before offset 0 existed, the owner answered empty, and the offset-0 trigger joined it. As ruled, it does not re-run.
+    /// Pin (2), know 26daff40e3: a joined flight that SUCCEEDS EMPTY re-runs once. Its read reached the owner before offset
+    /// 0 existed, the owner answered empty, and the offset-0 trigger joined it; the re-run pulls offset 0.
     ///
-    /// What the fixture shows of today's behaviour. On a fresh stream the FIRST empty owner answer does not succeed: it
-    /// starts the no-source wait (`sourceWaitBound`, production `10 x read_forward_timeout` = 20 s) and FAILS with
-    /// NO_SOURCE_REPLICA, so F2 re-runs it (pinned below, enabled). Only once that wait has elapsed does an empty answer
-    /// succeed (the #631 genesis promotion at -1); then the joined trigger is swallowed, the replica is CAUGHT_UP at -1 with
-    /// nothing pulled, and the next pull comes from the redrive.
+    /// On a fresh stream the FIRST empty owner answer does not succeed: it starts the no-source wait (`sourceWaitBound`) and
+    /// fails NO_SOURCE_REPLICA, re-run as a failed joined landing (pinned too). Past that wait an empty answer succeeds (the
+    /// #631 genesis promotion at -1); that is the succeeded-empty landing.
     @Nested
     class SucceededEmptyWithJoiner {
         private static final NodeId NODE_AA = NodeId.nodeId("node-aa").unwrap();
@@ -378,6 +446,8 @@ class PartitionBackfillJoinedRerunTest {
         private static final NodeId NON_OWNER = ReplicaPlacement.rank(STREAM, PARTITION, MEMBERS).getLast();
 
         private final AtomicLong clock = new AtomicLong(0L);
+        /// The owner's head as its watermark probe reports it: empty until offset 0 is appended.
+        private final AtomicLong ownerHead = new AtomicLong(-1L);
 
         private PartitionBackfill ownerBackfill() {
             registry.registerReplica(STREAM, PARTITION, NON_OWNER);
@@ -385,7 +455,7 @@ class PartitionBackfillJoinedRerunTest {
             return partitionBackfill(registry,
                                      recovery,
                                      gated(),
-                                     (_, _, _) -> Promise.success(-1L),
+                                     (_, _, _) -> Promise.success(ownerHead.get()),
                                      (_, _) -> -1L,
                                      NON_OWNER,
                                      BOUND,
@@ -394,7 +464,7 @@ class PartitionBackfillJoinedRerunTest {
                                      (_, _) -> Option.some(new CommittedOwner(OWNER, Epoch.ZERO)));
         }
 
-        /// Fresh stream, inside the no-source wait: the empty answer FAILS the joined flight, so F2 re-runs it.
+        /// Fresh stream, inside the no-source wait: the empty answer FAILS the joined flight, which re-runs once.
         @Test
         void joinedFlight_emptyOwnerAnswer_withinTheWait_failsAndRerunsOnce() {
             var backfill = ownerBackfill();
@@ -405,57 +475,32 @@ class PartitionBackfillJoinedRerunTest {
 
             assertThat(first.await(AWAIT).isFailure()).as("an empty owner answer inside the wait is NO_SOURCE, a failure")
                                                     .isTrue();
-            assertThat(pulls).as("so the joined trigger is honoured by the re-run").hasSize(2);
+            assertThat(awaitPulls(2)).as("so the joined trigger is honoured by the re-run").isEqualTo(2);
         }
 
-        /// TRIPWIRE of today's behaviour, as ruled: past the wait the empty answer SUCCEEDS (CAUGHT_UP at -1) and the joined
-        /// trigger pulls nothing. If the CTO rules that a joined succeeded-empty flight re-runs, this goes red: delete it and
-        /// enable [#joinedFlight_succeedsEmpty_rerunsOnce_whenRuled].
+        /// The pin: the empty answer succeeds (CAUGHT_UP at -1), the late joiner earns exactly one re-run, and that re-run
+        /// pulls offset 0, which the owner appended meanwhile.
         @Test
-        void joinedFlight_succeedsEmpty_pastTheWait_doesNotRerun_tripwire() {
+        void joinedFlight_succeedsEmpty_rerunsOnce_andTheRerunPullsOffset0() {
             var backfill = armedPastTheWait();
             var flight = backfill.backfill(STREAM, PARTITION);
 
             backfill.backfill(STREAM, PARTITION);
+            // the owner appends offset 0 after the flight's read reached it: its probe reports it from the re-run on
+            backfill.releaseWindowHook(() -> ownerHead.set(0L));
             pulls.get(1).succeed(emptyAnswer(OWNER));
 
             assertThat(flight.await(AWAIT).isSuccess()).as("past the wait an empty owner answer promotes").isTrue();
-            assertThat(descriptorFor(NON_OWNER).state()).isEqualTo(ReplicationState.CAUGHT_UP);
-            assertThat(descriptorFor(NON_OWNER).confirmedOffset()).as("nothing was pulled").isEqualTo(-1L);
-            assertThat(pulls).as("TRIPWIRE (#2574 open question): a joined flight that succeeded empty does not re-run today; "
-                                 + "if this fails, the ruling changed: enable joinedFlight_succeedsEmpty_rerunsOnce_whenRuled")
-                             .hasSize(2);
-        }
+            assertThat(awaitPulls(3)).as("the joined succeeded-empty landing re-ran once").isEqualTo(3);
 
-        /// The ruling-dependent expectation: a joined flight that succeeded empty re-runs once.
-        @Disabled("#2574 open question to the CTO: a joined flight that SUCCEEDS EMPTY does not re-run as ruled in know 3038b24582; "
-                  + "enable if the ruling extends F2 to it, and delete the tripwire beside it")
-        @Test
-        void joinedFlight_succeedsEmpty_rerunsOnce_whenRuled() {
-            var backfill = armedPastTheWait();
-            var flight = backfill.backfill(STREAM, PARTITION);
+            var rerunRequest = rerunRequests.get(2);
 
-            backfill.backfill(STREAM, PARTITION);
-            pulls.get(1).succeed(emptyAnswer(OWNER));
+            assertThat(rerunRequest.fromOffset()).as("the re-run pulls from offset 0").isEqualTo(0L);
+            pulls.get(2).succeed(responseFrom(OWNER, 0, 1));
 
-            assertThat(flight.await(AWAIT).isSuccess()).isTrue();
-            assertThat(pulls).as("the joined trigger is honoured by one re-run").hasSize(3);
-        }
-
-        /// How long until something pulls again after the swallowed trigger: the CAUGHT_UP-at--1 non-owner copy is a redrive
-        /// candidate at once, so the next redrive tick pulls it -- in production within one `STREAM_BACKFILL_REDRIVE_INTERVAL`
-        /// (5 s), unless a later live batch triggers a gap first.
-        @Test
-        void joinedFlight_succeedsEmpty_pastTheWait_isARedriveCandidateAtOnce() {
-            var backfill = armedPastTheWait();
-            var flight = backfill.backfill(STREAM, PARTITION);
-
-            backfill.backfill(STREAM, PARTITION);
-            pulls.get(1).succeed(emptyAnswer(OWNER));
-
-            assertThat(flight.await(AWAIT).isSuccess()).isTrue();
-            assertThat(backfill.redriveCandidates()).as("the next redrive tick pulls it")
-                                                    .containsExactly(new PartitionKey(STREAM, PARTITION));
+            assertThat(awaitConfirmed(0L)).as("offset 0 landed on the replica").isEqualTo(0L);
+            sleep(100L);
+            assertThat(pulls).as("exactly one re-run: the re-run had no joiner").hasSize(3);
         }
 
         /// The first call starts the no-source wait at t=0 and fails; the clock then moves past it.
@@ -469,6 +514,16 @@ class PartitionBackfillJoinedRerunTest {
 
             return backfill;
         }
+
+        private long awaitConfirmed(long expected) {
+            var deadline = System.currentTimeMillis() + 5_000L;
+
+            while (descriptorFor(NON_OWNER).confirmedOffset() < expected && System.currentTimeMillis() < deadline) {
+                sleep(5L);
+            }
+
+            return descriptorFor(NON_OWNER).confirmedOffset();
+        }
     }
 
     private ReplicaDescriptor descriptorFor(NodeId nodeId) {
@@ -481,6 +536,18 @@ class PartitionBackfillJoinedRerunTest {
 
     private static ReplicationMessage.CatchupResponse emptyAnswer(NodeId source) {
         return catchupResponse(source, STREAM, PARTITION, 0, -1, List.of(), List.of());
+    }
+
+    private static ReplicationMessage.CatchupResponse responseFrom(NodeId source, long from, int count) {
+        var payloads = new ArrayList<byte[]>();
+        var timestamps = new ArrayList<Long>();
+
+        for (var offset = from; offset < from + count; offset++) {
+            payloads.add(("event-" + offset).getBytes());
+            timestamps.add(1000L + offset);
+        }
+
+        return catchupResponse(source, STREAM, PARTITION, from, from + count - 1, payloads, timestamps);
     }
 
     private static ReplicationMessage.CatchupResponse responseOf(long from, int count) {

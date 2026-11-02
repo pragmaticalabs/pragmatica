@@ -6,9 +6,7 @@ package org.pragmatica.aether.stream.forward;
 
 import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Functions.Fn2;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.utils.Causes;
 
 
@@ -57,17 +55,21 @@ public sealed interface StreamForwardError extends Cause {
         }
     }
 
-    /// A forward request whose frame the local transport refused before it left this node (#2574): FORWARD-lane
-    /// backpressure, no peer state, or an encode failure ([WriteOutcome]). The target never saw it, so a forwarded publish
-    /// was not applied and a read was not served; a retry may outlive the condition, so the cause is transient. It fails
-    /// the request at once, where it used to wait out the read or publish timeout.
-    ///
-    /// `retryAfter` is the wait the request would have spent on the answer (its caller's wait, the read or publish timeout
-    /// capped by the ambient deadline). A caller that retries keeps at least that long between a refusal and its next send
-    /// ([#refusalRetryAfter]), so failing fast never re-sends on the congested lane sooner than the silent wait did.
-    record ForwardNotSent(WriteOutcome outcome, TimeSpan retryAfter, String message) implements StreamForwardError, Cause.Transient {
-        public static final Fn2<ForwardNotSent, WriteOutcome, TimeSpan> FACTORY = Causes.forTwoValues("Stream forward was not sent, the transport refused it: %s; retry after %s",
-                                                                                                      ForwardNotSent::new);
+    /// A forward READ whose frame the local transport did not send (#2574): the FORWARD lane refused it under backpressure,
+    /// the connection was dead, or there was no peer state ([WriteOutcome.BackpressureRefused], [WriteOutcome.ConnectionDead],
+    /// [WriteOutcome.NoPeerState]). The read fails at once, where it used to wait out its read timeout for an answer that
+    /// could not come. A retry may outlive the condition, so the cause is transient; every caller that re-reads on its own
+    /// trigger backs off on it ([RefusalBackoff]) rather than re-sending on the congested lane at once.
+    record ForwardNotSent(WriteOutcome outcome, String message) implements StreamForwardError, Cause.Transient {
+        public static final Fn1<ForwardNotSent, WriteOutcome> FACTORY = Causes.forOneValue("Stream forward read was not sent: %s",
+                                                                                           ForwardNotSent::new);
+    }
+
+    /// A forward READ whose message could not be encoded ([WriteOutcome.EncodeFailed], #2574): nothing was written and no
+    /// retry can change that (a missing or broken codec), so it is a hard error the caller does not retry.
+    record ForwardNotEncoded(WriteOutcome outcome, String message) implements StreamForwardError, Cause.Terminal {
+        public static final Fn1<ForwardNotEncoded, WriteOutcome> FACTORY = Causes.forOneValue("Stream forward read could not be encoded: %s",
+                                                                                              ForwardNotEncoded::new);
     }
 
     record ReadForwardFailed(String detail) implements StreamForwardError {
@@ -85,12 +87,11 @@ public sealed interface StreamForwardError extends Cause {
         return cause instanceof RemotePublishRetryable;
     }
 
-    /// The wait a refused forward asks its caller to keep before sending again (#2574): the `retryAfter` of the
-    /// [ForwardNotSent] anywhere in `cause`'s chain, none for any other failure.
-    static Option<TimeSpan> refusalRetryAfter(Cause cause) {
-        return cause instanceof ForwardNotSent notSent
-               ? Option.some(notSent.retryAfter())
-               : cause.source()
-                      .flatMap(StreamForwardError::refusalRetryAfter);
+    /// Whether `cause`, or any cause in its chain, is a read the transport did not send ([ForwardNotSent], #2574): the
+    /// failure every re-reading caller backs off on.
+    static boolean isRefusal(Cause cause) {
+        return cause instanceof ForwardNotSent || cause.source()
+                                                       .map(StreamForwardError::isRefusal)
+                                                       .or(false);
     }
 }

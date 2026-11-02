@@ -123,28 +123,6 @@ final class ClusterEventRedelivery {
                                maybeLanded || cause instanceof PublishOutcomeUnknown);
         }
 
-        /// #2574: after a publish the transport refused before it left (it fails at once, where it used to wait out the
-        /// publish timeout), the next attempt is due no sooner than that refusal's own wait from `now`, so the congested lane
-        /// is not re-sent to sooner than the silent wait re-sent to it. Any other failure leaves the schedule unchanged.
-        Pending pacedAfter(Cause cause, long now) {
-            return StreamForwardError.refusalRetryAfter(cause)
-                                     .map(wait -> Math.max(nextAttemptAt,
-                                                           now + wait.millis()))
-                                     .map(this::withNextAttemptAt)
-                                     .or(this);
-        }
-
-        private Pending withNextAttemptAt(long attemptAt) {
-            return new Pending(event,
-                               firstFailedAt,
-                               horizonStartedAt,
-                               attempts,
-                               attemptAt,
-                               onGivenUp,
-                               onDelivered,
-                               maybeLanded);
-        }
-
         /// This event with its horizon restarted at `now`: the stream refused with a promotion refusal (#2077).
         /// `firstFailedAt` stays, so the age of the event itself is still known.
         Pending rebasedAt(long now) {
@@ -322,10 +300,7 @@ final class ClusterEventRedelivery {
                                 Cause cause,
                                 Consumer<GiveUpOutcome> onGivenUp,
                                 Runnable onDelivered) {
-        var now = clock.getAsLong();
-        var pending = Pending.pending(event, now, onGivenUp, onDelivered, false)
-                             .afterFailure(cause)
-                             .pacedAfter(cause, now);
+        var pending = Pending.pending(event, clock.getAsLong(), onGivenUp, onDelivered, false).afterFailure(cause);
 
         return isPermanent(cause)
                ? drop(DropReason.PERMANENT, pending)
@@ -390,7 +365,7 @@ final class ClusterEventRedelivery {
 
         return pending.expiredAt(now)
                ? expire(pending)
-               : enqueue(pending.failedAgain(now).pacedAfter(cause, now));
+               : enqueue(pending.failedAgain(now));
     }
 
     /// The horizon bounds how long a stream that refuses for good is waited on. A promotion refusal is the stream saying

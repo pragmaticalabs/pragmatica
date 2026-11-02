@@ -4,14 +4,18 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.LockSupport;
+import java.util.function.Function;
 import java.util.stream.LongStream;
 
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.slice.ConsumerConfig;
@@ -20,7 +24,6 @@ import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
-import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage;
 import org.pragmatica.aether.stream.forward.StreamForwardTransport;
 import org.pragmatica.aether.stream.replication.ForwardCatchupTransport;
@@ -37,41 +40,40 @@ import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// #2574 pressure test: the FORWARD send rate does not rise when the lane is refusing. Each caller class whose retry the
-/// caller sweep found driven by its trigger rather than by a timer -- the backfill gap trigger, the consumer poll, the owner
-/// activation gate -- is run against the REAL forward client over a fixed window, in two arms that differ only in what the
-/// transport tells the client:
+/// #2574 pressure test (CTO, know 89e17399a9): the FORWARD send rate under a refusing lane, F1 vs pre-F1. Each caller class
+/// whose next read is driven by its trigger rather than a timer -- the backfill gap trigger, the consumer poll, the owner
+/// activation gate -- runs against the REAL forward client, at the production 2 s read timeout, in two arms that differ only
+/// in what the transport tells the client:
 ///
-/// - `SILENT_DROP`, the pre-F1 behaviour: the frame is dropped but reported `Sent`, so every request waits out its read
-///   timeout (this is exactly what `StreamForwardTransport.send` returning `void` did);
-/// - `REFUSING`, F1: the transport reports `BackpressureRefused` and the request fails at once.
+/// - `SILENT_DROP`, pre-F1: the frame is dropped but reported `Sent`, so every read waits out its 2 s timeout;
+/// - `REFUSING`, F1: the transport reports `BackpressureRefused`, the read fails at once, and the caller holds by its
+///   `RefusalBackoff` (250 ms doubling to 4 s, +-20%).
 ///
-/// The arms count the FORWARD frames the client hands the transport. Under fail-fast the count must not exceed the
-/// timeout-paced count: each caller keeps the refusal's own wait (the request's read timeout) before sending again. The
-/// windows are short and the read timeout scaled down (400 ms) to keep the test quick; the ratio is what is pinned. Counts
-/// are compared with one frame of slack for the window edge (a send scheduled for the instant the window closes lands on
-/// either side of it); without the pacing the refusing arm sends many times more (the counts are printed).
-@Timeout(value = 120, unit = TimeUnit.SECONDS)
+/// All six scenarios run together for 60 s, each triggered every 20 ms, counting the FORWARD frames the client hands the
+/// transport. Reported: the first-10 s burst and the sustained 60 s window, each against pre-F1. Asserted, as ruled: the
+/// sustained window does not rise (one frame of slack per probed peer for the window edge), and the burst stays within the
+/// ruled "slightly above" (sends at about 0, 0.25, 0.75, 1.75, 3.75, 7.75 s against one per 2 s: at most 1.5x + 1).
+@Timeout(value = 180, unit = TimeUnit.SECONDS)
 class ForwardRefusalPressureTest {
     private static final NodeId SELF = new NodeId("self");
     private static final NodeId OWNER = new NodeId("owner");
     private static final NodeId PEER_A = new NodeId("peer-a");
     private static final NodeId PEER_B = new NodeId("peer-b");
     private static final String STREAM = "orders";
-    private static final TimeSpan READ_TIMEOUT = TimeSpan.timeSpan(400).millis();
-    private static final long WINDOW_MS = 2_400L;
+    private static final TimeSpan READ_TIMEOUT = TimeSpan.timeSpan(2).seconds();
+    private static final long BURST_MS = 10_000L;
+    private static final long SUSTAINED_MS = 60_000L;
     private static final long TRIGGER_EVERY_MS = 20L;
-    private static final int EDGE_SLACK = 1;
 
     private enum Arm {
         SILENT_DROP,
         REFUSING
     }
 
-    /// Counts FORWARD request frames; delivers none.
+    /// Records when each FORWARD frame was handed to it; delivers none.
     private static final class CountingTransport implements StreamForwardTransport {
         private final Arm arm;
-        private final AtomicInteger frames = new AtomicInteger();
+        private final List<Long> sentAtNanos = new CopyOnWriteArrayList<>();
 
         private CountingTransport(Arm arm) {
             this.arm = arm;
@@ -79,12 +81,12 @@ class ForwardRefusalPressureTest {
 
         @Override
         public void send(NodeId target, StreamForwardMessage message) {
-            frames.incrementAndGet();
+            sentAtNanos.add(System.nanoTime());
         }
 
         @Override
         public Promise<WriteOutcome> sendOutcome(NodeId target, StreamForwardMessage message, TimeSpan callerWait) {
-            frames.incrementAndGet();
+            sentAtNanos.add(System.nanoTime());
 
             return Promise.success(arm == Arm.REFUSING
                                    ? new WriteOutcome.BackpressureRefused(target)
@@ -92,34 +94,50 @@ class ForwardRefusalPressureTest {
         }
     }
 
-    private StreamPartitionManager manager;
-    private StreamConsumerRuntime runtime;
-
-    @AfterEach
-    void tearDown() {
-        Option.option(runtime).onPresent(StreamConsumerRuntime::close);
-        Option.option(manager).onPresent(StreamPartitionManager::close);
-    }
+    private record Counts(int burst, int sustained) {}
 
     private static StreamForwardClient client(CountingTransport transport) {
         return StreamForwardClient.streamForwardClient(SELF, transport, READ_TIMEOUT, READ_TIMEOUT);
     }
 
-    // ---------------------------------------------------------------- backfill gap trigger
-
-    /// One backfill call per received batch (`ReplicationReceiveHandler` -> `onGap`), here every 20 ms, against a refusing
-    /// owner. Pre-F1 the 400 ms dead flight absorbed them; F1's refused flight holds its slot for the same wait.
     @Test
-    void backfillGapTrigger_refusingLane_sendsNoMoreThanTheTimeoutPacedRate() {
-        var silent = backfillFrames(Arm.SILENT_DROP);
-        var refusing = backfillFrames(Arm.REFUSING);
+    void refusingLane_sustainedSendRateDoesNotRise_andTheFirst10sBurstStaysSlight_perCallerClass() throws Exception {
+        var classes = List.<Function<Arm, Counts>>of(ForwardRefusalPressureTest::backfillGapTrigger,
+                                                     ForwardRefusalPressureTest::consumerPoll,
+                                                     ForwardRefusalPressureTest::ownerActivationGate);
+        var names = List.of("backfill gap trigger", "consumer poll", "owner activation gate (2 peers)");
+        var slack = List.of(1, 1, 2);
+        var futures = new ArrayList<Future<Counts>>();
 
-        report("backfill gap trigger", silent, refusing);
-        assertThat(refusing).as("refusing %d vs timeout-paced %d frames in %d ms", refusing, silent, WINDOW_MS)
-                            .isLessThanOrEqualTo(silent + EDGE_SLACK);
+        try (var executor = Executors.newFixedThreadPool(classes.size() * 2)) {
+            for (var scenario : classes) {
+                futures.add(executor.submit(() -> scenario.apply(Arm.SILENT_DROP)));
+                futures.add(executor.submit(() -> scenario.apply(Arm.REFUSING)));
+            }
+
+            for (var index = 0; index < classes.size(); index++) {
+                var silent = futures.get(2 * index).get();
+                var refusing = futures.get(2 * index + 1).get();
+
+                System.out.printf("PRESSURE %s readTimeout=2s first10s: silentDrop=%d refusing=%d | sustained60s: silentDrop=%d refusing=%d%n",
+                                  names.get(index),
+                                  silent.burst(),
+                                  refusing.burst(),
+                                  silent.sustained(),
+                                  refusing.sustained());
+                assertThat(refusing.sustained()).as("%s: sustained 60 s, refusing vs pre-F1", names.get(index))
+                                                .isLessThanOrEqualTo(silent.sustained() + slack.get(index));
+                assertThat((double) refusing.burst()).as("%s: first 10 s, refusing vs pre-F1", names.get(index))
+                                                     .isLessThanOrEqualTo(silent.burst() * 1.5 + slack.get(index));
+                assertThat(refusing.burst()).as("%s: the refusing arm was exercised", names.get(index)).isPositive();
+            }
+        }
     }
 
-    private static int backfillFrames(Arm arm) {
+    // ---------------------------------------------------------------- backfill gap trigger
+
+    /// One backfill call per received batch (`ReplicationReceiveHandler` -> `onGap`), here every 20 ms, against the owner.
+    private static Counts backfillGapTrigger(Arm arm) {
         var transport = new CountingTransport(arm);
         var registry = ReplicaRegistry.replicaRegistry();
         var partitions = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
@@ -134,9 +152,7 @@ class ForwardRefusalPressureTest {
                                                                ForwardCatchupTransport.forwardCatchupTransport(client(transport), 64),
                                                                SELF);
 
-            drive(() -> backfill.backfill(STREAM, 0));
-
-            return transport.frames.get();
+            return drive(transport, () -> backfill.backfill(STREAM, 0));
         } finally {
             partitions.close();
         }
@@ -145,38 +161,27 @@ class ForwardRefusalPressureTest {
     // ---------------------------------------------------------------- consumer poll
 
     /// A consumer whose reads are forwarded to the owner (`StreamReadRouter.readFrom` -> `readRemoteValidated`), polled at its
-    /// own interval (50 ms at most after a failure) and woken by appends every 20 ms. Pre-F1 each read waited 400 ms; F1
-    /// parks the loop for the refusal's wait.
-    @Test
-    void consumerPoll_refusingLane_sendsNoMoreThanTheTimeoutPacedRate() {
-        var silent = consumerFrames(Arm.SILENT_DROP);
-        var refusing = consumerFrames(Arm.REFUSING);
-
-        report("consumer poll", silent, refusing);
-        assertThat(refusing).as("refusing %d vs timeout-paced %d frames in %d ms", refusing, silent, WINDOW_MS)
-                            .isLessThanOrEqualTo(silent + EDGE_SLACK);
-    }
-
-    private int consumerFrames(Arm arm) {
+    /// own interval and woken by appends every 20 ms.
+    private static Counts consumerPoll(Arm arm) {
         var transport = new CountingTransport(arm);
         var forwardClient = client(transport);
+        var manager = StreamPartitionManager.streamPartitionManager();
 
-        manager = StreamPartitionManager.streamPartitionManager();
         manager.createStream(StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 60_000), "earliest"));
-        runtime = StreamConsumerRuntime.streamConsumerRuntime(manager,
-                                                              DeadLetterHandler.deadLetterHandler(),
-                                                              inMemoryCursorStore(),
-                                                              forwardedReader(forwardClient));
-        runtime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig("group-1"), (_, _, _) -> Promise.unitPromise());
-        var tick = new AtomicInteger();
+        var runtime = StreamConsumerRuntime.streamConsumerRuntime(manager,
+                                                                  DeadLetterHandler.deadLetterHandler(),
+                                                                  inMemoryCursorStore(),
+                                                                  forwardedReader(forwardClient));
 
-        drive(() -> manager.publishLocal(STREAM, 0, ("wake-" + tick.incrementAndGet()).getBytes(), tick.get()));
-        runtime.close();
-        manager.close();
-        runtime = null;
-        manager = null;
+        try {
+            runtime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig("group-1"), (_, _, _) -> Promise.unitPromise());
+            var tick = new AtomicInteger();
 
-        return transport.frames.get();
+            return drive(transport, () -> manager.publishLocal(STREAM, 0, ("wake-" + tick.incrementAndGet()).getBytes(), tick.get()));
+        } finally {
+            runtime.close();
+            manager.close();
+        }
     }
 
     /// The consumer's forwarded read, as `StreamReadRouter.forwardValidated` makes it.
@@ -199,19 +204,8 @@ class ForwardRefusalPressureTest {
     // ---------------------------------------------------------------- owner activation gate
 
     /// An owner whose promotion gate probes two peers over the catch-up read class (`OwnerPeerReads.appendedWatermark`, the
-    /// production probe), demanded every 20 ms (`admit`, once per owner action). Pre-F1 each gate run waited out the probe
-    /// timeout and concurrent demands were told it was in progress; F1 paces the gate by the refusal's wait.
-    @Test
-    void ownerActivationGate_refusingLane_sendsNoMoreThanTheTimeoutPacedRate() {
-        var silent = activationFrames(Arm.SILENT_DROP);
-        var refusing = activationFrames(Arm.REFUSING);
-
-        report("owner activation gate", silent, refusing);
-        assertThat(refusing).as("refusing %d vs timeout-paced %d frames in %d ms", refusing, silent, WINDOW_MS)
-                            .isLessThanOrEqualTo(silent + 2 * EDGE_SLACK);
-    }
-
-    private static int activationFrames(Arm arm) {
+    /// production probe), demanded every 20 ms (`admit`, once per owner action).
+    private static Counts ownerActivationGate(Arm arm) {
         var transport = new CountingTransport(arm);
         var forwardClient = client(transport);
         var record = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(SELF, Epoch.epoch(0L, 1L, 0), 1L, HlcTimestamp.ZERO);
@@ -236,72 +230,28 @@ class ForwardRefusalPressureTest {
                                                    _ -> Unit.unit(),
                                                    PromotionTestRanges.NEVER_ALARM);
 
-        drive(() -> gate.admit(STREAM, 0));
-
-        return transport.frames.get();
-    }
-
-    // ---------------------------------------------------------------- dead-letter publish
-
-    /// The dead-letter publish retries at 100 ms doubling (to 10 s); after a refused publish it waits at least the refusal's
-    /// own wait (the publish timeout the publish would have spent), and any other failure keeps the plain backoff.
-    @Test
-    void deadLetterRetry_afterARefusal_waitsAtLeastTheRefusalsWait() {
-        var wait = TimeSpan.timeSpan(5).seconds();
-        var refused = StreamForwardError.ForwardNotSent.FACTORY.apply(new WriteOutcome.BackpressureRefused(OWNER), wait);
-
-        for (var attempt = 1; attempt <= 3; attempt++) {
-            assertThat(ConsumerRuntimeState.deadLetterRetryDelayMs(attempt, refused)).as("attempt %d after a refusal", attempt)
-                                                                                     .isGreaterThanOrEqualTo(wait.millis());
-            assertThat(ConsumerRuntimeState.deadLetterRetryDelayMs(attempt, StreamError.General.PARTITION_NOT_LOCAL))
-                .as("attempt %d after any other failure keeps the plain backoff", attempt)
-                .isLessThan(wait.millis());
-        }
-    }
-
-    /// The same pacing end to end in the consumer: a dead-letter sink whose publish is refused, a SKIP consumer whose handler
-    /// fails one event. With a 1.2 s refusal wait the sink sees at most three appends in 2.5 s (0, 1.2, 2.4); the plain
-    /// backoff alone (100 ms doubling) would make five (0, 0.1, 0.3, 0.7, 1.5). Pins that the retry uses the wait.
-    @Test
-    void deadLetterRetry_refusedSink_appendsNoMoreOftenThanTheRefusalsWait() {
-        var wait = TimeSpan.timeSpan(1200).millis();
-        var appends = new AtomicInteger();
-        var refused = StreamForwardError.ForwardNotSent.FACTORY.apply(new WriteOutcome.BackpressureRefused(OWNER), wait);
-        var sink = new DeadLetterHandler() {
-            @Override
-            public Promise<Unit> append(String streamName,
-                                        int partition,
-                                        long offset,
-                                        String failingGroup,
-                                        byte[] payload,
-                                        String errorMessage,
-                                        int attemptCount) {
-                appends.incrementAndGet();
-
-                return refused.promise();
-            }
-
-            @Override
-            public Promise<List<DeadLetterHandler.DeadLetterEntry>> read(String streamName, int maxCount) {
-                return Promise.success(List.of());
-            }
-        };
-
-        manager = StreamPartitionManager.streamPartitionManager();
-        manager.createStream(StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 60_000), "earliest"));
-        runtime = StreamConsumerRuntime.streamConsumerRuntime(manager, sink);
-        runtime.subscribe(STREAM,
-                          0,
-                          ConsumerConfig.consumerConfig("group-dlq", 1, ConsumerConfig.ProcessingMode.ORDERED, ConsumerConfig.ErrorStrategy.SKIP),
-                          (_, _, _) -> StreamError.General.BUFFER_EMPTY.promise());
-        manager.publishLocal(STREAM, 0, "poison".getBytes(), 1L);
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(2_500L));
-
-        System.out.printf("PRESSURE dead-letter retry window=2500ms refusalWait=1200ms appends=%d%n", appends.get());
-        assertThat(appends.get()).as("dead-letter appends in 2.5 s under a 1.2 s refusal wait").isBetween(1, 3);
+        return drive(transport, () -> gate.admit(STREAM, 0));
     }
 
     // ---------------------------------------------------------------- shared
+
+    /// Runs `trigger` every [#TRIGGER_EVERY_MS] for [#SUSTAINED_MS]; counts the frames of the first [#BURST_MS] and of the
+    /// whole window.
+    private static Counts drive(CountingTransport transport, Runnable trigger) {
+        var start = System.nanoTime();
+        var end = start + TimeUnit.MILLISECONDS.toNanos(SUSTAINED_MS);
+
+        while (System.nanoTime() < end) {
+            trigger.run();
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(TRIGGER_EVERY_MS));
+        }
+
+        var burstEnd = start + TimeUnit.MILLISECONDS.toNanos(BURST_MS);
+        var frames = List.copyOf(transport.sentAtNanos);
+
+        return new Counts((int) frames.stream().filter(at -> at < burstEnd).count(),
+                          (int) frames.stream().filter(at -> at < end).count());
+    }
 
     private static ConsumerCursorStore inMemoryCursorStore() {
         var stored = new ConcurrentHashMap<String, Long>();
@@ -319,24 +269,5 @@ class ForwardRefusalPressureTest {
                 return Promise.success(Option.option(stored.get(group + stream + partition)));
             }
         };
-    }
-
-    /// Runs `trigger` every [#TRIGGER_EVERY_MS] for [#WINDOW_MS]; the frames counted are those sent within the window.
-    private static void drive(Runnable trigger) {
-        var end = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(WINDOW_MS);
-
-        while (System.nanoTime() < end) {
-            trigger.run();
-            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(TRIGGER_EVERY_MS));
-        }
-    }
-
-    private static void report(String callerClass, int silent, int refusing) {
-        System.out.printf("PRESSURE %s window=%dms readTimeout=%dms silentDrop=%d refusing=%d%n",
-                          callerClass,
-                          WINDOW_MS,
-                          READ_TIMEOUT.millis(),
-                          silent,
-                          refusing);
     }
 }

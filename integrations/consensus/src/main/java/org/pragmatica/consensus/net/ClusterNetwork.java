@@ -52,14 +52,6 @@ public interface ClusterNetwork {
         return Unit.unit();
     }
 
-    /// Test-only fault injection (#2574): a unicast send whose peer and message the filter matches is refused before it is
-    /// written, as a backpressured fast-fail lane refuses it -- the frame is dropped, and a caller that asks for the outcome
-    /// gets [WriteOutcome.BackpressureRefused]. It stands in for the FORWARD-lane refusal a loopback cluster cannot produce on
-    /// demand. Broadcasts are not filtered. Default no-op for transports without fault injection.
-    default Unit setOutboundRefusalFilter(java.util.function.BiPredicate<NodeId, ProtocolMessage> filter) {
-        return Unit.unit();
-    }
-
     /// Validates a state-transfer envelope against the actual encoded transport limit.
     /// In-memory transports without a frame limit need no additional restriction.
     default org.pragmatica.lang.Result<Unit> validateOutboundMessage(ProtocolMessage message) {

@@ -14,8 +14,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
+import org.pragmatica.aether.stream.forward.RefusalBackoff;
 import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.aether.stream.replication.PartitionKey;
 import org.pragmatica.aether.stream.replication.ReplicaWatermarkProbe;
@@ -485,10 +487,14 @@ public final class OwnerActivation {
     /// Partitions with a re-drive already scheduled.
     private final Set<PartitionKey> redriving = ConcurrentHashMap.newKeySet();
     /// #2574: per partition, the instant (System.nanoTime) before which no gate may run, because a probe of the last run was
-    /// refused by the transport before it left ([StreamForwardError.ForwardNotSent]). The refusal fails at once where the
-    /// probe used to wait out its read timeout; without this pacing every demand ([#admit]) would start a gate, and with it
-    /// one probe per live peer, at the request rate.
+    /// not sent by the transport ([StreamForwardError.ForwardNotSent]). The refusal fails at once where the probe used to
+    /// wait out its read timeout; without this pacing every demand ([#admit]) would start a gate, and with it one probe per
+    /// live peer, at the request rate.
     private final Map<PartitionKey, Long> refusedUntilNanos = new ConcurrentHashMap<>();
+    /// #2574 (CTO, know 89e17399a9): the refused-probe hold, per PEER: the refusal is a property of the lane to that peer,
+    /// and every partition's gate probes the same peers, so one peer's backoff paces all of them and a peer that answers
+    /// is not held back by another that refuses. A run's wait is the longest hold among its refused peers.
+    private final RefusalBackoff<NodeId> peerRefusals = RefusalBackoff.refusalBackoff();
     /// The block currently reported for each partition; the alarm fires when it first appears or changes.
     private final Map<PartitionKey, ActivationBlock> blocks = new ConcurrentHashMap<>();
     /// The "members did not answer" block, in its OWN slot (#1937): it is a condition independent of every other block, so a
@@ -694,7 +700,8 @@ public final class OwnerActivation {
     /// (`NOT_OWNER`), or consensus is inactive; a demand starts a fresh loop, and one loop runs per partition.
     ///
     /// #2574: an attempt that falls inside a refusal's wait ([#refusedUntilNanos]) runs no gate; it is re-driven at the
-    /// wait's end instead, so a refusing lane is probed no more often than the probe's silent wait used to probe it.
+    /// wait's end instead. After a refused probe the redrive therefore takes the ruled shape (know 89e17399a9): the
+    /// refused peers' hold, 250 ms doubling to 4 s, jittered, reset once the peer's probe is sent.
     private void attempt(String stream, int partition, TimeSpan backoff) {
         refusalWaitLeft(PartitionKey.partitionKey(stream, partition)).onEmpty(() -> activateOrRedrive(stream,
                                                                                                       partition,
@@ -720,16 +727,31 @@ public final class OwnerActivation {
         }
     }
 
-    /// #2574: the longest refusal wait among the probes of this run starts the partition's wait (see [#refusedUntilNanos]).
+    /// #2574: each probed peer's hold advances on a refusal and resets once its probe was sent; the longest hold among this
+    /// run's refused peers starts the partition's wait (see [#refusedUntilNanos]). `results` are in `peers` order.
     @Contract
-    private void noteRefusals(PartitionKey key, List<Result<PeerWatermark>> results) {
-        results.stream()
-               .flatMap(result -> result.fold(StreamForwardError::refusalRetryAfter,
-                                              _ -> Option.<TimeSpan> none())
-                                        .stream())
-               .max(Comparator.naturalOrder())
-               .ifPresent(wait -> refusedUntilNanos.put(key,
-                                                        System.nanoTime() + wait.nanos()));
+    private void noteRefusals(PartitionKey key, List<NodeId> peers, List<Result<PeerWatermark>> results) {
+        IntStream.range(0, Math.min(peers.size(), results.size()))
+                 .mapToObj(index -> peerHold(peers.get(index), results.get(index)))
+                 .flatMap(Option::stream)
+                 .max(Comparator.naturalOrder())
+                 .ifPresent(hold -> refusedUntilNanos.put(key, System.nanoTime() + hold.nanos()));
+    }
+
+    private Option<TimeSpan> peerHold(NodeId peer, Result<PeerWatermark> result) {
+        return result.fold(cause -> refusedHold(peer, cause), _ -> sentProbe(peer));
+    }
+
+    private Option<TimeSpan> refusedHold(NodeId peer, Cause cause) {
+        return StreamForwardError.isRefusal(cause)
+               ? Option.some(peerRefusals.refused(peer))
+               : sentProbe(peer);
+    }
+
+    private Option<TimeSpan> sentProbe(NodeId peer) {
+        peerRefusals.sent(peer);
+
+        return Option.none();
     }
 
     private void redrive(String stream, int partition, TimeSpan backoff, Cause cause) {
@@ -980,7 +1002,7 @@ public final class OwnerActivation {
                                              int partition,
                                              List<NodeId> peers,
                                              List<Result<PeerWatermark>> results) {
-        noteRefusals(PartitionKey.partitionKey(stream, partition), results);
+        noteRefusals(PartitionKey.partitionKey(stream, partition), peers, results);
         var answered = results.stream().flatMap(result -> result.option()
                                                                 .stream()).toList();
 

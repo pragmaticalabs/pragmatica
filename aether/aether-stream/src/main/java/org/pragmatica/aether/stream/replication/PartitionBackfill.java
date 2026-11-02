@@ -21,6 +21,7 @@ import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.OwnerActivation;
 import org.pragmatica.aether.stream.OwnerPeerReads;
 import org.pragmatica.aether.stream.StreamError;
+import org.pragmatica.aether.stream.forward.RefusalBackoff;
 import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -227,6 +228,8 @@ public final class PartitionBackfill {
     private volatile Runnable joinWindowHook = () -> {};
 
     private volatile Runnable releaseWindowHook = () -> {};
+    /// #2574 F1: the per-partition hold a refused flight keeps its slot for ([RefusalBackoff]); shared by every run.
+    private final RefusalBackoff<PartitionKey> refusalBackoff;
 
     private PartitionBackfill(ReplicaRegistry registry,
                               AlignedRecovery partitionRecovery,
@@ -264,6 +267,7 @@ public final class PartitionBackfill {
         this.reportedOversized = new ConcurrentHashMap<>();
         this.oversizedOrder = new Object();
         this.current = () -> true;
+        this.refusalBackoff = RefusalBackoff.refusalBackoff();
     }
 
     /// A per-run view of `shared` (#1638 late side effects): the same collaborators and the same cross-call state,
@@ -296,6 +300,7 @@ public final class PartitionBackfill {
         this.reportedOversized = shared.reportedOversized;
         this.oversizedOrder = shared.oversizedOrder;
         this.current = current;
+        this.refusalBackoff = shared.refusalBackoff;
     }
 
     /// Backward-compatible factory: no cold-start self-promotion (probe is a no-op that never reports a
@@ -554,32 +559,32 @@ public final class PartitionBackfill {
     /// releases the slot (#1638 N1, B2), so one backfill that never settles cannot wedge the partition's catch-up,
     /// while one that keeps progressing keeps its slot however long it runs.
     ///
-    /// ## A joined flight that fails re-runs once (#2574 F2)
-    /// A call that joins marks the flight. If that flight lands FAILED, the backfill runs once more as a NEW flight,
-    /// started after the failed one left the slot and before its result is delivered, so the joiner's trigger is
-    /// honoured: the flight it joined may have started before the data the trigger reports existed (a catch-up read
-    /// refused or lost before the owner appended). The re-run is bounded to once: a re-run flight that fails, joined or
-    /// not, does not re-run again. Joiners still resolve with the result of the flight they joined; the re-run is the
-    /// orchestrator's own pull. If another call already took the slot when the re-run would start, that flight serves
-    /// the trigger and no re-run starts. A flight that SUCCEEDS is not re-run, even if it pulled nothing.
+    /// ## A landing with a late joiner re-runs once (#2574 F2, know 26daff40e3)
+    /// A call that joins marks the flight. When a joined flight lands -- failed OR succeeded, an empty success included --
+    /// the backfill runs once more as a NEW flight, started after the landed one left the slot and before its result is
+    /// delivered: a late joiner carries newer demand than the flight's start (its read may have reached the owner before the
+    /// offset the trigger reports existed, or been refused or lost). Joiners still resolve with the result of the flight
+    /// they joined; the re-run is the orchestrator's own pull. A landing with no joiner never re-runs, so the mechanism
+    /// cannot sustain itself: re-runs chain only while real triggers keep joining. If another call already took the slot
+    /// when the re-run would start, that flight serves the trigger and no re-run starts.
     ///
-    /// ## A flight the transport refused holds its slot for the refusal's wait (#2574 F1)
-    /// A catch-up read refused before it left fails at once ([StreamForwardError.ForwardNotSent]) where it used to wait
-    /// out its read timeout, and that wait is what absorbed the gap triggers arriving meanwhile (one per received batch).
-    /// So a flight that fails on a refusal delivers its failure at once but keeps the partition's slot for the refusal's
-    /// wait (the read timeout the read would have spent): calls meanwhile join it, and at the wait's end the slot is
-    /// released and, if a call joined, the backfill re-runs once, as above. A refusing lane is therefore pulled from no
-    /// more often than the silent wait pulled from it, and no trigger is lost.
+    /// ## A flight the transport refused holds its slot (#2574 F1, know 89e17399a9)
+    /// A catch-up read the transport did not send fails at once ([StreamForwardError.ForwardNotSent]) where it used to wait
+    /// out its 2 s read timeout, and that wait is what absorbed the gap triggers arriving meanwhile (one per received
+    /// batch). So a flight that fails on a refusal delivers its failure at once but keeps the partition's slot for the
+    /// partition's [RefusalBackoff] hold (250 ms doubling to 4 s, jittered, reset once a flight lands without a refusal):
+    /// calls meanwhile join it, and at the hold's end the slot is released and, if a call joined, the backfill re-runs once,
+    /// as above. The hold is per partition because the slot it extends is.
     public Promise<Long> backfill(String streamName, int partition) {
         var key = partitionKey(streamName, partition);
-        var flight = Flight.flight(false);
+        var flight = Flight.flight();
 
         return Option.option(inFlight.putIfAbsent(key, flight))
                      .map(running -> join(running, streamName, partition))
                      .or(() -> fly(key, flight, streamName, partition));
     }
 
-    /// Joins `running`, marking it so its failure re-runs the backfill. A flight that already left the slot no longer
+    /// Joins `running`, marking it so its landing re-runs the backfill. A flight that already left the slot no longer
     /// honours a join, so the call starts over and either joins the partition's next flight or starts one.
     private Promise<Long> join(Flight running, String streamName, int partition) {
         joinWindowHook.run();
@@ -656,40 +661,44 @@ public final class PartitionBackfill {
     /// removal is conditional (#1638 B1): a run that lands after its flight timed out must not evict the NEXT flight
     /// of the partition from the slot.
     ///
-    /// #2574: a first landing on a transport refusal holds the slot for the refusal's wait ([#holdSlot]); any other
-    /// landing releases it at once ([#release]). Either way the result is delivered now.
+    /// #2574: a first landing on a transport refusal holds the slot for the partition's next refusal hold ([#holdSlot]);
+    /// any other landing resets the partition's hold (the read was sent) and releases the slot at once ([#release]).
+    /// Either way the result is delivered now.
     @Contract
     private void land(PartitionKey key, Flight flight, Result<Long> result) {
-        var refusalWait = result.fold(StreamForwardError::refusalRetryAfter, _ -> Option.<TimeSpan> none());
-
-        if (refusalWait.isPresent() && flight.hold()) {
-            holdSlot(key, flight, refusalWait.unwrap());
+        if (isRefused(result) && flight.hold()) {
+            holdSlot(key, flight, refusalBackoff.refused(key));
         } else {
-            release(key, flight, result.isFailure());
+            refusalBackoff.sent(key);
+            release(key, flight);
         }
 
         flight.result().resolve(result);
     }
 
-    /// #2574 F2: the slot is released before the result is delivered; the first release of a FAILED flight that a call
-    /// joined, and that is not itself a re-run, starts the partition's re-run.
+    private static boolean isRefused(Result<Long> result) {
+        return result.fold(StreamForwardError::isRefusal, _ -> false);
+    }
+
+    /// #2574 F2: the slot is released before the result is delivered; the first release of a flight that a call joined
+    /// starts the partition's re-run.
     @Contract
-    private void release(PartitionKey key, Flight flight, boolean failed) {
+    private void release(PartitionKey key, Flight flight) {
         inFlight.remove(key, flight);
         releaseWindowHook.run();
-        if (flight.land() && failed) {
+        if (flight.land()) {
             rerun(key);
         }
     }
 
-    /// #2574 F1: the refused flight stays in the slot until `wait` has passed, then is released as a failed flight.
+    /// #2574 F1: the refused flight stays in the slot until `hold` has passed, then is released.
     @Contract
-    private void holdSlot(PartitionKey key, Flight flight, TimeSpan wait) {
+    private void holdSlot(PartitionKey key, Flight flight, TimeSpan hold) {
         log.debug("Backfill of {}[{}] was refused by the transport; its slot is held for {}",
                   key.streamName(),
                   key.partition(),
-                  wait);
-        SharedScheduler.schedule(() -> release(key, flight, true), wait);
+                  hold);
+        SharedScheduler.schedule(() -> release(key, flight), hold);
     }
 
     @Contract
@@ -702,14 +711,14 @@ public final class PartitionBackfill {
         this.releaseWindowHook = hook;
     }
 
-    /// #2574 F2: the one re-run of a failed joined flight. It never joins: if a call already took the slot, that flight
-    /// serves the trigger, and the re-run flight is marked so its own failure does not re-run again.
+    /// #2574 F2: the re-run of a landed joined flight. It never joins: if a call already took the slot, that flight serves
+    /// the trigger.
     @Contract
     private void rerun(PartitionKey key) {
-        var flight = Flight.flight(true);
+        var flight = Flight.flight();
 
         if (inFlight.putIfAbsent(key, flight) == null) {
-            log.debug("Backfill of {}[{}] re-runs once: a call joined the flight that failed",
+            log.debug("Backfill of {}[{}] re-runs once: a call joined the flight that landed",
                       key.streamName(),
                       key.partition());
             fly(key, flight, key.streamName(), key.partition());
@@ -737,12 +746,11 @@ public final class PartitionBackfill {
     }
 
     /// One backfill of a partition: its result, shared by every caller that joined it, when it last progressed, how
-    /// many local barriers it is inside, and (#2574) whether it is a re-run and where it stands: in flight or held, each
-    /// with or without a joined call, or released from the slot.
+    /// many local barriers it is inside, and (#2574) where it stands: in flight or held, each with or without a joined call,
+    /// or released from the slot.
     private record Flight(Promise<Long> result,
                           AtomicLong lastProgressNanos,
                           AtomicInteger localBarriers,
-                          boolean rerun,
                           AtomicInteger joinState) {
         private static final int OPEN = 0;
         private static final int JOINED = 1;
@@ -750,11 +758,10 @@ public final class PartitionBackfill {
         private static final int HELD_JOINED = 3;
         private static final int RELEASED = 4;
 
-        static Flight flight(boolean rerun) {
+        static Flight flight() {
             return new Flight(Promise.promise(),
                               new AtomicLong(System.nanoTime()),
                               new AtomicInteger(),
-                              rerun,
                               new AtomicInteger(OPEN));
         }
 
@@ -784,12 +791,12 @@ public final class PartitionBackfill {
             };
         }
 
-        /// Marks the release from the slot; true only on the FIRST release of a joined flight that is not a re-run -- the
-        /// one release that may re-run the backfill.
+        /// Marks the release from the slot; true only on the FIRST release of a joined flight -- the one release that
+        /// re-runs the backfill.
         boolean land() {
             var previous = joinState.getAndSet(RELEASED);
 
-            return (previous == JOINED || previous == HELD_JOINED) && !rerun;
+            return previous == JOINED || previous == HELD_JOINED;
         }
 
         boolean inLocalBarrier() {

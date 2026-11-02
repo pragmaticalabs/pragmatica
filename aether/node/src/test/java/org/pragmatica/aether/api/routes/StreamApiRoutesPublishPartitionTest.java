@@ -213,19 +213,6 @@ class StreamApiRoutesPublishPartitionTest {
         assertThat(StreamApiRoutes.retryableRefusal(STREAM_ADDRESS, permanent)).isSameAs(permanent);
     }
 
-    /// #2574: a forward this node's transport refused before writing never reached the owner, so it answers the
-    /// retryable 503 ("refused before writing"), not "outcome unknown". Red without `ForwardNotSent` on the allow-list.
-    @Test
-    void retryableRefusal_forwardRefusedBeforeWrite_is503Retryable() {
-        var refused = StreamApiRoutes.retryableRefusal(STREAM_ADDRESS,
-                                                       StreamForwardError.ForwardNotSent.FACTORY.apply(new org.pragmatica.consensus.net.WriteOutcome.BackpressureRefused(new org.pragmatica.consensus.NodeId("owner")),
-                                                                                                       org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds()));
-
-        assertThat(refused).isInstanceOfSatisfying(ManagementServerError.PublishRetryable.class,
-                                                   retryable -> assertThat(retryable.httpStatus()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE));
-        assertThat(refused.message()).contains("refused before writing");
-    }
-
     /// #1944: a publish to a node whose copy of the stream is not yet the committed life (it has not applied the
     /// stream's config) used to answer 500 `Stream config not yet visible on this node`. The condition is transient and
     /// the refusal precedes any append, so it answers the same retryable 503 as the other pre-append refusals. Driven

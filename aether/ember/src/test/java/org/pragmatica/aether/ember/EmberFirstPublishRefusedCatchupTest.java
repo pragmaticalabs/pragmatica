@@ -26,6 +26,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipV
 import org.pragmatica.aether.stream.forward.StreamForwardMessage;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.quic.QuicClusterNetwork;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
@@ -37,13 +38,14 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// catch-up read for it is refused by the transport, as a backpressured FORWARD lane refuses it (CI logged exactly this
 /// refusal from the `stream-partition-backfill` thread within 30 ms of the stream's creation in every failing
 /// `EmberOrdinaryFailoverNoFalseAlertTest` job). The refusal is injected with the test-only outbound refusal filter of the
-/// transport ([org.pragmatica.consensus.net.ClusterNetwork#setOutboundRefusalFilter]); it fires once per node, on that node's
+/// transport ([QuicClusterNetwork#setOutboundRefusalFilter], on the QUIC transport only); it fires once per node, on that node's
 /// first catch-up `ReadForward` for the stream.
 ///
 /// Before #2574 the refused read was invisible: the read waited out its timeout (2 s), the offset-0 gap trigger joined that
 /// dead flight and pulled nothing, and the owner's wait for every in-sync replica outlived the entry node's forward hop, so the
-/// client got 503 "outcome unknown" (the spike's probe d74P1, 5 / 5 red). Now the refused read fails at once (F1) and a joined
-/// flight that fails re-runs (F2), so the replica pulls offset 0 and acknowledges it inside the publish's budget.
+/// client got 503 "outcome unknown" (the spike's probe d74P1, 5 / 5 red). Now the refused read fails at once (F1), its
+/// flight holds the partition's slot for the first refusal hold (~250 ms) and the joined trigger re-runs it (F2), so the
+/// replica pulls offset 0 and acknowledges it inside the publish's budget.
 @PortBudget
 class EmberFirstPublishRefusedCatchupTest {
     private static final int CLUSTER_SIZE = 3;
@@ -126,9 +128,8 @@ class EmberFirstPublishRefusedCatchupTest {
         var fired = new AtomicBoolean();
         var self = node.self().id();
 
-        StreamTripwireSupport.component(node, "clusterNode", RabiaNode.class)
-                             .network()
-                             .setOutboundRefusalFilter((_, message) -> isTestCatchupRead(message)
+        ((QuicClusterNetwork) StreamTripwireSupport.component(node, "clusterNode", RabiaNode.class)
+                                                   .network()).setOutboundRefusalFilter((_, message) -> isTestCatchupRead(message)
                                                                        && fired.compareAndSet(false, true)
                                                                        && refusedBy.add(self));
     }

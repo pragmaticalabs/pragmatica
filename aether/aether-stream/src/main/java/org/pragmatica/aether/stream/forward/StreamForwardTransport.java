@@ -23,11 +23,10 @@ public interface StreamForwardTransport {
         send(target, message);
     }
 
-    /// As [#send(NodeId, StreamForwardMessage, TimeSpan)], reporting the local transport's outcome (#2574): a request whose
-    /// frame was refused before it left this node ([WriteOutcome.BackpressureRefused], [WriteOutcome.NoPeerState],
-    /// [WriteOutcome.EncodeFailed]) can fail at once instead of waiting out its caller's wait for an answer that cannot
-    /// come. The default sends and reports [WriteOutcome.Sent], the conservative answer of a transport that does not track
-    /// its writes: it never claims a frame was not sent.
+    /// As [#send(NodeId, StreamForwardMessage, TimeSpan)], reporting the local transport's outcome (#2574): a forward read
+    /// whose frame was not sent ([WriteOutcome] other than `Sent`) fails at once instead of waiting out its read timeout for
+    /// an answer that cannot come. The default sends and reports [WriteOutcome.Sent], the conservative answer of a transport
+    /// that does not track its writes: it never claims a frame was not sent.
     default Promise<WriteOutcome> sendOutcome(NodeId target, StreamForwardMessage message, TimeSpan callerWait) {
         send(target, message, callerWait);
 

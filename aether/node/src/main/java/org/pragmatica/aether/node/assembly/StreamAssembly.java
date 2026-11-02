@@ -1976,8 +1976,8 @@ public sealed interface StreamAssembly {
                 network.send(target, message, callerWait);
             }
 
-            /// #2574: the QUIC transport's tracked write, so a request frame refused on a backpressured FORWARD lane fails
-            /// its read or publish at once instead of waiting out the caller's wait.
+            /// #2574: the network's tracked write (the same dispatch, on the same FORWARD lane, as `send`), so a forward read
+            /// refused on a backpressured lane fails at once instead of waiting out its read timeout.
             @Override
             public Promise<WriteOutcome> sendOutcome(NodeId target, StreamForwardMessage message, TimeSpan callerWait) {
                 return network.sendOutcome(target, message, callerWait);

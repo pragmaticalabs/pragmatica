@@ -324,8 +324,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     private volatile java.util.function.BiPredicate<NodeId, ProtocolMessage> outboundRefusalFilter = (_, _) -> false;
 
-    /// Test-only (#2574), see [ClusterNetwork#setOutboundRefusalFilter].
-    @Override
+    /// Test-only fault injection (#2574), on the QUIC transport alone (no [ClusterNetwork] method): a unicast send whose
+    /// peer and message the filter matches is refused before it is written, as a backpressured fast-fail lane refuses it --
+    /// the frame is dropped, and a caller that asks for the outcome gets [WriteOutcome.BackpressureRefused]. It stands in for
+    /// the FORWARD-lane refusal a loopback cluster cannot produce on demand. Broadcasts are not filtered.
     public Unit setOutboundRefusalFilter(java.util.function.BiPredicate<NodeId, ProtocolMessage> filter) {
         outboundRefusalFilter = filter;
 
