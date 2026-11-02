@@ -200,6 +200,27 @@ class ManagementClientErrorSiblingsStatusTest {
             .isEqualTo(HttpStatus.CONFLICT);
     }
 
+    /// #2594: a deposed leader still holds its local leader flag but has applied the new leader's record. The commit would
+    /// carry that record, which the applier's equality fence accepts, so the route refuses it (409) and applies nothing.
+    @Test
+    void clusterConfigApply_answers409_whenThisNodeStillLeadsLocallyButTheCommittedLeaderIsAnotherNode() {
+        @SuppressWarnings("unchecked")
+        var store = (KVStore<AetherKey, AetherValue>) mock(KVStore.class);
+        var seed = ClusterConfigValue.bootstrapSeed("prod", "1.0.0", List.of(new TopologyEntry("hetzner", "core", 3)), 3, 9, "hetzner", 1);
+        var leader = new org.pragmatica.cluster.state.kvstore.LeaderValue(new NodeId("core"), 2);
+
+        when(store.get(org.mockito.ArgumentMatchers.<AetherKey> any())).thenReturn(Option.some(seed));
+        org.mockito.Mockito.doReturn(Option.some(leader))
+                           .when(store)
+                           .getTyped(org.mockito.ArgumentMatchers.<AetherKey> any(), org.mockito.ArgumentMatchers.<Class<AetherValue>> any());
+
+        var routes = ClusterConfigRoutes.clusterConfigRoutes(() -> node(Map.of("kvStore", store, "isLeader", true, "self", new NodeId("core-2"))));
+        var body = new ManagementApiResponses.ApplyConfigRequest(OPERATOR_TOML, 0L);
+
+        assertThat(statusOf(routes.routes(), ManagementRoute.CLUSTER_CONFIG_APPLY, List.of(), body, Map.of()))
+            .isEqualTo(HttpStatus.CONFLICT);
+    }
+
     /// `/blueprints/status` shares the not-found constant with the GET: an id no store holds is 404.
     @Test
     void blueprintStatus_answers404_whenNoOutcomeAndNoBlueprintExist() {

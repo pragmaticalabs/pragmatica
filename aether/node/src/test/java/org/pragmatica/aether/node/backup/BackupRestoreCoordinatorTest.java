@@ -292,6 +292,23 @@ class BackupRestoreCoordinatorTest {
             assertThat(RestoreGate.isOpen(kvStore)).isTrue();
         }
 
+        /// #2594: a deposed leader still holds its local leader flag but has applied the new leader's record. The decision
+        /// would carry that record, which the applier's equality fence accepts, so nothing is issued.
+        @Test
+        void aLeaderWhoseCommittedRecordNamesAnotherNode_issuesNoDecision() {
+            var coordinator = coordinator(NodeId.nodeId("node-2").unwrap(), Option.none());
+
+            // the same drive as runToCompletion, which completes the unfenced decision well inside this bound
+            coordinator.activate();
+            for (int i = 0; i < 20 && !coordinator.isComplete(); i++) {
+                fireRetries(1);
+            }
+
+            assertThat(submitted).as("no restore transaction under another node's leader record").isEmpty();
+            assertThat(outcome()).isEqualTo(BackupRestoreOutcome.UNKNOWN);
+            assertThat(coordinator.isComplete()).isFalse();
+        }
+
         @Test
         void aLiveClusterIsNeverRestoredOver() {
             var remote = bareRemote(temp.resolve("remote.git"));
@@ -719,7 +736,12 @@ class BackupRestoreCoordinatorTest {
 
     // --- helpers ---
     private BackupRestoreCoordinator coordinator(Option<BackupRestoreCoordinator.Source> source) {
-        return BackupRestoreCoordinator.backupRestoreCoordinator(kvStore,
+        return coordinator(NodeId.nodeId("node-1").unwrap(), source);
+    }
+
+    private BackupRestoreCoordinator coordinator(NodeId self, Option<BackupRestoreCoordinator.Source> source) {
+        return BackupRestoreCoordinator.backupRestoreCoordinator(self,
+                                                                 kvStore,
                                                                  this::gatedApply,
                                                                  source,
                                                                  warnings::add,
