@@ -130,10 +130,8 @@ class M1StreamLoadTest {
 
             emit("{\"kind\":\"s7-attached\"," + header(arm) + ",\"attachSeconds\":" + attachS + ",\"subscriptionsByNode\":" + attachedByNode() + ",\"sliceHosts\":\"" + sliceHosts(arm) + "\"}");
             var producer = new Producer(arm);
-            var thread = new Thread(producer, "s7-producer");
 
-            thread.setDaemon(true);
-            thread.start();
+            producer.start();
             log(arm, "attached after " + attachS + " s; warming up " + WARMUP_S + " s");
             sleep(WARMUP_S * 1_000);
             var load = new ArrayList<Map<String, Object>>();
@@ -141,8 +139,7 @@ class M1StreamLoadTest {
             for (int w = 1; w <= WINDOWS; w++) {
                 load.add(window(arm, "load", w, WINDOW_S, producer));
             }
-            producer.stop = true;
-            thread.join(10_000);
+            producer.finish();
             long quiesceMs = awaitQuiet();
             var idle = new ArrayList<Map<String, Object>>();
 
@@ -269,6 +266,8 @@ class M1StreamLoadTest {
         row.put("seconds", s);
         row.put("eventsPublished", events);
         row.put("eventsPerSecPerPartition", events / s / arm.p());
+        row.put("producerCalls", producer.calls.get());
+        row.put("producerMaxCallMs", producer.maxCallMs.get());
         row.put("checkpointPuts", delta.getOrDefault("put:" + CKPT, 0L));
         row.put("enginePutsCkpt", delta.getOrDefault("cmd.Put:" + CKPT, 0L));
         row.put("noopCkpt", delta.getOrDefault("cmd.Noop:" + CKPT, 0L));
@@ -328,6 +327,9 @@ class M1StreamLoadTest {
         s.put("kPerGPPerT", commits / expected);
         s.put("idleCheckpointsPerSec", idle.stream().mapToDouble(r -> ((Number) r.get("checkpointPuts")).doubleValue() / ((Number) r.get("seconds")).doubleValue()).average().orElse(0));
         s.put("idleSlotsPerSec", idle.stream().mapToDouble(r -> ((Number) r.get("slots")).doubleValue() / ((Number) r.get("seconds")).doubleValue()).average().orElse(0));
+        s.put("rateHeld", load.stream().allMatch(r -> Math.abs(((Number) r.get("eventsPerSecPerPartition")).doubleValue() / arm.rate() - 1.0) <= 0.10));
+        s.put("producerCalls", producer.calls.get());
+        s.put("producerMaxCallMs", producer.maxCallMs.get());
         s.put("producerSent", producer.sent.get());
         s.put("producerPublished", producer.published.get());
         s.put("producerFailedCalls", producer.failed.get());
@@ -341,27 +343,50 @@ class M1StreamLoadTest {
 
     // ---- producer ------------------------------------------------------------------------------------------------------------------
 
-    /// Posts `produce` batches every 100 ms to a node's app port at `rate x P` events per second in total (a fractional carry keeps the
-    /// average exact); `published` counts what the slice reported published, `sent` what was requested.
-    private final class Producer implements Runnable {
+    /// `m1.s7.producers` (default 16) threads, each posting a `produce` batch every 100 ms to a node's app port, together `rate x P` events per second (a
+    /// fractional carry keeps each thread's average exact). A produce call can take seconds when the stream's partition owners are busy, so one thread would
+    /// silently fall below the target: the threads make the target reachable, and `published` counts what the slice reported published, `sent` what was
+    /// requested, `calls`/`maxCallMs` how slow the publish path was. A window whose `eventsPerSecPerPartition` is off target is a window the formula does
+    /// not apply to; the summary says whether every load window held the rate within 10%.
+    private final class Producer {
+        private static final int THREADS = Integer.getInteger("m1.s7.producers", 16);
         private final Arm arm;
+        private final List<Thread> threads = new ArrayList<>();
         volatile boolean stop;
         final AtomicLong sent = new AtomicLong();
         final AtomicLong published = new AtomicLong();
         final AtomicLong failed = new AtomicLong();
+        final AtomicLong calls = new AtomicLong();
+        final AtomicLong maxCallMs = new AtomicLong();
 
         Producer(Arm arm) {
             this.arm = arm;
         }
 
-        @Override
-        public void run() {
+        void start() {
+            for (int i = 0; i < THREADS; i++) {
+                var thread = new Thread(this::run, "s7-producer-" + i);
+
+                thread.setDaemon(true);
+                threads.add(thread);
+                thread.start();
+            }
+        }
+
+        void finish() throws InterruptedException {
+            stop = true;
+            for (var thread : threads) {
+                thread.join(60_000);
+            }
+        }
+
+        private void run() {
             long next = System.nanoTime();
             double carry = 0;
 
             while (!stop) {
                 next += 100_000_000L;
-                double want = arm.rate() * arm.p() * 0.1 + carry;
+                double want = arm.rate() * arm.p() * 0.1 / THREADS + carry;
                 int count = (int) want;
 
                 carry = want - count;
@@ -372,6 +397,8 @@ class M1StreamLoadTest {
 
                 if (wait > 0) {
                     sleep(wait);
+                } else if (wait < -2_000) {
+                    next = System.nanoTime();
                 }
             }
         }
@@ -383,9 +410,13 @@ class M1StreamLoadTest {
                 failed.incrementAndGet();
                 return;
             }
+            long t0 = System.nanoTime();
             var answer = send("POST", ports.getFirst(), "/api/ckpt-load/produce", "application/json", "{\"count\":" + count + "}");
+            long ms = (System.nanoTime() - t0) / 1_000_000;
             var matcher = Pattern.compile("\"published\"\\s*:\\s*(\\d+)").matcher(answer);
 
+            calls.incrementAndGet();
+            maxCallMs.accumulateAndGet(ms, Math::max);
             sent.addAndGet(count);
             if (matcher.find()) {
                 published.addAndGet(Long.parseLong(matcher.group(1)));
