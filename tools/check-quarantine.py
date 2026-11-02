@@ -36,7 +36,7 @@ ANY_SPELLING = re.compile(r'@Tag\s*\(\s*(?:value\s*=\s*)?"quarantine"\s*\)', re.
 ISSUE = re.compile(r"#(\d+)")
 # The reference comment: `// quarantine: #<issue> <why>`. Only a `//` comment that says "quarantine" counts, never a `///`
 # doc comment: the lines above a class carry its documentation, whose issue numbers have nothing to do with the tag.
-REFERENCE = re.compile(r"//(?!/)\s*quarantine\b(.*)", re.IGNORECASE)
+REFERENCE = re.compile(r"(?<!/)//(?!/)\s*quarantine\b(.*)", re.IGNORECASE)
 PRUNED = {"target", ".git", ".m2-local", "node_modules"}
 PLUGIN = re.compile(r"<plugin>\s*<groupId>org\.apache\.maven\.plugins</groupId>\s*"
                     r"<artifactId>maven-(surefire|failsafe)-plugin</artifactId>(.*?)</plugin>", re.S)
