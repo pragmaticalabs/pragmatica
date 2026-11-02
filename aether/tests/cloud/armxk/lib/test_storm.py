@@ -21,11 +21,39 @@ class StormFlagTest(unittest.TestCase):
         health = {"core-1": core(21217, 1, 0), "core-2": core(21217, 1, 1)}
         self.assertTrue(armxk.storm_flag(health))
 
-    def test_storm_flag_quiet_whenNoCoreHoldsAPendingBatch(self):
-        self.assertFalse(armxk.storm_flag({"core-1": core(21217, 1, 0), "core-2": core(21217, 1, 0)}))
+    def test_storm_flag_fires_withNoPendingBatch(self):
+        # p4s6's N=100 Noop-driven flood: pendingBatches 0 on every core; the ratio alone must flag it
+        self.assertTrue(armxk.storm_flag({"core-1": core(21217, 1, 0), "core-2": core(21217, 1, 0)}))
+
+    def test_storm_flag_fires_whenAnyOneCoreStorms(self):
+        # a window whose reference cores disagree (one lagging core) still flags on the storming one
+        self.assertTrue(armxk.storm_flag({"core-1": core(21217, 1, 0), "core-2": core(1, 1, 0)}))
+
+    def test_storm_check_dumpsEveryCore_evenWithNoPendingBatch(self):
+        dumped, emitted = [], []
+
+        class Dumping:
+            def node(self, cid):
+                return {"id": cid}
+
+            def agent(self, n, path):
+                dumped.append((n["id"], path))
+                return "count 0\n"
+
+            def emit(self, name, record):
+                emitted.append(name)
+
+        out = armxk.storm_check(Dumping(), "w", {"core-1": core(21217, 1, 0), "core-2": core(21217, 1, 0)})
+        self.assertEqual((out["storm"], sorted(dumped), emitted),
+                         (True, [("core-1", "/m1/pending"), ("core-2", "/m1/pending")], ["storm"]))
+        self.assertEqual(out["holders"], {"core-1": ["count 0"], "core-2": ["count 0"]})
+
+    def test_storm_flag_quiet_whenOnlyAPendingBatch(self):
+        # a pending batch with slots tracking commits is ordinary load, not a storm
+        self.assertFalse(armxk.storm_flag({"core-1": core(20, 20, 5)}))
 
     def test_storm_flag_quiet_whenSlotsTrackCommits(self):
-        # arm K under load: a pending batch is normal and slots stay near commits
+        # arm K under load: slots stay near commits
         self.assertFalse(armxk.storm_flag({"core-1": core(9000, 8000, 3), "core-2": core(9000, 8000, 2)}))
 
     def test_storm_flag_boundary_isStrictlyAboveTheRatio(self):

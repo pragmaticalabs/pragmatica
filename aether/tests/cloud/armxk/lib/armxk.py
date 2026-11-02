@@ -27,10 +27,10 @@ SPREAD_KEYS = ["put.total", "remove.total", "engine.batches", "engine.slots", "t
 RABIA_KEYS = ["decisionsCount", "proposalsCount", "voteRound1Count", "voteRound2Count", "syncSuccessCount", "syncFailureCount",
               "applyTimeoutCount"]
 COMMUNITY_POLICY_SIZE = {True: 25, False: 5}
-# The idle-storm flag (#2512 follow-up, CTO 2026-11-02): a window whose consensus slots outnumber its committed mutations more than this
-# many times while a core holds a pending batch is the empty-slot storm dry7 saw (21217 slots, 1 put, a batch the other voters will not
-# learn: oss wave3/inv-idle-spin.md). Both conditions are required: slots/commits alone is high in any write-free window that still runs
-# a few slots, and a pending batch alone is normal under load.
+# The idle-storm flag (#2512 follow-up, CTO 2026-11-02, corrected the same day): a window whose consensus slots outnumber its committed
+# mutations more than this many times is a storm (dry7: 21217 slots, 1 put). The ratio ALONE decides. The pending queue is recorded as
+# data, never as a condition: dry7's suspected mechanism keeps a pending batch (oss wave3/inv-idle-spin.md), but p4s6's N=100 Noop-driven
+# flood had pendingBatches 0 on every core, and a pending>0 condition would have missed it.
 STORM_SLOTS_PER_COMMIT = 50  # N >= 50 -> 25, else 5 (M-1's communitySize)
 
 
@@ -277,25 +277,22 @@ def window_health(snap_before, snap_after, rabia_before, rabia_after):
 
 
 def storm_flag(health):
-    """True when any core ran more than STORM_SLOTS_PER_COMMIT slots per committed mutation in the window while some core held a pending
-    batch at its end. `health` maps core id -> window_health(...)."""
-    if not health:
-        return False
-    ratio = max(h["slots"] / max(h["commits"], 1) for h in health.values())
-    return ratio > STORM_SLOTS_PER_COMMIT and any(h["pendingEnd"] > 0 for h in health.values())
+    """True when any core ran more than STORM_SLOTS_PER_COMMIT slots per committed mutation in the window (zero commits count as one).
+    `health` maps core id -> window_health(...)."""
+    return any(h["slots"] / max(h["commits"], 1) > STORM_SLOTS_PER_COMMIT for h in health.values())
 
 
 def storm_check(run, where, health):
-    """Flags the window and, on a flag, dumps the head pending batch of every core that holds one."""
+    """Flags the window and, on a flag, dumps every measured core's pending queue (count and head batch); a core reporting count > 0 is a
+    holder. The dump is data for the diagnosis, not part of the flag."""
     if not storm_flag(health):
         return {"storm": False}
     holders = {}
-    for cid, h in health.items():
-        if h["pendingEnd"] > 0:
-            try:
-                holders[cid] = run.agent(run.node(cid), "/m1/pending").strip().splitlines()
-            except HarnessError as e:
-                holders[cid] = [f"dump failed: {e}"]
+    for cid in health:
+        try:
+            holders[cid] = run.agent(run.node(cid), "/m1/pending").strip().splitlines()
+        except HarnessError as e:
+            holders[cid] = [f"dump failed: {e}"]
     out = {"storm": True, "holders": holders}
     run.emit("storm", {"utc": utc(), "where": where, "health": health, **out})
     log(f"STORM in {where}: holders {holders}")

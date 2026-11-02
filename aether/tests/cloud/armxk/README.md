@@ -105,12 +105,11 @@ Every window (each `measure()` window, both of its idle brackets, every arm K st
 slots and commits (the agent), decisions and the pending queue at both ends with the oldest pending age (`consensus.pendingBatches`,
 `oldestPendingBatchAgeMs` from `/api/v1/metrics/comprehensive`), and heap used/max (the agent's `heap.used`, `heap.max`).
 
-A window is flagged `STORM` when some core ran more than 50 slots per committed mutation (zero commits count as one) **and** some core
-holds a pending batch at the window's end. That is the empty-slot storm dry7 recorded (21217 slots, 1 put), whose suspected mechanism is
-a batch one core keeps proposing while the other voters refuse to learn it (oss `wave3/inv-idle-spin.md`). Each condition alone is
-normal: write-free windows run a few slots, and loaded windows hold pending batches. On a flag the harness dumps, from every core that
-holds a pending batch, the head of the engine's pending map (`/m1/pending`: count, head id, command count, timestamp), writes
-`evidence/storm.jsonl` and logs `STORM`. Run rules (CTO, 2026-11-02): a class with a STORM-flagged window is run **once** more (its flagged windows and holder dumps
+A window is flagged `STORM` when some core ran more than 50 slots per committed mutation (zero commits count as one). The ratio alone
+decides: the empty-slot storm dry7 recorded (21217 slots, 1 put) is suspected to keep a pending batch (oss `wave3/inv-idle-spin.md`), but
+p4s6's N=100 Noop-driven flood had `pendingBatches` 0 on every core, so the pending queue is recorded as data and never used as a
+condition. On a flag the harness dumps every measured core's pending map (`/m1/pending`: count, head id, command count, timestamp; a
+core with count > 0 is a holder), writes `evidence/storm.jsonl` and logs `STORM`. Run rules (CTO, 2026-11-02): a class with a STORM-flagged window is run **once** more (its flagged windows and holder dumps
 stay in the evidence; a second flag is recorded as `storm-after-rerun`, never a third run). Every core must be alive before and after
 each class: a dead core, an OutOfMemoryError exit above all (nodes run with `-XX:+ExitOnOutOfMemoryError`), aborts the run; the failure
 path pulls the evidence first and the cloud run's EXIT trap then tears down. The rules are pinned by `lib/test_storm.py`
