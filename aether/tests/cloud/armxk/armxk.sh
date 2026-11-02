@@ -81,7 +81,7 @@ inv = {"mode": "local", "sshKey": key, "remoteRoot": "/home/aether/work/cloudx-a
        "config": {"portBase": 26000, "workers": 6, "coreHeap": "512m", "workerHeap": "384m", "reps": 2,
                   "classes": ["s0", "s6", "s3", "s4"],
                   "timing": {"idleWindowMs": 15000, "minEventMs": 10000, "quietMs": 10000, "maxEventMs": 120000, "s0WindowMs": 20000,
-                             "controlMinMs": 5000, "controlQuietMs": 5000, "restoreSettleMs": 15000},
+                             "controlMinMs": 5000, "controlQuietMs": 5000, "restoreSettleMs": 15000, "admitTimeoutMs": 180000},
                   "armK": {"concurrency": [1, 4, 16], "passes": 3, "warmupS": 5, "measureS": 15, "controlS": 8}}}
 json.dump(inv, open(path, "w"), indent=1)
 PY

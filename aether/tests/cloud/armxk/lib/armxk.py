@@ -131,6 +131,16 @@ class Run:
         n["alive"] = True
         n["startedMs"] = int(time.time() * 1000)
         self.save()
+        self.assert_no_provider_token(n)
+
+    def assert_no_provider_token(self, n):
+        """The claim "no node can create a server" rests on no node holding a provider credential: count (never print) HCLOUD_* entries
+        in the started process's environment."""
+        out = self.sh(n["host"], f"p=$(bash {self.root}/lib/node.sh pid {self.root} {n['id']}) && tr '\\0' '\\n' < /proc/$p/environ | grep -c '^HCLOUD_' || true")
+        count = int(out.strip().splitlines()[-1] or 0)
+        self.emit("lifecycle", {"kind": "provider-token-check", "node": n["id"], "utc": utc(), "hcloudEnvEntries": count})
+        if count:
+            raise HarnessError(f"node {n['id']} was started with {count} HCLOUD_* environment entries; refusing to run")
 
     def kill(self, n):
         out = self.sh(n["host"], f"bash {self.root}/lib/node.sh kill {self.root} {n['id']}")
@@ -350,7 +360,7 @@ def workers_up(run):
     for i in range(target - len(run.nodes("worker"))):
         add_worker(run, hosts[i % len(hosts)])
     ids = {w["id"] for w in run.nodes("worker")}
-    await_cond(f"{len(ids)} workers in communities", lambda: ids <= admitted_workers(run), 900, 10)
+    await_cond(f"{len(ids)} workers in communities", lambda: ids <= admitted_workers(run), run.cfg["timing"]["admitTimeoutMs"] / 1000, 10)
     run.emit("lifecycle", {"kind": "workers-up", "utc": utc(), "workers": sorted(ids), "communities": communities(run)})
     log(f"{len(ids)} workers admitted into {len(communities(run))} communities")
 

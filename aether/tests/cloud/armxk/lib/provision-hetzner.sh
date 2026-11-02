@@ -82,7 +82,7 @@ inv = {"mode": "hetzner", "sshKey": f"{run_dir}/ssh/armxk-key", "remoteRoot": "/
        "driverHost": "wh-1", "hosts": hosts, "provisionedAtMs": int(open(f"{run_dir}/provisioned-at-ms").read()), "estimate": estimate,
        "config": {"portBase": 26000, "workers": workers, "coreHeap": "4g", "workerHeap": "1g", "reps": 3, "classes": ["s0", "s6", "s3", "s4"],
                   "timing": {"idleWindowMs": 45000, "minEventMs": 30000, "quietMs": 20000, "maxEventMs": 240000, "s0WindowMs": 120000,
-                             "controlMinMs": 10000, "controlQuietMs": 5000, "restoreSettleMs": 40000},
+                             "controlMinMs": 10000, "controlQuietMs": 5000, "restoreSettleMs": 40000, "admitTimeoutMs": 900000},
                   "armK": {"concurrency": [1, 4, 16, 64, 256], "passes": 3, "warmupS": 15, "measureS": 60, "controlS": 20}}}
 json.dump(inv, open(f"{run_dir}/inventory.json", "w"), indent=1)
 PY
