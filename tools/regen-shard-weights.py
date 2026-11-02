@@ -33,13 +33,21 @@ def top_level_class(report):
     return report.name[len("TEST-"):-len(".xml")].rsplit(".", 1)[-1].split("$")[0]
 
 
+def suite_seconds(report):
+    """A report's <testsuite time>; "1,234.5" is a grouped time, should surefire format one that way. A report without one
+    exits naming it: weighing its class at 0 s would plan a real class as free."""
+    time = ET.parse(report).getroot().get("time")
+    if time is None:
+        sys.exit(f"{report}: <testsuite> has no time attribute; refusing to weigh its class at 0 s")
+    return float(time.replace(",", ""))
+
+
 def measured_seconds(report_dirs):
     """Unrounded seconds per top-level class, summed over every TEST-*.xml under the given directories."""
     seconds = {}
     for d in report_dirs:
         for report in sorted(Path(d).rglob("TEST-*.xml")):
-            # "1,234.5": a grouped time, should surefire format one that way; a report with no time fails here, loudly
-            suite_time = float(ET.parse(report).getroot().get("time").replace(",", ""))
+            suite_time = suite_seconds(report)
             name = top_level_class(report)
             seconds[name] = seconds.get(name, 0.0) + suite_time
     return seconds

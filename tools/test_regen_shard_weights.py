@@ -71,6 +71,14 @@ class RegenShardWeightsTest(unittest.TestCase):
             (Path(d) / "TEST-org.x.XTest.xml").write_text('<testsuite name="org.x.XTest" time="1,234.5"/>')
             self.assertEqual(regen.measured_seconds([d]), {"XTest": 1234.5})
 
+    def test_a_report_without_a_time_exits_naming_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            report = Path(d) / "TEST-org.x.XTest.xml"
+            report.write_text('<testsuite name="org.x.XTest" tests="1"/>')
+            with self.assertRaises(SystemExit) as raised:
+                regen.measured_seconds([d])
+        self.assertEqual(str(raised.exception), f"{report}: <testsuite> has no time attribute; refusing to weigh its class at 0 s")
+
     def _module(self):
         """A synthetic module whose source tree plans the fixture's four classes plus one the run never reported."""
         d = Path(tempfile.mkdtemp())

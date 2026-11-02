@@ -15,13 +15,12 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  build-and-test:
+  # The format/lint gate and the static pins: everything build-and-test checked before it tested. They need no module
+  # build, so they run beside the test groups instead of in front of them; build-and-test needs this job, so a red here
+  # still fails the required check.
+  static-gates:
     runs-on: ubuntu-latest
-    env:
-      # Anonymous Docker Hub pulls from shared runner IPs hit "toomanyrequests: unauthenticated pull rate limit".
-      # Testcontainers prepends this to every Docker Hub image (postgres, mysql, localstack, testcontainers/ryuk); the
-      # trailing slash is required. mirror.gcr.io is Google's auth-free Docker Hub cache. CI only: developer machines pull from Hub.
-      TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX: mirror.gcr.io/
+    timeout-minutes: 30
 
     steps:
       - name: Checkout code
@@ -53,6 +52,13 @@ jobs:
       # Release checksums (#2235): SHA256SUMS covers every published asset by bare name; the check goes red when one is dropped.
       - name: Release checksums pins
         run: python3 -B -m unittest discover -s tools -p test_release_checksums.py
+
+      # The build-and-test module groups: every reactor module with tests has exactly one owner (a test group below, or the
+      # ember/consensus shard job), and the test-group matrix lists exactly the groups in tools/ci-test-groups.txt.
+      - name: Module group coverage
+        run: |
+          python3 -B -m unittest discover -s tools -p test_ci_test_groups.py
+          python3 -B tools/ci-test-groups.py check
 
       - name: Set up Java 25
         uses: actions/setup-java@v5
@@ -87,37 +93,110 @@ jobs:
         run: mvn org.pragmatica-lite:jbct-maven-plugin:check -B -pl '!jbct'
         timeout-minutes: 15
 
-      # Ember's tests run in the ember-shard-N jobs (#1643): they were 53 of this step's 89 minutes, serial, in one module.
-      # Ember is still compiled and jarred here, because forge-api, forge-core and dead-surface-gate depend on it.
-      #
-      # Consensus's tests run in the consensus-shard-N jobs (#2414): ~1050 s of the ~2800 s dependency chain
-      # Consensus -> DHT -> Invoke -> Deployment -> Node that sets this step's length. Consensus is still compiled, jarred and installed here.
-      - name: Build and test all modules
-        run: mvn install -B -pl '!examples' -Dember.skipTests=true -Dconsensus.skipTests=true
-        # 45 -> 60 (2026-09-28): rc4 alone used 42.5 of 45 min, and #1554's Ember tests pushed it over
-        # (timed out mid-suite, not a hang). Structural fix (split or parallelize the job) tracked separately.
-        # 60 -> 90 (2026-10-05): the last 12 rc4 commits took 57m27s-60m13s; two finished with BUILD SUCCESS
-        # and were still killed at 60 (Ember alone is ~30 min). 90 is headroom, not a fix for the duration.
-        # 90 -> 50 (#1643): without Ember's tests the step measured ~36 min (Ember started at +35.7 of 89), so 50 is ~1.4x.
-        timeout-minutes: 50
+  # build-and-test's module tests, split into groups that run in parallel. In one reactor each module's tests waited for
+  # its upstream modules' tests: node started 25 min into run 41351583462's 45 min reactor. A group installs its modules'
+  # upstream with -DskipTests (which still builds the statemachine test-jar) and then tests only its own modules, so every
+  # module it reads is compiled in the same checkout: dead-surface-gate reads every aether module's target/classes.
+  # The groups are tools/ci-test-groups.txt (regenerated from a run's reports); the matrix list must name exactly its groups.
+  test-group:
+    name: test-group-${{ matrix.group }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [g1, g2, g3, g4]
+    env:
+      # Anonymous Docker Hub pulls from shared runner IPs hit "toomanyrequests: unauthenticated pull rate limit".
+      # Testcontainers prepends this to every Docker Hub image (postgres, mysql, localstack, testcontainers/ryuk); the
+      # trailing slash is required. mirror.gcr.io is Google's auth-free Docker Hub cache. CI only: developer machines pull from Hub.
+      TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX: mirror.gcr.io/
 
-      - name: Run postgres-async integration tests
-        run: mvn test -B -pl integrations/db/postgres-async -Dpostgres-async.skipTests=false
-        timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: 'zulu'
+          cache: 'maven'
+
+      - name: Bootstrap annotation processors and Maven plugins
+        run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
+
+      - name: Plan this group
+        id: plan
+        run: |
+          python3 -B tools/ci-test-groups.py modules --group "${{ matrix.group }}" | tr ',' '\n' > "test-group-${{ matrix.group }}.txt"
+          echo "modules=$(python3 -B tools/ci-test-groups.py modules --group "${{ matrix.group }}")" >> "$GITHUB_OUTPUT"
+          echo "examples=$(python3 -B tools/ci-test-groups.py has-examples --group "${{ matrix.group }}")" >> "$GITHUB_OUTPUT"
+
+      - name: Install this group's upstream modules
+        run: mvn install -B -DskipTests -pl "${{ steps.plan.outputs.modules }}" -am
+        timeout-minutes: 15
+
+      # Ember's and Consensus's tests run in their shard jobs; postgres-async's integration tests are off by default and on here.
+      - name: Test this group's modules
+        run: >
+          mvn verify -B -pl "${{ steps.plan.outputs.modules }}"
+          -Dember.skipTests=true -Dconsensus.skipTests=true -Dpostgres-async.skipTests=false
+        timeout-minutes: 35
 
       - name: Verify examples (end-to-end pipeline check)
+        if: steps.plan.outputs.examples == 'yes'
         run: mvn verify -B -f examples/pom.xml
         timeout-minutes: 15
 
+      # The marker at the checkout root pins the artifact's root there: upload-artifact roots it at the matched files' common
+      # ancestor, so a one-module group (g1 is aether/node alone) would otherwise lose the module path its reports sit under.
       - name: Upload test results
         uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: test-results
+          name: test-results-${{ matrix.group }}
           if-no-files-found: error
           path: |
+            test-group-${{ matrix.group }}.txt
             **/target/surefire-reports/*.xml
             **/target/failsafe-reports/*.xml
+          retention-days: 7
+
+  # The required check. It passes only when the static gates and every test group passed: `if: always()` is load-bearing,
+  # because without it a failed group SKIPS this job, and a skipped required check counts as passing.
+  build-and-test:
+    needs: [static-gates, test-group]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Static gates and every test group passed
+        run: |
+          echo "static-gates: ${{ needs.static-gates.result }}, test-group: ${{ needs.test-group.result }}"
+          [ "${{ needs.static-gates.result }}" = success ] && [ "${{ needs.test-group.result }}" = success ]
+
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Download every group's test results
+        uses: actions/download-artifact@v5
+        with:
+          pattern: test-results-*
+          merge-multiple: true
+          path: reports
+
+      # A group that passed having tested nothing would still be green above; this fails a listed module that wrote no report.
+      - name: Every grouped module reported
+        run: python3 -B tools/ci-test-groups.py verify-reports reports
+
+      - name: Upload merged test results
+        uses: actions/upload-artifact@v6
+        with:
+          name: test-results
+          if-no-files-found: error
+          path: reports/
           retention-days: 7
 
   forge-tests:
