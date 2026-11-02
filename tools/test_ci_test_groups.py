@@ -5,6 +5,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 _tools = Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location("ci_test_groups", _tools / "ci-test-groups.py")
@@ -73,6 +74,12 @@ class CiTestGroupsTest(unittest.TestCase):
         self.assertEqual(groups.reactor_modules(self.root), ["", "a", "agg", "agg/b", "agg/c", "ember", "nested-profile-free"])
         # agg/c has only a fixture; an IT-only module has tests
         self.assertEqual(groups.modules_with_tests(self.root), ["a", "agg/b", "ember", "nested-profile-free"])
+
+    def test_a_profile_ahead_of_the_default_modules_is_not_read_as_the_reactor(self):
+        # the first <modules> in the text is the profile's: only stripping <profiles> leaves the default block first
+        write(self.root / "agg/pom.xml", "<project><profiles><profile><modules><module>gated</module></modules></profile>"
+                                         "</profiles><modules><module>b</module><module>c</module></modules></project>")
+        self.assertEqual(groups.reactor_modules(self.root), ["", "a", "agg", "agg/b", "agg/c", "ember", "nested-profile-free"])
 
     def test_every_module_with_tests_owned_once_passes(self):
         self.assertEqual(self._check("g1 a\ng2 agg/b  # 1.5 s at run 1\ng2 nested-profile-free\njob:ember-shard ember\n"), [])
@@ -176,6 +183,19 @@ class RepositoryGroupsTest(unittest.TestCase):
             self._cli("modules", "--group", "job:ember-shard")  # not a group: its module is the shard job's
         with self.assertRaises(SystemExit):
             self._cli("modules", "--group", "g9")
+
+    def test_the_check_command_exits_non_zero_naming_every_problem(self):
+        # the CI step is the exit status: a check that printed its problems and exited 0 would pass an unsound grouping
+        with mock.patch.object(groups, "check", return_value=["x has tests and no owner", "y has 2 owners"]):
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+                self._cli("check")
+        self.assertEqual(str(raised.exception), "x has tests and no owner\ny has 2 owners")
+
+    def test_the_verify_reports_command_exits_non_zero_on_a_module_without_reports(self):
+        with tempfile.TemporaryDirectory() as empty:
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+                self._cli("verify-reports", empty)
+        self.assertIn("aether/node (group g1) wrote no TEST-*.xml: its tests did not run", str(raised.exception))
 
     def test_exactly_one_group_runs_the_standalone_examples_build(self):
         answers = {g: self._cli("has-examples", "--group", g) for g in ("g1", "g2", "g3", "g4")}
