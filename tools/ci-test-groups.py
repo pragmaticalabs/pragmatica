@@ -52,7 +52,7 @@ def has_tests(module_dir):
 
 
 def modules_with_tests(root=ROOT):
-    return sorted(m for m in reactor_modules(root) if m and has_tests(root / m))
+    return sorted(m for m in reactor_modules(root) if has_tests(root / m))
 
 
 def read_groups(path=GROUPS):

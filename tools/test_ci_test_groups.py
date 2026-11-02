@@ -32,7 +32,7 @@ def write(path, text):
 
 def pom(*modules, profile=""):
     listed = "".join(f"<module>{m}</module>" for m in modules)
-    return f"<project><modules>{listed}</modules><!-- <module>commented</module> -->{profile}</project>"
+    return f"<project><modules>{listed}<!-- <module>commented</module> --></modules>{profile}</project>"
 
 
 def report(root, module, kind, name, *cases, tests=None):
@@ -53,6 +53,8 @@ class CiTestGroupsTest(unittest.TestCase):
             write(self.root / module / "src/test/java/ATest.java", TEST)
         write(self.root / "agg/c/pom.xml", pom())
         write(self.root / "agg/c/src/test/java/TestSerializers.java", "class TestSerializers {}")  # a fixture, no @Test
+        # @Test methods in a class surefire's and failsafe's names never select: an abstract contract, not a test
+        write(self.root / "agg/c/src/test/java/ContractSpec.java", "abstract class ContractSpec { @Test void t() {} }")
         write(self.root / "nested-profile-free/pom.xml", pom())
         write(self.root / "nested-profile-free/src/test/java/LoaderIT.java", "class LoaderIT { @Test void t() {} }")
         self.groups = self.root / "groups.txt"
@@ -62,6 +64,10 @@ class CiTestGroupsTest(unittest.TestCase):
     def _check(self, rows):
         self.groups.write_text(rows)
         return groups.check(self.root, self.groups, self.ci)
+
+    def test_a_root_with_tests_needs_an_owner_too(self):
+        write(self.root / "src/test/java/ATest.java", TEST)
+        self.assertIn("", groups.modules_with_tests(self.root))
 
     def test_reactor_is_read_through_aggregators_without_profiles_or_comments(self):
         self.assertEqual(groups.reactor_modules(self.root), ["", "a", "agg", "agg/b", "agg/c", "ember", "nested-profile-free"])
@@ -114,15 +120,16 @@ class CiTestGroupsTest(unittest.TestCase):
         self.assertEqual(totals, {"g1": (1, 3), "g2": (1, 0)})
 
     def test_regenerate_balances_by_measured_time_and_keeps_examples_together(self):
-        rows = [("g1", m) for m in ("big", "mid", "small", "examples/x", "examples/y")] + [("job:ember-shard", "ember")]
-        seconds = {"big": 100.0, "mid": 60.0, "small": 30.0, "examples/x": 20.0, "examples/y": 15.0}
+        # names sort against their weights, so name order would give [135, 90], not LPT's [125, 100]
+        rows = [("g1", m) for m in ("z-big", "m-mid", "a-small", "examples/x", "examples/y")] + [("job:ember-shard", "ember")]
+        seconds = {"z-big": 100.0, "m-mid": 60.0, "a-small": 30.0, "examples/x": 20.0, "examples/y": 15.0}
         text, totals = groups.regenerate(rows, seconds, 2, "7")
         self.groups.write_text(text)
         regenerated = groups.read_groups(self.groups)
         self.assertEqual(totals, [125.0, 100.0])
-        self.assertEqual(sorted(regenerated), sorted([("g1", "mid"), ("g1", "examples/x"), ("g1", "examples/y"),
-                                                      ("g1", "small"), ("g2", "big"), ("job:ember-shard", "ember")]))
-        self.assertIn("g2 big  # 100.0 s at run 7\n", text)
+        self.assertEqual(sorted(regenerated), sorted([("g1", "m-mid"), ("g1", "examples/x"), ("g1", "examples/y"),
+                                                      ("g1", "a-small"), ("g2", "z-big"), ("job:ember-shard", "ember")]))
+        self.assertIn("g2 z-big  # 100.0 s at run 7\n", text)
 
     def test_module_seconds_sums_surefire_and_failsafe_per_module(self):
         reports = self.root / "reports"
