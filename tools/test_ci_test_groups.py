@@ -224,11 +224,11 @@ class CompareTestcasesTest(unittest.TestCase):
                    ("x.ATest", "s", True), tests=0)
             report(side, "agg/b", "failsafe-reports", "x.BIT", ("x.BIT", "t", False))
 
-    def _run(self):
+    def _run(self, *options):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             try:
-                compare.main([str(self.old), str(self.new)])
+                compare.main([*options, str(self.old), str(self.new)])
                 return None, err.getvalue()
             except SystemExit as e:
                 return str(e), err.getvalue()
@@ -254,6 +254,38 @@ class CompareTestcasesTest(unittest.TestCase):
         report(self.new, "agg/b", "failsafe-reports", "x.BIT", ("x.BIT", "t", True))
         failure, _ = self._run()
         self.assertIsNotNone(failure)
+
+    def test_module_option_reads_flat_per_shard_artifacts_at_any_depth(self):
+        # ember-test-results-N holds TEST-*.xml at its top level; a download of several lands one directory per shard
+        flat_old, flat_new = self.root / "flat-old", self.root / "flat-new"
+        write(flat_old / "ember-test-results-1/TEST-x.ATest.xml", '<testsuite tests="2"><testcase classname="x.ATest" name="a"/>'
+                                                                  '<testcase classname="x.ATest" name="a"/></testsuite>')
+        write(flat_old / "ember-test-results-2/TEST-x.BTest.xml", '<testsuite tests="1"><testcase classname="x.BTest" name="b"/></testsuite>')
+        write(flat_new / "ember-test-results-3/TEST-x.ATest.xml", '<testsuite tests="2"><testcase classname="x.ATest" name="a"/>'
+                                                                  '<testcase classname="x.ATest" name="a"/></testsuite>')
+        write(flat_new / "ember-test-results-4/TEST-x.BTest.xml", '<testsuite tests="1"><testcase classname="x.BTest" name="b"/></testsuite>')
+        cases, files, _ = compare.testcases(flat_old, "aether/ember")
+        self.assertEqual((files, cases[("aether/ember", "x.ATest", "a", False)]), (2, 2))
+        self.old, self.new = flat_old, flat_new
+        failure, err = self._run("--module", "aether/ember")
+        self.assertIsNone(failure)
+        self.assertIn("old: 2 report file(s), 3 testcase element(s)", err)
+        (flat_new / "ember-test-results-4/TEST-x.BTest.xml").unlink()  # a class lost in the reshard
+        failure, err = self._run("--module", "aether/ember")
+        self.assertIsNotNone(failure)
+        self.assertIn("aether/ember x.BTest#b: old 1, new 0", err)
+
+    def test_without_module_a_flat_artifact_is_refused_not_compared_as_empty(self):
+        write(self.root / "flat/TEST-x.ATest.xml", '<testsuite tests="1"><testcase classname="x.ATest" name="a"/></testsuite>')
+        self.old = self.new = self.root / "flat"
+        failure, _ = self._run()
+        self.assertIn("old: no TEST-*.xml under", failure)
+
+    def test_a_side_compared_with_itself_or_its_own_subdirectory_is_refused(self):
+        for old, new in ((self.old, self.old), (self.root, self.old), (self.old, self.root)):
+            self.old, self.new = old, new
+            failure, _ = self._run("--module", "m")
+            self.assertIn("overlap: download each run into its own directory", failure or "")
 
     def test_an_empty_side_is_refused(self):
         shutil.rmtree(self.new)
