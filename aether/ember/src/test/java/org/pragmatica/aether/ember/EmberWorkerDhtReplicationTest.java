@@ -114,6 +114,78 @@ class EmberWorkerDhtReplicationTest {
                                     .allMatch(node -> dhtNode(node).config().writeQuorum() == 1));
     }
 
+    /// #2553: the leader drops a member's report (`liveReports`, for a member its view holds `Dead`) while a change is open; a
+    /// live process that is still there must notice the report is gone from its own store and file it again, or the change
+    /// waits for it forever. A second worker, silenced before the change, holds the change open (the leader still counts it
+    /// alive), so the first worker's filing is not enough to settle it.
+    ///
+    /// The drop is INJECTED as the exact commit the leader makes (a `Remove` of the report key) instead of waiting for a
+    /// `Dead` verdict, which would also let the change settle without the worker: the mechanism under test is the worker
+    /// reading its replica store and re-filing, not the membership verdict.
+    ///
+    /// The instrument checks come first and are separate from the outcome: the worker's own store holds its key before the
+    /// drop (the replica feed carries report keys) and loses it after (the feed carries removes). If either fails the
+    /// carrier is dead, which is not a defect of the fix.
+    @Test
+    @Timeout(480)
+    void workerReportDropped_sameLiveProcessRejoins_refilesAndChangeSettles() {
+        cluster = EmberTestPorts.startedCluster(PORTS, candidate -> {
+            var created = emberCluster(CORES, candidate, candidate + MGMT_OFFSET, candidate + APP_OFFSET, "wdr");
+
+            created.withDhtReplication(DHTConfig.DEFAULT);
+
+            return created;
+        }, START_BOUND);
+        awaitCondition("a leader is elected", () -> cluster.currentLeader().isPresent());
+
+        var addedWorker = cluster.addWorkerNode().await(START_BOUND);
+        var addedSilent = cluster.addWorkerNode().await(START_BOUND);
+
+        assertThat(addedWorker.isSuccess() && addedSilent.isSuccess()).as("both workers start").isTrue();
+        var worker = cluster.getNode(addedWorker.unwrap().id()).unwrap();
+        var silent = cluster.getNode(addedSilent.unwrap().id()).unwrap();
+
+        awaitCondition("the workers become ready", () -> worker.isReady() && silent.isReady());
+        awaitCondition("the worker's DHT resolves", () -> dhtNode(worker).replicationResolved());
+        awaitCondition("INSTRUMENT: the worker's own store holds its report key (the feed carries report keys)",
+                       () -> storeHoldsReport(worker, worker));
+        assertThat(cluster.blackhole(addedSilent.unwrap().id()).await(STOP_BOUND).isSuccess()).as("the second worker is silenced").isTrue();
+
+        var version = commitReplication(5, 3);
+
+        awaitCondition("the worker filed the version reaching the change", () -> leaderReportReaches(worker, version));
+        assertThat(isSettled(version)).as("the silenced worker, still counted alive, holds the change open").isFalse();
+
+        var key = AetherKey.DhtReplicationReportKey.dhtReplicationReportKey(worker.self());
+
+        assertThat(leaderNode().<Object>apply(List.of(new KVCommand.Remove<>(key))).await(REQUEST).isSuccess()).as("the drop commits").isTrue();
+        awaitConditionWithin("INSTRUMENT: the worker's own store loses its report key (the feed carries removes)",
+                             () -> !storeHoldsReport(worker, worker),
+                             10_000L,
+                             20L);
+        awaitCondition("the worker files it again, from its own store's absence", () -> leaderReportReaches(worker, version));
+        awaitSettled(version);
+    }
+
+    private static boolean storeHoldsReport(AetherNode reader, AetherNode owner) {
+        return reader.kvStore().get(AetherKey.DhtReplicationReportKey.dhtReplicationReportKey(owner.self())).isPresent();
+    }
+
+    private boolean leaderReportReaches(AetherNode owner, long version) {
+        return leaderNode().kvStore()
+                           .getTyped(AetherKey.DhtReplicationReportKey.dhtReplicationReportKey(owner.self()),
+                                     AetherValue.DhtReplicationReportValue.class)
+                           .filter(report -> report.appliedVersion() >= version)
+                           .isPresent();
+    }
+
+    private boolean isSettled(long version) {
+        return leaderNode().kvStore()
+                           .getTyped(AetherKey.DhtReplicationChangeKey.dhtReplicationChangeKey(), AetherValue.DhtReplicationChangeValue.class)
+                           .filter(value -> value.version() == version && value.settled())
+                           .isPresent();
+    }
+
     private long currentConfigVersion() {
         return leaderNode().kvStore().getTyped(ClusterConfigKey.CURRENT, ClusterConfigValue.class).unwrap().configVersion();
     }
@@ -212,7 +284,11 @@ class EmberWorkerDhtReplicationTest {
     }
 
     private static void awaitCondition(String what, BooleanSupplier condition) {
-        var deadline = System.currentTimeMillis() + BOUND_MS;
+        awaitConditionWithin(what, condition, BOUND_MS, 250L);
+    }
+
+    private static void awaitConditionWithin(String what, BooleanSupplier condition, long boundMs, long pollMs) {
+        var deadline = System.currentTimeMillis() + boundMs;
 
         while (!condition.getAsBoolean()) {
             if (System.currentTimeMillis() > deadline) {
@@ -220,7 +296,7 @@ class EmberWorkerDhtReplicationTest {
             }
 
             try {
-                Thread.sleep(250);
+                Thread.sleep(pollMs);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new AssertionError("interrupted waiting: " + what);

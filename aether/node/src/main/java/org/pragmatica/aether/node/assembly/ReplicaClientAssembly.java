@@ -37,6 +37,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -54,10 +55,12 @@ public sealed interface ReplicaClientAssembly {
     TimeSpan TICK = TimeSpan.timeSpan(100).millis();
     int QUEUE_CAPACITY = 1024;
 
-    /// The three consumers a worker's cluster directory fed through the projection, now fed from the ClusterSync directory.
+    /// The consumers a worker's cluster directory fed through the projection, now fed from the ClusterSync directory. `voters` is the
+    /// leader's installed electorate (#2543): the only way a passive client learns a roster change.
     record DirectoryInstall(Function<List<NodeInfo>, Result<Unit>> peers,
                             Consumer<List<NodeInfo>> endpoints,
-                            Consumer<WorkerMetadataMessage.DhtReplication> dhtReplication) {}
+                            Consumer<WorkerMetadataMessage.DhtReplication> dhtReplication,
+                            Consumer<VoterConfiguration> voters) {}
 
     /// What `replicaClient` reads from the assembly built so far.
     record Inputs(NodeId self,
@@ -203,6 +206,7 @@ public sealed interface ReplicaClientAssembly {
         private void installRest(ClusterDirectory directory) {
             install.endpoints().accept(directory.nodes());
             install.dhtReplication().accept(workerReplication(directory.dhtReplication()));
+            directory.voters().onPresent(install.voters());
             installed.set(directory.version());
         }
 

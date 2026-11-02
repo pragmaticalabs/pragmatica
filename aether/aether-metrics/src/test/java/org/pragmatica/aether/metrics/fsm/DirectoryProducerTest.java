@@ -11,6 +11,8 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.cluster.metrics.ClusterDirectory.DhtReplication;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.rabia.VoterConfiguration;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.NodeAddress;
@@ -33,7 +35,7 @@ class DirectoryProducerTest {
     @Test
     void generation_movesOnlyWhenTheContentChanges() {
         var content = new AtomicReference<>(nodes("a"));
-        var producer = new DirectoryProducer(content::get, () -> Result.success(DHT));
+        var producer = new DirectoryProducer(content::get, () -> Result.success(DHT), Option::none);
 
         assertThat(producer.produce(EPOCH).unwrap().generation()).isEqualTo(1);
         assertThat(producer.produce(EPOCH).unwrap().generation()).as("same content, same epoch: same directory").isEqualTo(1);
@@ -49,7 +51,7 @@ class DirectoryProducerTest {
     @Test
     void generation_movesWhenOnlyTheDhtReplicationChanges() {
         var replication = new AtomicReference<>(DHT);
-        var producer = new DirectoryProducer(() -> nodes("a"), () -> Result.success(replication.get()));
+        var producer = new DirectoryProducer(() -> nodes("a"), () -> Result.success(replication.get()), Option::none);
 
         producer.produce(EPOCH);
         replication.set(new DhtReplication(5, 3, 3, 2, 2L, -1L, 0, 0, true));
@@ -57,11 +59,56 @@ class DirectoryProducerTest {
         assertThat(producer.produce(EPOCH).unwrap().generation()).isEqualTo(2);
     }
 
+    private static Option<VoterConfiguration> voters(long epoch, String... ids) {
+        return Option.some(VoterConfiguration.voterConfiguration(epoch,
+                                                                 java.util.Arrays.stream(ids).map(id -> NodeId.nodeId(id).unwrap()).toList())
+                                             .unwrap());
+    }
+
+    /// #2543. The directory carries the leader's installed electorate, read when it is produced. Mutation: stamp `Option.none()`.
+    @Test
+    void produce_stampsTheLeadersInstalledVoters() {
+        var installed = voters(2, "a", "b", "c");
+        var producer = new DirectoryProducer(() -> nodes("a"), () -> Result.success(DHT), () -> installed);
+
+        assertThat(producer.produce(EPOCH).unwrap().voters()).isEqualTo(installed);
+    }
+
+    /// #2543. A roster change alone is a change: without a new generation no peer is told. Mutation: compare the nodes and the DHT replication only.
+    @Test
+    void generation_movesWhenOnlyTheVotersChange() {
+        var installed = new AtomicReference<>(voters(1, "a", "b", "c"));
+        var producer = new DirectoryProducer(() -> nodes("a"), () -> Result.success(DHT), installed::get);
+
+        assertThat(producer.produce(EPOCH).unwrap().generation()).isEqualTo(1);
+
+        installed.set(voters(2, "a", "b", "d"));
+
+        var changed = producer.produce(EPOCH).unwrap();
+
+        assertThat(changed.generation()).isEqualTo(2);
+        assertThat(changed.voters()).isEqualTo(installed.get());
+        assertThat(producer.produce(EPOCH).unwrap().generation()).as("the same electorate is not re-sent").isEqualTo(2);
+    }
+
+    /// A leader whose genesis is still pending has no electorate to report: the directory carries none, and gains one when it installs.
+    @Test
+    void produce_aLeaderWithNoInstalledVoters_carriesNone_untilItHasThem() {
+        var installed = new AtomicReference<Option<VoterConfiguration>>(Option.none());
+        var producer = new DirectoryProducer(() -> nodes("a"), () -> Result.success(DHT), installed::get);
+
+        assertThat(producer.produce(EPOCH).unwrap().voters().isEmpty()).isTrue();
+
+        installed.set(voters(0, "a"));
+
+        assertThat(producer.produce(EPOCH).unwrap().voters().isPresent()).isTrue();
+    }
+
     /// C-2. A new epoch (a new leader, or a counter bump) restarts at generation 1: the epoch triple orders first. Mutation: carry the
     /// generation across epochs.
     @Test
     void aNewEpoch_restartsAtGenerationOne_underTheNewTriple() {
-        var producer = new DirectoryProducer(() -> nodes("a"), () -> Result.success(DHT));
+        var producer = new DirectoryProducer(() -> nodes("a"), () -> Result.success(DHT), Option::none);
 
         producer.produce(EPOCH);
         producer.produce(EPOCH.nextCounter());
@@ -81,7 +128,8 @@ class DirectoryProducerTest {
         var producer = new DirectoryProducer(() -> nodes("a"),
                                              () -> failing.get()
                                                    ? Causes.cause("invalid configuration").<DhtReplication> result()
-                                                   : Result.success(DHT));
+                                                   : Result.success(DHT),
+                                             Option::none);
 
         failing.set(true);
 

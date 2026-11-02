@@ -176,6 +176,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         return ReconfigurationError.NOT_PASSIVE_CLIENT.result();
     }
 
+    /// Installs the electorate a core reported to this passive client (#2543); refused on any other node.
+    default Result<Unit> installPassiveVoters(VoterConfiguration configuration) {
+        return ReconfigurationError.NOT_PASSIVE_CLIENT.result();
+    }
+
     default java.util.Set<NodeId> verifiedVoterHistoryIds() {
         return java.util.Set.of();
     }
@@ -800,6 +805,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             @Override
             public Result<Unit> installPassiveCoreDirectory(List<NodeId> members) {
                 return consensus().installPassiveCoreDirectory(members, leaderManager()::installPassiveCoreDirectory);
+            }
+
+            @Override
+            public Result<Unit> installPassiveVoters(VoterConfiguration configuration) {
+                return consensus().installPassiveVoters(configuration);
             }
 
             @Override

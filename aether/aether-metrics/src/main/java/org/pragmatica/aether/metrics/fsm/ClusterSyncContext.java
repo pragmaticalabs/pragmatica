@@ -27,6 +27,7 @@ import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.cluster.metrics.ClusterDirectory;
 import org.pragmatica.cluster.metrics.ClusterDirectory.DhtReplication;
+import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
 import org.pragmatica.cluster.metrics.DirectoryVersion;
@@ -447,11 +448,14 @@ public final class ClusterSyncContext {
                         .or(ping);
     }
 
-    /// Wires the leader's directory content: the node list (every addressed core and worker) and the DHT replication. Also starts tracking the
+    /// Wires the leader's directory content: the node list (every addressed core and worker), the DHT replication and the leader's
+    /// installed voter configuration. Also starts tracking the
     /// pair each peer reports, from the collector's pong listener.
     @Contract
-    public void setDirectorySources(Supplier<List<NodeInfo>> nodes, Supplier<Result<DhtReplication>> dhtReplication) {
-        directoryProducer.set(Option.some(new DirectoryProducer(nodes, dhtReplication)));
+    public void setDirectorySources(Supplier<List<NodeInfo>> nodes,
+                                    Supplier<Result<DhtReplication>> dhtReplication,
+                                    Supplier<Option<VoterConfiguration>> voters) {
+        directoryProducer.set(Option.some(new DirectoryProducer(nodes, dhtReplication, voters)));
         collector.addPongListener(this::acknowledgeDirectory);
     }
 
