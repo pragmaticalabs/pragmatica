@@ -55,7 +55,7 @@ def estimate(core_type, cores, worker_type, worker_hosts, hours, cap_usd, usd_pe
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--core-type", default="ccx23")
+    ap.add_argument("--core-type", default="ccx13")
     ap.add_argument("--cores", type=int, default=5)
     ap.add_argument("--worker-type", default="cpx62")
     ap.add_argument("--worker-hosts", type=int, default=7)

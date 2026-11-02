@@ -68,8 +68,9 @@ VMs. Only `lib/provision-hetzner.sh` calls the provider.
 
 ## Topology
 
-- 5 cores, one per VM (`core-host-1..5`), ccx23 (4 dedicated vCPU). That is a guess at a realistic minimum core, so every capacity
-  number is reported as "at ccx23".
+- 5 cores, one per VM (`core-host-1..5`), ccx13 (2 dedicated vCPU each, 10 in all, inside the recorded limit of 12). Arm K is a
+  lower bound and criterion 2 is decided only in the direction a lower bound can decide, so a small core is conservative. Every
+  capacity number is reported as "at ccx13".
 - 7 worker hosts, cpx62 (112 shared vCPU, inside the recorded 120), carrying N = 100 workers (15/15/14/14/14/14/14). N per class:
   arm K 0 (before any worker); S0 100; S6a 100 instances on 100 workers, S6c 5 on the cores; S3 100 at the start of each window
   (99 during it, restored after); S4 100 workers, 5 cores at the start (4 during the window).
@@ -101,7 +102,7 @@ step and on failure.
 ## Cost
 
 `armxk.sh estimate` prices the topology from the list prices recorded in `lib/estimate.py` (with the date and pages they were read
-from) and checks it against the project limits. It never calls the API. Default: 5 ccx23 + 7 cpx62 = EUR 2.1567/h; a 3 h run
-plus a 1 h margin bills 4 h = EUR 8.63. The arm K load generator is worker host `wh-1` before its workers start (q8 P6.1), so it adds
+from) and checks it against the project limits. It never calls the API. Default: 5 ccx13 + 7 cpx62 = EUR 1.8122/h; a 3 h run
+plus a 1 h margin bills 4 h = EUR 7.25. The arm K load generator is worker host `wh-1` before its workers start (q8 P6.1), so it adds
 no server; a separate cpx62 load generator would add EUR 0.2091/h. `cloud-run` refuses to provision on any estimate problem, and
 refuses each step whose billed hours (every started hour, per server) would cross the cap.

@@ -7,8 +7,8 @@
 #   check  passes only when the project's server count equals the baseline read before `up` (any label, so an unlabelled
 #          replacement still fails it)
 #
-# Topology (env; defaults are the CTO's #2560 rulings of 2026-11-02): ARMXK_CORE_TYPE=ccx23 (a guess at a realistic minimum core;
-# every capacity number is reported as "at ccx23"), ARMXK_WORKER_TYPE=cpx62, ARMXK_WORKER_HOSTS=7 (inside the recorded 120 shared
+# Topology (env; defaults are the CTO's #2560 rulings of 2026-11-02): ARMXK_CORE_TYPE=ccx13 (10 dedicated vCPU, inside the recorded
+# limit of 12; arm K is a lower bound, so a smaller core is conservative; every capacity number is reported as "at ccx13"), ARMXK_WORKER_TYPE=cpx62, ARMXK_WORKER_HOSTS=7 (inside the recorded 120 shared
 # vCPU), ARMXK_WORKERS=100 (15/15/14/14/14/14/14 across the 7 hosts), ARMXK_LOCATION=nbg1 (the product pages list CPX62/CCX in NBG1 and
 # HEL1 only), ARMXK_HOURS=4 (a 3 h run plus a 1 h margin), and the project limits
 # ARMXK_LIMIT_INSTANCES / _SHARED_VCPU / _DEDICATED_VCPU (defaults are the last recorded values; the CTO reads the console).
@@ -21,7 +21,7 @@ source "$CLOUD_DIR/lib/cloud-driver.sh"
 RUN_ID=$(basename "$RUN_DIR" | tr -c 'a-zA-Z0-9-\n' '-' | tr 'A-Z' 'a-z' | cut -c1-40)
 LABEL="aether-cluster=armxk-${RUN_ID}"
 NET="armxk-${RUN_ID}-net"; KEY_NAME="armxk-${RUN_ID}-key"
-CORE_TYPE=${ARMXK_CORE_TYPE:-ccx23}; WORKER_TYPE=${ARMXK_WORKER_TYPE:-cpx62}
+CORE_TYPE=${ARMXK_CORE_TYPE:-ccx13}; WORKER_TYPE=${ARMXK_WORKER_TYPE:-cpx62}
 WORKER_HOSTS=${ARMXK_WORKER_HOSTS:-7}; WORKERS=${ARMXK_WORKERS:-100}
 LOCATION=${ARMXK_LOCATION:-nbg1}; HOURS=${ARMXK_HOURS:-4}
 log() { echo "[$(date -u +%H:%M:%SZ)] provision: $*"; }
