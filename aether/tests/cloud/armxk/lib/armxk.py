@@ -26,7 +26,12 @@ ARMXK = HERE.parent
 SPREAD_KEYS = ["put.total", "remove.total", "engine.batches", "engine.slots", "tx.accepted", "tx.refused"]
 RABIA_KEYS = ["decisionsCount", "proposalsCount", "voteRound1Count", "voteRound2Count", "syncSuccessCount", "syncFailureCount",
               "applyTimeoutCount"]
-COMMUNITY_POLICY_SIZE = {True: 25, False: 5}  # N >= 50 -> 25, else 5 (M-1's communitySize)
+COMMUNITY_POLICY_SIZE = {True: 25, False: 5}
+# The idle-storm flag (#2512 follow-up, CTO 2026-11-02): a window whose consensus slots outnumber its committed mutations more than this
+# many times while a core holds a pending batch is the empty-slot storm dry7 saw (21217 slots, 1 put, a batch the other voters will not
+# learn: oss wave3/inv-idle-spin.md). Both conditions are required: slots/commits alone is high in any write-free window that still runs
+# a few slots, and a pending batch alone is normal under load.
+STORM_SLOTS_PER_COMMIT = 50  # N >= 50 -> 25, else 5 (M-1's communitySize)
 
 
 def utc(ms=None):
@@ -234,10 +239,47 @@ class Run:
 def delta(before, after):
     out = {}
     for k, v in after.items():
-        if isinstance(v, int) and k != "now.ms":
+        if isinstance(v, int) and k != "now.ms" and not k.startswith("heap."):
             d = v - before.get(k, 0)
             if d:
                 out[k] = d
+    return out
+
+
+def window_health(snap_before, snap_after, rabia_before, rabia_after):
+    """One core's consensus health over a window: slots and commits from the agent, decisions and the pending queue from Rabia, heap."""
+    commits = sum(snap_after.get(k, 0) - snap_before.get(k, 0) for k in ("put.total", "remove.total"))
+    return {"slots": snap_after.get("engine.slots", 0) - snap_before.get("engine.slots", 0),
+            "decisions": rabia_after.get("decisionsCount", 0) - rabia_before.get("decisionsCount", 0),
+            "commits": commits,
+            "pendingStart": rabia_before.get("pendingBatches", 0), "pendingEnd": rabia_after.get("pendingBatches", 0),
+            "oldestPendingAgeMsEnd": rabia_after.get("oldestPendingBatchAgeMs", 0),
+            "heapUsed": snap_after.get("heap.used"), "heapMax": snap_after.get("heap.max")}
+
+
+def storm_flag(health):
+    """True when any core ran more than STORM_SLOTS_PER_COMMIT slots per committed mutation in the window while some core held a pending
+    batch at its end. `health` maps core id -> window_health(...)."""
+    if not health:
+        return False
+    ratio = max(h["slots"] / max(h["commits"], 1) for h in health.values())
+    return ratio > STORM_SLOTS_PER_COMMIT and any(h["pendingEnd"] > 0 for h in health.values())
+
+
+def storm_check(run, where, health):
+    """Flags the window and, on a flag, dumps the head pending batch of every core that holds one."""
+    if not storm_flag(health):
+        return {"storm": False}
+    holders = {}
+    for cid, h in health.items():
+        if h["pendingEnd"] > 0:
+            try:
+                holders[cid] = run.agent(run.node(cid), "/m1/pending").strip().splitlines()
+            except HarnessError as e:
+                holders[cid] = [f"dump failed: {e}"]
+    out = {"storm": True, "holders": holders}
+    run.emit("storm", {"utc": utc(), "where": where, "health": health, **out})
+    log(f"STORM in {where}: holders {holders}")
     return out
 
 
@@ -368,16 +410,20 @@ def workers_up(run):
 # ---- the measurement window (M-1's measure(), over ssh) ------------------------------------------------------------------------------
 
 
-def idle_window(run, ref, ms):
+def idle_window(run, ref, ms, where="idle"):
     before = run.snapshot(ref)
+    rabia_before = run.rabia(ref)
     sleep_s(ms / 1000)
     after = run.snapshot(ref)
+    rabia_after = run.rabia(ref)
+    health = {ref["id"]: window_health(before, after, rabia_before, rabia_after)}
     ops = run.last_ops(ref, before["now.ms"])
     ops.pop("now.ms", None)
     run.state.setdefault("idleOps", [])
     run.state["idleOps"] = sorted(set(run.state["idleOps"]) | set(ops))
     run.save()
-    return {"ms": after["now.ms"] - before["now.ms"], "counts": delta(before, after)}
+    return {"ms": after["now.ms"] - before["now.ms"], "counts": delta(before, after), "health": health,
+            **storm_check(run, where, health)}
 
 
 def sleep_s(seconds):
@@ -409,7 +455,7 @@ def measure(run, cls, rep, action, min_ms=None, quiet_ms=None, excluded=()):
     refs = [{"core": c} for c in run.nodes("core") if c["id"] not in excluded]
     if not refs:
         raise HarnessError("no live reference core")
-    idle_before = idle_window(run, refs[0]["core"], t["idleWindowMs"])
+    idle_before = idle_window(run, refs[0]["core"], t["idleWindowMs"], f"{cls} rep {rep} idle before")
     hosts = sorted({r["core"]["host"] for r in refs})
     load_start = {h: run.host_sample(h) for h in hosts}
     leader_start = run.leader()
@@ -425,18 +471,20 @@ def measure(run, cls, rep, action, min_ms=None, quiet_ms=None, excluded=()):
         r["after"] = run.snapshot(r["core"])
         r["rabiaAfter"] = run.rabia(r["core"])
     load_end = {h: run.host_sample(h) for h in hosts}
-    idle_after = idle_window(run, refs[0]["core"], t["idleWindowMs"])
+    idle_after = idle_window(run, refs[0]["core"], t["idleWindowMs"], f"{cls} rep {rep} idle after")
     deltas = [delta(r["before"], r["after"]) for r in refs]
+    health = {r["core"]["id"]: window_health(r["before"], r["after"], r["rabiaBefore"], r["rabiaAfter"]) for r in refs}
     spread = {k: [min(d.get(k, 0) for d in deltas), max(d.get(k, 0) for d in deltas)] for k in SPREAD_KEYS}
     record = {"kind": "sample", "class": cls, "rep": rep, "startUtc": start_utc, "windowMs": window_ms, "settled": settled,
               "workersStart": workers_start, "workersEnd": len(run.nodes("worker")), "cores": len(run.nodes("core")),
               "refCores": [r["core"]["id"] for r in refs], "leaderStart": leader_start, "leaderEnd": run.leader(),
               "raw": deltas[0], "perCore": {r["core"]["id"]: d for r, d in zip(refs, deltas)}, "spread": spread,
               "rabia": {r["core"]["id"]: {k: r["rabiaAfter"].get(k, 0) - r["rabiaBefore"].get(k, 0) for k in RABIA_KEYS} for r in refs},
-              "loadStart": load_start, "loadEnd": load_end, "idleBefore": idle_before, "idleAfter": idle_after, "event": note}
+              "loadStart": load_start, "loadEnd": load_end, "idleBefore": idle_before, "idleAfter": idle_after, "event": note,
+              "health": health, **storm_check(run, f"{cls} rep {rep}", health)}
     run.emit(cls.split("(")[0], record)
     log(f"{cls} rep {rep}: put.total={deltas[0].get('put.total', 0)} slots={deltas[0].get('engine.slots', 0)} "
-        f"tx={deltas[0].get('tx.accepted', 0)} window={window_ms}ms settled={settled}")
+        f"tx={deltas[0].get('tx.accepted', 0)} window={window_ms}ms settled={settled}{' STORM' if record['storm'] else ''}")
     return record
 
 
@@ -634,6 +682,10 @@ def core_readings(run):
     return out
 
 
+def readings_health(before, after):
+    return {cid: window_health(before[cid]["m1"], after[cid]["m1"], before[cid]["rabia"], after[cid]["rabia"]) for cid in before if cid in after}
+
+
 def readings_delta(before, after):
     out = {}
     for cid in before:
@@ -713,6 +765,7 @@ def armk_step(run, p, c, url, target, driver_host):
     loads = {h: run.host_sample(h) for h in sorted({cc["host"] for cc in run.nodes("core")})}
     record = {"kind": "armk-step", "pass": p, "c": c, "target": target["id"], "driverHost": driver_host, "startUtc": utc(driver["measureStartMs"]),
               "endUtc": utc(driver["measureEndMs"]), "driver": driver, "cores": readings_delta(before, after), "coreLoadAfter": loads,
+              "health": readings_health(before, after), **storm_check(run, f"arm K p{p} c={c}", readings_health(before, after)),
               "readingsUtc": [utc(min(v["readMs"] for v in before.values())), utc(max(v["readMs"] for v in after.values()))],
               "readSeconds": round(read_s, 2), "exact": exact}
     run.emit("armk", record)
@@ -726,7 +779,8 @@ def armk_control(run, p, after_c):
     sleep_s(run.cfg["armK"]["controlS"])
     after = core_readings(run)
     run.emit("armk", {"kind": "armk-control", "pass": p, "afterC": after_c, "c": 0, "startUtc": utc(min(v["readMs"] for v in before.values())),
-                      "cores": readings_delta(before, after)})
+                      "cores": readings_delta(before, after), "health": readings_health(before, after),
+                      **storm_check(run, f"arm K control p{p} after c={after_c}", readings_health(before, after))})
 
 
 def summarize_armk(run):

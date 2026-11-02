@@ -99,6 +99,19 @@ mixes two windows and is recorded only as `commitsPerOpRateRatio`. The summary r
 Evidence goes to `<run-dir>/evidence/*.jsonl`; host logs and samples are pulled to `<run-dir>/evidence/pull-<step>/` after every
 step and on failure.
 
+## Idle-storm flag
+
+Every window (each `measure()` window, both of its idle brackets, every arm K step and every arm K c=0 control) records, per core:
+slots and commits (the agent), decisions and the pending queue at both ends with the oldest pending age (`consensus.pendingBatches`,
+`oldestPendingBatchAgeMs` from `/api/v1/metrics/comprehensive`), and heap used/max (the agent's `heap.used`, `heap.max`).
+
+A window is flagged `STORM` when some core ran more than 50 slots per committed mutation (zero commits count as one) **and** some core
+holds a pending batch at the window's end. That is the empty-slot storm dry7 recorded (21217 slots, 1 put), whose suspected mechanism is
+a batch one core keeps proposing while the other voters refuse to learn it (oss `wave3/inv-idle-spin.md`). Each condition alone is
+normal: write-free windows run a few slots, and loaded windows hold pending batches. On a flag the harness dumps, from every core that
+holds a pending batch, the head of the engine's pending map (`/m1/pending`: count, head id, command count, timestamp), writes
+`evidence/storm.jsonl` and logs `STORM`. The rule is pinned by `lib/test_storm.py` (`python3 lib/test_storm.py`); no CI job runs it.
+
 ## Cost
 
 `armxk.sh estimate` prices the topology from the list prices recorded in `lib/estimate.py` (with the date and pages they were read
