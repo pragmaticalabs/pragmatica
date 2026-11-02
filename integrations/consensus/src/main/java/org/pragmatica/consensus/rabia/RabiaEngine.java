@@ -1076,7 +1076,7 @@ public class RabiaEngine<C extends Command> {
         this.metrics = Option.option(metrics).or(ConsensusMetrics.noop());
         this.metrics.registerOldestPendingBatchAgeProbe(self, this::oldestPendingBatchAgeMs);
         this.metrics.registerProposalConvergenceProbes(self,
-                                                       consecutiveEmptySlotsWithPending::get,
+                                                       this::consecutiveEmptySlotsWithPending,
                                                        this::firstChoiceBatchId);
         this.activationGated = activationGated;
         this.activationAuthorized = !activationGated;
@@ -1815,8 +1815,11 @@ public class RabiaEngine<C extends Command> {
                                                                             .id());
     }
 
+    /// #2045: 0 whenever nothing is pending, so a queue emptied without a decision (a `BatchCommitted` strip) reads 0 at once.
     long consecutiveEmptySlotsWithPending() {
-        return consecutiveEmptySlotsWithPending.get();
+        return pendingBatches.isEmpty()
+               ? 0L
+               : consecutiveEmptySlotsWithPending.get();
     }
 
     @Contract
