@@ -26,12 +26,12 @@ ARMXK = HERE.parent
 SPREAD_KEYS = ["put.total", "remove.total", "engine.batches", "engine.slots", "tx.accepted", "tx.refused"]
 RABIA_KEYS = ["decisionsCount", "proposalsCount", "voteRound1Count", "voteRound2Count", "syncSuccessCount", "syncFailureCount",
               "applyTimeoutCount"]
-COMMUNITY_POLICY_SIZE = {True: 25, False: 5}
+COMMUNITY_POLICY_SIZE = {True: 25, False: 5}  # N >= 50 -> 25, else 5 (M-1's communitySize)
 # The idle-storm flag (#2512 follow-up, CTO 2026-11-02, corrected the same day): a window whose consensus slots outnumber its committed
 # mutations more than this many times is a storm (dry7: 21217 slots, 1 put). The ratio ALONE decides. The pending queue is recorded as
 # data, never as a condition: dry7's suspected mechanism keeps a pending batch (oss wave3/inv-idle-spin.md), but p4s6's N=100 Noop-driven
 # flood had pendingBatches 0 on every core, and a pending>0 condition would have missed it.
-STORM_SLOTS_PER_COMMIT = 50  # N >= 50 -> 25, else 5 (M-1's communitySize)
+STORM_SLOTS_PER_COMMIT = 50
 
 
 def utc(ms=None):
@@ -197,7 +197,9 @@ class Run:
         (the nodes run with -XX:+ExitOnOutOfMemoryError, so an OOM is a process exit)."""
         out = self.sh(n["host"], f"bash {self.root}/lib/node.sh pid {self.root} {n['id']} >/dev/null && echo alive || "
                                  f"echo dead $(grep -ac OutOfMemoryError {self.root}/nodes/{n['id']}/node.log)", check=False).split()
-        if not out or out[0] == "alive":
+        if not out:
+            return f"; node {n['id']} liveness unreadable (no answer from {n['host']})"
+        if out[0] == "alive":
             return ""
         oom = len(out) > 1 and out[1] != "0"
         return f"; node {n['id']} process is gone{' after an OutOfMemoryError' if oom else ''}"
@@ -208,7 +210,7 @@ class Run:
         for n in self.nodes("core"):
             note = self.death_note(n)
             if note:
-                raise HarnessError(f"core died{note}; aborting the run")
+                raise HarnessError(f"core check failed{note}; aborting the run")
 
     def snapshot(self, core):
         values = {}
@@ -251,6 +253,8 @@ class Run:
         return self.sh(host, f"bash {self.root}/lib/node.sh sample {self.root}").strip()
 
     def emit(self, name, record):
+        if getattr(self, "attempt", None):
+            record = {**record, "attempt": self.attempt}
         with open(self.dir / "evidence" / f"{name}.jsonl", "a") as f:
             f.write(json.dumps(record, sort_keys=True) + "\n")
 
@@ -265,15 +269,23 @@ def delta(before, after):
     return out
 
 
+def reading(values, key, source):
+    """A reading the source always serves (Rabia's consensus block, the agent's heap gauges): absent means a broken path, never a zero.
+    The agent's counters are created on first use, so for THEM an absent key is a true zero and they keep `.get(k, 0)`."""
+    if key not in values:
+        raise HarnessError(f"{source} reading {key!r} missing (a dead reading is an error, never a zero)")
+    return values[key]
+
+
 def window_health(snap_before, snap_after, rabia_before, rabia_after):
     """One core's consensus health over a window: slots and commits from the agent, decisions and the pending queue from Rabia, heap."""
     commits = sum(snap_after.get(k, 0) - snap_before.get(k, 0) for k in ("put.total", "remove.total"))
     return {"slots": snap_after.get("engine.slots", 0) - snap_before.get("engine.slots", 0),
-            "decisions": rabia_after.get("decisionsCount", 0) - rabia_before.get("decisionsCount", 0),
+            "decisions": reading(rabia_after, "decisionsCount", "rabia") - reading(rabia_before, "decisionsCount", "rabia"),
             "commits": commits,
-            "pendingStart": rabia_before.get("pendingBatches", 0), "pendingEnd": rabia_after.get("pendingBatches", 0),
-            "oldestPendingAgeMsEnd": rabia_after.get("oldestPendingBatchAgeMs", 0),
-            "heapUsed": snap_after.get("heap.used"), "heapMax": snap_after.get("heap.max")}
+            "pendingStart": reading(rabia_before, "pendingBatches", "rabia"), "pendingEnd": reading(rabia_after, "pendingBatches", "rabia"),
+            "oldestPendingAgeMsEnd": reading(rabia_after, "oldestPendingBatchAgeMs", "rabia"),
+            "heapUsed": reading(snap_after, "heap.used", "agent"), "heapMax": reading(snap_after, "heap.max", "agent")}
 
 
 def storm_flag(health):
@@ -283,12 +295,13 @@ def storm_flag(health):
 
 
 def storm_check(run, where, health):
-    """Flags the window and, on a flag, dumps every measured core's pending queue (count and head batch); a core reporting count > 0 is a
-    holder. The dump is data for the diagnosis, not part of the flag."""
+    """Flags the window and, on a flag, dumps every live core's pending queue (count and head batch), measured in the window or not (an
+    idle bracket measures one reference core); a core reporting count > 0 is a holder. The dump is data for the diagnosis, not part of
+    the flag."""
     if not storm_flag(health):
         return {"storm": False}
     holders = {}
-    for cid in health:
+    for cid in [c["id"] for c in run.nodes("core")]:
         try:
             holders[cid] = run.agent(run.node(cid), "/m1/pending").strip().splitlines()
         except HarnessError as e:
@@ -526,6 +539,10 @@ def control_class(run):
         counts = {cid: d.get("put:ConfigKey", 0) for cid, d in rec["perCore"].items()}
         if set(counts.values()) != {1}:
             raise HarnessError(f"control-put rep {rep}: put:ConfigKey per core {counts}, expected exactly 1 on every core")
+        # the storm flag's numerator: a dead slot hook reads 0 and would never flag, so the put that committed must show a slot
+        dead_slot_path = {cid: h["slots"] for cid, h in rec["health"].items() if h["slots"] < 1 or h["decisions"] < 1}
+        if dead_slot_path:
+            raise HarnessError(f"control-put rep {rep}: a committed put with no slot or decision on {dead_slot_path} (dead slot path)")
     for c in run.nodes("core"):
         code, text = run.api(c, "GET", "/api/v1/metrics/prometheus")
         dead = [line for line in text.splitlines() if line.startswith("aether_consensus_commit") or line.startswith("aether_consensus_batches")]
@@ -764,6 +781,13 @@ def armk_step(run, p, c, url, target, driver_host):
     read_s = time.time() - read_start
     sleep_s(k["measureS"] - 2 * read_s - 1)
     after = core_readings(run)
+    # the holder dump's live control: under load the target holds batches, so a dump path that always reads 0 shows up against the metric
+    # a failed dump read is recorded and fails the control; it never aborts the run (the dump is diagnosis, not measurement)
+    try:
+        pending_probe = {"agentCount": pending_count(run, target)}
+    except HarnessError as e:
+        pending_probe = {"agentCount": None, "error": str(e)[:300]}
+    pending_probe["metricPendingBatches"] = reading(run.rabia(target), "pendingBatches", "rabia")
     await_cond(f"driver p{p} c{c} exit", lambda: run.sh(driver_host, f"cat {run.root}/armk-p{p}-c{c}.rc 2>/dev/null", check=False).strip(),
                120, 2)
     rc = run.sh(driver_host, f"cat {run.root}/armk-p{p}-c{c}.rc").strip()
@@ -783,11 +807,19 @@ def armk_step(run, p, c, url, target, driver_host):
               "endUtc": utc(driver["measureEndMs"]), "driver": driver, "cores": readings_delta(before, after), "coreLoadAfter": loads,
               "health": readings_health(before, after), **storm_check(run, f"arm K p{p} c={c}", readings_health(before, after)),
               "readingsUtc": [utc(min(v["readMs"] for v in before.values())), utc(max(v["readMs"] for v in after.values()))],
-              "readSeconds": round(read_s, 2), "exact": exact}
+              "readSeconds": round(read_s, 2), "exact": exact, "pendingProbe": pending_probe}
     run.emit("armk", record)
     lead = record["cores"].get(target["id"], {})
     log(f"arm K p{p} c={c}: {driver['opsPerSec']} ops/s p50={driver['p50Ms']} p99={driver['p99Ms']} errors={driver['errors']} "
         f"d_decisions={lead.get('d_decisionsCount')} d_putConfigKey={lead.get('d_putConfigKey')}")
+
+
+def pending_count(run, core):
+    for line in run.agent(core, "/m1/pending").splitlines():
+        name, _, value = line.partition(" ")
+        if name == "count":
+            return int(value)
+    raise HarnessError(f"/m1/pending on {core['id']} carries no count line")
 
 
 def armk_control(run, p, after_c):
@@ -800,14 +832,21 @@ def armk_control(run, p, after_c):
 
 
 def summarize_armk(run):
+    attempt = getattr(run, "attempt", None)
     rows = [json.loads(l) for l in (run.dir / "evidence" / "armk.jsonl").read_text().splitlines()]
+    # a STORM rerun appends a second attempt to the same file: mixing them doubles every c in the table and fakes a plateau at the first
+    rows = [r for r in rows if r.get("kind") != "armk-summary" and r.get("attempt") == attempt]
     steps = [r for r in rows if r["kind"] == "armk-step"]
     controls = [r for r in rows if r["kind"] == "armk-control"]
     idle = {}
     for r in controls:
+        if r.get("storm"):
+            continue  # a storm's decisions are not the idle background; subtracting them would make every step's net rate wrong
         for cid, d in r["cores"].items():
             idle.setdefault(cid, []).append(d["d_decisionsCount"] / max(d["seconds"], 1e-9))
-    summary = {"kind": "armk-summary", "utc": utc(), "passes": {}, "idleDecisionsPerSec": {c: sum(v) / len(v) for c, v in idle.items()}}
+    probes = [r["pendingProbe"] for r in steps if "pendingProbe" in r]
+    summary = {"kind": "armk-summary", "utc": utc(), "passes": {}, "idleDecisionsPerSec": {c: sum(v) / len(v) for c, v in idle.items()},
+               "stormControlsExcluded": sum(1 for r in controls if r.get("storm")), "pendingDumpControl": pending_dump_control(probes)}
     for p in sorted({r["pass"] for r in steps}):
         table = []
         for r in sorted([s for s in steps if s["pass"] == p], key=lambda s: s["c"]):
@@ -816,7 +855,9 @@ def summarize_armk(run):
             ok = r["driver"]["ok"]
             table.append({"c": r["c"], "opsPerSec": r["driver"]["opsPerSec"], "p50Ms": r["driver"]["p50Ms"], "p99Ms": r["driver"]["p99Ms"],
                           "errors": r["driver"]["errors"], "decisionsPerSec": lead.get("d_decisionsCount", 0) / secs,
-                          "decisionsPerSecNetOfIdle": lead.get("d_decisionsCount", 0) / secs - summary["idleDecisionsPerSec"].get(r["target"], 0),
+                          "decisionsPerSecNetOfIdle": (lead.get("d_decisionsCount", 0) / secs - summary["idleDecisionsPerSec"][r["target"]]
+                                                       if r["target"] in summary["idleDecisionsPerSec"] else None),
+                          "storm": r.get("storm", False),
                           "commitsPerSec": lead.get("d_putConfigKey", 0) / secs,
                           # a ratio of RATES: the core readings bracket the measured phase from outside, so their window is a few
                           # seconds wider than the driver's; counts over the two windows are not comparable, rates are
@@ -831,7 +872,18 @@ def summarize_armk(run):
                 break
         summary["passes"][str(p)] = {"steps": table, "plateauC": plateau}
     run.emit("armk", summary)
-    log(f"arm K summary written: plateau per pass {[(p, v['plateauC']) for p, v in summary['passes'].items()]}")
+    log(f"arm K summary written: plateau per pass {[(p, v['plateauC']) for p, v in summary['passes'].items()]}; "
+        f"pending dump control {summary['pendingDumpControl']}")
+
+
+def pending_dump_control(probes):
+    """`fail` when a dump read failed, or when the metric saw pending batches on some step and the dump never did (a dump path that always
+    reads 0); `pass` once the agent's dump read a pending batch; `inconclusive` when nothing was pending at any probe."""
+    if any(p["agentCount"] is None for p in probes):
+        return "fail"
+    if any(p["agentCount"] > 0 for p in probes):
+        return "pass"
+    return "fail" if any(p["metricPendingBatches"] > 0 for p in probes) else "inconclusive"
 
 
 # ---- evidence ------------------------------------------------------------------------------------------------------------------------
@@ -876,7 +928,10 @@ STEPS = {"control": (control_class, 6), "s0": (s0_class, 20), "s3": (s3_class, 2
 
 def storm_count(run):
     path = run.dir / "evidence" / "storm.jsonl"
-    return sum(1 for _ in open(path)) if path.exists() else 0
+    if not path.exists():
+        return 0
+    with open(path) as f:
+        return sum(1 for _ in f)
 
 
 def run_class(run, name, fn, minutes):
@@ -886,7 +941,11 @@ def run_class(run, name, fn, minutes):
         run.check_cores()
         spend_check(run, minutes)
         storms_before = storm_count(run)
-        fn(run)
+        run.attempt = attempt
+        try:
+            fn(run)
+        finally:
+            run.attempt = None
         run.check_cores()
         pull_evidence(run, name if attempt == 1 else f"{name}-rerun")
         flagged = storm_count(run) - storms_before
@@ -933,8 +992,8 @@ def main():
             run.stop_all()
         elif args.command == "leader":
             print(run.leader())
-    except HarnessError as e:
-        log(f"FAILED: {e}")
+    except Exception as e:  # not only HarnessError: an ssh timeout or a parse error must still pull before the cloud trap tears down
+        log(f"FAILED: {type(e).__name__}: {e}")
         try:
             pull_evidence(run, "on-failure")
         except Exception as pull_error:  # the failure itself is the report; a failed pull is logged beside it
