@@ -526,6 +526,25 @@ class QuicConsensusBackpressureTest {
             }
         }
 
+        /// A channel closing for a peer the transport holds no state for still closes that peer's episode.
+        @Test
+        void closedChannel_ofAPeerWithNoState_closesItsEpisode() {
+            var blocked = blockedChannel();
+            var network = network();
+            var chan = mock(QuicChannel.class);
+            var closeFuture = new DefaultChannelPromise(chan, ImmediateEventExecutor.INSTANCE);
+            when(chan.closeFuture()).thenReturn(closeFuture);
+            network.registerCloseListenerForTests(PEER, QuicPeerConnection.quicPeerConnection(PEER, chan));
+
+            try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+                blockWrites(network, blocked, WRITES);
+
+                closeFuture.setSuccess();
+
+                assertSummaryOf(capture, WRITES);
+            }
+        }
+
         private static QuicStreamChannel blockedChannel() {
             var blocked = mock(QuicStreamChannel.class);
             when(blocked.isWritable()).thenReturn(false);
