@@ -141,6 +141,7 @@ class RabiaMetricsCollectorTest {
         emptySlots.set(1_867L);
 
         assertThat(collector.snapshot().consecutiveEmptySlotsWithPending()).isEqualTo(1_867L);
+        assertThat(collector.snapshot().firstChoiceBatchId()).isEqualTo(Option.some("batch-x"));
         assertThat(collector.snapshot().counterMap().get("consensus_consecutive_empty_slots_with_pending").longValue())
             .as("the Prometheus vocabulary carries the same level")
             .isEqualTo(1_867L);

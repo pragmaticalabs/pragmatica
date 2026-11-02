@@ -252,7 +252,8 @@ class RabiaReorderedDeliveryTest {
         var cluster = scenario.cluster();
         cluster.blocked = delivery -> delivery.message() instanceof BatchCommitted;
 
-        assertThat(cluster.pumpBounded(() -> scenario.recovering().consecutiveEmptySlotsWithPending() > 30, 30_000))
+        // The slot rate under this schedule varies with executor interleaving (about 40 to 140 slots per 100k steps seen).
+        assertThat(cluster.pumpBounded(() -> scenario.recovering().consecutiveEmptySlotsWithPending() > 20, PUMP_BUDGET))
             .as("empty slots while the covered batch stays queued").isNotNegative();
         assertThat(scenario.recovering().firstChoiceBatchId()).isEqualTo(Option.some(scenario.coveredBatch().id().id()));
         List.of(1, 2).forEach(index -> assertThat(cluster.engines.get(index).firstChoiceBatchId()).as("voter %s", index).isEqualTo(Option.none()));
