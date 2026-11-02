@@ -251,6 +251,51 @@ class RabiaEngineSlowApplyDiagnosticsTest {
         assertThat(metrics.firstChoiceBatchId.get().get()).isEqualTo(Option.some(batch.id().id()));
     }
 
+    /// #2045: the empty-slot counter, decision by decision. It climbs on each slot decided without applying a batch while
+    /// something is pending, resets when a slot applies one (even with other batches still queued), restarts from 0 after
+    /// slots decided with nothing pending, and reads 0 as soon as the queue empties without a decision.
+    @Test
+    void theEmptySlotCounter_climbsOnlyWhilePending_resetsOnAnAppliedBatch_andReadsZeroOnceTheQueueEmpties() throws Exception {
+        engine(ProtocolConfig.testConfig());
+        activate();
+        var counter = metrics.consecutiveEmptySlots.get();
+        var x = Batch.create(SERIALIZER, List.of(new TestCommand("stuck-head")));
+        var y = Batch.create(SERIALIZER, List.of(new TestCommand("agreed-elsewhere")));
+        var z = Batch.create(SERIALIZER, List.of(new TestCommand("arrives-later")));
+        engine.handleNewBatch(new RabiaProtocolMessage.Asynchronous.NewBatch<>(NODE_2, x));
+        awaitIdle();
+
+        emptySlot(0);
+        emptySlot(1);
+        emptySlot(2);
+        assertThat(counter.getAsLong()).as("three empty slots with x pending").isEqualTo(3);
+
+        engine.processDecision(new RabiaProtocolMessage.Synchronous.Decision<>(NODE_2, new Phase(3), StateValue.V1, y));
+        awaitIdle();
+        assertThat(counter.getAsLong()).as("an applied batch resets the count; x is still pending").isZero();
+
+        emptySlot(4);
+        engine.processDecision(new RabiaProtocolMessage.Synchronous.Decision<>(NODE_2, new Phase(5), StateValue.V1, x));
+        awaitIdle();
+        emptySlot(6);
+        emptySlot(7);
+        engine.handleNewBatch(new RabiaProtocolMessage.Asynchronous.NewBatch<>(NODE_3, z));
+        awaitIdle();
+        assertThat(counter.getAsLong()).as("slots decided with nothing pending do not count").isZero();
+
+        emptySlot(8);
+        emptySlot(9);
+        assertThat(counter.getAsLong()).isEqualTo(2);
+        engine.handleBatchCommitted(new RabiaProtocolMessage.Asynchronous.BatchCommitted(NODE_2, z.id(), z.correlationIds()));
+        awaitIdle();
+        assertThat(counter.getAsLong()).as("the queue emptied without a decision").isZero();
+    }
+
+    private void emptySlot(long slot) throws InterruptedException {
+        engine.processDecision(new RabiaProtocolMessage.Synchronous.Decision<>(NODE_2, new Phase(slot), StateValue.V0, Batch.emptyBatch()));
+        awaitIdle();
+    }
+
     /// #2045: a Decision strips only its own correlation ids; the leftover keeps the batch's local arrival time, and the
     /// queue gauge follows each strip, down to 0 once the leftover commits too.
     @Test

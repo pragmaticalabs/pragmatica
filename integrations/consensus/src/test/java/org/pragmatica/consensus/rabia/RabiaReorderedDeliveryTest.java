@@ -244,8 +244,9 @@ class RabiaReorderedDeliveryTest {
     }
 
     /// The answer is the only repair: with `BatchCommitted` blocked the recovering voter proposes the covered batch forever,
-    /// every slot it holds it in decides empty, and the livelock counter and first-choice probe show it. A batch the others
-    /// agree on still applies and resets the counter; the answer, once delivered, empties the queue and the probe reads 0.
+    /// every slot it holds it in decides empty, and the livelock counter and first-choice probe show it. Once delivered, the
+    /// answer empties the queue and the probe reads 0. (The counter's reset rules are pinned decision by decision in
+    /// `RabiaEngineSlowApplyDiagnosticsTest`; here the recovering voter may also adopt slots by snapshot, which never resets it.)
     @Test
     void snapshotSkippedSlot_withoutTheCommittedAnswer_spinsAndTheProbesShowIt() {
         var scenario = snapshotSkippedSlotThenLateNewBatch();
@@ -265,9 +266,6 @@ class RabiaReorderedDeliveryTest {
         cluster.settle();
         assertThat(cluster.engines.get(1).consecutiveEmptySlotsWithPending())
             .as("voter 1 had nothing pending through the empty slots, so its count starts at 0").isZero();
-        List.of(0, 2).forEach(index -> cluster.engines.get(index).handleNewBatch(new NewBatch<>(cluster.members.get(1), next)));
-        cluster.pumpUntil(() -> cluster.machines.getFirst().getProcessedCommands().contains(new TestCommand("agreed-meanwhile")));
-        assertThat(scenario.recovering().consecutiveEmptySlotsWithPending()).as("an applied batch resets the count").isLessThan(5);
 
         cluster.blocked = _ -> false;
         cluster.pumpUntil(() -> scenario.recovering().pendingBatchCountForTesting() == 0);
