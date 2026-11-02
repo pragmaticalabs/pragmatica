@@ -25,21 +25,34 @@ import org.pragmatica.aether.stream.StreamPartitionManager.TailCut;
 /// ends ([StreamPartitionManager#purgePartitionState]: every stream-removal path, and a committed life replacing this node's
 /// losing proposal). It is keyed by stream, not owned by the [StreamPartitionManager.StreamEntry], because some of it is
 /// written while no entry exists (a durable-flag raise on a failed open, the install list-locks, an owner's visible position
-/// or an epoch verdict before the stream is hydrated), and a committed-config adoption that replaces the entry keeps it.
+/// or an epoch verdict while the name's committed config is applied but not hydrated), and a committed-config adoption
+/// that replaces the entry keeps it.
 ///
 /// Moved, not rewritten (PR-2a): every row keeps its type of map, its own concurrency and today's removal sites; the
 /// monitors that order some of them ([StreamPartitionManager]'s `quarantineLock` and `refusedCutOrder`, and each
 /// `pendingInstalls` list) keep their jobs. No new lock. A ring install or release does NOT replace [RingScoped] wholesale:
 /// its rows are dropped at the sites that drop them today, which are a ring release or install and the end of a cut.
+///
+/// Stamped with the [#incarnation] of the life it records for (know `f7bc44d170`, v2559). [StreamEntries] hands a writer only
+/// the state of the life it names, and a reader only the state of the name's live life, so a write that arrives for a life
+/// that has ended (or for a name with no life on this node) is never seen by a stream created again under the name.
 final class PartitionState {
+    private final long incarnation;
     private final RingScoped ringScoped = RingScoped.ringScoped();
     private final Standing standing = Standing.standing();
     private final RepairEpisode repairEpisode = RepairEpisode.repairEpisode();
 
-    private PartitionState() {}
+    private PartitionState(long incarnation) {
+        this.incarnation = incarnation;
+    }
 
-    static PartitionState partitionState() {
-        return new PartitionState();
+    static PartitionState partitionState(long incarnation) {
+        return new PartitionState(incarnation);
+    }
+
+    /// The incarnation ([org.pragmatica.aether.slice.StreamConfig#incarnation]) of the life this state records for.
+    long incarnation() {
+        return incarnation;
     }
 
     RingScoped ringScoped() {

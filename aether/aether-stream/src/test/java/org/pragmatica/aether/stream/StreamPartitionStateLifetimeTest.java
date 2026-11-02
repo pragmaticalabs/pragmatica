@@ -195,6 +195,28 @@ class StreamPartitionStateLifetimeTest {
             }
         }
 
+        /// Know `f7bc44d170` item 4: the replace purges the LOSING life's state (its incarnation), not only hides it behind the
+        /// reader's incarnation filter.
+        @Test
+        void replaceLosingLife_committedIncarnation_dropsTheLosingLifesStoredState() throws ReflectiveOperationException {
+            var node = clusterManager();
+
+            try {
+                node.createStream(config()).onFailure(cause -> fail(cause.message()));
+                var proposed = node.enforcedConfig(STREAM).map(StreamConfig::incarnation).or(-1L);
+
+                node.placementRoleSupplier((_, _) -> Role.REPLICA);
+                node.commitAdvanced(STREAM, PARTITION, 3L, EPOCH);
+                assertThat(entriesOf(node).lifePartitionState(STREAM, proposed).isPresent()).as("fixture: the proposal's state is stored").isTrue();
+
+                node.onStreamConfigPut(committed(config().withIncarnation(proposed + 1)));
+
+                assertThat(entriesOf(node).lifePartitionState(STREAM, proposed).isEmpty()).as("the losing life's state is dropped").isTrue();
+            } finally {
+                node.close();
+            }
+        }
+
         private StreamPartitionManager clusterManager() {
             return streamPartitionManager(Long.MAX_VALUE,
                                           EvictionListener.NOOP,
@@ -206,6 +228,14 @@ class StreamPartitionStateLifetimeTest {
                                           LastSealedOffsetSource.none(),
                                           DurableSealedOffsetSource.none());
         }
+    }
+
+    private static StreamEntries entriesOf(StreamPartitionManager manager) throws ReflectiveOperationException {
+        var field = StreamPartitionManager.class.getDeclaredField("entries");
+
+        field.setAccessible(true);
+
+        return (StreamEntries) field.get(manager);
     }
 
     private void create(StreamPartitionManager manager) {

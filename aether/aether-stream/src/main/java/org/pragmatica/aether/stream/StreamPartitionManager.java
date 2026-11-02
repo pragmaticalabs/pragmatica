@@ -1428,7 +1428,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                      partition),
                                       logs,
                                       lastSealedOffset,
-                                      this::trimFailedAtOpen)
+                                      hydrateTrimFailure(config))
                           .onFailure(_ -> release(floorBytes))
                           .onSuccess(entry -> restoreVisible(config, entry))
                           .flatMap(entry -> publishFreshEntry(config, entry, commitMode));
@@ -1720,7 +1720,9 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
         // Know 548514c110 Q1 / d9cd07cda1: the committed life inherits none of the per-partition state recorded under the
         // name while the replaced life was local. Purged before the hydrate, which records the committed life's own.
-        purgePartitionState(committed.name(), "the stream's local life was replaced by its committed life");
+        purgePartitionState(committed.name(),
+                            local.config().incarnation(),
+                            "the stream's local life was replaced by its committed life");
 
         return hydrateEntry(committed);
     }
@@ -1864,7 +1866,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                      partition),
                                       logs,
                                       lastSealedOffset,
-                                      this::trimFailedAtOpen)
+                                      hydrateTrimFailure(config))
                           .onSuccess(entry -> restoreVisible(config, entry))
                           .onSuccess(StreamEntry::markCommitted)
                           .onFailure(cause -> hydrationFailed(config, floorBytes, cause))
@@ -2214,10 +2216,15 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// takes the owner rule: an unresolved role must not expose more than the owner would. The confirmation
     /// count is read from `config`, not [#confirmationFactorFor]: on a fresh create the entry is not in
     /// `streams` yet, and the lookup would report `0` — no barrier — and expose the tail.
+    /// `state` is where the hold is recorded: the hydrating life's state while a hydrate builds the entry, the entry's own
+    /// life's state when one partition materializes later (know `f7bc44d170`).
     @Contract
-    private void restoreVisible(StreamConfig config, int partition, OffHeapRingBuffer ring) {
+    private void restoreVisible(StreamConfig config,
+                                int partition,
+                                OffHeapRingBuffer ring,
+                                Supplier<PartitionState> state) {
         switch (placementRoleSupplier.roleFor(config.name(), partition)) {
-            case REPLICA -> holdRecoveredTailUntilVerified(config.name(), partition, ring);
+            case REPLICA -> holdRecoveredTailUntilVerified(state, partition, ring);
             case OWNER, NONE -> ring.advanceVisible(Math.min(ring.durableOffset(),
                                                              replicationManager.replicatedThrough(config.name(),
                                                                                                   partition,
@@ -2330,9 +2337,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// durability" made the whole recovered tail visible at once, including the unacknowledged records of an ex-owner.
     /// A copy that recovered nothing has nothing to verify.
     @Contract
-    private void holdRecoveredTailUntilVerified(String streamName, int partition, OffHeapRingBuffer ring) {
+    private void holdRecoveredTailUntilVerified(Supplier<PartitionState> state, int partition, OffHeapRingBuffer ring) {
         if (ring.durableOffset() >= 0) {
-            standing(streamName).unverifiedReplicas().add(partition);
+            state.get().standing().unverifiedReplicas().add(partition);
         }
     }
 
@@ -2372,7 +2379,8 @@ public final class StreamPartitionManager implements AutoCloseable {
              .forEach((partition, materialized) -> {
                           restoreVisible(config,
                                          partition,
-                                         materialized.ring());
+                                         materialized.ring(),
+                                         hydratingState(config));
                           reportInterruptedRepair(config.name(),
                                                   partition,
                                                   materialized.wal());
@@ -2479,9 +2487,21 @@ public final class StreamPartitionManager implements AutoCloseable {
         return existingStanding(streamName).flatMap(standing -> option(standing.divergedAt().get(partition)));
     }
 
-    /// The per-partition state of `streamName` ([StreamEntries#partitionState]), created on first use: what a writer reaches.
+    /// The per-partition state of the live life of `streamName` ([StreamEntries#livePartitionState]), created on first use:
+    /// what a writer reaches. A name with no life on this node gets a dead bucket, so its write is dropped (know `f7bc44d170`).
     private PartitionState partitionState(String streamName) {
-        return entries.partitionState(streamName);
+        return entries.livePartitionState(streamName);
+    }
+
+    /// The state of `config`'s life, resolved when a write needs it ([StreamEntries#partitionState]).
+    private Supplier<PartitionState> lifeState(StreamConfig config) {
+        return () -> entries.partitionState(config.name(), config.incarnation());
+    }
+
+    /// The state a hydrate of `config`'s life records into ([StreamEntries#hydratingPartitionState]): the entry is not in
+    /// `streams` yet, so the live incarnation is the hydrated config's.
+    private Supplier<PartitionState> hydratingState(StreamConfig config) {
+        return () -> entries.hydratingPartitionState(config.name(), config.incarnation());
     }
 
     private PartitionState.Standing standing(String streamName) {
@@ -2668,10 +2688,18 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// quarantine that went with the ring takes the obstacle with it; a node that hosts the partition again starts a new episode.
     @Contract
     private void closeRefusedCuts(String streamName, IntPredicate partitions, String reason) {
-        existingRepairEpisode(streamName).map(episode -> refusedPartitions(episode, partitions))
-                             .or(List.of())
-                             .forEach(partition -> closeRefusedCut(new PartitionRef(streamName, partition),
-                                                                   reason));
+        existingRepairEpisode(streamName).onPresent(episode -> closeRefusedCuts(episode, streamName, partitions, reason));
+    }
+
+    @Contract
+    private void closeRefusedCuts(PartitionState.RepairEpisode episode,
+                                  String streamName,
+                                  IntPredicate partitions,
+                                  String reason) {
+        refusedPartitions(episode, partitions).forEach(partition -> closeRefusedCut(episode,
+                                                                                    new PartitionRef(streamName,
+                                                                                                     partition),
+                                                                                    reason));
     }
 
     private static List<Integer> refusedPartitions(PartitionState.RepairEpisode episode, IntPredicate partitions) {
@@ -2683,9 +2711,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     @Contract
-    private void closeRefusedCut(PartitionRef ref, String reason) {
+    private void closeRefusedCut(PartitionState.RepairEpisode episode, PartitionRef ref, String reason) {
         synchronized (refusedCutOrder) {
-            if (repairEpisode(ref.streamName()).refusedCuts().remove(ref.partition()) != null) {
+            if (episode.refusedCuts().remove(ref.partition()) != null) {
                 OperatorWarnings.raise(log,
                                        operatorWarnings,
                                        OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED,
@@ -3464,13 +3492,18 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// its own records, the local-verification failure of spec #1569 §7.5.3 -- so the state is visible cluster-wide
     /// and survives the restart, like an N13 divergence. The evidence carries the head only, so a retry raises the same
     /// reason. Returns `cause`, which fails the open.
-    private Cause trimFailedAtOpen(String streamName, int partition, long head, Cause cause) {
+    private Cause trimFailedAtOpen(Supplier<PartitionState> state,
+                                   String streamName,
+                                   int partition,
+                                   long head,
+                                   Cause cause) {
         log.error("Partition {}[{}] not opened: its owner-epoch history holds entries above head {} that could not be trimmed: {}",
                   streamName,
                   partition,
                   head,
                   cause.message());
-        raiseOnce(streamName,
+        raiseOnce(state.get().standing(),
+                  streamName,
                   partition,
                   PartitionRecoveryReasonKind.LOCAL_MISMATCH,
                   "the owner-epoch history holds entries above head " + head + " that the trim at open could not drop");
@@ -3484,11 +3517,40 @@ public final class StreamPartitionManager implements AutoCloseable {
         Cause trimFailed(String streamName, int partition, long head, Cause cause);
     }
 
+    /// A trim failure met while a hydrate builds the entry of `config`'s life: recorded in that life's state.
+    private TrimFailure hydrateTrimFailure(StreamConfig config) {
+        return (streamName, partition, head, cause) -> trimFailedAtOpen(hydratingState(config),
+                                                                        streamName,
+                                                                        partition,
+                                                                        head,
+                                                                        cause);
+    }
+
+    /// A trim failure met when one partition of a live entry materializes: recorded in the state of the entry's own life,
+    /// dropped if that life has ended meanwhile.
+    private TrimFailure lifeTrimFailure(StreamConfig config) {
+        return (streamName, partition, head, cause) -> trimFailedAtOpen(lifeState(config),
+                                                                        streamName,
+                                                                        partition,
+                                                                        head,
+                                                                        cause);
+    }
+
     /// Raise a reason about this node's copy on the durable flag, at most once per process per reason. Without a
     /// flag wired the reason is logged at ERROR and left to the local fence.
     @Contract
     private void raiseOnce(String streamName, int partition, PartitionRecoveryReasonKind kind, String evidence) {
-        if (standing(streamName).raisedLocally().add(partition + "#" + kind + "#" + evidence)) {
+        raiseOnce(standing(streamName), streamName, partition, kind, evidence);
+    }
+
+    /// [#raiseOnce], recorded in `standing`: a hydrate records in the state of the life it builds (know `f7bc44d170`).
+    @Contract
+    private void raiseOnce(PartitionState.Standing standing,
+                           String streamName,
+                           int partition,
+                           PartitionRecoveryReasonKind kind,
+                           String evidence) {
+        if (standing.raisedLocally().add(partition + "#" + kind + "#" + evidence)) {
             partitionFlags.onEmpty(() -> log.error("Partition {}[{}] needs the durable flag {} ({}), but no partition flag is wired here",
                                                    streamName,
                                                    partition,
@@ -5263,6 +5325,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         forgetHeldBack(entry);
         forgetFootprint(entry.config().name());
         purgePartitionState(entry.config().name(),
+                            entry.config().incarnation(),
                             "the stream is gone from this node");
 
         return success(unit());
@@ -5275,14 +5338,27 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// [PartitionState] is dropped whole. That includes the quarantine marker [PartitionState.Standing#divergedAt], on every
     /// path (#1505 F2 for destroy; know `e0035a56ef` for config removal and the idle reaper): the life's records are deleted
     /// with it, so a marker left behind would fence the fresh log of a stream created again under the same name, which could
-    /// then never reach CAUGHT_UP. What it drops is what was recorded before it ran: the entry-less writes ([PartitionState])
-    /// still record under the name afterwards, so one that lands after the removal (an owner's visible position, an epoch
-    /// verdict) is seen by a stream created again under the name `[unverified: whether such a late write is accepted after a
-    /// removal in a cluster; no test induces it]`.
+    /// then never reach CAUGHT_UP.
+    ///
+    /// It drops the state of the life `incarnation` only (know `f7bc44d170`): a removal whose purge runs late (after the
+    /// footprint await) does not drop the state of a stream created again under the name meanwhile. A write that arrives
+    /// after the removal is not seen by a later life either: a writer that names no life (an owner's visible position
+    /// [#commitAdvanced], an epoch verdict [#markVerifiedForEpoch], the trust stored by [#unverifiedFrom]) records only
+    /// while the name has a life on this node (a local entry or an applied committed config), and into that life's state,
+    /// so one that lands while the name has none is dropped; a reader sees only the live life's state. The residual (tracker
+    /// #2561): an old life's owner position that arrives after the stream was created again here, at the same owner epoch,
+    /// cannot be told from one of the new life (the message carries no incarnation, and the ownership record outlives the
+    /// stream), and is recorded for the new life. Without a cluster every life of a name carries
+    /// [StreamConfig#NO_INCARNATION]: there, a stream created again while a removal's purge is still pending shares the
+    /// ended life's state until that purge drops it.
     @Contract
-    private void purgePartitionState(String streamName, String reason) {
-        closeRefusedCuts(streamName, _ -> true, reason);
-        entries.purgePartitionState(streamName);
+    private void purgePartitionState(String streamName, long incarnation, String reason) {
+        entries.lifePartitionState(streamName, incarnation)
+               .onPresent(state -> closeRefusedCuts(state.repairEpisode(),
+                                                    streamName,
+                                                    _ -> true,
+                                                    reason));
+        entries.purgePartitionState(streamName, incarnation);
     }
 
     /// A destroyed stream stops being served and its life's durable refs are reclaimed (#1278 review). Best-effort:
@@ -5678,11 +5754,12 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           budgetFreedGeneration::get,
                                           logs,
                                           lastSealedOffset,
-                                          this::trimFailedAtOpen)
+                                          lifeTrimFailure(config))
                           .onFailure(_ -> releaseFailedMaterialize(ref, floorBytes, slotHeld))
                           .onSuccess(candidate -> restoreVisible(config,
                                                                  partition,
-                                                                 candidate.ring()))
+                                                                 candidate.ring(),
+                                                                 lifeState(config)))
                           .onSuccess(candidate -> reportInterruptedRepair(config.name(),
                                                                           partition,
                                                                           candidate.wal()))
