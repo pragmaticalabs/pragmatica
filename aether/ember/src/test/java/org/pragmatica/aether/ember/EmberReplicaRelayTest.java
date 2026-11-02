@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiPredicate;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
@@ -126,10 +127,11 @@ class EmberReplicaRelayTest {
     /// directory it had while the cores move on; with only its governor's allowed it catches up to the cores' directory. A leader ping never reaches a
     /// member, so the update came through the governor's pong.
     ///
-    /// The window is bounded by what the test waits on, never by a clock: a member whose directory is stale gets a directory on every core pong, so
-    /// dropping them also drops its core contact, and the core-absence fence (10 s) drains it. The extra worker is therefore started without waiting
-    /// for its join (the join is what took seconds); the control is a count of directory-bearing pongs dropped after the cores' directory moved; and the
-    /// extra worker is awaited only after the member has caught up and its filter is lifted.
+    /// A refused pong is not lost: it reaches the member with its directory removed. A member whose directory is stale gets a directory on every core
+    /// pong, and core pongs are its only core-liveness signal (`ClusterSyncCollector.onClusterSyncPong`); dropping them whole starved the core-absence
+    /// fence (10 s), which drained the member on a loaded host (#2510). The window is bounded by what the test waits on, never by a clock: the extra
+    /// worker is started without waiting for its join; the control is a count of directory-bearing pongs refused after the cores' directory moved; and
+    /// the extra worker is awaited only after the member has caught up and its filter is lifted.
     ///
     /// The catch-up target is the cores' directory at the control point, not their current one (#2510). The governor relays what it heard on its own
     /// last core pong, so its member is a pong round behind the cores; while the directory keeps moving (observed: one version per second for 11 s
@@ -141,7 +143,9 @@ class EmberReplicaRelayTest {
         var allowed = new AtomicReference<Predicate<NodeId>>(_ -> false);
         var dropped = new AtomicInteger();
 
-        node(member).setInboundFaultFilter(dropsDirectoryPongs(allowed, dropped));
+        var collector = node(member).metricsCollector();
+
+        node(member).setInboundFaultFilter(dropsDirectoryPongs(allowed, dropped, pong -> collector.onClusterSyncPong(withoutDirectory(pong))));
         var held = directory(member).unwrap().version();
 
         var extra = startWorkerWithoutWaiting("east");
@@ -162,15 +166,37 @@ class EmberReplicaRelayTest {
         register(extra.await(START_BOUND).unwrap().id());
     }
 
-    /// Drops a `ClusterSyncPong` that carries a directory unless `allowed` admits its sender, counting each one dropped.
-    private static BiPredicate<NodeId, Message.Wired> dropsDirectoryPongs(AtomicReference<Predicate<NodeId>> allowed, AtomicInteger dropped) {
-        return (sender, message) -> !(message instanceof ClusterSyncPong pong && pong.directory().isPresent()) || allowed.get().test(sender) || countedDrop(dropped);
+    /// Refuses the directory of a `ClusterSyncPong` unless `allowed` admits its sender, counting each one refused: the pong itself is handed to
+    /// `deliver` without its directory (its only route is the collector), so its sender's liveness still counts.
+    private static BiPredicate<NodeId, Message.Wired> dropsDirectoryPongs(AtomicReference<Predicate<NodeId>> allowed,
+                                                                          AtomicInteger dropped,
+                                                                          Consumer<ClusterSyncPong> deliver) {
+        return (sender, message) -> !(message instanceof ClusterSyncPong pong && pong.directory().isPresent()) || allowed.get().test(sender)
+                                    || refused((ClusterSyncPong) message, dropped, deliver);
     }
 
-    private static boolean countedDrop(AtomicInteger dropped) {
+    private static boolean refused(ClusterSyncPong pong, AtomicInteger dropped, Consumer<ClusterSyncPong> deliver) {
         dropped.incrementAndGet();
+        deliver.accept(pong);
 
         return false;
+    }
+
+    private static ClusterSyncPong withoutDirectory(ClusterSyncPong pong) {
+        return new ClusterSyncPong(pong.sender(),
+                                   pong.observation(),
+                                   pong.incarnation(),
+                                   pong.observedRabiaTerm(),
+                                   pong.observedEpochIncarnation(),
+                                   pong.observedEpochTerm(),
+                                   pong.observedEpochCounter(),
+                                   pong.lifecycleState(),
+                                   pong.communityReports(),
+                                   pong.peerHealth(),
+                                   pong.peerConnectivity(),
+                                   pong.readyCandidate(),
+                                   pong.observedDirectoryGeneration(),
+                                   Option.none());
     }
 
     // ---- phase 3: kill a governor under load ----
@@ -422,8 +448,9 @@ class EmberReplicaRelayTest {
         return cluster.getNode(id).map(AetherNode::isReady).or(false);
     }
 
+    /// Fails naming the node, not with a bare "Option is empty": a worker that left mid-phase most likely drained itself on core absence (#2510).
     private AetherNode node(String id) {
-        return cluster.getNode(id).unwrap();
+        return cluster.getNode(id).expect(id + " is no longer in the cluster (a worker drains itself after 10 s without core contact, #2510)");
     }
 
     private Option<ClusterDirectory> directory(String id) {
