@@ -35,7 +35,9 @@ import static org.pragmatica.aether.ember.StreamTripwireSupport.sleepQuietly;
 /// WHOLE budget, so it materializes on every node: the rings were refused growth at the share and froze there.
 ///
 /// Red under MT-37 (growth admitted against the whole budget): the rings then grow to within one segment of the budget, and
-/// the late stream's floor (more than a segment) is refused on every node, "deferred metadata-only" with a WARN.
+/// a later stream's floor (more than a segment) is refused, "Total off-heap memory limit exceeded". Since the fill waits for
+/// the owner to accept writes (#2562), f106a fills the budget reliably, so the first refused stream is usually f106b at
+/// its creation rather than the late stream.
 @PortBudget
 class EmberStreamFloorHeadroomTest {
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
