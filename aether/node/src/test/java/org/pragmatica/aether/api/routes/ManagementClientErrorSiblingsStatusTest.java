@@ -181,8 +181,10 @@ class ManagementClientErrorSiblingsStatusTest {
             .isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
     }
 
+    /// #2594: the committed record still names this node, but it no longer leads locally (its term ended before the record
+    /// moved). `self` matches the record, so only the local term check refuses the commit.
     @Test
-    void clusterConfigApply_answers409_whenTheCommittedLeaderIsAnotherNode() {
+    void clusterConfigApply_answers409_whenTheCommittedRecordNamesThisNodeButItNoLongerLeads() {
         @SuppressWarnings("unchecked")
         var store = (KVStore<AetherKey, AetherValue>) mock(KVStore.class);
         var seed = ClusterConfigValue.bootstrapSeed("prod", "1.0.0", List.of(new TopologyEntry("hetzner", "core", 3)), 3, 9, "hetzner", 1);
@@ -193,7 +195,7 @@ class ManagementClientErrorSiblingsStatusTest {
                            .when(store)
                            .getTyped(org.mockito.ArgumentMatchers.<AetherKey> any(), org.mockito.ArgumentMatchers.<Class<AetherValue>> any());
 
-        var routes = ClusterConfigRoutes.clusterConfigRoutes(() -> node(Map.of("kvStore", store, "isLeader", false)));
+        var routes = ClusterConfigRoutes.clusterConfigRoutes(() -> node(Map.of("kvStore", store, "isLeader", false, "self", new NodeId("core"))));
         var body = new ManagementApiResponses.ApplyConfigRequest(OPERATOR_TOML, 0L);
 
         assertThat(statusOf(routes.routes(), ManagementRoute.CLUSTER_CONFIG_APPLY, List.of(), body, Map.of()))

@@ -309,6 +309,24 @@ class BackupRestoreCoordinatorTest {
             assertThat(coordinator.isComplete()).isFalse();
         }
 
+        /// #2594: leadership ends (a lost term, a stop) while the pass reads the backup on the worker. The committed record
+        /// still names this node, so only the term check at issue time keeps the decision from being written.
+        @Test
+        void aLeaderThatStopsLeadingWhileReadingTheBackup_issuesNoDecision() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
+            var coordinator = coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO)));
+
+            coordinator.activate();
+            coordinator.deactivate();
+            settleUntilRetryScheduled();
+
+            assertThat(submitted).as("no restore transaction after this node stopped leading").isEmpty();
+            assertThat(outcome()).isEqualTo(BackupRestoreOutcome.UNKNOWN);
+            assertThat(kvStore.get(ConfigKey.forKey("alpha"))).isEqualTo(Option.none());
+        }
+
         @Test
         void aLiveClusterIsNeverRestoredOver() {
             var remote = bareRemote(temp.resolve("remote.git"));

@@ -80,6 +80,16 @@ class IsrOwnershipWriterTest {
 
             assertThat(fenced.decide(STREAM, PARTITION, Option.none(), A, GENERATION).isPresent()).isTrue();
         }
+
+        /// The record names this node, but its term has ended: `decide` is reachable without the writer's own leader gate.
+        @Test
+        void decide_ownRecordAfterLeadershipEnded_writesNothing() {
+            var fenced = writer(List.of(A, B, C, D),
+                                (_, _, owner) -> List.of(owner, B, C),
+                                StreamPartitionOwnershipWriter.ownCommittedLeader(() -> Option.some(LEADER), A, () -> false));
+
+            assertThat(fenced.decide(STREAM, PARTITION, Option.none(), A, GENERATION).isEmpty()).isTrue();
+        }
     }
 
     @Nested

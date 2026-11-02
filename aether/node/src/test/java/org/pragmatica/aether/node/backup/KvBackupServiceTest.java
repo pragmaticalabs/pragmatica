@@ -871,6 +871,26 @@ class KvBackupServiceTest {
             assertThat(ClusterIncarnation.committed(kvStore)).as("no supersede was committed").isEqualTo(before);
         }
 
+        /// #2594: leadership ends while the head is read on the worker. The committed record still names this node, so only
+        /// the term check at issue time keeps the supersede from being written by a node that no longer leads.
+        @Test
+        void declareGenesis_whenLeadershipEndsWhileTheHeadIsRead_issuesNothing() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 3, INCARNATION_ID, 40));
+            var service = leaderService(Option.some(remote), 1);
+            var before = ClusterIncarnation.committed(kvStore);
+            var pending = BackupGenesis.backupGenesis(service, LEADER_NODE)
+                                       .declare(commands -> applyAndNotify(service, commands));
+
+            service.onLeaderChange(leaderChange(false));
+
+            var refused = settle(pending);
+
+            assertThat(failureOf(refused)).isEqualTo(BackupGenesis.DeclareGenesisError.General.NOT_LEADER);
+            assertThat(ClusterIncarnation.committed(kvStore)).as("no supersede was committed").isEqualTo(before);
+        }
+
         /// B2: the push of the declaration is refused (not a fast-forward rejection — a remote policy or an
         /// outage). Re-running the command after the remote recovers publishes the declaration already
         /// committed locally, lifts the gate, and does not bump the incarnation a second time.

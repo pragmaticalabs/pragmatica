@@ -7,6 +7,8 @@ package org.pragmatica.aether.node;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -56,12 +58,26 @@ class DhtReplicationLeaderFenceTest {
         assertThat(proposalsUnder(SELF)).hasSize(1);
     }
 
+    /// The record names this node, but its term ends after the notification's own leader check: the proposal re-reads the
+    /// term at issue time and proposes nothing.
+    @Test
+    void onConfigCommitted_leadershipEndsBeforeTheProposal_proposesNothing() {
+        var reads = new AtomicInteger();
+
+        assertThat(proposalsUnder(SELF, () -> reads.getAndIncrement() == 0)).as("no change once this node no longer leads")
+                                                                         .isEmpty();
+    }
+
     private static List<KVCommand<AetherKey>> proposalsUnder(NodeId committedLeader) {
+        return proposalsUnder(committedLeader, () -> true);
+    }
+
+    private static List<KVCommand<AetherKey>> proposalsUnder(NodeId committedLeader, Supplier<Boolean> isLeader) {
         var kvStore = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), CODEC, CODEC);
         var submitted = new ArrayList<KVCommand<AetherKey>>();
 
         commitLeader(kvStore, LeaderValue.leaderValue(committedLeader, 2L));
-        settlement(kvStore, submitted).onConfigCommitted(CONFIG);
+        settlement(kvStore, submitted, isLeader).onConfigCommitted(CONFIG);
 
         return submitted.stream()
                         .filter(KVCommand.LeaderTransaction.class::isInstance)
@@ -69,7 +85,8 @@ class DhtReplicationLeaderFenceTest {
     }
 
     private static DhtReplicationSettlement settlement(KVStore<AetherKey, AetherValue> kvStore,
-                                                       List<KVCommand<AetherKey>> submitted) {
+                                                       List<KVCommand<AetherKey>> submitted,
+                                                       Supplier<Boolean> isLeader) {
         var dhtNode = DHTNode.dhtNodeAwaitingReplication(SELF, memoryStorageEngine(), ring(), DHTConfig.DEFAULT, HlcClock.hlcClock(SELF));
 
         return DhtReplicationSettlement.dhtReplicationSettlement(new DhtReplicationSettlement.Inputs(SELF,
@@ -77,7 +94,7 @@ class DhtReplicationLeaderFenceTest {
                                                                                                     kvStore,
                                                                                                     dhtNode,
                                                                                                     DHTConfig.DEFAULT,
-                                                                                                    () -> true,
+                                                                                                    isLeader,
                                                                                                     commands -> record(submitted, commands),
                                                                                                     Set::of,
                                                                                                     _ -> false,
