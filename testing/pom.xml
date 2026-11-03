@@ -20,10 +20,12 @@
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>core</artifactId>
         </dependency>
+        <!-- provided: FatalEscapeRecorder is a JUnit 5 extension; its users already have JUnit at test scope,
+             so the artifact adds no JUnit dependency of its own. -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-api</artifactId>
-            <scope>test</scope>
+            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
@@ -33,6 +35,11 @@
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>test-logging</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>
