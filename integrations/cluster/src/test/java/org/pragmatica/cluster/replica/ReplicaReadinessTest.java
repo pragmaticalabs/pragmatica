@@ -294,9 +294,50 @@ class ReplicaReadinessTest {
         assertThat(readiness.ready()).as("past the first chain's cap, inside the second grace").isTrue();
     }
 
-    /// The cap is two silences, derived from the silence constant.
+    /// EXPIRED-CARRY rule: a carry that has expired is never renewed by a later re-parent, so readiness does not rise again without a counted beat.
+    /// Mutation: drop the `carryExpired` guard in `carryBeatsFor`.
+    @Test
+    void carryBeatsFor_afterTheCarryExpired_doesNotMakeTheReplicaReadyAgain() {
+        var grace = ReplicaClientLimits.DEFAULT.carryGraceMillis() * MS;
+
+        readiness.carryBeatsFor(grace);
+        advance(ReplicaClientLimits.DEFAULT.carryGraceMillis() + 100);
+        assertThat(readiness.ready()).as("the carry has expired").isFalse();
+        readiness.carryBeatsFor(grace);
+
+        assertThat(readiness.ready()).as("a renewal after expiry must not flap readiness back up").isFalse();
+    }
+
+    /// A counted beat clears an expired carry, so a later carry works again. Control for the expired-carry rule: the guard must not wedge the carry for good.
+    @Test
+    void carryBeatsFor_afterExpiryAndACountedBeat_carriesAgain() {
+        var grace = ReplicaClientLimits.DEFAULT.carryGraceMillis() * MS;
+
+        readiness.carryBeatsFor(grace);
+        advance(ReplicaClientLimits.DEFAULT.carryGraceMillis() + 100);
+        readiness.onHeartbeat(TAG, 10, true);
+        readiness.carryBeatsFor(grace);
+        advance(ReplicaClientLimits.DEFAULT.carryGraceMillis() - 100);
+
+        assertThat(readiness.ready()).isTrue();
+    }
+
+    /// The cap is two silences of THIS limits, derived from the silence, not a constant that happens to equal it at the default. Mutation: a literal
+    /// cap (6_000).
     @Test
     void carryCapMillis_isTwoSilences() {
+        var limits = new ReplicaClientLimits(30_000L, 5_000L, 5_000L, 1024L, 100L);
+
+        assertThat(limits.carryCapMillis()).isEqualTo(10_000L);
         assertThat(ReplicaClientLimits.DEFAULT.carryCapMillis()).isEqualTo(2 * ReplicaClientLimits.DEFAULT.silenceMillis());
+    }
+
+    /// The grace is derived from the limits' silence and tick plus the fixed retry delay and heartbeat interval. Mutation: a literal grace (4_500).
+    @Test
+    void carryGraceMillis_followsANonDefaultSilenceAndTick() {
+        var limits = new ReplicaClientLimits(30_000L, 5_000L, 5_000L, 1024L, 100L);
+        var expected = 5_000L + 100L + BusyBackoff.MIN_DELAY_MILLIS + ReplicaFeedServer.HEARTBEAT_INTERVAL_MILLIS;
+
+        assertThat(limits.carryGraceMillis()).isEqualTo(expected);
     }
 }

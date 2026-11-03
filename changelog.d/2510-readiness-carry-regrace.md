@@ -6,6 +6,8 @@
   (`ReplicaClientLimits.carryCapMillis()`, 6 s by default). A counted beat clears the carry and resets that anchor. A chain of re-parents onto
   dead sources therefore leaves readiness by the cap at each relay level, and the existing bound (a governor's member gone within 17 s of both
   cores dying, `whenBothCoresAreGone_...`) is unchanged.
+- An EXPIRED carry is never renewed: once the deadline has passed (`carriedUntil != 0 && now > carriedUntil`), `carryBeatsFor` leaves it unchanged until a
+  counted beat clears it, so readiness never rises again without a counted beat (no not-ready -> ready flap on a late re-subscribe).
 - The grace a resume passes is `ReplicaClientLimits.carryGraceMillis()` = silence + tick + retry delay + one heartbeat interval (4.5 s by default;
   was the 3 s silence alone). `ReplicaFeedServer.HEARTBEAT_INTERVAL_MILLIS` is now the one heartbeat interval the core wiring schedules
   (`ReplicaFeedAssembly.HEARTBEAT_INTERVAL`, unchanged at 1 s).

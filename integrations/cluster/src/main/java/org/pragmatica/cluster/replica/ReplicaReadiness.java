@@ -112,10 +112,21 @@ public final class ReplicaReadiness {
     /// resume before any beat of the previous new source (it was silent, or was left again) restarts the grace from that latest subscribe: the
     /// deadline never moves backwards, and a silent source cannot outlive a grace anchored to the first subscribe (#2510). Renewal is capped: the
     /// deadline never passes the start of the first carry since the last counted beat plus [ReplicaClientLimits#carryCapMillis] (two silences), so a chain of
-    /// re-parents onto silent sources cannot extend readiness past that bound. A counted beat clears the carry and the anchor.
+    /// re-parents onto silent sources cannot extend readiness past that bound. A carry that has already EXPIRED is never renewed: readiness does not rise
+    /// again without a counted beat, which clears the carry and the anchor.
     public synchronized Unit carryBeatsFor(long graceNanos) {
         var now = nanos.getAsLong();
 
+        return carryExpired(now)
+               ? Unit.unit()
+               : renewCarry(now, graceNanos);
+    }
+
+    private boolean carryExpired(long now) {
+        return carriedUntilNanos != 0L && now > carriedUntilNanos;
+    }
+
+    private Unit renewCarry(long now, long graceNanos) {
         carryAnchorNanos = carryAnchorNanos == 0L
                            ? now
                            : carryAnchorNanos;
