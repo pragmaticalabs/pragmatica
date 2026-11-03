@@ -392,7 +392,7 @@ class RetryExhaustionTerminalTest {
         /// included. A recorder that only records leaves the store empty, so the durable apply
         /// marker could never be written by the production path and could not be read back.
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
-            commands.addAll(batch);
+            commands.addAll(TransactionEffects.effective(batch));
             kvStore.process(kvStore.createBatch(batch));
 
             return Promise.success(Collections.emptyList());

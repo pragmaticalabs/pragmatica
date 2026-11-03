@@ -666,12 +666,24 @@ class SchemaActivationGateTest {
 
         synchronized (cluster.commands) {
             return cluster.commands.stream()
-                                   .filter(command -> command instanceof KVCommand.Put<AetherKey, ?> put
-                                                      && put.key().equals(versionKey)
-                                                      && put.value() instanceof SchemaVersionValue value
-                                                      && value.status() == SchemaStatus.PENDING)
+                                   .filter(command -> resetsToPending(command, versionKey))
                                    .toList();
         }
+    }
+
+    /// #2584 P0 (D01): the reset is a guarded transaction whose mutation replaces the MIGRATING record read with PENDING.
+    /// The plain Put of PENDING this test used to look for is no longer emitted: a committed leader record naming SELF is
+    /// always present once Active is entered, so the reset is always the transaction.
+    private static boolean resetsToPending(KVCommand<AetherKey> command, SchemaVersionKey versionKey) {
+        return command instanceof KVCommand.LeaderTransaction<?, ?> transaction
+               && transaction.mutations()
+                             .stream()
+                             .anyMatch(mutation -> mutation.key().equals(versionKey)
+                                                   && mutation.replacement()
+                                                              .filter(SchemaVersionValue.class::isInstance)
+                                                              .map(SchemaVersionValue.class::cast)
+                                                              .filter(value -> value.status() == SchemaStatus.PENDING)
+                                                              .isPresent());
     }
 
     // --- test fixtures ---

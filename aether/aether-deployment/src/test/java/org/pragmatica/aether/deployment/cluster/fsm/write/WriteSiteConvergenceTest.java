@@ -68,6 +68,7 @@ class WriteSiteConvergenceTest {
                                                            "WORKER_ASSIGNMENT",
                                                            "BEST_EFFORT_FAILURE_OUTCOME",
                                                            "ACTIVATE",
+                                                           "ACTIVATE_REISSUE",
                                                            "UNLOAD_SLICE_FAILED",
                                                            "UNLOAD_STUCK_RESET",
                                                            "NODE_ARTIFACT_REMOVE_STUCK",

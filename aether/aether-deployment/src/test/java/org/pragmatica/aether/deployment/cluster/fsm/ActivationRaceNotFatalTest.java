@@ -497,7 +497,7 @@ class ActivationRaceNotFatalTest {
         @Override public Promise<Unit> stop() {return Promise.unitPromise();}
 
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
-            commands.addAll(batch);
+            commands.addAll(TransactionEffects.effective(batch));
 
             return Promise.success(Collections.emptyList());
         }

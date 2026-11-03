@@ -436,17 +436,20 @@ class BlueprintRepublishPlacementTest {
             process(createBatch(List.of(new KVCommand.Put<>(key, value))));
         }
 
+        /// The seeded LeaderKey is a consensus key, not an AetherKey, so the snapshot's keys are read as Objects: reading
+        /// them as AetherKey is a ClassCastException the seeded leader record would otherwise raise in every restore.
         @Override
+        @SuppressWarnings("unchecked")
         public synchronized java.util.Map<AetherKey, AetherValue> snapshot() {
-            var ordered = new java.util.LinkedHashMap<AetherKey, AetherValue>();
-            var all = super.snapshot();
-            java.util.function.Predicate<AetherKey> isBlueprint = AppBlueprintKey.class::isInstance;
+            var ordered = new java.util.LinkedHashMap<Object, Object>();
+            java.util.Map<Object, Object> all = (java.util.Map<Object, Object>) (java.util.Map<?, ?>) super.snapshot();
+            java.util.function.Predicate<Object> isBlueprint = AppBlueprintKey.class::isInstance;
             var firstGroup = order == RestoreOrder.BLUEPRINT_FIRST ? isBlueprint : isBlueprint.negate();
 
             all.forEach((k, v) -> {if (firstGroup.test(k)) ordered.put(k, v);});
             all.forEach((k, v) -> {if (!firstGroup.test(k)) ordered.put(k, v);});
 
-            return ordered;
+            return (java.util.Map<AetherKey, AetherValue>) (java.util.Map<?, ?>) ordered;
         }
     }
 

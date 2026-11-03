@@ -900,8 +900,11 @@ class ClusterDeploymentStateTransactionalTest {
         @Override public Promise<Unit> stop() {return Promise.unitPromise();}
 
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
-            commands.addAll(batch);
-            batches.add(List.copyOf(batch));
+            // #2584 P0: a rollback is one LeaderTransaction; record its mutations as the batch (see TransactionEffects).
+            var effective = TransactionEffects.effective(batch);
+
+            commands.addAll(effective);
+            batches.add(List.copyOf(effective));
 
             var failure = forcedApplyFailure;
             if (failure != null) {
