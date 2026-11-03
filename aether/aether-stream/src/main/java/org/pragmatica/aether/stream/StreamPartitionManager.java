@@ -916,22 +916,27 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// with no epoch, or one the history no longer attributes (a cut, a rewritten history), is not trusted.
     private boolean trustedMarker(String streamName, int partition, AppendLog wal, AppendLog.AckedMark marker) {
         return marker.epoch()
-                     .filter(key -> wal.attributedEpoch(marker.offset())
-                                       .equals(some(key)))
-                     .flatMap(key -> ownershipRecords.committed(streamName, partition)
-                                                     .filter(record -> inLiveLineage(streamName,
-                                                                                     partition,
-                                                                                     record,
-                                                                                     key,
-                                                                                     marker.offset())))
+                     .filter(key -> attributes(wal, marker, key))
+                     .filter(key -> inLiveLineage(streamName, partition, key, marker.offset()))
                      .isPresent();
     }
 
-    private static boolean inLiveLineage(String streamName,
-                                         int partition,
-                                         StreamPartitionOwnershipValue record,
-                                         AppendLog.EpochKey key,
-                                         long offset) {
+    private static boolean attributes(AppendLog wal, AppendLog.AckedMark marker, AppendLog.EpochKey key) {
+        return wal.attributedEpoch(marker.offset())
+                  .equals(some(key));
+    }
+
+    private boolean inLiveLineage(String streamName, int partition, AppendLog.EpochKey key, long offset) {
+        return ownershipRecords.committed(streamName, partition)
+                               .filter(record -> admitsTheMarkedPrefix(streamName, partition, record, key, offset))
+                               .isPresent();
+    }
+
+    private static boolean admitsTheMarkedPrefix(String streamName,
+                                                 int partition,
+                                                 StreamPartitionOwnershipValue record,
+                                                 AppendLog.EpochKey key,
+                                                 long offset) {
         return ProvenanceEntry.rankOf(key)
                               .flatMap(epoch -> EpochValidation.admit(streamName, partition, record, epoch, offset + 1))
                               .isSuccess();
