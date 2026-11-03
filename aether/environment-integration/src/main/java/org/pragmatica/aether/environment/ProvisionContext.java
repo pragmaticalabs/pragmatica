@@ -65,20 +65,32 @@ public record ProvisionContext(Option<ClusterName> clusterName,
     }
 
     /// Canonical node-id resolution: honor a caller-supplied [#nodeId] when present
-    /// (bootstrap path), otherwise self-allocate a fresh `aether-<cluster>-node-*`
-    /// id. Providers call this so identity is owned provider-side and echoed back via
-    /// [InstanceInfo#nodeId], rather than only tagging when the caller supplied one.
+    /// (bootstrap path), otherwise self-allocate a fresh CLOUD node id ([#mintCloudNodeId]).
+    /// Cloud providers call this so identity is owned provider-side and echoed back via
+    /// [InstanceInfo#nodeId], rather than only tagging when the caller supplied one. (Docker names
+    /// its containers itself and does not use it.)
     public String resolveNodeId() {
-        return nodeId.or(() -> mintNodeId(clusterName()));
+        return nodeId.or(ProvisionContext::mintCloudNodeId);
     }
 
-    /// A fresh `aether-<cluster>-node-<ulid>` node id. A caller that wants to KNOW the id before the provider runs (so the id it records and the
+    /// The node-id prefix of CLOUD nodes: `aether-node`, with NO cluster. A cloud server is named `<cluster>-<nodeId>` (the operation id,
+    /// [OperationId]), so the cluster already appears once there; repeating it in the node id would halve the cluster names a
+    /// provider's 63-character name limit allows (pre-GA flag day, CTO/owner ruling 2026-10-31). Docker keeps the cluster in its ids
+    /// ([#coreNodeNamePrefix]) because a container name is unique per daemon and several clusters share one.
+    public static final String CLOUD_NODE_PREFIX = "aether-node";
+
+    /// A fresh `aether-node-<ulid>` CLOUD node id (lower case: [IdGenerator] encodes the ULID in lower case).
+    public static String mintCloudNodeId() {
+        return IdGenerator.generate(CLOUD_NODE_PREFIX);
+    }
+
+    /// A fresh DOCKER `aether-<cluster>-node-<ulid>` node id. A caller that wants to KNOW the id before the provider runs (so the id it records and the
     /// identity the node boots with are one) mints it here and puts it in the context (#1027).
     public static String mintNodeId(Option<ClusterName> clusterName) {
         return IdGenerator.generate(coreNodeNamePrefix(clusterName));
     }
 
-    /// Canonical core-node name prefix for a cluster: `aether-<cluster>-node`. Compose
+    /// Canonical DOCKER core-node name prefix for a cluster: `aether-<cluster>-node` (cloud nodes use [#CLOUD_NODE_PREFIX]). Compose
     /// seeds are `<prefix>-<ordinal>` and auto-heal/bootstrap ids are `<prefix>-<ulid>`,
     /// so every core container of a cluster shares the `aether-<cluster>-` substring and
     /// a replacement is shape-identical to a seed. An absent cluster collapses to the
