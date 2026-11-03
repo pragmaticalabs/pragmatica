@@ -142,7 +142,10 @@ final class AckedMarker {
         }
 
         return next.offset() > bound
-               ? AppendLog.WalError.AckedMarkerAboveHead.FACTORY.apply(sidecar, next.offset(), bound).result()
+               ? AppendLog.WalError.AckedMarkerAboveHead.FACTORY.apply(sidecar,
+                                                                       next.offset(),
+                                                                       bound)
+                                                                .result()
                : persist(next, plainWriter).map(_ -> install(next));
     }
 
@@ -156,7 +159,7 @@ final class AckedMarker {
 
     private Result<Unit> persistDurably(AppendLog.AckedMark next) {
         return persist(next, forcedWriter).flatMap(_ -> forceDirectory())
-                                          .map(_ -> install(next));
+                      .map(_ -> install(next));
     }
 
     private Result<Unit> forceDirectory() {
@@ -185,9 +188,7 @@ final class AckedMarker {
     }
 
     static byte[] encode(AppendLog.AckedMark mark) {
-        var body = HEADER + " " + mark.epoch()
-                                      .map(AppendLog.EpochKey::token)
-                                      .or(NO_EPOCH) + " " + mark.offset();
+        var body = HEADER + " " + mark.epoch().map(AppendLog.EpochKey::token).or(NO_EPOCH) + " " + mark.offset();
 
         return (body + " " + Long.toHexString(crc(body)) + "\n").getBytes(StandardCharsets.UTF_8);
     }
@@ -219,14 +220,16 @@ final class AckedMarker {
         return NO_EPOCH.equals(field)
                ? Result.success(Option.none())
                : Result.success(field)
-                       .filter(corrupt(sidecar, "not an epoch key: '" + field + "'"), TOKEN.asMatchPredicate())
+                       .filter(corrupt(sidecar, "not an epoch key: '" + field + "'"),
+                               TOKEN.asMatchPredicate())
                        .flatMap(AppendLog.EpochKey::epochKey)
                        .map(Option::some);
     }
 
     private static Result<Long> parseOffset(Path sidecar, String field) {
         return Result.success(field)
-                     .filter(corrupt(sidecar, "not an offset: '" + field + "'"), OFFSET.asMatchPredicate())
+                     .filter(corrupt(sidecar, "not an offset: '" + field + "'"),
+                             OFFSET.asMatchPredicate())
                      .map(Long::parseLong);
     }
 

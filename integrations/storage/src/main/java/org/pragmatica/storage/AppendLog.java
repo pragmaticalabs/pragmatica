@@ -378,7 +378,7 @@ public final class AppendLog implements AutoCloseable {
         return existed
                ? recover(file, sink, sidecarWriter, markerWriter)
                : recover(file, sink, sidecarWriter, markerWriter).flatMap(AppendLog::bornWithMarker)
-                                                                 .flatMap(AppendLog::forceCreatedEntry);
+                        .flatMap(AppendLog::forceCreatedEntry);
     }
 
     /// A log this call CREATES has acked nothing: it is born with a durable `-1` marker (know `6665558916`, S6), so a
@@ -387,8 +387,8 @@ public final class AppendLog implements AutoCloseable {
     private static Result<AppendLog> bornWithMarker(AppendLog log) {
         synchronized (log.markerLock) {
             return log.acked.create()
-                      .onFailure(_ -> log.close())
-                      .map(_ -> log);
+                            .onFailure(_ -> log.close())
+                            .map(_ -> log);
         }
     }
 
@@ -522,7 +522,7 @@ public final class AppendLog implements AutoCloseable {
 
         synchronized (markerLock) {
             return lowerAckedMarker(keepThrough).flatMap(_ -> cutWindowProbe.get())
-                                                .flatMap(_ -> cutRecords(keepThrough));
+                                   .flatMap(_ -> cutRecords(keepThrough));
         }
     }
 
@@ -684,7 +684,8 @@ public final class AppendLog implements AutoCloseable {
 
     private Result<Unit> raiseAckedMarker(long offset) {
         synchronized (markerLock) {
-            return acked.advance(new AckedMark(attributedEpoch(offset), offset), Math.max(lastOffset, sealedFloor.getAsLong()));
+            return acked.advance(new AckedMark(attributedEpoch(offset), offset),
+                                 Math.max(lastOffset, sealedFloor.getAsLong()));
         }
     }
 
@@ -727,8 +728,7 @@ public final class AppendLog implements AutoCloseable {
         return Option.from(epochs.entries()
                                  .stream()
                                  .filter(entry -> entry.startOffset() <= offset)
-                                 .reduce((_, later) -> later))
-                     .map(EpochStart::key);
+                                 .reduce((_, later) -> later)).map(EpochStart::key);
     }
 
     /// READ-ONLY (#1569 A3): the owner-epoch history of the log at `file` as it is on the volume, without

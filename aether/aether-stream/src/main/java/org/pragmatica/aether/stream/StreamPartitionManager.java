@@ -891,8 +891,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void restoreAckedMarker(String streamName, int partition) {
         walFor(streamName, partition).filter(AppendLog::hasAckedRestore)
-                                     .filter(_ -> ownsTheCommittedRecord(streamName, partition))
-                                     .onPresent(wal -> restoreTrustedMarker(streamName, partition, wal));
+              .filter(_ -> ownsTheCommittedRecord(streamName, partition))
+              .onPresent(wal -> restoreTrustedMarker(streamName, partition, wal));
     }
 
     private boolean ownsTheCommittedRecord(String streamName, int partition) {
@@ -919,7 +919,11 @@ public final class StreamPartitionManager implements AutoCloseable {
                      .filter(key -> wal.attributedEpoch(marker.offset())
                                        .equals(some(key)))
                      .flatMap(key -> ownershipRecords.committed(streamName, partition)
-                                                     .filter(record -> inLiveLineage(streamName, partition, record, key, marker.offset())))
+                                                     .filter(record -> inLiveLineage(streamName,
+                                                                                     partition,
+                                                                                     record,
+                                                                                     key,
+                                                                                     marker.offset())))
                      .isPresent();
     }
 
@@ -2486,10 +2490,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     private void recordAckedMarker(String streamName, int partition, OffHeapRingBuffer ring) {
         if (placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER) {
             walFor(streamName, partition).onPresent(wal -> wal.recordAckedMarker(ring.visibleOffset())
-                                                             .onFailure(cause -> log.warn("Stream {} partition {}: the acked marker was not written (a restart waits for replica re-acks of the records it would have covered): {}",
-                                                                                          streamName,
-                                                                                          partition,
-                                                                                          cause.message())));
+                                                              .onFailure(cause -> log.warn("Stream {} partition {}: the acked marker was not written (a restart waits for replica re-acks of the records it would have covered): {}",
+                                                                                           streamName,
+                                                                                           partition,
+                                                                                           cause.message())));
         }
     }
 
@@ -2498,8 +2502,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void flushAckedMarkers() {
         materializedHeads().forEach(head -> resolvePartitionBuffer(head.streamName(), head.partition()).onSuccess(ring -> recordAckedMarker(head.streamName(),
-                                                                                                                                             head.partition(),
-                                                                                                                                             ring)));
+                                                                                                                                            head.partition(),
+                                                                                                                                            ring)));
     }
 
     /// #2087: the owner told this replica how far its visible position reaches. Ignored on the owner itself (it is the
@@ -7282,8 +7286,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         /// The partition stays open: the marker is an optimisation, and the lowering it seeded already happened.
         @Contract
         private static void clampAckedMarker(String streamName, int partition, AppendLog wal, long head) {
-            wal.clampAckedMarker(head)
-               .onFailure(cause -> forgoAckedRestore(streamName, partition, wal, cause));
+            wal.clampAckedMarker(head).onFailure(cause -> forgoAckedRestore(streamName, partition, wal, cause));
         }
 
         @Contract
@@ -7401,7 +7404,8 @@ public final class StreamPartitionManager implements AutoCloseable {
         /// with a `-1` marker, so a prefix sealed before anything was acknowledged is hidden.
         private static long visibleSeed(AppendLog wal, long base) {
             return wal.ackedMarker()
-                      .map(marker -> Math.min(base, marker.offset()))
+                      .map(marker -> Math.min(base,
+                                              marker.offset()))
                       .or(base);
         }
 
