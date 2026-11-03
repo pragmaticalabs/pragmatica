@@ -10,6 +10,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.CommittedSliceTarget;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentContext.AwaitedTarget;
+import org.pragmatica.aether.deployment.cluster.fsm.write.WriteSite;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -150,7 +151,8 @@ final class AwaitedTargetWatch {
         log.info("Leader re-submits the SliceTarget put for {}: not committed after {} ms (#1109)",
                  artifact,
                  active.ctx().awaitedTargetBound().millis());
-        active.submitBatch(List.of(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()),
+        active.submitBatch(WriteSite.AWAITED_TARGET_RESUBMIT,
+                           List.of(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()),
                                                        value)));
     }
 

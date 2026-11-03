@@ -56,6 +56,7 @@ import org.pragmatica.aether.node.projection.ProjectionAwareCursorStore;
 import org.pragmatica.aether.node.projection.ProjectionNodeSupport;
 import org.pragmatica.aether.node.projection.ProjectionRegistry;
 import org.pragmatica.aether.node.stream.ClusterCursorStore;
+import org.pragmatica.aether.node.stream.ConsensusBatchCounters;
 import org.pragmatica.aether.node.stream.ConsumerAssignmentWriter;
 import org.pragmatica.aether.node.stream.StreamConsumerManager;
 import org.pragmatica.aether.node.stream.StreamConsumerRegistry;
@@ -147,6 +148,7 @@ import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.hlc.HlcClock;
@@ -695,8 +697,10 @@ public sealed interface StreamAssembly {
                                                                                                   (stream, partition) -> Option.option(clusterEventsControllerRef.get()).flatMap(ownershipController -> ownershipController.desiredOwner(stream,
                                                                                                                                                                                                                                          partition)),
                                                                                                   streamIsrInputs(clusterEventsControllerRef),
-                                                                                                  () -> kvStore.getTyped(LeaderKey.INSTANCE,
-                                                                                                                         LeaderValue.class));
+                                                                                                  StreamPartitionOwnershipWriter.ownCommittedLeader(() -> kvStore.getTyped(LeaderKey.INSTANCE,
+                                                                                                                                                                           LeaderValue.class),
+                                                                                                                                                    config.self(),
+                                                                                                                                                    isLeaderSupplier));
         // #1339 residual: a failed ownership write re-arms the reconcile through the same coalescing entry, backed off.
         var streamOwnershipRetry = StreamOwnershipRetry.streamOwnershipRetry(SharedScheduler::schedule,
                                                                              () -> reconcileReplicaSet(clusterEventsControllerRef));
@@ -1034,7 +1038,8 @@ public sealed interface StreamAssembly {
                                 StreamReadRouter streamReadRouter,
                                 StreamConsumerRuntime streamConsumerRuntime,
                                 StreamConsumerManager streamConsumerManager,
-                                ProjectionNodeSupport projectionNodeSupport) {}
+                                ProjectionNodeSupport projectionNodeSupport,
+                                ConsensusBatchCounters consensusBatchCounters) {}
 
     /// The committed owner source, the linearizable owner serve pipeline, the forward handler and read router, the consumer and projection machinery and the streaming coordinator.
     static StreamServingOutputs streamServing(StreamServingInputs in) {
@@ -1154,8 +1159,10 @@ public sealed interface StreamAssembly {
         var projectionRegistry = ProjectionRegistry.projectionRegistry(topicSubscriptionRegistry::allSubscriptions);
         Fn1<Option<AetherValue.StreamCursorCheckpointValue>, AetherKey.StreamCursorCheckpointKey> committedCursorReader = cursorKey -> kvStore.getTyped(cursorKey,
                                                                                                                                                         AetherValue.StreamCursorCheckpointValue.class);
-        Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> cursorCommandWriter = commands -> switchableCluster.apply(commands)
-                                                                                                          .mapToUnit();
+        // #2590 (P0.4 instrument, moved to P1): the consensus load of consumer progress by key class, read by the S7 arms.
+        var consensusBatchCounters = ConsensusBatchCounters.consensusBatchCounters();
+        Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> cursorCommandWriter = consensusBatchCounters.counting(commands -> switchableCluster.apply(commands)
+                                                                                                                                          .mapToUnit());
         var streamClusterCursorStore = ProjectionAwareCursorStore.projectionAwareCursorStore(ClusterCursorStore.clusterCursorStore(streamCursorStore,
                                                                                                                                    config.self(),
                                                                                                                                    committedCursorReader,
@@ -1279,7 +1286,8 @@ public sealed interface StreamAssembly {
                                         streamReadRouter,
                                         streamConsumerRuntime,
                                         streamConsumerManager,
-                                        projectionNodeSupport);
+                                        projectionNodeSupport,
+                                        consensusBatchCounters);
     }
 
     /// What `streamWriteRouter` reads from the assembly built so far.
@@ -1959,7 +1967,9 @@ public sealed interface StreamAssembly {
         }
     }
 
-    private static StreamForwardTransport createStreamForwardTransport(ClusterNetwork network) {
+    /// Package-private so the wiring is pinnable (#2574): `sendOutcome` must reach the network's tracked write, or a
+    /// refused forward silently waits out its timeout again.
+    static StreamForwardTransport createStreamForwardTransport(ClusterNetwork network) {
         return new StreamForwardTransport() {
             @Contract
             @Override
@@ -1971,6 +1981,13 @@ public sealed interface StreamAssembly {
             @Override
             public void send(NodeId target, StreamForwardMessage message, TimeSpan callerWait) {
                 network.send(target, message, callerWait);
+            }
+
+            /// #2574: the network's tracked write (the same dispatch, on the same FORWARD lane, as `send`), so a forward read
+            /// refused on a backpressured lane fails at once instead of waiting out its read timeout.
+            @Override
+            public Promise<WriteOutcome> sendOutcome(NodeId target, StreamForwardMessage message, TimeSpan callerWait) {
+                return network.sendOutcome(target, message, callerWait);
             }
         };
     }

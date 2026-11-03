@@ -8,7 +8,7 @@ import org.pragmatica.lang.Cause;
 /// under the key — a deposed governor/owner attempting to commit an OLD epoch over a newer one.
 ///
 /// At the Store-A applier ([KVStore]) the rejection is SILENT (no value mutation, no `ValuePut`
-/// notification — mirroring `staleLeaderWrite`); this `Cause` is the shared typed vocabulary the
+/// notification — as for a stale `LeaderValue`, which goes through the same fence); this `Cause` is the shared typed vocabulary the
 /// data-plane fence (DHT put / stream append, pieces 1b/1e) surfaces to the caller, which re-resolves
 /// the current owner and retries against the new owner/epoch.
 ///

@@ -81,12 +81,23 @@ class SystemCodecPinningTest {
     /// answers the read in place of its events, and an answer that succeeds carries none), so it is not steady-state traffic, and
     /// no one-byte slot is free to give it.
     ///
+    /// The control-log forward types (#2590 P1, [#CONTROL_LOG_FORWARD], matched by full name) are exempt because no one-byte slot
+    /// is free to give them. Their cost, stated: the batch-append is one message per cursor partition per writer per window
+    /// (`N_nodes / W` per second, independent of the delivery rate), and P1 sends none (no user); each costs one extra byte per
+    /// type occurrence -- the message, and each record and outcome in it -- next to records of tens of bytes.
+    ///
     /// The A6 repair-plane types ([#A6_REPAIR_PLANE], matched by full name) are exempt because no one-byte slot is free
     /// to give them. The page pair and the verified read are not small-message traffic: a page exists only while a
     /// partition is repaired and carries up to 16 MiB, and a verified read answers with a content block. The stamp digest
     /// request IS steady-state traffic — it replaces the one-byte legacy digest request, one per owned partition per
     /// co-replica per anti-entropy round — so for it the exemption costs one byte per such message, next to a digest
     /// response that is unchanged; that cost is accepted because there is no slot to give it.
+    private static final Set<String> CONTROL_LOG_FORWARD = Set.of("org.pragmatica.aether.stream.forward.ControlRecordDto",
+                                                                  "org.pragmatica.aether.stream.forward.ControlOutcomeDto",
+                                                                  "org.pragmatica.aether.stream.forward.ControlOutcomeDto.Kind",
+                                                                  "org.pragmatica.aether.stream.forward.StreamForwardMessage.ControlAppendForward",
+                                                                  "org.pragmatica.aether.stream.forward.StreamForwardMessage.ControlAppendForwardResponse");
+
     private static final Set<String> A6_REPAIR_PLANE = Set.of("org.pragmatica.dht.DHTMessage.StampDigestRequest",
                                                                                  "org.pragmatica.dht.DHTMessage.MigrationPageRequest",
                                                                                  "org.pragmatica.dht.DHTMessage.MigrationPageResponse",
@@ -117,6 +128,7 @@ class SystemCodecPinningTest {
                                                   && !entry.getKey().endsWith(".LeaderPreVoteResponse")
                                                   && !entry.getKey().endsWith(".CommitAdvance")
                                                   && !A6_REPAIR_PLANE.contains(entry.getKey())
+                                                  && !CONTROL_LOG_FORWARD.contains(entry.getKey())
                                                   && !W_OBS_REPLICA_FEED.contains(entry.getKey())
                                                   && !entry.getKey().startsWith("org.pragmatica.aether.stream.provenance.")
                                                   && !entry.getKey().startsWith("org.pragmatica.aether.stream.forward.ReadRefusal"))

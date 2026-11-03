@@ -330,6 +330,7 @@ class ClusterConfigRoutesApplyTest {
         return switch (method.getName()) {
             case "kvStore" -> store;
             case "isLeader" -> true;
+            case "self" -> new org.pragmatica.consensus.NodeId("core");
             case "apply" -> applyBatch(store, args);
             default -> throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
         };

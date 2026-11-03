@@ -11,6 +11,7 @@ import java.util.Set;
 
 import org.pragmatica.aether.deployment.CommittedSliceTarget;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState.Active;
+import org.pragmatica.aether.deployment.cluster.fsm.write.WriteSite;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
@@ -50,9 +51,9 @@ record StaleEntryCleaner(Active active) {
                        (key, _) -> collectStaleNodeRoutesKey(commands, key, currentNodes));
         if (!commands.isEmpty()) {
             log.debug("Cleaning up {} stale node-routes entries", commands.size());
-            active.ctx()
-                  .cluster()
-                  .apply(commands)
+            active.termWriter()
+                  .write(WriteSite.STALE_NODE_ROUTES,
+                         () -> commands)
                   .onFailure(cause -> log.error("Failed to clean up stale node routes: {}",
                                                 cause.message()));
         }
@@ -86,9 +87,9 @@ record StaleEntryCleaner(Active active) {
                                                         currentNodes));
         if (!commands.isEmpty()) {
             log.info("Cleaning up {} stale topic subscription/publisher rows", commands.size());
-            active.ctx()
-                  .cluster()
-                  .apply(commands)
+            active.termWriter()
+                  .write(WriteSite.STALE_TOPIC_ROWS,
+                         () -> commands)
                   .onFailure(cause -> log.error("Failed to clean up stale topic rows: {}",
                                                 cause.message()));
         }
@@ -142,9 +143,9 @@ record StaleEntryCleaner(Active active) {
                                                        .toList();
 
         log.info("Cleaning up {} stale slice entries", staleKeys.size());
-        active.ctx()
-              .cluster()
-              .apply(commands)
+        active.termWriter()
+              .write(WriteSite.STALE_SLICE_ENTRIES,
+                     () -> commands)
               .onFailure(cause -> log.error("Failed to clean up stale slice entries: {}",
                                             cause.message()));
     }
@@ -169,9 +170,9 @@ record StaleEntryCleaner(Active active) {
                                                        .toList();
 
         log.info("Cleaning up {} stale node-artifact entries", staleKeys.size());
-        active.ctx()
-              .cluster()
-              .apply(commands)
+        active.termWriter()
+              .write(WriteSite.STALE_NODE_ARTIFACTS,
+                     () -> commands)
               .onFailure(cause -> log.error("Failed to clean up stale node-artifact entries: {}",
                                             cause.message()));
     }
@@ -223,9 +224,9 @@ record StaleEntryCleaner(Active active) {
             // most twice; this sweep is what removes it until it is gone. The duplicate Remove when the
             // node's own succeeds is harmless.
             if (state == SliceState.UNLOAD || state == SliceState.UNLOADING) {
-                active.removeNodeArtifactKey(key);
+                active.removeNodeArtifactKey(WriteSite.NODE_ARTIFACT_REMOVE_ORPHAN, key);
             } else {
-                active.issueUnloadCommand(key);
+                active.issueUnloadCommand(WriteSite.UNLOAD_ORPHAN, key);
             }
         }
 
