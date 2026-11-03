@@ -111,6 +111,7 @@ final class M1Instrument {
     @SuppressWarnings({"unchecked", "rawtypes"})
     static M1Instrument install(AetherNode node) throws ReflectiveOperationException {
         var instrument = new M1Instrument(node.self().id());
+        ALL.add(instrument);
         var store = node.kvStore();
 
         instrument.store = store;
@@ -152,6 +153,85 @@ final class M1Instrument {
     private final AtomicLong slotSerial = new AtomicLong();
     private final AtomicLong noopSerial = new AtomicLong();
     private Object engineRef;
+    /// Every installed instrument, so a dump can ask the OTHER cores' ledgers about this core's pending batches.
+    static final java.util.List<M1Instrument> ALL = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    /// Test-only dump of this core's pending batches (reflection on `pendingBatches`, `committedLedger`): the first-choice id (the batch this voter proposes), and per
+    /// pending batch its id, correlation ids, the command classes and keys inside, and whether the committed-batch ledger knows the id and ALL of its correlation ids.
+    String pendingDump() {
+        try {
+            var type = engineRef.getClass();
+            var pendingField = type.getDeclaredField("pendingBatches");
+            var ledgerField = type.getDeclaredField("committedLedger");
+
+            pendingField.setAccessible(true);
+            ledgerField.setAccessible(true);
+            var pending = new java.util.ArrayList<>(((java.util.Map<?, ?>) pendingField.get(engineRef)).entrySet());
+            var ledger = ledgerField.get(engineRef);
+            var committedField = ledger.getClass().getDeclaredField("committed");
+
+            committedField.setAccessible(true);
+            java.util.Map<Object, java.util.Set<Object>> committed;
+
+            synchronized (ledger) {
+                committed = new java.util.HashMap<>();
+                for (var e : ((java.util.Map<?, ?>) committedField.get(ledger)).entrySet()) {
+                    committed.put(e.getKey(), new java.util.HashSet<>((java.util.Set<?>) e.getValue()));
+                }
+            }
+            var rows = new java.util.ArrayList<String>();
+
+            for (var entry : pending) {
+                var batch = entry.getValue();
+                var ids = (java.util.List<?>) batch.getClass().getMethod("correlationIds").invoke(batch);
+                var commands = (java.util.List<?>) batch.getClass().getMethod("commands").invoke(batch);
+                var known = committed.get(entry.getKey());
+
+                rows.add("{\"id\":\"" + esc(entry.getKey()) + "\",\"nCorrelationIds\":" + ids.size() + ",\"correlationIds\":\"" + esc(ids.stream().limit(5).toList())
+                         + "\",\"commands\":\"" + esc(commands.stream().limit(6).map(M1Instrument::commandSummary).toList()) + "\",\"nCommands\":" + commands.size()
+                         + ",\"ledgerKnowsId\":" + (known != null) + ",\"ledgerKnowsAllCorrelationIds\":" + (known != null && known.containsAll(ids))
+                         + ",\"otherCoresLedgerKnowsAll\":\"" + ALL.stream().filter(i -> i != this).filter(i -> i.ledgerKnows(entry.getKey(), ids)).map(i -> i.nodeId).toList() + "\"}");
+            }
+            return "{\"core\":\"" + nodeId + "\",\"firstChoice\":\"" + (pending.isEmpty() ? "none" : esc(pending.getFirst().getKey())) + "\",\"pendingBatches\":" + pending.size()
+                   + ",\"ledgerSize\":" + committed.size() + ",\"pending\":" + rows.stream().collect(java.util.stream.Collectors.joining(",", "[", "]")) + "}";
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return "{\"core\":\"" + nodeId + "\",\"error\":\"" + e.getClass().getSimpleName() + "\"}";
+        }
+    }
+
+    /// Whether THIS core's committed-batch ledger holds `batchId` and every one of `correlationIds` (by reflection; a copy taken under the ledger's monitor).
+    boolean ledgerKnows(Object batchId, java.util.List<?> correlationIds) {
+        try {
+            var ledgerField = engineRef.getClass().getDeclaredField("committedLedger");
+
+            ledgerField.setAccessible(true);
+            var ledger = ledgerField.get(engineRef);
+            var committedField = ledger.getClass().getDeclaredField("committed");
+
+            committedField.setAccessible(true);
+            synchronized (ledger) {
+                var known = ((java.util.Map<?, ?>) committedField.get(ledger)).get(batchId);
+
+                return known != null && ((java.util.Set<?>) known).containsAll(correlationIds);
+            }
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return false;
+        }
+    }
+
+    private static String commandSummary(Object command) {
+        try {
+            var key = command.getClass().getMethod("key").invoke(command);
+
+            return command.getClass().getSimpleName() + ":" + key.getClass().getSimpleName() + " " + key;
+        } catch (ReflectiveOperationException e) {
+            return command.getClass().getSimpleName();
+        }
+    }
+
+    private static String esc(Object value) {
+        return String.valueOf(value).replace("\\", "/").replace("\"", "'");
+    }
 
     /// The engine's own view, read by reflection: batches still pending (`pendingBatches`), the age of the oldest one on this node's LOCAL clock
     /// (`oldestPendingBatchAgeMs`, the metric the engine registers) and its current phase. JSON object, or an `error` field when unreadable.
@@ -458,6 +538,9 @@ final class M1Instrument {
             var kind = command.getClass().getSimpleName();
 
             add("cmd." + kind, 1);
+            if (command instanceof KVCommand.Noop<?> barrier) {
+                add("cmd.Noop:" + barrier.key().getClass().getSimpleName(), 1);
+            }
             if (CAPTURE && command instanceof KVCommand.Noop<?> noop) {
                 source("noop.committed key=" + noop.key().getClass().getSimpleName() + " " + noop.key());
             }
