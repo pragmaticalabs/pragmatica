@@ -73,7 +73,25 @@ final class M1Instrument {
         var out = new TreeMap<String, Long>();
 
         counters.forEach((name, adder) -> out.put(name, adder.sum()));
+        enginePhase().ifPresent(phase -> out.put("engine.phase", phase));
         return out;
+    }
+
+    /// The engine's own slot number (`currentPhase`), read by reflection: the independent reading `engine.slots` is checked against. It
+    /// advances only in `advancePhase` (which calls `onPhaseCompleted` once) or on a snapshot restore, so outside restores its delta equals
+    /// the `engine.slots` delta, up to the one slot either end a non-atomic read can straddle.
+    java.util.OptionalLong enginePhase() {
+        if (engineRef == null) {
+            return java.util.OptionalLong.empty();
+        }
+        try {
+            var method = engineRef.getClass().getDeclaredMethod("currentPhaseForTesting");
+
+            method.setAccessible(true);
+            return java.util.OptionalLong.of(((org.pragmatica.consensus.rabia.Phase) method.invoke(engineRef)).value());
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException("engine phase unreadable on " + nodeId, e);
+        }
     }
 
     /// `after - before`, zero entries dropped.
@@ -182,6 +200,9 @@ final class M1Instrument {
     private void source(String what) {
         var src = sources.computeIfAbsent(what, _ -> new Source());
         var now = System.nanoTime();
+
+        // exact, never drained: `capture.n:noop.committed` is checked against the engine's own `cmd.Noop` per window
+        add("capture.n:" + what.substring(0, what.indexOf(' ')), 1);
 
         src.count.increment();
         if (src.firstNanos == 0) {

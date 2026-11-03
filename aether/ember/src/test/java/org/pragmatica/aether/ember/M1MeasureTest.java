@@ -92,6 +92,12 @@ class M1MeasureTest {
     private PrintWriter out;
     private int controlSerial;
     private boolean floodFound;
+    /// The last measure() window's settle verdict and the reference core's slots in the idle windows around it. settle() watches KV
+    /// notifications only, so a window can settle while the engine still runs empty or Noop slots (S6d at N>=50); S6 reads these to flag it.
+    private boolean lastSettled;
+    private long lastIdleSlotsBefore;
+    private long lastIdleSlotsAfter;
+    private Map<String, Long> lastIdleCounts = Map.of();
 
     @AfterEach
     void tearDown() {
@@ -613,6 +619,8 @@ class M1MeasureTest {
         }
     }
 
+    /// S6b sizes the slice by the community count; nothing places it one per community (placement is least-load), so `communitiesCovered`
+    /// in its line is the measured coverage, which can be below `communitiesTotal`.
     private int s6Instances(String cls) {
         return switch (cls) {
             case "s6b" -> Math.max(MIN_BLUEPRINT_INSTANCES, new java.util.HashSet<>(communities().values()).size());
@@ -739,28 +747,50 @@ class M1MeasureTest {
         long engineMutations = raw.getOrDefault("tx.accepted.mutations", 0L) + raw.getOrDefault("cmd.Put", 0L) + raw.getOrDefault("cmd.Remove", 0L);
         long notified = raw.getOrDefault("put.total", 0L) + raw.getOrDefault("remove.total", 0L);
         var transitions = raw.entrySet().stream().filter(e -> e.getKey().startsWith("nodeArtifact.state:")).collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (a, b) -> a, TreeMap::new));
-        var excluded = failedPuts > 0 || failedNow > 0 || !run.converged;
+        long slots = raw.getOrDefault("engine.slots", 0L);
+        long phaseAdvance = raw.getOrDefault("engine.phase", 0L);
+        // settle() is blind to empty and Noop slots; a busy idle window before or after the event means a flood is running (the S6d flood,
+        // which can start in the PREVIOUS rep's tail), so the window's counts are a truncation, not a sample. Absolute rate: a relative test
+        // (after <= 3x before) passes when the flood predates the window (measured: before 17,995, after 18,153). 20 slots/s is a guess;
+        // quiet idle measured 0-4 slots per 15 s.
+        boolean slotsQuiet = lastIdleSlotsBefore * 1000 <= 20 * IDLE_WINDOW_MS && lastIdleSlotsAfter * 1000 <= 20 * IDLE_WINDOW_MS;
+        var excluded = failedPuts > 0 || failedNow > 0 || !run.converged || !lastSettled || !slotsQuiet;
 
         emit("{\"kind\":\"s6\"," + header() + ",\"class\":\"" + run.cls + "\",\"rep\":" + run.rep + ",\"placement\":\"" + run.placement + "\",\"instances\":" + run.instances
              + ",\"converged\":" + run.converged + ",\"routePublished\":" + run.routePublished + ",\"statesAtEnd\":" + js(states.entrySet().stream().collect(Collectors.toMap(Map.Entry::getKey, e -> (long) e.getValue(), (a, b) -> a, TreeMap::new)))
              + ",\"hosts\":" + hosts.size() + ",\"communitiesTotal\":" + allCommunities.size() + ",\"communitiesCovered\":" + covered.size()
              + ",\"nodeArtifactPuts\":" + artifactPuts + ",\"nodeArtifactPutsPerInstance\":" + (run.instances == 0 ? 0 : (double) artifactPuts / run.instances)
              + ",\"transitions\":" + js(transitions) + ",\"failedPuts\":" + failedPuts + ",\"failedAtEnd\":" + failedNow
-             + ",\"txAccepted\":" + raw.getOrDefault("tx.accepted", 0L) + ",\"slots\":" + raw.getOrDefault("engine.slots", 0L)
+             + ",\"txAccepted\":" + raw.getOrDefault("tx.accepted", 0L) + ",\"slots\":" + slots + ",\"phaseAdvance\":" + phaseAdvance
+             + ",\"settled\":" + lastSettled + ",\"idleSlotsBefore\":" + lastIdleSlotsBefore + ",\"idleSlotsAfter\":" + lastIdleSlotsAfter + ",\"slotsQuiet\":" + slotsQuiet
              + ",\"mutationsNotified\":" + notified + ",\"mutationsEngine\":" + engineMutations
              + ",\"familyGaps\":" + js(familyGaps(raw))
              + ",\"membershipEdges\":" + edges + ",\"membersChanged\":" + membersChanged + ",\"leaderChanged\":" + leaderChanged
              + ",\"flaggedSwim\":" + (edges > 0 || membersChanged || leaderChanged) + ",\"excludedFromFit\":" + excluded
              + ",\"families\":" + js(raw.entrySet().stream().filter(e -> e.getKey().startsWith("put:") || e.getKey().startsWith("remove:")).collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (a, b) -> a, TreeMap::new))) + "}");
-        if (deploy && !excluded) {
-            // Instrument self-checks against two independent readings: the engine's committed commands (per family), and the leader's own KV state.
-            // A Put notifies exactly once, so the engine's puts of a family equal the notified puts of it; a Remove of an absent key notifies nothing,
-            // so the engine's removes may exceed the notified ones, never fall short.
-            for (var family : List.of("NodeArtifactKey", "NodeRoutesKey")) {
-                long enginePuts = raw.getOrDefault("cmd.Put:" + family, 0L) + raw.getOrDefault("tx.mut:" + family, 0L);
+        // Slot count against the engine's own slot number (an independent reading): every arm, excluded or not. +-2: each snapshot reads the
+        // phase and the counter non-atomically, so either end can straddle one slot.
+        if (raw.getOrDefault("engine.snapshot-restores", 0L) == 0) {
+            check(Math.abs(slots - phaseAdvance) <= 2, run.cls + ": engine.slots " + slots + " != engine phase advance " + phaseAdvance);
+        }
+        if (M1Instrument.CAPTURE) {
+            // the per-key Noop capture must see every Noop the engine committed (one per batch command, same thread; +-2 straddle as above)
+            long captured = raw.getOrDefault("capture.n:noop.committed", 0L);
 
-                check(enginePuts == raw.getOrDefault("put:" + family, 0L), run.cls + ": " + family + " puts: engine " + enginePuts + " != notified " + raw.getOrDefault("put:" + family, 0L));
-                check(raw.getOrDefault("cmd.Remove:" + family, 0L) >= raw.getOrDefault("remove:" + family, 0L), run.cls + ": " + family + " removes notified exceed engine removes");
+            check(Math.abs(captured - raw.getOrDefault("cmd.Noop", 0L)) <= 2, run.cls + ": captured committed Noops " + captured + " != cmd.Noop " + raw.getOrDefault("cmd.Noop", 0L));
+        }
+        if (!excluded) {
+            // Instrument self-checks against two independent readings: the engine's committed commands (per family), and the leader's own KV state.
+            // A Put notifies exactly once, so the engine's puts of a family (plain Puts plus accepted transaction mutations) equal the notified
+            // puts of it, for EVERY family; the one exception is DeploymentOutcomeKey, whose non-successor writes the store refuses without
+            // publishing (KVStore staleSuccessorWrite, lead ruling), so there the engine may exceed the notifications. A Remove of an absent key
+            // notifies nothing, so the engine's removes may exceed the notified ones, never fall short.
+            familyGaps(raw).forEach((gap, value) -> check(value > 0 && (gap.startsWith("remove:") || gap.equals("put:DeploymentOutcomeKey")),
+                                                          run.cls + ": " + gap + " engine minus notified = " + value));
+        }
+        if (deploy && !excluded) {
+            for (var family : List.of("NodeArtifactKey", "NodeRoutesKey")) {
+                check(raw.getOrDefault("put:" + family, 0L) > 0, run.cls + ": no " + family + " put notified in a deploy window");
             }
             check(notified <= engineMutations, run.cls + ": notification reading " + notified + " exceeds engine reading " + engineMutations);
             check(artifactPuts >= states.getOrDefault("ACTIVE", 0), run.cls + ": " + states.getOrDefault("ACTIVE", 0) + " ACTIVE instances but only " + artifactPuts + " NodeArtifactKey puts counted");
@@ -882,6 +912,7 @@ class M1MeasureTest {
     private Map<String, Long> measure(String cls, int rep, Set<String> excluded, Runnable action, long minMs, long quietMs) {
         var refs = refInstruments(excluded);
         var idleBefore = idleWindow(refs, IDLE_WINDOW_MS);
+        var idleSlotsBefore = lastIdleCounts.getOrDefault("engine.slots", 0L);
         var before = refs.stream().map(M1Instrument::snapshot).toList();
         var t0 = System.nanoTime();
         var workersStart = workers.size();
@@ -895,6 +926,10 @@ class M1MeasureTest {
         var t1 = System.nanoTime();
         var after = refs.stream().map(M1Instrument::snapshot).toList();
         var idleAfter = idleWindow(refs, IDLE_WINDOW_MS);
+
+        lastSettled = settled;
+        lastIdleSlotsBefore = idleSlotsBefore;
+        lastIdleSlotsAfter = lastIdleCounts.getOrDefault("engine.slots", 0L);
         drainCapture("window+idleAfter", cls, rep);
         var lastOffsetMs = lastNonIdleOffsetMs(refs.getFirst(), t0);
         var loadEnd = loadavg();
@@ -927,7 +962,8 @@ class M1MeasureTest {
         var after = refs.getFirst().snapshot();
 
         refs.getFirst().logSince(t0).forEach(commit -> idleOps.add(commit.op()));
-        return "{\"ms\":" + (System.nanoTime() - t0) / 1_000_000 + ",\"counts\":" + js(M1Instrument.delta(before, after)) + "}";
+        lastIdleCounts = M1Instrument.delta(before, after);
+        return "{\"ms\":" + (System.nanoTime() - t0) / 1_000_000 + ",\"counts\":" + js(lastIdleCounts) + "}";
     }
 
     /// True when no non-idle commit reached the first reference core for `quietMs` after `t0` (and at least `minMs` passed); false at the cap.
