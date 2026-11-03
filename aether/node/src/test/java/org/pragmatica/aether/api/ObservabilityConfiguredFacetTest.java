@@ -12,13 +12,10 @@ import org.pragmatica.aether.slice.ObservabilityStrategyCell;
 import org.pragmatica.aether.slice.ObservabilityStrategyCell.InvocationStrategy;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.cluster.node.rabia.RabiaNode;
-import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
 import org.pragmatica.testlogging.LogCapture;
 
 import java.util.List;
@@ -57,12 +54,11 @@ class ObservabilityConfiguredFacetTest {
         traceStore = InvocationTraceStore.invocationTraceStore();
         var sampler = AdaptiveSampler.adaptiveSampler(1_000_000);
 
-        registry = ObservabilityConfigRegistry.observabilityConfigRegistry(clusterNodeStub(),
-                                                                           kvStoreStub(),
-                                                                           ObservabilityBaseline.fleet(sampler,
-                                                                                                       traceStore,
-                                                                                                       NODE_ID,
-                                                                                                       DEFAULT_DEPTH));
+        registry = ObservabilityCommittingStub.registry(kvStoreStub(),
+                                                        ObservabilityBaseline.fleet(sampler,
+                                                                                    traceStore,
+                                                                                    NODE_ID,
+                                                                                    DEFAULT_DEPTH));
     }
 
     @Test
@@ -219,15 +215,5 @@ class ObservabilityConfiguredFacetTest {
     @SuppressWarnings("unchecked")
     private static KVStore<AetherKey, AetherValue> kvStoreStub() {
         return Mockito.mock(KVStore.class);
-    }
-
-    @SuppressWarnings("unchecked")
-    private static RabiaNode<KVCommand<AetherKey>> clusterNodeStub() {
-        RabiaNode<KVCommand<AetherKey>> node = Mockito.mock(RabiaNode.class);
-
-        Mockito.when(node.apply(Mockito.anyList()))
-               .thenAnswer(_ -> Promise.success(List.of(Unit.unit())));
-
-        return node;
     }
 }
