@@ -66,6 +66,6 @@ public final class R2dbcSqlConnectorFactory implements ResourceFactory<SqlConnec
                                                     .build();
         var pool = new ConnectionPool(poolConfig);
 
-        return R2dbcSqlConnector.r2dbcSqlConnector(config, pool);
+        return R2dbcSqlConnector.r2dbcSqlConnector(config, pool, connectionFactory);
     }
 }

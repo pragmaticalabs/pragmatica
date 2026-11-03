@@ -25,27 +25,36 @@ import io.r2dbc.spi.ConnectionFactory;
 import io.r2dbc.spi.Row;
 import io.r2dbc.spi.RowMetadata;
 import io.r2dbc.spi.Statement;
-import io.r2dbc.spi.Wrapped;
 
 import static org.pragmatica.lang.Option.none;
 
 
 public final class R2dbcSqlConnector implements SqlConnector {
-    private static final System.Logger LOG = System.getLogger(R2dbcSqlConnector.class.getName());
-
     private final DatabaseConnectorConfig config;
     private final ConnectionFactory connectionFactory;
+    private final ConnectionFactory unpooled;
     private final R2dbcOperations operations;
 
-    private R2dbcSqlConnector(DatabaseConnectorConfig config, ConnectionFactory connectionFactory) {
+    private R2dbcSqlConnector(DatabaseConnectorConfig config,
+                              ConnectionFactory connectionFactory,
+                              ConnectionFactory unpooled) {
         this.config = config;
         this.connectionFactory = connectionFactory;
+        this.unpooled = unpooled;
         this.operations = R2dbcOperations.r2dbcOperations(connectionFactory);
     }
 
     public static R2dbcSqlConnector r2dbcSqlConnector(DatabaseConnectorConfig config,
                                                       ConnectionFactory connectionFactory) {
-        return new R2dbcSqlConnector(config, connectionFactory);
+        return new R2dbcSqlConnector(config, connectionFactory, connectionFactory);
+    }
+
+    /// `unpooled` is the raw factory the pool wraps; `pinned` opens its dedicated connection there and never from
+    /// `pooled`, so a session lock cannot outlive its connection inside a pool.
+    public static R2dbcSqlConnector r2dbcSqlConnector(DatabaseConnectorConfig config,
+                                                      ConnectionFactory pooled,
+                                                      ConnectionFactory unpooled) {
+        return new R2dbcSqlConnector(config, pooled, unpooled);
     }
 
     public ConnectionFactory connectionFactory() {
@@ -106,11 +115,11 @@ public final class R2dbcSqlConnector implements SqlConnector {
     public <T> Promise<T> pinned(Duration statementTimeout,
                                  SqlConnector.TransactionCallback<T> body,
                                  SqlConnector.TransactionCallback<Unit> release) {
-        return ReactiveOperations.<Connection> fromPublisher(connectionFactory.create()).flatMap(conn -> runPinned(conn,
-                                                                                                                   new PinnedR2dbcConnector(config,
-                                                                                                                                            conn),
-                                                                                                                   body,
-                                                                                                                   release));
+        return ReactiveOperations.<Connection> fromPublisher(unpooled.create()).flatMap(conn -> runPinned(conn,
+                                                                                                          new PinnedR2dbcConnector(config,
+                                                                                                                                   conn),
+                                                                                                          body,
+                                                                                                          release));
     }
 
     @Override
@@ -179,14 +188,7 @@ public final class R2dbcSqlConnector implements SqlConnector {
                                             SqlConnector session,
                                             SqlConnector.TransactionCallback<T> body,
                                             SqlConnector.TransactionCallback<Unit> release) {
-        return invoke(body, session).fold(bodyResult -> releaseThenFinish(conn, session, release, bodyResult));
-    }
-
-    private static <T> Promise<T> releaseThenFinish(Connection conn,
-                                                    SqlConnector session,
-                                                    SqlConnector.TransactionCallback<Unit> release,
-                                                    Result<T> bodyResult) {
-        return invoke(release, session).fold(releaseResult -> finishPinned(conn, bodyResult, releaseResult));
+        return invoke(body, session).fold(bodyResult -> closeAfterRelease(conn, session, release, bodyResult));
     }
 
     private static <R> Promise<R> invoke(SqlConnector.TransactionCallback<R> callback, SqlConnector session) {
@@ -195,36 +197,14 @@ public final class R2dbcSqlConnector implements SqlConnector {
                       .flatMap(promise -> promise);
     }
 
-    // BER-by-destruction: an unlock that failed may have left a session lock behind, and a lock must never ride a
-    // pooled connection to another borrower. Nothing is retried; the physical connection is closed and the pool is
-    // made to invalidate its slot instead of recycling it (see [#destroyConnection]), so the backend ends and the lock
-    // goes with it. Guarantee earned: no connection returns to the pool unless its release succeeded. The body's
-    // outcome is kept; a failure while destroying is absorbed because the connection is unusable either way.
-    private static <T> Promise<T> finishPinned(Connection conn, Result<T> bodyResult, Result<Unit> releaseResult) {
-        return releaseResult.fold(cause -> destroyAndResolve(conn, bodyResult, cause),
-                                  _ -> closeAndResolve(conn, bodyResult));
-    }
-
-    private static <T> Promise<T> destroyAndResolve(Connection conn, Result<T> bodyResult, Cause releaseFailure) {
-        LOG.log(System.Logger.Level.WARNING,
-                "Pinned session release failed, destroying the physical connection: " + releaseFailure.message());
-
-        return destroyConnection(conn).fold(_ -> Promise.resolved(bodyResult));
-    }
-
-    /// r2dbc-pool validates a connection on `close()` and invalidates (destroys) the pool slot when validation fails.
-    /// Closing the wrapped physical connection first makes that validation fail, so `close()` destroys instead of
-    /// recycling. A connection that is not pool-wrapped is simply closed.
-    private static Promise<Unit> destroyConnection(Connection conn) {
-        return ReactiveOperations.fromVoidPublisher(physical(conn).close())
-                                 .fold(_ -> ReactiveOperations.fromVoidPublisher(conn.close()))
-                                 .fold(_ -> Promise.success(Unit.unit()));
-    }
-
-    private static Connection physical(Connection conn) {
-        return conn instanceof Wrapped<?> wrapped && wrapped.unwrap() instanceof Connection inner
-               ? inner
-               : conn;
+    // Close is the release (design 2.1 rule 2): the dedicated connection is physically closed, which ends the server
+    // session and drops every session-scoped lock. The explicit `release` step is a courtesy that ran just before; its
+    // outcome changes nothing, so a failure of it is absorbed (design-out: no pool exists to carry the session on).
+    private static <T> Promise<T> closeAfterRelease(Connection conn,
+                                                    SqlConnector session,
+                                                    SqlConnector.TransactionCallback<Unit> release,
+                                                    Result<T> bodyResult) {
+        return invoke(release, session).fold(_ -> closeAndResolve(conn, bodyResult));
     }
 
     private <T> Promise<T> beginAndExecute(Connection conn, SqlConnector.TransactionCallback<T> callback) {

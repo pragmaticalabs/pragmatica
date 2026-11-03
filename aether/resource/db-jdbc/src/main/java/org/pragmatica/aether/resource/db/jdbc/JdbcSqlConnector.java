@@ -5,6 +5,7 @@ package org.pragmatica.aether.resource.db.jdbc;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
+import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -14,6 +15,7 @@ import java.sql.SQLTransactionRollbackException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Properties;
 
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
 import org.pragmatica.aether.resource.db.DatabaseType;
@@ -84,11 +86,11 @@ public final class JdbcSqlConnector implements SqlConnector {
     public <T> Promise<T> pinned(Duration statementTimeout,
                                  SqlConnector.TransactionCallback<T> body,
                                  SqlConnector.TransactionCallback<Unit> release) {
-        return Promise.lift(e -> mapException(e, PINNED), this::borrowAutocommit).flatMap(conn -> runPinned(conn,
-                                                                                                            pinnedSession(conn,
-                                                                                                                          statementTimeout),
-                                                                                                            body,
-                                                                                                            release));
+        return Promise.lift(e -> mapException(e, PINNED), this::openDedicated).flatMap(conn -> runPinned(conn,
+                                                                                                         pinnedSession(conn,
+                                                                                                                       statementTimeout),
+                                                                                                         body,
+                                                                                                         release));
     }
 
     @Override
@@ -172,15 +174,23 @@ public final class JdbcSqlConnector implements SqlConnector {
         }
     }
 
-    private Connection borrowAutocommit() throws SQLException {
-        var conn = dataSource.getConnection();
+    /// A DEDICATED physical connection from the driver, never from the Hikari pool: closing it ends the server session,
+    /// and with it every session-scoped lock, with no pool in between to keep it alive.
+    private Connection openDedicated() throws SQLException {
+        var properties = new Properties();
+
+        config.effectiveUsername(DatabaseConnectorConfig.Transport.JDBC)
+              .onPresent(u -> properties.setProperty("user", u));
+        config.effectivePassword(DatabaseConnectorConfig.Transport.JDBC)
+              .onPresent(p -> properties.setProperty("password", p));
+        var conn = DriverManager.getConnection(config.effectiveJdbcUrl(), properties);
 
         try {
             conn.setAutoCommit(true);
 
             return conn;
         } catch (SQLException e) {
-            destroyConnection(conn);
+            closeQuietly(conn);
 
             throw e;
         }
@@ -203,14 +213,14 @@ public final class JdbcSqlConnector implements SqlConnector {
                                      SqlConnector session,
                                      SqlConnector.TransactionCallback<T> body,
                                      SqlConnector.TransactionCallback<Unit> release) {
-        return invoke(body, session).fold(bodyResult -> releaseThenFinish(conn, session, release, bodyResult));
+        return invoke(body, session).fold(bodyResult -> releaseThenClose(conn, session, release, bodyResult));
     }
 
-    private <T> Promise<T> releaseThenFinish(Connection conn,
-                                             SqlConnector session,
-                                             SqlConnector.TransactionCallback<Unit> release,
-                                             Result<T> bodyResult) {
-        return invoke(release, session).fold(releaseResult -> finishPinned(conn, bodyResult, releaseResult));
+    private <T> Promise<T> releaseThenClose(Connection conn,
+                                            SqlConnector session,
+                                            SqlConnector.TransactionCallback<Unit> release,
+                                            Result<T> bodyResult) {
+        return invoke(release, session).fold(_ -> closeAndResolve(conn, bodyResult));
     }
 
     private static <R> Promise<R> invoke(SqlConnector.TransactionCallback<R> callback, SqlConnector session) {
@@ -219,46 +229,19 @@ public final class JdbcSqlConnector implements SqlConnector {
                       .flatMap(promise -> promise);
     }
 
-    // BER-by-destruction: an unlock that failed may have left a session lock behind, and a lock must never ride a
-    // pooled connection to another borrower. The inverse is not retried; the physical connection is destroyed, so the
-    // backend ends and the lock goes with it. Guarantee earned: no connection returns to the pool unless its release
-    // succeeded. If the destroy itself fails the connection is deliberately NOT closed (closing returns it to the pool):
-    // a leaked pool slot is preferable to lending out a session that may still hold the lock. The body's outcome is
-    // kept; the release failure is logged.
-    private <T> Promise<T> finishPinned(Connection conn, Result<T> bodyResult, Result<Unit> releaseResult) {
-        return releaseResult.fold(cause -> destroyAndResolve(conn, bodyResult, cause),
-                                  _ -> closeAndResolve(conn, bodyResult));
-    }
-
-    private <T> Promise<T> destroyAndResolve(Connection conn, Result<T> bodyResult, Cause releaseFailure) {
-        LOG.log(System.Logger.Level.WARNING,
-                "Pinned session release failed, destroying the physical connection: " + releaseFailure.message());
-
-        return Promise.lift(DatabaseConnectorError::databaseFailure, () -> destroyConnection(conn)).fold(_ -> Promise.resolved(bodyResult));
-    }
-
+    // Close is the release (design 2.1 rule 2): closing the dedicated connection ends the server session, which drops
+    // every session-scoped lock. The explicit `release` step is a courtesy that ran just before; its outcome changes
+    // nothing here, so a failure of it is absorbed (design-out: no pool exists to carry the session on). Chained to
+    // the INNER promise, so an outer timeout leaves the session, and its fence, open until the statement ends.
     private <T> Promise<T> closeAndResolve(Connection conn, Result<T> bodyResult) {
-        return Promise.lift(DatabaseConnectorError::databaseFailure, () -> closeConnection(conn)).fold(_ -> Promise.resolved(bodyResult));
+        return Promise.lift(DatabaseConnectorError::databaseFailure, () -> closeQuietly(conn)).fold(_ -> Promise.resolved(bodyResult));
     }
 
-    private static Unit closeConnection(Connection conn) throws SQLException {
-        conn.close();
-
-        return unit();
-    }
-
-    /// Hikari does NOT free the pool entry on `Connection.abort`: the entry is only marked evicted and stays checked
-    /// out for good, so `HikariDataSource.evictConnection` is the destroying call (it closes the physical connection at
-    /// once and removes the entry). Any other DataSource gets `Connection.abort`, the portable destroying call.
-    private Unit destroyConnection(Connection conn) {
+    private static Unit closeQuietly(Connection conn) {
         try {
-            if (HikariEviction.owns(dataSource)) {
-                HikariEviction.evict(dataSource, conn);
-            } else {
-                conn.abort(Runnable::run);
-            }
+            conn.close();
         } catch (SQLException | RuntimeException e) {
-            LOG.log(System.Logger.Level.ERROR, "Pinned session destroy failed; the connection is left unreturned", e);
+            LOG.log(System.Logger.Level.WARNING, "Pinned session close failed", e);
         }
 
         return unit();

@@ -17,8 +17,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.Cause;
-import org.pragmatica.postgres.PgConnection;
 import org.pragmatica.postgres.PgResultSet;
 import org.pragmatica.postgres.PgRow;
 import org.pragmatica.postgres.net.Connectible;
@@ -32,18 +30,22 @@ import static org.pragmatica.lang.Unit.unit;
 
 
 final class PgAsyncSqlConnector implements AsyncSqlConnector {
-    private static final System.Logger LOG = System.getLogger(PgAsyncSqlConnector.class.getName());
-
     private final DatabaseConnectorConfig config;
     private final Connectible connectible;
+    private final Connectible dedicated;
 
-    private PgAsyncSqlConnector(DatabaseConnectorConfig config, Connectible connectible) {
+    private PgAsyncSqlConnector(DatabaseConnectorConfig config, Connectible connectible, Connectible dedicated) {
         this.config = config;
         this.connectible = connectible;
+        this.dedicated = dedicated;
     }
 
-    static PgAsyncSqlConnector pgAsyncSqlConnector(DatabaseConnectorConfig config, Connectible connectible) {
-        return new PgAsyncSqlConnector(config, connectible);
+    /// `dedicated` is an unpooled source (`ConnectibleBuilder.plain()`): `pinned` opens its connection there and never
+    /// from `connectible`, whatever the pool mode.
+    static PgAsyncSqlConnector pgAsyncSqlConnector(DatabaseConnectorConfig config,
+                                                   Connectible connectible,
+                                                   Connectible dedicated) {
+        return new PgAsyncSqlConnector(config, connectible, dedicated);
     }
 
     @Override
@@ -93,14 +95,13 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
     }
 
     /// postgres-async has no per-statement timeout, so `statementTimeout` is not enforced here: the bound is the
-    /// caller's own promise timeout. A `TRANSACTION`-mode pool lends a physical connection per query, which cannot hold
-    /// a session, so it is refused rather than silently unpinned.
+    /// caller's own promise timeout.
     @Override
     public <T> Promise<T> pinned(Duration statementTimeout,
                                  TransactionCallback<T> body,
                                  TransactionCallback<Unit> release) {
-        return connectible.getConnection()
-                          .flatMap(conn -> runPinned(conn, config, body, release));
+        return dedicated.getConnection()
+                        .flatMap(conn -> runPinned(conn, config, body, release));
     }
 
     @Override
@@ -219,26 +220,14 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
                                             DatabaseConnectorConfig config,
                                             TransactionCallback<T> body,
                                             TransactionCallback<Unit> release) {
-        if (conn instanceof PgConnection) {
-            return runPinnedSession(conn, new PinnedSqlConnector(config, conn), body, release);
-        }
-
-        return conn.close()
-                   .flatMap(_ -> DatabaseConnectorError.PinnedSessionUnsupported.FACTORY.apply("the pool lends a physical connection per query (TRANSACTION pool mode); a session cannot be held").promise());
+        return runPinnedSession(conn, new PinnedSqlConnector(config, conn), body, release);
     }
 
     private static <T> Promise<T> runPinnedSession(Connection conn,
                                                    SqlConnector session,
                                                    TransactionCallback<T> body,
                                                    TransactionCallback<Unit> release) {
-        return invoke(body, session).fold(bodyResult -> releaseThenFinish(conn, session, release, bodyResult));
-    }
-
-    private static <T> Promise<T> releaseThenFinish(Connection conn,
-                                                    SqlConnector session,
-                                                    TransactionCallback<Unit> release,
-                                                    Result<T> bodyResult) {
-        return invoke(release, session).fold(releaseResult -> finishPinned(conn, bodyResult, releaseResult));
+        return invoke(body, session).fold(bodyResult -> closeAfterRelease(conn, session, release, bodyResult));
     }
 
     private static <R> Promise<R> invoke(TransactionCallback<R> callback, SqlConnector session) {
@@ -247,22 +236,15 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
                       .flatMap(promise -> promise);
     }
 
-    // BER-by-destruction: an unlock that failed may have left a session lock behind, and the pool does no session
-    // reset (no DISCARD, no pg_advisory_unlock_all), so a lock would ride this connection to the next borrower. Nothing
-    // is retried; abort() closes the socket and removes the connection from the pool, the backend ends and the lock goes
-    // with it. Guarantee earned: no connection returns to the pool unless its release succeeded. The body's outcome is
-    // kept; a failure while destroying is absorbed because the connection is unusable either way.
-    private static <T> Promise<T> finishPinned(Connection conn, Result<T> bodyResult, Result<Unit> releaseResult) {
-        return releaseResult.fold(cause -> abortAndResolve(conn, bodyResult, cause),
-                                  _ -> closeAndResolve(conn, bodyResult));
-    }
-
-    private static <T> Promise<T> abortAndResolve(Connection conn, Result<T> bodyResult, Cause releaseFailure) {
-        LOG.log(System.Logger.Level.WARNING,
-                "Pinned session release failed, aborting the physical connection: " + releaseFailure.message());
-
-        return conn.abort()
-                   .fold(_ -> Promise.resolved(bodyResult));
+    // Close is the release (design 2.1 rule 2): the dedicated connection comes from `PgDatabase`, which has no pool, so
+    // close() ends the socket and the server session with it and drops every session-scoped lock. The explicit
+    // `release` step is a courtesy that ran just before; its outcome changes nothing, so a failure of it is absorbed
+    // (design-out: no pool exists to carry the session on).
+    private static <T> Promise<T> closeAfterRelease(Connection conn,
+                                                    SqlConnector session,
+                                                    TransactionCallback<Unit> release,
+                                                    Result<T> bodyResult) {
+        return invoke(release, session).fold(_ -> closeAndResolve(conn, bodyResult));
     }
 
     private static <T> Promise<T> closeAndResolve(Connection conn, Result<T> bodyResult) {

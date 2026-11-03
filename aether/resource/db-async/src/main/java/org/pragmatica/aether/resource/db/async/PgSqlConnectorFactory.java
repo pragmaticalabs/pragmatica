@@ -46,7 +46,7 @@ public final class PgSqlConnectorFactory implements ResourceFactory<PgSqlConnect
         configureConnection(builder, config);
         configurePool(builder, config);
 
-        return new PgSqlConnectorWrapper(PgAsyncSqlConnector.pgAsyncSqlConnector(config, builder.pool()));
+        return new PgSqlConnectorWrapper(PgAsyncSqlConnector.pgAsyncSqlConnector(config, builder.pool(), builder.plain()));
     }
 
     private static void configureConnection(NettyConnectibleBuilder builder, DatabaseConnectorConfig config) {

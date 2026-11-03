@@ -153,6 +153,18 @@ jobs:
           -Dember.skipTests=true -Dconsensus.skipTests=true -Dpostgres-async.skipTests=false -Daether.requireDocker=true
         timeout-minutes: 35
 
+      # The control for the guard above (#2591): with Docker "hidden" and the require property set, a live-database
+      # test must FAIL with the guard's own message. Fails this job if it passes, skips, or fails for any other reason.
+      - name: Docker-hidden control (the require guard must fail, never skip)
+        if: matrix.group == 'g3'
+        run: |
+          if mvn test -B -pl aether/resource/db-jdbc -Daether.hideDocker=true -Daether.requireDocker=true \
+               -Dtest=JdbcSqlConnectorPinnedTest -Dsurefire.failIfNoSpecifiedTests=false > docker-hidden-control.log 2>&1; then
+            echo "::error::the Docker-hidden control passed: requireDocker no longer fails when Docker is absent"; exit 1
+          fi
+          grep -q "refusing to skip" docker-hidden-control.log || { echo "::error::the control failed for another reason"; tail -50 docker-hidden-control.log; exit 1; }
+        timeout-minutes: 10
+
       - name: Verify examples (end-to-end pipeline check)
         if: steps.plan.outputs.examples == 'yes'
         run: mvn verify -B -f examples/pom.xml

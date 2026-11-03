@@ -6,10 +6,8 @@ package org.pragmatica.aether.resource.db.r2dbc;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.aether.resource.db.PoolConfig;
 import org.pragmatica.aether.resource.db.RowMapper;
@@ -35,9 +33,9 @@ import static org.pragmatica.lang.Unit.unit;
 /// FDB-1 (#2591): the pinned session of the R2dbc connector, against a LIVE PostgreSQL 16 through the production
 /// factory wiring and the real pool. A session-scoped database lock lives and dies with the physical connection it was
 /// taken on, so the properties pinned here are the ones the lock depends on:
-/// every call and nested transaction runs on ONE backend; the connection is not lent to anyone else while pinned;
-/// it returns to the pool only after the release step succeeded; and a failed release destroys it, taking a session
-/// lock the failed unlock left behind with it. Self-skips when no Docker daemon is reachable, unless
+/// every call and nested transaction runs on ONE backend; the pool is never touched (a pool of ONE keeps answering with its own connection);
+/// it is opened OUTSIDE the pool and never borrowed from it; and closing it ends the server session, taking a
+/// session lock even a failed unlock left behind with it. Self-skips when no Docker daemon is reachable, unless
 /// `-Daether.requireDocker=true` makes that a failure.
 @Timeout(value = 45, unit = TimeUnit.SECONDS)
 class R2dbcSqlConnectorPinnedTest {
@@ -114,54 +112,41 @@ class R2dbcSqlConnectorPinnedTest {
     }
 
     @Test
-    void pinned_runsEveryCallOnOneBackend_whileAnotherBorrowGetsADifferentOne() {
-        var base = connector(2);
+    void pinned_runsEveryCallOnOneBackend_theSingleSlotPoolIsServedAtOnceByAnother() {
+        var base = connector(1);
+        var poolPid = base.queryOne(SELECT_PID, PID).await().unwrap();
 
         var probe = base.pinned(NO_BOUND, session -> probe(base, session), RELEASE_OK).await().unwrap();
 
         assertThat(probe.second()).as("a second call on the session").isEqualTo(probe.first());
         assertThat(probe.inTransaction()).as("a nested transactional on the session").isEqualTo(probe.first());
-        assertThat(probe.competing()).as("control: a pooled borrow made while pinned is a DIFFERENT backend")
+        assertThat(probe.competing()).as("a pool of ONE was never touched: its own connection answered at once")
+                                     .isEqualTo(poolPid)
                                      .isNotEqualTo(probe.first());
     }
 
     @Test
-    void pinned_poolOfOne_competingBorrowWaitsUntilReleaseThenReusesTheSameBackend() throws Exception {
+    void pinned_afterCleanRelease_theSessionIsGone_andThePoolConnectionIsUnchanged() throws Exception {
         var base = connector(1);
-        var competing = new AtomicReference<Promise<Integer>>();
-        var inside = new CountDownLatch(1);
-        var gate = Promise.<Unit> promise();
+        var poolPid = base.queryOne(SELECT_PID, PID).await().unwrap();
 
-        var pinned = base.pinned(NO_BOUND,
-                                 session -> session.queryOne(SELECT_PID, PID)
-                                                   .flatMap(pid -> holdWhileBorrowing(base, competing, inside, gate, pid)),
-                                 RELEASE_OK);
+        var sessionPid = base.pinned(NO_BOUND,
+                                     session -> session.queryOne(SELECT_PID, PID)
+                                                       .flatMap(pid -> takeLock(session, pid)),
+                                     session -> session.queryList("SELECT pg_advisory_unlock(7001)", IGNORED).mapToUnit())
+                             .await()
+                             .unwrap();
 
-        assertThat(inside.await(30, TimeUnit.SECONDS)).as("the body reached the point where it holds the session").isTrue();
-        Thread.sleep(1000);
-        assertThat(competing.get().isResolved()).as("the pinned connection is NOT lent to a competing borrow").isFalse();
-
-        gate.succeed(unit());
-        var sessionPid = pinned.await().unwrap();
-
-        assertThat(competing.get().await().unwrap()).as("after the release succeeded the SAME backend went back to the pool")
-                                                    .isEqualTo(sessionPid);
-    }
-
-    private static Promise<Integer> holdWhileBorrowing(SqlConnector base,
-                                                       AtomicReference<Promise<Integer>> competing,
-                                                       CountDownLatch inside,
-                                                       Promise<Unit> gate,
-                                                       int pid) {
-        competing.set(base.queryOne(SELECT_PID, PID));
-        inside.countDown();
-
-        return gate.map(_ -> pid);
+        assertThat(sessionPid).isNotEqualTo(poolPid);
+        assertThat(base.queryOne(SELECT_PID, PID).await().unwrap()).as("the pool's connection was never borrowed or replaced")
+                                                                   .isEqualTo(poolPid);
+        assertEventuallyZero(base, "SELECT count(*) AS n FROM pg_stat_activity WHERE pid = " + sessionPid, "the closed session");
     }
 
     @Test
-    void pinned_releaseFails_destroysTheConnection_andTheLockItLeftBehindDiesWithIt() throws Exception {
+    void pinned_releaseFails_closeStillEndsTheSession_soTheLockDies_andThePoolIsUntouched() throws Exception {
         var base = connector(1);
+        var poolPid = base.queryOne(SELECT_PID, PID).await().unwrap();
 
         var sessionPid = base.pinned(NO_BOUND,
                                      session -> session.queryOne(SELECT_PID, PID)
@@ -170,11 +155,11 @@ class R2dbcSqlConnectorPinnedTest {
                              .await()
                              .unwrap();
 
-        assertThat(base.queryOne(SELECT_PID, PID).await().unwrap())
-            .as("a failed release must NOT return the session to the pool: the next borrow is another backend")
-            .isNotEqualTo(sessionPid);
+        assertThat(base.queryOne(SELECT_PID, PID).await().unwrap()).as("the pool's connection is the one it always was")
+                                                                   .isEqualTo(poolPid)
+                                                                   .isNotEqualTo(sessionPid);
         assertEventuallyZero(base, COUNT_LOCK, "the advisory lock the failed unlock left behind");
-        assertEventuallyZero(base, "SELECT count(*) AS n FROM pg_stat_activity WHERE pid = " + sessionPid, "the destroyed backend");
+        assertEventuallyZero(base, "SELECT count(*) AS n FROM pg_stat_activity WHERE pid = " + sessionPid, "the closed session");
     }
 
     private static Promise<Integer> takeLock(SqlConnector session, int pid) {
@@ -190,23 +175,7 @@ class R2dbcSqlConnectorPinnedTest {
             seen = base.queryOne(countSql, COUNT).await().unwrap();
         }
 
-        assertThat(seen).as(what + " must be gone once the session is destroyed").isZero();
-    }
-
-    @Test
-    void pinned_releaseSucceeds_theBackendIsReused_andTheLockWasReleasedByTheCallback() {
-        var base = connector(1);
-
-        var sessionPid = base.pinned(NO_BOUND,
-                                     session -> session.queryOne(SELECT_PID, PID)
-                                                       .flatMap(pid -> takeLock(session, pid)),
-                                     session -> session.queryList("SELECT pg_advisory_unlock(7001)", IGNORED).mapToUnit())
-                             .await()
-                             .unwrap();
-
-        assertThat(base.queryOne(SELECT_PID, PID).await().unwrap()).as("control: a clean release recycles the backend")
-                                                                   .isEqualTo(sessionPid);
-        assertThat(base.queryOne(COUNT_LOCK, COUNT).await().unwrap()).isZero();
+        assertThat(seen).as(what + " must be gone once the session is closed").isZero();
     }
 
     @Test
