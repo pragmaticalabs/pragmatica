@@ -1620,9 +1620,8 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// Mirrors the applier's fence: a committed life of non-zero incarnation different from the proposed one refuses.
     static boolean refusedByFence(StreamConfig proposed, List<Object> results) {
-        return displacedLife(results).filter(committed -> committed.incarnation() != 0
-                                                         && committed.incarnation() != proposed.incarnation())
-                                     .isPresent();
+        return displacedLife(results).filter(committed -> committed.incarnation() != 0 && committed.incarnation() != proposed.incarnation())
+                            .isPresent();
     }
 
     private static Option<StreamConfig> displacedLife(List<Object> results) {
