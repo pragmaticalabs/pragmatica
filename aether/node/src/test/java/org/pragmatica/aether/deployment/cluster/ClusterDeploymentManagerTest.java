@@ -93,6 +93,7 @@ class ClusterDeploymentManagerTest {
         node3 = NodeId.randomNodeId();
         clusterNode = new TestClusterNode(self);
         kvStore = new TestKVStore();
+        clusterNode.transactionEffect = kvStore::applyEffect;
         // #2584 P0: Active is entered only on a committed LeaderKey naming this node, and every leader write is issued
         // only under that record, so the fixture carries it as production does.
         kvStore.commitLeader(new LeaderValue(self, 1));
@@ -1033,6 +1034,7 @@ class ClusterDeploymentManagerTest {
     static class TestClusterNode implements ClusterNode<KVCommand<AetherKey>> {
         private final NodeId self;
         final List<KVCommand<AetherKey>> appliedCommands = new CopyOnWriteArrayList<>();
+        volatile java.util.function.Consumer<KVCommand<AetherKey>> transactionEffect = _ -> {};
 
         TestClusterNode(NodeId self) {
             this.self = self;
@@ -1061,9 +1063,33 @@ class ClusterDeploymentManagerTest {
         @Override
         @SuppressWarnings("unchecked")
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
-            appliedCommands.addAll(commands);
+            // #2584 P0: with the committed leader record, an ALL_OR_NOTHING rollback is one LeaderTransaction. Its mutations
+            // are recorded as the plain commands the tests assert on (same order, same atomicity), and applied to the store
+            // as the applier would, because the fenced rollback finishes only once its outcome is read back from the store.
+            appliedCommands.addAll(effective(commands));
+            commands.stream()
+                    .filter(KVCommand.LeaderTransaction.class::isInstance)
+                    .flatMap(command -> effective(List.of(command)).stream())
+                    .forEach(transactionEffect);
             return Promise.success((List<R>) commands.stream().map(_ -> Unit.unit()).toList());
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<KVCommand<AetherKey>> effective(List<KVCommand<AetherKey>> commands) {
+        return commands.stream()
+                       .flatMap(command -> command instanceof KVCommand.LeaderTransaction<?, ?> transaction
+                                           ? ((KVCommand.LeaderTransaction<AetherKey, AetherValue>) transaction).mutations()
+                                                                                                                .stream()
+                                                                                                                .map(ClusterDeploymentManagerTest::mutationCommand)
+                                           : java.util.stream.Stream.of(command))
+                       .toList();
+    }
+
+    private static KVCommand<AetherKey> mutationCommand(KVCommand.Mutation<AetherKey, AetherValue> mutation) {
+        return mutation.replacement()
+                       .<KVCommand<AetherKey>> map(value -> new KVCommand.Put<>(mutation.key(), value))
+                       .or(() -> new KVCommand.Remove<>(mutation.key()));
     }
 
     static class TestKVStore extends KVStore<AetherKey, AetherValue> {
@@ -1077,6 +1103,15 @@ class ClusterDeploymentManagerTest {
 
         void put(AetherKey key, AetherValue value) {
             entries.put(key, value);
+        }
+
+        @SuppressWarnings("unchecked")
+        void applyEffect(KVCommand<AetherKey> command) {
+            switch (command) {
+                case KVCommand.Put<AetherKey, ?> put -> entries.put(put.key(), (AetherValue) put.value());
+                case KVCommand.Remove<AetherKey> remove -> entries.remove(remove.key());
+                default -> {}
+            }
         }
 
         void commitLeader(LeaderValue committed) {
