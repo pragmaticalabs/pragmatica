@@ -15,7 +15,7 @@ Aether uses [Rabia](https://dl.acm.org/doi/10.1145/3477132.3483582) (SOSP 2021) 
 | Fault model | Crash-fault tolerant (CFT) |
 | Leader | None (leaderless) |
 | Quorum | `(N/2) + 1` |
-| Fast path | Super-majority in round 1 skips round 2 |
+| Decision rule | Every decision needs round-2 evidence: `f+1` matching round-2 votes (`f+1 = N - quorum + 1`). There is no round-1 shortcut |
 | Persistence | Pluggable (currently in-memory) |
 | State machine | Pluggable (KV-Store for Aether) |
 
@@ -47,15 +47,34 @@ sequenceDiagram
         NodeC->>NodeB: Vote(phase, batch)
     end
 
-    alt Super-majority agrees (fast path)
-        Note over NodeA,NodeC: Skip Round 2 - Commit directly
-    else No super-majority
-        Note over NodeA,NodeC: Round 2 - Additional voting round
+    Note over NodeA,NodeC: Round 2 - each node votes once it holds a quorum of round-1 votes
+
+    par Round 2 Votes
+        NodeA->>NodeB: VoteRound2(phase, V0/V1/VQUESTION)
+        NodeA->>NodeC: VoteRound2(phase, V0/V1/VQUESTION)
+        NodeB->>NodeA: VoteRound2(phase, V0/V1/VQUESTION)
+        NodeB->>NodeC: VoteRound2(phase, V0/V1/VQUESTION)
+        NodeC->>NodeA: VoteRound2(phase, V0/V1/VQUESTION)
+        NodeC->>NodeB: VoteRound2(phase, V0/V1/VQUESTION)
+    end
+
+    alt f+1 matching round-2 votes (and, for V1, a quorum of matching proposals)
+        Note over NodeA,NodeC: Decide that value
+    else Fewer than f+1 matching round-2 votes
+        Note over NodeA,NodeC: No decision - carry the value (or the common coin) into the next binary round
     end
 
     NodeA->>NodeA: Apply to StateMachine
     NodeA-->>Client: Promise completes with results
 ```
+
+### Why every decision needs round-2 evidence
+
+A node never forms a decision from round-1 votes alone, even when every round-1 vote it sees agrees. (A replica also applies a `Decision` message received from a trusted peer for its current slot, and catches up through sync; those paths apply a decision another node formed, they do not form one [mechanism: `RabiaEngine.handleDecision`].)
+
+- A node casts its round-2 vote only after it holds a quorum of round-1 votes, and votes `V0`/`V1` only if a quorum of those agree, otherwise `VQUESTION` [mechanism: `PhaseData.evaluateRound2Vote`, `RabiaEngine.canVoteRound2`].
+- It decides only after it has voted in round 2 and holds a quorum of round-2 votes, and then only if `f+1` of them name the same value; fewer than `f+1` carries a value (or the deterministic common coin) into the next binary round without a decision. A `V1` decision additionally needs a quorum of matching proposals; with `f+1` `V1` votes but no such proposal set the node rebroadcasts its proposals and does not decide [mechanism: `RabiaEngine.canMakeDecision`, `PhaseData.processRound2Completion` (`AwaitingProposal`)].
+- Why no shortcut: two quorums of `N - f` nodes can overlap in fewer than `f+1` nodes, so a node that decided on round-1 evidence could disagree with one that proceeds to round 2. A shortcut that skipped round 2 was added once and removed in #1390 for that reason [verified: `RabiaSuperMajorityFastPathTest.majorityIntersectionDoesNotGuaranteeFPlusOneMatchingVotes` (the intersection arithmetic), `RabiaEngineTest.first_round_agreement_still_requires_round2` and `RabiaHierarchySafetyTest.firstRoundMajorityCannotCommitBeforeSecondRoundEvidence` (the engine does not decide on round-1 agreement)].
 
 ### Command Batching
 
@@ -201,7 +220,7 @@ Batch timestamps order proposals within a consensus phase. Value timestamps (`up
 
 ### Deterministic Coin Flip
 
-When round 2 produces no majority, Rabia uses a deterministic coin flip seeded by `phase.value & 1`. All nodes compute the same result, ensuring progress without additional communication.
+When every round-2 vote in a binary round is `VQUESTION`, the next round's value is a deterministic coin seeded by the slot index, the configuration epoch and the binary-round number [mechanism: `PhaseData.coinFlip`]; if any `V0`/`V1` vote was seen but fewer than `f+1`, that value is carried instead. All replicas of a slot compute the same coin, so no extra communication is needed; the coin never decides a slot by itself.
 
 ## Leader Election
 

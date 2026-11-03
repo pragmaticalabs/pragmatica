@@ -1458,7 +1458,6 @@ individual request latencies. `errorRate` is the failed/completed invocation rat
     "proposalsCount": 998,
     "voteRound1Count": 2084,
     "voteRound2Count": 2011,
-    "fastPathCount": 812,
     "syncSuccessCount": 3,
     "syncFailureCount": 0,
     "avgDecisionLatencyMs": 4.7,
@@ -1500,7 +1499,7 @@ Get Prometheus-format metrics for scraping.
 **Content-Type**: `text/plain; version=0.0.4; charset=utf-8`
 
 Includes the consensus-load gauges (#674): `consensus_decisions_total`, `consensus_proposals_total`,
-`consensus_vote_round1_total`, `consensus_vote_round2_total`, `consensus_fast_path_total`,
+`consensus_vote_round1_total`, `consensus_vote_round2_total`,
 `consensus_sync_success_total`, `consensus_sync_failure_total`, `consensus_apply_timeouts_total` (monotonic
 totals), `consensus_pending_batches` and `consensus_oldest_pending_batch_age_ms` (levels) — the same names
 and values as the comprehensive response's `consensus` block (`oldestPendingBatchAgeMs`, `applyTimeoutCount`).
