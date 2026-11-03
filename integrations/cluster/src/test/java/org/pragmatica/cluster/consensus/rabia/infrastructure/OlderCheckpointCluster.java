@@ -275,6 +275,7 @@ public final class OlderCheckpointCluster {
                 case RabiaProtocolMessage.Asynchronous.ReconfigurationRequest request -> engine.reconfigurationRequest(request);
                 case RabiaProtocolMessage.Asynchronous.GenesisAnnouncement announcement -> engine.genesisAnnouncement(announcement);
                 case RabiaProtocolMessage.Asynchronous.NewBatch<?> newBatch -> engine.handleNewBatch((RabiaProtocolMessage.Asynchronous.NewBatch<KVCommand<StringKey>>) newBatch);
+                case RabiaProtocolMessage.Asynchronous.BatchCommitted committed -> engine.handleBatchCommitted(committed);
             }
         };
     }

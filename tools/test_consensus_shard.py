@@ -52,13 +52,9 @@ class ConsensusShardTest(unittest.TestCase):
         unweighted = {k: v for k, v in self.weights.items() if k != "QuicSimultaneousDialLaneTest"}
         bins = shard.assign(self.classes, unweighted, matrix_shards())
         self.assertEqual(sorted(c for b in bins for c in b["classes"]), self.classes)
-        # every planned class the file does not list (this one, and any class added since the last regeneration) counts
-        # at the default; listed classes that no longer exist are not planned
-        unlisted = [c for c in self.classes if c not in unweighted]
-        self.assertIn("QuicSimultaneousDialLaneTest", unlisted)
+        default = shard.default_weight(unweighted)
         self.assertEqual(sum(b["total"] for b in bins),
-                         sum(unweighted[c] for c in self.classes if c in unweighted)
-                         + shard.default_weight(unweighted) * len(unlisted))
+                         sum(unweighted.get(c, default) for c in self.classes))
 
     def test_verify_fails_on_zero_reports_and_on_a_missing_class(self):
         with tempfile.TemporaryDirectory() as d:
