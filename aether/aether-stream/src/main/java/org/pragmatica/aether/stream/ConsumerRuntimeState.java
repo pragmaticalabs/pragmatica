@@ -18,6 +18,8 @@ import java.util.function.LongSupplier;
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.ConsumerConfig.ErrorStrategy;
 import org.pragmatica.aether.stream.consumer.TransactionalCursorCommit;
+import org.pragmatica.aether.stream.forward.RefusalBackoff;
+import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
@@ -130,6 +132,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// scheduled. Seams so the backoff's growth is pinned without waiting for it.
     private final LongSupplier clockMs;
     private final DelayedTask escapeScheduler;
+    /// #2574: the refused-read hold of each consumer loop ([#parkAfterRefusal]).
+    private final RefusalBackoff<ConsumerKey> refusalBackoff = RefusalBackoff.refusalBackoff();
     private final ConcurrentHashMap<ConsumerKey, ConsumerState> consumers = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final ScheduledFuture<?> idleConsumerChecker;
@@ -1196,6 +1200,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// and left the work to this pass.
     @Contract
     private void afterCompletedPass(ConsumerKey key, ConsumerState state, boolean batchFull) {
+        refusalBackoff.sent(key);
         if (batchFull) {
             continueDrain(key, state);
 
@@ -1217,6 +1222,13 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         }
 
         logPollFailure(key, cause);
+        if (StreamForwardError.isRefusal(cause)) {
+            parkAfterRefusal(key, state, refusalBackoff.refused(key));
+
+            return;
+        }
+
+        refusalBackoff.sent(key);
         releaseDrain(key, state);
         if (state.pushBuffer().isPresent() && !state.isCancelled() && !closed.get()) {
             SharedScheduler.schedule(() -> requestDrain(key, state),
@@ -1241,6 +1253,32 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         if (!state.isCancelled() && !closed.get()) {
             escapeScheduler.schedule(() -> resumeAfterEscapeBackoff(key, state),
                                      TimeSpan.timeSpan(delayMs).millis());
+        }
+    }
+
+    /// #2574 (CTO, know 89e17399a9): a read the transport did not send (FORWARD-lane backpressure) fails at once, where it
+    /// used to wait out the 2 s read timeout, and the poll tick (50 ms at most) or the next append would re-read at once
+    /// on the congested lane. The loop is parked instead for the consumer's [RefusalBackoff] hold -- 250 ms doubling to
+    /// 4 s, jittered, per (group, partition) because each consumer loop re-reads on its own; reset once a pass is not
+    /// refused -- exactly as an escaped pass parks it: triggers meanwhile only mark it dirty, and the park's end re-drives it.
+    @Contract
+    private void parkAfterRefusal(ConsumerKey key, ConsumerState state, TimeSpan hold) {
+        var untilMs = clockMs.getAsLong() + hold.millis();
+
+        state.adjustPollInterval(false);
+        state.escapeBackoffUntil(untilMs);
+        state.finishDrain();
+        if (!state.isCancelled() && !closed.get()) {
+            escapeScheduler.schedule(() -> resumeAfterRefusalPark(key, state, untilMs), hold);
+        }
+    }
+
+    /// Ends THIS park only. A scheduler that wakes late finds that a poll tick already ran a pass once the park expired by
+    /// the clock, and that the pass may have parked again; clearing that newer park would let the next pass re-read at once.
+    @Contract
+    private void resumeAfterRefusalPark(ConsumerKey key, ConsumerState state, long untilMs) {
+        if (state.endEscapeBackoff(untilMs)) {
+            requestDrain(key, state);
         }
     }
 
@@ -2561,6 +2599,11 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         @Contract
         void escapeBackoffUntil(long untilMs) {
             escapeBackoffUntilMs.set(untilMs);
+        }
+
+        /// Ends the backoff that runs until `untilMs`; false when a newer one replaced it.
+        boolean endEscapeBackoff(long untilMs) {
+            return escapeBackoffUntilMs.compareAndSet(untilMs, 0L);
         }
 
         boolean inEscapeBackoff(long nowMs) {
