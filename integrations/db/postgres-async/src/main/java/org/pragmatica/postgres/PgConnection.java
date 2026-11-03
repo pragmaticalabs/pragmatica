@@ -183,6 +183,7 @@ public class PgConnection implements Connection {
     private final LinkedHashMap<String, PgPreparedStatement> statementCache;
     private PgPreparedStatement evicted;
     private Runnable onRelease;
+    private Runnable onAbort;
     private Columns currentColumns;
     /// Outer-transaction depth: 0 = no tx, 1 = inside outer tx, >1 = nested savepoints.
     /// PostgreSQL connections are single-threaded — no synchronization needed.
@@ -259,6 +260,12 @@ public class PgConnection implements Connection {
 
     void onRelease(Runnable onRelease) {
         this.onRelease = onRelease;
+    }
+
+    PgConnection onAbort(Runnable onAbort) {
+        this.onAbort = onAbort;
+
+        return this;
     }
 
     Promise<Connection> connect(String username, String password, String database) {
@@ -460,6 +467,21 @@ public class PgConnection implements Connection {
         }
 
         return stream.close();
+    }
+
+    @Override
+    public Promise<Unit> abort() {
+        var closed = stream.close();
+        var forget = onAbort;
+
+        onAbort = null;
+        onRelease = null;
+
+        if (forget != null) {
+            forget.run();
+        }
+
+        return closed;
     }
 
     Promise<Unit> shutdown() {

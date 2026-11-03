@@ -58,6 +58,17 @@ public interface Connection extends QueryExecutor {
     }
 
     Promise<Transaction> begin();
+
     Promise<Unit> close();
+
+    /**
+     * Destroys the physical connection instead of returning it to its pool: the socket is closed, the backend session
+     * ends (taking any session-scoped state, such as advisory locks, with it), and the pool forgets the connection and
+     * may open a replacement. After {@code abort()} the connection must not be used. Use it where {@link #close()}
+     * would hand a possibly dirty session to the next borrower.
+     *
+     * @return Promise completed when the socket is closed.
+     */
+    Promise<Unit> abort();
     boolean isConnected();
 }

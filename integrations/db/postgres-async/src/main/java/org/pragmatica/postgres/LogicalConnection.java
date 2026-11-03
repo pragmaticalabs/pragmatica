@@ -308,6 +308,13 @@ public class LogicalConnection implements Connection {
         };
     }
 
+    /// A transaction-mode logical connection owns no stable backend, so there is no physical session to destroy here:
+    /// closing it is the strongest action available. Session-scoped state cannot be held on this pool mode at all.
+    @Override
+    public Promise<Unit> abort() {
+        return close();
+    }
+
     @Override
     public boolean isConnected() {
         return state != State.CLOSED;

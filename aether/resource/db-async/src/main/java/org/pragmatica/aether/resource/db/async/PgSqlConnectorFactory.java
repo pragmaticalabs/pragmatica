@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.db.async;
 
+import java.time.Duration;
 import java.util.List;
 
 import org.pragmatica.aether.resource.ResourceFactory;
@@ -92,6 +93,13 @@ public final class PgSqlConnectorFactory implements ResourceFactory<PgSqlConnect
         @Override
         public <T> Promise<T> transactional(TransactionCallback<T> callback) {
             return delegate.transactional(callback);
+        }
+
+        @Override
+        public <T> Promise<T> pinned(Duration statementTimeout,
+                                     TransactionCallback<T> body,
+                                     TransactionCallback<Unit> release) {
+            return delegate.pinned(statementTimeout, body, release);
         }
 
         @Override

@@ -25,6 +25,7 @@ import org.pragmatica.postgres.net.ConnectibleBuilder;
 import org.pragmatica.postgres.net.Connection;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import static org.pragmatica.lang.Unit.unit;
@@ -120,27 +121,62 @@ public class PgConnectionPool extends PgConnectible {
             case PoolResult.Available available -> Promise.success(available.connection());
             case PoolResult.Pending pendingResult -> {
                 if (pendingResult.makeNew()) {
-                    obtainStream.get().flatMap(stream -> {
-                        var conn = new PgConnection(stream, dataConverter, maxStatements);
-
-                        conn.onRelease(() -> release(conn));
-
-                        return conn.connect(username, password, database);
-                    }).flatMap(this::validateConnection).withResult(result -> result.fold(cause -> {
-                                                                                              propagateFailure(cause);
-
-                                                                                              return null;
-                                                                                          },
-                                                                                          connected -> {
-                                                                                              release((PgConnection) connected);
-
-                                                                                              return null;
-                                                                                          }));
+                    Promise.async((Runnable) this::openConnection);
                 }
 
                 yield pendingResult.deferred();
             }
         };
+    }
+
+    private Promise<Unit> openConnection() {
+        return obtainStream.get()
+                           .flatMap(this::startConnection)
+                           .flatMap(this::validateConnection)
+                           .fold(this::registerOpened);
+    }
+
+    private Promise<Connection> startConnection(ProtocolStream stream) {
+        var conn = new PgConnection(stream, dataConverter, maxStatements);
+
+        conn.onRelease(() -> release(conn));
+        conn.onAbort(this::discard);
+
+        return conn.connect(username, password, database);
+    }
+
+    private Promise<Unit> registerOpened(Result<Connection> result) {
+        return result.fold(this::failOpening, this::releaseOpened);
+    }
+
+    private Promise<Unit> failOpening(Cause cause) {
+        propagateFailure(cause);
+
+        return Promise.success(unit());
+    }
+
+    private Promise<Unit> releaseOpened(Connection connected) {
+        release((PgConnection) connected);
+
+        return Promise.success(unit());
+    }
+
+    /// Forgets a connection that was destroyed with [PgConnection#abort()] instead of being released: its slot is
+    /// freed, and if borrowers are waiting a replacement is opened for them.
+    private Promise<Unit> discard() {
+        return Promise.async(locked(this::forgetDestroyedSlot));
+    }
+
+    private Runnable forgetDestroyedSlot() {
+        size--;
+
+        if (closing == null && !pending.isEmpty() && size < maxConnections) {
+            size++;
+
+            return this::openConnection;
+        }
+
+        return checkClosed();
     }
 
     private void propagateFailure(Cause cause) {

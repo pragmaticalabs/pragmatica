@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.db.async;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
@@ -16,6 +17,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.postgres.PgConnection;
 import org.pragmatica.postgres.PgResultSet;
 import org.pragmatica.postgres.PgRow;
 import org.pragmatica.postgres.net.Connectible;
@@ -29,6 +32,8 @@ import static org.pragmatica.lang.Unit.unit;
 
 
 final class PgAsyncSqlConnector implements AsyncSqlConnector {
+    private static final System.Logger LOG = System.getLogger(PgAsyncSqlConnector.class.getName());
+
     private final DatabaseConnectorConfig config;
     private final Connectible connectible;
 
@@ -85,6 +90,17 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
     public <T> Promise<T> transactional(TransactionCallback<T> callback) {
         return connectible.getConnection()
                           .flatMap(conn -> runTransaction(conn, callback));
+    }
+
+    /// postgres-async has no per-statement timeout, so `statementTimeout` is not enforced here: the bound is the
+    /// caller's own promise timeout. A `TRANSACTION`-mode pool lends a physical connection per query, which cannot hold
+    /// a session, so it is refused rather than silently unpinned.
+    @Override
+    public <T> Promise<T> pinned(Duration statementTimeout,
+                                 TransactionCallback<T> body,
+                                 TransactionCallback<Unit> release) {
+        return connectible.getConnection()
+                          .flatMap(conn -> runPinned(conn, config, body, release));
     }
 
     @Override
@@ -189,11 +205,74 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
     }
 
     private <T> Promise<T> runTransaction(Connection conn, TransactionCallback<T> callback) {
-        return conn.begin()
-                   .flatMap(tx -> executeInTransaction(tx, callback));
+        return runTransaction(conn, config, callback);
     }
 
-    private <T> Promise<T> executeInTransaction(Transaction tx, TransactionCallback<T> callback) {
+    private static <T> Promise<T> runTransaction(Connection conn,
+                                                 DatabaseConnectorConfig config,
+                                                 TransactionCallback<T> callback) {
+        return conn.begin()
+                   .flatMap(tx -> executeInTransaction(tx, config, callback));
+    }
+
+    private static <T> Promise<T> runPinned(Connection conn,
+                                            DatabaseConnectorConfig config,
+                                            TransactionCallback<T> body,
+                                            TransactionCallback<Unit> release) {
+        if (conn instanceof PgConnection) {
+            return runPinnedSession(conn, new PinnedSqlConnector(config, conn), body, release);
+        }
+
+        return conn.close()
+                   .flatMap(_ -> DatabaseConnectorError.PinnedSessionUnsupported.FACTORY.apply("the pool lends a physical connection per query (TRANSACTION pool mode); a session cannot be held").promise());
+    }
+
+    private static <T> Promise<T> runPinnedSession(Connection conn,
+                                                   SqlConnector session,
+                                                   TransactionCallback<T> body,
+                                                   TransactionCallback<Unit> release) {
+        return invoke(body, session).fold(bodyResult -> releaseThenFinish(conn, session, release, bodyResult));
+    }
+
+    private static <T> Promise<T> releaseThenFinish(Connection conn,
+                                                    SqlConnector session,
+                                                    TransactionCallback<Unit> release,
+                                                    Result<T> bodyResult) {
+        return invoke(release, session).fold(releaseResult -> finishPinned(conn, bodyResult, releaseResult));
+    }
+
+    private static <R> Promise<R> invoke(TransactionCallback<R> callback, SqlConnector session) {
+        return Promise.lift(DatabaseConnectorError::databaseFailure,
+                            () -> callback.execute(session))
+                      .flatMap(promise -> promise);
+    }
+
+    // BER-by-destruction: an unlock that failed may have left a session lock behind, and the pool does no session
+    // reset (no DISCARD, no pg_advisory_unlock_all), so a lock would ride this connection to the next borrower. Nothing
+    // is retried; abort() closes the socket and removes the connection from the pool, the backend ends and the lock goes
+    // with it. Guarantee earned: no connection returns to the pool unless its release succeeded. The body's outcome is
+    // kept; a failure while destroying is absorbed because the connection is unusable either way.
+    private static <T> Promise<T> finishPinned(Connection conn, Result<T> bodyResult, Result<Unit> releaseResult) {
+        return releaseResult.fold(cause -> abortAndResolve(conn, bodyResult, cause),
+                                  _ -> closeAndResolve(conn, bodyResult));
+    }
+
+    private static <T> Promise<T> abortAndResolve(Connection conn, Result<T> bodyResult, Cause releaseFailure) {
+        LOG.log(System.Logger.Level.WARNING,
+                "Pinned session release failed, aborting the physical connection: " + releaseFailure.message());
+
+        return conn.abort()
+                   .fold(_ -> Promise.resolved(bodyResult));
+    }
+
+    private static <T> Promise<T> closeAndResolve(Connection conn, Result<T> bodyResult) {
+        return conn.close()
+                   .fold(_ -> Promise.resolved(bodyResult));
+    }
+
+    private static <T> Promise<T> executeInTransaction(Transaction tx,
+                                                       DatabaseConnectorConfig config,
+                                                       TransactionCallback<T> callback) {
         var txConnector = new TransactionalSqlConnector(config, tx);
 
         return callback.execute(txConnector)
@@ -226,6 +305,62 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
         }
 
         return sb.toString();
+    }
+
+    /// The pinned session: statements run directly on the one physical connection (autocommit), and `transactional`
+    /// begins and commits on that SAME connection instead of borrowing another.
+    private record PinnedSqlConnector(DatabaseConnectorConfig config, Connection connection) implements SqlConnector {
+        @Override
+        public <T> Promise<T> queryOne(String sql, RowMapper<T> mapper, Object... params) {
+            return connection.completeQuery(convertPlaceholders(sql),
+                                            params)
+                             .flatMap(rs -> extractSingleRow(rs, mapper, sql));
+        }
+
+        @Override
+        public <T> Promise<Option<T>> queryOptional(String sql, RowMapper<T> mapper, Object... params) {
+            return connection.completeQuery(convertPlaceholders(sql),
+                                            params)
+                             .flatMap(rs -> extractOptionalRow(rs, mapper));
+        }
+
+        @Override
+        public <T> Promise<List<T>> queryList(String sql, RowMapper<T> mapper, Object... params) {
+            return connection.completeQuery(convertPlaceholders(sql),
+                                            params)
+                             .flatMap(rs -> extractAllRows(rs, mapper));
+        }
+
+        @Override
+        public Promise<Integer> update(String sql, Object... params) {
+            return connection.completeQuery(convertPlaceholders(sql),
+                                            params)
+                             .map(PgResultSet::affectedRows);
+        }
+
+        @Override
+        public Promise<int[]> batch(String sql, List<Object[]> paramsList) {
+            if (paramsList.isEmpty()) {
+                return Promise.success(new int[0]);
+            }
+
+            return executeBatch(connection, convertPlaceholders(sql), paramsList);
+        }
+
+        @Override
+        public <T> Promise<T> transactional(TransactionCallback<T> callback) {
+            return runTransaction(connection, config, callback);
+        }
+
+        @Override
+        public DatabaseType databaseType() {
+            return config.effectiveType(DatabaseConnectorConfig.Transport.ASYNC);
+        }
+
+        @Override
+        public Promise<Boolean> isHealthy() {
+            return Promise.success(true);
+        }
     }
 
     private record TransactionalSqlConnector(DatabaseConnectorConfig config, Transaction transaction) implements SqlConnector {

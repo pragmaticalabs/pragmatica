@@ -27,7 +27,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
-import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.MySQLContainer;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
@@ -90,7 +89,7 @@ class AetherSchemaManagerMysqlTest {
 
     @BeforeAll
     static void startContainer() {
-        assumeTrue(isDockerAvailable(), "Docker is not available - skipping real-MySQL migration test");
+        assumeTrue(DockerRequirement.dockerAvailable(), "Docker is not available - skipping real-MySQL migration test");
         mysql = new MySQLContainer<>("mysql:8.0");
         mysql.start();
     }
@@ -243,14 +242,6 @@ class AetherSchemaManagerMysqlTest {
 
     private static JdbcMysqlConnector newConnector() {
         return new JdbcMysqlConnector(mysql.getJdbcUrl(), mysql.getUsername(), mysql.getPassword(), mysql.getDatabaseName(), none());
-    }
-
-    private static boolean isDockerAvailable() {
-        try {
-            return DockerClientFactory.instance().isDockerAvailable();
-        } catch (Throwable t) {
-            return false;
-        }
     }
 
     /// Minimal real-MySQL [SqlConnector] for the migration test, plus helper probes that inspect the
