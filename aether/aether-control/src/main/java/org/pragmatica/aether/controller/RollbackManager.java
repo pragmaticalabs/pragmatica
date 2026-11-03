@@ -698,6 +698,10 @@ public interface RollbackManager {
                                                                                List.of(mutation));
             }
 
+            /// FER (degrade forward): a failed submit (no quorum, a stopping node) is logged and absorbed. The record keeps naming an
+            /// older version, which the next SliceTarget notification or the next leader activation re-derives; nothing is retried
+            /// here, because a submit that cannot reach consensus will not be helped by an immediate second one. Guarantee earned: a
+            /// refused or failed write never leaves a wrong record behind, only a lagging one.
             @Contract
             private void submitRecord(RecordWrite write, int attempt, Runnable retry) {
                 var transaction = write.transaction();
@@ -735,6 +739,9 @@ public interface RollbackManager {
                 retry.run();
             }
 
+            /// FER (degrade forward): after the last refusal the record is left lagging and the operator is told; there is no outbox
+            /// and no further retry. Guarantee earned: the lag is visible (ERROR line and event) and is bounded by the next SliceTarget
+            /// update or leader activation.
             @Contract
             private void reportExhausted(ArtifactBase artifactBase) {
                 exhausted.add(artifactBase);
