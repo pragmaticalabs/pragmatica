@@ -289,7 +289,6 @@ public sealed interface ManagementApiResponses {
                                     long proposalsCount,
                                     long voteRound1Count,
                                     long voteRound2Count,
-                                    long fastPathCount,
                                     long syncSuccessCount,
                                     long syncFailureCount,
                                     double avgDecisionLatencyMs,

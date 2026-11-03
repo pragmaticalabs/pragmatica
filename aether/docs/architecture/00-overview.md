@@ -61,7 +61,7 @@ graph TB
 | **Slice** | Deployable unit - a Java interface annotated with `@Slice`. Two types: Service (multiple entry points) and Lean (single entry point). Identical at runtime. |
 | **Blueprint** | Desired configuration - which slices to deploy, how many instances. TOML format, applied via CLI or API. |
 | **KV-Store** | Consensus-replicated state machine. Single source of truth for all persistent cluster state. |
-| **Consensus** | Rabia protocol - leaderless CFT. Any node can propose, agreement via two-round voting with fast path. |
+| **Consensus** | Rabia protocol - leaderless CFT. Any node can propose, agreement via two-round voting; every decision needs round-2 evidence. |
 | **DHT** | Distributed hash table for artifact storage. Consistent hashing, quorum R/W, anti-entropy repair. |
 
 ## Component Map

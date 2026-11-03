@@ -303,7 +303,6 @@ class MetricsRoutesTest {
             assertEquals(1, response.consensus().proposalsCount());
             assertEquals(2, response.consensus().voteRound1Count());
             assertEquals(1, response.consensus().voteRound2Count());
-            assertEquals(0, response.consensus().fastPathCount());
         }
 
         /// #1117: the two new fields ride the consensus block of the comprehensive response.

@@ -12,7 +12,7 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// The #674 pins. The three vote-traffic recorders were EMPTY BODIES — the engine called them all
-/// along (`RabiaEngine` vote/fast-path handlers), and every call vanished, so round-1/round-2 vote
+/// along (`RabiaEngine` vote handlers), and every call vanished, so round-1/round-2 vote
 /// volume — the quantity that grows with coordination load — was never counted anywhere. These
 /// tests pin the counting, the snapshot/reset split, and the wire vocabulary the Prometheus gauges
 /// and the HTTP consensus block share.
@@ -34,7 +34,6 @@ class RabiaMetricsCollectorTest {
 
         assertThat(snapshot.voteRound1Count()).isEqualTo(2);
         assertThat(snapshot.voteRound2Count()).isEqualTo(1);
-        assertThat(snapshot.fastPathCount()).as("no fast path since #1390").isZero();
     }
 
     /// `snapshot()` must not consume: a differencing consumer (the coordination-slope shape) reads
@@ -66,7 +65,6 @@ class RabiaMetricsCollectorTest {
 
         assertThat(second.voteRound1Count()).isZero();
         assertThat(second.voteRound2Count()).isZero();
-        assertThat(second.fastPathCount()).isZero();
     }
 
     /// The wire vocabulary: `counterMap()`'s keys ARE the Prometheus gauge names
@@ -90,7 +88,6 @@ class RabiaMetricsCollectorTest {
                                          "consensus_proposals_total",
                                          "consensus_vote_round1_total",
                                          "consensus_vote_round2_total",
-                                         "consensus_fast_path_total",
                                          "consensus_sync_success_total",
                                          "consensus_sync_failure_total",
                                          "consensus_pending_batches",
