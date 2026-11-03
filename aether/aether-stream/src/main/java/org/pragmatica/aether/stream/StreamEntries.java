@@ -84,7 +84,9 @@ final class StreamEntries {
     /// (neither the local entry's nor the applied config's). Otherwise the writer gets a dead bucket, never stored. The
     /// replace is a compare-and-set against the state read, and liveness is read between the two, so a writer whose life
     /// ended meanwhile, or whose name was re-created meanwhile, cannot replace the new life's state: the set fails, and the
-    /// retry finds the life no longer live `[unverified: race-only, no deterministic test; mutant CAS-to-put survives]`.
+    /// retry finds the life no longer live. The compare-and-set and its retry are pinned by `StreamEntriesFirstWriteRaceTest`
+    /// (a `put` in place of the set, or a lost set that does not retry, loses writes); `StreamEntriesTest` pins each liveness
+    /// check on its own. [unverified: no test ends or re-creates a life between the liveness read and the set]
     /// No lambda here calls into `streams` (the lock order is streams-bin, then
     /// partitionStates-bin, never the reverse).
     PartitionState partitionState(String streamName, long incarnation) {

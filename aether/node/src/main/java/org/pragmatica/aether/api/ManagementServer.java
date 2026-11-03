@@ -9,6 +9,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
@@ -101,6 +102,7 @@ import org.pragmatica.aether.metrics.observability.AetherMetrics;
 import org.pragmatica.aether.http.AetherVersioningMetricsSink;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.concurrent.PublishSlot;
+import org.pragmatica.aether.node.stream.ConsensusBatchCounters;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.node.StorageFactory.StorageSetup;
 import org.pragmatica.utility.warning.OperatorWarningCode;
@@ -769,6 +771,30 @@ class ManagementServerImpl implements ManagementServer {
         observability.gauge("aether.streams.memory.used.bytes", usedBytes);
         observability.gauge("aether.streams.memory.used.ratio", usedRatio);
         observability.gauge("aether.streams.seams.unbound.safety", unboundSafetySeams);
+        registerConsensusBatchMetrics();
+    }
+
+    /// #2590: consumer progress's load on consensus, cumulative since boot -- the batches the cursor command writer proposed
+    /// and their commands by key class. The S7 arms compare them before and after progress moves off consensus.
+    /// The node is an adapter boundary here: a node double (a Mockito mock) answers `null` for an accessor it does not stub,
+    /// and a missing instrument must not stop the management server from starting.
+    @Contract
+    private void registerConsensusBatchMetrics() {
+        Option.option(nodeSupplier.get().consensusBatchCounters()).onPresent(this::registerConsensusBatchGauges);
+    }
+
+    private void registerConsensusBatchGauges(ConsensusBatchCounters counters) {
+        Supplier<Number> batches = counters::batches;
+
+        observability.gauge("aether.consensus.cursor.batches", batches);
+        for (var keyClass : ConsensusBatchCounters.KeyClass.values()) {
+            Supplier<Number> commands = () -> counters.commands(keyClass);
+
+            observability.gauge("aether.consensus.cursor.commands",
+                                commands,
+                                "class",
+                                keyClass.name().toLowerCase(Locale.ROOT));
+        }
     }
 
     /// Promotion of each storage instance that promotes (an inert one has nothing to report), cumulative since boot, read
