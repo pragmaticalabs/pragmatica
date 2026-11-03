@@ -109,6 +109,7 @@ class StreamDeleteCreateOrderTest {
         node.awaitPending(1);
 
         assertThat(manager.destroyStream(STREAM).isSuccess()).as("fixture: the materialized stream is destroyed").isTrue();
+        assertThat(manager.commitLaneCount()).as("the in-flight Put and the queued Remove share the name's one lane").isEqualTo(1);
         driveUntilDone(autoCreate.future(), () -> node.committedKinds().size() == 2);
 
         assertThat(store.get(KEY).isPresent()).as("the committed config is gone: the Remove committed last").isFalse();
@@ -167,8 +168,10 @@ class StreamDeleteCreateOrderTest {
         var retried = manager.createStream(config());
 
         assertThat(failed.isFailure()).as("fixture: the first commit failed").isTrue();
-        assertThat(retried.fold(cause -> cause == StreamError.General.STREAM_ALREADY_EXISTS, _ -> false))
-            .as("the retry was submitted and committed (the republish sentinel), not wedged behind the failed one: %s", retried).isTrue();
+        boolean republishSentinel = retried.fold(cause -> cause == StreamError.General.STREAM_ALREADY_EXISTS, _ -> false);
+
+        assertThat(republishSentinel).as("the retry was submitted and committed (the republish sentinel), not wedged behind the failed one: %s", retried)
+                                     .isTrue();
         assertThat(node.submitted()).as("both creates reached the engine").isEqualTo(2);
         assertThat(manager.commitLaneCount()).as("every lane settled").isZero();
     }
