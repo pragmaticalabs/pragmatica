@@ -100,9 +100,11 @@ class RollbackManagerTest {
 
             assertThat(clusterNode.appliedCommands).hasSize(1);
             var command = clusterNode.appliedCommands.getFirst();
-            assertThat(command).isInstanceOf(KVCommand.Put.class);
-            var put = (KVCommand.Put<AetherKey, AetherValue>) command;
-            assertThat(put.key()).isInstanceOf(PreviousVersionKey.class);
+            // #2613: the record is a guarded leader transaction, never a plain put.
+            assertThat(command).isInstanceOf(KVCommand.LeaderTransaction.class);
+            var mutations = ((KVCommand.LeaderTransaction<?, ?>) command).mutations();
+            assertThat(mutations).hasSize(1);
+            assertThat(mutations.getFirst().key()).isInstanceOf(PreviousVersionKey.class);
         }
     }
 
@@ -201,9 +203,12 @@ class RollbackManagerTest {
     // Helper methods
     private void simulateSliceTargetChange(Artifact artifact) {
         var key = SliceTargetKey.sliceTargetKey(artifact.base());
+        var replaced = kvStore.getTyped(key, SliceTargetValue.class);
         var value = SliceTargetValue.sliceTargetValue(artifact.version(), 1);
         var put = new KVCommand.Put<SliceTargetKey, SliceTargetValue>(key, value);
-        var notification = new ValuePut<>(put, Option.none());
+        // #2613: the record is derived from the committed target, so the target is committed before the notification.
+        kvStore.process(kvStore.createBatch(List.<KVCommand<AetherKey>>of(new KVCommand.Put<AetherKey, AetherValue>(key, value))));
+        var notification = new ValuePut<>(put, replaced);
         rollbackManager.onSliceTargetPut(notification);
     }
 

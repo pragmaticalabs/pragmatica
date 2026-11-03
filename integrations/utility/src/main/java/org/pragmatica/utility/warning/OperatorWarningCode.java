@@ -752,6 +752,17 @@ public enum OperatorWarningCode {
     /// previous record stays in force and the next change is delivered; nothing is retried. Subject `<artifact>/<section>`. Raised on
     /// the transition into failure only; a repeat failure logs at ERROR without re-raising.
     CONFIG_WATCH_CALLBACK_FAILED("config-watch-callback-failed", "config", WarningLevel.WARNING),
+    /// The leader could not bring an artifact's rollback record up to its SliceTarget (#2613): the guarded record write was refused three times
+    /// in a row because the target or the record kept changing under it. The record still names an older version, so the next rollback
+    /// decision for the artifact reads stale bookkeeping until a later SliceTarget update or the next leader activation re-derives it. The
+    /// subject is the artifact base. Closed by [#ROLLBACK_RECORD_RECONCILED]. [guess: name, level and subsystem]
+    ROLLBACK_RECORD_RECONCILE_EXHAUSTED("rollback-record-reconcile-exhausted", "rollback", WarningLevel.CRITICAL),
+    /// The recovery of [#ROLLBACK_RECORD_RECONCILE_EXHAUSTED], same subject (#2613): the artifact's rollback record now names its target's
+    /// version. INFO, published only after a published exhaustion for the subject (#752 mechanism).
+    ROLLBACK_RECORD_RECONCILED("rollback-record-reconciled",
+                               "rollback",
+                               WarningLevel.INFO,
+                               ROLLBACK_RECORD_RECONCILE_EXHAUSTED),
     /// The recovery of [#CONFIG_WATCH_CALLBACK_FAILED], same subject (#774): the next delivery bound and (when it called back) succeeded.
     /// INFO, published only after a published failure for the subject (#752 mechanism).
     CONFIG_WATCH_CALLBACK_RECOVERED("config-watch-callback-recovered",

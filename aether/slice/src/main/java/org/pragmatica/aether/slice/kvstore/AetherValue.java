@@ -1267,8 +1267,14 @@ public sealed interface AetherValue {
 
         /// A new target version was deployed: the rollback history carries over.
         public PreviousVersionValue withVersionChange(Version newVersion, long nowMs) {
+            return withVersionChange(currentVersion, newVersion, nowMs);
+        }
+
+        /// A new target version was deployed over `previous`, which need not be this record's own current version
+        /// (#2613: the previous version is the one the SliceTarget change replaced). The rollback history carries over.
+        public PreviousVersionValue withVersionChange(Version previous, Version newVersion, long nowMs) {
             return new PreviousVersionValue(artifactBase,
-                                            currentVersion,
+                                            previous,
                                             newVersion,
                                             nowMs,
                                             rollbackCount,
