@@ -917,7 +917,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     private boolean trustedMarker(String streamName, int partition, AppendLog wal, AppendLog.AckedMark marker) {
         return marker.epoch()
                      .filter(key -> attributes(wal, marker, key))
-                     .filter(key -> inLiveLineage(streamName, partition, key, marker.offset()))
+                     .filter(key -> inLiveLineage(streamName,
+                                                  partition,
+                                                  key,
+                                                  marker.offset()))
                      .isPresent();
     }
 
