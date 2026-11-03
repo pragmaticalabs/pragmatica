@@ -85,10 +85,16 @@ class IdentityLedgerWiringTest {
         }
     }
 
-    private boolean raised(OperatorWarningCode code) {
+    /// The one guarded read of `events`: `Collections.synchronizedList` locks single calls only, so every
+    /// iteration (stream, assertj traversal, failure-message rendering) must run over this copy, never the live list.
+    private List<OperatorWarning> raisedEvents() {
         synchronized (events) {
-            return events.stream().anyMatch(event -> event.code() == code);
+            return List.copyOf(events);
         }
+    }
+
+    private boolean raised(OperatorWarningCode code) {
+        return raisedEvents().stream().anyMatch(event -> event.code() == code);
     }
 
     @Test
@@ -237,7 +243,7 @@ class IdentityLedgerWiringTest {
         assertThat(tokens.admit(PEER_A, 10L)).isEqualTo(Admission.ADMITTED);
         assertThat(tokens.admitDurably(PEER_A, 11L).await(BOUND).unwrap()).isEqualTo(Admission.CONFLICT);
         assertThat(readFile(location.file())).contains("peer-a");
-        assertThat(events).as("a healthy ledger raises nothing").isEmpty();
+        assertThat(raisedEvents()).as("a healthy ledger raises nothing").isEmpty();
     }
 
     @Test
@@ -283,7 +289,7 @@ class IdentityLedgerWiringTest {
         assertThat(tokens.admit(PEER_A, 10L)).isEqualTo(Admission.UNAVAILABLE);
         assertThat(Files.exists(location.file())).as("not rewritten empty").isFalse();
         assertThat(tokens.ledgerDurable()).as("a wiped node does not claim the protection: the gauge reads 0").isFalse();
-        assertThat(events).singleElement().satisfies(event -> {
+        assertThat(raisedEvents()).singleElement().satisfies(event -> {
             assertThat(event.code()).isEqualTo(OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE);
             assertThat(event.subject()).as("the node's own id").isEqualTo(SELF.id());
             assertThat(event.message()).as("isolation until a merge, and the remedy that is safe").contains("ISOLATED").contains("majority of the configured core seats").contains("NEW node id");
@@ -313,9 +319,7 @@ class IdentityLedgerWiringTest {
         assertThat(tokens.admitDurably(PEER_B, 21L).await(BOUND).unwrap()).isEqualTo(Admission.CONFLICT);
         await("the recovery event", () -> raised(OperatorWarningCode.IDENTITY_LEDGER_DURABLE));
         assertThat(tokens.ledgerDurable()).isTrue();
-        synchronized (events) {
-            assertThat(events).as("both transitions are about this node").allSatisfy(event -> assertThat(event.subject()).isEqualTo(SELF.id()));
-        }
+        assertThat(raisedEvents()).as("both transitions are about this node").allSatisfy(event -> assertThat(event.subject()).isEqualTo(SELF.id()));
     }
 
     /// The majority a wiped core waits for is counted over these seats: the core-role entries of the configured topology, this node
@@ -372,7 +376,7 @@ class IdentityLedgerWiringTest {
         Files.writeString(location.file().resolveSibling("ledger.offers"), "garbage, not a journal");
         IdentityLedgerWiring.wire(location, SELF, tokens, sink);
 
-        await("the offers journal event", () -> events.stream().anyMatch(event -> event.message().contains("offers journal")));
+        await("the offers journal event", () -> raisedEvents().stream().anyMatch(event -> event.message().contains("offers journal")));
         assertThat(tokens.admit(PEER_A, 10L)).as("no offers counted: still closed").isEqualTo(Admission.UNAVAILABLE);
     }
 
