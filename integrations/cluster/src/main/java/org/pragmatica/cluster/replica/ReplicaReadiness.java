@@ -38,7 +38,9 @@ public final class ReplicaReadiness {
     private final ArrayDeque<Beat> beats = new ArrayDeque<>();
     private IncarnationTag beatTag = IncarnationTag.NONE;
     private boolean caughtUp;
+    private final long carryCapNanos;
     private long carriedUntilNanos;
+    private long carryAnchorNanos;
     private boolean published;
     private boolean lastPublished;
 
@@ -55,6 +57,7 @@ public final class ReplicaReadiness {
         this.sink = sink;
         this.staleNanos = limits.staleMillis() * NANOS_PER_MILLI;
         this.lagNanos = limits.lagMillis() * NANOS_PER_MILLI;
+        this.carryCapNanos = limits.carryCapMillis() * NANOS_PER_MILLI;
     }
 
     public static ReplicaReadiness replicaReadiness(LongSupplier nanos,
@@ -71,6 +74,7 @@ public final class ReplicaReadiness {
         if (serving && !isAhead(tag, nextSlot)) {
             beatTag = tag;
             carriedUntilNanos = 0L;
+            carryAnchorNanos = 0L;
             beats.addLast(new Beat(nanos.getAsLong(), nextSlot));
         }
 
@@ -106,9 +110,16 @@ public final class ReplicaReadiness {
 
     /// A resume onto another source keeps the counted heartbeats only until `graceNanos` from now, or until the new source counts its own. A further
     /// resume before any beat of the previous new source (it was silent, or was left again) restarts the grace from that latest subscribe: the
-    /// deadline never moves backwards, and a silent source cannot outlive a grace anchored to the first subscribe (#2510).
+    /// deadline never moves backwards, and a silent source cannot outlive a grace anchored to the first subscribe (#2510). Renewal is capped: the
+    /// deadline never passes the start of the first carry since the last counted beat plus [ReplicaClientLimits#carryCapMillis] (two silences), so a chain of
+    /// re-parents onto silent sources cannot extend readiness past that bound. A counted beat clears the carry and the anchor.
     public synchronized Unit carryBeatsFor(long graceNanos) {
-        carriedUntilNanos = Math.max(carriedUntilNanos, nanos.getAsLong() + graceNanos);
+        var now = nanos.getAsLong();
+
+        carryAnchorNanos = carryAnchorNanos == 0L
+                           ? now
+                           : carryAnchorNanos;
+        carriedUntilNanos = Math.min(Math.max(carriedUntilNanos, now + graceNanos), carryAnchorNanos + carryCapNanos);
 
         return Unit.unit();
     }

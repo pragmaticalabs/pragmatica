@@ -261,4 +261,42 @@ class ReplicaReadinessTest {
         advance(200);
         assertThat(readiness.ready()).isFalse();
     }
+
+    /// The cap: renewals never carry past the first carry since the last counted beat plus two silences. Mutation: drop the `Math.min` against
+    /// `carryAnchorNanos + carryCapNanos` in `carryBeatsFor`.
+    @Test
+    void carryBeatsFor_aChainOfRenewals_neverPassesTheCap() {
+        var limits = ReplicaClientLimits.DEFAULT;
+        var grace = limits.carryGraceMillis() * MS;
+
+        readiness.carryBeatsFor(grace);
+        advance(2_000);
+        readiness.carryBeatsFor(grace);
+        advance(2_000);
+        readiness.carryBeatsFor(grace);
+        advance(limits.carryCapMillis() - 4_000 - 100);
+        assertThat(readiness.ready()).as("100 ms inside the cap").isTrue();
+        advance(200);
+        assertThat(readiness.ready()).as("100 ms past the cap, though the last renewal asked for 4500 ms more").isFalse();
+    }
+
+    /// A counted beat clears the carry and resets the anchor: the next chain gets a full cap of its own. Mutation: keep `carryAnchorNanos` on a beat.
+    @Test
+    void carryBeatsFor_afterACountedBeat_theCapRestartsFromTheNewAnchor() {
+        var limits = ReplicaClientLimits.DEFAULT;
+        var grace = limits.carryGraceMillis() * MS;
+
+        readiness.carryBeatsFor(grace);
+        advance(4_000);
+        readiness.onHeartbeat(TAG, 10, true);
+        readiness.carryBeatsFor(grace);
+        advance(limits.carryGraceMillis() - 100);
+        assertThat(readiness.ready()).as("past the first chain's cap, inside the second grace").isTrue();
+    }
+
+    /// The cap is two silences, derived from the silence constant.
+    @Test
+    void carryCapMillis_isTwoSilences() {
+        assertThat(ReplicaClientLimits.DEFAULT.carryCapMillis()).isEqualTo(2 * ReplicaClientLimits.DEFAULT.silenceMillis());
+    }
 }
