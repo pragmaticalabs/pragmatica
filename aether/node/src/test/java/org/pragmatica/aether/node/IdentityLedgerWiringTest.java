@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 
 import org.junit.jupiter.api.Test;
@@ -40,6 +41,8 @@ class IdentityLedgerWiringTest {
     private static final NodeId PEER_A = new NodeId("peer-a");
     private static final NodeId PEER_B = new NodeId("peer-b");
     private static final TimeSpan BOUND = TimeSpan.timeSpan(10).seconds();
+    private static final long POLL_WINDOW_NANOS = 500_000_000L;
+    private static final int WRITER_LIST_CAP = 2_000;
 
     @TempDir
     Path directory;
@@ -378,6 +381,41 @@ class IdentityLedgerWiringTest {
 
         await("the offers journal event", () -> raisedEvents().stream().anyMatch(event -> event.message().contains("offers journal")));
         assertThat(tokens.admit(PEER_A, 10L)).as("no offers counted: still closed").isEqualTo(Admission.UNAVAILABLE);
+    }
+
+    /// Pins the guarded snapshot: a writer appends to the live list for the whole window while `raised` reads it.
+    /// Unguarded (`raisedEvents()` returning `events` itself) this throws a `ConcurrentModificationException`
+    /// within milliseconds; the copy taken under `synchronized (events)` never does.
+    @Test
+    void raised_whileAWriterAppendsContinuously_neverThrows() throws Exception {
+        var stop = new AtomicBoolean();
+        var writer = Thread.ofPlatform().start(() -> appendUntil(stop));
+
+        try {
+            var deadline = System.nanoTime() + POLL_WINDOW_NANOS;
+
+            while (System.nanoTime() < deadline) {
+                assertThat(raised(OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE)).isFalse();
+            }
+        } finally {
+            stop.set(true);
+            writer.join();
+        }
+    }
+
+    private void appendUntil(AtomicBoolean stop) {
+        var warning = OperatorWarning.operatorWarning(OperatorWarningCode.IDENTITY_LEDGER_DURABLE, SELF.id(), "probe");
+
+        while (!stop.get()) {
+            events.add(warning);
+            trimWhenLarge();
+        }
+    }
+
+    private void trimWhenLarge() {
+        if (events.size() > WRITER_LIST_CAP) {
+            events.clear();
+        }
     }
 
     private static String readFile(Path file) {
