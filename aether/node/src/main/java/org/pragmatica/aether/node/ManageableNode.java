@@ -42,6 +42,7 @@ import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.node.projection.ProjectionNodeSupport;
+import org.pragmatica.aether.node.stream.ConsensusBatchCounters;
 import org.pragmatica.aether.node.stream.StreamConsumerManager;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
@@ -156,6 +157,12 @@ public interface ManageableNode {
     DeploymentMap deploymentMap();
     ClusterEventAggregator eventAggregator();
     StreamPartitionManager streamPartitionManager();
+
+    /// #2590: consensus batches of consumer progress by key class, since boot. A node that proposes no cursor batches
+    /// (the test doubles) reports zeros; the assembled node reports its cursor command writer's counts.
+    default ConsensusBatchCounters consensusBatchCounters() {
+        return ConsensusBatchCounters.consensusBatchCounters();
+    }
 
     /// The node's sealed-segment index (#634-3/4): per-partition [SegmentIndex.SegmentRef] ranges, the
     /// third local retention-floor source beside the ring tail and the WAL watermark. The default is an

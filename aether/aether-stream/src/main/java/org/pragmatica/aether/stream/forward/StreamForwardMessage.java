@@ -426,4 +426,38 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
             return VisibleBounds.of(earliestRetained, visibleHead);
         }
     }
+
+    /// #2590 P1: a control-log batch forwarded to the partition's owner. ONE message for the whole batch, answered with one
+    /// outcome per record in order ([ControlAppendForwardResponse]); the owner runs it as one queue item, one run append and
+    /// one group-commit fsync. A wire change: nodes of different versions do not share a cluster across it (pre-GA).
+    record ControlAppendForward(NodeId sender,
+                                String correlationId,
+                                String streamName,
+                                int partition,
+                                List<ControlRecordDto> records) implements StreamForwardMessage {
+        public ControlAppendForward {
+            records = List.copyOf(records);
+        }
+
+        public static ControlAppendForward controlAppendForward(NodeId sender,
+                                                                String correlationId,
+                                                                String streamName,
+                                                                int partition,
+                                                                List<ControlRecordDto> records) {
+            return new ControlAppendForward(sender, correlationId, streamName, partition, records);
+        }
+    }
+
+    /// #2590 P1: the owner's answer to a [ControlAppendForward], one outcome per forwarded record, in order.
+    record ControlAppendForwardResponse(NodeId sender, String correlationId, List<ControlOutcomeDto> outcomes) implements StreamForwardMessage {
+        public ControlAppendForwardResponse {
+            outcomes = List.copyOf(outcomes);
+        }
+
+        public static ControlAppendForwardResponse controlAppendForwardResponse(NodeId sender,
+                                                                                String correlationId,
+                                                                                List<ControlOutcomeDto> outcomes) {
+            return new ControlAppendForwardResponse(sender, correlationId, outcomes);
+        }
+    }
 }
