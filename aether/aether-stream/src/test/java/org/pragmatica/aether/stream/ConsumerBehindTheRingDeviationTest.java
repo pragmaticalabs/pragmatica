@@ -60,6 +60,17 @@ class ConsumerBehindTheRingDeviationTest {
         manager.createStream(StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 60_000), "earliest"))
                .onFailure(cause -> fail(cause.message()));
         manager.publishLocal(STREAM, 0, "seed".getBytes(UTF_8), 1L).onFailure(cause -> fail(cause.message()));
+        awaitSeedNotificationDelivered();
+    }
+
+    /// #2564: the ring delivers the seed's append notification on its own notifier thread, which can run after a test
+    /// has subscribed. The consumer then gets a wake-up no test asked for, and the scripted reads change (a second empty
+    /// read at the head). So every test subscribes only after that notification has been delivered, while no listener exists.
+    private void awaitSeedNotificationDelivered() {
+        awaitUntil(() -> manager.partitionBuffer(STREAM, 0)
+                                .filter(OffHeapRingBuffer::notifierIdle)
+                                .isPresent(),
+                   "the seed's append notification delivered");
     }
 
     @AfterEach
