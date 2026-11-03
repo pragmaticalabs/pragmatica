@@ -336,6 +336,11 @@ class M1StreamLoadTest {
         row.put("noopCkpt", delta.getOrDefault("cmd.Noop:" + CKPT, 0L));
         row.put("noopAll", delta.getOrDefault("cmd.Noop", 0L));
         row.put("slots", delta.getOrDefault("engine.slots", 0L));
+        // the L sampler submits one Noop(AlertThresholdKey) per sample, each its own slot: it is the harness own load, not checkpoint or background load
+        long samplerNoops = delta.getOrDefault("cmd.Noop:AlertThresholdKey", 0L);
+
+        row.put("samplerNoops", samplerNoops);
+        row.put("slotsExSampler", Math.max(0L, delta.getOrDefault("engine.slots", 0L) - samplerNoops));
         row.put("batches", delta.getOrDefault("engine.batches", 0L));
         row.put("commands", delta.getOrDefault("engine.commands", 0L));
         row.put("tx", delta.getOrDefault("tx.accepted", 0L));
@@ -410,7 +415,8 @@ class M1StreamLoadTest {
         s.put("ratioToFormula", ratio);
         s.put("within10pct", Math.abs(ratio - 1.0) <= 0.10);
         s.put("commitsPerCheckpoint", ckpt == 0 ? 0 : commits * WINDOW_S / ckpt);
-        s.put("slotsPerCheckpoint", ckpt == 0 ? 0 : mean(load, "slots") / ckpt);
+        s.put("slotsPerCheckpoint", ckpt == 0 ? 0 : mean(load, "slotsExSampler") / ckpt);
+        s.put("slotsPerCheckpointInclSampler", ckpt == 0 ? 0 : mean(load, "slots") / ckpt);
         s.put("txPerCheckpoint", ckpt == 0 ? 0 : mean(load, "tx") / ckpt);
         double lSeconds = mean(load, "applyLatencyMedianMs") / 1_000.0;
         double expectedWithL = arm.g() * arm.p() / (T_SECONDS + lSeconds);
@@ -422,7 +428,7 @@ class M1StreamLoadTest {
         s.put("within10pctWithL", Math.abs(perSecond / expectedWithL - 1.0) <= 0.10);
         s.put("kPerGPPerT", commits / expected);
         s.put("idleCheckpointsPerSec", idle.stream().mapToDouble(r -> ((Number) r.get("checkpointPuts")).doubleValue() / ((Number) r.get("seconds")).doubleValue()).average().orElse(0));
-        s.put("idleSlotsPerSec", idle.stream().mapToDouble(r -> ((Number) r.get("slots")).doubleValue() / ((Number) r.get("seconds")).doubleValue()).average().orElse(0));
+        s.put("idleSlotsPerSec", idle.stream().mapToDouble(r -> ((Number) r.get("slotsExSampler")).doubleValue() / ((Number) r.get("seconds")).doubleValue()).average().orElse(0));
         s.put("rateHeld", load.stream().allMatch(r -> Math.abs(((Number) r.get("eventsPerSecPerPartition")).doubleValue() / arm.rate() - 1.0) <= 0.10));
         s.put("producerCalls", producer.calls.get());
         s.put("producerMaxCallMs", producer.maxCallMs.get());
