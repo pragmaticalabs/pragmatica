@@ -13,15 +13,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// is deleted or reordered reddens exactly one assertion here).
 class ConfigChangeFeedWiringTest {
     private static final String PUBLISH = "dcm.onApplied(configChangeFeed::publish)";
-    private static final String FSM_LISTENER = "dcm.onApplied(nodeDeploymentManager::onConfigChanged)";
+    // F1 (L2 landing): the legacy FSM listener reaches the applier through the engine wiring, which hands it back unchanged on LEGACY
+    // (DeploymentWiring.configApplied); the order that matters is still the applier's registration order.
+    private static final String FSM_LISTENER = "deploymentWiring.configApplied(nodeDeploymentManager::onConfigChanged)";
+    private static final String FSM_REGISTRATION = "dcm.onApplied(configApplied)";
 
     @Test
     void theApplierPublishesToTheFeed_beforeTheLegacyFsmListener() {
         var source = AssemblySource.spaced();
 
-        assertThat(source).containsOnlyOnce(PUBLISH).containsOnlyOnce(FSM_LISTENER);
+        assertThat(source).containsOnlyOnce(PUBLISH).containsOnlyOnce(FSM_LISTENER).containsOnlyOnce(FSM_REGISTRATION);
         assertThat(source.indexOf(PUBLISH)).as("the feed is registered first: a Watched subscription is triggered ahead of the legacy push")
-                                           .isLessThan(source.indexOf(FSM_LISTENER));
+                                           .isLessThan(source.indexOf(FSM_REGISTRATION));
     }
 
     @Test
@@ -31,7 +34,7 @@ class ConfigChangeFeedWiringTest {
         assertThat(source).containsOnlyOnce("configChangeFeed.shutdown()")
                           .containsOnlyOnce("NodeStopSequence.Steps.steps(this::releaseWatchesThenDeactivate,");
         assertThat(source.indexOf("configChangeFeed.shutdown()")).as("shutdown is part of the first stop step, ahead of the deactivation it precedes")
-                                                                .isLessThan(source.indexOf("clusterDeploymentManager.deactivate()"));
+                                                                .isLessThan(source.indexOf("deploymentWiring.deactivateCluster(clusterDeploymentManager::deactivate)"));
     }
 
     @Test
