@@ -382,14 +382,26 @@ public final class AppendLog implements AutoCloseable {
     }
 
     /// A log this call CREATES has acked nothing: it is born with a durable `-1` marker (know `6665558916`, S6), so a
-    /// prefix sealed before anything is acknowledged is not visible after a restart. A marker that cannot be written closes
-    /// the log, as a failed directory force does.
+    /// prefix sealed before anything is acknowledged is not visible after a restart.
+    ///
+    /// FER (degrade forward): a born marker that cannot be written is a WARN and the log opens anyway, holding whatever
+    /// marker the volume now has -- two opens of one new log race to the same temp file (a duplicate create that loses the
+    /// install race opens the winner's log), and the loser's rename then fails. A log left with no marker gets no #1463
+    /// lowering on its next restart: the stated residual of a log with no marker, never an exposure the build did not have.
     private static Result<AppendLog> bornWithMarker(AppendLog log) {
         synchronized (log.markerLock) {
             return log.acked.create()
-                            .onFailure(_ -> log.close())
+                            .onFailure(log::bornMarkerFailed)
+                            .recover(_ -> log.acked.reload(log.file))
                             .map(_ -> log);
         }
+    }
+
+    @Contract
+    private void bornMarkerFailed(Cause cause) {
+        log.warn("Append log {} was created without its acked marker; it reads the marker the volume holds: {}",
+                 file,
+                 cause.message());
     }
 
     /// A failed force closes the log it just opened: its file may not survive a power loss, so it is

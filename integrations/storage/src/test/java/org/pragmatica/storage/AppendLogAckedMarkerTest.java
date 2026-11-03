@@ -7,6 +7,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -45,6 +47,34 @@ class AppendLogAckedMarkerTest {
         assertThat(forced).as("the marker's temp file is forced").anySatisfy(f -> assertThat(f.path()).isEqualTo(tempOfMarker()));
         assertThat(forced).as("and the directory after the rename").anySatisfy(f -> assertThat(f.path()).isEqualTo(dir.toAbsolutePath()));
         assertThat(Files.exists(tempOfMarker())).as("no temp file is left behind").isFalse();
+    }
+
+    /// A born marker that cannot be written does not refuse the open (two opens of one new log race to the same temp file);
+    /// the log holds what the volume holds -- here nothing.
+    @Test
+    void open_ofANewLog_whoseBornMarkerCannotBeWritten_opensWithNoMarker() {
+        var wal = AppendLog.open(file(), AppendLog.TornTailSink.logOnly(), FileOps::writeBytesForced, failingWhile(new AtomicBoolean(true)))
+                           .onFailure(cause -> fail("the open was refused: " + cause.message()))
+                           .unwrap();
+
+        assertThat(wal.ackedMarker()).isEqualTo(Option.none());
+        assertThat(Files.exists(marker())).isFalse();
+        wal.write(0, bytes("a"), 0L).onFailure(c -> fail(c.message()));
+        wal.close();
+    }
+
+    /// Two opens of the same new log at once both succeed (the duplicate-create race of a stream partition).
+    @Test
+    void concurrentOpensOfOneNewLog_bothSucceed() throws Exception {
+        for (var round = 0; round < 20; round++) {
+            var log = dir.resolve("race-" + round + ".wal");
+            var first = CompletableFuture.supplyAsync(() -> AppendLog.open(log));
+            var second = CompletableFuture.supplyAsync(() -> AppendLog.open(log));
+            var opened = List.of(first.get(10, TimeUnit.SECONDS), second.get(10, TimeUnit.SECONDS));
+
+            assertThat(opened).as("round %d", round).allSatisfy(result -> assertThat(result.isSuccess()).isTrue());
+            opened.forEach(result -> result.onSuccess(AppendLog::close));
+        }
     }
 
     @Test
