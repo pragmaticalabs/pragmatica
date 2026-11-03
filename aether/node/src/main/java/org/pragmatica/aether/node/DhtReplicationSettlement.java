@@ -627,6 +627,9 @@ public interface DhtReplicationSettlement {
 
                 inputs.kvStore()
                       .getTyped(LeaderKey.INSTANCE, LeaderValue.class)
+                      .filter(leader -> leader.leader()
+                                              .equals(inputs.self()) && inputs.isLeader()
+                                                                              .get())
                       .onPresent(leader -> submitTransaction(leader, expected, next));
             }
 
