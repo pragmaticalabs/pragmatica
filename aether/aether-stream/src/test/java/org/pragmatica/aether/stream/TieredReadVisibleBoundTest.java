@@ -8,7 +8,6 @@ package org.pragmatica.aether.stream;
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
@@ -164,21 +163,9 @@ class TieredReadVisibleBoundTest {
         assertThat(fetch(0)).containsExactly(0L, 1L, 2L, 3L);
     }
 
-    /// #1463 tripwire (today): recovery seeds `visible` at the sealed floor, so after a cold restart the prefix sealed while
-    /// NOTHING was acknowledged reads as visible. Delete when PR-2f lands and enable
-    /// [#coldRestart_overAPrefixSealedWhileUnacknowledged_readsItAsNotYetVisible].
-    @Test
-    void coldRestart_tripwire_overAPrefixSealedWhileUnacknowledged_readsIt() {
-        sealUnacknowledgedPrefix_thenRestart();
-        assertThat(fetch(0)).as("PR-2f landed? The marker lowers the seeded visible below the unacknowledged sealed prefix. Delete this "
-                                + "tripwire and enable coldRestart_overAPrefixSealedWhileUnacknowledged_readsItAsNotYetVisible")
-                            .containsExactly(0L);
-    }
-
     /// #1463 acceptance (CTO ruling 2026-10-28; S6, know `6665558916`): a log created by this build is born with a `-1`
     /// marker, so a cold restart over a prefix sealed while unacknowledged reads it as not yet visible.
     @Test
-    @Disabled("#1463 (PR-2f): enable when the acked marker lowers the seeded visible; RED today: the sealed unacknowledged offset 0 is served")
     void coldRestart_overAPrefixSealedWhileUnacknowledged_readsItAsNotYetVisible() {
         sealUnacknowledgedPrefix_thenRestart();
         assertThat(visible()).as("the born -1 marker lowers the seed below the sealed floor").isEqualTo(-1L);

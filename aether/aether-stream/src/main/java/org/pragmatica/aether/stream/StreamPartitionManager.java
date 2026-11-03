@@ -2385,6 +2385,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// an announcement stays BEHIND, never ahead, and this closes the gap: after the last ack a replica's visible
     /// position lags the owner's by at most one tick interval plus one message delivery. Cost: one small message per
     /// owned partition per replica per tick, independent of the publish rate.
+    ///
+    /// PR-2f: the same tick records the owner's visible position as the partition log's acked marker
+    /// ([#recordAckedMarker]), at most one small unforced rename per owned partition per tick, and only when visible moved.
     @Contract
     public void repeatVisible() {
         materializedHeads().forEach(head -> resolvePartitionBuffer(head.streamName(), head.partition()).onSuccess(ring -> repeatVisible(head,
@@ -2396,6 +2399,35 @@ public final class StreamPartitionManager implements AutoCloseable {
         if (ring.visibleOffset() >= 0) {
             announceVisible(head.streamName(), head.partition(), ring.visibleOffset());
         }
+
+        recordAckedMarker(head.streamName(), head.partition(), ring);
+    }
+
+    /// PR-2f (I-05): on the OWNER, write its visible position to the partition log's acked marker -- a no-op unless visible
+    /// moved past the last marker (or past the visible position the ring was seeded at). A node that is not the owner
+    /// writes nothing: a replica's visible position is not the owner's acknowledgement state.
+    ///
+    /// FER (degrade forward): a failed write is a WARN and is otherwise ignored. The marker is an optimisation; without
+    /// the advance it would have recorded, a restart waits for replica re-acks of those records, bounded as before the
+    /// marker existed. Nothing is retried here -- the next tick writes again if visible is still ahead.
+    @Contract
+    private void recordAckedMarker(String streamName, int partition, OffHeapRingBuffer ring) {
+        if (placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER) {
+            walFor(streamName, partition).onPresent(wal -> wal.recordAckedMarker(ring.visibleOffset())
+                                                             .onFailure(cause -> log.warn("Stream {} partition {}: the acked marker was not written (a restart waits for replica re-acks of the records it would have covered): {}",
+                                                                                          streamName,
+                                                                                          partition,
+                                                                                          cause.message())));
+        }
+    }
+
+    /// PR-2f: the tick's marker write for every materialized partition, run by [#close] before the logs close, so a graceful
+    /// stop restarts with the acked marker it had (a kill loses at most the last tick's advance).
+    @Contract
+    private void flushAckedMarkers() {
+        materializedHeads().forEach(head -> resolvePartitionBuffer(head.streamName(), head.partition()).onSuccess(ring -> recordAckedMarker(head.streamName(),
+                                                                                                                                             head.partition(),
+                                                                                                                                             ring)));
     }
 
     /// #2087: the owner told this replica how far its visible position reaches. Ignored on the owner itself (it is the
@@ -5578,6 +5610,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     @Override
     public void close() {
+        flushAckedMarkers();
         streams.values().forEach(StreamEntry::close);
         streams.clear();
         scheduler.clearOnClose();
@@ -7155,6 +7188,11 @@ public final class StreamPartitionManager implements AutoCloseable {
         ///
         /// #1638 F6: a trim that fails leaves the ghost in place, so the partition stays closed on this node -- detect and
         /// flag, never guess -- and the failure is reported with its own cause ([TrimFailure]).
+        ///
+        /// PR-2f (S3, know `6665558916`): the acked marker is clamped here too, to the same head -- the larger of the ring head
+        /// and the log's last offset, because a log whose sealed prefix was compacted away reopens with no records while the
+        /// data continues in the sealed tier -- and rewritten durably, so a crash that left it above the data never vouches
+        /// for records this copy does not hold.
         private static Result<Unit> trimAtOpen(String streamName,
                                                int partition,
                                                AppendLog wal,
@@ -7163,7 +7201,26 @@ public final class StreamPartitionManager implements AutoCloseable {
             var head = ring.headOffset();
 
             return wal.truncateEpochsAboveHead(head)
-                      .mapError(cause -> trimFailed.trimFailed(streamName, partition, head, cause));
+                      .mapError(cause -> trimFailed.trimFailed(streamName, partition, head, cause))
+                      .onSuccess(_ -> clampAckedMarker(streamName, partition, wal, head));
+        }
+
+        /// Design-out, not a refusal: a marker that could not be clamped is never restored in this incarnation (its restore
+        /// is taken and dropped), so it can raise nothing, and the tail waits for replica re-acks as it would with no marker.
+        /// The partition stays open: the marker is an optimisation, and the lowering it seeded already happened.
+        @Contract
+        private static void clampAckedMarker(String streamName, int partition, AppendLog wal, long head) {
+            wal.clampAckedMarker(head)
+               .onFailure(cause -> forgoAckedRestore(streamName, partition, wal, cause));
+        }
+
+        @Contract
+        private static void forgoAckedRestore(String streamName, int partition, AppendLog wal, Cause cause) {
+            log.warn("Stream {} partition {}: the acked marker could not be clamped to the head; it is not restored on this start: {}",
+                     streamName,
+                     partition,
+                     cause.message());
+            wal.takeAckedRestore();
         }
 
         /// Place the WAL's un-sealed tail (records above the durable last-sealed offset `base`) at its
@@ -7177,6 +7234,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                AppendLog wal,
                                                long base) {
             var records = new ArrayList<WalRecord>();
+            var visibleSeed = visibleSeed(wal, base);
 
             return wal.replay(-1L, records::add)
                       .flatMap(_ -> placeTail(streamName,
@@ -7184,7 +7242,9 @@ public final class StreamPartitionManager implements AutoCloseable {
                                               wal.path(),
                                               ring,
                                               base,
+                                              visibleSeed,
                                               sortedByOffset(streamName, partition, records)))
+                      .onSuccess(_ -> wal.ackedMarkerBaseline(visibleSeed))
                       .onFailure(cause -> log.error("Stream {} is not materialized on this node: partition {} refused its WAL: {}",
                                                     streamName,
                                                     partition,
@@ -7209,6 +7269,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                               Path walFile,
                                               OffHeapRingBuffer ring,
                                               long base,
+                                              long visibleSeed,
                                               List<WalRecord> fileRecords) {
             var tail = recordsAbove(fileRecords, base);
 
@@ -7217,7 +7278,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                                  walFile,
                                                                                                                  base,
                                                                                                                  tail))
-                              .flatMap(_ -> seedRing(ring, base))
+                              .flatMap(_ -> seedRing(ring, base, visibleSeed))
                               .flatMap(_ -> appendTail(streamName, partition, walFile, ring, tail));
         }
 
@@ -7250,9 +7311,26 @@ public final class StreamPartitionManager implements AutoCloseable {
         /// Position the fresh ring so the next append is `seed + 1`; a no-op when `seed < 0` (nothing
         /// sealed, and the WAL starts at offset 0 or is empty).
         private static Result<Unit> seedRing(OffHeapRingBuffer ring, long seed) {
+            return seedRing(ring, seed, seed);
+        }
+
+        /// [#seedRing], with visible seeded at `visibleSeed` (#1463, PR-2f): see [#visibleSeed].
+        private static Result<Unit> seedRing(OffHeapRingBuffer ring, long seed, long visibleSeed) {
             return seed >= 0
-                   ? ring.seedHead(seed)
+                   ? ring.seedHead(seed, visibleSeed)
                    : success(unit());
+        }
+
+        /// #1463 (PR-2f, know `6665558916` S5/S6): a prefix sealed while unacknowledged is durable in the tier and must not
+        /// read as visible after a restart, so the WAL path seeds visible at the acked marker when the marker lies below the
+        /// sealed floor `base`. The lowering is role-agnostic -- it can only hide, never expose -- and runs before any
+        /// listener exists, so every later change only raises visible. No marker (a log written by an older build, a torn or
+        /// CRC-bad marker) means no lowering: visible is seeded at the floor, as before. A log created by this build is born
+        /// with a `-1` marker, so a prefix sealed before anything was acknowledged is hidden.
+        private static long visibleSeed(AppendLog wal, long base) {
+            return wal.ackedMarker()
+                      .map(marker -> Math.min(base, marker.offset()))
+                      .or(base);
         }
 
         /// The file's LOWEST stored offset must be at most `base + 1` (#1278). `base` already counts every offset

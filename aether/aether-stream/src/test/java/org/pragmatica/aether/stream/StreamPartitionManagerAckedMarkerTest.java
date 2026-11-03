@@ -11,6 +11,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
+import java.util.zip.CRC32;
 
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
@@ -19,6 +20,7 @@ import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
+import org.pragmatica.aether.stream.replication.ReplicaSetController;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.segment.SealerThresholds;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
@@ -28,6 +30,7 @@ import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.storage.AppendLog;
 import org.pragmatica.storage.LocalDiskTier;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.MetadataStore;
@@ -85,6 +88,7 @@ class StreamPartitionManagerAckedMarkerTest {
     private final AtomicReference<StreamPartitionOwnershipValue> committed = new AtomicReference<>();
     private final AtomicReference<Result<Unit>> gate = new AtomicReference<>(Result.unitResult());
     private final AtomicReference<Option<NodeId>> remoteOwner = new AtomicReference<>(Option.none());
+    private final AtomicReference<ReplicaSetController.Role> role = new AtomicReference<>(ReplicaSetController.Role.OWNER);
 
     @BeforeEach
     void setUp() {
@@ -195,6 +199,74 @@ class StreamPartitionManagerAckedMarkerTest {
         assertThat(visible()).as("the record names this node: the marker is trusted").isEqualTo(4L);
     }
 
+    // ---- the writer (tick + close) and the open-time clamp: wiring pins ----------------------------------------------------
+
+    @Test
+    void tick_writesTheOwnersVisiblePosition_asTheAckedMarker_attributedToItsEpoch() {
+        startOwner(walDir);
+        publish(10);
+        assertThat(markerOffset()).as("control: born at -1").isEqualTo(Option.some(-1L));
+        replication.handleAck(replicateAck(PEER, STREAM, PARTITION, 4L));
+        assertThat(markerOffset()).as("an ack alone writes nothing").isEqualTo(Option.some(-1L));
+        manager.repeatVisible();
+        assertThat(AppendLog.readAckedMarker(walFile(walDir)).flatMap(AppendLog.AckedMark::epoch).isPresent())
+                  .as("the epoch the history attributes 4 to").isTrue();
+        assertThat(markerOffset()).isEqualTo(Option.some(4L));
+    }
+
+    @Test
+    void close_flushesTheAckedMarker_withoutATick() {
+        startOwner(walDir);
+        publish(10);
+        replication.handleAck(replicateAck(PEER, STREAM, PARTITION, 6L));
+        manager.close();
+        manager = null;
+        assertThat(markerOffset()).isEqualTo(Option.some(6L));
+    }
+
+    @Test
+    void tick_onANodeThatIsNotTheOwner_writesNoMarker() {
+        startOwner(walDir);
+        publish(10);
+        replication.handleAck(replicateAck(PEER, STREAM, PARTITION, 4L));
+        role.set(ReplicaSetController.Role.NONE);
+        manager.repeatVisible();
+        manager.close();
+        manager = null;
+        assertThat(markerOffset()).as("neither the tick nor the close of a non-owner writes it").isEqualTo(Option.some(-1L));
+    }
+
+    @Test
+    void tick_whoseMarkerWriteFails_isIgnored_andTheNextTickWritesIt() throws IOException {
+        startOwner(walDir);
+        publish(10);
+        replication.handleAck(replicateAck(PEER, STREAM, PARTITION, 4L));
+
+        var blocker = walFile(walDir).resolveSibling(PARTITION + ".acked.tmp");
+
+        Files.createDirectories(blocker.resolve("blocks-the-temp-file"));
+        manager.repeatVisible();
+        assertThat(markerOffset()).as("control: the write failed").isEqualTo(Option.some(-1L));
+        publish(1);
+        assertThat(visible()).as("the partition keeps serving").isEqualTo(4L);
+        Files.delete(blocker.resolve("blocks-the-temp-file"));
+        Files.delete(blocker);
+        manager.repeatVisible();
+        assertThat(markerOffset()).isEqualTo(Option.some(4L));
+    }
+
+    @Test
+    void restart_clampsAMarkerAboveTheRecoveredHead_toTheHead() throws IOException {
+        startOwner(walDir);
+        publish(10);
+        manager.close();
+        manager = null;
+        Files.writeString(walFile(walDir).resolveSibling(PARTITION + ".acked"), validMarkerLine(50L));
+        assertThat(markerOffset()).as("control: a marker above everything the log holds").isEqualTo(Option.some(50L));
+        restartOn(walDir);
+        assertThat(markerOffset()).as("clamped to the recovered head (9) at open, durably").isEqualTo(Option.some(9L));
+    }
+
     // ---- scenarios ----------------------------------------------------------------------------------------------------
 
     /// Publish 0..9; the peer acks 4; one tick; the peer acks 7; then the node is KILLED: its files are copied as they
@@ -243,6 +315,7 @@ class StreamPartitionManagerAckedMarkerTest {
         manager.ownershipRecords((_, _) -> Option.option(committed.get()));
         manager.ownerWriteAdmission((_, _) -> remoteOwner.get());
         manager.ownerServeGate((_, _) -> gate.get());
+        manager.placementRoleSupplier((_, _) -> role.get());
         manager.createStream(config()).onFailure(cause -> fail(cause.message()));
     }
 
@@ -295,6 +368,29 @@ class StreamPartitionManagerAckedMarkerTest {
             manager.publishLocal(STREAM, PARTITION, ("e-" + i).getBytes(UTF_8), 1L)
                    .onFailure(cause -> fail("publish failed: " + cause.message()));
         }
+    }
+
+    private Option<Long> markerOffset() {
+        return AppendLog.readAckedMarker(walFile(walDir)).map(AppendLog.AckedMark::offset);
+    }
+
+    private static Path walFile(Path dir) {
+        try (Stream<Path> paths = Files.walk(dir)) {
+            return paths.filter(path -> path.getFileName().toString().equals(PARTITION + ".wal")).findFirst().orElseThrow();
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /// The sidecar's one line, `aether-append-log-acked v1 - <offset> <crc>`, with a valid CRC (the storage module's encoder
+    /// is package-private).
+    private static String validMarkerLine(long offset) {
+        var body = "aether-append-log-acked v1 - " + offset;
+        var crc = new CRC32();
+
+        crc.update(body.getBytes(UTF_8));
+
+        return body + " " + Long.toHexString(crc.getValue()) + "\n";
     }
 
     private static void copyTree(Path from, Path to) {
