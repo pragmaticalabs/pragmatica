@@ -84,10 +84,10 @@ class ByteCappedCatchupPageTest {
                                          segmentSealer(storageSegmentSink(replicaStorage, new SegmentIndex())));
         handler = streamForwardHandler(OWNER,
                                        owner,
-                                       (_, message) -> client.onReadForwardResponse((ReadForwardResponse) message),
+                                       AcceptingStreamForwardTransport.accepting((_, message) -> client.onReadForwardResponse((ReadForwardResponse) message)),
                                        ONE_EVENT_PER_PAGE_BYTES,
                                        StreamReadForwardMetrics.NOOP);
-        client = streamForwardClient(NEW_PEER, (_, message) -> handler.onReadForward((ReadForward) message));
+        client = streamForwardClient(NEW_PEER, AcceptingStreamForwardTransport.accepting((_, message) -> handler.onReadForward((ReadForward) message)));
     }
 
     @AfterEach

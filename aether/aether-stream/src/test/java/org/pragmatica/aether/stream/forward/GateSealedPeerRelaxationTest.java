@@ -127,7 +127,7 @@ class GateSealedPeerRelaxationTest {
         replica.createStream(config()).onFailure(cause -> fail(cause.message()));
         client = clientAgainst(streamForwardHandler(OWNER,
                                                     owner,
-                                                    this::deliverToPeer,
+                                                    AcceptingStreamForwardTransport.accepting(this::deliverToPeer),
                                                     StreamForwardHandler.DEFAULT_MAX_READ_RESPONSE_BYTES,
                                                     StreamReadForwardMetrics.NOOP,
                                                     Option.none(),
@@ -280,7 +280,7 @@ class GateSealedPeerRelaxationTest {
     /// Without a tier wired (base handler) the read stays ring-only and the ring's refusal stands, as before.
     @Test
     void catchupRead_withoutATier_isCursorExpired() {
-        client = clientAgainst(streamForwardHandler(OWNER, owner, this::deliverToPeer));
+        client = clientAgainst(streamForwardHandler(OWNER, owner, AcceptingStreamForwardTransport.accepting(this::deliverToPeer)));
         publish(3);
         awaitSealedThrough(0);
 
@@ -323,7 +323,7 @@ class GateSealedPeerRelaxationTest {
     private StreamForwardClient clientAgainst(StreamForwardHandler ownerHandler) {
         handler = ownerHandler;
 
-        return streamForwardClient(NEW_PEER, (_, message) -> handler.onReadForward((ReadForward) message));
+        return streamForwardClient(NEW_PEER, AcceptingStreamForwardTransport.accepting((_, message) -> handler.onReadForward((ReadForward) message)));
     }
 
     private void deliverToPeer(NodeId target, StreamForwardMessage message) {

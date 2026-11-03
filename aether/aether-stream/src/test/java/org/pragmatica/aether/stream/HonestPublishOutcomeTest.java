@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import org.pragmatica.aether.stream.forward.AcceptingStreamForwardTransport;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -134,7 +135,7 @@ class HonestPublishOutcomeTest {
                 createStream(manager);
                 var handler = StreamForwardHandler.streamForwardHandler(SELF,
                                                                         manager,
-                                                                        (_, message) -> responses.add(message));
+                                                                        AcceptingStreamForwardTransport.accepting((_, message) -> responses.add(message)));
 
                 handler.onPublishForward(publishForward(SENDER, "c-1", STREAM, PARTITION, payload(), 1000L));
 
@@ -299,7 +300,7 @@ class HonestPublishOutcomeTest {
                 createStream(manager);
                 var handler = StreamForwardHandler.streamForwardHandler(SELF,
                                                                         manager,
-                                                                        (_, message) -> responses.add(message));
+                                                                        AcceptingStreamForwardTransport.accepting((_, message) -> responses.add(message)));
 
                 handler.onPublishForward(publishForward(SENDER, "c-1", STREAM, PARTITION, payload(), 1000L));
 

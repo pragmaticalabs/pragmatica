@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import org.pragmatica.aether.stream.forward.AcceptingStreamForwardTransport;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.forward.ForwardCodecsStream;
@@ -50,10 +51,10 @@ class ForwardedRingCorruptionTest {
             var local = owner.readServing(STREAM, 0, 0, 10).fold(cause -> cause, _ -> fail("expected corruption"));
             StreamForwardClient[] client = new StreamForwardClient[1];
 
-            client[0] = streamForwardClient(CALLER_ID, (_, message) -> handler.onReadForward((ReadForward) overTheWire(message)), TimeSpan.timeSpan(5).seconds());
+            client[0] = streamForwardClient(CALLER_ID, AcceptingStreamForwardTransport.accepting((_, message) -> handler.onReadForward((ReadForward) overTheWire(message))), TimeSpan.timeSpan(5).seconds());
             handler = streamForwardHandler(OWNER_ID,
                                            owner,
-                                           (_, message) -> client[0].onReadForwardResponse((ReadForwardResponse) overTheWire(message)),
+                                           AcceptingStreamForwardTransport.accepting((_, message) -> client[0].onReadForwardResponse((ReadForwardResponse) overTheWire(message))),
                                            Long.MAX_VALUE,
                                            org.pragmatica.aether.stream.forward.StreamReadForwardMetrics.NOOP,
                                            Option.none());

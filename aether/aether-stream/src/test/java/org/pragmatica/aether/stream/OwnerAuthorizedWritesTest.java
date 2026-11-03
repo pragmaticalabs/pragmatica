@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import org.pragmatica.aether.stream.forward.AcceptingStreamForwardTransport;
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
@@ -291,7 +292,7 @@ class OwnerAuthorizedWritesTest {
         void forwardHandler_repliesRetryable_ratherThanAnsweringNotEnoughReplicas() {
             var responses = new ArrayList<StreamForwardMessage>();
 
-            StreamForwardHandler.streamForwardHandler(SELF, partitionManager, (_, message) -> responses.add(message))
+            StreamForwardHandler.streamForwardHandler(SELF, partitionManager, AcceptingStreamForwardTransport.accepting((_, message) -> responses.add(message)))
                                 .onPublishForward(publishForward(OWNER, "c-1", STREAM, PARTITION, "e0".getBytes(), 1L));
 
             assertThat(responses).hasSize(1);
