@@ -924,6 +924,8 @@ class ClusterCursorStoreTest {
             manager.destroyStream(STREAM).onFailure(cause -> Assertions.fail(cause.message()));
             assertThat(issued).as("control: the production destroy published its commands to the applier")
                               .anyMatch(command -> command instanceof KVCommand.Remove<AetherKey> remove && remove.key() instanceof AetherKey.StreamConfigKey);
+            assertThat(issued).as("the production destroy publishes no removal of a cursor key (the applier may or may not honour one: this is what the destroy ASKS for)")
+                              .noneMatch(command -> command instanceof KVCommand.Remove<AetherKey> remove && remove.key() instanceof StreamCursorCheckpointKey);
             createStream();
 
             return storeWith(fixedLocal(Option.none()),
