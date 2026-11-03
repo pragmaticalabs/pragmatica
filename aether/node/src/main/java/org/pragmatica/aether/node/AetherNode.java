@@ -1797,7 +1797,6 @@ public interface AetherNode extends ManageableNode {
                 var backupFlushed = kvBackupService.map(service -> service.stopFlushed(BACKUP_STOP_FLUSH_BOUND,
                                                                                        backupReplica()))
                                                    .or(Promise.unitPromise());
-
                 // B13 (design 7, 2a/2b): PASSIVE, then the FSM2 node's SUSPEND drain (a no-op under LEGACY), then the quiesce.
                 deploymentWiring.leaveQuorum(() -> router.route(ClusterStateNotification.passive()),
                                              router::quiesce);

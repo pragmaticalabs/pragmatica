@@ -637,7 +637,8 @@ public final class BackupRestoreCoordinator {
     /// when a remove precedes it: so the remove transaction witnesses the value the mutation expects, and its acceptance
     /// establishes the put's precondition (the replace write's all-or-none rule).
     private static KVCommand.ReadWitness<AetherKey> witnessOf(KVCommand.Mutation<AetherKey, AetherValue> mutation) {
-        return new KVCommand.ReadWitness<>(mutation.key(), mutation.expected().map(Object.class::cast));
+        return new KVCommand.ReadWitness<>(mutation.key(),
+                                           mutation.expected().map(Object.class::cast));
     }
 
     // --- decisions and transactions ---

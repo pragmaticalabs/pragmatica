@@ -393,9 +393,7 @@ public sealed interface WorkerHierarchyAssembly {
         Consumer<VoterConfiguration> installVoters = voters -> clusterNode.installPassiveVoters(voters)
                                                                           .onFailure(cause -> LOG.warn("Worker electorate install refused: {}",
                                                                                                        cause.message()));
-        Runnable workerReady = () -> becomeForwarding(switchableCluster,
-                                                      forwardingClusterNode,
-                                                      passiveClientActivation);
+        Runnable workerReady = () -> becomeForwarding(switchableCluster, forwardingClusterNode, passiveClientActivation);
         var workerMetadataChannel = org.pragmatica.aether.worker.metadata.WorkerMetadataChannel.workerMetadataChannel(config.self(),
                                                                                                                       configuredWorker(config),
                                                                                                                       kvStore,
