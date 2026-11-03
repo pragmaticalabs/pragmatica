@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -136,6 +138,26 @@ class StreamNoWalRestartOffsetTest {
                                                              .isEqualTo(sealedBeforeCrash);
     }
 
+    /// NT-45 (PR-2f): a partition with no WAL has no acked marker -- nothing writes one anywhere on the node -- and its
+    /// restart is unchanged: visible is seeded at the sealed floor, and an owner admission raises nothing from a marker.
+    @Test
+    void noWalRestart_hasNoAckedMarker_andSeedsVisibleAtTheSealedFloor() throws IOException {
+        index = new SegmentIndex();
+        startOwnerOn(index);
+        publish(PUBLISHED);
+        awaitSealedThrough(SEALED_THROUGH);
+        manager.repeatVisible();
+        manager.close();
+        index = new SegmentIndex();
+        index.rebuildFromRefs(metadataStore);
+        startOwnerOn(index);
+        assertThat(manager.mayServeAsOwner(STREAM, PARTITION)).as("control: an owner admission ran").isTrue();
+
+        assertThat(visible()).as("seeded at the sealed floor, as before PR-2f").isEqualTo(index.lastSealedOffset(STREAM, PARTITION));
+        assertThat(ackedMarkersUnder(storageDir)).as("no .acked file anywhere").isZero();
+        assertThat(ackedMarkersUnder(snapshotDir)).isZero();
+    }
+
     /// Over-seeding guard: a no-WAL stream that never sealed anything still starts at offset 0.
     @Test
     void noWalRestart_withNothingSealed_startsAtZero() {
@@ -192,6 +214,18 @@ class StreamNoWalRestartOffsetTest {
                                          1,
                                          StreamCompression.NONE,
                                          Option.none());
+    }
+
+    private long visible() {
+        return manager.partitionBuffer(STREAM, PARTITION)
+                      .map(OffHeapRingBuffer::visibleOffset)
+                      .or(Long.MIN_VALUE);
+    }
+
+    private static long ackedMarkersUnder(Path dir) throws IOException {
+        try (var paths = Files.walk(dir)) {
+            return paths.filter(path -> path.getFileName().toString().contains(".acked")).count();
+        }
     }
 
     private long head() {

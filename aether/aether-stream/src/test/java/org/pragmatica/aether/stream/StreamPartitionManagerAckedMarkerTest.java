@@ -19,6 +19,7 @@ import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
+import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicaSetController;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
@@ -38,7 +39,6 @@ import org.pragmatica.storage.StorageInstance;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
@@ -109,23 +109,9 @@ class StreamPartitionManagerAckedMarkerTest {
 
     // ---- NT-41: a kill within one tick of the last ack ----------------------------------------------------------------
 
-    /// NT-41 tripwire (today): nothing about acks survives the restart, so after the first served read the owner's
-    /// visible position is still `-1` -- the acked prefix 0..4 waits for a replica re-ack. Delete when PR-2f lands and
-    /// enable [#killWithinOneTickOfTheLastAck_restoresTheTickedMarker_andNoUnackedRecord].
-    @Test
-    void killWithinOneTickOfTheLastAck_tripwire_holdsTheWholeTailInvisible() {
-        killAfterTickedAckAt4_thenAckThrough7();
-        assertThat(visible()).as("control: nothing raises visible at rebuild").isEqualTo(-1L);
-        servedRead();
-        assertThat(visible()).as("PR-2f landed? The ticked marker (4) is restored at the owner-admission edge. Delete this tripwire and "
-                                 + "enable killWithinOneTickOfTheLastAck_restoresTheTickedMarker_andNoUnackedRecord")
-                             .isEqualTo(-1L);
-    }
-
     /// NT-41 real: the marker written by the tick covers 0..4; the acks for 5..7 came after the last tick and the kill
     /// lost them, so those records wait for a re-ack (the bounded fallback), and 8..9 -- never acked -- stay invisible.
     @Test
-    @Disabled("NT-41 (PR-2f): enable when the owner's acked marker is restored at the owner-admission edge; RED today: visible stays -1")
     void killWithinOneTickOfTheLastAck_restoresTheTickedMarker_andNoUnackedRecord() {
         killAfterTickedAckAt4_thenAckThrough7();
         assertThat(visible()).as("never raised at ring rebuild, before any owner admission (S1)").isEqualTo(-1L);
@@ -138,24 +124,8 @@ class StreamPartitionManagerAckedMarkerTest {
 
     // ---- NT-111 (iii): the owner gate refuses ------------------------------------------------------------------------
 
-    /// NT-111 (iii) tripwire (today): neither a refused nor an admitted owner read raises visible. Delete when PR-2f lands
-    /// and enable [#ownerGateRefusing_neverRaisesFromTheMarker_untilItAdmits].
-    @Test
-    void ownerGateRefusing_tripwire_neverRaises_andNeitherDoesAnAdmission() {
-        restartWithMarkerAt4();
-        gate.set(GATE_REFUSES);
-        refusedRead();
-        assertThat(visible()).as("control: a refused gate raises nothing").isEqualTo(-1L);
-        gate.set(Result.unitResult());
-        servedRead();
-        assertThat(visible()).as("PR-2f landed? An admitted owner read restores the marker. Delete this tripwire and enable "
-                                 + "ownerGateRefusing_neverRaisesFromTheMarker_untilItAdmits")
-                             .isEqualTo(-1L);
-    }
-
     /// NT-111 (iii) real: while the owner gate refuses, the marker is not read; the first admission raises to it.
     @Test
-    @Disabled("NT-111 iii (PR-2f): enable when the acked marker is restored at the owner-admission edge; RED today: visible stays -1 after the admission")
     void ownerGateRefusing_neverRaisesFromTheMarker_untilItAdmits() {
         restartWithMarkerAt4();
         gate.set(GATE_REFUSES);
@@ -169,25 +139,9 @@ class StreamPartitionManagerAckedMarkerTest {
 
     // ---- NT-111 (iv): the committed record names another node ---------------------------------------------------------
 
-    /// NT-111 (iv) tripwire (today): an admitted read raises nothing, with or without a remote committed owner. Delete when
-    /// PR-2f lands and enable [#remoteCommittedOwner_neverRaisesFromTheMarker_untilTheRecordNamesThisNode].
-    @Test
-    void remoteCommittedOwner_tripwire_neverRaises_andNeitherDoesSelf() {
-        restartWithMarkerAt4();
-        remoteOwner.set(Option.some(PEER));
-        servedRead();
-        assertThat(visible()).as("control: a remote committed owner raises nothing").isEqualTo(-1L);
-        remoteOwner.set(Option.none());
-        servedRead();
-        assertThat(visible()).as("PR-2f landed? An admitted read with the record naming this node restores the marker. Delete this "
-                                 + "tripwire and enable remoteCommittedOwner_neverRaisesFromTheMarker_untilTheRecordNamesThisNode")
-                             .isEqualTo(-1L);
-    }
-
     /// NT-111 (iv) real: an admitted owner read while the committed record names another node does not trust the marker;
     /// once the record names this node, the next admission does.
     @Test
-    @Disabled("NT-111 iv (PR-2f): enable when the acked marker is restored at the owner-admission edge; RED today: visible stays -1")
     void remoteCommittedOwner_neverRaisesFromTheMarker_untilTheRecordNamesThisNode() {
         restartWithMarkerAt4();
         remoteOwner.set(Option.some(PEER));
@@ -197,6 +151,117 @@ class StreamPartitionManagerAckedMarkerTest {
         remoteOwner.set(Option.none());
         servedRead();
         assertThat(visible()).as("the record names this node: the marker is trusted").isEqualTo(4L);
+    }
+
+    // ---- NT-111 (i), (ii) and the A-15 shape: never raised --------------------------------------------------------------
+
+    /// NT-111 (i): while the role is NONE -- the role unresolved, with the transient owner rule -- an admitted owner check
+    /// never reads the marker; the marker stays pending, and the first admission as OWNER restores it.
+    @Test
+    void noneRole_neverRaisesFromTheMarker_evenWhenTheGateAdmits() {
+        restartWithMarkerAt4();
+        role.set(ReplicaSetController.Role.NONE);
+        assertThat(manager.mayServeAsOwner(STREAM, PARTITION)).as("control: the gate admits").isTrue();
+        assertThat(manager.mayServeAsOwner(STREAM, PARTITION)).isTrue();
+        assertThat(visible()).as("the NONE role never raises visible from the marker").isEqualTo(-1L);
+        role.set(ReplicaSetController.Role.OWNER);
+        servedRead();
+        assertThat(visible()).as("positive control: pending, not consumed").isEqualTo(4L);
+    }
+
+    /// NT-111 (ii): a marker whose offset the epoch history does not attribute to the marker's epoch is never trusted, and
+    /// it is consumed: no later admission reads it again.
+    @Test
+    void unattributedMarker_isNeverTrusted() throws IOException {
+        restartWithMarkerAt4();
+        manager.close();
+        manager = null;
+        Files.writeString(walFile(walDir).resolveSibling(PARTITION + ".acked"), validMarkerLine("999", 4L));
+        restartOn(walDir);
+        servedRead();
+        servedRead();
+        assertThat(visible()).as("an epoch the history does not attribute 4 to").isEqualTo(-1L);
+    }
+
+    /// The committed record must be present: with none (the cold-start window, HRW routing alone) the marker stays pending
+    /// and is not read; once a record naming this node commits, the next admission restores it.
+    @Test
+    void noCommittedRecord_neverRaisesFromTheMarker_untilOneCommits() {
+        restartWithMarkerAt4();
+
+        var record = committed.getAndSet(null);
+
+        servedRead();
+        assertThat(visible()).as("no committed record: not trusted, not consumed").isEqualTo(-1L);
+        committed.set(record);
+        servedRead();
+        assertThat(visible()).isEqualTo(4L);
+    }
+
+    /// [StreamPartitionManager#mayServeAsOwner] is an owner-admission site too.
+    @Test
+    void mayServeAsOwner_restoresTheMarker() {
+        restartWithMarkerAt4();
+        assertThat(manager.mayServeAsOwner(STREAM, PARTITION)).isTrue();
+        assertThat(visible()).isEqualTo(4L);
+    }
+
+    /// NT-111 (ii), same rank: a key of the marker's own epoch rank but another incarnation passes the lineage check and
+    /// fails attribution alone -- the history attributes 4 to the key it recorded, not to this one.
+    @Test
+    void markerOfTheSameEpochRankUnderAnotherKey_isNeverTrusted() throws IOException {
+        restartWithMarkerAt4();
+        manager.close();
+        manager = null;
+
+        var foreign = ProvenanceEntry.provenanceEntry(E1, Option.some("01JFOREIGNINCARNATION0000000"), 0L).key().unwrap().token();
+
+        Files.writeString(walFile(walDir).resolveSibling(PARTITION + ".acked"), validMarkerLine(foreign, 4L));
+        restartOn(walDir);
+        servedRead();
+        assertThat(visible()).as("the history attributes 4 to another key").isEqualTo(-1L);
+    }
+
+    /// A log with no marker (an older build's) is never given one by its own seed: the tick after the restart writes none
+    /// until visible moves.
+    @Test
+    void restartOverALogWithNoMarker_tickWritesNoMarkerFromTheSeed() throws IOException {
+        startOwner(walDir);
+        publish(10);
+        manager.close();
+        manager = null;
+        Files.delete(walFile(walDir).resolveSibling(PARTITION + ".acked"));
+        restartOn(walDir);
+        manager.repeatVisible();
+        assertThat(Files.exists(walFile(walDir).resolveSibling(PARTITION + ".acked"))).as("the seed is not an ack").isFalse();
+        replication.handleAck(replicateAck(PEER, STREAM, PARTITION, 3L));
+        manager.repeatVisible();
+        assertThat(markerOffset()).as("positive control: a real advance is written").isEqualTo(Option.some(3L));
+    }
+
+    /// The A-15 shape at the admission edge: the committed record's lineage has an epoch AFTER the marker's that began at or
+    /// below the marker's offset (another owner wrote from offset 2 on), so the marker's prefix is not in the live lineage
+    /// and is never exposed, even with the record naming this node and the gate admitting.
+    @Test
+    void markerOutsideTheLiveLineage_isNeverTrusted() {
+        startOwner(walDir);
+        publish(10);
+        replication.handleAck(replicateAck(PEER, STREAM, PARTITION, 4L));
+        manager.repeatVisible();
+        manager.close();
+        committed.set(committed.get().restarted(2L, HlcTimestamp.ZERO));
+        startOwner(walDir);
+        servedRead();
+        assertThat(visible()).as("a later epoch began at 2, below the marker's 4").isEqualTo(-1L);
+    }
+
+    /// Owner writes are an admission site too: the first publish after the restart restores the marker.
+    @Test
+    void firstOwnerWrite_restoresTheMarker() {
+        restartWithMarkerAt4();
+        assertThat(visible()).isEqualTo(-1L);
+        publish(1);
+        assertThat(visible()).isEqualTo(4L);
     }
 
     // ---- the writer (tick + close) and the open-time clamp: wiring pins ----------------------------------------------------
@@ -311,7 +376,7 @@ class StreamPartitionManagerAckedMarkerTest {
                                          replication,
                                          Option.some(dir),
                                          index::lastSealedOffset);
-        manager.ownerEpochSource((_, _) -> committed.get().ownerEpoch());
+        manager.ownerEpochSource((_, _) -> Option.option(committed.get()).map(StreamPartitionOwnershipValue::ownerEpoch).or(Epoch.ZERO));
         manager.ownershipRecords((_, _) -> Option.option(committed.get()));
         manager.ownerWriteAdmission((_, _) -> remoteOwner.get());
         manager.ownerServeGate((_, _) -> gate.get());
@@ -385,7 +450,11 @@ class StreamPartitionManagerAckedMarkerTest {
     /// The sidecar's one line, `aether-append-log-acked v1 - <offset> <crc>`, with a valid CRC (the storage module's encoder
     /// is package-private).
     private static String validMarkerLine(long offset) {
-        var body = "aether-append-log-acked v1 - " + offset;
+        return validMarkerLine("-", offset);
+    }
+
+    private static String validMarkerLine(String epochToken, long offset) {
+        var body = "aether-append-log-acked v1 " + epochToken + " " + offset;
         var crc = new CRC32();
 
         crc.update(body.getBytes(UTF_8));
