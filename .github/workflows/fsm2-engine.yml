@@ -64,11 +64,14 @@ jobs:
           -Dtest="${{ steps.plan.outputs.classes }}" -Dsurefire.failIfNoSpecifiedTests=false
         timeout-minutes: 30
 
-      # A run that never reached FSM2 is not evidence: every started cluster logs its engine, so at least one FSM2 line must be there.
-      - name: Verify the clusters ran FSM2
+      # A run that never reached FSM2 is not evidence. Surefire records the forked JVM's system properties in every report, and every
+      # EmberCluster reads its engine from that property (EngineSelector): each report of this shard must carry it set to fsm2.
+      - name: Verify the test JVMs ran with the FSM2 selector
         run: |
-          grep -rl "deployment engine FSM2" aether/ember/target/surefire-reports/ | head -1 | grep -q . \
-            || { echo "no Ember cluster logged 'deployment engine FSM2': the selector did not reach the test JVM"; exit 1; }
+          total=$(ls aether/ember/target/surefire-reports/TEST-*.xml | wc -l)
+          fsm2=$(grep -l 'name="aether.deployment.engine" value="fsm2"' aether/ember/target/surefire-reports/TEST-*.xml | wc -l)
+          echo "reports: $total, carrying aether.deployment.engine=fsm2: $fsm2"
+          [ "$total" -gt 0 ] && [ "$fsm2" -eq "$total" ] || { echo "the selector did not reach every test JVM"; exit 1; }
 
       - name: Verify this shard ran its classes
         run: python3 -B tools/ember-shard.py --shards "$SHARDS" --index "$SHARD" --verify aether/ember/target/surefire-reports
