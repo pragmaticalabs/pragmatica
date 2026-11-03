@@ -1460,7 +1460,8 @@ individual request latencies. `errorRate` is the failed/completed invocation rat
     "syncFailureCount": 0,
     "avgDecisionLatencyMs": 4.7,
     "oldestPendingBatchAgeMs": 0,
-    "applyTimeoutCount": 0
+    "applyTimeoutCount": 0,
+    "consecutiveEmptySlotsWithPending": 0
   }
 }
 ```
@@ -1504,6 +1505,14 @@ The age is 0 when no batch is pending (#1117): a value that keeps growing is a s
 decided, and `consensus_apply_timeouts_total` counts the applies that were never answered within the apply
 timeout (30 s by default). The engine also logs `SLOW-APPLY-RUNNING` with the worker's stack once a consensus
 task has run longer than one second.
+
+`consensus_consecutive_empty_slots_with_pending` (a level, #2045) counts the slots this node decided in a row
+without applying a batch while it held pending batches; it returns to 0 once a slot applies a batch or the queue
+empties. The comprehensive response carries it as `consecutiveEmptySlotsWithPending`, next to
+`firstChoiceBatchId`: the id of the batch this node proposes first, absent (or `null`, depending on the server's
+JSON null-inclusion setting) when nothing is pending, as in the example above. A counter that
+keeps climbing on several cores while pending stays non-zero is the empty-slot livelock: compare
+`firstChoiceBatchId` across the cores, and cores that disagree name the split. Each core answers for itself.
 
 ### GET /api/v1/metrics/transport
 
