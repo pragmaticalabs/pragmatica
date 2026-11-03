@@ -247,6 +247,21 @@ public interface RollbackManager {
         }
     }
 
+    /// What triggered a derivation of the rollback record (#2613). The record is always re-derived from the
+    /// committed target and record; the context only decides which previous version the derivation may name.
+    sealed interface DerivationContext {
+        /// A delivered SliceTarget put: the value it carried and the value it replaced.
+        record Notification(SliceTargetValue value, Option<SliceTargetValue> oldValue) implements DerivationContext {}
+
+        /// A refused write's own (previous, current) pair.
+        record Retry(Version previous, Version current) implements DerivationContext {}
+
+        /// A new leader's activation: no notification names the change.
+        enum Activation implements DerivationContext {
+            INSTANCE
+        }
+    }
+
     record RollbackStats(ArtifactBase artifactBase,
                          int rollbackCount,
                          long lastRollbackTimestamp,
@@ -295,21 +310,6 @@ public interface RollbackManager {
                                Logger log) implements RollbackManager {
             /// Attempts per refusal chain: the first write and two re-derivations. A guess (taste); settle by the contention test.
             private static final int MAX_RECORD_ATTEMPTS = 3;
-
-            /// What triggered a derivation of the rollback record (#2613). The record is always re-derived from the
-            /// committed target and record; the context only decides which previous version the derivation may name.
-            sealed interface DerivationContext {
-                /// A delivered SliceTarget put: the value it carried and the value it replaced.
-                record Notification(SliceTargetValue value, Option<SliceTargetValue> oldValue) implements DerivationContext {}
-
-                /// A refused write's own (previous, current) pair.
-                record Retry(Version previous, Version current) implements DerivationContext {}
-
-                /// A new leader's activation: no notification names the change.
-                enum Activation implements DerivationContext {
-                    INSTANCE
-                }
-            }
 
             /// The committed target and record a derivation read.
             record Observed(ArtifactBase base, SliceTargetValue target, Option<PreviousVersionValue> record) {
