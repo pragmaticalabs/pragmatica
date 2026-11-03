@@ -285,7 +285,7 @@ public final class ClusterBootstrapConfigValidator {
 
     /// PF-36 (G1-a): a Hetzner server is named `<cluster>-<nodeId>` (the operation id), at most 63 characters. The budget is computed from
     /// the configuration: the cluster name, one hyphen, and the longest node id the configured Hetzner sources and roles can be given
-    /// ([OperationId#longestMintedIdLength]: the cluster-bearing minted id, the CTM worker id, the bootstrap id). Refused here, before
+    /// ([OperationId#longestMintedIdLength]: the minted cloud id, the CTM worker id, the bootstrap id). Refused here, before
     /// any node, with the numbers; never truncated: a shortened name would no longer be the one a later lookup searches.
     private static void validateClusterNameFitsServerNames(ClusterBootstrapConfig config, List<String> errors) {
         var cluster = config.cluster().name().value();
@@ -312,8 +312,7 @@ public final class ClusterBootstrapConfigValidator {
                       + "' (" + cluster.length()
                       + " characters) is too long for source '" + worst[0]
                       + "' role '" + worst[1]
-                      + "': a Hetzner server is named '<cluster>-<node id>' and the longest node id this pool can be given is " + OperationId.longestMintedIdLength(cluster.length(),
-                                                                                                                                                                    worst[0],
+                      + "': a Hetzner server is named '<cluster>-<node id>' and the longest node id this pool can be given is " + OperationId.longestMintedIdLength(worst[0],
                                                                                                                                                                     worst[1])
                       + " characters, so the name is " + worstLength
                       + " characters, over the limit of " + OperationId.MAX_LENGTH

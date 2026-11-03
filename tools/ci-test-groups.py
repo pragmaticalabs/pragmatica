@@ -28,6 +28,9 @@ EXAMPLES = "examples/"
 # surefire's default includes plus failsafe's (*IT, IT*, *ITCase): a module whose only tests are ITs still has tests.
 TEST_NAME = re.compile(r"^(Test.*|.*Test|.*Tests|.*TestCase|.*IT|IT.*|.*ITCase)$")
 HAS_TESTS = re.compile(r"@(Test|ParameterizedTest|RepeatedTest|TestFactory|TestTemplate)\b")
+# A class tagged with an excluded group at class level runs nothing in a required job (the root pom's excludedGroups), so a
+# module whose every test class is tagged so writes no report: it is not a module with tests (ember-shard.py's same rule).
+EXCLUDED_CLASS_TAG = re.compile(r'^@Tag\("(Infinite|Slow|Benchmark|S3|quarantine)"\)', re.MULTILINE)
 
 
 def _pom_modules(text):
@@ -47,8 +50,12 @@ def reactor_modules(root=ROOT, module=""):
 
 def has_tests(module_dir):
     tests = module_dir / "src/test/java"
-    return tests.is_dir() and any(TEST_NAME.match(p.stem) and HAS_TESTS.search(p.read_text(errors="replace"))
+    return tests.is_dir() and any(TEST_NAME.match(p.stem) and _runs_tests(p.read_text(errors="replace"))
                                   for p in tests.rglob("*.java"))
+
+
+def _runs_tests(text):
+    return bool(HAS_TESTS.search(text)) and not EXCLUDED_CLASS_TAG.search(text)
 
 
 def modules_with_tests(root=ROOT):

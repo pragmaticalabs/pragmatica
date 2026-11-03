@@ -2168,7 +2168,7 @@ public interface AetherNode extends ManageableNode {
 
             @Override
             public Option<BackupGenesis> backupGenesis() {
-                return kvBackupService.map(BackupGenesis::backupGenesis);
+                return kvBackupService.map(service -> BackupGenesis.backupGenesis(service, config.self()));
             }
 
             @Override
