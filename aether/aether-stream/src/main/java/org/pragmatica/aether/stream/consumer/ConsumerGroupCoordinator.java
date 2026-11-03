@@ -12,7 +12,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerGroupKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -22,6 +24,7 @@ import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
@@ -48,12 +51,16 @@ public sealed interface ConsumerGroupCoordinator {
         return new NoOpCoordinator();
     }
 
-    /// @param registry the node's view of the COMMITTED assignments: a coordinator that takes over leadership
-    ///                 starts its generation above the highest one already committed (#2626)
+    /// @param registry     the node's view of the COMMITTED assignments: a rebalance is checked against it
+    ///                     before it is submitted (#2626)
+    /// @param leaderEpoch  the node's current leader epoch (`Epoch(incarnation, leaderTerm, _)`), read at every
+    ///                     rebalance; only its incarnation and term are used, the counter is the coordinator's own
     static ConsumerGroupCoordinator consumerGroupCoordinator(ClusterNode<KVCommand<AetherKey>> clusterNode,
-                                                             ConsumerGroupRegistry registry) {
+                                                             ConsumerGroupRegistry registry,
+                                                             Supplier<Epoch> leaderEpoch) {
         return new DefaultConsumerGroupCoordinator(clusterNode,
                                                    registry,
+                                                   leaderEpoch,
                                                    new AtomicReference<>(new CoordinatorState.Dormant()));
     }
 
@@ -100,13 +107,14 @@ public sealed interface ConsumerGroupCoordinator {
 
         record Dormant() implements CoordinatorState {}
 
-        /// @param generation the last generation this leader stamped on a rebalance; every rebalance takes the
-        ///                   next one, so the applier's [org.pragmatica.cluster.state.kvstore.MonotonicFenced]
-        ///                   fence on [ConsumerGroupValue] keeps the newest rebalance whatever order Rabia
-        ///                   commits the submitted batches in (#2626)
+        /// @param counter the last rebalance counter this activation stamped; every rebalance takes the next one
+        ///                under the leader's current `(incarnation, term)`, so the applier's [org.pragmatica.cluster.state.kvstore.EpochBearing]
+        ///                fence on [ConsumerGroupValue] keeps the newest rebalance whatever order Rabia commits the
+        ///                submitted batches in, and refuses a deposed leader's late batch (#2626)
         record Active(ClusterNode<KVCommand<AetherKey>> clusterNode,
                       ConsumerGroupRegistry registry,
-                      AtomicLong generation,
+                      Supplier<Epoch> leaderEpoch,
+                      AtomicLong counter,
                       ConcurrentHashMap<GroupKey, List<ConsumerMember>> members,
                       ConcurrentHashMap<GroupKey, Integer> partitionCounts) implements CoordinatorState {
             private static final Logger log = LoggerFactory.getLogger(Active.class);
@@ -127,22 +135,20 @@ public sealed interface ConsumerGroupCoordinator {
                 }
 
                 partitionCounts.put(key, partitionCount);
-                rebalance(groupId, streamName, partitionCount);
 
-                return Result.unitResult();
+                return rebalance(groupId, streamName, partitionCount);
             }
 
             @Override
             public Result<Unit> leaveGroup(String groupId, String streamName, String consumerId) {
                 var key = new GroupKey(groupId, streamName);
 
-                option(members.get(key)).onPresent(memberList -> removeMemberAndRebalance(key,
-                                                                                          memberList,
-                                                                                          groupId,
-                                                                                          streamName,
-                                                                                          consumerId));
-
-                return Result.unitResult();
+                return option(members.get(key)).map(memberList -> removeMemberAndRebalance(key,
+                                                                                           memberList,
+                                                                                           groupId,
+                                                                                           streamName,
+                                                                                           consumerId))
+                                               .or(Result.unitResult());
             }
 
             @Override
@@ -154,60 +160,84 @@ public sealed interface ConsumerGroupCoordinator {
                 return Map.copyOf(result);
             }
 
-            void rebalance(String groupId, String streamName, int partitionCount) {
-                var commands = nextAssignmentCommands(groupId, streamName, partitionCount);
-
-                if (!commands.isEmpty()) {
-                    clusterNode.apply(commands)
-                               .onFailure(cause -> log.error("Consensus proposal failed for consumer group {}/{}: {}",
-                                                             groupId,
-                                                             streamName,
-                                                             cause.message()));
-                }
+            Result<Unit> rebalance(String groupId, String streamName, int partitionCount) {
+                return nextAssignmentCommands(groupId, streamName, partitionCount).onSuccess(commands -> submit(groupId,
+                                                                                                              streamName,
+                                                                                                              commands))
+                                                                                  .mapToUnit();
             }
 
-            /// The member snapshot and the generation are taken in ONE critical section, so a higher generation
-            /// never carries an older member list: of two rebalances the later-stamped one is also the
-            /// later-derived one, which is what lets the commit-side fence keep the newest.
-            private synchronized List<KVCommand<AetherKey>> nextAssignmentCommands(String groupId,
-                                                                                   String streamName,
-                                                                                   int partitionCount) {
+            private void submit(String groupId, String streamName, List<KVCommand<AetherKey>> commands) {
+                if (commands.isEmpty()) {
+                    return;
+                }
+
+                clusterNode.apply(commands)
+                           .onFailure(cause -> log.error("Consensus proposal failed for consumer group {}/{}: {}",
+                                                         groupId,
+                                                         streamName,
+                                                         cause.message()));
+            }
+
+            /// The member snapshot and the epoch are taken in ONE critical section, so a higher epoch never
+            /// carries an older member list: of two rebalances the later-stamped one is also the later-derived
+            /// one, which is what lets the commit-side fence keep the newest.
+            private synchronized Result<List<KVCommand<AetherKey>>> nextAssignmentCommands(String groupId,
+                                                                                           String streamName,
+                                                                                           int partitionCount) {
                 var memberList = members.getOrDefault(new GroupKey(groupId, streamName), List.of());
 
                 if (memberList.isEmpty()) {
                     log.info("No consumers in group {}/{}, skipping rebalance", groupId, streamName);
 
-                    return List.of();
+                    return Result.success(List.of());
                 }
 
                 var sorted = memberList.stream().sorted(Comparator.comparing(ConsumerMember::consumerId)).toList();
 
-                return buildAssignmentCommands(groupId,
-                                               streamName,
-                                               partitionCount,
-                                               sorted,
-                                               nextGeneration(groupId, streamName));
+                return nextEpoch(groupId, streamName).map(epoch -> buildAssignmentCommands(groupId,
+                                                                                             streamName,
+                                                                                             partitionCount,
+                                                                                             sorted,
+                                                                                             epoch));
             }
 
-            /// Above both this leader's last stamp and the highest generation already committed for the group
-            /// (a new leader's counter starts at zero, and its first rebalance must not be fenced out by its
-            /// predecessor's). Two leaders can still stamp the same generation in a handover window; the fence
-            /// accepts equal, so that cross-node ordering is NOT settled here.
-            private long nextGeneration(String groupId, String streamName) {
-                var next = Math.max(generation.get(), committedGeneration(groupId, streamName)) + 1;
+            /// `(incarnation, term)` come from the leader, the counter from this activation. When the committed
+            /// assignments already carry this very `(incarnation, term)` (a leader re-adopted at the same term,
+            /// whose counter restarted) the counter is re-seeded above the committed one. When the committed
+            /// epoch is AHEAD of the leader's, this node is deposed or its term source lags: the rebalance is
+            /// refused here, loudly, because the applier would refuse it anyway and nothing would re-derive it.
+            private Result<Epoch> nextEpoch(String groupId, String streamName) {
+                var base = leaderEpoch.get();
+                var committed = committedEpoch(groupId, streamName);
+                var seeded = committed.filter(c -> sameTerm(c, base)).map(Epoch::localCounter).or(0L);
+                var candidate = base.withCounter(Math.max(counter.get(), seeded) + 1);
 
-                generation.set(next);
+                if (committed.filter(c -> !candidate.isStrictlyAfter(c)).isPresent()) {
+                    log.warn("Refusing rebalance of consumer group {}/{}: epoch {} is not after the committed {} (deposed leader or lagging term source)",
+                             groupId,
+                             streamName,
+                             candidate,
+                             committed.or(Epoch.ZERO));
 
-                return next;
+                    return CoordinatorError.SUPERSEDED.result();
+                }
+
+                counter.set(candidate.localCounter());
+
+                return Result.success(candidate);
             }
 
-            private long committedGeneration(String groupId, String streamName) {
-                return registry.assignmentsFor(groupId, streamName)
-                               .values()
-                               .stream()
-                               .mapToLong(ConsumerGroupValue::generation)
-                               .max()
-                               .orElse(0L);
+            private static boolean sameTerm(Epoch committed, Epoch base) {
+                return committed.incarnation() == base.incarnation() && committed.rabiaTerm() == base.rabiaTerm();
+            }
+
+            private Option<Epoch> committedEpoch(String groupId, String streamName) {
+                return Option.from(registry.assignmentsFor(groupId, streamName)
+                                           .values()
+                                           .stream()
+                                           .map(ConsumerGroupValue::epoch)
+                                           .max(Comparator.naturalOrder()));
             }
 
             private static void addGroupStatusIfMatching(Map<String, List<ConsumerInfo>> result,
@@ -222,7 +252,7 @@ public sealed interface ConsumerGroupCoordinator {
                            memberList.stream().map(m -> new ConsumerInfo(m.consumerId(), m.nodeId())).toList());
             }
 
-            private void removeMemberAndRebalance(GroupKey key,
+            private Result<Unit> removeMemberAndRebalance(GroupKey key,
                                                   List<ConsumerMember> memberList,
                                                   String groupId,
                                                   String streamName,
@@ -233,34 +263,34 @@ public sealed interface ConsumerGroupCoordinator {
                     members.remove(key);
                     partitionCounts.remove(key);
 
-                    return;
+                    return Result.unitResult();
                 }
 
-                rebalanceFromMembers(groupId, streamName, memberList);
+                return rebalanceFromMembers(groupId, streamName, memberList);
             }
 
-            private void rebalanceFromMembers(String groupId, String streamName, List<ConsumerMember> memberList) {
+            private Result<Unit> rebalanceFromMembers(String groupId, String streamName, List<ConsumerMember> memberList) {
                 var key = new GroupKey(groupId, streamName);
                 var partitionCount = partitionCounts.getOrDefault(key, 0);
 
                 if (partitionCount <= 0) {
-                    return;
+                    return Result.unitResult();
                 }
 
-                rebalance(groupId, streamName, partitionCount);
+                return rebalance(groupId, streamName, partitionCount);
             }
 
             private static List<KVCommand<AetherKey>> buildAssignmentCommands(String groupId,
                                                                               String streamName,
                                                                               int partitionCount,
                                                                               List<ConsumerMember> sorted,
-                                                                              long generation) {
+                                                                              Epoch epoch) {
                 var commands = new ArrayList<KVCommand<AetherKey>>();
 
                 for (var i = 0; i < partitionCount; i++) {
                     var member = sorted.get(i % sorted.size());
                     var key = ConsumerGroupKey.consumerGroupKey(groupId, streamName, i);
-                    var value = ConsumerGroupValue.consumerGroupValue(member.nodeId(), member.consumerId(), generation);
+                    var value = ConsumerGroupValue.consumerGroupValue(member.nodeId(), member.consumerId(), epoch);
 
                     commands.add(new KVCommand.Put<>(key, value));
                 }
@@ -275,7 +305,8 @@ public sealed interface ConsumerGroupCoordinator {
     record ConsumerMember(String consumerId, NodeId nodeId) {}
 
     enum CoordinatorError implements Cause {
-        NOT_LEADER("Consumer group coordinator is not active (not leader)");
+        NOT_LEADER("Consumer group coordinator is not active (not leader)"),
+        SUPERSEDED("Consumer group rebalance refused: a newer leader term has already committed assignments");
         private final String message;
         CoordinatorError(String message) {
             this.message = message;
@@ -288,6 +319,7 @@ public sealed interface ConsumerGroupCoordinator {
 
     record DefaultConsumerGroupCoordinator(ClusterNode<KVCommand<AetherKey>> clusterNode,
                                            ConsumerGroupRegistry registry,
+                                           Supplier<Epoch> leaderEpoch,
                                            AtomicReference<CoordinatorState> state) implements ConsumerGroupCoordinator {
         private static final Logger log = LoggerFactory.getLogger(DefaultConsumerGroupCoordinator.class);
 
@@ -297,6 +329,7 @@ public sealed interface ConsumerGroupCoordinator {
                 log.info("Activating consumer group coordinator (became leader)");
                 state.set(new CoordinatorState.Active(clusterNode,
                                                       registry,
+                                                      leaderEpoch,
                                                       new AtomicLong(),
                                                       new ConcurrentHashMap<>(),
                                                       new ConcurrentHashMap<>()));

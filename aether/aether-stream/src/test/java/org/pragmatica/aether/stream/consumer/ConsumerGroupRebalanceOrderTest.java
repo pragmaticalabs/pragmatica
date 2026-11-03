@@ -6,10 +6,12 @@
 package org.pragmatica.aether.stream.consumer;
 
 import io.netty.buffer.ByteBuf;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerGroupKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -65,7 +67,7 @@ class ConsumerGroupRebalanceOrderTest {
         store = new KVStore<>(router, stubSerializer(), stubDeserializer());
         registry = ConsumerGroupRegistry.consumerGroupRegistry();
         router.addRoute(ValuePut.class, this::route);
-        coordinator = newCoordinator();
+        coordinator = newCoordinator(1L);
     }
 
     @SuppressWarnings("unchecked")
@@ -75,8 +77,10 @@ class ConsumerGroupRebalanceOrderTest {
         }
     }
 
-    private ConsumerGroupCoordinator newCoordinator() {
-        var created = ConsumerGroupCoordinator.consumerGroupCoordinator(heldClusterNode(), registry);
+    private ConsumerGroupCoordinator newCoordinator(long leaderTerm) {
+        var created = ConsumerGroupCoordinator.consumerGroupCoordinator(heldClusterNode(),
+                                                                        registry,
+                                                                        () -> Epoch.epoch(1L, leaderTerm, 0L));
 
         created.onLeaderChange(new LeaderChange(Option.some(SELF), true));
 
@@ -191,7 +195,7 @@ class ConsumerGroupRebalanceOrderTest {
             commit(1);
             held.clear();
 
-            var successor = newCoordinator();
+            var successor = newCoordinator(2L);
 
             successor.joinGroup(GROUP, STREAM, PARTITIONS, "c3", NODE_A);
             commit(0);
@@ -203,17 +207,87 @@ class ConsumerGroupRebalanceOrderTest {
     }
 
     @Nested
+    class DeposedLeader {
+        /// L1 (term 1) is deposed by L2 (term 2) but its batches are still in flight. L2 has not seen L1's commits,
+        /// so the two member lists are unrelated: only the epoch decides, and the older term must lose in BOTH orders.
+        @Test
+        void rebalance_deposedLeadersLateBatchIsRefused_whenItCommitsAfterTheSuccessors() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);
+            newCoordinator(2L).joinGroup(GROUP, STREAM, PARTITIONS, "c3", NODE_A);
+            assertThat(held).hasSize(3);
+
+            commit(2);
+            commit(1);
+            commit(0);
+
+            assertThat(committedOwners().values()).containsOnly("c3").hasSize(PARTITIONS);
+        }
+
+        @Test
+        void rebalance_successorWins_whenTheDeposedLeadersBatchCommitsFirst() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);
+            newCoordinator(2L).joinGroup(GROUP, STREAM, PARTITIONS, "c3", NODE_A);
+
+            commit(0);
+            commit(1);
+            commit(2);
+
+            assertThat(committedOwners().values()).containsOnly("c3").hasSize(PARTITIONS);
+        }
+    }
+
+    @Nested
+    class LaggingTerm {
+        @Test
+        void joinGroup_isRefusedLoudly_whenCommittedAssignmentsCarryANewerTerm() {
+            newCoordinator(2L).joinGroup(GROUP, STREAM, PARTITIONS, "c3", NODE_A);
+            commit(0);
+            held.clear();
+
+            var lagging = newCoordinator(1L);
+            var result = lagging.joinGroup(GROUP, STREAM, PARTITIONS, "c4", NODE_B);
+
+            result.onSuccess(_ -> Assertions.fail("a lagging term must be refused, not silently submitted"))
+                  .onFailure(cause -> assertThat(cause).isEqualTo(ConsumerGroupCoordinator.CoordinatorError.SUPERSEDED));
+            assertThat(held).as("a refused rebalance submits nothing").isEmpty();
+        }
+    }
+
+    @Nested
+    class ReAdoptedTerm {
+        /// A leader re-adopted at the SAME term restarts its counter at zero; it must stamp above what it committed
+        /// before, or the fence (strictly older) would not refuse it but two rebalances would share an epoch.
+        @Test
+        void rebalance_counterIsReseededAboveTheCommittedOne_whenTheTermIsUnchanged() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);
+            commit(0);
+            commit(1);
+            var committedCounter = epochOf(held.get(1)).localCounter();
+            held.clear();
+
+            newCoordinator(1L).joinGroup(GROUP, STREAM, PARTITIONS, "c3", NODE_A);
+
+            assertThat(epochOf(held.getFirst()).localCounter()).isGreaterThan(committedCounter);
+            commit(0);
+            assertThat(committedOwners().values()).containsOnly("c3").hasSize(PARTITIONS);
+        }
+    }
+
+    @Nested
     class ConcurrentJoins {
         private static final int CONSUMERS = 6;
         private static final int ROUNDS = 150;
 
         /// Whatever order the batches commit in, the newest one must carry every member that had joined: the
-        /// member snapshot and the generation are taken together, so a later generation never holds an older list.
+        /// member snapshot and the epoch are taken together, so a later epoch never holds an older list.
         @Test
         void rebalance_highestGenerationBatchSeesEveryMember_underConcurrentJoins() throws InterruptedException {
             for (var round = 0; round < ROUNDS; round++) {
                 held.clear();
-                var fresh = newCoordinator();
+                var fresh = newCoordinator(1L);
 
                 joinConcurrently(fresh);
 
@@ -248,7 +322,7 @@ class ConsumerGroupRebalanceOrderTest {
 
         private List<String> consumersOfNewestBatch() {
             return held.stream()
-                       .max(Comparator.comparingLong(ConsumerGroupRebalanceOrderTest::generationOf))
+                       .max(Comparator.comparing(ConsumerGroupRebalanceOrderTest::epochOf))
                        .orElseThrow()
                        .stream()
                        .map(ConsumerGroupRebalanceOrderTest::consumerOf)
@@ -257,8 +331,8 @@ class ConsumerGroupRebalanceOrderTest {
         }
     }
 
-    private static long generationOf(List<KVCommand<AetherKey>> batch) {
-        return ((ConsumerGroupValue) ((KVCommand.Put<AetherKey, AetherValue>) batch.getFirst()).value()).generation();
+    private static Epoch epochOf(List<KVCommand<AetherKey>> batch) {
+        return ((ConsumerGroupValue) ((KVCommand.Put<AetherKey, AetherValue>) batch.getFirst()).value()).epoch();
     }
 
     private static String consumerOf(KVCommand<AetherKey> command) {

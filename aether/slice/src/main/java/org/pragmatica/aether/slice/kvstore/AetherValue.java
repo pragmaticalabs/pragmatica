@@ -35,7 +35,6 @@ import org.pragmatica.cluster.state.kvstore.HolderBound;
 import org.pragmatica.cluster.state.kvstore.HolderFenced;
 import org.pragmatica.cluster.state.kvstore.OwnerFenced;
 import org.pragmatica.cluster.state.kvstore.LeaderAuthorized;
-import org.pragmatica.cluster.state.kvstore.MonotonicFenced;
 import org.pragmatica.cluster.state.kvstore.VersionFenced;
 import org.pragmatica.cluster.state.kvstore.WitnessedRemoval;
 import org.pragmatica.hlc.HlcTimestamp;
@@ -2983,23 +2982,28 @@ public sealed interface AetherValue {
 
     /// One partition's consumer assignment, written by the group coordinator on every rebalance.
     ///
-    /// [MonotonicFenced] on `generation` (#2626): Rabia commits pending
-    /// batches in content-hash order, not submission order, so two rebalances submitted within one commit
-    /// latency can commit the OLDER assignment last — a new consumer starved, or a departed one keeping its
-    /// partitions, with nothing to re-derive it. Every rebalance stamps all of its partitions with the next
-    /// generation, and the applier refuses a Put that would LOWER the committed one, so the newest member list
-    /// stands whatever order the batches commit in. Equal generations are accepted (the same rebalance
-    /// re-submitted). `assignedAt` is for operator diagnosis only, never for ordering.
+    /// [EpochBearing] on `epoch` (#2626): Rabia commits pending batches in content-hash order, not submission
+    /// order, so two rebalances submitted within one commit latency can commit the OLDER assignment last — a new
+    /// consumer starved, or a departed one keeping its partitions, with nothing to re-derive it. Every rebalance
+    /// stamps all its partitions with `Epoch(incarnation, leaderTerm, counter)`, and the applier refuses a Put
+    /// whose epoch is strictly older than the committed one, so the newest rebalance stands whatever order the
+    /// batches commit in.
     ///
-    /// @param generation the rebalance this assignment belongs to; strictly increases from one rebalance to the next
-    record ConsumerGroupValue(NodeId assignedTo, String consumerId, long assignedAt, long generation) implements AetherValue, MonotonicFenced {
+    /// The leader term dominates the counter, which closes what a bare counter could not: a successor leader
+    /// always stamps above its predecessor (no lagging-seed refusal, no equal-stamp tie between two leaders), and a
+    /// deposed leader's late batch carries a lower term and is refused. Within one term a single coordinator owns
+    /// the counter, so two distinct rebalances never share an epoch. `assignedAt` is for operator diagnosis only,
+    /// never for ordering.
+    ///
+    /// @param epoch the rebalance this assignment belongs to; strictly increases from one rebalance to the next
+    record ConsumerGroupValue(NodeId assignedTo, String consumerId, long assignedAt, Epoch epoch) implements AetherValue, EpochBearing<Epoch> {
         @Override
-        public long fenceWatermark() {
-            return generation;
+        public Epoch fenceEpoch() {
+            return epoch;
         }
 
-        public static ConsumerGroupValue consumerGroupValue(NodeId assignedTo, String consumerId, long generation) {
-            return new ConsumerGroupValue(assignedTo, consumerId, System.currentTimeMillis(), generation);
+        public static ConsumerGroupValue consumerGroupValue(NodeId assignedTo, String consumerId, Epoch epoch) {
+            return new ConsumerGroupValue(assignedTo, consumerId, System.currentTimeMillis(), epoch);
         }
     }
 
