@@ -107,6 +107,9 @@ class OrderedSectionRollbackTest {
                     .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.BUFFER_CLOSED));
                 ring.append(bytes("plain"), 4L)
                     .onSuccess(offset -> fail("a halted ring accepted a plain append at " + offset));
+                ring.<Long> appendBatchOrdered(List.of(bytes("batch")), new long[]{5L}, Result::success)
+                    .onSuccess(offset -> fail("a halted ring accepted a batch at " + offset))
+                    .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.BUFFER_CLOSED));
             }
         }
     }
@@ -139,6 +142,22 @@ class OrderedSectionRollbackTest {
                        .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.RUN_DOES_NOT_FIT));
                 assertThat(ring.headOffset()).as("no offset was assigned").isEqualTo(0L);
                 assertThat(texts(ring.read(0, 5).unwrap())).as("the earlier event was not evicted").containsExactly("a");
+            }
+        }
+
+        /// The bytes clause refuses before any growth: a run larger than the whole data region could never fit, so the ring must not grow
+        /// to its maximum first and then refuse it.
+        @Test
+        void appendBatchOrdered_runLargerThanTheDataRegion_isRefusedWithoutGrowingTheRing() {
+            try (var ring = offHeapRingBuffer(8, 1 << 20)) {
+                var allocated = ring.allocatedBytes();
+                var payloads = List.of(new byte[400_000], new byte[400_000], new byte[400_000]);
+
+                assertThat(allocated).as("control: the ring starts below its data region").isLessThan(1L << 20);
+                ring.<Long> appendBatchOrdered(payloads, new long[]{1L, 2L, 3L}, Result::success)
+                    .onSuccess(offset -> fail("a run larger than the data region was appended through " + offset))
+                    .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.RUN_DOES_NOT_FIT));
+                assertThat(ring.allocatedBytes()).as("the refusal grew nothing").isEqualTo(allocated);
             }
         }
 
