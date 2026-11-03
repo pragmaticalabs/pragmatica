@@ -715,6 +715,12 @@ public final class AppendLog implements AutoCloseable {
         return acked.takeRestore();
     }
 
+    /// Whether [#takeAckedRestore] would still return the open-time marker. One volatile read, so an owner admission can
+    /// skip the restore in O(1) once it has run.
+    public boolean hasAckedRestore() {
+        return acked.restorePending();
+    }
+
     /// The owner epoch the history attributes `offset` to: the last entry starting at or below it, [Option#none] when none
     /// does. Reads memory only.
     public Option<EpochKey> attributedEpoch(long offset) {

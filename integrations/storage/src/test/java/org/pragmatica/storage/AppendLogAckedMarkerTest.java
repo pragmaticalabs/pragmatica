@@ -8,8 +8,10 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
@@ -24,6 +26,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// PR-2f (#2201 B-04/B-17, I-05): the `<log>.acked` sidecar. NT-42 (a cut lowers it durably before it cuts), NT-43 (the
 /// open-time clamp, bounded by the caller's head, S3), NT-44 (a torn or CRC-bad marker is no marker), S6 (a created log is
 /// born with a durable `-1`), and the raise's own rules (unforced, attributed, monotone, bounded).
+@Timeout(60)
 class AppendLogAckedMarkerTest {
     private static final AppendLog.EpochOrder NUMERIC = (later, earlier) -> Long.parseLong(later.token()) > Long.parseLong(earlier.token());
     /// Every record is a 24-byte header and a 1-byte payload.
@@ -42,6 +45,20 @@ class AppendLogAckedMarkerTest {
         assertThat(forced).as("the marker's temp file is forced").anySatisfy(f -> assertThat(f.path()).isEqualTo(tempOfMarker()));
         assertThat(forced).as("and the directory after the rename").anySatisfy(f -> assertThat(f.path()).isEqualTo(dir.toAbsolutePath()));
         assertThat(Files.exists(tempOfMarker())).as("no temp file is left behind").isFalse();
+    }
+
+    @Test
+    void open_ofANewLog_hasNothingToRestore_fromItsBornMarker() {
+        var wal = AppendLog.open(file()).unwrap();
+
+        wal.close();
+
+        var reopened = AppendLog.open(file()).unwrap();
+
+        assertThat(reopened.ackedMarker().map(AppendLog.AckedMark::offset)).as("control: the born marker").isEqualTo(Option.some(-1L));
+        assertThat(reopened.hasAckedRestore()).as("a -1 marker restores nothing").isFalse();
+        assertThat(reopened.takeAckedRestore()).isEqualTo(Option.none());
+        reopened.close();
     }
 
     @Test
@@ -145,6 +162,45 @@ class AppendLogAckedMarkerTest {
         assertThat(reopened.lastOffset()).as("control: the crash left the long file").isEqualTo(5L);
         assertThat(reopened.ackedMarker()).as("a marker at the cut over a longer file").isEqualTo(Option.some(mark("1", 1)));
         reopened.close();
+    }
+
+    /// The bound a raise checks is read under the marker lock, which the cut holds until the log is shortened: a raise that
+    /// races the cut either lands before the lowering (and is lowered with it) or sees the cut head and is refused.
+    @Test
+    void aRaiseRacingACut_neverLandsAboveIt() {
+        var wal = filledInTwoEpochs();
+        var racer = new AtomicReference<Thread>();
+
+        wal.recordAckedMarker(1).onFailure(c -> fail(c.message()));
+        wal.cutWindowProbe(() -> raceARaise(wal, racer));
+        wal.truncateSuffix(1).onFailure(c -> fail(c.message()));
+        joinQuietly(racer.get());
+        assertThat(wal.lastOffset()).as("control: the cut ran").isEqualTo(1L);
+        assertThat(wal.ackedMarker().map(AppendLog.AckedMark::offset)).as("never above the cut head").isEqualTo(Option.some(1L));
+        assertThat(AppendLog.readAckedMarker(file()).map(AppendLog.AckedMark::offset)).isEqualTo(Option.some(1L));
+        wal.close();
+    }
+
+    /// Inside the cut window: a concurrent raise to 5 (the pre-cut head) is given 300 ms to land.
+    private static Result<Unit> raceARaise(AppendLog wal, AtomicReference<Thread> racer) {
+        var thread = Thread.ofPlatform().start(() -> wal.recordAckedMarker(5));
+
+        racer.set(thread);
+        joinFor(thread, 300);
+
+        return Result.unitResult();
+    }
+
+    private static void joinFor(Thread thread, long millis) {
+        try {
+            thread.join(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private static void joinQuietly(Thread thread) {
+        joinFor(thread, 5_000);
     }
 
     @Test

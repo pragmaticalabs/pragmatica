@@ -872,8 +872,73 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Whether this node may currently serve `(streamName, partition)` as its owner (#1555): the reported
     /// `servedByOwner` is true only when placement names self AND this holds.
     public boolean mayServeAsOwner(String streamName, int partition) {
+        return admitAsOwner(streamName, partition).isSuccess();
+    }
+
+    /// The owner promotion gate (#1555) at every owner-admission site ([#mayServeAsOwner], owner-role reads, owner writes),
+    /// and the one place the acked marker may RAISE visible (PR-2f, know `6665558916` S1): only after the gate admits,
+    /// which in production means [OwnerActivation#admit] found this node activated -- consensus active, a committed record
+    /// naming self read after a barrier round, the lineage commit landed. A ring rebuild never raises from the marker.
+    private Result<Unit> admitAsOwner(String streamName, int partition) {
         return ownerServeGate.admit(streamName, partition)
-                             .isSuccess();
+                             .onSuccess(_ -> restoreAckedMarker(streamName, partition));
+    }
+
+    /// PR-2f (I-05): restore the owner's acked marker once per ring incarnation, at its first owner admission that finds the
+    /// committed record naming this node. While the role is not OWNER, or no record is committed, or the record names
+    /// another node, the marker stays pending and is not read; once those hold it is taken -- whatever the verdict -- and
+    /// raises visible only if [#trustedMarker]. After that the check is one volatile read per admission.
+    @Contract
+    private void restoreAckedMarker(String streamName, int partition) {
+        walFor(streamName, partition).filter(AppendLog::hasAckedRestore)
+                                     .filter(_ -> ownsTheCommittedRecord(streamName, partition))
+                                     .onPresent(wal -> restoreTrustedMarker(streamName, partition, wal));
+    }
+
+    private boolean ownsTheCommittedRecord(String streamName, int partition) {
+        return placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER
+               && ownershipRecords.committed(streamName, partition)
+                                  .isPresent()
+               && ownerWriteAdmission.remoteCommittedOwner(streamName, partition)
+                                     .isEmpty();
+    }
+
+    @Contract
+    private void restoreTrustedMarker(String streamName, int partition, AppendLog wal) {
+        wal.takeAckedRestore()
+           .filter(marker -> trustedMarker(streamName, partition, wal, marker))
+           .onPresent(marker -> raiseToMarker(streamName, partition, marker));
+    }
+
+    /// The trust predicate (I-05): the log's epoch history attributes the marker's offset to the marker's epoch, and the
+    /// committed record's epoch starts keep that prefix in the live lineage -- no committed epoch after the marker's began
+    /// at or below its offset ([EpochValidation#admit], the question a consumer cursor at `offset + 1` is asked). A marker
+    /// with no epoch, or one the history no longer attributes (a cut, a rewritten history), is not trusted.
+    private boolean trustedMarker(String streamName, int partition, AppendLog wal, AppendLog.AckedMark marker) {
+        return marker.epoch()
+                     .filter(key -> wal.attributedEpoch(marker.offset())
+                                       .equals(some(key)))
+                     .flatMap(key -> ownershipRecords.committed(streamName, partition)
+                                                     .filter(record -> inLiveLineage(streamName, partition, record, key, marker.offset())))
+                     .isPresent();
+    }
+
+    private static boolean inLiveLineage(String streamName,
+                                         int partition,
+                                         StreamPartitionOwnershipValue record,
+                                         AppendLog.EpochKey key,
+                                         long offset) {
+        return ProvenanceEntry.rankOf(key)
+                              .flatMap(epoch -> EpochValidation.admit(streamName, partition, record, epoch, offset + 1))
+                              .isSuccess();
+    }
+
+    /// Bounded by durable as every raise of visible is. The open-time clamp already bounds the marker by the recovered head,
+    /// which a replayed ring holds durably, so the bound is a guard here rather than a cut.
+    @Contract
+    private void raiseToMarker(String streamName, int partition, AppendLog.AckedMark marker) {
+        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> ring.advanceVisible(Math.min(ring.durableOffset(),
+                                                                                                     marker.offset())));
     }
 
     /// A client-facing local read (#1555). On the placement OWNER it passes the owner promotion gate first, so a
@@ -1147,7 +1212,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     private Result<Unit> ownerRoleGate(String streamName, int partition) {
         return placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER
-               ? ownerServeGate.admit(streamName, partition)
+               ? admitAsOwner(streamName, partition)
                : Result.unitResult();
     }
 
@@ -3555,7 +3620,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                   .map(owner -> new StreamError.NotOwnerAppend(streamName, partition, owner).<Unit> result())
                                   .or(Result::unitResult)
                                   .flatMap(_ -> ensureOwnerRing(streamName, partition))
-                                  .flatMap(_ -> ownerServeGate.admit(streamName, partition))
+                                  .flatMap(_ -> admitAsOwner(streamName, partition))
                                   .flatMap(_ -> ensureReplicaFloor(streamName, partition, minAcks))
                                   .flatMap(_ -> ensureSegmentTierRoom());
     }

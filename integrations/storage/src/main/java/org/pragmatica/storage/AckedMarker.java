@@ -117,6 +117,11 @@ final class AckedMarker {
                : Option.none();
     }
 
+    /// Whether [#takeRestore] still holds the open-time marker. One volatile read.
+    boolean restorePending() {
+        return restorePending.get();
+    }
+
     /// The visible position the ring was seeded at: a raise must exceed it.
     Unit baseline(long seededVisible) {
         highWater = Math.max(highWater, seededVisible);
