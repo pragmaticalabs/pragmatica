@@ -11,7 +11,7 @@ import org.pragmatica.lang.io.TimeSpan;
 
 
 /// Unicast transport for stream forward messages. Every send reports the local [WriteOutcome] of the underlying cluster
-/// network: [WriteOutcome.Sent] means accepted locally, never delivered. A forward read whose frame was not sent
+/// network: [WriteOutcome.Sent] means not refused locally, not that it was delivered. A forward read whose frame was not sent
 /// ([WriteOutcome] other than `Sent`) fails at once instead of waiting out its read timeout for an answer that cannot
 /// come (#2574).
 @FunctionalInterface

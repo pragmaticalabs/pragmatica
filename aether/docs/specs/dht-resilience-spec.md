@@ -96,7 +96,7 @@ private void sendRemotePut(NodeId target, byte[] key, byte[] value, long version
                             QuorumCollector<Unit> collector) {
     var correlationId = KSUID.ksuid().toString();
     pendingOps.put(correlationId, new PendingOperation<>(collector));
-    network.sendOutcome(target, new DHTMessage.PutRequest(...))
+    network.send(target, new DHTMessage.PutRequest(...))   // Promise<WriteOutcome> (#2583 P1)
            .onSuccess(outcome -> {
                if (!(outcome instanceof WriteOutcome.Sent)) {
                    pendingOps.remove(correlationId);

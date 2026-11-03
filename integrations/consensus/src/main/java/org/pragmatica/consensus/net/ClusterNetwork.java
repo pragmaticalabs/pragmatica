@@ -43,7 +43,7 @@ import static org.pragmatica.consensus.net.NetworkServiceMessage.*;
 /// Network failures should be logged internally, not thrown to callers.
 ///
 /// Delivery is best-effort and unacknowledged: every unicast `send` reports a local [WriteOutcome], and one
-/// reported as [WriteOutcome.Sent] was only accepted locally. Rabia tolerates loss, reordering and duplicates through its own timeouts and
+/// reported as [WriteOutcome.Sent] was not refused locally, which says nothing about delivery. Rabia tolerates loss, reordering and duplicates through its own timeouts and
 /// retransmission; every other consumer earns end-to-end delivery itself (quorum collection,
 /// anti-entropy, caller deadlines).
 public interface ClusterNetwork {
@@ -167,8 +167,8 @@ public interface ClusterNetwork {
 
     /// Send a message to a specific node and report the synchronous local-transport outcome.
     ///
-    /// The outcome is local only (see [WriteOutcome]): [WriteOutcome.Sent] means the transport accepted the frame,
-    /// not that the peer received it. Only a refusal ([WriteOutcome.BackpressureRefused], [WriteOutcome.NoPeerState],
+    /// The outcome is local only (see [WriteOutcome]): [WriteOutcome.Sent] means the transport did not refuse the frame
+    /// (it was written, queued, or silently discarded, as a test blackhole does), not that the peer received it. Only a refusal ([WriteOutcome.BackpressureRefused], [WriteOutcome.NoPeerState],
     /// [WriteOutcome.EncodeFailed]) proves the frame never left; [WriteOutcome.ConnectionDead] proves it only for a
     /// [NoOfflineBuffering] frame, because an ordinary one may sit in the offline buffer and be delivered later. A
     /// caller that ignores the returned outcome relies on its own end-to-end mechanism (retransmission, a deadline,

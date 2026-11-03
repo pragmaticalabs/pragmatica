@@ -11,7 +11,7 @@ import org.pragmatica.lang.io.TimeSpan;
 
 
 /// Unicast transport for replication messages. Every send reports the local [WriteOutcome] of the underlying cluster
-/// network: [WriteOutcome.Sent] means accepted locally, never delivered.
+/// network: [WriteOutcome.Sent] means not refused locally, not that it was delivered.
 @FunctionalInterface
 public interface ReplicationTransport {
     Promise<WriteOutcome> send(NodeId target, ReplicationMessage message);

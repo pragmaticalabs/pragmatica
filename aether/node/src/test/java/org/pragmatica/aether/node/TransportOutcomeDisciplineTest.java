@@ -20,23 +20,29 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// #2583 P1 ratchet: every unicast transport `send` in `src/main` either hands its [WriteOutcome] on, or is counted in
 /// the allow-list (`transport-outcome-allowlist.txt`) against an entry that cites what compensates for a lost frame (a
-/// `path:line`), or the `#2583-P<n>` phase that gives it a policy.
+/// `path:line@anchor`, the anchor being a symbol the cited line must still contain), or the `#2583-P<n>` phase that
+/// gives it a policy.
 ///
 /// The scan is lexical, per file, over comment- and string-stripped source:
 ///
-///   - a site is every `.send(` call and every `::send` method reference;
-///   - a call whose result is chained (`send(...).onSuccess(...)`) or is the whole returned expression
-///     (`return network.send(...)`) hands the outcome on and needs no entry;
-///   - every other site is outcome-blind: a statement, a lambda body, a method reference.
+///   - a site is every `.send(` call, every `::send` method reference and every `new (NetworkServiceMessage.)?Send(`
+///     message-bus unicast (it reaches `QuicClusterNetwork.handleSend`, which discards the outcome);
+///   - a `.send(` call whose FIRST continuation reads the value (`onSuccess`, `withSuccess`, `map`, `flatMap`, `fold`,
+///     `onResult`) or which is the whole returned expression (`return network.send(...)`) hands the outcome on and
+///     needs no entry. `onFailure`, `withFailure` and `mapToUnit` read nothing: the promise never fails;
+///   - every other site is outcome-blind: a statement, a lambda body, a method reference, a router `Send`, a chain
+///     that does not read the value.
 ///
 /// A file's entry must carry its exact outcome-blind count, so a new blind send fails this test and so does a
 /// stale entry. The search space is asserted, not assumed: every module whose `src/main` names one of the transport
@@ -56,6 +62,7 @@ class TransportOutcomeDisciplineTest {
     /// the walk lost part of its search space.
     static final int FILE_FLOOR = 650;
     static final String ALLOW_LIST = "transport-outcome-allowlist.txt";
+    static final List<String> READER_CONTINUATIONS = List.of("onSuccess", "withSuccess", "map", "flatMap", "fold", "onResult");
 
     @Test
     void searchSpace_coversEveryModuleThatNamesATransport() {
@@ -115,6 +122,31 @@ class TransportOutcomeDisciplineTest {
         }
 
         @Test
+        void routerSend_isAlwaysBlind_qualifiedOrImported() {
+            var source = "class A {\n void f() { router.route(new Send(peer, m)); }\n void g() { router.route(new NetworkServiceMessage.Send(peer, m)); }\n}";
+
+            assertThat(SendScanner.blindLines(source)).containsExactly(2, 3);
+        }
+
+        @Test
+        void chainOpeningWithAnOutcomeReader_handsTheOutcomeOn() {
+            READER_CONTINUATIONS.forEach(reader -> assertThat(SendScanner.blindLines("class A { void f() { network.send(p, m)." + reader + "(this::policy); } }"))
+                                                                  .as(reader)
+                                                                  .isEmpty());
+        }
+
+        @Test
+        void chainOpeningWithAContinuationThatReadsNothing_isBlind() {
+            var onFailure = "class A { void f() { var _ = network.send(p, m).onFailure(_ -> {}); } }";
+            var mapToUnit = "class A { void f() { var _ = network.send(p, m).mapToUnit(); } }";
+            var readerSecond = "class A { void f() { network.send(p, m).onFailure(_ -> {}).onSuccess(this::policy); } }";
+
+            assertThat(SendScanner.blindLines(onFailure)).containsExactly(1);
+            assertThat(SendScanner.blindLines(mapToUnit)).containsExactly(1);
+            assertThat(SendScanner.blindLines(readerSecond)).containsExactly(1);
+        }
+
+        @Test
         void commentsAndStrings_areNotSites() {
             var source = "class A { // network.send(a, b);\n /* x::send */ String s = \"network.send(a, b)\"; }";
 
@@ -143,6 +175,30 @@ class TransportOutcomeDisciplineTest {
             assertThat(found).anyMatch(v -> v.startsWith("a/B.java") && v.contains("2 outcome-blind"))
                              .anyMatch(v -> v.startsWith("e/F.java") && v.contains("no allow-list entry"))
                              .anyMatch(v -> v.startsWith("c/D.java") && v.contains("0 outcome-blind"));
+        }
+
+        @Test
+        void citationWithoutAnchor_isRejected(@TempDir Path root) throws IOException {
+            Files.writeString(root.resolve("C.java"), "line one\nretry(this::tick)\n");
+            var entries = AllowList.parse("a/B.java | 1 | C.java:2 | reason\n");
+
+            assertThat(violations(Map.of("a/B.java", 1), entries, root)).anyMatch(v -> v.contains("no content anchor"));
+        }
+
+        @Test
+        void citationWhoseLineDriftedOffItsAnchor_isRejected(@TempDir Path root) throws IOException {
+            Files.writeString(root.resolve("C.java"), "line one\nretry(this::tick)\n");
+            var entries = AllowList.parse("a/B.java | 1 | C.java:1@retry(this::tick) | reason\n");
+
+            assertThat(violations(Map.of("a/B.java", 1), entries, root)).anyMatch(v -> v.contains("has drifted"));
+        }
+
+        @Test
+        void citationOnItsAnchor_isAccepted_singleLineOrRange(@TempDir Path root) throws IOException {
+            Files.writeString(root.resolve("C.java"), "line one\nretry(this::tick)\nline three\n");
+            var entries = AllowList.parse("a/B.java | 1 | C.java:2@retry(this::tick), C.java:1-3@line three | reason\n");
+
+            assertThat(violations(Map.of("a/B.java", 1), entries, root)).isEmpty();
         }
 
         @Test
@@ -187,7 +243,7 @@ class TransportOutcomeDisciplineTest {
     }
 
     static final Pattern PHASE_CITATION = Pattern.compile("#2583-P[0-4][a-e]?");
-    static final Pattern FILE_CITATION = Pattern.compile("([\\w./-]+\\.java):(\\d+)(?:-(\\d+))?");
+    static final Pattern FILE_CITATION = Pattern.compile("([\\w./-]+\\.java):(\\d+)(?:-(\\d+))?(?:@(.+))?");
 
     static List<String> violations(Map<String, Integer> blind, Map<String, Entry> entries, Path root) {
         var found = new ArrayList<String>();
@@ -231,15 +287,37 @@ class TransportOutcomeDisciplineTest {
         }
 
         var cited = root.resolve(file.group(1));
-        var line = Integer.parseInt(Objects.requireNonNullElse(file.group(3), file.group(2)));
+        var first = Integer.parseInt(file.group(2));
+        var last = Integer.parseInt(Objects.requireNonNullElse(file.group(3), file.group(2)));
 
-        if (!Files.isRegularFile(cited) || lineCount(cited) < line) {
+        if (!Files.isRegularFile(cited) || lineCount(cited) < last) {
             found.add(path + ": citation '" + citation + "' names no such file line");
+
+            return;
         }
+
+        checkAnchor(path, citation, file.group(4), citedText(cited, first, last), found);
+    }
+
+    private static void checkAnchor(String path, String citation, String anchor, String text, List<String> found) {
+        if (anchor == null) {
+            found.add(path + ": citation '" + citation + "' has no content anchor (want path.java:line@symbol)");
+        } else if (!text.contains(anchor)) {
+            found.add(path + ": citation '" + citation + "' has drifted: the cited line(s) no longer contain '" + anchor + "'");
+        }
+    }
+
+    private static String citedText(Path file, int first, int last) {
+        return read(file).lines().skip(first - 1L).limit(last - first + 1L).collect(Collectors.joining("\n"));
     }
 
     sealed interface SendScanner {
         Pattern SITE = Pattern.compile("\\.\\s*send\\s*\\(|::\\s*send\\b");
+        /// A message-bus unicast: always blind, because `QuicClusterNetwork.handleSend` discards the outcome.
+        Pattern ROUTER_SEND = Pattern.compile("\\bnew\\s+(?:NetworkServiceMessage\\s*\\.\\s*)?Send\\s*\\(");
+        /// The continuation a chained send must open with to count as reading the outcome.
+        Pattern FIRST_CONTINUATION = Pattern.compile("^\\.\\s*(\\w+)");
+        Set<String> READERS = Set.of("onSuccess", "withSuccess", "map", "flatMap", "fold", "onResult");
 
         /// 1-based lines of the outcome-blind sites in `source`.
         static List<Integer> blindLines(String source) {
@@ -253,14 +331,26 @@ class TransportOutcomeDisciplineTest {
                 }
             }
 
-            return lines;
+            var router = ROUTER_SEND.matcher(code);
+
+            while (router.find()) {
+                lines.add(lineOf(code, router.start()));
+            }
+
+            return lines.stream().sorted().toList();
         }
 
         private static boolean isBlindCall(String code, int dot, int open) {
             var close = matchingParen(code, open);
             var next = code.substring(close + 1).stripLeading();
 
-            return ! (next.startsWith(".") || isReturned(code, dot) && next.startsWith(";"));
+            return ! (readsOutcome(next) || isReturned(code, dot) && next.startsWith(";"));
+        }
+
+        private static boolean readsOutcome(String continuation) {
+            var first = FIRST_CONTINUATION.matcher(continuation);
+
+            return first.find() && READERS.contains(first.group(1));
         }
 
         private static boolean isReturned(String code, int dot) {
