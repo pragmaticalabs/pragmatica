@@ -951,7 +951,8 @@ public final class ClusterConfigRoutes implements RouteSource {
             return new ManagementServerError.ServiceUnavailable("No core leader is committed yet; an election is in progress. Retry shortly.").<ClusterConfigValue> promise();
         }
 
-        return committedLeader.filter(leader -> node.isLeader())
+        return committedLeader.filter(leader -> node.isLeader() && leader.leader()
+                                                                         .equals(node.self()))
                               .fold(() -> new ManagementServerError.Conflict("Current core leader required for config update").<ClusterConfigValue> promise(),
                                     leader -> {
                                         var id = java.util.UUID.randomUUID()
