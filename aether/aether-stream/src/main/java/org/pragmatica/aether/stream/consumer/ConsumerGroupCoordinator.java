@@ -148,7 +148,7 @@ public sealed interface ConsumerGroupCoordinator {
                                                                                            groupId,
                                                                                            streamName,
                                                                                            consumerId))
-                                               .or(Result.unitResult());
+                             .or(Result.unitResult());
             }
 
             @Override
@@ -162,9 +162,9 @@ public sealed interface ConsumerGroupCoordinator {
 
             Result<Unit> rebalance(String groupId, String streamName, int partitionCount) {
                 return nextAssignmentCommands(groupId, streamName, partitionCount).onSuccess(commands -> submit(groupId,
-                                                                                                              streamName,
-                                                                                                              commands))
-                                                                                  .mapToUnit();
+                                                                                                                streamName,
+                                                                                                                commands))
+                                             .mapToUnit();
             }
 
             private void submit(String groupId, String streamName, List<KVCommand<AetherKey>> commands) {
@@ -196,10 +196,10 @@ public sealed interface ConsumerGroupCoordinator {
                 var sorted = memberList.stream().sorted(Comparator.comparing(ConsumerMember::consumerId)).toList();
 
                 return nextEpoch(groupId, streamName).map(epoch -> buildAssignmentCommands(groupId,
-                                                                                             streamName,
-                                                                                             partitionCount,
-                                                                                             sorted,
-                                                                                             epoch));
+                                                                                           streamName,
+                                                                                           partitionCount,
+                                                                                           sorted,
+                                                                                           epoch));
             }
 
             /// `(incarnation, term)` come from the leader, the counter from this activation. When the committed
@@ -253,10 +253,10 @@ public sealed interface ConsumerGroupCoordinator {
             }
 
             private Result<Unit> removeMemberAndRebalance(GroupKey key,
-                                                  List<ConsumerMember> memberList,
-                                                  String groupId,
-                                                  String streamName,
-                                                  String consumerId) {
+                                                          List<ConsumerMember> memberList,
+                                                          String groupId,
+                                                          String streamName,
+                                                          String consumerId) {
                 memberList.removeIf(m -> m.consumerId()
                                           .equals(consumerId));
                 if (memberList.isEmpty()) {
@@ -269,7 +269,9 @@ public sealed interface ConsumerGroupCoordinator {
                 return rebalanceFromMembers(groupId, streamName, memberList);
             }
 
-            private Result<Unit> rebalanceFromMembers(String groupId, String streamName, List<ConsumerMember> memberList) {
+            private Result<Unit> rebalanceFromMembers(String groupId,
+                                                      String streamName,
+                                                      List<ConsumerMember> memberList) {
                 var key = new GroupKey(groupId, streamName);
                 var partitionCount = partitionCounts.getOrDefault(key, 0);
 
