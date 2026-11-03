@@ -695,8 +695,10 @@ public sealed interface StreamAssembly {
                                                                                                   (stream, partition) -> Option.option(clusterEventsControllerRef.get()).flatMap(ownershipController -> ownershipController.desiredOwner(stream,
                                                                                                                                                                                                                                          partition)),
                                                                                                   streamIsrInputs(clusterEventsControllerRef),
-                                                                                                  () -> kvStore.getTyped(LeaderKey.INSTANCE,
-                                                                                                                         LeaderValue.class));
+                                                                                                  StreamPartitionOwnershipWriter.ownCommittedLeader(() -> kvStore.getTyped(LeaderKey.INSTANCE,
+                                                                                                                                                                           LeaderValue.class),
+                                                                                                                                                    config.self(),
+                                                                                                                                                    isLeaderSupplier));
         // #1339 residual: a failed ownership write re-arms the reconcile through the same coalescing entry, backed off.
         var streamOwnershipRetry = StreamOwnershipRetry.streamOwnershipRetry(SharedScheduler::schedule,
                                                                              () -> reconcileReplicaSet(clusterEventsControllerRef));

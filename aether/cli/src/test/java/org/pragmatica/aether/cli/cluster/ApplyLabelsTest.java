@@ -8,6 +8,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.lang.Option;
@@ -46,10 +48,28 @@ class ApplyLabelsTest {
     }
 
     /// `aether-<cluster>-node-<ulid>` is 39 characters plus the cluster name: 24 fit the 63-character label limit, 25 do not.
+    private static ClusterBootstrapConfig config(String cluster, String sourceType) {
+        return ClusterBootstrapConfigParser.parse("""
+                                                  config_version = "1.0.0"
+
+                                                  [cluster]
+                                                  name = "%s"
+                                                  version = "1.0.0"
+
+                                                  [source.s1]
+                                                  type = "%s"
+                                                  %s
+
+                                                  [source.s1.core]
+                                                  count = 3
+                                                  """.formatted(cluster, sourceType, sourceType.equals("cloud") ? "provider = \"aws\"\nregion = \"eu-west-1\"\ncredentials = \"aws-key\"" : ""))
+                                           .unwrap();
+    }
+
     @Test
     void requireMintable_acceptsTheLongestClusterNameThatFits_andRefusesOneCharacterMore() {
-        var fits = new ClusterName("a".repeat(24));
-        var tooLong = new ClusterName("a".repeat(25));
+        var fits = config("a".repeat(24), "docker");
+        var tooLong = config("a".repeat(25), "docker");
 
         assertThat(ApplyLabels.requireMintable(fits, ApplyStateFixtures.APPLY_ID).isSuccess()).isTrue();
         ApplyLabels.requireMintable(tooLong, ApplyStateFixtures.APPLY_ID)
@@ -59,6 +79,16 @@ class ApplyLabelsTest {
                                                          .isNotNull());
         ApplyLabels.requireMintable(tooLong, ApplyStateFixtures.APPLY_ID)
                    .onFailure(cause -> assertThat(cause.message()).contains("63-character").contains("at most 24 characters").contains("Nothing was created"));
+    }
+
+    /// v-g1 round 4: a cloud apply mints `aether-node-<ulid>` (38 characters, no cluster), so a long cluster name must not be refused for a
+    /// Docker-shaped id the apply will not mint. Hetzner's own limit on the server name is PF-36's.
+    @Test
+    void requireMintable_cloudOnlyApply_isNotRefusedForTheDockerShape() {
+        var cloud = config("a".repeat(30), "cloud");
+
+        assertThat(ApplyLabels.requireMintable(cloud, ApplyStateFixtures.APPLY_ID).isSuccess()).isTrue();
+        assertThat(ApplyLabels.requireMintable(config("a".repeat(30), "docker"), ApplyStateFixtures.APPLY_ID).isFailure()).as("the same name IS refused when Docker mints").isTrue();
     }
 
     @Test

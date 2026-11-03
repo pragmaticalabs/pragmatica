@@ -29,7 +29,8 @@
         <!-- The @Tag("heavy-db") differential tests (Oracle/SQL Server/DB2) are excluded by default
              and opted into on dedicated amd64 hardware (or CI) by overriding these two properties:
              mvn test -DheavyDb.excludedGroups= -DheavyDb.includedGroups=heavy-db -->
-        <heavyDb.excludedGroups>heavy-db</heavyDb.excludedGroups>
+        <!-- quarantine: flaky tests under the quarantine ruling stay out of the default build (tools/check-quarantine.py). -->
+        <heavyDb.excludedGroups>heavy-db, quarantine</heavyDb.excludedGroups>
         <heavyDb.includedGroups></heavyDb.includedGroups>
     </properties>
 
