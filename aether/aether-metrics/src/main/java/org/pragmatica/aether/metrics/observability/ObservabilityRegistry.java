@@ -161,7 +161,6 @@ public interface ObservabilityRegistry {
             registerTransportGauge("consensus_proposals_total", "Rabia proposals submitted", metricsSupplier);
             registerTransportGauge("consensus_vote_round1_total", "Rabia round-1 votes processed", metricsSupplier);
             registerTransportGauge("consensus_vote_round2_total", "Rabia round-2 votes processed", metricsSupplier);
-            registerTransportGauge("consensus_fast_path_total", "Rabia fast-path agreements", metricsSupplier);
             registerTransportGauge("consensus_sync_success_total", "Rabia sync rounds succeeded", metricsSupplier);
             registerTransportGauge("consensus_sync_failure_total", "Rabia sync rounds failed", metricsSupplier);
             registerTransportGauge("consensus_pending_batches",
