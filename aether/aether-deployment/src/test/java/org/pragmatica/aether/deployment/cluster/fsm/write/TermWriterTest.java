@@ -91,6 +91,31 @@ class TermWriterTest {
         assertThat(causeOf(outcome)).isEqualTo(HierarchyStateWriter.Refusal.INACTIVE);
     }
 
+    /// The term half of the hierarchy authority: a record naming this node is not enough once the term has ended.
+    @Test
+    void hierarchy_termEnded_returnsInactiveRefusal() {
+        commitLeader(store, SELF, 1);
+        deactivated.set(true);
+        var directiveKey = ActivationDirectiveKey.activationDirectiveKey(OTHER);
+
+        var outcome = termWriter().hierarchyPut(directiveKey, Option.none(), ActivationDirectiveValue.core()).await();
+
+        assertThat(cluster.batches()).isEmpty();
+        assertThat(causeOf(outcome)).isEqualTo(HierarchyStateWriter.Refusal.INACTIVE);
+    }
+
+    /// The positive control of the refusal above: the same hierarchy write in a live term under a record naming this node.
+    @Test
+    void hierarchy_liveTermNamesSelf_isIssued() {
+        commitLeader(store, SELF, 1);
+        var directiveKey = ActivationDirectiveKey.activationDirectiveKey(OTHER);
+
+        var outcome = termWriter().hierarchyPut(directiveKey, Option.none(), ActivationDirectiveValue.core()).await();
+
+        assertThat(outcome.isSuccess()).isTrue();
+        assertThat(cluster.batches()).hasSize(1);
+    }
+
     /// LEGACY = one apply of what the site built, then the site's own handler, given the apply's own cause unchanged.
     @Test
     void legacy_appliesThenRunsTheGivenHandler_unchanged() {

@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm;
 
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
@@ -49,6 +50,7 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmTestHarness;
+import org.pragmatica.testlogging.LogCapture;
 
 import java.net.SocketAddress;
 import java.util.ArrayList;
@@ -252,9 +254,14 @@ class AttemptBoundOutcomeTest {
         var harness = leaderHarness(new HoldingClusterNode(SELF, store), store, DeploymentAtomicity.ALL_OR_NOTHING);
         var expanded = blueprint(3);
 
-        applyBlueprint(harness, store, expanded, FIRST_ATTEMPT, 1L);
-        exhaustRetryBudgetOn(harness, SELF, SLICE);
+        try (var log = LogCapture.capture(ClusterDeploymentState.Active.class, Level.WARN, false)) {
+            applyBlueprint(harness, store, expanded, FIRST_ATTEMPT, 1L);
+            exhaustRetryBudgetOn(harness, SELF, SLICE);
 
+            assertThat(log.messages(Level.WARN)).as("D19 is logged at WARN, naming the missing record")
+                                                .anyMatch(message -> message.contains("rollback of blueprint " + expanded.id().asString() + " not issued")
+                                                                     && message.contains("no committed leader record"));
+        }
         assertThat(activeState(harness).permanentlyFailed()).as("precondition: the failure reached the rollback").contains(SLICE);
         assertThat(committedBlueprint(store, expanded.id())).as("no unfenced rollback removed the blueprint").isEqualTo(Option.some(expanded));
         assertThat(outcomeStatusName(store, expanded.id())).isEqualTo(DeploymentOutcomeStatus.IN_PROGRESS.name());

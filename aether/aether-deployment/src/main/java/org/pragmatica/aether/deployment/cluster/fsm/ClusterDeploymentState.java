@@ -752,29 +752,29 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                 value.attemptCount());
             // The lock is NOT removed here (#806): this runs only for an EXPIRED lock, which the next
             // acquire takes over, and a bare Remove of a `WitnessedRemoval` value is refused anyway.
-            termWriter.write(WriteSite.SCHEMA_STALLED_RESET,
-                             () -> stalledMigrationReset(versionKey, value, updated))
+            termWriter.writeUnder(WriteSite.SCHEMA_STALLED_RESET,
+                                  leader -> stalledMigrationReset(versionKey, value, updated, leader))
                       .onFailure(cause -> log.error("Failed to reset stalled migration for '{}': {}",
                                                     datasourceName,
                                                     cause.message()));
         }
 
         /// #2584: the reset is a mutation guarded on the MIGRATING record it read, so the applier refuses it if the record
-        /// moved since (a migration that completed or failed meanwhile keeps its status). [TermWriter] has checked that
-        /// the committed leader record names this node before this builds, so the transaction carries that record.
+        /// moved since (a migration that completed or failed meanwhile keeps its status). It carries the leader record
+        /// [TermWriter] checked, which names this node, so a newer leader's record makes the applier refuse it too.
         private List<KVCommand<AetherKey>> stalledMigrationReset(SchemaVersionKey versionKey,
                                                                  SchemaVersionValue read,
-                                                                 SchemaVersionValue updated) {
+                                                                 SchemaVersionValue updated,
+                                                                 org.pragmatica.cluster.state.kvstore.LeaderValue leader) {
             var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(versionKey,
                                                                           Option.some(read),
                                                                           Option.some(updated));
 
-            return committedLeader().map(leader -> List.<KVCommand<AetherKey>> of(new KVCommand.LeaderTransaction<>(versionKey,
-                                                                                                                    UUID.randomUUID().toString(),
-                                                                                                                    leader,
-                                                                                                                    List.of(),
-                                                                                                                    List.of(mutation))))
-                                  .or(List.of());
+            return List.of(new KVCommand.LeaderTransaction<>(versionKey,
+                                                             UUID.randomUUID().toString(),
+                                                             leader,
+                                                             List.of(),
+                                                             List.of(mutation)));
         }
 
         private void triggerLoadedSliceActivation() {

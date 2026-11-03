@@ -17,6 +17,7 @@ import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Functions.Fn0;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -56,8 +57,15 @@ public final class TermWriter {
     /// applied, and the write fails as the site's [NotLeaderAction] says. The returned promise is otherwise the apply's
     /// own; the site attaches its existing success and failure handling to it.
     public <R> Promise<List<R>> write(WriteSite site, Fn0<List<KVCommand<AetherKey>>> build) {
+        return writeUnder(site, _ -> build.apply());
+    }
+
+    /// As [#write], for a site whose commands carry the leader record they are issued under (a [KVCommand.LeaderTransaction]).
+    /// `build` receives the very record the precondition checked, never one read afterwards: a newer leader's record that
+    /// commits between the check and the build would otherwise be embedded, and the applier would accept it.
+    public <R> Promise<List<R>> writeUnder(WriteSite site, Fn1<List<KVCommand<AetherKey>>, LeaderValue> build) {
         return issuingLeader().fold(() -> notLeader(site),
-                                    _ -> cluster.apply(build.apply()));
+                                    leader -> cluster.apply(build.apply(leader)));
     }
 
     /// A conditional hierarchy put (the [WriteSite#CORE_DIRECTIVE] and [WriteSite#ACTIVATE_REISSUE] sites). Refused with
@@ -82,11 +90,11 @@ public final class TermWriter {
                     .equals(self) && !deactivated.getAsBoolean();
     }
 
+    /// The refusal of [#write]. Only sites that go through [#write] reach it, and none of them declares
+    /// [NotLeaderAction#INACTIVE_REFUSAL]: the hierarchy sites are refused by the hierarchy writer inside
+    /// [#hierarchyPut]/[#hierarchyCommit], so the action decides nothing here and the site is carried for its consumer.
     private <R> Promise<List<R>> notLeader(WriteSite site) {
-        return switch (site.notLeader()) {
-            case FAIL_NOT_LEADER, ABANDON_ROLLBACK -> FsmWriteError.NotLeader.FACTORY.apply(site, committedLeader()).promise();
-            case INACTIVE_REFUSAL -> HierarchyStateWriter.Refusal.INACTIVE.promise();
-        };
+        return FsmWriteError.NotLeader.FACTORY.apply(site, committedLeader()).promise();
     }
 
     private Option<NodeId> committedLeader() {
