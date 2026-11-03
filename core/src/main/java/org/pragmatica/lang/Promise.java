@@ -3677,7 +3677,7 @@ final class PromiseImpl<T> implements Promise<T> {
         try {
             FatalEscapes.escaped(continuation, error, origin);
         } catch (Throwable hookFailure) {
-            // Nothing safe to do on this path; the escape itself was already logged above.
+        // Nothing safe to do on this path; the escape itself was already logged above.
         }
     }
 
