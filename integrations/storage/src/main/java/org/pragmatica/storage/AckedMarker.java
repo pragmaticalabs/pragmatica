@@ -129,6 +129,16 @@ final class AckedMarker {
         return unit();
     }
 
+    /// Re-read the marker from the volume (after a write that may have raced another writer of the same sidecar).
+    Unit reload(Path logFile) {
+        var current = read(logFile);
+
+        highWater = current.map(AppendLog.AckedMark::offset).or(Long.MIN_VALUE);
+        mark = current;
+
+        return unit();
+    }
+
     /// Born with a durable `-1` marker (know `6665558916`, S6): a log created by this build has acked nothing.
     Result<Unit> create() {
         return persistDurably(new AppendLog.AckedMark(Option.none(), -1L));
