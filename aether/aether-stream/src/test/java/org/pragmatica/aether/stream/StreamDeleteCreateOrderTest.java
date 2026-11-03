@@ -38,9 +38,12 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 
 /// #2627: a stream's `StreamConfigKey` submissions (create Put, publish-path auto-create Put, destroy Remove) reach the
@@ -127,7 +130,7 @@ class StreamDeleteCreateOrderTest {
         var outcome = manager.createStream(config());
 
         assertThat(outcome.isFailure()).as("a refused create must not report success: %s", outcome).isTrue();
-        outcome.onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("refused create reported success"))
+        outcome.onSuccess(_ -> fail("refused create reported success"))
                .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.STREAM_ALREADY_EXISTS));
         assertThat(committedIncarnation()).as("the committed life stands").isEqualTo(5L);
     }
@@ -195,7 +198,7 @@ class StreamDeleteCreateOrderTest {
         router.addRoute((Class) ValueRemove.class, (Consumer) remove);
     }
 
-    private Started startOnOwnThread(java.util.function.Supplier<Result<Unit>> action) {
+    private Started startOnOwnThread(Supplier<Result<Unit>> action) {
         var thread = new AtomicReference<Thread>();
         var future = CompletableFuture.supplyAsync(() -> {
             thread.set(Thread.currentThread());
@@ -210,7 +213,7 @@ class StreamDeleteCreateOrderTest {
     }
 
     /// Commit whatever is pending, newest first, until the caller has returned AND `settled` holds.
-    private Result<Unit> driveUntilDone(CompletableFuture<Result<Unit>> future, java.util.function.BooleanSupplier settled) {
+    private Result<Unit> driveUntilDone(CompletableFuture<Result<Unit>> future, BooleanSupplier settled) {
         while (!future.isDone() || !settled.getAsBoolean() || node.pendingCount() > 0) {
             node.commitNewestFirst();
             Thread.onSpinWait();
