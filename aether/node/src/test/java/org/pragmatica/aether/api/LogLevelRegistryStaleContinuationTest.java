@@ -18,6 +18,8 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.mockito.Mockito;
@@ -84,6 +86,56 @@ class LogLevelRegistryStaleContinuationTest {
 
         assertThat(registry.allLevels()).as("only a commit's own onLogLevelRemove drops the logger")
                                         .containsEntry(LOGGER, "DEBUG");
+    }
+
+    @Test
+    void setLevel_continuation_doesNotReapplyTheLoggerConfiguration() {
+        var applyA = Promise.<List<Object>> promise();
+        var registry = registryApplying(applyA);
+
+        registry.setLevel(LOGGER, "DEBUG");
+        registry.onLogLevelPut(put("DEBUG"));
+        registry.onLogLevelPut(put("TRACE"));
+        applyA.succeed(List.of());
+
+        assertThat(LogManager.getLogger(LOGGER).getLevel()).as("B set the logger after A; A's continuation must not reapply A to the logger")
+                                                           .isEqualTo(Level.TRACE);
+    }
+
+    @Test
+    void resetLevel_continuation_doesNotResetTheLoggerConfiguration() {
+        var applyA = Promise.<List<Object>> promise();
+        var registry = registryApplying(applyA);
+
+        registry.onLogLevelPut(put("DEBUG"));
+        registry.resetLevel(LOGGER);
+        registry.onLogLevelRemove(remove());
+        registry.onLogLevelPut(put("TRACE"));
+        applyA.succeed(List.of());
+
+        assertThat(LogManager.getLogger(LOGGER).getLevel()).as("B re-set the logger after A's reset; A's continuation must not clear it")
+                                                           .isEqualTo(Level.TRACE);
+    }
+
+    @Test
+    void onLogLevelPut_writesTheRegistryAndTheLoggerConfiguration() {
+        var registry = registryApplying(Promise.<List<Object>> promise());
+
+        registry.onLogLevelPut(put("TRACE"));
+
+        assertThat(registry.allLevels()).containsEntry(LOGGER, "TRACE");
+        assertThat(LogManager.getLogger(LOGGER).getLevel()).isEqualTo(Level.TRACE);
+    }
+
+    @Test
+    void onLogLevelRemove_dropsTheRegistryEntryAndClearsTheLoggerConfiguration() {
+        var registry = registryApplying(Promise.<List<Object>> promise());
+
+        registry.onLogLevelPut(put("TRACE"));
+        registry.onLogLevelRemove(remove());
+
+        assertThat(registry.allLevels()).doesNotContainKey(LOGGER);
+        assertThat(LogManager.getLogger(LOGGER).getLevel()).isNotEqualTo(Level.TRACE);
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})

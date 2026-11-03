@@ -91,6 +91,17 @@ class AlertManagerStaleContinuationTest {
                                               .containsKey(METRIC);
     }
 
+    @Test
+    void onAlertThresholdRemove_dropsTheThreshold() {
+        var manager = managerApplying(Promise.<List<Object>> promise());
+
+        manager.onAlertThresholdPut(put(0.1, 0.2));
+        manager.onAlertThresholdRemove(remove());
+
+        assertThat(manager.getAllThresholds()).as("the commit's own remove notification is now the only thing that drops the key")
+                                              .doesNotContainKey(METRIC);
+    }
+
     // `onSuccess` continuations are event handlers: Promise runs them on the executor, in registration order, on one
     // task per resolved promise. This handler is registered after the continuation under test (and after the failure
     // log), so once it fires the continuation has run - a deterministic barrier, not a sleep.

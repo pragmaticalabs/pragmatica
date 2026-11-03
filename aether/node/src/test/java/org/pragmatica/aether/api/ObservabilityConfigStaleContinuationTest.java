@@ -83,6 +83,23 @@ class ObservabilityConfigStaleContinuationTest {
     }
 
     @Test
+    void removeConfig_continuation_doesNotReswapTheLiveCell() {
+        var applyA = Promise.<List<Object>> promise();
+        var registry = registryApplying(applyA);
+        var cell = ObservabilityStrategyCell.observabilityStrategyCell(ARTIFACT, METHOD);
+
+        registry.register(cell);
+        registry.onObservabilityConfigPut(put(true, false, false, false, 1));
+        registry.removeConfig(ARTIFACT, METHOD);
+        registry.onObservabilityConfigRemove(remove());
+        registry.onObservabilityConfigPut(put(false, true, false, true, 7));
+        var strategyAfterB = cell.strategy();
+        applyA.succeed(List.of());
+
+        assertThat(cell.strategy()).as("the removal continuation must not re-resolve the cell").isSameAs(strategyAfterB);
+    }
+
+    @Test
     void setConfig_continuation_leavesTheMapToTheCommit() {
         var applyA = Promise.<List<Object>> promise();
         var registry = registryApplying(applyA);
