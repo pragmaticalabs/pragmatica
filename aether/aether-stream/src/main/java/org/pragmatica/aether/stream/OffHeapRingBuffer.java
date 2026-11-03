@@ -1033,7 +1033,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     private Result<Unit> seedHeadChecked(long base, long visibleSeed) {
         var currentHead = rawHeadOffset();
 
-        if (base < 0 || currentHead != -1 || visibleSeed < -1 || visibleSeed > base) {
+        if (base < 0 || currentHead != -1 || visibleSeed < - 1 || visibleSeed > base) {
             return new StreamError.SeedRejected(base, currentHead).result();
         }
         // Tail first, then fence, then head — as evictOldest orders it: a reader that saw head = base
