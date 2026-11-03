@@ -2812,7 +2812,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             }
 
             log.debug("Issuing ACTIVATE command for {}", sliceKey);
-            applyStateWrite(WriteSite.ACTIVATE, sliceKey, SliceState.ACTIVATE).onFailure(cause -> onActivateWriteFailure(sliceKey, cause, 0));
+            applyStateWrite(WriteSite.ACTIVATE, sliceKey, SliceState.ACTIVATE).onFailure(cause -> onActivateWriteFailure(sliceKey,
+                                                                                                                         cause,
+                                                                                                                         0));
         }
 
         private boolean unloadedForMissingTarget(SliceNodeKey sliceKey) {
@@ -2900,10 +2902,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                      sliceKey,
                      attempt + 1);
             termWriter.hierarchyPut(NodeArtifactKey.nodeArtifactKey(sliceKey.nodeId(),
-                                                                  sliceKey.artifact()),
-                                  Option.<AetherValue> some(committedLoaded),
-                                  NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVATE, 0L))
-                           .onFailure(cause -> onActivateWriteFailure(sliceKey, cause, attempt));
+                                                                    sliceKey.artifact()),
+                                    Option.<AetherValue> some(committedLoaded),
+                                    NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVATE, 0L))
+                      .onFailure(cause -> onActivateWriteFailure(sliceKey, cause, attempt));
         }
 
         /// #2579 layer 2, the backstop for any lost ACTIVATE, not only a failed write: a slice the leader has seen
