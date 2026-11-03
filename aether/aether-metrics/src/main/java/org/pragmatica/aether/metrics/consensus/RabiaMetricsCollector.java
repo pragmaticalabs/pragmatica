@@ -23,10 +23,6 @@ import static org.pragmatica.lang.Result.unitResult;
 
 
 public final class RabiaMetricsCollector implements ConsensusMetrics {
-    /// The engine stopped taking the Round-2-skipping fast path in #1390, so nothing counts it any more.
-    /// The wire field stays (constant zero) so the management API and Prometheus vocabularies do not change.
-    private static final long NO_FAST_PATH = 0L;
-
     private final AtomicLong decisionsCount = new AtomicLong();
     private final AtomicLong proposalsCount = new AtomicLong();
     private final AtomicLong voteRound1Count = new AtomicLong();
@@ -66,7 +62,7 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
     /// The three vote-traffic recorders were EMPTY BODIES until #674 — round-1/round-2 vote volume
     /// is precisely the quantity that grows with coordination load, and nothing anywhere counted it,
     /// which left the #367/#368 scale ladder measuring a subsystem with no wire-visible load signal.
-    /// The engine has called these all along (`RabiaEngine` vote/fast-path handlers); only the
+    /// The engine has called these all along (`RabiaEngine` vote handlers); only the
     /// counting was missing.
     @Override
     @Contract
@@ -134,7 +130,6 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
                                 proposalsCount.get(),
                                 voteRound1Count.get(),
                                 voteRound2Count.get(),
-                                NO_FAST_PATH,
                                 syncSuccessCount.get(),
                                 syncFailureCount.get(),
                                 totalDecisionLatencyNs.sum(),
@@ -152,7 +147,6 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
                                 proposalsCount.getAndSet(0),
                                 voteRound1Count.getAndSet(0),
                                 voteRound2Count.getAndSet(0),
-                                NO_FAST_PATH,
                                 syncSuccessCount.getAndSet(0),
                                 syncFailureCount.getAndSet(0),
                                 totalDecisionLatencyNs.sumThenReset(),

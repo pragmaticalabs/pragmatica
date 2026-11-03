@@ -7,4 +7,4 @@
 
 ### Removed (2026-10-18 — dead code left by #1390, #1535)
 - `TopologyManager.superMajoritySize()`, `ConsensusMetrics.recordFastPath` and `RabiaMetricsCollector.recordFastPath` (no caller since the engine stopped taking the fast path), and `CommunityPlacementPlanner.distributeWorkerOrCommunity` with its private helpers.
-- **Retained on purpose:** the wire field `fastPathCount` / `consensus_fast_path_total` is still exported and now always reads 0, so no management-API or Prometheus vocabulary changes in this fix. Removing it is a separate API decision.
+- **Retained on purpose:** the wire field `fastPathCount` / `consensus_fast_path_total` is still exported and now always reads 0, so no management-API or Prometheus vocabulary changes in this fix. Removing it is a separate API decision (done in #2617: see `2617-remove-dead-fast-path-metric.md`).
