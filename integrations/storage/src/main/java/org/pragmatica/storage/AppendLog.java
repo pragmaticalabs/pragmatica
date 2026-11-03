@@ -188,6 +188,7 @@ public final class AppendLog implements AutoCloseable {
     private volatile Option<Cause> syncFailure = Option.none();  // set once under syncLock on fail-stop; never cleared
     private volatile boolean closed;
     private volatile LongSupplier sealedFloor = NO_SEALED_FLOOR;  // the live floor of the order rule (I-04); read under writeLock
+    private volatile Option<Consumer<Cause>> failStopListener = Option.none();  // replaces sink.failStopped when installed (D-01)
     private final EpochHistory epochs;
     private final TornTailSink sink;
 
@@ -651,6 +652,16 @@ public final class AppendLog implements AutoCloseable {
         return this;
     }
 
+    /// Installs `listener` as the receiver of this log's fail-stop (#2201 D-01), in place of the sink's
+    /// [TornTailSink#failStopped]: an owner that knows what the log holds (a stream partition) reports it under its own subject, and
+    /// the instance-level report would only repeat it under a vaguer one. Invoked once, on the transition to fail-stopped, under the
+    /// log's sync lock, so it must not block. Installed once by the opener before the first write; returns this log.
+    public AppendLog onFailStop(Consumer<Cause> listener) {
+        failStopListener = Option.some(listener);
+
+        return this;
+    }
+
     /// Last appended offset, or `-1` when the WAL holds no valid record.
     public long lastOffset() {
         return lastOffset;
@@ -818,12 +829,23 @@ public final class AppendLog implements AutoCloseable {
     /// failure (a failed fsync, frame write or post-compaction reopen); every later append (and
     /// truncate) is refused with the stored cause.
     private void failStop(Cause cause) {
+        var first = syncFailure.isEmpty();
+
         syncFailure = Option.some(new WalError.FailStopped(cause.message()));
         log.error("AppendLog fail-stopped for {} — appends refused; "
                  + "reopen (node restart) recovers the valid prefix: {}",
                   file,
                   cause.message());
-        sink.failStopped(file, cause);
+        if (first) {
+            reportFailStop(cause);
+        }
+    }
+
+    /// Once per log: to the installed [#onFailStop] listener when there is one, to the sink otherwise. Two writers that both passed
+    /// the health check before the first failure can each fail their frame, so the transition, not the call, is reported.
+    private void reportFailStop(Cause cause) {
+        failStopListener.onPresent(listener -> listener.accept(cause))
+                        .onEmpty(() -> sink.failStopped(file, cause));
     }
 
     /// Runs under `syncLock` (the only writer of these fields). The timing wraps ONLY the

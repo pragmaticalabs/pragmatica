@@ -554,7 +554,7 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `storage-maintenance-started` (INFO — the recovery: the managers were activated; raised only after `storage-maintenance-not-started` was offered to the event feed for the same `subject`)
 - `storage-wal-tail-cut` (WARNING — a stream append log cut a torn tail while opening, bytes that were never acknowledged; `subject` is the instance; a cut happens once at open, so there is no recovery event)
 - `storage-volume-guard-inactive` (WARNING — the unmounted-volume guard of the instance is off: its sentinel is on the same filesystem as the guarded volume and is lost with it, so the node would boot empty on an unmounted volume instead of refusing; `subject` is the instance; decided once at boot, no recovery event)
-- `storage-wal-fail-stopped` (CRITICAL — a stream append log fail-stopped after a failed fsync, frame write or reopen and refuses every append until the node restarts; `subject` is the instance, the message names the log; raised once per instance, no recovery event)
+- `storage-wal-fail-stopped` (CRITICAL — an append log fail-stopped after a failed fsync, frame write or reopen and refuses every append; for a stream partition's WAL the `subject` is `stream[partition]` and the warning is raised once per partition log (#2201 D-01), every later publish to that partition is refused with `PartitionFailStopped` before it takes an offset, and gauge `aether.streams.wal.failstopped` counts the node's fail-stopped partitions; for any other log the `subject` is the instance, the message names the log, and it is raised once per instance; recovery for a stream partition: replace the node, see `wal.failStopped`; no recovery event)
 - `storage-prefetch-not-started` (WARNING — the instance's prefetch manager could not be activated when the node reported ready; `subject` is the instance)
 - `storage-prefetch-started` (INFO — the recovery: the prefetch manager was activated; raised only after `storage-prefetch-not-started` was offered to the event feed for the same `subject`)
 - `storage-stream-disk-cap-over-space` (WARNING — `[streaming] segment_disk_max_bytes` is larger than the space usable where stream segments are kept, so stream seals fail with `TierFull` before the cap is reached; `subject` is `streams`; decided at boot, no recovery event)
@@ -1505,6 +1505,12 @@ The age is 0 when no batch is pending (#1117): a value that keeps growing is a s
 decided, and `consensus_apply_timeouts_total` counts the applies that were never answered within the apply
 timeout (30 s by default). The engine also logs `SLOW-APPLY-RUNNING` with the worker's stack once a consensus
 task has run longer than one second.
+
+Includes the streams gauges: `aether_streams_memory_used_bytes`, `aether_streams_memory_used_ratio`,
+`aether_streams_seams_unbound_safety` (0 on a correctly wired node, #2201 A-14), and
+`aether_streams_wal_failstopped` (#2201 D-01): the number of partitions materialized on this node whose WAL fail-stopped, 0 from
+boot and at least 1 while a partition refuses every publish (`storage-wal-fail-stopped`, `wal.failStopped`). Each sample line ends in its
+value; the registry writes no timestamp.
 
 ### GET /api/v1/metrics/transport
 
@@ -2568,7 +2574,7 @@ the view actionable (see recovery below).
 | `wal.lastCompactedUpto` | Last offset physically reclaimed by a compaction rewrite (`-1` when the file was never compacted) |
 | `wal.fsyncCount` | Group commits completed since the WAL was opened |
 | `wal.fsyncMeanMicros` / `fsyncMaxMicros` | Mean / slowest single fsync since open, in microseconds |
-| `wal.failStopped` | `true` when this partition's WAL refused further appends after a failed fsync (#634-7 fail-stop — a retried fsync can falsely succeed after the OS drops the dirty pages, so the WAL stops instead). Every publish on the partition fails until the recovery action: **replace the node** (`POST /api/v1/nodes/replace/{id}`). A fail-stopped node is not restarted: under terminal removal a dead owner never returns and nothing reads its WAL again, so what survives is what reached the surviving replicas (see `confirmation_factor`); a refused append was never acked |
+| `wal.failStopped` | `true` when this partition's WAL refused further appends after a failed fsync (#634-7 fail-stop — a retried fsync can falsely succeed after the OS drops the dirty pages, so the WAL stops instead). The transition raises `storage-wal-fail-stopped` with subject `stream[partition]` and counts in gauge `aether.streams.wal.failstopped` (#2201 D-01). Every publish on the partition fails until the recovery action: **replace the node** (`POST /api/v1/nodes/replace/{id}`). A fail-stopped node is not restarted: under terminal removal a dead owner never returns and nothing reads its WAL again, so what survives is what reached the surviving replicas (see `confirmation_factor`); a refused append was never acked |
 | `ringTail` | Earliest offset still in the in-memory ring (`-1` when the materialized ring is EMPTY — has never held a record, e.g. right after a restart; a partition with no ring at all appears only as a segment-only row or not at all) |
 | `sealedThrough` | The durable sealed bound — what WAL truncation chases (`-1` when nothing is sealed) |
 | `reclaimedThrough` | The persisted reclaimed-through floor (#1278): the highest offset retention reclaimed for this partition, `-1` when it never reclaimed any. Written durably before the segment refs it licenses are dropped; after a restart the sealed bound is rebuilt from it, so a WAL starting at `reclaimedThrough + 1` is reclaimed history, not a lost head |

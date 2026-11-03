@@ -410,7 +410,7 @@ Metrics:
 Variants (wrap `/api/v1/metrics/*` REST routes):
 
 ```bash
-# Prometheus-format scrape (text/plain exposition)
+# Prometheus-format scrape (text/plain exposition); includes aether_streams_wal_failstopped (partitions whose WAL fail-stopped)
 aether metrics prometheus
 
 # Transport-layer metrics (node-level QUIC message/backpressure counters)

@@ -4,15 +4,21 @@ import java.lang.reflect.Field;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
-/// #2201 A-01: the O(1) state the ordered section's guard reads from the log -- the cached last epoch key and the log's health.
+/// #2201 A-01: the O(1) state the ordered section's guard reads from the log -- the cached last epoch key and the log's health. D-01: the
+/// fail-stop listener an owner installs replaces the instance sink's report, and the transition is reported once.
 class AppendLogSectionStateTest {
     private static final AppendLog.EpochOrder NUMERIC = (later, earlier) -> Long.parseLong(later.token()) > Long.parseLong(earlier.token());
 
@@ -60,6 +66,56 @@ class AppendLogSectionStateTest {
               .onSuccess(_ -> fail("a closed log reads as writable"))
               .onFailure(cause -> assertThat(cause).isEqualTo(AppendLog.WalError.General.WAL_CLOSED));
         assertThat(closed.failStopped()).as("closed is not fail-stopped").isFalse();
+    }
+
+    @Test
+    void onFailStop_replacesTheSinkReport_andIsInvokedOnceForTheTransition() throws Exception {
+        var sink = new RecordingSink();
+        var heard = new CopyOnWriteArrayList<Cause>();
+        var wal = AppendLog.open(file(), sink).unwrap().onFailStop(heard::add);
+
+        channelOf(wal).close();
+        assertThat(wal.write(0, bytes("a"), 0L).isFailure()).as("control: the I/O failure fail-stops the log").isTrue();
+        assertThat(wal.write(0, bytes("a"), 0L).isFailure()).as("control: a later write is refused").isTrue();
+        secondFailure(wal);
+        assertThat(heard).as("the listener hears the transition once").hasSize(1);
+        assertThat(sink.failStops).as("the instance sink is not told when an owner listens").isEmpty();
+        wal.close();
+    }
+
+    @Test
+    void withoutAListener_theSinkReportsTheFailStop_once() throws Exception {
+        var sink = new RecordingSink();
+        var wal = AppendLog.open(file(), sink).unwrap();
+
+        channelOf(wal).close();
+        assertThat(wal.write(0, bytes("a"), 0L).isFailure()).as("control: the I/O failure fail-stops the log").isTrue();
+        secondFailure(wal);
+        assertThat(sink.failStops).hasSize(1);
+        wal.close();
+    }
+
+    /// A second failure reaching the fail-stop after the first: two writers that both passed the health check before the first failure each
+    /// fail their frame. Driven directly, under the sync lock as the log drives it, because the race itself is not deterministic.
+    private static void secondFailure(AppendLog wal) throws Exception {
+        var failStop = AppendLog.class.getDeclaredMethod("failStopOnWriteFailure", Cause.class);
+
+        failStop.setAccessible(true);
+        failStop.invoke(wal, Causes.cause("second frame write failed"));
+    }
+
+    private static final class RecordingSink implements AppendLog.TornTailSink {
+        private final List<Cause> failStops = new CopyOnWriteArrayList<>();
+
+        @Contract
+        @Override
+        public void accept(AppendLog.TornTail tornTail) {}
+
+        @Contract
+        @Override
+        public void failStopped(Path file, Cause cause) {
+            failStops.add(cause);
+        }
     }
 
     private static FileChannel channelOf(AppendLog wal) throws Exception {

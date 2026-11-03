@@ -73,26 +73,28 @@ class PartitionSectionTest {
         var provenance = Causes.cause("provenance");
         var calls = new AtomicInteger();
 
-        assertThat(PartitionSection.partitionSection(fence::result, () -> counted(calls, provenance), Option::none).admit().isFailure()).isTrue();
+        assertThat(PartitionSection.partitionSection("orders", 0, fence::result, () -> counted(calls, provenance), Option::none).admit().isFailure()).isTrue();
         assertThat(calls.get()).as("a refused fence stops the guard").isZero();
-        PartitionSection.partitionSection(Result::unitResult, provenance::result, Option::none)
+        PartitionSection.partitionSection("orders", 0, Result::unitResult, provenance::result, Option::none)
                         .admit()
                         .onSuccess(_ -> fail("a provenance refusal was admitted"))
                         .onFailure(cause -> assertThat(cause).isSameAs(provenance));
-        assertThat(PartitionSection.partitionSection(Result::unitResult, Result::unitResult, Option::none).admit().isSuccess())
+        assertThat(PartitionSection.partitionSection("orders", 0, Result::unitResult, Result::unitResult, Option::none).admit().isSuccess())
             .as("a partition without a log has no health to check").isTrue();
     }
 
     @Test
-    void admit_refusesAClosedLog_andAdmitsAnOpenOne() {
+    void admit_refusesAClosedLog_asPartitionFailStopped_andAdmitsAnOpenOne() {
         var wal = AppendLog.open(dir.resolve("p.wal")).unwrap();
-        var section = PartitionSection.partitionSection(Result::unitResult, Result::unitResult, () -> Option.some(wal));
+        var section = PartitionSection.partitionSection("orders", 0, Result::unitResult, Result::unitResult, () -> Option.some(wal));
 
         assertThat(section.admit().isSuccess()).as("an open, healthy log is admitted").isTrue();
         wal.close();
         section.admit()
                .onSuccess(_ -> fail("a closed log was admitted"))
-               .onFailure(cause -> assertThat(cause).isEqualTo(AppendLog.WalError.General.WAL_CLOSED));
+               .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.PartitionFailStopped("orders",
+                                                                                                    0,
+                                                                                                    AppendLog.WalError.General.WAL_CLOSED)));
     }
 
     private static Result<Long> countAndAdmit(AtomicInteger continuations, long offset) {
