@@ -43,4 +43,10 @@ public record LeaderValue(NodeId leader, long viewSequence) implements EpochBear
     public boolean reportsStaleRefusal() {
         return false;
     }
+
+    /// A `Long` epoch is not enough to be a leader: only another `LeaderValue` is fenced against this one.
+    @Override
+    public Class<?> fenceKind() {
+        return LeaderValue.class;
+    }
 }

@@ -26,8 +26,9 @@ package org.pragmatica.cluster.state.kvstore;
 /// identically inside the consensus applier, and the decision is reconstructible from the committed
 /// KV alone.
 ///
-/// **Epoch kinds.** Two values are compared only when their epochs are of the same class. A mismatched
-/// kind never fences a `Put` and never authorizes a `Remove`, so no comparison across kinds is attempted.
+/// **Epoch kinds.** Two values are compared only when their [#fenceKind()] match (by default the class of the
+/// epoch; a [LeaderValue] is its own kind). A mismatched kind never fences a `Put` and never authorizes a
+/// `Remove`, so no comparison across kinds is attempted.
 ///
 /// The epoch type itself (`org.pragmatica.aether.slice.generation.Epoch`) lives in the BSL-1.1
 /// `aether/slice` module, which depends on this Apache-2.0 module — never the reverse. The recursive
@@ -52,5 +53,12 @@ public interface EpochBearing<E extends Comparable<E>> {
     /// [LeaderValue] opts out: a refused election is a lost race, not an epoch source lagging the commit.
     default boolean reportsStaleRefusal() {
         return true;
+    }
+
+    /// The kind this value is compared as: two values are fenced against each other only when their kinds are
+    /// equal. The default is the class of the epoch; a value whose epoch class is shared with unrelated values
+    /// (a [LeaderValue] and its `Long` `viewSequence`) overrides it with its own identity.
+    default Class<?> fenceKind() {
+        return fenceEpoch().getClass();
     }
 }

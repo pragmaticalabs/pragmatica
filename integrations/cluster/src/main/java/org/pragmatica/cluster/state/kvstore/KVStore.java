@@ -602,7 +602,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// Ownership/governance epoch fence (#345 piece 1a) over ANY [EpochBearing] value (governor announcement,
     /// DHT partition ownership, and the H4 leader fence: a [LeaderValue] mints its `viewSequence`, so a stale
     /// or equal election is refused, mutates nothing and emits NO notification — a stale leader is never
-    /// observed by the election FSMs). Epochs of different kinds are never compared: a mismatched kind is not
+    /// observed by the election FSMs). Values of different kinds ([EpochBearing#fenceKind]) are never compared: a mismatched kind is not
     /// stale ([#sameEpochKind]). When BOTH the incoming
     /// and the currently-committed value under the key are `EpochBearing`, the write is rejected iff
     /// its epoch is STRICTLY older than the committed one — a deposed governor/owner cannot commit an
@@ -652,13 +652,13 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
                && incomingEpochIsStale(in, stored);
     }
 
-    /// Two epochs are compared only when they are of the same class. Every caller of [#incomingEpochIsStale]
-    /// and [#newerOwnerWitness] checks this first, which is what makes their epoch casts safe: a mismatched
-    /// kind never fences a `Put` and never authorizes a `Remove`, and no comparison can throw inside the applier.
+    /// Two values are compared only when their [EpochBearing#fenceKind] match: by default the epoch's class, and a
+    /// [LeaderValue] is its own kind, so a non-leader value whose epoch is also a `Long` is never taken for a leader.
+    /// Every caller of [#incomingEpochIsStale] and [#newerOwnerWitness] checks this first, which is what makes
+    /// their epoch casts safe: a mismatched kind never fences a `Put` and never authorizes a `Remove`, and no
+    /// comparison can throw inside the applier.
     private static boolean sameEpochKind(EpochBearing<?> incoming, EpochBearing<?> stored) {
-        return incoming.fenceEpoch()
-                       .getClass() == stored.fenceEpoch()
-                                            .getClass();
+        return incoming.fenceKind() == stored.fenceKind();
     }
 
     /// Captures the recursive epoch type variable so the [Comparable#compareTo] is fully type-checked
@@ -756,7 +756,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// `Remove` of a key whose COMMITTED value is fenced (any [EpochBearing] value, the [LeaderValue]
     /// included) is rejected — applied to nothing, NO
     /// `ValueRemove` emitted — UNLESS it carries a witness that is (a) present, (b) the SAME fenced kind as
-    /// the committed value (an `EpochBearing` witness whose epoch is of the same class, so a `LeaderValue`
+    /// the committed value (an `EpochBearing` witness of the same [EpochBearing#fenceKind], so a `LeaderValue`
     /// for the `LeaderKey`; see [#sameEpochKind]), and (c) current
     /// (equal-or-newer ordinary epoch, strictly-newer OwnerFenced epoch, or strictly-greater `viewSequence`). A missing, wrong-typed, or stale
     /// witness fails, so a deposed owner cannot delete a fenced key even with a bare `Remove(key)` —
