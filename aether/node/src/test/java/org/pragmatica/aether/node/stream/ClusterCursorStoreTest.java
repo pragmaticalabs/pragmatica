@@ -26,6 +26,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue.AssignmentToken;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue;
+import org.pragmatica.aether.slice.kvstore.ReplicaFilter;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore.CommitOutcome;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore.Cursor;
@@ -772,6 +773,150 @@ class ClusterCursorStoreTest {
 
             assertThat(outcome).describedAs("the core admitted the checkpoint and the forwarded batch's ordered results prove it, so the commit is Persisted without any mirror; got %s", outcome)
                                .isEqualTo(Result.success(CommitOutcome.persisted()));
+        }
+    }
+
+    /// #2596 (#2590 P0.2): a worker-hosted consumer's checkpoint never reaches `Persisted`. Unlike `WorkerMirrorWithoutCursors`, the
+    /// worker's view here is cut by the PRODUCTION [ReplicaFilter]: a core's commit ring and replica snapshot drop every key it excludes,
+    /// `StreamCursorCheckpointKey` among them, so the worker's `kvStore` never holds a cursor the core committed. `core` is the real
+    /// applier the forwarded batches land on; the assignment names [#SELF] at [#EPOCH] on both sides.
+    @Nested
+    class WorkerForwarding {
+        private KVStore<AetherKey, AetherValue> core;
+        private final List<KVCommand<AetherKey>> sent = new ArrayList<>();
+
+        @BeforeEach
+        void setUp() {
+            core = new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+            core.process(core.createBatch(List.of(assignment(SELF, EPOCH))));
+        }
+
+        private ConsumerCursorStore worker() {
+            return ClusterCursorStore.clusterCursorStore(recordingLocal(new AtomicReference<>()),
+                                                         SELF,
+                                                         this::workerReplicaRead,
+                                                         assignedToSelf(),
+                                                         this::forwardToCore,
+                                                         () -> true);
+        }
+
+        private Promise<Unit> forwardToCore(List<KVCommand<AetherKey>> commands) {
+            sent.addAll(commands);
+            core.process(core.createBatch(commands));
+
+            return Promise.unitPromise();
+        }
+
+        /// What a worker replica holds of the core's committed state: nothing the replica filter excludes.
+        private Option<StreamCursorCheckpointValue> workerReplicaRead(StreamCursorCheckpointKey key) {
+            return ReplicaFilter.replicaFilter().excludes(key)
+                   ? Option.none()
+                   : core.getTyped(key, StreamCursorCheckpointValue.class);
+        }
+
+        private Option<Long> coreCheckpoint() {
+            return core.getTyped(CHECKPOINT_KEY, StreamCursorCheckpointValue.class)
+                       .map(StreamCursorCheckpointValue::committedOffset);
+        }
+
+        /// The command kinds one commit attempt sent, in order; clears the record for the next attempt.
+        private List<String> attemptKinds() {
+            var kinds = sent.stream().map(command -> command.getClass().getSimpleName()).toList();
+
+            sent.clear();
+
+            return kinds;
+        }
+
+        private static boolean mirrorLagging(Result<CommitOutcome> outcome) {
+            return outcome.map(o -> o instanceof CommitOutcome.LocalOnly local && local.cause()
+                                                                                       .message()
+                                                                                       .contains("not yet visible in this node's committed state"))
+                          .or(false);
+        }
+
+        @Test
+        void commit_forwardingWorker_cursorKeyFilteredFromReplica_reportsLocalOnly() {
+            var worker = worker();
+
+            var first = worker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
+            var retry = worker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
+
+            assertThat(coreCheckpoint()).describedAs("control: the core's applier ADMITTED the forwarded checkpoint").isEqualTo(Option.some(10L));
+            assertThat(workerReplicaRead(CHECKPOINT_KEY)).describedAs("#2596: the worker's replica read of the cursor key is empty while the core holds it")
+                                                         .isEqualTo(Option.none());
+            assertThat(mirrorLagging(first) && mirrorLagging(retry))
+                    .describedAs("#2596 fixed? If #2590 P2 has landed, enable `commit_forwardingWorker_landedOnCore_reportsPersisted` and delete this tripwire; got %s then %s",
+                                 first,
+                                 retry)
+                    .isTrue();
+        }
+
+        @Disabled("#2590 P2: enable when a worker's checkpoint verdict no longer reads a replica that excludes the cursor key, ported onto the P2 cursor store if ClusterCursorStore and the legacy key are gone; delete the _reportsLocalOnly tripwire then")
+        @Test
+        void commit_forwardingWorker_landedOnCore_reportsPersisted() {
+            var outcome = worker().commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
+
+            assertThat(coreCheckpoint()).isEqualTo(Option.some(10L));
+            assertThat(outcome).describedAs("the core holds this worker's checkpoint, so the commit is Persisted; got %s", outcome)
+                               .isEqualTo(Result.success(CommitOutcome.persisted()));
+        }
+
+        /// #2596: every attempt of a forwarding worker costs two consensus commands, the `Put` and the `Noop` barrier, and since the
+        /// verdict above never reaches `Persisted`, every periodic checkpoint is retried with that same pair.
+        @Test
+        void commit_forwardingWorker_eachAttemptSendsPutAndNoop() {
+            var worker = worker();
+
+            worker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
+            var first = attemptKinds();
+            worker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
+            var retry = attemptKinds();
+
+            assertThat(List.of(first, retry)).describedAs("#2596 changed? #2590 P2 drops the verdict re-read and the Noop barrier: when it lands, delete this characterisation; commands per attempt")
+                                             .isEqualTo(List.of(List.of("Put", "Noop"), List.of("Put", "Noop")));
+        }
+    }
+
+    /// #2590 P0.3 (X-4): a late stale checkpoint against the real applier, an enabled tripwire of today's behaviour with the
+    /// #2590 P2 assertion `@Disabled` beside it.
+    @Nested
+    class TodaysCursorExposures {
+        private KVStore<AetherKey, AetherValue> kv;
+
+        @BeforeEach
+        void setUp() {
+            kv = new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+            kv.process(kv.createBatch(List.of(assignment(SELF, EPOCH))));
+        }
+
+        private void apply(KVCommand<AetherKey> command) {
+            kv.process(kv.createBatch(List.of(command)));
+        }
+
+        private Option<Long> committedOffset() {
+            return kv.getTyped(CHECKPOINT_KEY, StreamCursorCheckpointValue.class)
+                     .map(StreamCursorCheckpointValue::committedOffset);
+        }
+
+        /// X-4: a checkpoint delayed in flight lands after a later one, under the same token and the same rewind epoch. Neither fence
+        /// compares offsets, so the applier admits it and the committed cursor moves backwards.
+        @Test
+        void apply_lateStaleCheckpointSameEpochs_regressesCommittedOffset() {
+            apply(ClusterCursorStore.checkpointCommand(CHECKPOINT_KEY, 200L, SELF_TOKEN, RewindEpoch.NONE));
+            apply(ClusterCursorStore.checkpointCommand(CHECKPOINT_KEY, 100L, SELF_TOKEN, RewindEpoch.NONE));
+
+            assertThat(committedOffset()).describedAs("X-4 fixed? If #2590 P2 has landed, enable `apply_lateStaleCheckpointSameEpochs_isRefusedCovered` and delete this tripwire")
+                                         .isEqualTo(Option.some(100L));
+        }
+
+        @Disabled("#2590 P2: enable when a cursor record below the committed one is refused as Covered, ported onto the P2 cursor store if ClusterCursorStore and the legacy key are gone; delete the _regressesCommittedOffset tripwire then")
+        @Test
+        void apply_lateStaleCheckpointSameEpochs_isRefusedCovered() {
+            apply(ClusterCursorStore.checkpointCommand(CHECKPOINT_KEY, 200L, SELF_TOKEN, RewindEpoch.NONE));
+            apply(ClusterCursorStore.checkpointCommand(CHECKPOINT_KEY, 100L, SELF_TOKEN, RewindEpoch.NONE));
+
+            assertThat(committedOffset()).describedAs("a committed cursor never regresses").isEqualTo(Option.some(200L));
         }
     }
 

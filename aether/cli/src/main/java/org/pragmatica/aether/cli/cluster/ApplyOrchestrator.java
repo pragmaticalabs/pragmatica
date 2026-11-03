@@ -337,7 +337,7 @@ public final class ApplyOrchestrator {
         var clusterName = desired.cluster().name();
         var started = startedState(plan, desired);
         // Plan time: a cluster name whose minted node ids cannot be provider labels refuses the whole apply before the ledger exists.
-        return ApplyLabels.requireMintable(clusterName,
+        return ApplyLabels.requireMintable(desired,
                                            started.applyId())
                           .flatMap(_ -> ApplyState.save(started))
                           .flatMap(_ -> executor.apply(plan,
