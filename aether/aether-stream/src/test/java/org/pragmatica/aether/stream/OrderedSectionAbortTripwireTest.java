@@ -112,6 +112,8 @@ class OrderedSectionAbortTripwireTest {
             race.run();
 
             assertThat(race.stalled.get().isFailure()).as("control: the stale-epoch publish was refused").isTrue();
+            race.stalled.get().onFailure(cause -> assertThat(cause).as("refused by the in-section provenance check, not by the WAL after an offset")
+                                                                   .isInstanceOf(StreamError.ProvenanceRegression.class));
             assertThat(race.stalledOffsetVisibleToReaders()).isFalse();
             assertThat(race.walOffsets()).as("no hole: the next publish took the offset the refused one never had").containsExactly(0L, 1L, 2L);
             assertThat(race.restartRefused()).isFalse();

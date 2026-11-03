@@ -72,6 +72,20 @@ class PartitionFailStopTest {
     }
 
     @Test
+    void failStoppedWal_refusesAnOwnerBatchBeforeAnOffset() throws Exception {
+        manager = materialized();
+        publish("acked").onFailure(cause -> fail(cause.message()));
+        failStopTheWal();
+        publish("meets-the-failure");
+        var head = ring().headOffset();
+
+        manager.publishLocalBatchAtFloor(STREAM, PARTITION, List.of("b0".getBytes(UTF_8), "b1".getBytes(UTF_8)), 2L, 0)
+               .onSuccess(offset -> fail("a fail-stopped partition took a batch through offset " + offset))
+               .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.PartitionFailStopped.class));
+        assertThat(ring().headOffset()).as("a refused batch takes no offset").isEqualTo(head);
+    }
+
+    @Test
     void failStopBeforeTheSinkIsBound_isRaisedWhenItBinds() throws Exception {
         manager = materialized();
         publish("acked").onFailure(cause -> fail(cause.message()));
