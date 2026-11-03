@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import io.netty.buffer.ByteBuf;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
@@ -17,6 +18,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import org.pragmatica.aether.node.stream.ConsumerAssignmentWriter.CommittedAssignments;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -26,12 +28,18 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue.AssignmentToken;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue;
+import org.pragmatica.aether.slice.kvstore.ReplicaFilter;
+import org.pragmatica.aether.stream.EvictionListener;
+import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore.CommitOutcome;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore.Cursor;
+import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
@@ -772,6 +780,255 @@ class ClusterCursorStoreTest {
 
             assertThat(outcome).describedAs("the core admitted the checkpoint and the forwarded batch's ordered results prove it, so the commit is Persisted without any mirror; got %s", outcome)
                                .isEqualTo(Result.success(CommitOutcome.persisted()));
+        }
+    }
+
+    /// #2596 (#2590 P0.2): a worker-hosted consumer's checkpoint never reaches `Persisted`. Unlike `WorkerMirrorWithoutCursors`, the
+    /// worker's view here is cut by the PRODUCTION [ReplicaFilter]: a core's commit ring and replica snapshot drop every key it excludes,
+    /// `StreamCursorCheckpointKey` among them, so the worker's `kvStore` never holds a cursor the core committed. `core` is the real
+    /// applier the forwarded batches land on; the assignment names [#SELF] at [#EPOCH] on both sides.
+    @Nested
+    class WorkerForwarding {
+        private KVStore<AetherKey, AetherValue> core;
+        private final List<KVCommand<AetherKey>> sent = new ArrayList<>();
+
+        @BeforeEach
+        void setUp() {
+            core = new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+            core.process(core.createBatch(List.of(assignment(SELF, EPOCH))));
+        }
+
+        private ConsumerCursorStore worker() {
+            return ClusterCursorStore.clusterCursorStore(recordingLocal(new AtomicReference<>()),
+                                                         SELF,
+                                                         this::workerReplicaRead,
+                                                         assignedToSelf(),
+                                                         this::forwardToCore,
+                                                         () -> true);
+        }
+
+        private Promise<Unit> forwardToCore(List<KVCommand<AetherKey>> commands) {
+            sent.addAll(commands);
+            core.process(core.createBatch(commands));
+
+            return Promise.unitPromise();
+        }
+
+        /// What a worker replica holds of the core's committed state: nothing the replica filter excludes.
+        private Option<StreamCursorCheckpointValue> workerReplicaRead(StreamCursorCheckpointKey key) {
+            return ReplicaFilter.replicaFilter().excludes(key)
+                   ? Option.none()
+                   : core.getTyped(key, StreamCursorCheckpointValue.class);
+        }
+
+        private Option<Long> coreCheckpoint() {
+            return core.getTyped(CHECKPOINT_KEY, StreamCursorCheckpointValue.class)
+                       .map(StreamCursorCheckpointValue::committedOffset);
+        }
+
+        /// The command kinds one commit attempt sent, in order; clears the record for the next attempt.
+        private List<String> attemptKinds() {
+            var kinds = sent.stream().map(command -> command.getClass().getSimpleName()).toList();
+
+            sent.clear();
+
+            return kinds;
+        }
+
+        private static boolean mirrorLagging(Result<CommitOutcome> outcome) {
+            return outcome.map(o -> o instanceof CommitOutcome.LocalOnly local && local.cause()
+                                                                                       .message()
+                                                                                       .contains("not yet visible in this node's committed state"))
+                          .or(false);
+        }
+
+        @Test
+        void commit_forwardingWorker_cursorKeyFilteredFromReplica_reportsLocalOnly() {
+            var worker = worker();
+
+            var first = worker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
+            var retry = worker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
+
+            assertThat(coreCheckpoint()).describedAs("control: the core's applier ADMITTED the forwarded checkpoint").isEqualTo(Option.some(10L));
+            assertThat(workerReplicaRead(CHECKPOINT_KEY)).describedAs("#2596: the worker's replica read of the cursor key is empty while the core holds it")
+                                                         .isEqualTo(Option.none());
+            assertThat(mirrorLagging(first) && mirrorLagging(retry))
+                    .describedAs("#2596 fixed? If #2590 P2 has landed, enable `commit_forwardingWorker_landedOnCore_reportsPersisted` and delete this tripwire; got %s then %s",
+                                 first,
+                                 retry)
+                    .isTrue();
+        }
+
+        @Disabled("#2590 P2: enable when a worker's checkpoint verdict no longer reads a replica that excludes the cursor key, ported onto the P2 cursor store if ClusterCursorStore and the legacy key are gone; delete the _reportsLocalOnly tripwire then")
+        @Test
+        void commit_forwardingWorker_landedOnCore_reportsPersisted() {
+            var outcome = worker().commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
+
+            assertThat(coreCheckpoint()).isEqualTo(Option.some(10L));
+            assertThat(outcome).describedAs("the core holds this worker's checkpoint, so the commit is Persisted; got %s", outcome)
+                               .isEqualTo(Result.success(CommitOutcome.persisted()));
+        }
+
+        /// #2596: every attempt of a forwarding worker costs two consensus commands, the `Put` and the `Noop` barrier, and since the
+        /// verdict above never reaches `Persisted`, every periodic checkpoint is retried with that same pair.
+        @Test
+        void commit_forwardingWorker_eachAttemptSendsPutAndNoop() {
+            var worker = worker();
+
+            worker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
+            var first = attemptKinds();
+            worker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
+            var retry = attemptKinds();
+
+            assertThat(List.of(first, retry)).describedAs("#2596 changed? #2590 P2 drops the verdict re-read and the Noop barrier: when it lands, delete this characterisation; commands per attempt")
+                                             .isEqualTo(List.of(List.of("Put", "Noop"), List.of("Put", "Noop")));
+        }
+    }
+
+    /// #2590 (moved from P0.3 to P1): a consumed stream destroyed and re-created under the same name. Nothing removes its
+    /// cluster cursor today -- review R2.2a found 35 `Remove` sites and none for `StreamCursorCheckpointKey` -- so the new
+    /// stream's consumer resumes from the old life's offset and skips `[0, offset)` of the new log. The destroy here is
+    /// PRODUCTION's: [StreamPartitionManager#destroyStream] publishes its commands to a cluster node whose applier is the
+    /// real [KVStore] holding the checkpoint. A destroy that also removed the cursor key turns the tripwire red. P2
+    /// carries the stream incarnation in every persisted cursor and discards one that does not match.
+    @Nested
+    class StreamRecreate {
+        private KVStore<AetherKey, AetherValue> kv;
+        private List<KVCommand<AetherKey>> issued;
+        private StreamPartitionManager manager;
+
+        @BeforeEach
+        void setUp() {
+            kv = new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+            issued = new ArrayList<>();
+            manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE,
+                                                                    EvictionListener.NOOP,
+                                                                    ReplicationManager.NONE,
+                                                                    ApplyingClusterNode.applyingClusterNode(kv, issued));
+            kv.process(kv.createBatch(List.of(assignment(SELF, EPOCH), new KVCommand.Put<AetherKey, AetherValue>(CHECKPOINT_KEY, checkpoint(70L, SELF_TOKEN)))));
+        }
+
+        @AfterEach
+        void tearDown() {
+            manager.close();
+        }
+
+        private void createStream() {
+            manager.createStream(StreamConfig.streamConfig(STREAM))
+                   .onFailure(cause -> Assertions.fail(cause.message()));
+        }
+
+        private Option<Long> fetchAfterRecreate() {
+            createStream();
+            assertThat(kv.getTyped(CHECKPOINT_KEY, StreamCursorCheckpointValue.class).isPresent()).as("control: the checkpoint is committed before the destroy").isTrue();
+            manager.destroyStream(STREAM).onFailure(cause -> Assertions.fail(cause.message()));
+            assertThat(issued).as("control: the production destroy published its commands to the applier")
+                              .anyMatch(command -> command instanceof KVCommand.Remove<AetherKey> remove && remove.key() instanceof AetherKey.StreamConfigKey);
+            assertThat(issued).as("the production destroy publishes no removal of a cursor key (the applier may or may not honour one: this is what the destroy ASKS for)")
+                              .noneMatch(command -> command instanceof KVCommand.Remove<AetherKey> remove && remove.key() instanceof StreamCursorCheckpointKey);
+            createStream();
+
+            return storeWith(fixedLocal(Option.none()),
+                             key -> kv.getTyped(key, StreamCursorCheckpointValue.class),
+                             _ -> Promise.unitPromise()).fetch(GROUP, STREAM, PARTITION, EPOCH)
+                                                        .await()
+                                                        .onFailure(cause -> Assertions.fail(cause.message()))
+                                                        .or(Option.none());
+        }
+
+        /// Tripwire, enabled: asserts today's behaviour. Mutation: StreamPartitionManager.applyRemoveCommand also removes
+        /// the stream's cursor key.
+        @Test
+        void fetchCursor_streamDestroyedAndRecreated_returnsOldLifeCursor() {
+            assertThat(fetchAfterRecreate()).describedAs("#2590 tripwire: the old life's cursor is no longer returned after the stream was "
+                                                         + "re-created. If #2590 P2 has landed, enable fetchCursor_streamDestroyedAndRecreated_discardsOldLifeCursor "
+                                                         + "and delete this tripwire.")
+                                            .isEqualTo(Option.some(70L));
+        }
+
+        @Disabled("#2590 P2: a persisted cursor carries the stream incarnation; one from another life is discarded")
+        @Test
+        void fetchCursor_streamDestroyedAndRecreated_discardsOldLifeCursor() {
+            assertThat(fetchAfterRecreate()).describedAs("a cursor of the destroyed stream must not position the new one")
+                                            .isEqualTo(Option.none());
+        }
+    }
+
+    /// #2590 P0.3 (X-4): a late stale checkpoint against the real applier, an enabled tripwire of today's behaviour with the
+    /// #2590 P2 assertion `@Disabled` beside it.
+    @Nested
+    class TodaysCursorExposures {
+        private KVStore<AetherKey, AetherValue> kv;
+
+        @BeforeEach
+        void setUp() {
+            kv = new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+            kv.process(kv.createBatch(List.of(assignment(SELF, EPOCH))));
+        }
+
+        private void apply(KVCommand<AetherKey> command) {
+            kv.process(kv.createBatch(List.of(command)));
+        }
+
+        private Option<Long> committedOffset() {
+            return kv.getTyped(CHECKPOINT_KEY, StreamCursorCheckpointValue.class)
+                     .map(StreamCursorCheckpointValue::committedOffset);
+        }
+
+        /// X-4: a checkpoint delayed in flight lands after a later one, under the same token and the same rewind epoch. Neither fence
+        /// compares offsets, so the applier admits it and the committed cursor moves backwards.
+        @Test
+        void apply_lateStaleCheckpointSameEpochs_regressesCommittedOffset() {
+            apply(ClusterCursorStore.checkpointCommand(CHECKPOINT_KEY, 200L, SELF_TOKEN, RewindEpoch.NONE));
+            apply(ClusterCursorStore.checkpointCommand(CHECKPOINT_KEY, 100L, SELF_TOKEN, RewindEpoch.NONE));
+
+            assertThat(committedOffset()).describedAs("X-4 fixed? If #2590 P2 has landed, enable `apply_lateStaleCheckpointSameEpochs_isRefusedCovered` and delete this tripwire")
+                                         .isEqualTo(Option.some(100L));
+        }
+
+        @Disabled("#2590 P2: enable when a cursor record below the committed one is refused as Covered, ported onto the P2 cursor store if ClusterCursorStore and the legacy key are gone; delete the _regressesCommittedOffset tripwire then")
+        @Test
+        void apply_lateStaleCheckpointSameEpochs_isRefusedCovered() {
+            apply(ClusterCursorStore.checkpointCommand(CHECKPOINT_KEY, 200L, SELF_TOKEN, RewindEpoch.NONE));
+            apply(ClusterCursorStore.checkpointCommand(CHECKPOINT_KEY, 100L, SELF_TOKEN, RewindEpoch.NONE));
+
+            assertThat(committedOffset()).describedAs("a committed cursor never regresses").isEqualTo(Option.some(200L));
+        }
+    }
+
+    /// A cluster node whose consensus is the real applier: every batch is applied to `kv` and recorded.
+    private record ApplyingClusterNode(KVStore<AetherKey, AetherValue> kv, List<KVCommand<AetherKey>> issued) implements ClusterNode<KVCommand<AetherKey>> {
+        static ApplyingClusterNode applyingClusterNode(KVStore<AetherKey, AetherValue> kv, List<KVCommand<AetherKey>> issued) {
+            return new ApplyingClusterNode(kv, issued);
+        }
+
+        @Override
+        public NodeId self() {
+            return SELF;
+        }
+
+        @Override
+        public TopologyManager topologyManager() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Promise<Unit> start() {
+            return Promise.unitPromise();
+        }
+
+        @Override
+        public Promise<Unit> stop() {
+            return Promise.unitPromise();
+        }
+
+        @SuppressWarnings("unchecked")
+        @Override
+        public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
+            issued.addAll(commands);
+            kv.process(kv.createBatch(commands));
+
+            return (Promise<List<R>>) (Promise<?>) Promise.success(List.of());
         }
     }
 

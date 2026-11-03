@@ -79,7 +79,18 @@ class LivePlacementMembersWiringTest {
     void ownershipWriterHrwOwner_readsTheControllersDesiredOwner() {
         // #1730: the writer is the ISR-aware one -- the same desired-owner read, plus the live/initial-ISR inputs from the
         // controller and the committed leader its guarded transactions carry.
-        assertThat(assemblyCode()).containsOnlyOnce("Option.option(clusterEventsControllerRef.get()).flatMap(ownershipController->ownershipController.desiredOwner(stream,partition)),streamIsrInputs(clusterEventsControllerRef),()->kvStore.getTyped(LeaderKey.INSTANCE,LeaderValue.class));");
+        assertThat(assemblyCode()).containsOnlyOnce("Option.option(clusterEventsControllerRef.get()).flatMap(ownershipController->ownershipController.desiredOwner(stream,partition)),streamIsrInputs(clusterEventsControllerRef),StreamPartitionOwnershipWriter.ownCommittedLeader(()->kvStore.getTyped(LeaderKey.INSTANCE,LeaderValue.class),config.self(),isLeaderSupplier));");
+    }
+
+    /// #2594: both ISR-aware writers, stream ownership and entity arc ownership, are authorized only by this node's own committed
+    /// leader record while it leads; neither is handed the raw record.
+    @Test
+    void isrOwnershipWriters_areAuthorizedOnlyByThisNodesOwnCommittedLeader() {
+        var code = assemblyCode();
+        var own = "streamIsrInputs(clusterEventsControllerRef),StreamPartitionOwnershipWriter.ownCommittedLeader(()->kvStore.getTyped(LeaderKey.INSTANCE,LeaderValue.class),config.self(),isLeaderSupplier)";
+
+        assertThat(code.split(Pattern.quote(own), -1)).as("the stream and the entity writer").hasSize(3);
+        assertThat(code).doesNotContain("streamIsrInputs(clusterEventsControllerRef),()->kvStore.getTyped(LeaderKey.INSTANCE,LeaderValue.class)");
     }
 
     /// #1555 sticky ownership: every node routes by the committed record, and backfill resolves the same owner.
