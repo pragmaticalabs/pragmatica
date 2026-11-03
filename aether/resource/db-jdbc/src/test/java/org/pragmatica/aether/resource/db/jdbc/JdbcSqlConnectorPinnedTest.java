@@ -29,6 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.pragmatica.aether.resource.db.DatabaseConnectorConfig.databaseConnectorConfigBuilder;
 import static org.pragmatica.lang.Unit.unit;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// FDB-1 (#2591): the pinned session of the Jdbc connector, against a LIVE PostgreSQL 16 through the production
 /// factory wiring and the real pool. A session-scoped database lock lives and dies with the physical connection it was
@@ -160,6 +161,105 @@ class JdbcSqlConnectorPinnedTest {
                                                                    .isNotEqualTo(sessionPid);
         assertEventuallyZero(base, COUNT_LOCK, "the advisory lock the failed unlock left behind");
         assertEventuallyZero(base, "SELECT count(*) AS n FROM pg_stat_activity WHERE pid = " + sessionPid, "the closed session");
+    }
+
+    private static final String OTHER_BACKENDS = "SELECT count(*) AS n FROM pg_stat_activity WHERE datname = current_database()"
+                                                 + " AND pid <> pg_backend_pid() AND backend_type = 'client backend'";
+
+    /// What the body of a held-open session reports: the backend it runs on, and the promise that ends it.
+    private record Held(AtomicInteger pid, Promise<Integer> gate) {
+        static Held held() {
+            return new Held(new AtomicInteger(), Promise.promise());
+        }
+    }
+
+    private static Promise<Integer> holdOpen(SqlConnector session, Held held) {
+        return session.queryOne(SELECT_PID, PID).flatMap(pid -> hold(held, pid));
+    }
+
+    private static Promise<Integer> hold(Held held, int pid) {
+        held.pid().set(pid);
+
+        return held.gate();
+    }
+
+    private static Promise<Integer> throwing(SqlConnector session) {
+        throw new IllegalStateException("body threw synchronously (injected by the test)");
+    }
+
+    private static int awaitPid(Held held) throws Exception {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+
+        while (held.pid().get() == 0 && System.nanoTime() < deadline) {
+            Thread.sleep(50);
+        }
+
+        assertThat(held.pid().get()).as("the body started on its dedicated session").isNotZero();
+
+        return held.pid().get();
+    }
+
+    private static String sessionCount(int pid) {
+        return "SELECT count(*) AS n FROM pg_stat_activity WHERE pid = " + pid;
+    }
+
+    private static void assertEventuallyAt(SqlConnector base, String countSql, int expected, String what) throws Exception {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+        var seen = base.queryOne(countSql, COUNT).await().unwrap();
+
+        while (seen != expected && System.nanoTime() < deadline) {
+            Thread.sleep(100);
+            seen = base.queryOne(countSql, COUNT).await().unwrap();
+        }
+
+        assertThat(seen).as(what).isEqualTo(expected);
+    }
+
+    @Test
+    void pinned_bodyThrowsSynchronously_failsTheCall_andTheDedicatedSessionIsGone() throws Exception {
+        var base = connector(1);
+
+        base.queryOne(SELECT_PID, PID).await().unwrap();
+
+        var baseline = base.queryOne(OTHER_BACKENDS, COUNT).await().unwrap();
+        var result = base.<Integer> pinned(NO_BOUND, session -> throwing(session), RELEASE_OK).await();
+
+        assertThat(result.isFailure()).as("a throwing body is a failure, not an escaped exception").isTrue();
+        assertEventuallyAt(base, OTHER_BACKENDS, baseline, "no backend beyond the pool's own once the throwing body's session is closed");
+    }
+
+    @Test
+    void pinned_outerCancelled_sessionOutlivesTheCancel_untilTheBodyEnds_thenIsGone() throws Exception {
+        var base = connector(1);
+        var held = Held.held();
+        var outer = base.pinned(NO_BOUND, session -> holdOpen(session, held), RELEASE_OK);
+        var sessionPid = awaitPid(held);
+
+        outer.cancel();
+
+        assertThat(outer.await().isFailure()).as("the caller sees the cancel").isTrue();
+        assertThat(base.queryOne(sessionCount(sessionPid), COUNT).await().unwrap()).as("the close is chained to the body, not to the cancel")
+                                                                                   .isOne();
+
+        held.gate().succeed(sessionPid);
+
+        assertEventuallyAt(base, sessionCount(sessionPid), 0, "the session once the body ended after the cancel");
+    }
+
+    @Test
+    void pinned_outerTimesOut_sessionOutlivesTheTimeout_untilTheBodyEnds_thenIsGone() throws Exception {
+        var base = connector(1);
+        var held = Held.held();
+        var outer = base.pinned(NO_BOUND, session -> holdOpen(session, held), RELEASE_OK).timeout(timeSpan(300).millis());
+        var sessionPid = awaitPid(held);
+
+        assertThat(outer.await().isFailure()).as("the caller sees the timeout").isTrue();
+        assertThat(base.queryOne(sessionCount(sessionPid), COUNT).await().unwrap()).as("the close is chained to the body, not to the timeout")
+                                                                                   .isOne();
+
+        held.gate().succeed(sessionPid);
+
+        assertEventuallyAt(base, sessionCount(sessionPid), 0, "the session once the body ended after the timeout");
     }
 
     private static Promise<Integer> takeLock(SqlConnector session, int pid) {

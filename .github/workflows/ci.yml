@@ -155,11 +155,14 @@ jobs:
 
       # The control for the guard above (#2591): with Docker "hidden" and the require property set, a live-database
       # test must FAIL with the guard's own message. Fails this job if it passes, skips, or fails for any other reason.
+      # It writes NO report files (surefire has no property for a separate reports directory): the failing XML would overwrite the real
+      # TEST-...JdbcSqlConnectorPinnedTest.xml that the uploaded artifact must carry. The log it greps is its only output.
       - name: Docker-hidden control (the require guard must fail, never skip)
         if: matrix.group == 'g3'
         run: |
           if mvn test -B -pl aether/resource/db-jdbc -Daether.hideDocker=true -Daether.requireDocker=true \
-               -Dtest=JdbcSqlConnectorPinnedTest -Dsurefire.failIfNoSpecifiedTests=false > docker-hidden-control.log 2>&1; then
+               -Dtest=JdbcSqlConnectorPinnedTest -Dsurefire.failIfNoSpecifiedTests=false \
+               -DdisableXmlReport=true -Dsurefire.useFile=false > docker-hidden-control.log 2>&1; then
             echo "::error::the Docker-hidden control passed: requireDocker no longer fails when Docker is absent"; exit 1
           fi
           grep -q "refusing to skip" docker-hidden-control.log || { echo "::error::the control failed for another reason"; tail -50 docker-hidden-control.log; exit 1; }

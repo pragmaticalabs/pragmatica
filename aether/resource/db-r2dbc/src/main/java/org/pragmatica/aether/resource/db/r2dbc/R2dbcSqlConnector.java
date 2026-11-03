@@ -44,11 +44,6 @@ public final class R2dbcSqlConnector implements SqlConnector {
         this.operations = R2dbcOperations.r2dbcOperations(connectionFactory);
     }
 
-    public static R2dbcSqlConnector r2dbcSqlConnector(DatabaseConnectorConfig config,
-                                                      ConnectionFactory connectionFactory) {
-        return new R2dbcSqlConnector(config, connectionFactory, connectionFactory);
-    }
-
     /// `unpooled` is the raw factory the pool wraps; `pinned` opens its dedicated connection there and never from
     /// `pooled`, so a session lock cannot outlive its connection inside a pool.
     public static R2dbcSqlConnector r2dbcSqlConnector(DatabaseConnectorConfig config,
