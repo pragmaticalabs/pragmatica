@@ -262,9 +262,14 @@ public final class EmberCluster {
     /// Exposed to tests via [#currentClusterSecret].
     private final AtomicReference<byte[]> clusterSecret = new AtomicReference<>(generateClusterSecret());
 
-    /// The deployment engine every node of this cluster is constructed with (phase-3 design 8.2); LEGACY unless a test says otherwise. The
-    /// committed engine marker, minted by the first leader, then makes the choice cluster-wide.
-    private final AtomicReference<DeploymentEngine> deploymentEngine = new AtomicReference<>(DeploymentEngine.LEGACY);
+    /// The engine the global selector names ([EngineSelector], `-Daether.deployment.engine`): read once per cluster. A value that names no
+    /// engine refuses [#start] instead of running LEGACY.
+    private final Result<DeploymentEngine> selectedEngine = EngineSelector.fromSystemProperty();
+
+    /// The deployment engine every node of this cluster is constructed with (phase-3 design 8.2): the selector's engine (LEGACY when the
+    /// property is absent) unless a test says otherwise. The committed engine marker, minted by the first leader, then makes the choice
+    /// cluster-wide.
+    private final AtomicReference<DeploymentEngine> deploymentEngine = new AtomicReference<>(selectedEngine.or(DeploymentEngine.LEGACY));
 
     /// Per-node engine overrides (phase-3 design 8.2, W-29's misconfigured-newcomer arms), by NodeId; a node absent here takes [#deploymentEngine].
     private final Map<String, DeploymentEngine> nodeEngines = new ConcurrentHashMap<>();
@@ -761,12 +766,18 @@ public final class EmberCluster {
     }
 
     private Promise<Unit> start(Set<String> heldBackNodeIds, Set<String> excludedFromGenesis) {
-        log.info("Starting Ember cluster with {} nodes on ports {}-{} ({} held back: {})",
+        return selectedEngine.async()
+                             .flatMap(_ -> startNodes(heldBackNodeIds, excludedFromGenesis));
+    }
+
+    private Promise<Unit> startNodes(Set<String> heldBackNodeIds, Set<String> excludedFromGenesis) {
+        log.info("Starting Ember cluster with {} nodes on ports {}-{} ({} held back: {}), deployment engine {}",
                  initialClusterSize,
                  basePort,
                  basePort + initialClusterSize - 1,
                  heldBackNodeIds.size(),
-                 heldBackNodeIds);
+                 heldBackNodeIds,
+                 deploymentEngine.get());
         int poolSize = 2 * targetClusterSize + additionalNodeSlots;
 
         genesisExcluded = Set.copyOf(excludedFromGenesis);

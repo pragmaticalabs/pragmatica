@@ -24,6 +24,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
 import org.pragmatica.aether.ember.EmberCluster;
+import org.pragmatica.aether.ember.EngineSelector;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
@@ -92,7 +93,7 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 ///   - (d) the map reaches all-ACTIVE and agrees with every node's local view, and no node's map and local states
 ///     disagree for longer than X.
 ///
-/// **Both engines, one class** (phase-3 design 13.1; `-Dt1117.engine=legacy|fsm2`, default legacy). Under FSM2 the cluster is constructed with
+/// **Both engines, one class** (phase-3 design 13.1; the global selector `-Daether.deployment.engine=legacy|fsm2`, default legacy). Under FSM2 the cluster is constructed with
 /// `DeploymentEngine.FSM2` and the same fault is consulted at FSM2's submission point (the first ACTIVE submission of the target, `attempt == 1`,
 /// `probe == 0`). What changes in the assertions:
 ///   - the map view is the committed `SliceObservedKey` row of each node; the local view is the node's SERVING SURFACE (the slice's bridge is
@@ -126,8 +127,11 @@ class Issue1117ReadinessTracerTest {
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
 
     private static final boolean INJECT = Boolean.parseBoolean(System.getProperty("t1117.inject", "true"));
-    /// `-Dt1117.engine=fsm2` runs the cluster on the FSM2 engine; the default keeps the LEGACY mode the tracer was written for.
-    private static final boolean FSM2 = "fsm2".equalsIgnoreCase(System.getProperty("t1117.engine", "legacy"));
+    /// The global selector `-Daether.deployment.engine=fsm2` ([EngineSelector], which replaced this class's private `t1117.engine`) runs the
+    /// cluster on the FSM2 engine; the default keeps the LEGACY mode the tracer was written for. EmberCluster already constructs its nodes with
+    /// the selected engine; this flag only switches the assertions.
+    private static final boolean FSM2 = EngineSelector.fromSystemProperty()
+                                                      .or(DeploymentEngine.LEGACY) == DeploymentEngine.FSM2;
     private static final String EXPECTED_WARNS = "/fsm2/expected-warns-t1117.txt";
 
     private static final String CONSUMER_SLICE = TestArtifacts.STREAM_CONSUMER_SLICE;

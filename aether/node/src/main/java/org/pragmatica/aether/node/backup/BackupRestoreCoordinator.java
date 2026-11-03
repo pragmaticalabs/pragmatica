@@ -614,11 +614,15 @@ public final class BackupRestoreCoordinator {
                                                                 engineMarker.map(BackupRestoreCoordinator::witnessOf)
                                                                             .stream())
                                                         .toList(),
-                                                  Stream.concat(engineMarker.stream(),
-                                                                Stream.of(new KVCommand.Mutation<>(BackupRestoreKey.backupRestoreKey(),
-                                                                                                   Option.<AetherValue> some(marker),
-                                                                                                   Option.<AetherValue> some(marker.restored()))))
+                                                  Stream.concat(engineMarker.stream(), Stream.of(restoredMarker(marker)))
                                                         .toList());
+    }
+
+    /// The `RESTORED` marker replacing the `IN_PROGRESS` one.
+    private static KVCommand.Mutation<AetherKey, AetherValue> restoredMarker(BackupRestoreValue marker) {
+        return new KVCommand.Mutation<>(BackupRestoreKey.backupRestoreKey(),
+                                        Option.<AetherValue> some(marker),
+                                        Option.<AetherValue> some(marker.restored()));
     }
 
     /// Phase-3 design 8.2 (W-34): the deployment engine marker ends as the backup has it. A leader without `[backup]` has no restore gate,
