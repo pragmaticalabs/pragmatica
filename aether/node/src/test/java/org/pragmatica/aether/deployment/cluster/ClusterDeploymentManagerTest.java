@@ -28,6 +28,9 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
+import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
@@ -90,6 +93,9 @@ class ClusterDeploymentManagerTest {
         node3 = NodeId.randomNodeId();
         clusterNode = new TestClusterNode(self);
         kvStore = new TestKVStore();
+        // #2584 P0: Active is entered only on a committed LeaderKey naming this node, and every leader write is issued
+        // only under that record, so the fixture carries it as production does.
+        kvStore.commitLeader(new LeaderValue(self, 1));
         router = MessageRouter.mutable();
         manager = buildManager(List.of(self, node2, node3), ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT);
     }
@@ -1067,8 +1073,21 @@ class ClusterDeploymentManagerTest {
             super(null, null, null);
         }
 
+        private volatile LeaderValue leader;
+
         void put(AetherKey key, AetherValue value) {
             entries.put(key, value);
+        }
+
+        void commitLeader(LeaderValue committed) {
+            leader = committed;
+        }
+
+        @Override
+        public synchronized <VV> Option<VV> getTyped(StructuredKey key, Class<VV> valueClass) {
+            return key instanceof LeaderKey && valueClass.isInstance(leader)
+                   ? Option.some(valueClass.cast(leader))
+                   : super.getTyped(key, valueClass);
         }
 
         @Override
