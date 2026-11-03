@@ -13,16 +13,13 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ObservabilityConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ObservabilityConfigValue;
-import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
 
-import java.util.List;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -151,7 +148,7 @@ class ObservabilityConfigRegistryTest {
 
     @Test
     void setConfig_persistsCommand_andAppliesStrategyLocally() {
-        var writeRegistry = ObservabilityConfigRegistry.observabilityConfigRegistry(clusterNodeStub(), kvStore);
+        var writeRegistry = ObservabilityCommittingStub.registry(kvStore, ObservabilityBaseline.countingOnly());
         var cell = ObservabilityStrategyCell.observabilityStrategyCell(ARTIFACT, METHOD);
 
         writeRegistry.register(cell);
@@ -432,12 +429,11 @@ class ObservabilityConfigRegistryTest {
     }
 
     private static ObservabilityConfigRegistry depthRegistry(int defaultDepth) {
-        return ObservabilityConfigRegistry.observabilityConfigRegistry(clusterNodeStub(),
-                                                                       kvStoreStub(),
-                                                                       ObservabilityBaseline.fleet(AdaptiveSampler.adaptiveSampler(500),
-                                                                                                   InvocationTraceStore.invocationTraceStore(),
-                                                                                                   "node",
-                                                                                                   defaultDepth));
+        return ObservabilityCommittingStub.registry(kvStoreStub(),
+                                                    ObservabilityBaseline.fleet(AdaptiveSampler.adaptiveSampler(500),
+                                                                                InvocationTraceStore.invocationTraceStore(),
+                                                                                "node",
+                                                                                defaultDepth));
     }
 
     // A distinct InvocationStrategy instance (never InvocationStrategy.IDENTITY); behaviour is
@@ -487,14 +483,5 @@ class ObservabilityConfigRegistryTest {
     @SuppressWarnings("unchecked")
     private static KVStore<AetherKey, AetherValue> kvStoreStub() {
         return Mockito.mock(KVStore.class);
-    }
-
-    @SuppressWarnings("unchecked")
-    private static RabiaNode<KVCommand<AetherKey>> clusterNodeStub() {
-        RabiaNode<KVCommand<AetherKey>> node = Mockito.mock(RabiaNode.class);
-
-        Mockito.when(node.apply(Mockito.anyList())).thenAnswer(_ -> Promise.success(List.of(Unit.unit())));
-
-        return node;
     }
 }
