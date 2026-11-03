@@ -31,6 +31,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
@@ -104,7 +106,7 @@ class RetryExhaustionTerminalTest {
 
     @BeforeEach
     void setUp() {
-        leaderStore = new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+        leaderStore = withSelfLeader(new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer()));
         leaderSideCluster = new RecordingClusterNode(SELF, leaderStore);
         leaderHarness = leaderHarness(leaderSideCluster, leaderStore);
     }
@@ -520,5 +522,13 @@ class RetryExhaustionTerminalTest {
                 return null;
             }
         };
+    }
+    /// #2584 P0: the leader FSM writes only under a committed leader record naming this node, as in production,
+    /// where `Active` is entered on that record's commit.
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static KVStore<AetherKey, AetherValue> withSelfLeader(KVStore<AetherKey, AetherValue> store) {
+        store.process(store.createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(SELF, 1)))));
+
+        return store;
     }
 }

@@ -243,10 +243,11 @@ class AttemptBoundOutcomeTest {
                 .isEqualTo(Option.some(SECOND_ATTEMPT));
     }
 
-    /// Without a committed leader record the rollback cannot be fenced; it still applies, unfenced, as
-    /// it did before #972 — a missing leader record must not strand an apply outstanding.
+    /// #2584 P0: without a committed leader record no write is issued at all, the unfenced rollback included. Before
+    /// P0 it applied unfenced, as it did before #972; now it is abandoned (WARN), and the apply stays outstanding for a
+    /// leader that holds the record. P2 removes the unfenced branch.
     @Test
-    void withoutACommittedLeaderRecord_theRollbackStillApplies_unfenced() {
+    void withoutACommittedLeaderRecord_theRollbackIsAbandoned_notApplied() {
         var store = freshStore();
         var harness = leaderHarness(new HoldingClusterNode(SELF, store), store, DeploymentAtomicity.ALL_OR_NOTHING);
         var expanded = blueprint(3);
@@ -254,9 +255,9 @@ class AttemptBoundOutcomeTest {
         applyBlueprint(harness, store, expanded, FIRST_ATTEMPT, 1L);
         exhaustRetryBudgetOn(harness, SELF, SLICE);
 
-        assertThat(committedBlueprint(store, expanded.id())).isEqualTo(Option.none());
-        assertThat(outcomeStatusName(store, expanded.id())).isEqualTo(DeploymentOutcomeStatus.FAILED.name());
-        assertThat(outcomeAttempt(store, expanded.id())).isEqualTo(FIRST_ATTEMPT);
+        assertThat(activeState(harness).permanentlyFailed()).as("precondition: the failure reached the rollback").contains(SLICE);
+        assertThat(committedBlueprint(store, expanded.id())).as("no unfenced rollback removed the blueprint").isEqualTo(Option.some(expanded));
+        assertThat(outcomeStatusName(store, expanded.id())).isEqualTo(DeploymentOutcomeStatus.IN_PROGRESS.name());
     }
 
     /// #2592: a deposed leader has applied the NEW leader's `LeaderValue` but not yet run `onExit`. Its rollback
