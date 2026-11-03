@@ -150,6 +150,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// Bytes accounted against the seam over this buffer's lifetime (released on close()).
     private long accountedBytes;
     private final List<LongConsumer> appendListeners = new CopyOnWriteArrayList<>();
+    /// Told the `keepThrough` of every suffix truncation that removed something (#2590 P1), see [#addTruncationListener].
+    private final List<LongConsumer> truncationListeners = new CopyOnWriteArrayList<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
     /// Reads refused because the arena was closed UNDER an in-flight reader (#999) — the genuine race, not
     /// the benign late arrival the `closed` fast path absorbs.
@@ -875,7 +877,22 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
                              return cutSuffix(keepThrough, head);
                          })
-                         .onSuccess(afterCut::accept);
+                         .onSuccess(afterCut::accept)
+                         .onSuccess(_ -> notifyTruncated(keepThrough));
+    }
+
+    /// Registers a listener told `keepThrough` each time [#truncateSuffix] removes records (#2590 P1): an index built over
+    /// this ring's records must learn that offsets above `keepThrough` are gone, because the next append reuses them. It
+    /// runs under the append lock, on the truncating thread, after the ring shrank, so it must only record the fact and
+    /// return: it may not block, append or read this ring.
+    @Contract
+    public void addTruncationListener(LongConsumer listener) {
+        truncationListeners.add(listener);
+    }
+
+    @Contract
+    private void notifyTruncated(long keepThrough) {
+        truncationListeners.forEach(listener -> listener.accept(keepThrough));
     }
 
     private long cutSuffix(long keepThrough, long head) {
