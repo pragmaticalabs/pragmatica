@@ -82,6 +82,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     public static final long MAX_CAPACITY = (Long.MAX_VALUE - HEADER_SIZE - DEFAULT_SEGMENT_BYTES) / INDEX_ENTRY_SIZE;
     /// Always-admit growth predicate (default seam — standalone buffers grow without budget gating).
     private static final LongPredicate ALWAYS_ADMIT = _ -> true;
+    /// The guard of an ordered append whose caller keeps its own checks (WAL replay, replica receive): admits every write.
+    private static final Supplier<Result<Unit>> ADMIT_ALL = Result::unitResult;
 
     /// No-op release (default seam).
     private static final LongConsumer NOOP_RELEASE = _ -> {};
@@ -464,8 +466,21 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// confirmation peers. Listeners then learn the new visible high-water on this ring's serial notifier,
     /// never under the section.
     public <T> Result<T> appendOrdered(byte[] payload, long timestamp, Fn1<Result<T>, Long> inOrder) {
+        return appendOrdered(payload, timestamp, ADMIT_ALL, inOrder);
+    }
+
+    /// [#appendOrdered(byte[], long, Fn1)] behind `guard` (#2201 A-01): the guard runs INSIDE the ordered section, before an offset
+    /// exists, so a write it refuses takes no offset, writes nothing and runs no `inOrder`. Whatever the guard reads (the owner-epoch
+    /// fence, the log's last epoch, the log's health) cannot change between the check and the append, because every append on this ring
+    /// waits for the section. The guard must be O(1) and must not block: every append on the partition waits for it.
+    public <T> Result<T> appendOrdered(byte[] payload,
+                                       long timestamp,
+                                       Supplier<Result<Unit>> guard,
+                                       Fn1<Result<T>, Long> inOrder) {
         synchronized (appendLock) {
-            return appendLocked(payload, timestamp).flatMap(inOrder);
+            return guard.get()
+                        .flatMap(_ -> appendLocked(payload, timestamp))
+                        .flatMap(inOrder);
         }
     }
 
@@ -675,14 +690,26 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// A failed batch skips `inOrder`; listeners run after the section is released, as for
     /// [#appendOrdered].
     public <T> Result<T> appendBatchOrdered(List<byte[]> payloads, long[] timestamps, Fn1<Result<T>, Long> inOrder) {
-        return notifyingAfter(appendBatchOrderedLocked(payloads, timestamps, inOrder));
+        return appendBatchOrdered(payloads, timestamps, ADMIT_ALL, inOrder);
+    }
+
+    /// [#appendBatchOrdered(List, long[], Fn1)] behind `guard`, evaluated inside the section before the run takes any offset, as for
+    /// [#appendOrdered(byte[], long, Supplier, Fn1)].
+    public <T> Result<T> appendBatchOrdered(List<byte[]> payloads,
+                                            long[] timestamps,
+                                            Supplier<Result<Unit>> guard,
+                                            Fn1<Result<T>, Long> inOrder) {
+        return notifyingAfter(appendBatchOrderedLocked(payloads, timestamps, guard, inOrder));
     }
 
     private <T> Result<T> appendBatchOrderedLocked(List<byte[]> payloads,
                                                    long[] timestamps,
+                                                   Supplier<Result<Unit>> guard,
                                                    Fn1<Result<T>, Long> inOrder) {
         synchronized (appendLock) {
-            return appendRunLocked(payloads, timestamps).flatMap(inOrder);
+            return guard.get()
+                        .flatMap(_ -> appendRunLocked(payloads, timestamps))
+                        .flatMap(inOrder);
         }
     }
 

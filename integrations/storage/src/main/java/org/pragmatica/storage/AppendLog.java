@@ -519,6 +519,12 @@ public final class AppendLog implements AutoCloseable {
         return epochs.entries();
     }
 
+    /// The key of the last recorded owner epoch, [Option#none] when the history is empty (#2201 A-01). O(1) and allocation-free: the
+    /// history publishes it with every change, so a per-append check (the ordered section's guard) never walks the list.
+    public Option<EpochKey> lastEpochKey() {
+        return epochs.lastKey();
+    }
+
     /// Drop every epoch entry starting above `offset`, durably -- for a log truncated back to `offset`,
     /// where no epoch began past it.
     public Result<Unit> truncateEpochsAbove(long offset) {
@@ -605,6 +611,21 @@ public final class AppendLog implements AutoCloseable {
 
     public Path path() {
         return file;
+    }
+
+    /// Whether the log refuses every later append after a failed fsync, frame write or reopen (see the fail-stop section of the class
+    /// doc). Never cleared in this incarnation; a reopen recovers the valid prefix. One volatile read.
+    public boolean failStopped() {
+        return syncFailure.isPresent();
+    }
+
+    /// The refusal [#write] would return for any offset before looking at it: [WalError.General#WAL_CLOSED] when closed, the stored
+    /// fail-stop cause when fail-stopped, success otherwise (#2201 A-01: the ordered section checks it before an offset exists). Two
+    /// volatile reads, no allocation on success.
+    public Result<Unit> writable() {
+        return closed
+               ? WalError.General.WAL_CLOSED.result()
+               : syncFailure.fold(Result::unitResult, Cause::result);
     }
 
     /// Last appended offset, or `-1` when the WAL holds no valid record.

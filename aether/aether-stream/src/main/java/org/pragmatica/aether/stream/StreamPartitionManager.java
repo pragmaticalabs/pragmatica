@@ -3406,7 +3406,16 @@ public final class StreamPartitionManager implements AutoCloseable {
                                  timestamp,
                                  ownerEpoch,
                                  admission,
+                                 ownerSection(streamName, partition, ownerEpoch),
                                  offset -> logAndReplicate(streamName, partition, offset, payload, timestamp, ownerEpoch));
+    }
+
+    /// The in-section admission of an owner append (#2201 A-01): the epoch fence, the provenance check and the log's health, re-read
+    /// under the ring's append lock before an offset exists. The pre-section checks stay as the cheap early exit.
+    private PartitionSection ownerSection(String streamName, int partition, Epoch ownerEpoch) {
+        return PartitionSection.partitionSection(() -> ensureNotStale(streamName, partition, ownerEpoch),
+                                                 () -> provenanceAdmits(streamName, partition, some(ownerEpoch)),
+                                                 () -> walFor(streamName, partition));
     }
 
     /// The in-section half of an owner publish — runs under the partition's append lock, right after the
@@ -3686,6 +3695,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                     Epoch ownerEpoch) {
         return buffer.appendBatchOrdered(payloads,
                                          LongStream.generate(() -> timestamp).limit(payloads.size()).toArray(),
+                                         ownerSection(streamName, partition, ownerEpoch)::admit,
                                          lastOffset -> logRunAndReplicate(streamName,
                                                                           partition,
                                                                           lastOffset,
@@ -4215,8 +4225,30 @@ public final class StreamPartitionManager implements AutoCloseable {
                                             Epoch ownerEpoch,
                                             Result<Unit> admission,
                                             Fn1<Result<T>, Long> inOrder) {
+        return appendToPartition(entry,
+                                 streamName,
+                                 partition,
+                                 payload,
+                                 timestamp,
+                                 ownerEpoch,
+                                 admission,
+                                 PartitionSection.ADMIT_ALL,
+                                 inOrder);
+    }
+
+    /// As above, with `section` admitting the append inside the ordered section, before the ring assigns an offset (#2201 A-01).
+    private <T> Result<T> appendToPartition(StreamEntry entry,
+                                            String streamName,
+                                            int partition,
+                                            byte[] payload,
+                                            long timestamp,
+                                            Epoch ownerEpoch,
+                                            Result<Unit> admission,
+                                            PartitionSection section,
+                                            Fn1<Result<T>, Long> inOrder) {
         return appendTarget(entry, streamName, partition, payload, ownerEpoch, admission).flatMap(buffer -> buffer.appendOrdered(payload,
                                                                                                                                  timestamp,
+                                                                                                                                 section::admit,
                                                                                                                                  inOrder))
                            .onSuccess(_ -> entry.updateActivity());
     }
@@ -4308,13 +4340,11 @@ public final class StreamPartitionManager implements AutoCloseable {
                          .or(Result::unitResult);
     }
 
+    /// O(1): the log's cached last key ([AppendLog#lastEpochKey]), never a walk of the history (#2201 A-01, the guard reads it on every
+    /// owner append).
     private Option<Epoch> lastRecordedEpoch(String streamName, int partition) {
-        return walFor(streamName, partition).flatMap(wal -> Option.from(wal.epochHistory()
-                                                                           .stream()
-                                                                           .reduce((earlier, later) -> later)))
-                     .flatMap(last -> ProvenanceEntry.provenanceEntry(last).option())
-                     .map(entry -> entry.epoch()
-                                        .rank());
+        return walFor(streamName, partition).flatMap(AppendLog::lastEpochKey)
+                     .flatMap(key -> ProvenanceEntry.rankOf(key).option());
     }
 
     /// The owner-epoch history of this node's copy of `(streamName, partition)`, oldest first (#1596): empty when
