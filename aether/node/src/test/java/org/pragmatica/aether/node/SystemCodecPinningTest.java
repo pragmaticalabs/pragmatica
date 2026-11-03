@@ -70,6 +70,9 @@ class SystemCodecPinningTest {
     /// `CommitAdvance` (#2087) is exempt like the refusals: one small message per coalesced visible advance and one per owned
     /// partition per tick -- no more than the ack it follows -- and no one-byte slot is free to give it (every slot
     /// 0..127 is pinned, 0..20 are the primitives, and a retired tag is never reused).
+    ///
+    /// `BatchCommitted` (#2045) is exempt like the refusals: a voter sends it only when its committed-batch ledger refuses a
+    /// proposal, none in steady state, and no one-byte slot is free to give it.
     /// The `provenance` package (#1596: `ProvenanceEntry` and its `ProvenanceEpoch` kinds) is exempt like the
     /// refusals: history entries, carried only by a replica catch-up answer (a handful per catch-up, none on any other read, and an empty list encodes no element tag),
     /// so it is not the per-message traffic the window was bought for -- and no one-byte slot is free to give it.
@@ -118,6 +121,7 @@ class SystemCodecPinningTest {
         var hot = SystemTags.TAGS.entrySet()
                                  .stream()
                                  .filter(entry -> !entry.getKey().endsWith(".SyncRejected") && !entry.getKey().endsWith(".HelloRefused")
+                                                  && !entry.getKey().endsWith(".BatchCommitted")
                                                   && !entry.getKey().endsWith(".IdentityRefused")
                                                   && !entry.getKey().endsWith(".AppGossip")
                                                   && !entry.getKey().endsWith(".LeaderPreVoteRequest")
