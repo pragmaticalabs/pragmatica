@@ -20,4 +20,11 @@ public record ReplicaClientLimits(long staleMillis,
                                                                               3_000L,
                                                                               8L * 1024 * 1024,
                                                                               250L);
+
+    /// How long a re-parent keeps the old source's counted heartbeats: the silence that detects a dead new source, one tick of detection granularity,
+    /// the retry delay before the next source is asked, and one heartbeat interval for that source's first beat. A grace of `silenceMillis` alone
+    /// expires while a silent source is still being waited out (#2510).
+    public long carryGraceMillis() {
+        return silenceMillis + tickMillis + BusyBackoff.MIN_DELAY_MILLIS + ReplicaFeedServer.HEARTBEAT_INTERVAL_MILLIS;
+    }
 }

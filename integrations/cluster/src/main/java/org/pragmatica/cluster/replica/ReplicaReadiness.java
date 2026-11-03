@@ -104,11 +104,11 @@ public final class ReplicaReadiness {
         return Unit.unit();
     }
 
-    /// A resume onto another source keeps the counted heartbeats only until `graceNanos` from now, or until the new source counts its own.
+    /// A resume onto another source keeps the counted heartbeats only until `graceNanos` from now, or until the new source counts its own. A further
+    /// resume before any beat of the previous new source (it was silent, or was left again) restarts the grace from that latest subscribe: the
+    /// deadline never moves backwards, and a silent source cannot outlive a grace anchored to the first subscribe (#2510).
     public synchronized Unit carryBeatsFor(long graceNanos) {
-        if (carriedUntilNanos == 0L) {
-            carriedUntilNanos = nanos.getAsLong() + graceNanos;
-        }
+        carriedUntilNanos = Math.max(carriedUntilNanos, nanos.getAsLong() + graceNanos);
 
         return Unit.unit();
     }

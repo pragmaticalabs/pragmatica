@@ -242,6 +242,19 @@ class ReplicaFeedClientRelayTest {
             }
         }
 
+        /// `rounds` rounds of 300 ms in which the cores drain (grants, entries) but send no heartbeat, so a subscriber is granted and stays uncounted.
+        void runWithoutCoreBeats(int rounds) {
+            for (var i = 0; i < rounds; i++) {
+                advance(300);
+                cores.forEach(core -> core.server.tick());
+                pump();
+                workers.values().stream().filter(worker -> worker.up.get()).forEach(worker -> worker.client.tick());
+                pump();
+                cores.forEach(core -> core.server.tick());
+                pump();
+            }
+        }
+
         /// Commits one batch at the next slot on every core, the way the engine does (one shared batch, so every core records the same batch id).
         @SafeVarargs
         final void commit(KVCommand<StructuredKey>... commands) {
@@ -621,11 +634,12 @@ class ReplicaFeedClientRelayTest {
         assertThat(mesh.isCore(mesh.subscribeTargets(member).getLast()) || member.client.source().equals(Option.some(gov.id))).isTrue();
     }
 
-    /// Spec 2.8 (b) through the relay: with both cores gone for good the governor stops serving within its freshness bound plus the silence interval, and
-    /// its member stops being ready within the same bound plus its own silence interval, not a bound per level. The governor's counted heartbeat and the
-    /// member's are carried across a re-parent for one silence interval only. Mutation: carry them for the whole freshness bound (drop `carryBeatsFor`).
+    /// Spec 2.8 (b) through the relay: with both cores gone for good the governor stops serving once its own counted heartbeat is stale (30 s), and its
+    /// member, whose last counted heartbeat is the governor's last, once that one is stale (a second 30 s). Each re-parent renews the carry grace (#2510),
+    /// so the carry no longer cuts either level short; the freshness bound is the ceiling for each. Mutation: carry them past the freshness bound (drop
+    /// the `isFresh` check from `isSynced`).
     @Test
-    void whenBothCoresAreGone_theGovernorAndItsMemberLeaveReadinessWithinOneBoundAndTwoSilences() {
+    void whenBothCoresAreGone_theGovernorAndItsMemberLeaveReadinessEachWithinItsFreshnessBound() {
         var mesh = meshWithData();
         var gov = mesh.governorReady("w-gov");
         var member = mesh.worker("w-1");
@@ -637,10 +651,44 @@ class ReplicaFeedClientRelayTest {
 
         assertThat(member.readiness.ready()).as("7 s: the silence interval is still being waited out").isTrue();
 
-        mesh.run(50);
+        mesh.run(215);
 
-        assertThat(gov.gate.mayServeMembers()).as("17 s after the cores died: the governor serves nobody").isFalse();
-        assertThat(member.readiness.ready()).as("17 s after the cores died: the member is not ready (spec bound 30 s from the last heartbeat, not 60 s)").isFalse();
+        assertThat(gov.gate.mayServeMembers()).as("66 s after the cores died: the governor serves nobody").isFalse();
+        assertThat(member.readiness.ready()).as("66 s after the cores died: the member is not ready (two freshness levels, the carry renewing while it cycles)").isFalse();
+    }
+
+    /// #2510 phase three: the governor dies, the selector flips the member to a core (which grants but has not beaten yet) and back to the silent
+    /// governor, and the silent governor is waited out; the carried beats must hold until the core's first beat, and the member then converges on the
+    /// core without a snapshot. The member sits 2.4 s on the first core before the flip, so the carry set by the first subscribe (4.5 s) is spent before the
+    /// core beats: only a grace renewed by the second subscribe holds. Mutation: `carryBeatsFor` ignores a carry already set (the rc5 guard), or the client
+    /// passes `silenceMillis` as the grace.
+    @Test
+    void aMemberReparentedToACoreAndBackToASilentGovernor_staysReadyUntilTheCoreBeat() {
+        var mesh = meshWithData();
+        var gov = mesh.governorReady("w-gov");
+        var member = mesh.worker("w-1");
+
+        mesh.run(8);
+        assertThat(mesh.subscribeTargets(member)).containsExactly(gov.id);
+
+        gov.up.set(false);
+        mesh.announced.set(Option.none());
+        mesh.runWithoutCoreBeats(8);
+        assertThat(mesh.isCore(mesh.subscribeTargets(member).getLast())).as("first re-parent: a core, granted, 2.4 s without a beat (inside the 3 s silence)").isTrue();
+        mesh.announced.set(Option.some(gov.id));
+        mesh.runWithoutCoreBeats(2);
+        assertThat(mesh.subscribeTargets(member).getLast()).as("second re-parent: the silent governor, no counted beat in between").isEqualTo(gov.id);
+
+        for (var i = 0; i < 40 && mesh.subscribeTargets(member).getLast().equals(gov.id); i++) {
+            mesh.advance(300);
+            mesh.step();
+            assertThat(member.readiness.ready()).as("round %d: still waiting out the silent governor, the carried beats hold", i).isTrue();
+        }
+
+        assertThat(mesh.isCore(mesh.subscribeTargets(member).getLast())).as("the silence moved the member to a core").isTrue();
+        mesh.run(3);
+        assertThat(member.readiness.ready()).isTrue();
+        assertThat(member.installs.get()).as("no second snapshot").isEqualTo(1);
     }
 
     /// The hand-off acts only on a session that follows a governor: a node that becomes the governor while already on a core keeps its session.

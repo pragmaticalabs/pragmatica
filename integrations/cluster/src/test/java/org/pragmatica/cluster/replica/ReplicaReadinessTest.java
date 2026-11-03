@@ -206,4 +206,59 @@ class ReplicaReadinessTest {
         advance(30_500);
         assertThat(readiness.servable()).isFalse();
     }
+
+    /// #2510 phase three (a): a member re-parents core -> a silent governor before any beat of the first new source; the grace restarts from the LATEST
+    /// subscribe, not the first. Mutation: carry only while no carry is set (`if (carriedUntilNanos == 0L)`), the rc5 guard.
+    @Test
+    void carryBeatsFor_secondReparentWithoutABeat_keepsAGraceFromTheLatestSubscribe() {
+        var grace = ReplicaClientLimits.DEFAULT.silenceMillis() * MS;
+
+        readiness.carryBeatsFor(grace);
+        advance(130);
+        readiness.carryBeatsFor(grace);
+        advance(2_900);
+
+        assertThat(readiness.ready()).as("3030 ms after the first subscribe, 2900 ms after the second: inside the second grace").isTrue();
+    }
+
+    /// Control for the test above: a single re-parent holds exactly its grace and drops after it, so the red of the second-subscribe case comes from the
+    /// guard and not from a short grace. Mutation: never expire the carry.
+    @Test
+    void carryBeatsFor_singleReparent_holdsItsGraceAndDropsAfterIt() {
+        var grace = ReplicaClientLimits.DEFAULT.silenceMillis() * MS;
+
+        readiness.carryBeatsFor(grace);
+        advance(2_900);
+        assertThat(readiness.ready()).isTrue();
+        advance(200);
+        assertThat(readiness.ready()).isFalse();
+    }
+
+    /// The deadline never moves backwards: a shorter grace asked later does not cut a longer one already granted. Mutation: assign `now + grace`
+    /// instead of `max(existing, now + grace)`.
+    @Test
+    void carryBeatsFor_aShorterLaterGrace_doesNotShortenTheDeadline() {
+        readiness.carryBeatsFor(10_000 * MS);
+        advance(100);
+        readiness.carryBeatsFor(1_000 * MS);
+        advance(5_000);
+
+        assertThat(readiness.ready()).isTrue();
+    }
+
+    /// The default grace covers a silent new source being waited out (silence + tick), the retry delay and the next source's first heartbeat, and no more.
+    /// Mutation: pass `silenceMillis` alone (the rc5 grace).
+    @Test
+    void carryGraceMillis_coversSilenceRetryAndOneHeartbeat() {
+        var limits = ReplicaClientLimits.DEFAULT;
+        var needed = limits.silenceMillis() + limits.tickMillis() + BusyBackoff.MIN_DELAY_MILLIS + ReplicaFeedServer.HEARTBEAT_INTERVAL_MILLIS;
+
+        assertThat(limits.carryGraceMillis()).isEqualTo(needed).isGreaterThan(limits.silenceMillis());
+
+        readiness.carryBeatsFor(limits.carryGraceMillis() * MS);
+        advance(limits.carryGraceMillis() - 100);
+        assertThat(readiness.ready()).isTrue();
+        advance(200);
+        assertThat(readiness.ready()).isFalse();
+    }
 }
