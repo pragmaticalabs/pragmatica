@@ -13,6 +13,7 @@ import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.zip.CRC32;
@@ -83,7 +84,7 @@ import static org.pragmatica.lang.Unit.unit;
 /// `append` resolves its `Promise` ONLY after the record's bytes are `force(false)`-durable, while
 /// still batching concurrent appends into a single fsync. It is `write` then `commit`:
 ///   - `write` runs in the CALLER's thread, before `append` returns (#1232): a serialized write
-///     section (`writeLock`) refuses an offset that does not exceed the last written one
+///     section (`writeLock`) refuses an offset the order rule below does not admit
 ///     ([WalError.OffsetRegression]), assigns a monotonic write-seq, writes the framed bytes at the
 ///     current end position, and publishes `writtenSeq = seq` AFTER the write completes — so any
 ///     reader of `writtenSeq` sees a seq whose bytes are in the channel. File order is therefore CALL
@@ -98,6 +99,15 @@ import static org.pragmatica.lang.Unit.unit;
 /// concurrent appends typically costs far fewer than N fsyncs. Only `commit` runs on the async executor
 /// (`Promise.promise`), so a pipelined publisher that fires without awaiting maximizes batching, and a
 /// caller holding an ordered section can `write` inside it and wait for the fsync outside it.
+///
+/// ## Offset order (I-04, #2201)
+/// The log validates offsets and never assigns them: its writer assigns each offset inside its own ordered section. A write at
+/// offset `o` is accepted when `o == lastOffset + 1`; when the log holds no record (`lastOffset == -1`: nothing since open, or a
+/// cut to empty), at any offset; or when `lastOffset < o <= floor + 1`, a forward jump across a range the sealed tier already holds,
+/// where `floor` is read LIVE, at the write, from the supplier installed by [#withSealedFloor] (a log opened without one has no
+/// floor, `-1`, and admits only `lastOffset + 1`). Any other offset is refused with [WalError.OffsetRegression]: nothing is written,
+/// no epoch entry is recorded, and the log stays writable. The floor is read only off the contiguous path, so a contiguous write
+/// costs nothing extra.
 ///
 /// ## Fail-stop on fsync or frame-write failure (#634-7, #1232)
 /// A FAILED group-commit `force` fail-stops the WAL: the covered appends resolve failure, and every
@@ -150,6 +160,8 @@ public final class AppendLog implements AutoCloseable {
     /// File-size watermark past which a `truncate` triggers a compaction rewrite (else O(1) lazy).
     private static final long COMPACTION_THRESHOLD_BYTES = 8L * 1024 * 1024;
 
+    /// The floor of a log opened without one ([#withSealedFloor]): nothing sealed, so only `lastOffset + 1` follows a record.
+    private static final LongSupplier NO_SEALED_FLOOR = () -> -1L;
     private static final Fn1<Cause, Throwable> APPEND_FAILED = t -> new WalError.AppendFailed(t.getMessage());
 
     private static final Fn1<Cause, Throwable> TRUNCATE_FAILED = t -> new WalError.TruncateFailed(t.getMessage());
@@ -175,6 +187,7 @@ public final class AppendLog implements AutoCloseable {
     private volatile long fsyncMaxNanos;  // guarded by syncLock
     private volatile Option<Cause> syncFailure = Option.none();  // set once under syncLock on fail-stop; never cleared
     private volatile boolean closed;
+    private volatile LongSupplier sealedFloor = NO_SEALED_FLOOR;  // the live floor of the order rule (I-04); read under writeLock
     private final EpochHistory epochs;
     private final TornTailSink sink;
 
@@ -339,7 +352,7 @@ public final class AppendLog implements AutoCloseable {
     /// Append a record and GROUP-COMMIT fsync: [#write] in the caller's thread, then [#commit]. The
     /// returned `Promise` resolves ONLY after this record's bytes are `force(false)`-durable; concurrent
     /// appends may share one fsync. Refused once a fsync has failed (see the fail-stop section of the
-    /// class doc), and for an offset that does not exceed the last written one.
+    /// class doc), and for an offset the offset-order rule does not admit (class doc, I-04).
     public Promise<Unit> append(long offset, byte[] payload, long timestampMillis) {
         return write(offset, payload, timestampMillis).async()
                     .flatMap(this::commit);
@@ -347,9 +360,9 @@ public final class AppendLog implements AutoCloseable {
 
     /// Write the record's frame NOW, in the caller's thread, and return its write sequence for
     /// [#commit]. The frame is in the channel (not yet durable) when this returns, so file order is call
-    /// order. Refused unwritten when closed, fail-stopped, or when `offset` does not exceed the last
-    /// written offset ([WalError.OffsetRegression]) — recovery places records by stored offset and
-    /// refuses a duplicate, so the writer never produces one.
+    /// order. Refused unwritten when closed, fail-stopped, or when the offset-order rule does not admit `offset`
+    /// ([WalError.OffsetRegression]: at or below the last written offset, or a gap above it the sealed floor does not cover) —
+    /// recovery places records by stored offset and refuses a duplicate or a gap, so the writer never produces one.
     public Result<Long> write(long offset, byte[] payload, long timestampMillis) {
         return closed
                ? WalError.General.WAL_CLOSED.result()
@@ -628,6 +641,16 @@ public final class AppendLog implements AutoCloseable {
                : syncFailure.fold(Result::unitResult, Cause::result);
     }
 
+    /// Installs `floor`, the live sealed floor of the offset-order rule (see the class doc, I-04): the highest offset the sealed tier
+    /// durably holds for this log's partition, `-1` when nothing is sealed. Read at each write that does not follow `lastOffset`
+    /// contiguously, never captured, because the floor rises while the log runs. Installed once by the opener before the first write;
+    /// returns this log.
+    public AppendLog withSealedFloor(LongSupplier floor) {
+        sealedFloor = floor;
+
+        return this;
+    }
+
     /// Last appended offset, or `-1` when the WAL holds no valid record.
     public long lastOffset() {
         return lastOffset;
@@ -682,10 +705,16 @@ public final class AppendLog implements AutoCloseable {
     // === append path ===
     private Result<Long> writeRecord(long offset, byte[] payload, long timestampMillis) {
         synchronized (writeLock) {
-            return offset > lastOffset
+            return admitsOffset(offset)
                    ? writeNext(offset, payload, timestampMillis)
                    : new WalError.OffsetRegression(offset, lastOffset).result();
         }
+    }
+
+    /// The offset-order rule (I-04, class doc), under `writeLock`: `o == lastOffset + 1`, any `o` on an empty log, or
+    /// `lastOffset < o <= floor + 1`. The floor supplier is consulted only when the first two do not hold.
+    private boolean admitsOffset(long offset) {
+        return offset == lastOffset + 1 || (offset > lastOffset && (lastOffset == -1 || offset <= sealedFloor.getAsLong() + 1));
     }
 
     private Result<Long> writeAttributed(long offset,
@@ -694,7 +723,7 @@ public final class AppendLog implements AutoCloseable {
                                          EpochKey key,
                                          EpochOrder order) {
         synchronized (writeLock) {
-            return offset > lastOffset
+            return admitsOffset(offset)
                    ? epochs.recordIfNew(key, offset, order)
                            .onFailure(this::failStopOnEpochWriteFailure)
                            .flatMap(_ -> writeNext(offset, payload, timestampMillis))
@@ -1342,9 +1371,10 @@ public final class AppendLog implements AutoCloseable {
             }
         }
 
-        /// An append whose offset does not exceed the last written offset (#1232). File order must be
-        /// offset order — recovery places records by stored offset and refuses a duplicate — so the
-        /// frame is refused before it is written.
+        /// An append whose offset the order rule does not admit (#1232; I-04, #2201): one that does not exceed the last written
+        /// offset, or that leaves a gap above `lastOffset + 1` not covered by the sealed floor. File order must be offset order and
+        /// contiguous above the sealed floor — recovery places records by stored offset, refuses a duplicate and refuses a gap above
+        /// the seed — so the frame is refused before it is written, and the log stays writable.
         record OffsetRegression(long offset, long lastOffset) implements WalError {
             @Override
             public String message() {

@@ -153,9 +153,12 @@ class StreamPartitionManagerRestartAfterCompactionTest {
     /// hole at 3 is refused by the per-record check before any eviction and cannot see the ordering.
     @Test
     void restart_walWithMidLogHole_refusesLoudly_andSealsNothing() {
+        // The fixture writes a hole the WAL order rule (I-04, #2201) refuses: an unbounded sealed floor admits it, standing in for a
+        // corruption or a pre-rule writer.
         var wal = AppendLog.open(walDir.resolve(STREAM).resolve(PARTITION + ".wal"))
                               .onFailure(cause -> fail(cause.message()))
-                              .unwrap();
+                              .unwrap()
+                              .withSealedFloor(() -> Long.MAX_VALUE - 1);
 
         LongStream.of(0, 1, 2, 3, 4, 5, 7, 8).forEach(offset -> wal.append(offset, payload((int) offset), 1000L + offset)
                                                                    .await()

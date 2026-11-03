@@ -486,8 +486,13 @@ class SegmentSealerTest {
         }
     }
 
+    /// The fixture may write a hole the WAL order rule (I-04, #2201) refuses: an unbounded sealed floor admits it, standing in for a
+    /// corruption or a pre-rule writer.
     private static AppendLog walWith(Path dir, long... offsets) {
-        var wal = AppendLog.open(dir.resolve("p.wal")).onFailure(cause -> fail(cause.message())).unwrap();
+        var wal = AppendLog.open(dir.resolve("p.wal"))
+                           .onFailure(cause -> fail(cause.message()))
+                           .unwrap()
+                           .withSealedFloor(() -> Long.MAX_VALUE - 1);
 
         for (var offset : offsets) {
             wal.append(offset, ("w-" + offset).getBytes(), offset).await().onFailure(cause -> fail(cause.message()));

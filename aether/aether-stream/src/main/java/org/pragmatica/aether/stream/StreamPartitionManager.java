@@ -6715,7 +6715,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                        Option<AppendLog.Opener> logs,
                                                                        LastSealedOffsetSource lastSealedOffset,
                                                                        TrimFailure trimFailed) {
-            return openWal(config, partition, logs).onFailure(_ -> ring.closeWithoutRelease())
+            return openWal(config, partition, logs, lastSealedOffset).onFailure(_ -> ring.closeWithoutRelease())
                           .flatMap(wal -> recoverOne(config, partition, ring, wal, lastSealedOffset, trimFailed));
         }
 
@@ -6768,7 +6768,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                          Option<AppendLog.Opener> logs,
                                                          LastSealedOffsetSource lastSealedOffset,
                                                          TrimFailure trimFailed) {
-            return openWals(config, selected, logs).flatMap(wals -> recoverWals(config,
+            return openWals(config, selected, logs, lastSealedOffset).flatMap(wals -> recoverWals(config,
                                                                                 selected,
                                                                                 rings,
                                                                                 wals,
@@ -7041,16 +7041,18 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         private static Result<List<Option<AppendLog>>> openWals(StreamConfig config,
                                                                 List<Integer> selected,
-                                                                Option<AppendLog.Opener> logs) {
-            return logs.map(opener -> openSelectedWals(config, selected, opener))
+                                                                Option<AppendLog.Opener> logs,
+                                                                LastSealedOffsetSource lastSealedOffset) {
+            return logs.map(opener -> openSelectedWals(config, selected, opener, lastSealedOffset))
                        .or(() -> success(noWals(selected.size())));
         }
 
         private static Result<List<Option<AppendLog>>> openSelectedWals(StreamConfig config,
                                                                         List<Integer> selected,
-                                                                        AppendLog.Opener opener) {
+                                                                        AppendLog.Opener opener,
+                                                                        LastSealedOffsetSource lastSealedOffset) {
             var results = selected.stream()
-                                  .map(partition -> openPartitionWal(opener, config, partition).map(Option::some))
+                                  .map(partition -> openPartitionWal(opener, config, partition, lastSealedOffset).map(Option::some))
                                   .toList();
 
             return Result.allOf(results).onFailure(_ -> closeOpenedWals(results));
@@ -7060,15 +7062,24 @@ public final class StreamPartitionManager implements AutoCloseable {
         /// {@link #openSelectedWals} for the one-partition materialize path ({@link #materializeOne}).
         private static Result<Option<AppendLog>> openWal(StreamConfig config,
                                                          int partition,
-                                                         Option<AppendLog.Opener> logs) {
-            return logs.map(opener -> openPartitionWal(opener, config, partition).map(Option::some))
+                                                         Option<AppendLog.Opener> logs,
+                                                         LastSealedOffsetSource lastSealedOffset) {
+            return logs.map(opener -> openPartitionWal(opener, config, partition, lastSealedOffset).map(Option::some))
                        .or(() -> success(Option.none()));
         }
 
         /// The log `<stream>[@<incarnation>]/<partition>`: under the storage instance's log root in production, which
         /// keeps the pre-#1567 layout `<walBaseDir>/<stream>/<partition>.wal` for a config with no incarnation.
-        private static Result<AppendLog> openPartitionWal(AppendLog.Opener opener, StreamConfig config, int partition) {
-            return opener.open(logName(config, partition));
+        ///
+        /// The log gets the partition's LIVE sealed floor for its offset-order rule (I-04, #2201): the same source recovery seeds
+        /// the ring from, so the first write above a ring seeded at the floor (a WAL whose last record is below it) is admitted, and
+        /// any other gap is refused.
+        private static Result<AppendLog> openPartitionWal(AppendLog.Opener opener,
+                                                          StreamConfig config,
+                                                          int partition,
+                                                          LastSealedOffsetSource lastSealedOffset) {
+            return opener.open(logName(config, partition))
+                         .map(wal -> wal.withSealedFloor(() -> lastSealedOffset.lastSealedOffset(config.name(), partition)));
         }
 
         /// The log of one partition of one LIFE of a stream (#1278 review), shared by the open and the read-only

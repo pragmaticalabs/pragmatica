@@ -85,9 +85,9 @@ class AppendLogTest {
 
             assertThat(wal.lastOffset()).isEqualTo(-1L);
             appendSync(wal, 41L, payload(41), 1L);
-            appendSync(wal, 99L, payload(99), 1L);
+            appendSync(wal, 42L, payload(42), 1L);
 
-            assertThat(wal.lastOffset()).isEqualTo(99L);
+            assertThat(wal.lastOffset()).isEqualTo(42L);
             wal.close();
         }
 
@@ -805,8 +805,8 @@ class AppendLogTest {
             assertThat(offsetsOf(replayAll(reopened, -1L))).as("acked record 0 survives; unacked 1 legitimately resurrects")
                                                            .containsExactly(0L, 1L);
             assertThat(reopened.stats().failStopped()).as("fail-stop is per-instance, cleared by reopen").isFalse();
-            appendSync(reopened, 5L, payload(5), 1L);
-            assertThat(reopened.lastOffset()).isEqualTo(5L);
+            appendSync(reopened, 2L, payload(2), 1L);
+            assertThat(reopened.lastOffset()).isEqualTo(2L);
             reopened.close();
         }
 
