@@ -2698,6 +2698,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.JSON_CONFIG_APPLIED,
                 OperatorWarningCode.CONFIG_WATCH_CALLBACK_RECOVERED,
                 OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG_CLEARED,
+                OperatorWarningCode.ROLLBACK_RECORD_RECONCILED,
             });
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactlyInAnyOrder(new OperatorWarningCode[]{
@@ -2759,6 +2760,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.UPLOAD_BYTE_BUDGET_EXHAUSTED,
                 OperatorWarningCode.CONFIG_WATCH_CALLBACK_FAILED,
                 OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG,
+                OperatorWarningCode.ROLLBACK_RECORD_RECONCILE_EXHAUSTED,
             });
         var recoveries = java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).count();
         var t = new AtomicLong(1_000_000L);

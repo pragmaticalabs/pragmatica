@@ -2691,7 +2691,8 @@ public interface AetherNode extends ManageableNode {
                                                               clusterNode,
                                                               kvStore,
                                                               clusterNode.leaderManager(),
-                                                              delegateRouter::route);
+                                                              delegateRouter::route,
+                                                              operatorWarningSink);
         // #1573: the one producer of AllInstancesFailed. Every node ships its slice execution outcomes on the
         // cluster-sync pong; the leader alone judges "every ACTIVE instance of this version is broken" and
         // routes the event to rollback, the cluster event and the alert. The tick forgets its state on a
