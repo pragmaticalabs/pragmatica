@@ -9,7 +9,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.IntStream;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -39,7 +38,6 @@ class OrderedSectionRollbackTest {
     /// NT-27: a failed continuation of an ordered batch leaves the head where it was, and the next append takes the withdrawn offset.
     @Nested
     class BatchRollback {
-        @Disabled("NT-27, RED until PR-2c commit 3 (rollback): a failed batch continuation must leave the head unchanged (#2201)")
         @Test
         void appendBatchOrdered_leavesTheHeadUnchanged_whenTheContinuationFails() {
             try (var ring = offHeapRingBuffer(8, 4096)) {
@@ -59,10 +57,63 @@ class OrderedSectionRollbackTest {
         }
     }
 
+    /// NT-30: the seqlock's parity is restored on any exit from a cut's window, so readers never spin on an odd sequence.
+    @Nested
+    class SeqlockParity {
+        @Test
+        void truncateSuffix_arenaClosedInsideTheWindow_restoresTheParity_andFailsClosed() throws Exception {
+            var ring = offHeapRingBuffer(8, 4096);
+
+            ring.append(bytes("a"), 1L).onFailure(cause -> fail(cause.message()));
+            ring.append(bytes("b"), 2L).onFailure(cause -> fail(cause.message()));
+            ring.insideCutProbe(ring::close);
+
+            ring.truncateSuffix(0L)
+                .onSuccess(removed -> fail("a cut whose arena closed mid-window succeeded, removed " + removed))
+                .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.BUFFER_CLOSED));
+            assertThat(truncationSeq(ring) & 1L).as("the sequence is even again").isZero();
+        }
+
+        @Test
+        void rollback_insideTheWindowThrows_restoresTheParity() throws Exception {
+            try (var ring = offHeapRingBuffer(8, 4096)) {
+                ring.append(bytes("a"), 1L).onFailure(cause -> fail(cause.message()));
+                ring.insideCutProbe(OrderedSectionRollbackTest::arenaClosed);
+
+                ring.<Long> appendOrdered(bytes("orphan"), 2L, _ -> Causes.cause("wal refused").result());
+
+                assertThat(truncationSeq(ring) & 1L).as("the sequence is even again").isZero();
+            }
+        }
+    }
+
+    /// Spec 5.2 failure mode: a rollback that itself fails halts the ring; the publish fails with the rollback's cause and every later
+    /// append is refused until the partition is re-materialized (a new ring).
+    @Nested
+    class FailedRollback {
+        @Test
+        void appendOrdered_whoseWithdrawalFails_haltsTheRing() {
+            try (var ring = offHeapRingBuffer(8, 4096)) {
+                ring.append(bytes("a"), 1L).onFailure(cause -> fail(cause.message()));
+                ring.afterDurableCutProbe(OrderedSectionRollbackTest::arenaClosed);
+
+                ring.<Long> appendOrdered(bytes("orphan"), 2L, _ -> Causes.cause("wal refused").result())
+                    .onSuccess(offset -> fail("a failed continuation succeeded at " + offset))
+                    .onFailure(cause -> assertThat(cause).as("the rollback's cause, not the continuation's").isEqualTo(StreamError.General.BUFFER_CLOSED));
+                ring.afterDurableCutProbe(() -> {});
+
+                ring.<Long> appendOrdered(bytes("later"), 3L, Result::success)
+                    .onSuccess(offset -> fail("a halted ring accepted an append at " + offset))
+                    .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.BUFFER_CLOSED));
+                ring.append(bytes("plain"), 4L)
+                    .onSuccess(offset -> fail("a halted ring accepted a plain append at " + offset));
+            }
+        }
+    }
+
     /// NT-107: an ordered run the ring could not withdraw (it would evict its own members) is refused before any offset exists.
     @Nested
     class OversizeRun {
-        @Disabled("NT-107, RED until PR-2c commit 3: a run larger than the ring's capacity must be refused RUN_DOES_NOT_FIT before any offset exists (#2201)")
         @Test
         void appendBatchOrdered_refusesARunLargerThanTheCapacity_beforeAnyOffset() {
             try (var ring = offHeapRingBuffer(4, 4096)) {
@@ -76,7 +127,6 @@ class OrderedSectionRollbackTest {
             }
         }
 
-        @Disabled("NT-107, RED until PR-2c commit 3: a run whose bytes exceed the allocation must be refused RUN_DOES_NOT_FIT before any offset exists (#2201)")
         @Test
         void appendBatchOrdered_refusesARunLargerThanTheAllocation_beforeAnyOffset() {
             try (var ring = offHeapRingBuffer(8, 4096)) {
@@ -95,7 +145,6 @@ class OrderedSectionRollbackTest {
         @TempDir
         Path walDir;
 
-        @Disabled("NT-107, RED until PR-2c commit 3: the owner batch refuses an oversize run with nothing in the ring or the WAL, and the single-publish fallback lands contiguously (#2201)")
         @Test
         void publishBatch_oversizeRun_isRefusedUntouched_andTheSinglePublishFallbackStaysContiguous() throws Exception {
             var config = StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(4, 1_000_000L, 3_600_000L), "earliest");
@@ -161,7 +210,6 @@ class OrderedSectionRollbackTest {
         @TempDir
         Path walDir;
 
-        @Disabled("NT-28, RED until PR-2c commit 3: a refused replica WAL write must restore the ring head (#2201)")
         @Test
         void appendRecovered_refusedWalWrite_restoresTheHead_andTheRetryLandsAtTheSameOffset() throws Exception {
             var manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
@@ -184,6 +232,18 @@ class OrderedSectionRollbackTest {
             assertThat(walOffsets(manager)).as("the WAL is contiguous").containsExactly(0L, 1L);
             manager.close();
         }
+    }
+
+    /// What a native access throws once the ring's arena is closed under it.
+    private static void arenaClosed() {
+        throw new IllegalStateException("already closed");
+    }
+
+    private static long truncationSeq(OffHeapRingBuffer ring) throws Exception {
+        var field = OffHeapRingBuffer.class.getDeclaredField("truncationSeq");
+
+        field.setAccessible(true);
+        return field.getLong(ring);
     }
 
     private static List<Long> walOffsets(StreamPartitionManager manager) throws Exception {

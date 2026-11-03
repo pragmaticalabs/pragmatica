@@ -3980,12 +3980,12 @@ public final class StreamPartitionManager implements AutoCloseable {
                                  timestamp,
                                  ownerEpoch,
                                  provenanceAdmits(streamName, partition, some(ownerEpoch)),
-                                 offset -> success(logReplicated(streamName,
-                                                                 partition,
-                                                                 offset,
-                                                                 payload,
-                                                                 timestamp,
-                                                                 some(ownerEpoch))));
+                                 offset -> logReplicated(streamName,
+                                                         partition,
+                                                         offset,
+                                                         payload,
+                                                         timestamp,
+                                                         some(ownerEpoch)));
     }
 
     /// Offset-addressed sibling of [#appendReplicatedInSection] (#1505): the same fence, admission and size
@@ -4009,12 +4009,12 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                    timestamp,
                                                                                    new PartitionQuarantine(streamName,
                                                                                                            partition),
-                                                                                   assigned -> success(logReplicated(streamName,
-                                                                                                                     partition,
-                                                                                                                     assigned,
-                                                                                                                     payload,
-                                                                                                                     timestamp,
-                                                                                                                     provenance))))
+                                                                                   assigned -> logReplicated(streamName,
+                                                                                                             partition,
+                                                                                                             assigned,
+                                                                                                             payload,
+                                                                                                             timestamp,
+                                                                                                             provenance)))
                            .onSuccess(_ -> entry.updateActivity());
     }
 
@@ -4089,26 +4089,40 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// frame with NO fsync (#1244): durability is claimed at the ACK, not the append. [#syncReplicated] is
     /// the barrier — the receive handler awaits it once per batch and a backfill run awaits it before
     /// promoting — and it commits every frame written so far in one group commit. The record's offset is
-    /// handed through unchanged. A failed write is recorded rather than raised: the record is applied and
-    /// serveable, but [#syncReplicated] fails, so acks stop and the owner's barrier degrades honestly.
-    private long logReplicated(String streamName,
-                               int partition,
-                               long offset,
-                               byte[] payload,
-                               long timestamp,
-                               Option<Epoch> provenance) {
-        walFor(streamName, partition).onPresent(wal -> recordReplicatedWrite(streamName,
-                                                                             partition,
-                                                                             new ReplicatedWrite(wal,
-                                                                                                 offset,
-                                                                                                 attributedWrite(wal,
-                                                                                                                 offset,
-                                                                                                                 payload,
-                                                                                                                 timestamp,
-                                                                                                                 provenance))));
+    /// handed through unchanged. A failed write is recorded AND returned (#2201 A-01, NT-28): the failure fails the
+    /// ordered continuation, so the ring withdraws the record ([OffHeapRingBuffer#appendOrderedAt]) and the
+    /// sender's retry lands at the same offset; the recorded failure keeps [#syncReplicated] failing, so nothing is
+    /// acked, until a later write on this log succeeds.
+    private Result<Long> logReplicated(String streamName,
+                                       int partition,
+                                       long offset,
+                                       byte[] payload,
+                                       long timestamp,
+                                       Option<Epoch> provenance) {
+        var logged = walFor(streamName, partition).map(wal -> logReplicatedTo(wal,
+                                                                              streamName,
+                                                                              partition,
+                                                                              offset,
+                                                                              attributedWrite(wal,
+                                                                                              offset,
+                                                                                              payload,
+                                                                                              timestamp,
+                                                                                              provenance)))
+                                                  .or(() -> success(offset));
+
         provenance.onPresent(_ -> flagMissingHistory(streamName, partition, offset));
 
-        return offset;
+        return logged;
+    }
+
+    private Result<Long> logReplicatedTo(AppendLog wal,
+                                         String streamName,
+                                         int partition,
+                                         long offset,
+                                         Result<Long> writeSeq) {
+        recordReplicatedWrite(streamName, partition, new ReplicatedWrite(wal, offset, writeSeq));
+
+        return writeSeq.map(_ -> offset);
     }
 
     /// #1277 review N2: forget the latest replicated write recorded for `(streamName, partition)` when its
@@ -4164,14 +4178,12 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// A replicated WAL frame write: the WAL it went to, the record's offset — the position the barrier
     /// exposes once this write is durable (#1235) — and its write sequence (or the write failure).
     ///
-    /// The latest write replaces the previous one; no separate poison flag is kept. A later success after
-    /// a failed write would leave a hole the ring does not have, but a failed frame write or fsync
-    /// FAIL-STOPS the WAL, so every later write on that instance fails too and acks stay withheld. The one
-    /// refusal that does not fail-stop, [AppendLog.WalError.OffsetRegression], means the replica's ring
-    /// assigned an offset its WAL already holds — ring and WAL disagree, and that offset's payload in the
-    /// file may differ from the ring's; a later successful write lets acks resume past it.
-    /// `[design intent — unverified: reachable only through a ring/WAL head mismatch such as a frozen-ring
-    /// drop during recovery (#1233); no test induces it]`. The entry is forgotten when its WAL is released
+    /// The latest write replaces the previous one; no separate poison flag is kept. A failed write also fails
+    /// the ordered continuation, so the ring withdraws that record (#2201 A-01) and no hole is left behind it: a
+    /// failed frame write or fsync FAIL-STOPS the WAL, so every later write on that instance fails too and acks
+    /// stay withheld; a refusal that does not fail-stop ([AppendLog.WalError.OffsetRegression], a ring/WAL head
+    /// mismatch) leaves the ring at its previous head, and a later successful write at that offset lets acks
+    /// resume (`OrderedSectionRollbackTest.ReplicaReceiveRollback`). The entry is forgotten when its WAL is released
     /// ([#forgetReplicatedWrites]), so a rebuilt partition's first barrier never targets a closed WAL.
     record ReplicatedWrite(AppendLog wal, long offset, Result<Long> writeSeq) {
         Promise<Unit> commit() {
