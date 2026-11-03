@@ -681,6 +681,39 @@ class OffHeapRingBufferTest {
                   .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.SeedRejected.class));
         }
 
+        /// #1463 (PR-2f): visible seeded below the sealed floor; durable and the head stay at `base`.
+        @Test
+        void seedHead_withAVisibleSeed_seedsVisibleThere_andDurableAtTheBase() {
+            buffer.seedHead(BASE, 7L)
+                  .onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
+
+            assertThat(buffer.visibleOffset()).isEqualTo(7L);
+            assertThat(buffer.durableOffset()).isEqualTo(BASE);
+            assertThat(buffer.headOffset()).isEqualTo(BASE);
+            assertThat(buffer.tailOffset()).isEqualTo(BASE + 1);
+        }
+
+        @Test
+        void seedHead_withAVisibleSeedOfMinusOne_hidesTheWholeSealedPrefix() {
+            buffer.seedHead(BASE, -1L)
+                  .onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
+
+            assertThat(buffer.visibleOffset()).isEqualTo(-1L);
+            assertThat(buffer.durableOffset()).isEqualTo(BASE);
+        }
+
+        @Test
+        void seedHead_withAVisibleSeedOutsideMinusOneToBase_isRejected_withoutMutation() {
+            buffer.seedHead(BASE, BASE + 1)
+                  .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("a visible seed above the base was accepted"))
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.SeedRejected.class));
+            buffer.seedHead(BASE, -2L)
+                  .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("a visible seed below -1 was accepted"))
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.SeedRejected.class));
+            assertThat(buffer.headOffset()).as("nothing changed").isEqualTo(-1L);
+            assertThat(buffer.visibleOffset()).isEqualTo(-1L);
+        }
+
         @Test
         void seedHead_returnsBufferClosed_whenClosed() {
             var localBuffer = offHeapRingBuffer(10, 256);
