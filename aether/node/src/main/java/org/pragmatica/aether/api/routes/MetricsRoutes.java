@@ -249,7 +249,9 @@ public final class MetricsRoutes implements RouteSource {
                                             consensus.syncFailureCount(),
                                             consensus.avgDecisionLatencyMs(),
                                             consensus.oldestPendingBatchAgeMs(),
-                                            consensus.applyTimeoutCount());
+                                            consensus.applyTimeoutCount(),
+                                            consensus.consecutiveEmptySlotsWithPending(),
+                                            consensus.firstChoiceBatchId());
     }
 
     private DerivedMetricsResponse buildDerivedMetricsResponse() {
