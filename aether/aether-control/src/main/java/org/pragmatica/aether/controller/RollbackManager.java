@@ -253,8 +253,8 @@ public interface RollbackManager {
         /// A delivered SliceTarget put: the value it carried and the value it replaced.
         record Notification(SliceTargetValue value, Option<SliceTargetValue> oldValue) implements DerivationContext {}
 
-        /// A refused write's own (previous, current) pair.
-        record Retry(Version previous, Version current) implements DerivationContext {}
+        /// A refused write's own (previous, current) pair, and the artifact's version-change count when that write was derived.
+        record Retry(Version previous, Version current, long versionChanges) implements DerivationContext {}
 
         /// A new leader's activation: no notification names the change.
         enum Activation implements DerivationContext {
@@ -306,6 +306,7 @@ public interface RollbackManager {
                                LeaderManager leaderManager,
                                ConcurrentHashMap<ArtifactBase, RollbackState> rollbackStates,
                                Set<ArtifactBase> exhausted,
+                               ConcurrentHashMap<ArtifactBase, Long> versionChanges,
                                OperatorWarningSink warnings,
                                Logger log) implements RollbackManager {
             /// Attempts per refusal chain: the first write and two re-derivations. A guess (taste); settle by the contention test.
@@ -316,6 +317,15 @@ public interface RollbackManager {
                 boolean isRecorded() {
                     return record.filter(value -> value.currentVersion()
                                                        .equals(target.currentVersion()))
+                                 .isPresent();
+                }
+
+                /// The record names exactly the change (previous, the target's version). A version-only check would take a record
+                /// that names the target's version from an EARLIER episode (the revert B -> A over a stale (X, A)) as current.
+                boolean isRecordedAs(Version previous) {
+                    return record.filter(value -> value.previousVersion()
+                                                       .equals(previous) && value.currentVersion()
+                                                                                 .equals(target.currentVersion()))
                                  .isPresent();
                 }
 
@@ -531,7 +541,21 @@ public interface RollbackManager {
 
                 rollbackStates.compute(artifactBase,
                                        (ab, existing) -> computeVersionTracking(ab, existing, currentVersion));
+                if (isVersionChange(sliceTargetValue, oldValue)) {
+                    versionChanges.merge(artifactBase, 1L, Long::sum);
+                }
+
                 deriveRecord(artifactBase, new DerivationContext.Notification(sliceTargetValue, oldValue), 1);
+            }
+
+            private static boolean isVersionChange(SliceTargetValue value, Option<SliceTargetValue> oldValue) {
+                return oldValue.filter(old -> old.currentVersion()
+                                                 .equals(value.currentVersion()))
+                               .isEmpty();
+            }
+
+            private long versionChangesOf(ArtifactBase artifactBase) {
+                return versionChanges.getOrDefault(artifactBase, 0L);
             }
 
             private RollbackState computeVersionTracking(ArtifactBase ab,
@@ -597,24 +621,42 @@ public interface RollbackManager {
 
             @Contract
             private void deriveFrom(LeaderValue leader, Observed observed, DerivationContext context, int attempt) {
-                if (observed.isRecorded()) {
+                if (isRecorded(context, observed)) {
                     closeExhaustion(observed.base());
 
                     return;
                 }
+                // Read AFTER the HEAD reads in observe(): a version change visible there has had its notification counted.
+                var changes = versionChangesOf(observed.base());
 
-                previousVersion(context, observed).onPresent(previous -> writeVersionChange(leader,
-                                                                                            observed,
-                                                                                            previous,
-                                                                                            attempt));
+                previousVersion(context, observed, changes).onPresent(previous -> writeVersionChange(leader,
+                                                                                                     observed,
+                                                                                                     previous,
+                                                                                                     changes,
+                                                                                                     attempt));
+            }
+
+            /// Whether the record already names the change this derivation would write. A version change at HEAD and a retry know
+            /// their (previous, current) pair and compare both; the rest know only the target's version.
+            private static boolean isRecorded(DerivationContext context, Observed observed) {
+                return switch (context) {
+                    case DerivationContext.Notification notification -> versionChangeAtHead(notification, observed).map(observed::isRecordedAs).or(observed::isRecorded);
+                    case DerivationContext.Retry retry -> observed.isRecordedAs(retry.previous());
+                    case DerivationContext.Activation _ -> observed.isRecorded();
+                };
             }
 
             /// A refused write re-derives with its own (previous, current) pair, so the retry rewrites exactly that change while the
             /// target still names it, and writes nothing once a later version change has replaced it.
             @Contract
-            private void writeVersionChange(LeaderValue leader, Observed observed, Version previous, int attempt) {
+            private void writeVersionChange(LeaderValue leader,
+                                            Observed observed,
+                                            Version previous,
+                                            long changes,
+                                            int attempt) {
                 var retry = new DerivationContext.Retry(previous,
-                                                        observed.target().currentVersion());
+                                                        observed.target().currentVersion(),
+                                                        changes);
 
                 submitRecord(versionChangeWrite(leader, observed, previous),
                              attempt,
@@ -628,14 +670,14 @@ public interface RollbackManager {
             ///   a first deployment, nothing to write. The gate is `oldValue` and the committed record, never the mirror.
             /// - Notification that differs from the HEAD target (read-ahead): nothing. The later notification for that key is queued
             ///   on this node and derives from its own `oldValue`.
-            /// - Retry: its own previous, only if the target still names the version it carried; a later version change is
-            ///   re-derived by its own notification.
+            /// - Retry: its own previous, only if the target still names the version it carried AND no version change was
+            ///   delivered since it was derived; a later version change, B -> C -> B included, is re-derived by its own notification.
             /// - Activation: the record's current version (an approximation across a handover: a version between the record's and
             ///   the target's may have gone unrecorded by every leader).
-            private static Option<Version> previousVersion(DerivationContext context, Observed observed) {
+            private static Option<Version> previousVersion(DerivationContext context, Observed observed, long changes) {
                 return switch (context) {
                     case DerivationContext.Notification notification -> notificationPrevious(notification, observed);
-                    case DerivationContext.Retry retry -> retryPrevious(retry, observed);
+                    case DerivationContext.Retry retry -> retryPrevious(retry, observed, changes);
                     case DerivationContext.Activation _ -> observed.recordedVersion();
                 };
             }
@@ -648,6 +690,14 @@ public interface RollbackManager {
                        : Option.none();
             }
 
+            private static Option<Version> versionChangeAtHead(DerivationContext.Notification notification,
+                                                               Observed observed) {
+                return notification.value()
+                                   .equals(observed.target())
+                       ? replacedVersion(notification, observed)
+                       : Option.none();
+            }
+
             private static Option<Version> replacedVersion(DerivationContext.Notification notification,
                                                            Observed observed) {
                 return notification.oldValue()
@@ -655,9 +705,11 @@ public interface RollbackManager {
                                    .filter(replaced -> !replaced.equals(observed.target().currentVersion()));
             }
 
-            private static Option<Version> retryPrevious(DerivationContext.Retry retry, Observed observed) {
+            private static Option<Version> retryPrevious(DerivationContext.Retry retry,
+                                                         Observed observed,
+                                                         long changes) {
                 return retry.current()
-                            .equals(observed.target().currentVersion())
+                            .equals(observed.target().currentVersion()) && retry.versionChanges() == changes
                        ? Option.some(retry.previous())
                        : Option.none();
             }
@@ -969,6 +1021,7 @@ public interface RollbackManager {
                                           leaderManager,
                                           new ConcurrentHashMap<>(),
                                           ConcurrentHashMap.newKeySet(),
+                                          new ConcurrentHashMap<>(),
                                           warnings,
                                           LoggerFactory.getLogger(RollbackManager.class));
 

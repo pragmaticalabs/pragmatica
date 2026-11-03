@@ -295,6 +295,72 @@ class RollbackManagerGuardedRecordTest {
         assertThat(held.captured()).isEmpty();
     }
 
+    /// Verifier v2622: a REVERT (B -> A) commits after the deploy's (A, B) write was submitted and before it lands. The revert's
+    /// notification is at HEAD and names `oldValue` B, so the record must become (B, A) - the previous of A is B. A version-only
+    /// "already recorded" check sees the stale (X, A) record as current and writes nothing, and nothing later re-derives it.
+    @Test
+    void onSliceTargetPut_recordsRevertedVersion_whenRevertCommitsBeforeTheDeployWriteLands() {
+        startManager();
+        var targetB = commit(TARGET_KEY, targetA.withVersion(B));
+
+        manager.onSliceTargetPut(put(targetB, targetA));
+        assertThat(held.captured()).as("arming: the deploy submitted one write").hasSize(1);
+        var reverted = commit(TARGET_KEY, targetB.withVersion(A));
+
+        manager.onSliceTargetPut(put(reverted, targetB));
+        held.applyAllPending();
+        held.applyAllPending();
+
+        assertRecord(B, A);
+    }
+
+    /// Verifier v2622, retry arm of the revert: the revert's own (B, A) write is refused by a scale change, and its retry must
+    /// rewrite (B, A) although the stale record (X, A) already names version A.
+    @Test
+    void onSliceTargetPut_retriesRevertWrite_whenScaleChangeRefusesIt() {
+        startManager();
+        var targetB = commit(TARGET_KEY, targetA.withVersion(B));
+
+        manager.onSliceTargetPut(put(targetB, targetA));
+        var reverted = commit(TARGET_KEY, targetB.withVersion(A));
+
+        manager.onSliceTargetPut(put(reverted, targetB));
+        held.awaitCaptured(2);
+        held.applyToStore(0);
+        held.settle();
+        commit(TARGET_KEY, reverted.withInstances(reverted.targetInstances() + 1));
+        held.applyToStore(1);
+        held.settle();
+        held.applyAllPending();
+        held.applyAllPending();
+
+        assertRecord(B, A);
+    }
+
+    /// Verifier v2622: B -> C -> B commits before the deploy's (A, B) write lands. N3 records (C, B); the stale (A, B) write is
+    /// refused, and its retry must not overwrite the newer (C, B) although the target names B again (R6.1's ABA case).
+    @Test
+    void onSliceTargetPut_keepsNewerRecord_whenStaleRetryFindsTheSameVersionAgain() {
+        startManager();
+        var targetB = commit(TARGET_KEY, targetA.withVersion(B));
+
+        manager.onSliceTargetPut(put(targetB, targetA));
+        var targetC = commit(TARGET_KEY, targetB.withVersion(C));
+        var targetB2 = commit(TARGET_KEY, targetC.withVersion(B));
+
+        manager.onSliceTargetPut(put(targetC, targetB));
+        manager.onSliceTargetPut(put(targetB2, targetC));
+        held.awaitCaptured(2);
+        held.applyToStore(1);
+        assertRecord(C, B);
+        held.applyToStore(0);
+        held.settle();
+        held.applyAllPending();
+        held.applyAllPending();
+
+        assertRecord(C, B);
+    }
+
     private void startManager() {
         manager = RollbackManager.rollbackManager(SELF, CONFIG, held, store, new AlwaysLeaderManager(SELF));
         manager.activate();
