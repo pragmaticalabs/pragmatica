@@ -2339,15 +2339,17 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     /// A rebuilt ring's replayed WAL tail is durable and not visible ([StreamEntry#placeRecord], #1387); this
-    /// restores `visible` to what the ack state supports, before the ring can be read. Nothing about acks
-    /// is persisted — the production [ReplicaRegistry] writes through `WatermarkStore.NOOP` — so on an
-    /// OWNER every peer is blind after a restart and the tail stays at the seed (the sealed bound) until a
-    /// live ack covers it, exactly its state before the restart; a stream with no peer barrier
-    /// (`confirmationFactor <= 1`) sees the whole tail at once, as before. A REPLICA's visible position is its
-    /// OWN durability (#1235 replica side), so its tail is visible at once. `NONE` — the role unresolved —
-    /// takes the owner rule: an unresolved role must not expose more than the owner would. The confirmation
-    /// count is read from `config`, not [#confirmationFactorFor]: on a fresh create the entry is not in
-    /// `streams` yet, and the lookup would report `0` — no barrier — and expose the tail.
+    /// restores `visible` to what the ack state supports, before the ring can be read. The production [ReplicaRegistry]
+    /// persists no acks (`WatermarkStore.NOOP`), so on an OWNER every peer is blind after a restart and the tail stays at
+    /// the seed until a live ack covers it; a stream with no peer barrier (`confirmationFactor <= 1`) sees the whole tail at
+    /// once, as before. The seed is the sealed floor, or the acked marker below it (#1463, [StreamEntry#visibleSeed]).
+    /// A REPLICA holds its recovered tail until it is verified against its owner ([#holdRecoveredTailUntilVerified]).
+    ///
+    /// PR-2f: OWNER and NONE are separate arms with the same rule. NONE -- the role unresolved -- must not expose more
+    /// than the owner would, and it never reads the acked marker: the marker can raise visible only at the
+    /// owner-admission edge, which re-checks the OWNER role when it runs (know `6665558916`, S1/S5), never here at the
+    /// rebuild. The confirmation count is read from `config`, not [#confirmationFactorFor]: on a fresh create the entry is
+    /// not in `streams` yet, and the lookup would report `0` -- no barrier -- and expose the tail.
     /// `state` is where the hold is recorded: the hydrating life's state while a hydrate builds the entry, the entry's own
     /// life's state when one partition materializes later (know `f7bc44d170`).
     @Contract
@@ -2357,14 +2359,19 @@ public final class StreamPartitionManager implements AutoCloseable {
                                 Supplier<PartitionState> state) {
         switch (placementRoleSupplier.roleFor(config.name(), partition)) {
             case REPLICA -> holdRecoveredTailUntilVerified(state, partition, ring);
-            case OWNER, NONE -> ring.advanceVisible(Math.min(ring.durableOffset(),
-                                                             replicationManager.replicatedThrough(config.name(),
-                                                                                                  partition,
-                                                                                                  config.confirmationFactor() - 1)));
+            case OWNER -> ring.advanceVisible(replicaAckedBound(config, partition, ring));
+            case NONE -> ring.advanceVisible(replicaAckedBound(config, partition, ring));
         }
 
         ring.addAppendListener(visible -> announceVisible(config.name(), partition, visible));
         ring.addTruncationListener(keepThrough -> partitionLogEvents.truncated(config.name(), partition, keepThrough));
+    }
+
+    /// `min(durable, replicatedThrough(CF - 1))`: what the live replica acks support, the restore rule of the OWNER and NONE
+    /// arms of [#restoreVisible].
+    private long replicaAckedBound(StreamConfig config, int partition, OffHeapRingBuffer ring) {
+        return Math.min(ring.durableOffset(),
+                        replicationManager.replicatedThrough(config.name(), partition, config.confirmationFactor() - 1));
     }
 
     /// #2087: the owner's visible position moved: tell the replicas. Runs on the ring's serial notifier -- never under
