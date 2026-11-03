@@ -214,9 +214,11 @@ class StreamDeleteCreateOrderTest {
 
     /// Commit whatever is pending, newest first, until the caller has returned AND `settled` holds.
     private Result<Unit> driveUntilDone(CompletableFuture<Result<Unit>> future, BooleanSupplier settled) {
+        var deadline = System.nanoTime() + SPIN_LIMIT_NANOS;
+
         while (!future.isDone() || !settled.getAsBoolean() || node.pendingCount() > 0) {
             node.commitNewestFirst();
-            Thread.onSpinWait();
+            spinOrFail(deadline, "the caller to return with every submission committed");
         }
 
         return future.join();
@@ -226,8 +228,10 @@ class StreamDeleteCreateOrderTest {
         /// Unfixed code submits the create's Put next to the held Remove (two pending); fixed code parks the create behind
         /// the Remove (one pending, the creating thread waiting). Both are stable states to commit from.
         void awaitSubmittedOrParked(ForcedOrderNode node) {
+            var deadline = System.nanoTime() + SPIN_LIMIT_NANOS;
+
             while (node.pendingCount() < 2 && !parked()) {
-                Thread.onSpinWait();
+                spinOrFail(deadline, "the create to submit its Put or park behind the Remove");
             }
         }
 
@@ -236,6 +240,17 @@ class StreamDeleteCreateOrderTest {
 
             return t != null && (t.getState() == Thread.State.WAITING || t.getState() == Thread.State.TIMED_WAITING);
         }
+    }
+
+    /// A spin that never ends is a hang the class timeout cannot interrupt: every wait here is bounded and fails loudly.
+    private static final long SPIN_LIMIT_NANOS = TimeUnit.SECONDS.toNanos(20);
+
+    private static void spinOrFail(long deadlineNanos, String waitingFor) {
+        if (System.nanoTime() - deadlineNanos > 0) {
+            fail("gave up waiting for " + waitingFor);
+        }
+
+        Thread.onSpinWait();
     }
 
     private static StreamConfig config() {
@@ -287,8 +302,10 @@ class StreamDeleteCreateOrderTest {
         }
 
         void awaitPending(int count) {
+            var deadline = System.nanoTime() + SPIN_LIMIT_NANOS;
+
             while (pendingCount() < count) {
-                Thread.onSpinWait();
+                spinOrFail(deadline, count + " pending submission(s)");
             }
         }
 
