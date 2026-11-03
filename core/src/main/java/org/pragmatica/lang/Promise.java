@@ -1923,6 +1923,29 @@ public sealed interface Promise<T> permits PromiseImpl {
         return Causes.composite(Stream.of(results).map(result -> (Result<?>) result).toArray(Result<?>[]::new)).result();
     }
 
+    /// **[Side Effect]**
+    /// Install the process-wide [FatalEscapeHandler], which then receives every [Error] escaping a continuation
+    /// of any promise in this JVM. Meant for a host's entry point (`main`, a test extension), never for a
+    /// component that can exist more than once per JVM. The escapes recorded before the first install in the
+    /// process (the first 16) are replayed to the handler before this returns.
+    ///
+    /// @param handler the handler to install
+    ///
+    /// @return the registration whose [FatalEscapeHandler.Registration#uninstall()] frees the slot, or
+    ///         [FatalEscapeError#ALREADY_INSTALLED] when another handler holds it
+    static Result<FatalEscapeHandler.Registration> installFatalEscapeHandler(FatalEscapeHandler handler) {
+        return FatalEscapes.install(handler);
+    }
+
+    /// The number of [Error]s that escaped a continuation and reached no handler: those that escaped while no
+    /// handler was installed after the first install, and those beyond the replay buffer before it. Each one
+    /// was still logged at ERROR where it escaped.
+    ///
+    /// @return the count since JVM start
+    static long unownedFatalEscapes() {
+        return FatalEscapes.unowned();
+    }
+
     /// **[Resolution]**
     /// Cancel all provided promises.
     ///
@@ -3627,13 +3650,21 @@ final class PromiseImpl<T> implements Promise<T> {
     /// stay wedged either, so both happen, in that order. Not classified [Cause.Terminal] or
     /// [Cause.Transient]: an escape is a bug, and whether a retry can help is the caller's call
     /// (#1297's sealer retries its drain after a pause by design).
+    ///
+    /// Every [Error], a [VirtualMachineError] or not, is then handed to the installed [FatalEscapeHandler]
+    /// (see [FatalEscapes]); a [RuntimeException] is not. This is the only call into the hook, and it sits on
+    /// the escape path: the completion path does not reach it.
     static Cause escaped(String continuation, Throwable escape) {
+        var origin = originOf(escape);
         var cause = new CoreError.Exception("Throwable escaped " + continuation
-                                           + " continuation at " + originOf(escape)
+                                           + " continuation at " + origin
                                            + ": " + escape,
                                             escape);
 
         log.error("{}", cause.message(), escape);
+        if (escape instanceof Error error) {
+            FatalEscapes.escaped(continuation, error, origin);
+        }
 
         return cause;
     }
