@@ -39,7 +39,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.pragmatica.lang.Unit.unit;
 
 /// The fatal-escape hook: every [Error] escaping a continuation reaches the installed [FatalEscapeHandler] exactly
-/// once, a [RuntimeException] never does, escapes before the first install are replayed to it, and the slot,
+/// once per continuation boundary crossed (a rethrown VME crossing two boundaries is delivered twice), a [RuntimeException] never does, escapes before the first install are replayed to it, and the slot,
 /// the buffer and the handler are contained (the drain-and-lock rule).
 ///
 /// Each test starts from a fresh-JVM state through [FatalEscapes#resetForTesting()], because the buffer closes
@@ -103,6 +103,20 @@ class FatalEscapeHookTest {
             assertFailedWith(promise, error);
             assertThat(recorder.escapes()).hasSize(1);
             assertDelivered(recorder.escapes().getFirst(), error, PromiseImpl.ASYNC);
+        }
+
+        @Test
+        void rethrownVme_crossingTwoBoundaries_isDeliveredOncePerBoundary() {
+            var recorder = installRecorder();
+            var error = error("stackOverflow");
+            var inner = Promise.<Integer>promise();
+
+            inner.map(_ -> raise(error));
+
+            assertThatThrownBy(() -> Promise.success(1).onResult(_ -> inner.succeed(1))).isSameAs(error);
+            assertThat(recorder.escapes()).extracting(FatalEscape::error).containsExactly(error, error);
+            assertThat(recorder.escapes()).extracting(FatalEscape::continuation)
+                                          .containsExactly(PromiseImpl.REPLACE_RESULT, PromiseImpl.ON_RESULT);
         }
 
         @Test

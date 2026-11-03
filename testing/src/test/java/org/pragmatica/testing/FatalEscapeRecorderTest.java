@@ -106,6 +106,42 @@ class FatalEscapeRecorderTest {
             }
         }
 
+        @Test
+        void escapeDeliveredAfterTeardown_warnsNamingErrorAndTest() {
+            var recorder = FatalEscapeRecorder.fatalEscapeRecorder();
+            var late = new AssertionError("late escape");
+            var escape = new FatalEscape("onResult", late, "com.example.Origin.method(Origin.java:7)", "worker-1");
+
+            recorder.beforeEach(context("the finished test"));
+            recorder.afterEach(context("the finished test"));
+
+            try (var log = LogCapture.capture(FatalEscapeRecorder.class, Level.WARN, false)) {
+                recorder.record(escape);
+
+                assertThat(log.messages(Level.WARN)).anySatisfy(message -> assertThat(message).contains("late escape")
+                                                                                              .contains("onResult")
+                                                                                              .contains("teardown of the finished test"));
+                assertThat(recorder.recorded()).isEmpty();
+            }
+        }
+
+        @Test
+        void escapeDeliveredWhileInstalled_isRecordedWithoutWarning() {
+            var recorder = FatalEscapeRecorder.fatalEscapeRecorder();
+            var escape = new FatalEscape("onResult", new AssertionError("in time"), "origin", "worker-1");
+
+            recorder.beforeEach(context("the running test"));
+
+            try (var log = LogCapture.capture(FatalEscapeRecorder.class, Level.WARN, false)) {
+                recorder.record(escape);
+
+                assertThat(recorder.recorded()).containsExactly(escape);
+                assertThat(log.messages(Level.WARN)).noneMatch(message -> message.contains("delivered after the teardown"));
+            }
+
+            recorder.afterEach(context("the running test"));
+        }
+
         private static ExtensionContext context(String displayName) {
             return (ExtensionContext) Proxy.newProxyInstance(ExtensionContext.class.getClassLoader(),
                                                             new Class<?>[]{ExtensionContext.class},

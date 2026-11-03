@@ -3663,10 +3663,22 @@ final class PromiseImpl<T> implements Promise<T> {
 
         log.error("{}", cause.message(), escape);
         if (escape instanceof Error error) {
-            FatalEscapes.escaped(continuation, error, origin);
+            notifyFatalEscape(continuation, error, origin);
         }
 
         return cause;
+    }
+
+    /// The hook must never change the escape's own handling: whatever it throws (a StackOverflowError on a
+    /// near-exhausted stack, a NoClassDefFoundError once its class failed to initialise) is dropped here, so
+    /// the caller still resolves the dependent and rethrows a VME exactly as without a handler.
+    @SuppressWarnings("JBCT-EX-03")
+    private static void notifyFatalEscape(String continuation, Error error, String origin) {
+        try {
+            FatalEscapes.escaped(continuation, error, origin);
+        } catch (Throwable hookFailure) {
+            // Nothing safe to do on this path; the escape itself was already logged above.
+        }
     }
 
     /// The origin named in the Cause is the first frame that belongs to neither the JDK nor this library:
@@ -3863,5 +3875,8 @@ final class PromiseImpl<T> implements Promise<T> {
         // LockSupport.park: https://bugs.openjdk.org/browse/JDK-8074773
         @SuppressWarnings("unused")
         Class<?> ensureLoaded = LockSupport.class;
+        // Initialise the fatal-escape hook here, on an ordinary stack: initialised first inside the catch of a
+        // StackOverflowError it can fail, and a class that failed to initialise stays unusable for the JVM's life.
+        FatalEscapes.unowned();
     }
 }

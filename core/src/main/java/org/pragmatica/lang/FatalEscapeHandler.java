@@ -33,8 +33,12 @@ package org.pragmatica.lang;
 /// the handler itself runs, on the same thread, does not reach the handler again, so a handler that uses
 /// [Promise] cannot recurse into itself.
 ///
-/// Delivery is exactly once per escape, but not ordered: an escape delivered directly after an install can
-/// arrive before the replay of the escapes recorded before that install.
+/// Delivery is exactly once per continuation boundary crossed, not once per [Error] object: a
+/// [VirtualMachineError] is rethrown by the boundary that caught it, so when that rethrow crosses further
+/// boundaries (a continuation that itself resolves another promise) the same object is delivered once at each.
+/// A handler that must act once per error compares [FatalEscape#error()] by identity. Delivery is not ordered
+/// either: an escape delivered directly after an install can arrive before the replay of the escapes recorded
+/// before that install.
 @FunctionalInterface
 public interface FatalEscapeHandler {
     /// Receive one escape.

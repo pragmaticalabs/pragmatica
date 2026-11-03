@@ -55,6 +55,12 @@ import static org.pragmatica.lang.Unit.unit;
 /// [Promise#unownedFatalEscapes()] and logs a WARN naming the test that just ran when the count rose since the
 /// previous teardown, which is how an escape between two tests, or in a test without the extension, shows up.
 ///
+/// An escape can still reach the recorder after its test's teardown: an escape that read the slot just before
+/// the uninstall may call the handler once after `uninstall` returned (the race stated on
+/// [FatalEscapeHandler.Registration#uninstall()]), for example from the previous test's leftover executor work.
+/// It is delivered, so it is not in the unowned count, and no test's [#recorded()] holds it. The extension
+/// therefore logs a WARN naming the error, the continuation and the test that had finished.
+///
 /// The escapes recorded before the first install in the JVM are replayed into the first test that installs,
 /// whichever test produced them. Recording is not ordered.
 public final class FatalEscapeRecorder implements BeforeEachCallback, AfterEachCallback {
@@ -63,6 +69,9 @@ public final class FatalEscapeRecorder implements BeforeEachCallback, AfterEachC
 
     private final List<FatalEscape> recorded = new CopyOnWriteArrayList<>();
     private volatile Option<FatalEscapeHandler.Registration> registration = Option.none();
+    // True from just before the install (the replay of pre-install escapes runs inside it) until the uninstall.
+    private volatile boolean active;
+    private volatile String lastTest = "no test yet";
 
     private FatalEscapeRecorder() {}
 
@@ -85,6 +94,8 @@ public final class FatalEscapeRecorder implements BeforeEachCallback, AfterEachC
     @Contract
     public void beforeEach(ExtensionContext context) {
         recorded.clear();
+        lastTest = context.getDisplayName();
+        active = true;
         registration = Option.some(Promise.installFatalEscapeHandler(this::record).expect("FatalEscapeRecorder cannot install for " + context.getDisplayName()));
     }
 
@@ -94,13 +105,30 @@ public final class FatalEscapeRecorder implements BeforeEachCallback, AfterEachC
         var held = registration;
 
         registration = Option.none();
+        active = false;
         held.map(FatalEscapeHandler.Registration::uninstall)
             .onPresent(uninstalled -> uninstalled.expect("FatalEscapeRecorder lost its slot during " + context.getDisplayName()));
         reportUnowned(context.getDisplayName());
     }
 
-    private Unit record(FatalEscape escape) {
-        recorded.add(escape);
+    /// Package-private so that a test can deliver after teardown, as the uninstall race does.
+    Unit record(FatalEscape escape) {
+        if (active) {
+            recorded.add(escape);
+        } else {
+            warnLate(escape);
+        }
+
+        return unit();
+    }
+
+    private Unit warnLate(FatalEscape escape) {
+        log.warn("{} escaping {} at {} on {} was delivered after the teardown of {}; no test records it",
+                 escape.error(),
+                 escape.continuation(),
+                 escape.origin(),
+                 escape.threadName(),
+                 lastTest);
 
         return unit();
     }

@@ -42,9 +42,16 @@ import static org.pragmatica.lang.Unit.unit;
 /// counted as unowned, never buffered, so it cannot be replayed into a later handler. One lock guards exactly two
 /// compound steps, "slot empty, so record" and "set the slot, then take the buffer". An escape reads the slot
 /// (one volatile read) and, when a handler is present, calls it without the lock; when none is, it takes the
-/// lock and checks again. The install replays what it took outside the lock. So every escape is delivered
-/// exactly once (it recorded before the take and is replayed, or it saw the slot set and is delivered directly)
-/// or counted as unowned, and never both.
+/// lock and checks again. The install replays what it took outside the lock. So every boundary crossing is
+/// delivered exactly once (it recorded before the take and is replayed, or it saw the slot set and is delivered
+/// directly) or counted as unowned, and never both. A rethrown [VirtualMachineError] crossing several
+/// continuation boundaries is one crossing at each, so the same [Error] object is delivered (or counted) once
+/// per boundary; the handler's contract says so.
+///
+/// **Class initialisation.** This class is initialised by `PromiseImpl`'s static initialiser, on an ordinary
+/// stack. Initialised lazily inside the catch of a `StackOverflowError`, its own static initialiser can fail,
+/// and a class that failed to initialise stays unusable for the JVM's life; `PromiseImpl.escaped` additionally
+/// drops whatever the hook throws, so the hook can never change the escape's own handling.
 ///
 /// Escapes recorded before the first install in a JVM are replayed into whichever handler installs first, which
 /// in a test JVM is the first test that installs one, whatever test produced them.
