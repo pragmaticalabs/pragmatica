@@ -36,6 +36,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
@@ -898,8 +900,11 @@ class ClusterDeploymentStateTransactionalTest {
         @Override public Promise<Unit> stop() {return Promise.unitPromise();}
 
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
-            commands.addAll(batch);
-            batches.add(List.copyOf(batch));
+            // #2584 P0: a rollback is one LeaderTransaction; record its mutations as the batch (see TransactionEffects).
+            var effective = TransactionEffects.effective(batch);
+
+            commands.addAll(effective);
+            batches.add(List.copyOf(effective));
 
             var failure = forcedApplyFailure;
             if (failure != null) {
@@ -932,8 +937,10 @@ class ClusterDeploymentStateTransactionalTest {
     }
 
     private static final class InMemoryKvStore extends KVStore<AetherKey, AetherValue> {
+        @SuppressWarnings({"unchecked", "rawtypes"})
         InMemoryKvStore(MessageRouter router) {
             super(router, stubSerializer(), stubDeserializer());
+            process(createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(SELF, 1)))));
         }
 
         void put(AetherKey key, AetherValue value) {
