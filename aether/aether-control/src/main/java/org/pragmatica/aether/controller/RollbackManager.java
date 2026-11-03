@@ -45,6 +45,9 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -250,14 +253,20 @@ public interface RollbackManager {
                          Option<Version> lastRolledBackFrom,
                          Option<Version> lastRolledBackTo) {}
 
-    /// A fixed policy and no rollback reporter — for tests and embedding only; a node wires
-    /// [#rollbackManager(NodeId, Supplier, ClusterNode, KVStore, LeaderManager, Consumer)].
+    /// A fixed policy, no rollback reporter and no operator-warning sink — for tests and embedding only; a node wires
+    /// [#rollbackManager(NodeId, Supplier, ClusterNode, KVStore, LeaderManager, Consumer, OperatorWarningSink)].
     static RollbackManager rollbackManager(NodeId self,
                                            RollbackConfig config,
                                            ClusterNode<KVCommand<AetherKey>> cluster,
                                            KVStore<AetherKey, AetherValue> kvStore,
                                            LeaderManager leaderManager) {
-        return rollbackManager(self, () -> config, cluster, kvStore, leaderManager, RollbackManager::ignoreRollback);
+        return rollbackManager(self,
+                               () -> config,
+                               cluster,
+                               kvStore,
+                               leaderManager,
+                               RollbackManager::ignoreRollback,
+                               OperatorWarningSink.logOnly());
     }
 
     @Contract
@@ -265,13 +274,15 @@ public interface RollbackManager {
 
     /// #1573: `policy` is the committed cluster-wide `[rollback]` section, read at every decision so a committed
     /// change (e.g. `enabled = false`) takes effect without a restart. `reporter` receives every committed
-    /// rollback, with its evidence, for the CRITICAL cluster event.
+    /// rollback, with its evidence, for the CRITICAL cluster event. `warnings` receives the operator warning raised when
+    /// the rollback record cannot be reconciled with its SliceTarget (#2613).
     static RollbackManager rollbackManager(NodeId self,
                                            Supplier<RollbackConfig> policy,
                                            ClusterNode<KVCommand<AetherKey>> cluster,
                                            KVStore<AetherKey, AetherValue> kvStore,
                                            LeaderManager leaderManager,
-                                           Consumer<RollbackEvent.AutoRollbackExecuted> reporter) {
+                                           Consumer<RollbackEvent.AutoRollbackExecuted> reporter,
+                                           OperatorWarningSink warnings) {
         record rollbackManager(NodeId self,
                                Supplier<RollbackConfig> policy,
                                Consumer<RollbackEvent.AutoRollbackExecuted> reporter,
@@ -279,11 +290,48 @@ public interface RollbackManager {
                                KVStore<AetherKey, AetherValue> kvStore,
                                LeaderManager leaderManager,
                                ConcurrentHashMap<ArtifactBase, RollbackState> rollbackStates,
+                               Set<ArtifactBase> exhausted,
+                               OperatorWarningSink warnings,
                                Logger log) implements RollbackManager {
+            /// Attempts per refusal chain: the first write and two re-derivations. A guess (taste); settle by the contention test.
+            private static final int MAX_RECORD_ATTEMPTS = 3;
+
+            /// What triggered a derivation of the rollback record (#2613). The record is always re-derived from the
+            /// committed target and record; the context only decides which previous version the derivation may name.
+            sealed interface DerivationContext {
+                /// A delivered SliceTarget put: the value it carried and the value it replaced.
+                record Notification(SliceTargetValue value, Option<SliceTargetValue> oldValue) implements DerivationContext {}
+
+                /// A refused write's own (previous, current) pair.
+                record Retry(Version previous, Version current) implements DerivationContext {}
+
+                /// A new leader's activation: no notification names the change.
+                enum Activation implements DerivationContext {
+                    INSTANCE
+                }
+            }
+
+            /// The committed target and record a derivation read.
+            record Observed(ArtifactBase base, SliceTargetValue target, Option<PreviousVersionValue> record) {
+                boolean isRecorded() {
+                    return record.filter(value -> value.currentVersion()
+                                                       .equals(target.currentVersion()))
+                                 .isPresent();
+                }
+
+                Option<Version> recordedVersion() {
+                    return record.map(PreviousVersionValue::currentVersion);
+                }
+            }
+
+            /// A guarded record write ready to submit.
+            record RecordWrite(ArtifactBase base, KVCommand.LeaderTransaction<AetherKey, AetherValue> transaction) {}
+
             @Override
             public Promise<Unit> activate() {
                 log.info("Node {} activating RollbackManager", self);
                 loadPreviousVersionsFromKvStore();
+                deriveRecordsOnActivation();
 
                 return Promise.unitPromise();
             }
@@ -304,7 +352,8 @@ public interface RollbackManager {
             @Override
             public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {
                 trackVersionChange(valuePut.cause().key().artifactBase(),
-                                   valuePut.cause().value());
+                                   valuePut.cause().value(),
+                                   valuePut.oldValue());
             }
 
             @Override
@@ -410,7 +459,27 @@ public interface RollbackManager {
             @Override
             public void resetRollbackCount(ArtifactBase artifactBase) {
                 rollbackStates.computeIfPresent(artifactBase, (_, state) -> resetState(artifactBase, state));
-                previousVersionValue(artifactBase).onPresent(value -> putPreviousVersion(value.withRollbackCountReset()));
+                resetRecord(artifactBase, 1);
+            }
+
+            /// #2613: the reset is a record-only writer, so it is a leader transaction with a CAS on the record as read and no target
+            /// witness. A refusal re-reads and retries within [#MAX_RECORD_ATTEMPTS]; the write needs this node to be the committed leader.
+            @Contract
+            private void resetRecord(ArtifactBase artifactBase, int attempt) {
+                committedLeaderIsSelf().flatMap(leader -> resetWrite(leader, artifactBase))
+                                     .onPresent(write -> submitRecord(write,
+                                                                      attempt,
+                                                                      () -> resetRecord(artifactBase, attempt + 1)))
+                                     .onEmpty(() -> log.debug("Rollback count reset for {} not written: no record, or this node is not the committed leader",
+                                                              artifactBase));
+            }
+
+            private Option<RecordWrite> resetWrite(LeaderValue leader, ArtifactBase artifactBase) {
+                return previousVersionValue(artifactBase).map(record -> new RecordWrite(artifactBase,
+                                                                                        recordTransaction(leader,
+                                                                                                          List.of(),
+                                                                                                          Option.some(record),
+                                                                                                          record.withRollbackCountReset())));
             }
 
             private RollbackState resetState(ArtifactBase artifactBase, RollbackState state) {
@@ -447,7 +516,13 @@ public interface RollbackManager {
                               .map(PreviousVersionValue.class::cast);
             }
 
-            private void trackVersionChange(ArtifactBase artifactBase, SliceTargetValue sliceTargetValue) {
+            /// #2613: the mirror follows the notification (its `currentVersion` feeds [#decide]'s eligibility); its counters arrive only
+            /// through [#onPreviousVersionPut] when a record commits, never from an uncommitted derivation. The record itself is then
+            /// re-derived from the committed target and record, version change or not.
+            @Contract
+            private void trackVersionChange(ArtifactBase artifactBase,
+                                            SliceTargetValue sliceTargetValue,
+                                            Option<SliceTargetValue> oldValue) {
                 if (!leaderManager.isLeader()) {
                     return;
                 }
@@ -456,13 +531,14 @@ public interface RollbackManager {
 
                 rollbackStates.compute(artifactBase,
                                        (ab, existing) -> computeVersionTracking(ab, existing, currentVersion));
+                deriveRecord(artifactBase, new DerivationContext.Notification(sliceTargetValue, oldValue), 1);
             }
 
             private RollbackState computeVersionTracking(ArtifactBase ab,
                                                          RollbackState existing,
                                                          Version currentVersion) {
                 return Option.option(existing)
-                             .map(state -> computeVersionChange(state, ab, currentVersion))
+                             .map(state -> trackVersion(state, ab, currentVersion))
                              .or(() -> initialDeploymentState(ab, currentVersion));
             }
 
@@ -472,13 +548,7 @@ public interface RollbackManager {
                 return RollbackState.initial(ab, currentVersion);
             }
 
-            /// #1573: the committed value is authoritative. A rollback commits its PreviousVersionValue in the
-            /// same batch as (and ahead of) the SliceTarget put, so by the time this runs for a rollback the
-            /// value already names the new target and nothing is rewritten — the rollback history is never
-            /// clobbered by the version change it caused.
-            private RollbackState computeVersionChange(RollbackState state,
-                                                       ArtifactBase artifactBase,
-                                                       Version newVersion) {
+            private RollbackState trackVersion(RollbackState state, ArtifactBase artifactBase, Version newVersion) {
                 if (state.currentVersion().equals(newVersion)) {
                     return state;
                 }
@@ -487,37 +557,208 @@ public interface RollbackManager {
                          artifactBase,
                          state.currentVersion(),
                          newVersion);
-                var committed = previousVersionValue(artifactBase);
 
-                if (committed.filter(value -> value.currentVersion()
-                                                   .equals(newVersion)).isPresent()) {
-                    return state.withKVStoreUpdate(committed.unwrap());
-                }
+                return state.withVersionChange(newVersion);
+            }
 
-                var next = committed.map(value -> value.withVersionChange(newVersion,
-                                                                          System.currentTimeMillis()))
-                                    .or(() -> PreviousVersionValue.previousVersionValue(artifactBase,
-                                                                                        state.currentVersion(),
-                                                                                        newVersion));
+            /// A new leader records every version change no leader recorded across the handover. `[mechanism: the leader notification
+            /// is derived from the committed LeaderKey, so at this point the store already names this node; a later LeaderKey
+            /// naming another node refuses the write]`.
+            @Contract
+            private void deriveRecordsOnActivation() {
+                kvStore.forEach(SliceTargetKey.class,
+                                SliceTargetValue.class,
+                                (key, _) -> deriveRecord(key.artifactBase(), DerivationContext.Activation.INSTANCE, 1));
+            }
 
-                putPreviousVersion(next);
-
-                return state.withKVStoreUpdate(next);
+            /// #2613: the one rule that writes the rollback record, run by the SliceTarget handler, by every retry and by activation.
+            /// Reads the HEAD target and record, then writes a guarded record only when the record lags the target and the context can
+            /// name the previous version. Never writes from the mirror.
+            @Contract
+            private void deriveRecord(ArtifactBase artifactBase, DerivationContext context, int attempt) {
+                committedLeaderIsSelf().onPresent(leader -> deriveAs(leader, artifactBase, context, attempt))
+                                     .onEmpty(() -> log.debug("Rollback record for {} not derived: this node is not the committed leader",
+                                                              artifactBase));
             }
 
             @Contract
-            private void putPreviousVersion(PreviousVersionValue value) {
-                var command = new KVCommand.Put<AetherKey, AetherValue>(PreviousVersionKey.previousVersionKey(value.artifactBase()),
-                                                                        value);
+            private void deriveAs(LeaderValue leader,
+                                  ArtifactBase artifactBase,
+                                  DerivationContext context,
+                                  int attempt) {
+                observe(artifactBase).onPresent(observed -> deriveFrom(leader, observed, context, attempt));
+            }
 
-                cluster.apply(List.of(command))
-                       .onSuccess(_ -> log.debug("Stored rollback record for {}: previous={} current={}",
-                                                 value.artifactBase(),
-                                                 value.previousVersion(),
-                                                 value.currentVersion()))
+            private Option<Observed> observe(ArtifactBase artifactBase) {
+                return currentTarget(artifactBase).map(target -> new Observed(artifactBase,
+                                                                              target,
+                                                                              previousVersionValue(artifactBase)));
+            }
+
+            @Contract
+            private void deriveFrom(LeaderValue leader, Observed observed, DerivationContext context, int attempt) {
+                if (observed.isRecorded()) {
+                    closeExhaustion(observed.base());
+
+                    return;
+                }
+
+                previousVersion(context, observed).onPresent(previous -> writeVersionChange(leader,
+                                                                                            observed,
+                                                                                            previous,
+                                                                                            attempt));
+            }
+
+            /// A refused write re-derives with its own (previous, current) pair, so the retry rewrites exactly that change while the
+            /// target still names it, and writes nothing once a later version change has replaced it.
+            @Contract
+            private void writeVersionChange(LeaderValue leader, Observed observed, Version previous, int attempt) {
+                var retry = new DerivationContext.Retry(previous,
+                                                        observed.target().currentVersion());
+
+                submitRecord(versionChangeWrite(leader, observed, previous),
+                             attempt,
+                             () -> deriveRecord(observed.base(), retry, attempt + 1));
+            }
+
+            /// Which version the record may name as previous, or none when this derivation must write nothing.
+            ///
+            /// - Notification equal to the HEAD target: the version it replaced if that differs (today's meaning, "previous of C is
+            ///   B"), else the record's current version (a non-version change after an earlier change went unrecorded). Neither:
+            ///   a first deployment, nothing to write. The gate is `oldValue` and the committed record, never the mirror.
+            /// - Notification that differs from the HEAD target (read-ahead): nothing. The later notification for that key is queued
+            ///   on this node and derives from its own `oldValue`.
+            /// - Retry: its own previous, only if the target still names the version it carried; a later version change is
+            ///   re-derived by its own notification.
+            /// - Activation: the record's current version (an approximation across a handover: a version between the record's and
+            ///   the target's may have gone unrecorded by every leader).
+            private static Option<Version> previousVersion(DerivationContext context, Observed observed) {
+                return switch (context) {
+                    case DerivationContext.Notification notification -> notificationPrevious(notification, observed);
+                    case DerivationContext.Retry retry -> retryPrevious(retry, observed);
+                    case DerivationContext.Activation _ -> observed.recordedVersion();
+                };
+            }
+
+            private static Option<Version> notificationPrevious(DerivationContext.Notification notification,
+                                                                Observed observed) {
+                return notification.value()
+                                   .equals(observed.target())
+                       ? replacedVersion(notification, observed).orElse(observed.recordedVersion())
+                       : Option.none();
+            }
+
+            private static Option<Version> replacedVersion(DerivationContext.Notification notification,
+                                                           Observed observed) {
+                return notification.oldValue()
+                                   .map(SliceTargetValue::currentVersion)
+                                   .filter(replaced -> !replaced.equals(observed.target().currentVersion()));
+            }
+
+            private static Option<Version> retryPrevious(DerivationContext.Retry retry, Observed observed) {
+                return retry.current()
+                            .equals(observed.target().currentVersion())
+                       ? Option.some(retry.previous())
+                       : Option.none();
+            }
+
+            private RecordWrite versionChangeWrite(LeaderValue leader, Observed observed, Version previous) {
+                var current = observed.target().currentVersion();
+                var next = observed.record()
+                                   .map(value -> value.withVersionChange(previous,
+                                                                         current,
+                                                                         System.currentTimeMillis()))
+                                   .or(() -> PreviousVersionValue.previousVersionValue(observed.base(),
+                                                                                       previous,
+                                                                                       current));
+                var targetWitness = new KVCommand.ReadWitness<AetherKey>(SliceTargetKey.sliceTargetKey(observed.base()),
+                                                                         Option.some(observed.target()));
+
+                return new RecordWrite(observed.base(),
+                                       recordTransaction(leader, List.of(targetWitness), observed.record(), next));
+            }
+
+            /// The guarded write of one rollback record: this node still the committed leader, every witness unchanged, and the record
+            /// still the value read. The target witness is the whole value on purpose: a version-only comparison is not expressible
+            /// (`ReadWitness` compares by `equals`), and the whole value bounds ABA because `SliceTargetValue.withVersion` stamps
+            /// `updatedAt`. Do not simplify it to the version.
+            private static KVCommand.LeaderTransaction<AetherKey, AetherValue> recordTransaction(LeaderValue leader,
+                                                                                                 List<KVCommand.ReadWitness<AetherKey>> guards,
+                                                                                                 Option<PreviousVersionValue> before,
+                                                                                                 PreviousVersionValue next) {
+                var recordKey = PreviousVersionKey.previousVersionKey(next.artifactBase());
+                var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(recordKey,
+                                                                              before.map(AetherValue.class::cast),
+                                                                              Option.<AetherValue> some(next));
+
+                return new KVCommand.LeaderTransaction<AetherKey, AetherValue>(recordKey,
+                                                                               UUID.randomUUID().toString(),
+                                                                               leader,
+                                                                               guards,
+                                                                               List.of(mutation));
+            }
+
+            @Contract
+            private void submitRecord(RecordWrite write, int attempt, Runnable retry) {
+                var transaction = write.transaction();
+
+                cluster.<Object> apply(List.<KVCommand<AetherKey>> of(transaction))
+                       .map(results -> accepted(results,
+                                                transaction.transactionId()))
+                       .onSuccess(accepted -> onRecordSubmitted(accepted, write, attempt, retry))
                        .onFailure(cause -> log.error("Failed to store rollback record for {}: {}",
-                                                     value.artifactBase(),
+                                                     write.base(),
                                                      cause.message()));
+            }
+
+            /// A refusal writes nothing itself: `retry` re-derives from the committed state, and the derivation decides whether a write is
+            /// still owed. After the last attempt the record is left lagging, reported, and healed by the next SliceTarget update or
+            /// the next leader's activation.
+            @Contract
+            private void onRecordSubmitted(boolean accepted, RecordWrite write, int attempt, Runnable retry) {
+                if (accepted) {
+                    log.debug("Stored rollback record for {}", write.base());
+                    closeExhaustion(write.base());
+
+                    return;
+                }
+
+                if (attempt >= MAX_RECORD_ATTEMPTS) {
+                    reportExhausted(write.base());
+
+                    return;
+                }
+
+                log.debug("Rollback record write for {} refused by its guard (attempt {}), re-deriving",
+                          write.base(),
+                          attempt);
+                retry.run();
+            }
+
+            @Contract
+            private void reportExhausted(ArtifactBase artifactBase) {
+                exhausted.add(artifactBase);
+                OperatorWarnings.raise(log,
+                                       warnings,
+                                       OperatorWarningCode.ROLLBACK_RECORD_RECONCILE_EXHAUSTED,
+                                       artifactBase.asString(),
+                                       "Rollback record for {} still lags its SliceTarget after {} refused writes; "
+                                      + "the next SliceTarget update or leader activation re-derives it",
+                                       artifactBase.asString(),
+                                       MAX_RECORD_ATTEMPTS);
+            }
+
+            /// Recovery of [#reportExhausted], raised once, by the node that raised the warning, when the record is next seen current.
+            @Contract
+            private void closeExhaustion(ArtifactBase artifactBase) {
+                if (exhausted.remove(artifactBase)) {
+                    OperatorWarnings.raise(log,
+                                           warnings,
+                                           OperatorWarningCode.ROLLBACK_RECORD_RECONCILED,
+                                           artifactBase.asString(),
+                                           "Rollback record for {} names its SliceTarget version again",
+                                           artifactBase.asString());
+                }
             }
 
             @Contract
@@ -566,8 +807,8 @@ public interface RollbackManager {
             }
 
             /// #1573: the rollback record and the SliceTarget change commit as ONE leader transaction, record
-            /// first, so the version-change notification the target raises already sees the record (see
-            /// [#computeVersionChange]). #1573 N2: the transaction is fenced on the state the decision was made
+            /// first, so the version-change notification the target raises already finds the record current (see
+            /// [#deriveRecord]). #1573 N2: the transaction is fenced on the state the decision was made
             /// from — the committed cluster config (the `[rollback]` policy's source), the SliceTarget still
             /// naming the failed version, the rollback record as read, and this node still the committed
             /// leader. A lost race is a no-op and a DEBUG line, never a rollback of a newer target.
@@ -720,6 +961,8 @@ public interface RollbackManager {
                                           kvStore,
                                           leaderManager,
                                           new ConcurrentHashMap<>(),
+                                          ConcurrentHashMap.newKeySet(),
+                                          warnings,
                                           LoggerFactory.getLogger(RollbackManager.class));
 
         manager.loadPreviousVersionsFromKvStore();
