@@ -570,8 +570,8 @@ public sealed interface StreamError extends Cause {
         @Override
         public String message() {
             return "Append refused for %s[%d]: the partition's WAL on this node can no longer write (%s); replace the node".formatted(streamName,
-                                                                                                                                         partition,
-                                                                                                                                         cause.message());
+                                                                                                                                      partition,
+                                                                                                                                      cause.message());
         }
 
         @Override

@@ -4152,7 +4152,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                               payload,
                                                                                               timestamp,
                                                                                               provenance)))
-                                                  .or(() -> success(offset));
+                           .or(() -> success(offset));
 
         provenance.onPresent(_ -> flagMissingHistory(streamName, partition, offset));
 
@@ -6672,7 +6672,13 @@ public final class StreamPartitionManager implements AutoCloseable {
 
             return Result.allOf(ringResults)
                          .mapError(_ -> StreamError.General.STREAM_MEMORY_EXCEEDED)
-                         .flatMap(rings -> openEntryWals(config, selected, rings, logs, lastSealedOffset, trimFailed, failStopped))
+                         .flatMap(rings -> openEntryWals(config,
+                                                         selected,
+                                                         rings,
+                                                         logs,
+                                                         lastSealedOffset,
+                                                         trimFailed,
+                                                         failStopped))
                          .onFailure(_ -> closeBuilt(ringResults));
         }
 
@@ -6819,11 +6825,11 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                          TrimFailure trimFailed,
                                                          WalFailStop failStopped) {
             return openWals(config, selected, logs, lastSealedOffset, failStopped).flatMap(wals -> recoverWals(config,
-                                                                                selected,
-                                                                                rings,
-                                                                                wals,
-                                                                                lastSealedOffset,
-                                                                                trimFailed))
+                                                                                                               selected,
+                                                                                                               rings,
+                                                                                                               wals,
+                                                                                                               lastSealedOffset,
+                                                                                                               trimFailed))
                            .map(wals -> entryOf(config, selected, rings, wals));
         }
 
@@ -7104,7 +7110,11 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                         LastSealedOffsetSource lastSealedOffset,
                                                                         WalFailStop failStopped) {
             var results = selected.stream()
-                                  .map(partition -> openPartitionWal(opener, config, partition, lastSealedOffset, failStopped).map(Option::some))
+                                  .map(partition -> openPartitionWal(opener,
+                                                                     config,
+                                                                     partition,
+                                                                     lastSealedOffset,
+                                                                     failStopped).map(Option::some))
                                   .toList();
 
             return Result.allOf(results).onFailure(_ -> closeOpenedWals(results));
@@ -7134,8 +7144,11 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                           LastSealedOffsetSource lastSealedOffset,
                                                           WalFailStop failStopped) {
             return opener.open(logName(config, partition))
-                         .map(wal -> wal.withSealedFloor(() -> lastSealedOffset.lastSealedOffset(config.name(), partition)))
-                         .map(wal -> wal.onFailStop(cause -> failStopped.walFailStopped(config.name(), partition, cause)));
+                         .map(wal -> wal.withSealedFloor(() -> lastSealedOffset.lastSealedOffset(config.name(),
+                                                                                                 partition)))
+                         .map(wal -> wal.onFailStop(cause -> failStopped.walFailStopped(config.name(),
+                                                                                        partition,
+                                                                                        cause)));
         }
 
         /// The log of one partition of one LIFE of a stream (#1278 review), shared by the open and the read-only

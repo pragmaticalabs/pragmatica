@@ -159,9 +159,9 @@ public final class AppendLog implements AutoCloseable {
     private static final int CRC_HEADER_BYTES = 8 + 8;
     /// File-size watermark past which a `truncate` triggers a compaction rewrite (else O(1) lazy).
     private static final long COMPACTION_THRESHOLD_BYTES = 8L * 1024 * 1024;
-
     /// The floor of a log opened without one ([#withSealedFloor]): nothing sealed, so only `lastOffset + 1` follows a record.
-    private static final LongSupplier NO_SEALED_FLOOR = () -> -1L;
+    private static final LongSupplier NO_SEALED_FLOOR = () -> - 1L;
+
     private static final Fn1<Cause, Throwable> APPEND_FAILED = t -> new WalError.AppendFailed(t.getMessage());
 
     private static final Fn1<Cause, Throwable> TRUNCATE_FAILED = t -> new WalError.TruncateFailed(t.getMessage());
@@ -844,8 +844,7 @@ public final class AppendLog implements AutoCloseable {
     /// Once per log: to the installed [#onFailStop] listener when there is one, to the sink otherwise. Two writers that both passed
     /// the health check before the first failure can each fail their frame, so the transition, not the call, is reported.
     private void reportFailStop(Cause cause) {
-        failStopListener.onPresent(listener -> listener.accept(cause))
-                        .onEmpty(() -> sink.failStopped(file, cause));
+        failStopListener.onPresent(listener -> listener.accept(cause)).onEmpty(() -> sink.failStopped(file, cause));
     }
 
     /// Runs under `syncLock` (the only writer of these fields). The timing wraps ONLY the

@@ -449,7 +449,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         }
 
         if (halted.isPresent()) {
-            return halted.unwrap().result();
+            return halted.unwrap()
+                         .result();
         }
 
         if (payload.length > dataRegionSize) {
@@ -517,7 +518,10 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     private <T> Result<T> halted(Cause withdrawalFailure) {
         halted = Option.some(withdrawalFailure);
         log.error("Ring {}[{}] HALTED: an ordered append whose continuation failed could not be withdrawn ({}); the ring accepts no "
-                 + "append until the partition is re-materialized", streamName, partition, withdrawalFailure.message());
+                 + "append until the partition is re-materialized",
+                  streamName,
+                  partition,
+                  withdrawalFailure.message());
 
         return withdrawalFailure.result();
     }
@@ -591,7 +595,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                         long nextOffset,
                                         Fn1<Result<Long>, Long> inOrder) {
         if (offset == nextOffset) {
-            return appendLocked(payload, timestamp).flatMap(assigned -> continuedOrWithdrawn(nextOffset - 1, inOrder, assigned));
+            return appendLocked(payload, timestamp).flatMap(assigned -> continuedOrWithdrawn(nextOffset - 1,
+                                                                                             inOrder,
+                                                                                             assigned));
         }
 
         return offset < nextOffset
@@ -780,7 +786,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         }
 
         if (halted.isPresent()) {
-            return halted.unwrap().result();
+            return halted.unwrap()
+                         .result();
         }
 
         if (payloads.isEmpty()) {

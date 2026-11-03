@@ -11,6 +11,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.storage.AppendLog;
 
+
 /// The admission of an owner append into a partition's ordered section (#2201 A-01, spec 5.2 items 1-2). [#admit] is the guard
 /// [OffHeapRingBuffer#appendOrdered(byte[], long, Supplier, org.pragmatica.lang.Functions.Fn1)] runs under the ring's append lock,
 /// before an offset exists: the owner-epoch fence, then the provenance check against the log's last recorded epoch, then the log's
@@ -26,7 +27,11 @@ record PartitionSection(String streamName,
                         Supplier<Result<Unit>> provenance,
                         Supplier<Option<AppendLog>> wal) {
     /// Admits every append: the section of a caller that checks for itself.
-    static final PartitionSection ADMIT_ALL = partitionSection("", -1, Result::unitResult, Result::unitResult, Option::none);
+    static final PartitionSection ADMIT_ALL = partitionSection("",
+                                                               - 1,
+                                                               Result::unitResult,
+                                                               Result::unitResult,
+                                                               Option::none);
 
     static PartitionSection partitionSection(String streamName,
                                              int partition,
