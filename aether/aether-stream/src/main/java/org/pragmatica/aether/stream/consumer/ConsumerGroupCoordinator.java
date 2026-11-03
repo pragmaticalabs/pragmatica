@@ -170,8 +170,8 @@ public sealed interface ConsumerGroupCoordinator {
             /// never carries an older member list: of two rebalances the later-stamped one is also the
             /// later-derived one, which is what lets the commit-side fence keep the newest.
             private synchronized List<KVCommand<AetherKey>> nextAssignmentCommands(String groupId,
-                                                                                    String streamName,
-                                                                                    int partitionCount) {
+                                                                                   String streamName,
+                                                                                   int partitionCount) {
                 var memberList = members.getOrDefault(new GroupKey(groupId, streamName), List.of());
 
                 if (memberList.isEmpty()) {
