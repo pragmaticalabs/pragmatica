@@ -48,6 +48,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryReasonKind;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.StreamFootprint;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
@@ -272,6 +273,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// #1730 phase 2 / #1873: the committed ownership records a validated consumer read is checked against, late-bound
     /// ([#ownershipRecords(OwnerActivation.OwnershipRecordSource)]); none until wired.
     private volatile OwnerActivation.OwnershipRecordSource ownershipRecords = (_, _) -> Option.none();
+    /// #2590 P1: where a partition's committed position and its suffix truncations are told, late-bound
+    /// ([#partitionLogEvents(PartitionLogEvents)]); nobody until wired.
+    private volatile PartitionLogEvents partitionLogEvents = PartitionLogEvents.NONE;
     /// #2201 C-16: the sealed tier a validated consumer read falls back to below the ring tail, late-bound
     /// ([#tieredReader(TieredStreamReader)]); none until wired, and then such a read answers `CursorExpired` at the ring tail.
     private volatile Option<TieredStreamReader> tieredReader = Option.none();
@@ -1094,6 +1098,26 @@ public final class StreamPartitionManager implements AutoCloseable {
     public void ownershipRecords(OwnerActivation.OwnershipRecordSource source) {
         this.ownershipRecords = source;
         boundSeams.add(StreamSeam.OWNERSHIP_RECORDS);
+    }
+
+    /// #2590 P1: bind the listener told each partition's committed position and suffix truncations. Not a safety seam:
+    /// until something builds an index over a partition's records there is nobody to tell.
+    @Contract
+    public void partitionLogEvents(PartitionLogEvents events) {
+        this.partitionLogEvents = events;
+    }
+
+    /// #2590 P1 (R4.1): the change counter of the committed in-sync set in the partition's ownership record, `0` for a
+    /// record minted before #1730 and for a partition with no record committed.
+    public long committedIsrVersion(String streamName, int partition) {
+        return ownershipRecords.committed(streamName, partition)
+                               .map(StreamPartitionOwnershipValue::isrVersion)
+                               .or(0L);
+    }
+
+    /// The ownership epoch an owner append of `(streamName, partition)` is stamped with now.
+    public Epoch currentOwnerEpoch(String streamName, int partition) {
+        return ownerEpochSource.currentOwnerEpoch(streamName, partition);
     }
 
     private Result<Unit> ownerRoleGate(String streamName, int partition) {
@@ -2234,6 +2258,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
 
         ring.addAppendListener(visible -> announceVisible(config.name(), partition, visible));
+        ring.addTruncationListener(keepThrough -> partitionLogEvents.truncated(config.name(), partition, keepThrough));
     }
 
     /// #2087: the owner's visible position moved: tell the replicas. Runs on the ring's serial notifier -- never under
@@ -2242,6 +2267,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void announceVisible(String streamName, int partition, long visible) {
         if (placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER) {
+            partitionLogEvents.committed(streamName, partition, visible);
             replicationManager.announceCommitted(streamName,
                                                  partition,
                                                  visible,
@@ -2281,6 +2307,17 @@ public final class StreamPartitionManager implements AutoCloseable {
         resolvePartitionBuffer(streamName, partition).onSuccess(ring -> exposeReplicaCommitted(streamName,
                                                                                                partition,
                                                                                                ring));
+        partitionLogEvents.committed(streamName, partition, committedMarkThrough(streamName, partition));
+    }
+
+    /// #2590 P1: how far this node knows `(streamName, partition)` to be committed. On the owner it is the ring's visible
+    /// position (fsync-durable here and acknowledged by the confirmation peers); on any other node it is the position the
+    /// committed owner announced (#2087), which may run ahead of what this node holds. `-1` when nothing is.
+    public long committedThrough(String streamName, int partition) {
+        return placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER
+               ? resolvePartitionBuffer(streamName, partition).map(OffHeapRingBuffer::visibleOffset)
+                                       .or(-1L)
+               : committedMarkThrough(streamName, partition);
     }
 
     /// A batch landed under `epoch`: the owner of that epoch is the one this replica now follows, so a position reported
@@ -3666,6 +3703,83 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// An owner append that has left the ordered section: its offset, and the group-commit fsync its WAL
     /// frame waits on (already resolved when the partition has no WAL).
     private record LoggedAppend(long offset, Promise<Unit> durable) {}
+
+    /// #2590 P1: a control-log run the owner appended, `[firstOffset, lastOffset]`, and the ONE group-commit fsync that
+    /// covers it. `durable` is not awaited here: the caller awaits it outside its own ordered section, and a failure of it
+    /// leaves the run appended and replicated, an unknown outcome rather than a refusal.
+    public record ControlRunAppend(long firstOffset, long lastOffset, Promise<Unit> durable) {}
+
+    /// #2590 P1: the control log's owner append of `payloads` as ONE run: the epoch fence, the owner admission (a
+    /// committed owner elsewhere answers [StreamError.NotOwnerAppend]), the replica floor, one run append, its WAL frames,
+    /// ONE replication message and ONE group commit, exactly as [#publishLocalBatchAtFloor]. A failure here is a refusal:
+    /// nothing reached the ring, the WAL or a replica. Unlike every publish path the fsync is NOT awaited: the returned
+    /// [ControlRunAppend] carries it. A stream this node has not materialized yet is materialized from the committed
+    /// config and the floor is that config's `CF - 1`, as [#publishForwarded] does.
+    public Result<ControlRunAppend> appendControlRun(String streamName,
+                                                     int partition,
+                                                     List<byte[]> payloads,
+                                                     long timestamp) {
+        return controlRun(streamName, partition, payloads, timestamp, confirmationFactorFor(streamName) - 1).fold(cause -> recoverControlRun(cause,
+                                                                                                                                             streamName,
+                                                                                                                                             partition,
+                                                                                                                                             payloads,
+                                                                                                                                             timestamp),
+                                                                                                                  Result::success);
+    }
+
+    private Result<ControlRunAppend> recoverControlRun(Cause cause,
+                                                       String streamName,
+                                                       int partition,
+                                                       List<byte[]> payloads,
+                                                       long timestamp) {
+        return cause instanceof StreamError.StreamNotFound
+               ? materializeThenControlRun(streamName, partition, payloads, timestamp)
+               : cause.result();
+    }
+
+    private Result<ControlRunAppend> materializeThenControlRun(String streamName,
+                                                               int partition,
+                                                               List<byte[]> payloads,
+                                                               long timestamp) {
+        return committedConfigSource.committedConfig(streamName)
+                                    .toResult(new StreamError.StreamConfigNotYetVisible(streamName))
+                                    .flatMap(config -> ensureStreamMaterialized(config).flatMap(_ -> controlRun(streamName,
+                                                                                                                partition,
+                                                                                                                payloads,
+                                                                                                                timestamp,
+                                                                                                                config.confirmationFactor() - 1)));
+    }
+
+    private Result<ControlRunAppend> controlRun(String streamName,
+                                                int partition,
+                                                List<byte[]> payloads,
+                                                long timestamp,
+                                                int minAcks) {
+        var ownerEpoch = ownerEpochSource.currentOwnerEpoch(streamName, partition);
+
+        return ensureWritableConsistency(streamName).flatMap(_ -> resolveWritableEntry(streamName))
+                                        .flatMap(entry -> publishBatchInSection(entry,
+                                                                                streamName,
+                                                                                partition,
+                                                                                payloads,
+                                                                                timestamp,
+                                                                                ownerEpoch,
+                                                                                minAcks))
+                                        .map(logged -> controlRunAppend(streamName,
+                                                                        partition,
+                                                                        payloads.size(),
+                                                                        logged));
+    }
+
+    /// The run's fsync, marking the run durable here once it resolves, as [#admittedBatch] does after its await.
+    private ControlRunAppend controlRunAppend(String streamName, int partition, int count, LoggedAppend logged) {
+        return new ControlRunAppend(logged.offset() - count + 1,
+                                    logged.offset(),
+                                    logged.durable()
+                                          .onSuccess(_ -> ownerDurable(streamName,
+                                                                       partition,
+                                                                       logged.offset())));
+    }
 
     /// Admitted storage run without single-event fallback: a caller retains per-event outcomes when
     /// an oversized run must be retried one event at a time. Refusals before append preserve the run.
