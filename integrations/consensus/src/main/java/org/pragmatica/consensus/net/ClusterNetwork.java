@@ -177,7 +177,6 @@ public interface ClusterNetwork {
     /// Implementations must not throw exceptions, and the returned promise always resolves successfully: a transport
     /// failure is an outcome, never a failed promise.
     <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message);
-
     /// Send a REQUEST frame whose caller stops waiting after `offlineTtl` (#1996), reporting the outcome as
     /// [#send(NodeId, ProtocolMessage)] does.
     ///
