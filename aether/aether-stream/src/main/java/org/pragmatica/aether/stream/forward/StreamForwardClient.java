@@ -24,6 +24,7 @@ import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.VisibleBounds;
 import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -399,7 +400,12 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
         var readWait = Deadline.current().bounded(readTimeout);
 
         SharedScheduler.schedule(() -> timeoutRead(message.correlationId()), readWait);
-        transport.send(target, message, readWait);
+        // #2574: a read the transport did not send fails at once; its scheduled timeout then finds no pending entry.
+        // detached: nothing chains on the outcome; the failure resolves the caller's promise through the pending-entry
+        // removal, which races the response and the timeout safely (whichever removes the entry resolves it).
+        transport.sendOutcome(target, message, readWait)
+                 .onSuccess(outcome -> failReadIfNotSent(outcome,
+                                                         message.correlationId()));
         log.trace("Sent ReadForward to {} for {}[{}] fromOffset={} maxEvents={} correlationId={} preference={}",
                   target,
                   message.streamName(),
@@ -550,6 +556,32 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
             metrics.recordTimeout();
             promise.resolve(READ_FORWARD_TIMEOUT.result());
         });
+    }
+
+    /// #2574 (CTO, know de7d2783de): a read whose frame was not sent fails at once. Refused under backpressure, a dead
+    /// connection or no peer state is the transient [StreamForwardError.ForwardNotSent] every re-reading caller backs off
+    /// on; an encode failure is the hard [StreamForwardError.ForwardNotEncoded], which no retry can change. `Sent` keeps the
+    /// read waiting for its answer. (A read is safe to fail on `ConnectionDead` even if the offline buffer later delivers
+    /// the frame: its late answer is orphaned.)
+    private static Option<Cause> notSentCause(WriteOutcome outcome) {
+        return switch (outcome) {
+            case WriteOutcome.Sent _ -> Option.none();
+            case WriteOutcome.BackpressureRefused _, WriteOutcome.ConnectionDead _, WriteOutcome.NoPeerState _ -> Option.some(StreamForwardError.ForwardNotSent.FACTORY.apply(outcome));
+            case WriteOutcome.EncodeFailed _ -> Option.some(StreamForwardError.ForwardNotEncoded.FACTORY.apply(outcome));
+        };
+    }
+
+    private void failReadIfNotSent(WriteOutcome outcome, String correlationId) {
+        notSentCause(outcome).onPresent(cause -> failRead(correlationId, cause));
+    }
+
+    private void failRead(String correlationId, Cause cause) {
+        option(pendingReads.remove(correlationId)).onPresent(promise -> notSent(promise, cause));
+    }
+
+    private static void notSent(Promise<ReadForwardResult> promise, Cause cause) {
+        log.debug("Stream forward read not sent: {}", cause.message());
+        promise.resolve(cause.result());
     }
 
     private static void logOrphanedPublishResponse(PublishForwardResponse response) {

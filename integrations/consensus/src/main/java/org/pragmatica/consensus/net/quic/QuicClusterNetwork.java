@@ -334,6 +334,32 @@ public class QuicClusterNetwork implements ClusterNetwork {
         return Unit.unit();
     }
 
+    private volatile java.util.function.BiPredicate<NodeId, ProtocolMessage> outboundRefusalFilter = (_, _) -> false;
+
+    /// Test-only fault injection (#2574), on the QUIC transport alone (no [ClusterNetwork] method): a unicast send whose
+    /// peer and message the filter matches is refused before it is written, as a backpressured fast-fail lane refuses it --
+    /// the frame is dropped, and a caller that asks for the outcome gets [WriteOutcome.BackpressureRefused]. It stands in for
+    /// the FORWARD-lane refusal a loopback cluster cannot produce on demand. Broadcasts are not filtered.
+    public Unit setOutboundRefusalFilter(java.util.function.BiPredicate<NodeId, ProtocolMessage> filter) {
+        outboundRefusalFilter = filter;
+
+        return Unit.unit();
+    }
+
+    /// True when the test-only outbound filter refuses this send; the refusal is logged (no transport counter moves: it is
+    /// not a real backpressure drop).
+    private boolean refusedByFaultFilter(NodeId peerId, ProtocolMessage message) {
+        if (!outboundRefusalFilter.test(peerId, message)) {
+            return false;
+        }
+
+        log.warn("Outbound fault filter refused {} to peer {} (simulated backpressure)",
+                 message.getClass().getSimpleName(),
+                 peerId);
+
+        return true;
+    }
+
     private volatile java.util.function.BiPredicate<NodeId, Message.Wired> inboundMessagePolicy = (_, _) -> true;
 
     @Override
@@ -1135,7 +1161,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     @Override
     public <M extends ProtocolMessage> Unit send(NodeId peerId, M message) {
-        if (blackholed) {
+        if (blackholed || refusedByFaultFilter(peerId, message)) {
             return unit();
         }
 
@@ -1146,7 +1172,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     @Override
     public <M extends ProtocolMessage> Unit send(NodeId peerId, M message, TimeSpan offlineTtl) {
-        if (blackholed) {
+        if (blackholed || refusedByFaultFilter(peerId, message)) {
             return unit();
         }
 
@@ -1185,6 +1211,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
             return Promise.success(new WriteOutcome.Sent(peerId));
         }
 
+        if (refusedByFaultFilter(peerId, message)) {
+            return Promise.success(new WriteOutcome.BackpressureRefused(peerId));
+        }
+
         return Promise.success(dispatchPayloadWithOutcome(peerId, message));
     }
 
@@ -1194,6 +1224,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                                          TimeSpan offlineTtl) {
         if (blackholed) {
             return Promise.success(new WriteOutcome.Sent(peerId));
+        }
+
+        if (refusedByFaultFilter(peerId, message)) {
+            return Promise.success(new WriteOutcome.BackpressureRefused(peerId));
         }
 
         return Promise.success(dispatchPayloadWithOutcome(peerId, message, expiryWithin(offlineTtl)));
