@@ -137,9 +137,9 @@ class FatalEscapeRecorderTest {
 
                 assertThat(recorder.recorded()).containsExactly(escape);
                 assertThat(log.messages(Level.WARN)).noneMatch(message -> message.contains("delivered after the teardown"));
+            } finally {
+                recorder.afterEach(context("the running test"));
             }
-
-            recorder.afterEach(context("the running test"));
         }
 
         private static ExtensionContext context(String displayName) {
