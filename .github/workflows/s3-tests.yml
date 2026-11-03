@@ -26,8 +26,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     concurrency:
-      group: s3-tests-${{ github.event.pull_request.number || github.ref }}
-      cancel-in-progress: true
+      # Push, schedule and dispatch runs on main and release-* are records: keyed by event and SHA, never
+      # cancelled while running. Only a newer run of the same PR cancels a PR run.
+      group: s3-tests-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     env:
       # Same mirror as ci.yml for Docker Hub images (testcontainers/ryuk); the MinIO image is on cgr.dev, not Hub.
       TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX: mirror.gcr.io/

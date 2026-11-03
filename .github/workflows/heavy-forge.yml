@@ -42,8 +42,10 @@ jobs:
     # fork 5700s so failsafe reaps before the step dies, job 120m.
     timeout-minutes: 120
     concurrency:
-      group: heavy-forge-${{ github.event.pull_request.number || github.ref }}
-      cancel-in-progress: true
+      # Push, schedule and dispatch runs on main and release-* are records: keyed by event and SHA, never
+      # cancelled while running. Only a newer run of the same PR cancels a PR run.
+      group: heavy-forge-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
     steps:
       - name: Checkout code
