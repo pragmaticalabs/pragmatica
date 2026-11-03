@@ -531,9 +531,8 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     /// The committed-state fence, shared by [#handlePut] and [#handleRemove] (#345 piece 1a, #379):
-    /// a mutation (a `Put` value or a `Remove` witness) is rejected when it is either a stale
-    /// `LeaderKey` write (H4 leader fence), a stale-epoch write to any [EpochBearing] value
-    /// (ownership fence), a non-successor write to a [VersionFenced] value (lost-update fence,
+    /// a mutation (a `Put` value or a `Remove` witness) is rejected when it is either a stale-epoch write
+    /// to any [EpochBearing] value (ownership fence, and the H4 leader fence through [LeaderValue]), a non-successor write to a [VersionFenced] value (lost-update fence,
     /// RFC-0018 #570), a regressive write to a [MonotonicFenced] value (running-max fence,
     /// #700), a write to an [AssignmentGuarded] key by anything but its committed assignee (#1271), or a write that would erase a committed
     /// [LeaderAuthorized] or [OwnerFenced] marker (fence-drop arms), or a write that would change the committed non-empty community of a [CommunityFenced] value (#1840), or a write that would replace the committed life of an [IncarnationFenced] value (#1278), or a release of a [HolderFenced] hold by anyone but its committed holder, or a holder-bound write to a [HolderGuarded] key made after that holder was superseded (#1155). All arms are pure functions of the committed storage content and the
@@ -541,16 +540,15 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// Snapshot restore ([#restoreSnapshot]) intentionally bypasses all fences: a restored snapshot
     /// is the authoritative committed state, not a competing write.
     private boolean staleWrite(K key, Object incoming) {
-        return dropsOwnerFence(key, incoming) || dropsLeaderAuthorization(key, incoming) || staleLeaderWrite(key,
-                                                                                                             incoming) || staleEpochWrite(key,
-                                                                                                                                          incoming) || staleSuccessorWrite(key,
-                                                                                                                                                                           incoming) || regressiveWatermarkWrite(key,
-                                                                                                                                                                                                                 incoming) || unassignedWrite(key,
-                                                                                                                                                                                                                                              incoming) || reassignsCommunity(key,
-                                                                                                                                                                                                                                                                              incoming) || reincarnates(key,
-                                                                                                                                                                                                                                                                                                        incoming) || releasesUnheld(key,
-                                                                                                                                                                                                                                                                                                                                    incoming) || writesUnheld(key,
-                                                                                                                                                                                                                                                                                                                                                              incoming);
+        return dropsOwnerFence(key, incoming) || dropsLeaderAuthorization(key, incoming) || staleEpochWrite(key,
+                                                                                                            incoming) || staleSuccessorWrite(key,
+                                                                                                                                             incoming) || regressiveWatermarkWrite(key,
+                                                                                                                                                                                   incoming) || unassignedWrite(key,
+                                                                                                                                                                                                                incoming) || reassignsCommunity(key,
+                                                                                                                                                                                                                                                incoming) || reincarnates(key,
+                                                                                                                                                                                                                                                                          incoming) || releasesUnheld(key,
+                                                                                                                                                                                                                                                                                                      incoming) || writesUnheld(key,
+                                                                                                                                                                                                                                                                                                                                incoming);
     }
 
     /// #1155: a release of a [HolderFenced] hold by anyone but the holder of the committed hold; see that type.
@@ -601,21 +599,11 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         return storage.get(key) instanceof LeaderAuthorized && !(incoming instanceof LeaderAuthorized);
     }
 
-    /// H4 leader fence (cluster-topology-overhaul §Wave 8.2): `LeaderKey` writes are
-    /// compare-and-put — applied only when the incoming [LeaderValue#viewSequence()] is strictly
-    /// greater than the stored one. The check is deterministic (it depends only on the replicated
-    /// storage content and the incoming value), so every replica accepts or rejects identically
-    /// inside the consensus applier. A rejected write mutates nothing and emits NO notification — a
-    /// stale leader must never be observed by the election FSMs.
-    private boolean staleLeaderWrite(K key, Object incoming) {
-        return key instanceof LeaderKey
-               && incoming instanceof LeaderValue in
-               && storage.get(key) instanceof LeaderValue stored
-               && in.viewSequence() <= stored.viewSequence();
-    }
-
-    /// Ownership/governance epoch fence (#345 piece 1a): generalizes the leader fence to ANY
-    /// [EpochBearing] value (governor announcement, DHT partition ownership). When BOTH the incoming
+    /// Ownership/governance epoch fence (#345 piece 1a) over ANY [EpochBearing] value (governor announcement,
+    /// DHT partition ownership, and the H4 leader fence: a [LeaderValue] mints its `viewSequence`, so a stale
+    /// or equal election is refused, mutates nothing and emits NO notification — a stale leader is never
+    /// observed by the election FSMs). Values of different kinds ([EpochBearing#fenceKind]) are never compared: a mismatched kind is not
+    /// stale ([#sameEpochKind]). When BOTH the incoming
     /// and the currently-committed value under the key are `EpochBearing`, the write is rejected iff
     /// its epoch is STRICTLY older than the committed one — a deposed governor/owner cannot commit an
     /// OLD epoch over a newer one. A first write (no committed value) and any non-`EpochBearing`
@@ -632,9 +620,10 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// is throttled: after a failover every in-flight write of the deposed writer is a refusal on every replica,
     /// which is normal, so the first refusal of each (incoming, committed) epoch pair is logged in full and the
     /// repeats are summarised at most once per interval.
+    /// A write that opts out ([EpochBearing#reportsStaleRefusal], a lost leader election) is refused silently.
     private void reportStaleEpochRefusal(K key, Object incoming) {
-        if (incoming instanceof EpochBearing<?> in && storage.get(key) instanceof EpochBearing<?> stored && incomingEpochIsStale(in,
-                                                                                                                                 stored)) {
+        if (incoming instanceof EpochBearing<?> in && in.reportsStaleRefusal() && storage.get(key) instanceof EpochBearing<?> stored && staleEpochWrite(key,
+                                                                                                                                                        in)) {
             var refusals = staleEpochRefusals.incrementAndGet();
 
             refusalWarning.report(List.of(in.fenceEpoch(), stored.fenceEpoch()),
@@ -659,12 +648,22 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private boolean staleEpochWrite(K key, Object incoming) {
         return incoming instanceof EpochBearing<?> in
                && storage.get(key) instanceof EpochBearing<?> stored
+               && sameEpochKind(in, stored)
                && incomingEpochIsStale(in, stored);
     }
 
+    /// Two values are compared only when their [EpochBearing#fenceKind] match: by default the epoch's class, and a
+    /// [LeaderValue] is its own kind, so a non-leader value whose epoch is also a `Long` is never taken for a leader.
+    /// Every caller of [#incomingEpochIsStale] and [#newerOwnerWitness] checks this first, which is what makes
+    /// their epoch casts safe: a mismatched kind never fences a `Put` and never authorizes a `Remove`, and no
+    /// comparison can throw inside the applier.
+    private static boolean sameEpochKind(EpochBearing<?> incoming, EpochBearing<?> stored) {
+        return incoming.fenceKind() == stored.fenceKind();
+    }
+
     /// Captures the recursive epoch type variable so the [Comparable#compareTo] is fully type-checked
-    /// (never reflective). The cast of the stored epoch is safe: a single key only ever holds one
-    /// `EpochBearing` value type (governor or ownership), so its epoch type matches the incoming one.
+    /// (never reflective). The cast of the stored epoch is safe only after [#sameEpochKind], which every
+    /// caller checks first.
     @SuppressWarnings("unchecked")
     private static <E extends Comparable<E>> boolean incomingEpochIsStale(EpochBearing<E> incoming,
                                                                           EpochBearing<?> stored) {
@@ -754,10 +753,11 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     /// The delete-side committed-state fence (#379) — STRICTER than the `Put` fence by design. A
-    /// `Remove` of a key whose COMMITTED value is fenced (any [EpochBearing] value, or the `LeaderKey`'s
-    /// [LeaderValue]) is rejected — applied to nothing, NO `ValueRemove` emitted — UNLESS it carries a
-    /// witness that is (a) present, (b) the SAME fenced kind as the committed value (an `EpochBearing`
-    /// witness for an `EpochBearing`-valued key, a `LeaderValue` for the `LeaderKey`), and (c) current
+    /// `Remove` of a key whose COMMITTED value is fenced (any [EpochBearing] value, the [LeaderValue]
+    /// included) is rejected — applied to nothing, NO
+    /// `ValueRemove` emitted — UNLESS it carries a witness that is (a) present, (b) the SAME fenced kind as
+    /// the committed value (an `EpochBearing` witness of the same [EpochBearing#fenceKind], so a `LeaderValue`
+    /// for the `LeaderKey`; see [#sameEpochKind]), and (c) current
     /// (equal-or-newer ordinary epoch, strictly-newer OwnerFenced epoch, or strictly-greater `viewSequence`). A missing, wrong-typed, or stale
     /// witness fails, so a deposed owner cannot delete a fenced key even with a bare `Remove(key)` —
     /// closing the witnessless-delete gap. A non-fenced committed value, or an absent key, deletes
@@ -775,8 +775,6 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         }
 
         return switch (storage.get(key)) {
-            case LeaderValue committed when key instanceof LeaderKey -> !currentLeaderWitness(committed,
-                                                                                              remove.witness());
             case OwnerFenced<?, ?> committed -> !newerOwnerWitness(committed, remove.witness());
             case EpochBearing<?> committed -> !currentEpochWitness(committed, remove.witness());
             case WitnessedRemoval committed -> !remove.witness().map(committed::equals).or(false);
@@ -787,7 +785,9 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     @SuppressWarnings("unchecked")
     private static <E extends Comparable<E>> boolean newerOwnerWitness(OwnerFenced<E, ?> committed,
                                                                        Option<Object> witness) {
-        return witness.map(value -> value instanceof OwnerFenced<?, ?> owner && ((E) owner.fenceEpoch()).compareTo(committed.fenceEpoch()) > 0)
+        return witness.map(value -> value instanceof OwnerFenced<?, ?> owner
+                                    && sameEpochKind(owner, committed)
+                                    && ((E) owner.fenceEpoch()).compareTo(committed.fenceEpoch()) > 0)
                       .or(false);
     }
 
@@ -795,15 +795,9 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// `EpochBearing` (matching kind), and NOT strictly-older than the committed epoch — the current
     /// owner or a newer one. Reuses the same [#incomingEpochIsStale] comparator as the `Put` fence.
     private boolean currentEpochWitness(EpochBearing<?> committed, Option<Object> witness) {
-        return witness.map(w -> w instanceof EpochBearing<?> incoming && !incomingEpochIsStale(incoming, committed))
-                      .or(false);
-    }
-
-    /// A witness authorizes deleting the `LeaderKey` iff it is present, itself a `LeaderValue`
-    /// (matching kind), and its `viewSequence` is strictly greater than the committed one — the exact
-    /// inverse of the `Put` leader fence's stale-OR-EQUAL (`<=`) rejection.
-    private boolean currentLeaderWitness(LeaderValue committed, Option<Object> witness) {
-        return witness.map(w -> w instanceof LeaderValue incoming && incoming.viewSequence() > committed.viewSequence())
+        return witness.map(w -> w instanceof EpochBearing<?> incoming
+                                && sameEpochKind(incoming, committed)
+                                && !incomingEpochIsStale(incoming, committed))
                       .or(false);
     }
 
