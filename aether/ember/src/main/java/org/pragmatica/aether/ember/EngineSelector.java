@@ -14,6 +14,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
+
 /// The global deployment-engine selector of the harness (FSM replacement plan F1 item 7): the system property
 /// [#PROPERTY] (`-Daether.deployment.engine=legacy|fsm2`) picks the engine every [EmberCluster] constructs its nodes
 /// with, so one switch runs the Ember corpus, the forge tests and Forge itself on FSM2. Absent means LEGACY, the
@@ -25,7 +26,8 @@ import org.pragmatica.lang.utils.Causes;
 public sealed interface EngineSelector {
     String PROPERTY = "aether.deployment.engine";
 
-    Fn1<Cause, String> UNKNOWN_ENGINE = Causes.forOneValue("-D" + PROPERTY + "=%s names no deployment engine; use legacy or fsm2");
+    Fn1<Cause, String> UNKNOWN_ENGINE = Causes.forOneValue("-D" + PROPERTY
+                                                          + "=%s names no deployment engine; use legacy or fsm2");
 
     /// The engine the property selects: absent or blank -> LEGACY; `legacy` / `fsm2` in any case; anything else fails.
     static Result<DeploymentEngine> engine(Option<String> raw) {

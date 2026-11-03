@@ -614,7 +614,8 @@ public final class BackupRestoreCoordinator {
                                                                 engineMarker.map(BackupRestoreCoordinator::witnessOf)
                                                                             .stream())
                                                         .toList(),
-                                                  Stream.concat(engineMarker.stream(), Stream.of(restoredMarker(marker)))
+                                                  Stream.concat(engineMarker.stream(),
+                                                                Stream.of(restoredMarker(marker)))
                                                         .toList());
     }
 

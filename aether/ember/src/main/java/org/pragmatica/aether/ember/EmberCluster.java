@@ -261,7 +261,6 @@ public final class EmberCluster {
     /// cannot admit each other's nodes; [#withClusterSecret] is the only sanctioned override.
     /// Exposed to tests via [#currentClusterSecret].
     private final AtomicReference<byte[]> clusterSecret = new AtomicReference<>(generateClusterSecret());
-
     /// The engine the global selector names ([EngineSelector], `-Daether.deployment.engine`): read once per cluster. A value that names no
     /// engine refuses [#start] instead of running LEGACY.
     private final Result<DeploymentEngine> selectedEngine = EngineSelector.fromSystemProperty();
