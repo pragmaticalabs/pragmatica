@@ -8,6 +8,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.rabia.ConsensusMetrics;
@@ -36,6 +37,10 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
     private final LongAdder totalDecisionLatencyNs = new LongAdder();
     private final LongAdder applyTimeouts = new LongAdder();
     private final AtomicReference<LongSupplier> oldestPendingBatchAgeProbe = new AtomicReference<>(() -> 0L);
+    private final AtomicReference<LongSupplier> consecutiveEmptySlotsProbe = new AtomicReference<>(() -> 0L);
+
+    private final AtomicReference<Supplier<Option<String>>> firstChoiceBatchIdProbe = new AtomicReference<>(Option::empty);
+
     private final AtomicReference<String> role = new AtomicReference<>("FOLLOWER");
     private final AtomicReference<Option<String>> leaderId = new AtomicReference<>(Option.empty());
 
@@ -103,6 +108,15 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
         oldestPendingBatchAgeProbe.set(ageMs);
     }
 
+    @Override
+    @Contract
+    public void registerProposalConvergenceProbes(NodeId nodeId,
+                                                  LongSupplier consecutiveEmptySlotsWithPending,
+                                                  Supplier<Option<String>> firstChoiceBatchId) {
+        consecutiveEmptySlotsProbe.set(consecutiveEmptySlotsWithPending);
+        firstChoiceBatchIdProbe.set(firstChoiceBatchId);
+    }
+
     public Result<Unit> updateRole(boolean isLeader, Option<String> currentLeaderId) {
         role.set(isLeader
                  ? "LEADER"
@@ -125,7 +139,9 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
                                 syncFailureCount.get(),
                                 totalDecisionLatencyNs.sum(),
                                 oldestPendingBatchAgeProbe.get().getAsLong(),
-                                applyTimeouts.sum());
+                                applyTimeouts.sum(),
+                                consecutiveEmptySlotsProbe.get().getAsLong(),
+                                firstChoiceBatchIdProbe.get().get());
     }
 
     public RabiaMetrics snapshotAndReset() {
@@ -141,6 +157,8 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
                                 syncFailureCount.getAndSet(0),
                                 totalDecisionLatencyNs.sumThenReset(),
                                 oldestPendingBatchAgeProbe.get().getAsLong(),
-                                applyTimeouts.sumThenReset());
+                                applyTimeouts.sumThenReset(),
+                                consecutiveEmptySlotsProbe.get().getAsLong(),
+                                firstChoiceBatchIdProbe.get().get());
     }
 }

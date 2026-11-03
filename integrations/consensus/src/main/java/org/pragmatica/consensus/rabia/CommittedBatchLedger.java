@@ -5,6 +5,7 @@ package org.pragmatica.consensus.rabia;
 
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -37,9 +38,10 @@ import static org.pragmatica.lang.Option.some;
 /// NOT cleared by stop or reset (those clear the pending queue); that is harmless for correctness because correlation
 /// ids are unique, but the memory stays held for the life of the engine.
 ///
-/// Known gaps, tracked in #2045: a batch committed in a slot a snapshot restore skipped is never recorded, and two
-/// concurrent identical submissions merged on one voter leave the other voters' ledgers without the merged correlation
-/// id. Both are pinned by tripwire tests in `RabiaReorderedDeliveryTest`.
+/// #2045: the ledger is a function of the applied log. A voter records only the correlation ids a Decision carries,
+/// never the ids it merged locally, so every replica that applied the same slots holds the same entries and refuses the
+/// same late batches. A voter that skipped slots through a snapshot restore lacks their entries; the voters that have
+/// them answer its proposal of such a batch with `BatchCommitted`, which it records here.
 final class CommittedBatchLedger {
     static final int DEFAULT_CAPACITY = 65_536;
 
@@ -65,6 +67,16 @@ final class CommittedBatchLedger {
     synchronized <C extends Command> Option<Batch<C>> unseen(Batch<C> incoming) {
         return Option.option(committed.get(incoming.id())).fold(() -> some(incoming),
                                                                 known -> withoutCommitted(incoming, known));
+    }
+
+    /// The correlation ids of `incoming` already committed under its batch id; empty when none are.
+    synchronized Option<List<CorrelationId>> committedOf(Batch<?> incoming) {
+        return Option.option(committed.get(incoming.id()))
+                     .map(known -> incoming.correlationIds()
+                                           .stream()
+                                           .filter(known::contains)
+                                           .toList())
+                     .filter(ids -> !ids.isEmpty());
     }
 
     private static <C extends Command> Option<Batch<C>> withoutCommitted(Batch<C> incoming, Set<CorrelationId> known) {
