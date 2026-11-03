@@ -15,8 +15,12 @@
  */
 package org.pragmatica.consensus.rabia;
 
+import java.util.function.LongSupplier;
+import java.util.function.Supplier;
+
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 
 
 /// Metrics collection interface for consensus engine observability.
@@ -84,6 +88,20 @@ public interface ConsensusMetrics {
     /// @param nodeId The node
     /// @param ageMs  Age of the oldest pending batch in milliseconds, 0 when nothing is pending
     default void registerOldestPendingBatchAgeProbe(NodeId nodeId, java.util.function.LongSupplier ageMs) {}
+
+    /// Hand the metrics sink two probes that show whether the voters' proposals converge (#2045). The first reads the
+    /// number of slots this node decided in a row without applying a batch while it held pending batches, `0` once a slot
+    /// applies one or the queue empties; a value that climbs without bound is the empty-slot livelock, where the voters'
+    /// first choices differ and none reaches a quorum. The second reads the id of the batch this node proposes first,
+    /// none when nothing is pending; comparing it across voters names the split. Probes, like the pending-age probe,
+    /// because both are levels that change with no event the sink sees. Called once, at engine construction.
+    ///
+    /// @param nodeId                           The node
+    /// @param consecutiveEmptySlotsWithPending Slots decided in a row without applying a batch while something was pending
+    /// @param firstChoiceBatchId               Id of the batch this node proposes first, none when nothing is pending
+    default void registerProposalConvergenceProbes(NodeId nodeId,
+                                                   LongSupplier consecutiveEmptySlotsWithPending,
+                                                   Supplier<Option<String>> firstChoiceBatchId) {}
 
     /// Returns a no-op implementation that does nothing.
     static ConsensusMetrics noop() {
