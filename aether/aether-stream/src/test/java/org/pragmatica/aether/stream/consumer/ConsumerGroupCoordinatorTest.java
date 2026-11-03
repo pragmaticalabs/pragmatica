@@ -40,7 +40,7 @@ class ConsumerGroupCoordinatorTest {
 
     @BeforeEach
     void setUp() {
-        coordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(stubClusterNode());
+        coordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(stubClusterNode(), ConsumerGroupRegistry.consumerGroupRegistry());
     }
 
     private ClusterNode<KVCommand<AetherKey>> stubClusterNode() {

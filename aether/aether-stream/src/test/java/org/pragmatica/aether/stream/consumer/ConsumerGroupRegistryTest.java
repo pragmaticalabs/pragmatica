@@ -160,7 +160,7 @@ class ConsumerGroupRegistryTest {
                                                                            NodeId nodeId,
                                                                            String consumerId) {
         var key = ConsumerGroupKey.consumerGroupKey(groupId, streamName, partition);
-        var value = ConsumerGroupValue.consumerGroupValue(nodeId, consumerId);
+        var value = ConsumerGroupValue.consumerGroupValue(nodeId, consumerId, 1L);
         return new ValuePut<>(new KVCommand.Put<>(key, value), Option.none());
     }
 

@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -47,8 +48,13 @@ public sealed interface ConsumerGroupCoordinator {
         return new NoOpCoordinator();
     }
 
-    static ConsumerGroupCoordinator consumerGroupCoordinator(ClusterNode<KVCommand<AetherKey>> clusterNode) {
-        return new DefaultConsumerGroupCoordinator(clusterNode, new AtomicReference<>(new CoordinatorState.Dormant()));
+    /// @param registry the node's view of the COMMITTED assignments: a coordinator that takes over leadership
+    ///                 starts its generation above the highest one already committed (#2626)
+    static ConsumerGroupCoordinator consumerGroupCoordinator(ClusterNode<KVCommand<AetherKey>> clusterNode,
+                                                             ConsumerGroupRegistry registry) {
+        return new DefaultConsumerGroupCoordinator(clusterNode,
+                                                   registry,
+                                                   new AtomicReference<>(new CoordinatorState.Dormant()));
     }
 
     record NoOpCoordinator() implements ConsumerGroupCoordinator {
@@ -94,7 +100,13 @@ public sealed interface ConsumerGroupCoordinator {
 
         record Dormant() implements CoordinatorState {}
 
+        /// @param generation the last generation this leader stamped on a rebalance; every rebalance takes the
+        ///                   next one, so the applier's [org.pragmatica.cluster.state.kvstore.MonotonicFenced]
+        ///                   fence on [ConsumerGroupValue] keeps the newest rebalance whatever order Rabia
+        ///                   commits the submitted batches in (#2626)
         record Active(ClusterNode<KVCommand<AetherKey>> clusterNode,
+                      ConsumerGroupRegistry registry,
+                      AtomicLong generation,
                       ConcurrentHashMap<GroupKey, List<ConsumerMember>> members,
                       ConcurrentHashMap<GroupKey, Integer> partitionCounts) implements CoordinatorState {
             private static final Logger log = LoggerFactory.getLogger(Active.class);
@@ -143,17 +155,7 @@ public sealed interface ConsumerGroupCoordinator {
             }
 
             void rebalance(String groupId, String streamName, int partitionCount) {
-                var key = new GroupKey(groupId, streamName);
-                var memberList = members.getOrDefault(key, List.of());
-
-                if (memberList.isEmpty()) {
-                    log.info("No consumers in group {}/{}, skipping rebalance", groupId, streamName);
-
-                    return;
-                }
-
-                var sorted = memberList.stream().sorted(Comparator.comparing(ConsumerMember::consumerId)).toList();
-                var commands = buildAssignmentCommands(groupId, streamName, partitionCount, sorted);
+                var commands = nextAssignmentCommands(groupId, streamName, partitionCount);
 
                 if (!commands.isEmpty()) {
                     clusterNode.apply(commands)
@@ -162,6 +164,50 @@ public sealed interface ConsumerGroupCoordinator {
                                                              streamName,
                                                              cause.message()));
                 }
+            }
+
+            /// The member snapshot and the generation are taken in ONE critical section, so a higher generation
+            /// never carries an older member list: of two rebalances the later-stamped one is also the
+            /// later-derived one, which is what lets the commit-side fence keep the newest.
+            private synchronized List<KVCommand<AetherKey>> nextAssignmentCommands(String groupId,
+                                                                                    String streamName,
+                                                                                    int partitionCount) {
+                var memberList = members.getOrDefault(new GroupKey(groupId, streamName), List.of());
+
+                if (memberList.isEmpty()) {
+                    log.info("No consumers in group {}/{}, skipping rebalance", groupId, streamName);
+
+                    return List.of();
+                }
+
+                var sorted = memberList.stream().sorted(Comparator.comparing(ConsumerMember::consumerId)).toList();
+
+                return buildAssignmentCommands(groupId,
+                                               streamName,
+                                               partitionCount,
+                                               sorted,
+                                               nextGeneration(groupId, streamName));
+            }
+
+            /// Above both this leader's last stamp and the highest generation already committed for the group
+            /// (a new leader's counter starts at zero, and its first rebalance must not be fenced out by its
+            /// predecessor's). Two leaders can still stamp the same generation in a handover window; the fence
+            /// accepts equal, so that cross-node ordering is NOT settled here.
+            private long nextGeneration(String groupId, String streamName) {
+                var next = Math.max(generation.get(), committedGeneration(groupId, streamName)) + 1;
+
+                generation.set(next);
+
+                return next;
+            }
+
+            private long committedGeneration(String groupId, String streamName) {
+                return registry.assignmentsFor(groupId, streamName)
+                               .values()
+                               .stream()
+                               .mapToLong(ConsumerGroupValue::generation)
+                               .max()
+                               .orElse(0L);
             }
 
             private static void addGroupStatusIfMatching(Map<String, List<ConsumerInfo>> result,
@@ -207,13 +253,14 @@ public sealed interface ConsumerGroupCoordinator {
             private static List<KVCommand<AetherKey>> buildAssignmentCommands(String groupId,
                                                                               String streamName,
                                                                               int partitionCount,
-                                                                              List<ConsumerMember> sorted) {
+                                                                              List<ConsumerMember> sorted,
+                                                                              long generation) {
                 var commands = new ArrayList<KVCommand<AetherKey>>();
 
                 for (var i = 0; i < partitionCount; i++) {
                     var member = sorted.get(i % sorted.size());
                     var key = ConsumerGroupKey.consumerGroupKey(groupId, streamName, i);
-                    var value = ConsumerGroupValue.consumerGroupValue(member.nodeId(), member.consumerId());
+                    var value = ConsumerGroupValue.consumerGroupValue(member.nodeId(), member.consumerId(), generation);
 
                     commands.add(new KVCommand.Put<>(key, value));
                 }
@@ -240,6 +287,7 @@ public sealed interface ConsumerGroupCoordinator {
     }
 
     record DefaultConsumerGroupCoordinator(ClusterNode<KVCommand<AetherKey>> clusterNode,
+                                           ConsumerGroupRegistry registry,
                                            AtomicReference<CoordinatorState> state) implements ConsumerGroupCoordinator {
         private static final Logger log = LoggerFactory.getLogger(DefaultConsumerGroupCoordinator.class);
 
@@ -247,7 +295,11 @@ public sealed interface ConsumerGroupCoordinator {
         public void onLeaderChange(LeaderChange leaderChange) {
             if (leaderChange.localNodeIsLeader()) {
                 log.info("Activating consumer group coordinator (became leader)");
-                state.set(new CoordinatorState.Active(clusterNode, new ConcurrentHashMap<>(), new ConcurrentHashMap<>()));
+                state.set(new CoordinatorState.Active(clusterNode,
+                                                      registry,
+                                                      new AtomicLong(),
+                                                      new ConcurrentHashMap<>(),
+                                                      new ConcurrentHashMap<>()));
             } else {
                 log.info("Deactivating consumer group coordinator (not leader)");
                 state.set(new CoordinatorState.Dormant());
