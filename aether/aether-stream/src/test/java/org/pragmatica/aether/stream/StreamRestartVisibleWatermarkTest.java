@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
 import org.pragmatica.aether.stream.segment.SegmentSink;
@@ -17,6 +18,7 @@ import org.pragmatica.aether.slice.StreamAccess.StreamEvent;
 import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
+import org.pragmatica.aether.stream.replication.ReplicaSetController;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.consensus.NodeId;
@@ -150,6 +152,39 @@ class StreamRestartVisibleWatermarkTest {
         assertThat(fetch(0)).containsExactly(0L, 1L, 2L, 3L, 4L);
     }
 
+    /// PR-2f: the NONE arm of `restoreVisible` is its own arm and keeps the owner rule. A ring is materialized only for
+    /// OWNER or REPLICA, so NONE reaches the restore only when the role changes between the materialize decision and the
+    /// restore; this supplier answers NONE to the restore alone (read from the caller's stack) and OWNER to everything
+    /// else. With no peer barrier the owner rule exposes the whole durable tail, so the NONE ring does too -- not the seed.
+    @Test
+    void restart_asTheUnresolvedRole_takesTheOwnerRule() {
+        startOwner(1);
+        publish(PUBLISHED);
+        awaitSealedThrough(SEALED_THROUGH);
+        manager.close();
+        index = new SegmentIndex();
+        index.rebuildFromRefs(metadataStore);
+
+        var askedByTheRestore = new AtomicInteger();
+
+        startOwnerOn(index, 1, (_, _) -> roleAnsweringTheRestore(askedByTheRestore));
+        assertThat(askedByTheRestore.get()).as("control: the restore saw NONE").isPositive();
+        assertThat(visible()).as("NONE restores min(durable, replicatedThrough), as the owner does").isEqualTo(PUBLISHED - 1L);
+    }
+
+    private static ReplicaSetController.Role roleAnsweringTheRestore(AtomicInteger askedByTheRestore) {
+        var restoring = StackWalker.getInstance()
+                                   .walk(frames -> frames.anyMatch(frame -> frame.getMethodName().equals("restoreVisible")));
+
+        if (restoring) {
+            askedByTheRestore.incrementAndGet();
+
+            return ReplicaSetController.Role.NONE;
+        }
+
+        return ReplicaSetController.Role.OWNER;
+    }
+
     // ---- fixture -------------------------------------------------------------------------------------------
     /// A fresh owner over the SAME WAL directory and the SAME storage, with a fresh segment index rebuilt from
     /// the surviving refs and a fresh replica registry holding no acknowledgements — a restart, as recovery
@@ -167,6 +202,12 @@ class StreamRestartVisibleWatermarkTest {
     }
 
     private void startOwnerOn(SegmentIndex segmentIndex, int minSyncReplicas) {
+        startOwnerOn(segmentIndex, minSyncReplicas, (_, _) -> ReplicaSetController.Role.OWNER);
+    }
+
+    private void startOwnerOn(SegmentIndex segmentIndex,
+                              int minSyncReplicas,
+                              StreamPartitionManager.PlacementRoleSupplier roles) {
         var sealer = segmentSealer(storageSegmentSink(storage, segmentIndex));
 
         replication = replicationWithPeer();
@@ -175,6 +216,7 @@ class StreamRestartVisibleWatermarkTest {
                                          replication,
                                          Option.some(walDir),
                                          segmentIndex::lastSealedOffset);
+        manager.placementRoleSupplier(roles);
         manager.createStream(config(minSyncReplicas)).onFailure(cause -> fail(cause.message()));
         access = streamAccess(manager,
                               identitySerializer(),
