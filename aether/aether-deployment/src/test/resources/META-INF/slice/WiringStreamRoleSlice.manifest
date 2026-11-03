@@ -1,0 +1,7 @@
+# Test fixture for the phase-3 SliceLegBuilders golden test (W-30): the stream roles a slice declares (reference counting, 8.5).
+stream.publishers.count=1
+stream.publisher.0.config=streams.events
+stream.publisher.0.role=producer
+stream.access.count=2
+stream.access.0.config=streams.audit
+stream.access.1.config=not-a-stream-section

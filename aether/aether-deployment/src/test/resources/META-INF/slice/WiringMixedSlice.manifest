@@ -1,0 +1,15 @@
+# Test fixture for the phase-3 SliceLegBuilders golden test (W-30): all three leg kinds in one slice, in a deliberately scrambled
+# declaration order, so that the order of the legs is the builders' and not the manifest's.
+reactive.count=3
+reactive.0.category=scheduled
+reactive.0.method=sweep
+reactive.0.config=scheduling.sweep
+reactive.1.category=stream
+reactive.1.method=onOrder
+reactive.1.config=streams.orders
+reactive.1.batch=false
+reactive.1.eventType=com.example.Order
+reactive.2.category=subscription
+reactive.2.method=onOrder
+reactive.2.config=topics.orders
+reactive.2.topicName=orders

@@ -2669,6 +2669,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.BACKUP_CONFIG_RESTORED,
                 OperatorWarningCode.BACKUP_RESTORE_UNBLOCKED,
                 OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED,
+                OperatorWarningCode.TERMINATION_RETIREMENT_RESOLVED,
                 OperatorWarningCode.INSTANCE_TERMINATION_REJOINED,
                 OperatorWarningCode.INSTANCE_TERMINATION_CLEARED,
                 OperatorWarningCode.INSTANCE_REAP_RELEASED,
@@ -2696,6 +2697,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.UPLOAD_BYTE_BUDGET_RESTORED,
                 OperatorWarningCode.JSON_CONFIG_APPLIED,
                 OperatorWarningCode.CONFIG_WATCH_CALLBACK_RECOVERED,
+                OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG_CLEARED,
             });
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactlyInAnyOrder(new OperatorWarningCode[]{
@@ -2708,6 +2710,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.NODE_REPLACEMENT_FAILED_KEPT_BOTH,
                 OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED,
                 OperatorWarningCode.INSTANCE_REAP_HELD,
+                OperatorWarningCode.TERMINATION_RETIREMENT_OVERDUE,
                 OperatorWarningCode.UPGRADE_STARTED,
                 OperatorWarningCode.UPGRADE_PAUSED,
                 OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
@@ -2755,6 +2758,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.UPLOAD_NODE_CAP_SATURATED,
                 OperatorWarningCode.UPLOAD_BYTE_BUDGET_EXHAUSTED,
                 OperatorWarningCode.CONFIG_WATCH_CALLBACK_FAILED,
+                OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG,
             });
         var recoveries = java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).count();
         var t = new AtomicLong(1_000_000L);

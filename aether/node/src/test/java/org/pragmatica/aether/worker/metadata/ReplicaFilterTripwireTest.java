@@ -124,6 +124,14 @@ class ReplicaFilterTripwireTest {
         assertThat(ReplicaFilter.replicaFilter().excludes(identity)).as("INCLUDED, as the reservation is").isEqualTo(ReplicaFilter.replicaFilter().excludes(reservation)).isFalse();
     }
 
+    /// The engine marker is INCLUDED: a worker's engine marker guard reads it from the replica, so a worker of the other engine refuses itself on
+    /// positive evidence. Mutation: move `DeploymentEngineKey` to the EXCLUDE arm and this goes red.
+    @Test
+    void deploymentEngineMarker_isIncluded_soAWorkersGuardSeesTheClustersEngine() {
+        assertThat(ReplicaFilter.replicaFilter().excludes(AetherKey.DeploymentEngineKey.deploymentEngineKey())).as("the engine marker reaches the worker replica")
+                                                                                                         .isFalse();
+    }
+
     @Disabled("enable at W3/W4 (worker replica): when the worker holds a full replica minus the exclusion set, re-point workerView at the filtered replica")
     @Test
     void replicaHoldsEveryKeyOutsideTheFilter_andNoneInsideIt() {

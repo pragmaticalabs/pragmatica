@@ -208,12 +208,12 @@ public sealed interface DrainAssembly {
     /// DRAINING reports from the pong fan reach the membership FSM and the cluster deployment manager.
     static Unit bindDrainReport(ClusterSyncPongSignalFan pongSignalFan,
                                 MembershipFsm membershipFsm,
-                                ClusterDeploymentManager clusterDeploymentManager) {
+                                Consumer<NodeId> drainReportTarget) {
         // #1054: every DRAINING pong the leader records is a drain acknowledgement, latched by the FSM for the
         // member's drain episode. It is latched as the pong lands because the readiness sweep forgets a halted
         // drainee within three pings, long before the DEPARTING timeout. An acknowledged drain terminalizes at
         // expiry; an undelivered DRAIN to a live target is withdrawn to MEMBER instead of reaped.
-        pongSignalFan.onDrainingReported(drainReportListener(membershipFsm, clusterDeploymentManager));
+        pongSignalFan.onDrainingReported(drainReportListener(membershipFsm, drainReportTarget));
 
         return Unit.unit();
     }
@@ -413,9 +413,14 @@ public sealed interface DrainAssembly {
     /// `startDrainEviction`. Package-private so the composition is pinned without booting a node.
     static Consumer<NodeId> drainReportListener(MembershipFsm membershipFsm,
                                                 ClusterDeploymentManager clusterDeploymentManager) {
+        return drainReportListener(membershipFsm, clusterDeploymentManager::onNodeDraining);
+    }
+
+    /// The same composition with the eviction half given as a target, which the deployment wiring binds per engine (B12).
+    static Consumer<NodeId> drainReportListener(MembershipFsm membershipFsm, Consumer<NodeId> eviction) {
         return drainingNode -> {
             membershipFsm.onDrainAcknowledged(drainingNode);
-            clusterDeploymentManager.onNodeDraining(drainingNode);
+            eviction.accept(drainingNode);
         };
     }
 

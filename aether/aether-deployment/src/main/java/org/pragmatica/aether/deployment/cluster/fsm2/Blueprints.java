@@ -514,13 +514,61 @@ public sealed interface Blueprints {
         return m;
     }
 
+    /// A slice needs the batch again when its target is neither committed nor in flight. The first declaration's put is in flight until it
+    /// commits, is refused (then the awaited-target sweep re-sends it at its bound, 6.2) or is dropped unsent ([#releaseUnsent]); without
+    /// the in-flight conjunct the first reconcile after a publish re-submits the batch the declaration just sent (P3-G, G1).
     private static boolean hasUncommittedTarget(ClusterModel m, ExpandedBlueprint expanded) {
         return expanded.loadOrder()
                        .stream()
                        .anyMatch(slice -> !m.targets.get(slice.artifact().base())
                                                     .map(target -> target.currentVersion()
                                                                          .equals(slice.artifact().version()))
-                                                    .or(false));
+                                                    .or(false) && !inFlight(m,
+                                                                            slice.artifact()));
+    }
+
+    /// A put for the artifact's base is in flight, of any version. The key is the base, not the version: a second put on the same
+    /// `SliceTargetKey`, built from the same mirror, expects the same committed value as the one in flight, so at most one of the two can
+    /// be accepted; re-driving another version while one is in flight only adds a refused round. Once the put in flight settles, the
+    /// re-drive judges the committed target afresh.
+    private static boolean inFlight(ClusterModel m, Artifact artifact) {
+        return m.pendingTargetPuts.containsKey(artifact.base());
+    }
+
+    /// A draft that is dropped without being sent (suspension), fails, or expires no longer holds its target puts in flight, so the next
+    /// reconcile re-drives an open apply at once instead of at the awaited-target bound (G1). Only a pending put this draft carries, at its
+    /// exact value, is released: an entry a newer declaration has replaced is kept, and a draft of another kind carries no pending put.
+    /// A put whose base no open apply owns is kept: nothing would re-drive it, and the awaited-target watch re-sends it at its bound (NT-11).
+    static ClusterModel releaseUnsent(ClusterModel m, TxDraft draft) {
+        draft.mutations().forEach(mutation -> releaseTarget(m, mutation));
+
+        return m;
+    }
+
+    private static ClusterModel releaseTarget(ClusterModel m, KVCommand.Mutation<AetherKey, AetherValue> mutation) {
+        if (mutation.key() instanceof SliceTargetKey key) {
+            m.pendingTargetPuts.get(key.artifactBase())
+                               .filter(pending -> mutation.replacement()
+                                                          .equals(Option.some((AetherValue) pending)))
+                               .filter(_ -> reDriven(m,
+                                                     key.artifactBase()))
+                               .onPresent(_ -> m.pendingTargetPuts = m.pendingTargetPuts.remove(key.artifactBase()));
+        }
+
+        return m;
+    }
+
+    /// The blueprint that owns the base has an open apply, so the intake re-drive (R-4.1.4) re-sends the batch once the put is released.
+    private static boolean reDriven(ClusterModel m, ArtifactBase base) {
+        return m.ownerByBase.get(base)
+                            .filter(id -> hasOpenApply(m, id))
+                            .isPresent();
+    }
+
+    private static boolean hasOpenApply(ClusterModel m, BlueprintId id) {
+        return m.applies.get(id)
+                        .filter(apply -> isOpen(m, id, apply))
+                        .isPresent();
     }
 
     private static ClusterModel redeclare(ClusterModel m, Ctx ctx, BlueprintId id, ExpandedBlueprint expanded) {
