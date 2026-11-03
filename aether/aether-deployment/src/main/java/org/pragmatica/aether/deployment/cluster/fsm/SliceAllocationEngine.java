@@ -14,6 +14,7 @@ import org.pragmatica.aether.config.PlacementPolicy;
 import org.pragmatica.aether.deployment.cluster.AllocationPool;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Blueprint;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState.Active;
+import org.pragmatica.aether.deployment.cluster.fsm.write.WriteSite;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.consensus.NodeId;
@@ -143,7 +144,9 @@ record SliceAllocationEngine(Active active, List<NodeId> eligibleNodes) {
             return;
         }
 
-        current.stream().filter(key -> !eligible.contains(key.nodeId())).forEach(active::issueUnloadCommand);
+        current.stream()
+               .filter(key -> !eligible.contains(key.nodeId()))
+               .forEach(key -> active.issueUnloadCommand(WriteSite.UNLOAD_SCALE_DOWN, key));
     }
 
     private boolean hasNoAllocatableNodes(Artifact artifact) {
@@ -348,6 +351,8 @@ record SliceAllocationEngine(Active active, List<NodeId> eligibleNodes) {
             return;
         }
 
-        existingInstances.stream().skip(Math.max(0, activeCount - actualRemove)).forEach(active::issueUnloadCommand);
+        existingInstances.stream()
+                         .skip(Math.max(0, activeCount - actualRemove))
+                         .forEach(key -> active.issueUnloadCommand(WriteSite.UNLOAD_SCALE_DOWN, key));
     }
 }
