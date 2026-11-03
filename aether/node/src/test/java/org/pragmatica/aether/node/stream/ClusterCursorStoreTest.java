@@ -12,6 +12,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import io.netty.buffer.ByteBuf;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
@@ -19,6 +20,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import org.pragmatica.aether.node.stream.ConsumerAssignmentWriter.CommittedAssignments;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -28,12 +30,17 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue.AssignmentToken;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue;
+import org.pragmatica.aether.stream.EvictionListener;
+import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore.CommitOutcome;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore.Cursor;
+import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
@@ -779,35 +786,55 @@ class ClusterCursorStoreTest {
 
     /// #2590 (moved from P0.3 to P1): a consumed stream destroyed and re-created under the same name. Nothing removes its
     /// cluster cursor today -- review R2.2a found 35 `Remove` sites and none for `StreamCursorCheckpointKey` -- so the new
-    /// stream's consumer resumes from the old life's offset and skips `[0, offset)` of the new log. The fixture's destroy
-    /// does what production's does: it removes the stream's config key, nothing else. P2 carries the stream incarnation
-    /// in every persisted cursor and discards one that does not match.
+    /// stream's consumer resumes from the old life's offset and skips `[0, offset)` of the new log. The destroy here is
+    /// PRODUCTION's: [StreamPartitionManager#destroyStream] publishes its commands to a cluster node whose applier is the
+    /// real [KVStore] holding the checkpoint. A destroy that also removed the cursor key turns the tripwire red. P2
+    /// carries the stream incarnation in every persisted cursor and discards one that does not match.
     @Nested
     class StreamRecreate {
-        private final Map<AetherKey, AetherValue> committed = new ConcurrentHashMap<>();
+        private KVStore<AetherKey, AetherValue> kv;
+        private List<KVCommand<AetherKey>> issued;
+        private StreamPartitionManager manager;
 
         @BeforeEach
         void setUp() {
-            committed.put(CHECKPOINT_KEY, checkpoint(70L, SELF_TOKEN));
+            kv = new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+            issued = new ArrayList<>();
+            manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE,
+                                                                    EvictionListener.NOOP,
+                                                                    ReplicationManager.NONE,
+                                                                    ApplyingClusterNode.applyingClusterNode(kv, issued));
+            kv.process(kv.createBatch(List.of(assignment(SELF, EPOCH), new KVCommand.Put<AetherKey, AetherValue>(CHECKPOINT_KEY, checkpoint(70L, SELF_TOKEN)))));
         }
 
-        /// Production's destroy removes the stream's config key, which this fixture does not hold, and no cursor key.
-        private void destroyAndRecreate() {}
+        @AfterEach
+        void tearDown() {
+            manager.close();
+        }
+
+        private void createStream() {
+            manager.createStream(StreamConfig.streamConfig(STREAM))
+                   .onFailure(cause -> Assertions.fail(cause.message()));
+        }
 
         private Option<Long> fetchAfterRecreate() {
-            destroyAndRecreate();
-            var store = storeWith(fixedLocal(Option.none()),
-                                  key -> Option.option(committed.get(key))
-                                               .map(StreamCursorCheckpointValue.class::cast),
-                                  _ -> Promise.unitPromise());
+            createStream();
+            assertThat(kv.getTyped(CHECKPOINT_KEY, StreamCursorCheckpointValue.class).isPresent()).as("control: the checkpoint is committed before the destroy").isTrue();
+            manager.destroyStream(STREAM).onFailure(cause -> Assertions.fail(cause.message()));
+            assertThat(issued).as("control: the production destroy published its commands to the applier")
+                              .anyMatch(command -> command instanceof KVCommand.Remove<AetherKey> remove && remove.key() instanceof AetherKey.StreamConfigKey);
+            createStream();
 
-            return store.fetch(GROUP, STREAM, PARTITION, EPOCH)
-                        .await()
-                        .onFailure(cause -> Assertions.fail(cause.message()))
-                        .or(Option.none());
+            return storeWith(fixedLocal(Option.none()),
+                             key -> kv.getTyped(key, StreamCursorCheckpointValue.class),
+                             _ -> Promise.unitPromise()).fetch(GROUP, STREAM, PARTITION, EPOCH)
+                                                        .await()
+                                                        .onFailure(cause -> Assertions.fail(cause.message()))
+                                                        .or(Option.none());
         }
 
-        /// Tripwire, enabled: asserts today's behaviour.
+        /// Tripwire, enabled: asserts today's behaviour. Mutation: StreamPartitionManager.applyRemoveCommand also removes
+        /// the stream's cursor key.
         @Test
         void fetchCursor_streamDestroyedAndRecreated_returnsOldLifeCursor() {
             assertThat(fetchAfterRecreate()).describedAs("#2590 tripwire: the old life's cursor is no longer returned after the stream was "
@@ -821,6 +848,42 @@ class ClusterCursorStoreTest {
         void fetchCursor_streamDestroyedAndRecreated_discardsOldLifeCursor() {
             assertThat(fetchAfterRecreate()).describedAs("a cursor of the destroyed stream must not position the new one")
                                             .isEqualTo(Option.none());
+        }
+    }
+
+    /// A cluster node whose consensus is the real applier: every batch is applied to `kv` and recorded.
+    private record ApplyingClusterNode(KVStore<AetherKey, AetherValue> kv, List<KVCommand<AetherKey>> issued) implements ClusterNode<KVCommand<AetherKey>> {
+        static ApplyingClusterNode applyingClusterNode(KVStore<AetherKey, AetherValue> kv, List<KVCommand<AetherKey>> issued) {
+            return new ApplyingClusterNode(kv, issued);
+        }
+
+        @Override
+        public NodeId self() {
+            return SELF;
+        }
+
+        @Override
+        public TopologyManager topologyManager() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Promise<Unit> start() {
+            return Promise.unitPromise();
+        }
+
+        @Override
+        public Promise<Unit> stop() {
+            return Promise.unitPromise();
+        }
+
+        @SuppressWarnings("unchecked")
+        @Override
+        public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
+            issued.addAll(commands);
+            kv.process(kv.createBatch(commands));
+
+            return (Promise<List<R>>) (Promise<?>) Promise.success(List.of());
         }
     }
 

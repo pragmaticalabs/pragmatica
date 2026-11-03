@@ -5,13 +5,16 @@
 
 package org.pragmatica.aether.stream.segment;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.RewindEpoch;
+import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore.Cursor;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -32,6 +35,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 import static org.pragmatica.aether.stream.segment.CursorStore.cursorStore;
 import static org.pragmatica.storage.GarbageCollectorConfig.garbageCollectorConfig;
 import static org.pragmatica.storage.StorageGarbageCollector.storageGarbageCollector;
@@ -100,21 +104,54 @@ class CursorStoreTest {
     /// #2590 (moved from P0.3 to P1): a stream destroyed and re-created under the same name. The node-local cursor ref
     /// `cursors/<group>/<stream>/<partition>` survives: no main-source path deletes by the `cursors/` prefix (the grep over
     /// `aether/**/src/main/**/*.java` finds only the constant in [CursorStore]), so the new stream's consumer is positioned
-    /// by the old life's offset. The fixture's destroy does what production's does to node storage: nothing. P2 carries the
-    /// stream incarnation in the cursor and discards one that does not match.
+    /// by the old life's offset. The destroy here is PRODUCTION's: [StreamPartitionManager#destroyStream] with the node's
+    /// [StreamFootprint] over the same storage, which is the one destroy step that deletes this node's durable refs
+    /// (`StreamFootprint.forget`). A destroy that also deleted the cursor ref turns the tripwire red. P2 carries the stream
+    /// incarnation in the cursor and discards one that does not match.
     @Nested
     class StreamRecreate {
-        /// Production's destroy and re-create touch no cursor ref.
-        private void destroyAndRecreate() {}
+        private static final long FIRST_LIFE = 1L;
+        private static final long SECOND_LIFE = 2L;
 
-        private Result<Option<Long>> fetchAfterRecreate() {
-            store.commit(GROUP, STREAM, PARTITION, 42L).await();
-            destroyAndRecreate();
+        private final MetadataStore metadata = MetadataStore.inMemoryMetadataStore("streams");
+        private StorageInstance streamsStorage;
+        private StreamPartitionManager manager;
 
-            return store.fetch(GROUP, STREAM, PARTITION).await();
+        @BeforeEach
+        void setUpManager() {
+            streamsStorage = StorageInstance.storageInstance("streams", List.of(MemoryTier.memoryTier(ONE_GB)), metadata);
+
+            var index = new SegmentIndex();
+
+            manager = streamPartitionManager(Long.MAX_VALUE, Option.none(), index::lastSealedOffset);
+            manager.streamFootprint(StreamFootprint.streamFootprint(streamsStorage, metadata, index));
         }
 
-        /// Tripwire, enabled: asserts today's behaviour.
+        @AfterEach
+        void closeManager() {
+            manager.close();
+        }
+
+        private void createStream(long incarnation) {
+            manager.createStream(StreamConfig.streamConfig(STREAM).withIncarnation(incarnation))
+                   .onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
+        }
+
+        private Result<Option<Long>> fetchAfterRecreate() {
+            var cursors = cursorStore(streamsStorage);
+
+            createStream(FIRST_LIFE);
+            cursors.commit(GROUP, STREAM, PARTITION, 42L).await();
+            assertThat(metadata.listAllRefs().keySet()).as("control: the cursor is a ref of the node storage the destroy cleans")
+                                                       .anyMatch(ref -> ref.startsWith("cursors/"));
+            manager.destroyStream(STREAM).onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
+            createStream(SECOND_LIFE);
+
+            return cursors.fetch(GROUP, STREAM, PARTITION).await();
+        }
+
+        /// Tripwire, enabled: asserts today's behaviour. Mutation: StreamFootprint.refsOfLife also selects the stream's
+        /// `cursors/` refs.
         @Test
         void cursorStore_streamRecreatedSameName_localCursorStillApplied() {
             assertThat(fetchAfterRecreate()).describedAs("#2590 tripwire: the old life's local cursor is no longer returned after the stream "
