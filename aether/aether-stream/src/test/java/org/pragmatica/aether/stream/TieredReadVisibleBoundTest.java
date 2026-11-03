@@ -8,7 +8,10 @@ package org.pragmatica.aether.stream;
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamAccess.StreamEvent;
@@ -22,9 +25,12 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.storage.LocalDiskTier;
 import org.pragmatica.storage.MemoryTier;
+import org.pragmatica.storage.MetadataStore;
 import org.pragmatica.storage.StorageInstance;
 
+import java.nio.file.Path;
 import java.util.List;
 import java.util.function.Function;
 
@@ -48,6 +54,7 @@ import static org.pragmatica.aether.stream.segment.TieredStreamReader.tieredStre
 ///
 /// The N3 shape: min-sync 2, one peer that never acknowledges, ring capacity 2 (retention `maxCount`), three
 /// owner publishes. Offset 0 is evicted and sealed with nothing visible.
+@Timeout(60)
 class TieredReadVisibleBoundTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
@@ -61,6 +68,16 @@ class TieredReadVisibleBoundTest {
     private ReplicationManager replication;
     private StreamPartitionManager manager;
     private PartitionedStreamAccess<byte[]> access;
+
+    /// The cold-restart pair (#1463) needs a WAL and a durable tier that survive the manager.
+    @TempDir
+    Path walDir;
+
+    @TempDir
+    Path storageDir;
+
+    private MetadataStore restartMetadata;
+    private StorageInstance restartStorage;
 
     @BeforeEach
     void setUp() {
@@ -100,6 +117,7 @@ class TieredReadVisibleBoundTest {
     void tearDown() {
         manager.close();
         storage.shutdown();
+        Option.option(restartStorage).onPresent(StorageInstance::shutdown);
     }
 
     /// The N3 scenario itself: the evictee nobody acknowledged IS sealed, and a read of it while nothing is
@@ -144,6 +162,86 @@ class TieredReadVisibleBoundTest {
         assertThat(visible()).isEqualTo(3L);
         assertThat(fetch(1)).containsExactly(1L, 2L, 3L);
         assertThat(fetch(0)).containsExactly(0L, 1L, 2L, 3L);
+    }
+
+    /// #1463 tripwire (today): recovery seeds `visible` at the sealed floor, so after a cold restart the prefix sealed while
+    /// NOTHING was acknowledged reads as visible. Delete when PR-2f lands and enable
+    /// [#coldRestart_overAPrefixSealedWhileUnacknowledged_readsItAsNotYetVisible].
+    @Test
+    void coldRestart_tripwire_overAPrefixSealedWhileUnacknowledged_readsIt() {
+        sealUnacknowledgedPrefix_thenRestart();
+        assertThat(fetch(0)).as("PR-2f landed? The marker lowers the seeded visible below the unacknowledged sealed prefix. Delete this "
+                                + "tripwire and enable coldRestart_overAPrefixSealedWhileUnacknowledged_readsItAsNotYetVisible")
+                            .containsExactly(0L);
+    }
+
+    /// #1463 acceptance (CTO ruling 2026-10-28; S6, know `6665558916`): a log created by this build is born with a `-1`
+    /// marker, so a cold restart over a prefix sealed while unacknowledged reads it as not yet visible.
+    @Test
+    @Disabled("#1463 (PR-2f): enable when the acked marker lowers the seeded visible; RED today: the sealed unacknowledged offset 0 is served")
+    void coldRestart_overAPrefixSealedWhileUnacknowledged_readsItAsNotYetVisible() {
+        sealUnacknowledgedPrefix_thenRestart();
+        assertThat(visible()).as("the born -1 marker lowers the seed below the sealed floor").isEqualTo(-1L);
+        assertThat(fetch(0)).as("the not-yet-visible shape, as before the restart").isEmpty();
+        replication.handleAck(replicateAck(PEER, STREAM, PARTITION, 0));
+        assertThat(fetch(0)).as("positive control: a live ack releases it").containsExactly(0L);
+    }
+
+    /// The N3 shape over a WAL: offset 0 is evicted and sealed while nothing is acknowledged, then the manager restarts over
+    /// the same WAL and storage, with a segment index rebuilt from the surviving refs.
+    private void sealUnacknowledgedPrefix_thenRestart() {
+        manager.close();
+        restartMetadata = MetadataStore.inMemoryMetadataStore("tiered-read-restart");
+        restartStorage = StorageInstance.storageInstance("tiered-read-restart",
+                                                         List.of(MemoryTier.memoryTier(ONE_GB),
+                                                                 LocalDiskTier.localDiskTier(storageDir, ONE_GB).unwrap()),
+                                                         restartMetadata);
+        startWalOwner(new SegmentIndex());
+        publish(3);
+        awaitSealedThrough(0);
+        assertThat(visible()).as("control: nothing was ever acknowledged").isEqualTo(-1L);
+        manager.close();
+        var rebuilt = new SegmentIndex();
+
+        rebuilt.rebuildFromRefs(restartMetadata);
+        startWalOwner(rebuilt);
+        assertThat(rebuilt.lastSealedOffset(STREAM, PARTITION)).as("control: the sealed floor survived the restart").isEqualTo(0L);
+    }
+
+    private void startWalOwner(SegmentIndex segmentIndex) {
+        ReplicaRegistry registry = replicaRegistry();
+
+        registry.registerReplica(STREAM, PARTITION, SELF);
+        registry.registerReplica(STREAM, PARTITION, PEER);
+        index = segmentIndex;
+        replication = replicationManager(SELF, registry);
+        manager = streamPartitionManager(Long.MAX_VALUE,
+                                         segmentSealer(SealReleaseLag.laggingRelease(storageSegmentSink(restartStorage, segmentIndex))),
+                                         replication,
+                                         Option.some(walDir),
+                                         segmentIndex::lastSealedOffset);
+        manager.createStream(config()).onFailure(cause -> fail(cause.message()));
+        access = streamAccess(manager,
+                              identitySerializer(),
+                              identityDeserializer(),
+                              STREAM,
+                              1,
+                              Option.<Function<byte[], Object>>none(),
+                              (_, _, _, _) -> Promise.unitPromise(),
+                              tieredStreamReader(segmentIndex, restartStorage));
+    }
+
+    private static StreamConfig config() {
+        return StreamConfig.streamConfig(STREAM,
+                                         1,
+                                         RetentionPolicy.retentionPolicy(RING_CAPACITY, 1_048_576L, 60_000L),
+                                         "earliest",
+                                         1_048_576L,
+                                         ConsistencyMode.EVENTUAL,
+                                         3,
+                                         2,
+                                         StreamCompression.NONE,
+                                         Option.none());
     }
 
     private List<Long> fetch(long fromOffset) {
