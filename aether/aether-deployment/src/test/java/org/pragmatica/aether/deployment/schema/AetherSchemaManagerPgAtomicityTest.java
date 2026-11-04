@@ -20,7 +20,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
-import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.PostgreSQLContainer;
 
 import java.sql.Connection;
@@ -62,7 +61,7 @@ class AetherSchemaManagerPgAtomicityTest {
 
     @BeforeAll
     static void startContainer() {
-        assumeTrue(isDockerAvailable(), "Docker is not available - skipping real-PostgreSQL atomicity test");
+        assumeTrue(DockerRequirement.dockerAvailable(), "Docker is not available - skipping real-PostgreSQL atomicity test");
         postgres = new PostgreSQLContainer<>("postgres:16-alpine");
         postgres.start();
     }
@@ -133,14 +132,6 @@ class AetherSchemaManagerPgAtomicityTest {
 
     private static long historyRowCount(JdbcPgConnector connector, int version) {
         return connector.scalarCount("SELECT count(*) AS c FROM aether_schema_history WHERE version = ?", version);
-    }
-
-    private static boolean isDockerAvailable() {
-        try {
-            return DockerClientFactory.instance().isDockerAvailable();
-        } catch (Throwable t) {
-            return false;
-        }
     }
 
     /// Minimal real-PostgreSQL [SqlConnector] for the atomicity test. Each operation runs against a
