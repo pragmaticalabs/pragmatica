@@ -1,0 +1,3 @@
+# F1 survivor pin fixture (wiring-SliceLegBuilders-04): a factory that declares no config-update section names no factory.
+slice.factory=org.example.FactoryWithoutSections
+reactive.count=0

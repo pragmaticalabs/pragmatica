@@ -1,0 +1,4 @@
+# F1 survivor pin fixture (wiring-SliceLegBuilders-17): a publisher role at index stream.publishers.count lies outside the declared count.
+stream.publishers.count=1
+stream.publisher.0.config=streams.events
+stream.publisher.1.config=streams.audit
