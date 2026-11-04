@@ -308,8 +308,7 @@ class SchemaOrchestratorLeaseTest {
             start();
 
             for (var attempt = 1; attempt <= 4; attempt++) {
-                fail(attempt, held, attempt < 4);
-                assertThat(current().status()).as("after Held %d", attempt).isEqualTo(SchemaStatus.PENDING);
+                assertThat(fail(attempt, held, attempt < 4)).as("status while waiting out Held %d", attempt).isEqualTo(SchemaStatus.PENDING);
             }
 
             assertThat(redispatchDelays()).containsExactly(15_000L, 45_000L, 45_000L, 45_000L);
@@ -355,16 +354,19 @@ class SchemaOrchestratorLeaseTest {
         }
 
         /// Fails attempt `attempt` with `cause`, waits until its re-dispatch is scheduled and the attempt has let go of
-        /// its lock, then (when `redispatch`) steps time to fire it.
-        private void fail(int attempt, Cause cause, boolean redispatch) {
+        /// its lock, then (when `redispatch`) steps time to fire it. Returns the status read while the backoff was pending.
+        private SchemaStatus fail(int attempt, Cause cause, boolean redispatch) {
             awaitEvent("attempt " + attempt + " dispatched", () -> schemaManager.invocations.size() == attempt);
             schemaManager.completeAll(cause.result());
             awaitEvent("attempt " + attempt + "'s re-dispatch scheduled", () -> redispatchDelays().size() == attempt);
             awaitEvent("attempt " + attempt + " released its lock", () -> committedLock().expiresAt() <= time.now() && time.pending() == 1);
 
+            var waiting = current().status();
+
             if (redispatch) {
                 time.advance(redispatchDelays().getLast());
             }
+            return waiting;
         }
 
         private List<OperatorWarning> deliveredWarnings() {
