@@ -23,8 +23,11 @@ jobs:
   # skipped, because the pull_request run of the same head is the one that gates. A branch with no such PR (a stacked feature
   # branch whose PR targets another feature branch, a branch with no PR yet) and every push to main or release-* still run.
   # If the lookup fails the run proceeds: a duplicate run is cheaper than a missing one.
-  # The skipped jobs' check runs carry the same names as the pull_request run's required contexts; see the PR description for
-  # why that cannot satisfy a required check early. The base list below must equal `pull_request.branches` above.
+  # A skipped job still posts a check run, and a skipped check run named like a required context SATISFIES it (observed on #2657:
+  # mergeStateStatus UNSTABLE, not BLOCKED, while the pull_request run's real build-and-test had not started). So every skipped
+  # job must post under a name no required context uses: the three single-instance required jobs (build-and-test, forge-tests,
+  # stub-suites) rename themselves when skipping; the matrix jobs post their unexpanded `name:` template, which matches nothing.
+  # The base list below must equal `pull_request.branches` above.
   push-dedupe:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -239,6 +242,7 @@ jobs:
   # The required check. It passes only when the static gates and every test group passed: `if: always()` is load-bearing,
   # because without it a failed group SKIPS this job, and a skipped required check counts as passing.
   build-and-test:
+    name: ${{ needs.push-dedupe.outputs.skip == 'true' && 'build-and-test (duplicate push run, skipped)' || 'build-and-test' }}
     needs: [push-dedupe, static-gates, test-group]
     if: always() && needs.push-dedupe.outputs.skip != 'true'
     runs-on: ubuntu-latest
@@ -273,6 +277,7 @@ jobs:
           retention-days: 7
 
   forge-tests:
+    name: ${{ needs.push-dedupe.outputs.skip == 'true' && 'forge-tests (duplicate push run, skipped)' || 'forge-tests' }}
     needs: push-dedupe
     if: needs.push-dedupe.outputs.skip != 'true'
     runs-on: ubuntu-latest
@@ -536,6 +541,7 @@ jobs:
   # so three suites all wedged are ~15.4 min; the 25-minute job cap covers that plus setup, holds a fourth
   # suite, and still stops a runner-level hang long before GitHub's 6-hour default.
   stub-suites:
+    name: ${{ needs.push-dedupe.outputs.skip == 'true' && 'stub-suites (duplicate push run, skipped)' || 'stub-suites' }}
     needs: push-dedupe
     if: needs.push-dedupe.outputs.skip != 'true'
     runs-on: ubuntu-latest
