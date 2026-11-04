@@ -35,4 +35,4 @@ jobs:
 
       - name: Merge queue - fragment verified on the pull request
         if: github.event_name == 'merge_group'
-        run: echo "changelog fragment: not re-checked on merge_group (needs PR labels and base ref); the pull_request run of this check gates entry to the queue"
+        run: echo "changelog fragment not re-checked on merge_group (needs PR labels and base ref), the pull_request run of this check gates entry to the queue"
