@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.junit.jupiter.api.AfterEach;
@@ -57,11 +58,15 @@ import static org.pragmatica.aether.ember.StreamTripwireSupport.sleepQuietly;
 ///   pinned the bounded stall (visible below the tail for 15 s, then caught up by re-acks) is deleted with this flip.
 /// - #2654: life 2's first ownership record carries an incarnation strictly above life 1's, because no ownership epoch is
 ///   minted before the life's cluster incarnation commits.
+/// - Widened (OWNER ruling `ab33af11c6`, mechanism `e10cf838c9`): the acceptance covers a GOVERNOR read on a NON-owner too,
+///   which forwards to the owner while its copy is stale: (a) no announcement from the current owner in this life, or (b)
+///   its visible position below the announced one. Each arm has its own control and goes red with its condition removed.
 @PortBudget
 class EmberOwnerRestartAckedTailTripwireTest {
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(180).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(90).seconds();
     private static final int ACKED = 20;
+    private static final int LAGGED = 5;
     private static final long ACKED_TAIL = ACKED - 1;
     private static final long ISR_BUDGET_MS = 90_000L;
     private static final long REBUILD_BUDGET_MS = 240_000L;
@@ -72,6 +77,7 @@ class EmberOwnerRestartAckedTailTripwireTest {
     private static final String ENGINE_KEY = engineKey(STREAM);
 
     private final AtomicBoolean dropAcks = new AtomicBoolean(false);
+    private final AtomicReference<AetherNode> starved = new AtomicReference<>();
     private final AtomicLong droppedAcks = new AtomicLong();
     private final Set<AetherNode> filtered = ConcurrentHashMap.newKeySet();
     private EmberCluster cluster;
@@ -87,36 +93,73 @@ class EmberOwnerRestartAckedTailTripwireTest {
         StreamTripwireSupport.deleteTree(baseDir);
     }
 
-    /// The acceptance (OWNER ruling S2 (a), know `3cde22c5af`): the first read served after the restart covers the acked tail
-    /// with the replicas' acks still held off. The owner's acked marker (PR-2f) is restored at its first owner admission, which
-    /// is demand-driven, so the arm issues one consumer read through the OWNER's router (a GOVERNOR read served from the
-    /// owner's ring behind its owner gate) before it samples the owner's visible bounds. A non-owner's router would not do: a
-    /// GOVERNOR read there is served from that node's own replica ring and forwarded only on `PARTITION_NOT_LOCAL`
-    /// (`ForwardingReadRouter`), so it never reaches the owner's admission, and a replica never raises visible from the
-    /// marker (know `6665558916` S5).
+    /// The acceptance (OWNER rulings S2 (a) `3cde22c5af` and WIDEN `ab33af11c6`, mechanism `e10cf838c9`): every read served
+    /// after the restart covers the acked tail with the replicas' acks still held off, including a GOVERNOR read on a
+    /// non-owner. The owner's acked marker is restored at its first owner admission, which is demand-driven; a non-owner never
+    /// raises from the marker (`6665558916` S5), so its GOVERNOR read is forwarded to the owner while its copy is stale.
+    /// - Arm (a): before any announcement from the owner in this life, the non-owner forwards (red with condition (a) of
+    ///   `StreamPartitionManager.behindCommittedOwner` mutated out: its held copy serves `[]`).
+    /// - The owner's visible head reaches the acked tail with replica acks still held off.
+    /// - Arm (b): acks flow again, the non-owner's inbound replication data is dropped and [#LAGGED] more events are
+    ///   acknowledged by the third node, so the non-owner holds an announcement above its own visible position. Its GOVERNOR
+    ///   read is forwarded (red with condition (b) mutated out: its copy serves at most the first [#ACKED]).
     @Test
     @Timeout(1200)
-    void ownerAfterColdRestart_seesItsAckedTailWithoutReplicaAcks() {
+    void everyReadAfterColdRestart_coversTheAckedTailWithoutReplicaAcks() {
         var owner = restartWithAcksHeldOff();
+        var nonOwner = cluster.allNodes().stream().filter(node -> !node.self().equals(owner.self())).findFirst().orElseThrow();
 
         assertThat(ringHead(owner)).as("control: the whole acked tail is in the owner's rebuilt ring").isEqualTo(ACKED_TAIL);
+        assertThat(ringHead(nonOwner)).as("control: the non-owner holds the replayed tail in its own ring, so a local read would not fail PARTITION_NOT_LOCAL").isEqualTo(ACKED_TAIL);
+        assertThat(committedThrough(nonOwner)).as("control (arm a): the non-owner has no announcement from the owner in this life").isEqualTo(-1L);
 
-        var firstServed = firstServedRead(owner);
-
-        assertThat(firstServed).as("the first served read after the restart covers the acked tail without replica re-acks")
-                               .hasSize(ACKED);
+        assertThat(firstServedRead(nonOwner)).as("arm (a): the first non-owner GOVERNOR read after the restart covers the acked tail")
+                                             .hasSize(ACKED);
+        assertThat(firstServedRead(owner)).as("the first owner-served read after the restart covers the acked tail").hasSize(ACKED);
         assertThat(highestVisibleOver(owner, 5_000L)).as("the owner's visible head, with replica acks held off").isEqualTo(ACKED_TAIL);
         assertThat(droppedAcks.get()).as("control: the inbound filter was live and dropped replica acks after the restart, so the tail was not released by an ack")
                                      .isPositive();
+
+        var tail = publishLagging(owner, nonOwner);
+
+        assertThat(visibleHead(nonOwner)).as("control (arm b): the non-owner's visible position is below the announced one").isLessThan(committedThrough(nonOwner));
+        assertThat(firstServedRead(nonOwner)).as("arm (b): a non-owner GOVERNOR read while its copy lags the announcement covers the acked tail")
+                                             .hasSize((int) tail + 1);
     }
 
-    /// The first successful GOVERNOR read of the partition from offset 0 through the owner's router; a refused read (the
+    /// Arm (b) setup: release the replica acks, starve `nonOwner` of replication data for the stream, and acknowledge
+    /// [#LAGGED] more events (the third node's ack is the one the confirmation factor needs). Returns the new acked tail once
+    /// `nonOwner` holds an announcement covering it.
+    private long publishLagging(AetherNode owner, AetherNode nonOwner) {
+        starved.set(nonOwner);
+        dropAcks.set(false);
+
+        var router = StreamTripwireSupport.component(owner, "streamWriteRouter", StreamWriteRouter.class);
+
+        for (var i = 0; i < LAGGED; i++) {
+            var offset = router.publish(ENGINE_KEY, PARTITION, ("lagged-" + i).getBytes(StandardCharsets.UTF_8), System.currentTimeMillis()).await(PUBLISH_BOUND);
+
+            assertThat(offset.isSuccess()).as("acknowledged lagging publish %d: %s", i, offset).isTrue();
+        }
+
+        var tail = ACKED_TAIL + LAGGED;
+
+        awaitUntil(() -> committedThrough(nonOwner) >= tail, 30_000L, "the owner's announcement of the new tail reaches the starved non-owner");
+
+        return tail;
+    }
+
+    private static long committedThrough(AetherNode node) {
+        return node.streamPartitionManager().committedThrough(ENGINE_KEY, PARTITION);
+    }
+
+    /// The first successful GOVERNOR read of the partition from offset 0 through `node`'s router; a refused read (the
     /// owner's promotion still pending) is retried inside [#FIRST_READ_BOUND_MS].
-    private List<OffHeapRingBuffer.RawEvent> firstServedRead(AetherNode owner) {
+    private List<OffHeapRingBuffer.RawEvent> firstServedRead(AetherNode node) {
         var deadline = System.currentTimeMillis() + FIRST_READ_BOUND_MS;
 
         while (System.currentTimeMillis() < deadline) {
-            var served = owner.streamReadRouter().read(ENGINE_KEY, PARTITION, 0L, 100, ReadPreference.GOVERNOR).await(READ_BOUND);
+            var served = node.streamReadRouter().read(ENGINE_KEY, PARTITION, 0L, 100, ReadPreference.GOVERNOR).await(READ_BOUND);
 
             if (served.isSuccess()) {
                 return served.unwrap();
@@ -189,14 +232,17 @@ class EmberOwnerRestartAckedTailTripwireTest {
         while (!installerDone.get()) {
             for (var node : cluster.allNodes()) {
                 if (filtered.add(node)) {
-                    node.setInboundFaultFilter((_, message) -> admitted(message));
+                    node.setInboundFaultFilter((_, message) -> admitted(node, message));
                 }
             }
             sleepQuietly(2L);
         }
     }
 
-    private boolean admitted(Object message) {
+    private boolean admitted(AetherNode receiver, Object message) {
+        if (receiver == starved.get() && carriesStreamData(message)) {
+            return false;
+        }
         if (dropAcks.get() && message instanceof ReplicationMessage.ReplicateAck ack && ENGINE_KEY.equals(ack.streamName())) {
             droppedAcks.incrementAndGet();
 
@@ -204,6 +250,16 @@ class EmberOwnerRestartAckedTailTripwireTest {
         }
 
         return true;
+    }
+
+    /// Replication data for the stream: what would let a starved copy catch up.
+    private static boolean carriesStreamData(Object message) {
+        return switch (message) {
+            case ReplicationMessage.ReplicateEvents events -> ENGINE_KEY.equals(events.streamName());
+            case ReplicationMessage.BatchSync sync -> ENGINE_KEY.equals(sync.streamName());
+            case ReplicationMessage.CatchupResponse response -> ENGINE_KEY.equals(response.streamName());
+            default -> false;
+        };
     }
 
     private Option<AetherNode> restoredOwner() {
