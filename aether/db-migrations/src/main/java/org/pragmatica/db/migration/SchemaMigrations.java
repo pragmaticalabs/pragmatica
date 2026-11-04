@@ -23,6 +23,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.db.migration.MigrationError.BaselineConflict.baselineConflict;
 import static org.pragmatica.db.migration.MigrationError.ChecksumMismatch.checksumMismatch;
@@ -56,8 +57,10 @@ public interface SchemaMigrations {
                                    String nodeId,
                                    String owner);
 
-    static SchemaMigrations schemaMigrations() {
-        return new DefaultSchemaMigrations(SchemaHistoryRepository.schemaHistoryRepository());
+    /// `statementTimeout` bounds every statement on the migration's pinned database session (FDB-2a, #2591); the
+    /// caller passes its own per-attempt migration timeout, so no single statement outlives the attempt.
+    static SchemaMigrations schemaMigrations(TimeSpan statementTimeout) {
+        return new DefaultSchemaMigrations(SchemaHistoryRepository.schemaHistoryRepository(), statementTimeout);
     }
 
     record SchemaResult(int appliedCount, int currentVersion, long totalMs) {
@@ -69,9 +72,11 @@ public interface SchemaMigrations {
 
 final class DefaultSchemaMigrations implements SchemaMigrations {
     private final SchemaHistoryRepository historyRepo;
+    private final TimeSpan statementTimeout;
 
-    DefaultSchemaMigrations(SchemaHistoryRepository historyRepo) {
+    DefaultSchemaMigrations(SchemaHistoryRepository historyRepo, TimeSpan statementTimeout) {
         this.historyRepo = historyRepo;
+        this.statementTimeout = statementTimeout;
     }
 
     /// Claim ownership of the physical database IMMEDIATELY after bootstrap and BEFORE
