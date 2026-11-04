@@ -34,6 +34,7 @@ import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmObserver;
+import org.pragmatica.utility.react.ReactExecutor;
 
 
 /// Leader manager responsible for choosing the cluster leader. Backed by the
@@ -56,7 +57,7 @@ public interface LeaderManager {
     /// D1-react (KVStore dispatcher design §3.5.1 row 107): the executor the `LeaderChange` route runs on. A node installs
     /// its gated executor once, at assembly; until then (and in a host that installs none) the route runs inline, as
     /// before D1-react. Default no-op for implementations without an election FSM.
-    default org.pragmatica.lang.Unit installReactExecutor(org.pragmatica.utility.react.ReactExecutor executor) {
+    default org.pragmatica.lang.Unit installReactExecutor(ReactExecutor executor) {
         return org.pragmatica.lang.Unit.unit();
     }
 
@@ -366,7 +367,7 @@ public interface LeaderManager {
                                   LeaderElectionContext context,
                                   boolean localMode) implements LeaderManager {
         @Override
-        public org.pragmatica.lang.Unit installReactExecutor(org.pragmatica.utility.react.ReactExecutor executor) {
+        public org.pragmatica.lang.Unit installReactExecutor(ReactExecutor executor) {
             return context.installReactExecutor(executor);
         }
 

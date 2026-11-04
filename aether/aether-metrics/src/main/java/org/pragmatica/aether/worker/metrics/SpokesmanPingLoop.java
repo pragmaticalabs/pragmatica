@@ -173,12 +173,14 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
     private final AtomicReference<Map<NodeId, String>> governorToCommunity = new AtomicReference<>(Map.of());
 
     private final CancellableTask task = CancellableTask.cancellableTask();
+
     /// D1-react (§3.5.1 rows 72/73). Activation and the status writes are side-effect reactions behind the engine-alive
     /// gate; every deactivation (row 73's remove, an emptied or FAILED assignment, `stop()`) is an ungated undo on the same
     /// executor (U1), so FIFO keeps it after the activation it undoes and an engine stop cannot leak the ping timer.
     /// The writes are under U2: absorb of rows 72/73 bumps [#assignmentGeneration], and a reaction writes only if it has
     /// not moved, so a removed assignment is never resurrected as `Put(ACTIVE)`.
     private final AtomicReference<ReactExecutor> react = new AtomicReference<>(ReactExecutor.inline("SpokesmanPingLoop"));
+
     private final AtomicLong assignmentGeneration = new AtomicLong();
     private final Object writeGuard = new Object();
 
@@ -208,8 +210,7 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
     @Contract
     public void stop() {
         started.set(false);
-        react.get()
-             .undo("Spokesman stop", this::deactivate);
+        react.get().undo("Spokesman stop", this::deactivate);
     }
 
     @Override
@@ -234,21 +235,18 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
         var generation = bumpGeneration();
 
         if (value.communities().isEmpty() || value.status() == SpokesmanStatus.FAILED) {
-            react.get()
-                 .undo("Spokesman deactivate", this::deactivate);
+            react.get().undo("Spokesman deactivate", this::deactivate);
 
             return;
         }
 
         if (value.status() == SpokesmanStatus.ACTIVE) {
-            react.get()
-                 .react("Spokesman activate", () -> activate(value.communities()));
+            react.get().react("Spokesman activate", () -> activate(value.communities()));
 
             return;
         }
 
-        react.get()
-             .react("Spokesman assigned", () -> handleAssigned(value, generation));
+        react.get().react("Spokesman assigned", () -> handleAssigned(value, generation));
     }
 
     @Contract
@@ -265,7 +263,8 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
 
     private static String failureReason(RuntimeException ex) {
         return ex.getMessage() == null
-               ? ex.getClass().getSimpleName()
+               ? ex.getClass()
+                   .getSimpleName()
                : ex.getMessage();
     }
 
@@ -298,8 +297,7 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
         }
 
         bumpGeneration();
-        react.get()
-             .undo("Spokesman remove", this::deactivate);
+        react.get().undo("Spokesman remove", this::deactivate);
     }
 
     @Override

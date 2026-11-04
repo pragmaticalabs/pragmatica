@@ -250,6 +250,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.utility.react.ReactExecutor;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -1560,8 +1561,7 @@ public interface AetherNode extends ManageableNode {
                                                    NodeReactors reactors) {
         // D1-react (KVStore dispatcher design §3.5 R5): the react gate reads this node's engine from here on.
         reactors.bindEngine(clusterNode::isEngineStopRequested);
-        clusterNode.leaderManager()
-                   .installReactExecutor(reactors.executor("LeaderManager"));
+        clusterNode.leaderManager().installReactExecutor(reactors.executor("LeaderManager"));
         // #329: leader-pinned task-group ownership is gated on consensus catch-up. A freshly
         // elected replacement leader whose Rabia log is still draining (isPendingCatchUp) is
         // isActive but not caught up; granting it ownership funnels every leader-pinned op
@@ -1992,7 +1992,7 @@ public interface AetherNode extends ManageableNode {
             /// outcome, the store closes: its undelivered queue is dropped (the router is quiesced), every waiter fails
             /// with outcome-unknown, and the dispatcher thread is joined with a bound.
             @Override
-            public java.util.List<org.pragmatica.utility.react.ReactExecutor> reactExecutors() {
+            public List<ReactExecutor> reactExecutors() {
                 return reactors.all();
             }
 

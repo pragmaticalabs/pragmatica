@@ -35,7 +35,8 @@ public record NodeReactors(AtomicReference<BooleanSupplier> engineStopRequested,
 
         return new NodeReactors(new AtomicReference<>(() -> false),
                                 new AtomicBoolean(),
-                                (component, reaction, error) -> once.stopNode("react " + component + "/" + reaction, error),
+                                (component, reaction, error) -> once.stopNode("react " + component + "/" + reaction,
+                                                                              error),
                                 new ConcurrentHashMap<>());
     }
 
@@ -57,8 +58,7 @@ public record NodeReactors(AtomicReference<BooleanSupplier> engineStopRequested,
     }
 
     public Unit close() {
-        executors.values()
-                 .forEach(ReactExecutor::close);
+        executors.values().forEach(ReactExecutor::close);
 
         return unit();
     }
@@ -72,7 +72,7 @@ public record NodeReactors(AtomicReference<BooleanSupplier> engineStopRequested,
     }
 
     private boolean engineAlive() {
-        return !engineStopRequested.get()
-                                   .getAsBoolean();
+        return ! engineStopRequested.get()
+                                    .getAsBoolean();
     }
 }

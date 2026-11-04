@@ -18,6 +18,7 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.function.ToLongFunction;
 import java.util.stream.Collectors;
+import java.util.function.LongSupplier;
 
 import org.pragmatica.aether.http.ListenerStops;
 import org.pragmatica.aether.slice.SliceState;
@@ -145,6 +146,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.utility.react.ReactExecutor;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.netty.channel.EventLoopGroup;
@@ -811,22 +813,18 @@ class ManagementServerImpl implements ManagementServer {
     @Contract
     private void registerKvDispatchMetrics() {
         Option.option(nodeSupplier.get().kvStore()).onPresent(this::registerKvDispatchGauges);
-        nodeSupplier.get()
-                    .reactExecutors()
-                    .forEach(this::registerReactGauges);
+        nodeSupplier.get().reactExecutors().forEach(this::registerReactGauges);
     }
 
     /// D1-react (KVStore dispatcher design §3.6, owner ruling 7): per C9 component, its react queue depth and high-water mark,
     /// and the side-effect reactions the engine-alive gate dropped. Measured only: no alarm, no overflow policy.
-    private void registerReactGauges(org.pragmatica.utility.react.ReactExecutor executor) {
+    private void registerReactGauges(ReactExecutor executor) {
         reactGauge("aether.react.queue.depth", executor, executor::queueDepth);
         reactGauge("aether.react.queue.high.water", executor, executor::highWater);
         reactGauge("aether.react.dropped.engine.stopped", executor, executor::droppedEngineStopped);
     }
 
-    private Unit reactGauge(String name,
-                            org.pragmatica.utility.react.ReactExecutor executor,
-                            java.util.function.LongSupplier read) {
+    private Unit reactGauge(String name, ReactExecutor executor, LongSupplier read) {
         Supplier<Number> value = read::getAsLong;
 
         observability.gauge(name, value, "component", executor.component());

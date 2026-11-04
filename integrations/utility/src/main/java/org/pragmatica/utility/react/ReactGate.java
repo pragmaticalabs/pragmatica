@@ -5,6 +5,7 @@ package org.pragmatica.utility.react;
 
 import java.util.function.BooleanSupplier;
 
+
 /// The engine-alive gate of a react executor (KVStore dispatcher design §3.5 R5, §3.5.1): a side-effect reaction runs
 /// only while the gate is open. It is read when the reaction RUNS, never when it is queued, so a reaction queued before
 /// an engine stop and run after it is dropped.

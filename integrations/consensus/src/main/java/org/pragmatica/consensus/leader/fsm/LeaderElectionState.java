@@ -976,11 +976,13 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// deactivation and leave a manager active.
     private static void routeLeaderChange(LeaderElectionContext ctx, LeaderNotification.LeaderChange change) {
         if (change.localNodeIsLeader()) {
-            ctx.reactExecutor()
-               .react("LeaderChange(self)", () -> ctx.router().route(change));
+            ctx.reactExecutor().react("LeaderChange(self)",
+                                      () -> ctx.router()
+                                               .route(change));
         } else {
-            ctx.reactExecutor()
-               .undo("LeaderChange(other)", () -> ctx.router().route(change));
+            ctx.reactExecutor().undo("LeaderChange(other)",
+                                     () -> ctx.router()
+                                              .route(change));
         }
     }
 

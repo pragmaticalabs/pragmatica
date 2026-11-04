@@ -46,7 +46,6 @@ import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmState;
 import org.pragmatica.statemachine.TransitionRequest;
-
 import org.pragmatica.utility.react.ReactExecutor;
 
 import org.slf4j.Logger;
@@ -327,11 +326,13 @@ public interface ScheduledTaskManager {
         /// The fire each claimed key is running (#1930), so a skipped tick can say how long it has been in flight.
         final Map<ScheduledTaskKey, FireInFlight> fires = new ConcurrentHashMap<>();
         final Map<ScheduledTaskKey, ScheduledFuture<?>> activeTimers = new ConcurrentHashMap<>();
+
         /// D1-react (§3.5.1 rows 25/28, U2): a registry-driven arm is a reaction on this executor; the cancel stays in
         /// absorb. Each cancel bumps its key's generation inside the key's `compute`, and every cancel-all bumps
         /// [#stateGeneration] first; the arm runs inside the same `compute` only if neither moved since absorb, with
         /// eligibility re-read at run time. Whichever runs first, the later one sees the other: no armed-after-cancel.
         final AtomicReference<ReactExecutor> react = new AtomicReference<>(ReactExecutor.inline("ScheduledTaskRegistry"));
+
         final Map<ScheduledTaskKey, Long> timerGenerations = new ConcurrentHashMap<>();
         final AtomicLong stateGeneration = new AtomicLong();
         final Set<ScheduledTaskKey> inFlight = ConcurrentHashMap.newKeySet();
@@ -620,13 +621,16 @@ public interface ScheduledTaskManager {
             var keyGeneration = TaskOps.cancelTimer(ctx, key);
             var stateGeneration = ctx.stateGeneration.get();
 
-            ctx.react.get()
-               .react("ScheduledTask arm", () -> armIfCurrent(key, task, keyGeneration, stateGeneration));
+            ctx.react.get().react("ScheduledTask arm", () -> armIfCurrent(key, task, keyGeneration, stateGeneration));
         }
 
         private void armIfCurrent(ScheduledTaskKey key, ScheduledTask task, long keyGeneration, long stateGeneration) {
             ctx.timerGenerations.compute(key,
-                                         (_, current) -> armUnderGuard(key, task, keyGeneration, stateGeneration, current));
+                                         (_, current) -> armUnderGuard(key,
+                                                                       task,
+                                                                       keyGeneration,
+                                                                       stateGeneration,
+                                                                       current));
         }
 
         private Long armUnderGuard(ScheduledTaskKey key,
@@ -634,8 +638,7 @@ public interface ScheduledTaskManager {
                                    long keyGeneration,
                                    long stateGeneration,
                                    Long current) {
-            if (current != null && current == keyGeneration && ctx.stateGeneration.get() == stateGeneration
-                && shouldRunInCurrentState(task)) {
+            if (current != null && current == keyGeneration && ctx.stateGeneration.get() == stateGeneration && shouldRunInCurrentState(task)) {
                 TaskOps.startTimer(ctx, key, task);
             }
 

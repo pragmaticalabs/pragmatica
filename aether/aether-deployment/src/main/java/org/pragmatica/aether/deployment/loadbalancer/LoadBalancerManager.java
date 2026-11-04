@@ -270,7 +270,9 @@ public interface LoadBalancerManager {
                 routeChange(httpMethod,
                             pathPrefix,
                             Set.of()).onSuccess(change -> react.react("NodeRoutes route removal",
-                                                                      () -> announceRemoval(change, httpMethod, pathPrefix)))
+                                                                      () -> announceRemoval(change,
+                                                                                            httpMethod,
+                                                                                            pathPrefix)))
                            .onFailure(cause -> log.error("Failed to create route change for removal of {} {}: {}",
                                                          httpMethod,
                                                          pathPrefix,

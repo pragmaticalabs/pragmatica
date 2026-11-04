@@ -36,20 +36,14 @@ import org.slf4j.LoggerFactory;
 /// lost to a stop).
 public interface ReactExecutor {
     Unit react(String reaction, Runnable call);
-
     Unit undo(String reaction, Runnable call);
-
     String component();
-
     /// Reactions submitted and not yet started.
     long queueDepth();
-
     /// The largest [#queueDepth] observed since construction.
     long highWater();
-
     /// Side-effect reactions dropped because the gate was closed when they ran (or the executor was closed).
     long droppedEngineStopped();
-
     Unit close();
 
     static ReactExecutor reactExecutor(String component, ReactGate gate, ReactFailureSink failureSink) {
@@ -117,6 +111,7 @@ public interface ReactExecutor {
 
         /// The one boundary where the JDK executor's refusal is converted: a closed executor refuses the task, and
         /// the refusal runs `onRefused` instead (count a side effect as dropped, run an undo inline).
+        @SuppressWarnings("JBCT-EX-03")
         private Unit submit(String reaction, Runnable task, Runnable onRefused) {
             raiseDepth();
             try {
@@ -165,6 +160,7 @@ public interface ReactExecutor {
 
         /// §6.1 react wrapper: a `RuntimeException` is logged and isolated per reaction; any other `Throwable` (an
         /// `Error`) goes to the failure sink, which stops the node.
+        @SuppressWarnings("JBCT-EX-03")
         private void runGuarded(String reaction, Runnable call) {
             try {
                 call.run();
