@@ -24,6 +24,7 @@ import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.membership.ntt.DrainProcedure;
 import org.pragmatica.aether.invoke.InvocationTraceStore;
 import org.pragmatica.aether.node.AetherNodeConfig;
+import org.pragmatica.aether.node.KvDispatchLagWatch;
 import org.pragmatica.aether.node.SystemStreamRegistrar;
 import org.pragmatica.aether.slice.*;
 import org.pragmatica.aether.slice.StreamConfig;
@@ -175,6 +176,10 @@ public sealed interface ClusterEventsAssembly {
         defer.accept(() -> SharedScheduler.scheduleAtFixedRate(eventAggregator::evictIdleThrottleWindows,
                                                                OPERATOR_WARNING_EVICTION_INTERVAL,
                                                                OPERATOR_WARNING_EVICTION_INTERVAL));
+        // D1 (KVStore dispatcher design §3.6): the slope warning over THIS node's store's delivery lag, on this node's sink.
+        var kvDispatchLagWatch = KvDispatchLagWatch.kvDispatchLagWatch(kvStore::deliveryMetrics, operatorWarningSink);
+
+        defer.accept(() -> SharedScheduler.scheduleAtFixedRate(kvDispatchLagWatch::tick, KvDispatchLagWatch.TICK));
 
         return new EventAggregatorOutputs(clusterEventsHlcClock,
                                           clusterEventsPublisherRef,

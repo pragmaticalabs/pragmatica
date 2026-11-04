@@ -24,6 +24,16 @@ class OperatorWarningWiringTest {
         assertThat(code).containsOnlyOnce("returnOperatorWarningSink.handingOffTo(replaying,aggregator::onHandedOffWarning);");
     }
 
+    /// D1 item 10 (KVStore dispatcher design §3.6): the `kv-dispatch-lagging` watch samples THIS node's store and raises on this node's
+    /// sink, once a second. `KvDispatchLagWatchTest` drives the watch itself.
+    @Test
+    void assembly_watchesTheNodeStoresDispatchLagOnThisNodesSink() {
+        var code = assemblyCode();
+
+        assertThat(code).containsOnlyOnce("varkvDispatchLagWatch=KvDispatchLagWatch.kvDispatchLagWatch(kvStore::deliveryMetrics,operatorWarningSink);");
+        assertThat(code).containsOnlyOnce("defer.accept(()->SharedScheduler.scheduleAtFixedRate(kvDispatchLagWatch::tick,KvDispatchLagWatch.TICK));");
+    }
+
     @Test
     void assembly_givesTheSinkToSwimCoreAbsenceAndReplication() {
         var code = assemblyCode();
