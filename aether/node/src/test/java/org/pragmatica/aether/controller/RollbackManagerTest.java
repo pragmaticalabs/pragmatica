@@ -8,6 +8,7 @@ package org.pragmatica.aether.controller;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
@@ -41,8 +42,10 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Timeout(value = 60, unit = SECONDS)
 class RollbackManagerTest {
     private static final NodeId SELF = NodeId.nodeId("node-1").unwrap();
     private static final NodeId LEADER = NodeId.nodeId("node-1").unwrap();

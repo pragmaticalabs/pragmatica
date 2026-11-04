@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
@@ -47,11 +48,13 @@ import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
+import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// #1573 rollback safety, one property per test. Each negative case is armed by the positive
 /// `insideBakeWindow_rollsBack_recordFirstInOneBatch`: the same fixture rolls back unless the one
 /// condition under test holds.
+@Timeout(value = 60, unit = SECONDS)
 class RollbackManagerAutoRollbackSafetyTest {
     private static final NodeId SELF = NodeId.nodeId("node-1").unwrap();
     private static final ArtifactBase BASE = Artifact.artifact("org.test:my-slice:2.0.0").unwrap().base();
