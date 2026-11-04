@@ -813,7 +813,7 @@ class ManagementServerImpl implements ManagementServer {
         Option.option(nodeSupplier.get().kvStore()).onPresent(this::registerKvDispatchGauges);
     }
 
-    private void registerKvDispatchGauges(KVStore<AetherKey, AetherValue> store) {
+    private Unit registerKvDispatchGauges(KVStore<AetherKey, AetherValue> store) {
         kvDispatchGauge("aether.kv.dispatch.lag.batches", store, DeliveryMetrics::lagBatches);
         kvDispatchGauge("aether.kv.dispatch.lag.oldest.age.ms", store, DeliveryMetrics::lagOldestAgeMillis);
         kvDispatchGauge("aether.kv.dispatch.queue.depth", store, DeliveryMetrics::queueDepth);
@@ -850,15 +850,19 @@ class ManagementServerImpl implements ManagementServer {
                         "replay");
         kvDispatchGauge("aether.kv.dispatch.slow.handlers", store, DeliveryMetrics::slowHandlers);
         kvDispatchGauge("aether.kv.dispatch.slow.handler.max.nanos", store, DeliveryMetrics::slowHandlerMaxNanos);
+
+        return unit();
     }
 
-    private void kvDispatchGauge(String name,
+    private Unit kvDispatchGauge(String name,
                                  KVStore<AetherKey, AetherValue> store,
                                  ToLongFunction<DeliveryMetrics> read,
                                  String... tags) {
         Supplier<Number> value = () -> read.applyAsLong(store.deliveryMetrics());
 
         observability.gauge(name, value, tags);
+
+        return unit();
     }
 
     /// Promotion of each storage instance that promotes (an inert one has nothing to report), cumulative since boot, read
