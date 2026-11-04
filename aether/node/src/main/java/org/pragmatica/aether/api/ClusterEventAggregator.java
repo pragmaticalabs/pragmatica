@@ -91,6 +91,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.utility.warning.WarningLevel;
 
 import org.slf4j.Logger;
@@ -978,17 +979,32 @@ public final class ClusterEventAggregator {
     /// past its horizon, overflow) shortens the window to [#OPERATOR_WARNING_RETRY_MS], so the next occurrence after it
     /// is admitted and reports what this one could not, while a key whose events keep being lost is attempted at most
     /// once per retry window.
+    ///
+    /// This form reads `replayingCheck` on the CALLING thread, so it is right only for a caller on the raising thread. The
+    /// node's sink hands warnings off to another thread and enters through [#onHandedOffWarning].
     @Contract
     public void onOperatorWarning(OperatorWarning warning) {
+        onOperatorWarning(warning, replayingCheck);
+    }
+
+    /// The node sink's entry (KVStore dispatcher design §3.5 R4): the warning crossed the operator-warning hand-off thread,
+    /// where `isReplaying()` always reads false, so the replay bit it carries was captured on the raising thread.
+    @Contract
+    public void onHandedOffWarning(OperatorWarningSink.HandedOff handedOff) {
+        onOperatorWarning(handedOff.warning(), handedOff::replayed);
+    }
+
+    /// `replayed` is read only where the warning would be emitted, as `replayingCheck` always was.
+    private void onOperatorWarning(OperatorWarning warning, BooleanSupplier replayed) {
         var key = throttleKey(warning.code(), warning.subject());
 
         warning.code()
                .recoveryOf()
-               .onPresent(closes -> onRecovery(warning, closes))
-               .onEmpty(() -> onCondition(warning, key));
+               .onPresent(closes -> onRecovery(warning, closes, replayed))
+               .onEmpty(() -> onCondition(warning, key, replayed));
     }
 
-    private void onCondition(OperatorWarning warning, String key) {
+    private void onCondition(OperatorWarning warning, String key, BooleanSupplier replayed) {
         var spoofable = SPOOFABLE_SUBJECT_CODES.contains(warning.code());
 
         if (spoofable) {
@@ -1019,7 +1035,7 @@ public final class ClusterEventAggregator {
         var event = warningEvent(warning, window.suppressedBefore());
 
         lastRaisedOperatorWarning = Option.some(event);
-        if (replayingCheck.getAsBoolean()) {
+        if (replayed.getAsBoolean()) {
             LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing local emit of {}", event);
             shortenWindow(key, window);
 
@@ -1114,7 +1130,7 @@ public final class ClusterEventAggregator {
     /// closes it. It has no window of its own: one published warning allows one recovery. Publishing it also ends the
     /// warning's throttle window, so a condition that recurs right after its recovery is shown again rather than
     /// throttled behind a "repaired" that is no longer true (#752).
-    private void onRecovery(OperatorWarning warning, OperatorWarningCode closes) {
+    private void onRecovery(OperatorWarning warning, OperatorWarningCode closes, BooleanSupplier replayed) {
         var closedKey = throttleKey(closes, warning.subject());
         var event = warningEvent(warning, 0);
         var held = Option.option(awaitingDelivery.computeIfPresent(closedKey, (_, _) -> Option.some(event)));
@@ -1133,7 +1149,7 @@ public final class ClusterEventAggregator {
             openRecoverable.add(closedKey);
         }
 
-        if (replayingCheck.getAsBoolean()) {
+        if (replayed.getAsBoolean()) {
             holdDuringReplay(closedKey, event);
 
             return;

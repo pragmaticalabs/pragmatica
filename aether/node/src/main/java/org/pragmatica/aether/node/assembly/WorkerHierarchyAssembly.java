@@ -40,6 +40,8 @@ import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.aether.node.DhtReplicationSettlement;
 import org.pragmatica.aether.node.DhtWriterStaleWatch;
 import org.pragmatica.aether.node.GossipKeyRotationHandler;
+import org.pragmatica.aether.node.NodeReplacementWiring;
+import org.pragmatica.aether.node.UpgradeRunWiring;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.aether.node.health.WorkerEndpointDirectory;
 import org.pragmatica.aether.slice.*;
@@ -228,16 +230,16 @@ public sealed interface WorkerHierarchyAssembly {
                                                                                                                                                                                                                  .key()
                                                                                                                                                                                                                  .communityId()))
                                                      .onPut(AetherKey.NodeReplacementKey.class,
-                                                            (ValuePut<AetherKey.NodeReplacementKey, AetherValue.NodeReplacementValue> put) -> nodeReplacements.put(put.cause()
-                                                                                                                                                                      .key(),
-                                                                                                                                                                   put.cause()
-                                                                                                                                                                      .value()))
+                                                            (ValuePut<AetherKey.NodeReplacementKey, AetherValue.NodeReplacementValue> put) -> NodeReplacementWiring.absorbPut(nodeReplacements,
+                                                                                                                                                                              kvStore::isReplaying,
+                                                                                                                                                                              put))
                                                      .onRemove(AetherKey.NodeReplacementKey.class,
                                                                (ValueRemove<AetherKey.NodeReplacementKey, AetherValue.NodeReplacementValue> remove) -> nodeReplacements.remove(remove.cause()
                                                                                                                                                                                      .key()))
                                                      .onPut(AetherKey.UpgradeRunKey.class,
-                                                            (ValuePut<AetherKey.UpgradeRunKey, AetherValue.UpgradeRunValue> put) -> upgradeRuns.put(put.cause()
-                                                                                                                                                       .value()))
+                                                            (ValuePut<AetherKey.UpgradeRunKey, AetherValue.UpgradeRunValue> put) -> UpgradeRunWiring.absorbPut(upgradeRuns,
+                                                                                                                                                               kvStore::isReplaying,
+                                                                                                                                                               put))
                                                      .onRemove(AetherKey.UpgradeRunKey.class,
                                                                (ValueRemove<AetherKey.UpgradeRunKey, AetherValue.UpgradeRunValue>_) -> upgradeRuns.remove())
                                                      .onPut(AetherKey.NodePlacementKey.class,

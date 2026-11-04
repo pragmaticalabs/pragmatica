@@ -157,7 +157,7 @@ public sealed interface ClusterEventsAssembly {
         // #1574 / #1617: ONE operator-warning sink per node, bound to THIS node's aggregator (never another
         // Ember node's). It hands each warning off to a bounded queue, so a raise from SWIM, replication or the
         // core-absence fence never waits on the event log. Idle throttle keys are evicted once per minute.
-        var operatorWarningSink = OperatorWarningSink.handingOffTo(eventAggregator::onOperatorWarning);
+        var operatorWarningSink = operatorWarningSink(eventAggregator, kvStore::isReplaying);
         // #2062: an instance whose termination the CTM cannot confirm after its bounded retries is an operator event.
         clusterTopologyManager.setOperatorWarningSink(operatorWarningSink);
         // #1109: the leader's committed-target gate reports a LOAD it has refused past the bound to THIS node's event log.
@@ -184,6 +184,13 @@ public sealed interface ClusterEventsAssembly {
                                           clusterEventsOwnerCheck,
                                           eventAggregator,
                                           operatorWarningSink);
+    }
+
+    /// The node's ONE operator-warning sink, bound to `aggregator`. Each warning crosses with the replay bit read on the raising
+    /// thread (KVStore dispatcher design §3.5 R4): a warning a KV handler raises in a replay burst is suppressed like any replayed emit,
+    /// though the hand-off thread itself always reads `isReplaying()` false.
+    static OperatorWarningSink operatorWarningSink(ClusterEventAggregator aggregator, BooleanSupplier replaying) {
+        return OperatorWarningSink.handingOffTo(replaying, aggregator::onHandedOffWarning);
     }
 
     /// What `eventTick` reads from the assembly built so far.

@@ -11,7 +11,6 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.api.ClusterEvent;
@@ -54,13 +53,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// operator-warning sink into a real aggregator whose replay check is the store's. A live sentinel raised afterwards
 /// is the control: the hand-off is one FIFO thread, so once the sentinel is published, anything the replay raised was
 /// handled before it.
-///
-/// The tripwires assert today's behaviour (a replayed warning is published); they go red when the skip lands, and
-/// their message says what to enable.
 @Timeout(value = 60, unit = TimeUnit.SECONDS)
 class ReplayedOperatorWarningTest {
     private static final Logger LOG = LoggerFactory.getLogger(ReplayedOperatorWarningTest.class);
-    private static final String TRIPWIRE = "D1 item 9 landed: enable the skip assertions";
     private static final NodeId SELF = new NodeId("replay-warning-self");
     private static final SliceCodec CODEC = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
     private static final String SUBJECT = "g:orders[0]";
@@ -95,43 +90,20 @@ class ReplayedOperatorWarningTest {
         store.close();
     }
 
-    /// Condition path (`ClusterEventAggregator` `onCondition`).
-    @Test
-    void replayedOperatorWarning_isPublishedToday() {
-        var sink = sinkAsToday();
-
-        assertThat(replayThenSentinel(sink, warning(OperatorWarningCode.DEPLOY_WARNING, "replayed"))).as(TRIPWIRE)
-                                                                                                    .contains("deploy-warning:replayed");
-    }
-
-    /// Recovery path (`ClusterEventAggregator` `onRecovery`): the repair of a shown warning, raised during replay.
-    @Test
-    void replayedRecovery_isPublishedToday() {
-        var sink = sinkAsToday();
-
-        raiseLive(sink, warning(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED, SUBJECT));
-        awaitPublished("stream-consumer-state-diverged:" + SUBJECT);
-
-        assertThat(replayThenSentinel(sink, warning(OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED, SUBJECT))).as(TRIPWIRE)
-                                                                                                                 .contains("stream-consumer-state-repaired:" + SUBJECT);
-    }
-
-    /// Mutation: the aggregator reads `replayingCheck` on the hand-off thread again: the replayed warning is published,
-    /// red.
-    @Disabled("D1 item 9: enabled when the replay skip lands")
+    /// Condition path (`ClusterEventAggregator` `onCondition`). Mutation: the aggregator reads `replayingCheck` on the
+    /// hand-off thread again: the replayed warning is published, red.
     @Test
     void replayedOperatorWarning_isSuppressedAcrossTheHandOff() {
-        var sink = sinkAsToday();
+        var sink = nodeSink();
 
         assertThat(replayThenSentinel(sink, warning(OperatorWarningCode.DEPLOY_WARNING, "replayed"))).containsExactly("deploy-warning:sentinel");
     }
 
-    /// Mutation: as above: the repair raised during replay is published at once instead of held for the first tick
-    /// after it, red.
-    @Disabled("D1 item 9: enabled when the replay skip lands")
+    /// Recovery path (`ClusterEventAggregator` `onRecovery`): the repair of a shown warning, raised during replay, is
+    /// held for the first tick after it. Mutation: as above: it is published at once, red.
     @Test
     void replayedRecovery_isHeldAcrossTheHandOff() {
-        var sink = sinkAsToday();
+        var sink = nodeSink();
 
         raiseLive(sink, warning(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED, SUBJECT));
         awaitPublished("stream-consumer-state-diverged:" + SUBJECT);
@@ -140,9 +112,9 @@ class ReplayedOperatorWarningTest {
                                                                                                                                  "deploy-warning:sentinel");
     }
 
-    /// The ClusterEventsAssembly sink as it stands before the skip.
-    private OperatorWarningSink sinkAsToday() {
-        return OperatorWarningSink.handingOffTo(aggregator::onOperatorWarning);
+    /// The node's operator-warning sink, as ClusterEventsAssembly builds it over the store's replay check.
+    private OperatorWarningSink nodeSink() {
+        return ClusterEventsAssembly.operatorWarningSink(aggregator, store::isReplaying);
     }
 
     /// Routes the store's puts to a handler that raises the stored warning, replays `replayed`, then raises a live

@@ -12,7 +12,6 @@ import java.util.function.Consumer;
 
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementIndex;
@@ -52,12 +51,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// with `isReplaying()` true), then commits a LIVE transition whose own announcement is the control: the hand-off is
 /// one FIFO thread, so once the live announcement arrived, anything the replay raised has arrived before it. The owner
 /// gate is open in every arm.
-///
-/// The tripwires assert today's behaviour (a replayed put announces); they go red when the skip lands, and their
-/// message says what to enable.
 @Timeout(value = 60, unit = TimeUnit.SECONDS)
 class ReplayedAnnouncementTest {
-    private static final String TRIPWIRE = "D1 item 9 landed: enable the skip assertions";
     private static final NodeId SELF = new NodeId("replay-self");
     private static final NodeId REPLAYED = new NodeId("replay-original");
     private static final NodeId LIVE = new NodeId("live-original");
@@ -92,62 +87,42 @@ class ReplayedAnnouncementTest {
         store.close();
     }
 
-    @Test
-    void replayedNodeReplacementPut_announcesToday() {
-        var index = nodeReplacementsRoutedAsToday();
-
-        assertThat(startedSubjects(replayThenLiveReplacement(index))).as(TRIPWIRE)
-                                                                     .contains(REPLAYED.id());
-    }
-
-    @Test
-    void replayedUpgradeRunPut_announcesToday() {
-        var index = upgradeRunsRoutedAsToday();
-
-        assertThat(replayThenLiveUpgrade(index)).as(TRIPWIRE)
-                                                .contains(OperatorWarningCode.UPGRADE_STARTED);
-    }
-
     /// Mutation: the announcer ignores the replay bit, or the absorber passes `false`: the replayed record announces
     /// `NODE_REPLACEMENT_STARTED`, red.
-    @Disabled("D1 item 9: enabled when the replay skip lands")
     @Test
     void replayedNodeReplacementPut_announcesNothing() {
-        var index = nodeReplacementsRoutedAsToday();
+        var index = nodeReplacementsRouted();
 
         assertThat(startedSubjects(replayThenLiveReplacement(index))).containsExactly(LIVE.id());
     }
 
     /// Mutation: as above, for the upgrade run: the replayed run announces `UPGRADE_STARTED`, red.
-    @Disabled("D1 item 9: enabled when the replay skip lands")
     @Test
     void replayedUpgradeRunPut_announcesNothing() {
-        var index = upgradeRunsRoutedAsToday();
+        var index = upgradeRunsRouted();
 
         assertThat(replayThenLiveUpgrade(index)).containsExactly(OperatorWarningCode.UPGRADE_PAUSED);
     }
 
-    /// The WorkerHierarchyAssembly route and the TopologyAssembly listener as they stand before the skip.
-    private NodeReplacementIndex nodeReplacementsRoutedAsToday() {
+    /// The WorkerHierarchyAssembly route (the production absorber) and the TopologyAssembly listener.
+    private NodeReplacementIndex nodeReplacementsRouted() {
         var index = NodeReplacementIndex.nodeReplacementIndex();
 
         index.onTransition(NodeReplacementWiring.announcer(() -> true, sink));
         routeOn(NodeReplacementKey.class,
-                (ValuePut<NodeReplacementKey, NodeReplacementValue> put) -> index.put(put.cause()
-                                                                                         .key(),
-                                                                                      put.cause()
-                                                                                         .value()));
+                (ValuePut<NodeReplacementKey, NodeReplacementValue> put) -> NodeReplacementWiring.absorbPut(index,
+                                                                                                            store::isReplaying,
+                                                                                                            put));
 
         return index;
     }
 
-    private UpgradeRunIndex upgradeRunsRoutedAsToday() {
+    private UpgradeRunIndex upgradeRunsRouted() {
         var index = UpgradeRunIndex.upgradeRunIndex();
 
         index.onTransition(UpgradeRunWiring.announcer(() -> true, sink));
         routeOn(UpgradeRunKey.class,
-                (ValuePut<UpgradeRunKey, UpgradeRunValue> put) -> index.put(put.cause()
-                                                                               .value()));
+                (ValuePut<UpgradeRunKey, UpgradeRunValue> put) -> UpgradeRunWiring.absorbPut(index, store::isReplaying, put));
 
         return index;
     }
