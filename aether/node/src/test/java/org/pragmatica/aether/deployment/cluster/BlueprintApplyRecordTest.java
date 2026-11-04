@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.cluster;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -58,6 +59,8 @@ class BlueprintApplyRecordTest {
     private static final Artifact SLICE = Artifact.artifact("org.example:app-slice:1.0.0").unwrap();
     private static final AetherKey APPLY = AetherKey.DeploymentApplyKey.deploymentApplyKey(ID);
     private static final AetherKey BLUEPRINT = AetherKey.AppBlueprintKey.appBlueprintKey(ID);
+    /// Mirrors `BlueprintServiceInstance.MAX_OUTCOME_START_ATTEMPTS` (an instance field there, so not referenceable): a drift turns the budget test red.
+    private static final int APPLY_RECORD_BUDGET = 5;
     private static final String DSL = """
             id = "org.example:app:1.0.0"
 
@@ -174,6 +177,36 @@ class BlueprintApplyRecordTest {
         assertThat(first).anyMatch(command -> command.key() instanceof AetherKey.DeploymentApplyKey);
     }
 
+    /// The ARTIFACT publish path builds its batch in `buildAllCommands`, a different builder from the DSL path's: the apply record must ride that
+    /// batch too (F1 survivor adep-BlueprintService-12: dropping `record.onPresent(commands::add)` there left every DSL-path test green).
+    @Test
+    void publishFromArtifact_underFsm2_theApplyRecordRidesTheSameBatchAsTheBlueprint() throws IOException {
+        var blueprintArtifact = Artifact.artifact("org.example:app-blueprint:1.0.0").unwrap();
+        var blueprintJar = tempDir.resolve("app-blueprint-1.0.0.jar");
+
+        try (var out = new JarOutputStream(Files.newOutputStream(blueprintJar))) {
+            out.putNextEntry(new ZipEntry("META-INF/blueprint.toml"));
+            out.write(DSL.getBytes(StandardCharsets.UTF_8));
+            out.closeEntry();
+        }
+
+        Repository artifactRepository = requested -> requested.equals(blueprintArtifact)
+                                                     ? Result.lift(Causes::fromThrowable, () -> blueprintJar.toUri().toURL()).flatMap(url -> Location.location(requested, url)).async()
+                                                     : repository.locate(requested);
+        var node = new Node();
+
+        BlueprintService.blueprintService(node, store, artifactRepository, true)
+                        .publishFromArtifact(blueprintArtifact.asString())
+                        .await()
+                        .onFailure(cause -> assertThat(cause.message()).isNull());
+
+        var first = node.batches.getFirst();
+
+        assertThat(first).anyMatch(command -> command.key() instanceof AetherKey.AppBlueprintKey);
+        assertThat(first).as("the artifact path's batch carries the apply record").anyMatch(command -> command.key() instanceof AetherKey.DeploymentApplyKey);
+        assertThat(apply().map(DeploymentApplyValue::attemptId)).isEqualTo(Option.some(committedAttempt()));
+    }
+
     // -- R-4.1.2: previous ---------------------------------------------------------------------------------------------------
     /// The same-id overwritten value is what a rollback restores.
     @Test
@@ -216,6 +249,20 @@ class BlueprintApplyRecordTest {
         assertThat(result.isFailure()).as("NT-118").isTrue();
         result.onSuccess(published -> assertThat(published).isNull()).onFailure(cause -> assertThat(cause.message()).contains("apply record did not land"));
         assertThat(node.batches.size()).as("the confirmation retried within its budget").isGreaterThan(2);
+    }
+
+    /// The confirmation's retry budget is exact: the publish batch plus `MAX_OUTCOME_START_ATTEMPTS` re-applications of the record, then the
+    /// failure (F1 survivor adep-BlueprintService-05: `>` instead of `>=` allowed one re-application more).
+    @Test
+    void aPublishWhoseApplyRecordNeverLands_retriesExactlyTheBudget_thenFails() {
+        var node = new Node();
+
+        node.drop = command -> command.key() instanceof AetherKey.DeploymentApplyKey;
+
+        var result = BlueprintService.blueprintService(node, store, repository, true).publish(DSL).await();
+
+        assertThat(result.isFailure()).isTrue();
+        assertThat(node.batches.size()).as("the publish batch plus the budgeted re-applications").isEqualTo(1 + APPLY_RECORD_BUDGET);
     }
 
     /// The positive control, and the case where the apply already closed: the cluster FSM finished before the confirmation read, so the record is
