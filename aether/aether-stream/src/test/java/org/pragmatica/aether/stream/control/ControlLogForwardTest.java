@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.control;
 
+import org.pragmatica.aether.stream.forward.AcceptingStreamForwardTransport;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -114,7 +115,7 @@ class ControlLogForwardTest {
             var responses = new CopyOnWriteArrayList<ControlAppendForwardResponse>();
             var handler = StreamForwardHandler.streamForwardHandler(SELF,
                                                                     manager,
-                                                                    (_, message) -> collect(responses, message),
+                                                                    AcceptingStreamForwardTransport.accepting((_, message) -> collect(responses, message)),
                                                                     owner.controlLog());
 
             handler.onControlAppendForward(ControlAppendForward.controlAppendForward(SENDER,
@@ -141,9 +142,9 @@ class ControlLogForwardTest {
         var clientHolder = new CopyOnWriteArrayList<StreamForwardClient>();
         var handler = StreamForwardHandler.streamForwardHandler(SELF,
                                                                 owner.manager(),
-                                                                (_, message) -> answer(clientHolder, message),
+                                                                AcceptingStreamForwardTransport.accepting((_, message) -> answer(clientHolder, message)),
                                                                 owner.controlLog());
-        var client = StreamForwardClient.streamForwardClient(SENDER, (_, message) -> deliver(handler, messages, message));
+        var client = StreamForwardClient.streamForwardClient(SENDER, AcceptingStreamForwardTransport.accepting((_, message) -> deliver(handler, messages, message)));
 
         clientHolder.add(client);
 

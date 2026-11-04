@@ -52,6 +52,8 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.net.tcp.Server;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.consensus.net.WriteOutcome;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.Unit.unit;
@@ -138,7 +140,7 @@ class AppHttpServerForwardNotAppliedTest {
         }
 
         @Override
-        public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
             if (message instanceof HttpForwardRequest request) {
                 forwards.incrementAndGet();
                 responder.get()
@@ -149,7 +151,12 @@ class AppHttpServerForwardNotAppliedTest {
                                                                             request.pipeline()));
             }
 
-            return unit();
+            return Promise.success(new WriteOutcome.Sent(nodeId));
+        }
+
+        @Override
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+            return send(nodeId, message);
         }
 
         @Override public <M extends ProtocolMessage> Unit broadcast(M message) {return unit();}

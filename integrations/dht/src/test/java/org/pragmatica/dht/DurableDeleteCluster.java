@@ -59,7 +59,7 @@ final class DurableDeleteCluster {
 
         var storage = memoryStorageEngine(gate);
         var node = dhtNode(id, storage, ring, config);
-        DHTNetwork network = this::deliver;
+        DHTNetwork network = AcceptingNetwork.accepting(this::deliver);
         var antiEntropy = dhtAntiEntropy(node, network, _ -> true);
 
         node.useWallClock(clock::get);

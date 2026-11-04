@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import org.pragmatica.aether.stream.forward.AcceptingStreamForwardTransport;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -150,10 +151,10 @@ class ConsumerBehindTheRingTierPathTest {
                 .onFailure(cause -> fail(cause.message()));
         var clientRef = new org.pragmatica.aether.stream.forward.StreamForwardClient[1];
         org.pragmatica.aether.stream.forward.StreamForwardTransport ownerToAssignee =
-            (_, message) -> clientRef[0].onReadForwardResponse((org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse) message);
+            AcceptingStreamForwardTransport.accepting((_, message) -> clientRef[0].onReadForwardResponse((org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse) message));
         var ownerHandler = org.pragmatica.aether.stream.forward.StreamForwardHandler.streamForwardHandler(ownerId, owner, ownerToAssignee);
         org.pragmatica.aether.stream.forward.StreamForwardTransport assigneeToOwner =
-            (_, message) -> ownerHandler.onReadForward((org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward) message);
+            AcceptingStreamForwardTransport.accepting((_, message) -> ownerHandler.onReadForward((org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward) message));
 
         clientRef[0] = org.pragmatica.aether.stream.forward.StreamForwardClient.streamForwardClient(assigneeId,
                                                                                                     assigneeToOwner,

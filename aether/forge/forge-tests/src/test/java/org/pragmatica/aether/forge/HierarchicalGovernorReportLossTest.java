@@ -96,7 +96,7 @@ class HierarchicalGovernorReportLossTest {
             return true;
         });
         assertThat(HierarchyAuthorityAcceptanceTest.runtime(oldGovernor).network()
-            .sendOutcome(target.self(), staleReport.get()).await(BUDGET).unwrap().isSent()).isTrue();
+            .send(target.self(), staleReport.get()).await(BUDGET).unwrap().isSent()).isTrue();
         await().atMost(BUDGET.duration()).until(() -> delivered.get() > 0);
         await().during(2, TimeUnit.SECONDS).atMost(5, TimeUnit.SECONDS).untilAsserted(() -> {
             var current = announcement(community).unwrap();

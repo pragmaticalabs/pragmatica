@@ -60,7 +60,7 @@ class StreamForwardHandlerTest {
     void setUp() {
         partitionManager = streamPartitionManager(Long.MAX_VALUE);
         sentMessages = new ArrayList<>();
-        StreamForwardTransport capturingTransport = (target, message) -> sentMessages.add(new SentMessage(target, message));
+        StreamForwardTransport capturingTransport = AcceptingStreamForwardTransport.accepting((target, message) -> sentMessages.add(new SentMessage(target, message)));
         handler = streamForwardHandler(GOVERNOR, partitionManager, capturingTransport);
     }
 
@@ -203,8 +203,8 @@ class StreamForwardHandlerTest {
                                                      StreamCompression.NONE,
                                                      Option.none()));
             pendingManager.publishLocal(STREAM, PARTITION, PAYLOAD, TIMESTAMP);
-            handler = streamForwardHandler(GOVERNOR, pendingManager, (target, message) -> sentMessages.add(new SentMessage(target,
-                                                                                                                          message)));
+            handler = streamForwardHandler(GOVERNOR, pendingManager, AcceptingStreamForwardTransport.accepting((target, message) -> sentMessages.add(new SentMessage(target,
+                                                                                                                          message))));
         }
 
         @Test
@@ -366,7 +366,7 @@ class StreamForwardHandlerTest {
             // So only 1 event fits (64 + 280 = 344), second would hit 624 > 500.
             var tinyHandler = streamForwardHandler(GOVERNOR,
                                                    partitionManager,
-                                                   (target, message) -> sentMessages.add(new SentMessage(target, message)),
+                                                   AcceptingStreamForwardTransport.accepting((target, message) -> sentMessages.add(new SentMessage(target, message))),
                                                    500L,
                                                    StreamReadForwardMetrics.NOOP);
             var request = readForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, FROM_OFFSET, MAX_EVENTS);
@@ -401,7 +401,7 @@ class StreamForwardHandlerTest {
 
             return streamForwardHandler(GOVERNOR,
                                         barrierManager,
-                                        (target, message) -> sentMessages.add(new SentMessage(target, message)));
+                                        AcceptingStreamForwardTransport.accepting((target, message) -> sentMessages.add(new SentMessage(target, message))));
         }
 
         private static StreamConfig configWithMinSync(int minSyncReplicas) {
@@ -478,7 +478,7 @@ class StreamForwardHandlerTest {
             barrierManager.committedConfigSource(_ -> Option.some(configWithMinSync(2)));
             var handler = streamForwardHandler(GOVERNOR,
                                                barrierManager,
-                                               (target, message) -> sentMessages.add(new SentMessage(target, message)));
+                                               AcceptingStreamForwardTransport.accepting((target, message) -> sentMessages.add(new SentMessage(target, message))));
 
             handler.onPublishForward(publishForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, PAYLOAD, TIMESTAMP));
 
@@ -507,7 +507,7 @@ class StreamForwardHandlerTest {
             barrierManager.committedConfigSource(_ -> Option.some(configWithMinSync(2)));
             var handler = streamForwardHandler(GOVERNOR,
                                                barrierManager,
-                                               (target, message) -> responses.add(new SentMessage(target, message)));
+                                               AcceptingStreamForwardTransport.accepting((target, message) -> responses.add(new SentMessage(target, message))));
             assertThat(barrierManager.confirmationFactorFor(STREAM)).as("precondition: the owner has not materialized the stream")
                                                                     .isZero();
 

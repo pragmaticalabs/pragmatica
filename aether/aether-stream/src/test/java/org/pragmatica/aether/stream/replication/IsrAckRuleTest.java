@@ -52,7 +52,7 @@ class IsrAckRuleTest {
         List.of(OWNER, NEAR, FAR, OUTSIDER)
             .forEach(node -> registry.registerReplica(STREAM, PARTITION, node));
         timeouts = new CopyOnWriteArrayList<>();
-        manager = new DefaultReplicationManager(OWNER, registry, (_, _) -> {}, () -> {}, (task, _) -> {
+        manager = new DefaultReplicationManager(OWNER, registry, AcceptingReplicationTransport.accepting((_, _) -> {}), () -> {}, (task, _) -> {
             timeouts.add(task);
 
             return neverFires.schedule(() -> {}, 1, TimeUnit.HOURS);

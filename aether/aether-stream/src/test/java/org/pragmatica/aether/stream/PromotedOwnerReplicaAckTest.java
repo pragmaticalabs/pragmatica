@@ -32,6 +32,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.stream.replication.AcceptingReplicationTransport;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
@@ -61,13 +62,13 @@ class PromotedOwnerReplicaAckTest {
         var receiver = ReplicationReceiveHandler.replicationReceiveHandler(R,
                                                                            replica::appendRecovered,
                                                                            replica::nextExpectedOffset,
-                                                                           this::toOwner,
+                                                                           AcceptingReplicationTransport.accepting(this::toOwner),
                                                                            (_, _) -> {});
         var registry = ReplicaRegistry.replicaRegistry();
 
         registry.registerReplica(STREAM, PARTITION, X);
         registry.registerReplica(STREAM, PARTITION, R);
-        ownerReplication.set(ReplicationManager.replicationManager(X, registry, (target, message) -> deliver(receiver, message)));
+        ownerReplication.set(ReplicationManager.replicationManager(X, registry, AcceptingReplicationTransport.accepting((target, message) -> deliver(receiver, message))));
         owner = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, ownerReplication.get());
         assertThat(owner.createStream(config()).isSuccess()).isTrue();
         assertThat(replica.createStream(config()).isSuccess()).isTrue();

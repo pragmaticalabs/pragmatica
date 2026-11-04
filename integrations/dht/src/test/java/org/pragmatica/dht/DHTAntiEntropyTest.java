@@ -25,6 +25,8 @@ import org.pragmatica.consensus.ProtocolMessage;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.consensus.net.WriteOutcome;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.dht.ConsistentHashRing.consistentHashRing;
@@ -371,8 +373,10 @@ class DHTAntiEntropyTest {
         final CopyOnWriteArrayList<CapturedMessage> captured = new CopyOnWriteArrayList<>();
 
         @Override
-        public void send(NodeId nodeId, ProtocolMessage message) {
+        public Promise<WriteOutcome> send(NodeId nodeId, ProtocolMessage message) {
             captured.add(new CapturedMessage(nodeId, message));
+
+            return Promise.success(new WriteOutcome.Sent(nodeId));
         }
     }
 }

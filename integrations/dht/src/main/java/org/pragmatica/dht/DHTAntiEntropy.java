@@ -897,7 +897,7 @@ public final class DHTAntiEntropy {
     /// that refuses the send — adds one `pendingDigests` entry per owned partition per peer, every
     /// round, with nothing to remove them.
     private void sendLoudly(NodeId peer, ProtocolMessage message, String what, Runnable onNotSent) {
-        network.sendOutcome(peer, message)
+        network.send(peer, message)
                .withSuccess(outcome -> {
                               if (!outcome.isSent()) {
                               log.warn("DHT anti-entropy {} to {} not sent ({}); the next round repeats it",

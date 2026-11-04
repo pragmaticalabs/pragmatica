@@ -34,7 +34,7 @@ class ReplicateEventsChunkingTest {
 
         registry.registerReplica("s", 0, self);
         registry.registerReplica("s", 0, replica);
-        var manager = ReplicationManager.replicationManager(self, registry, (_, message) -> record(sent, message));
+        var manager = ReplicationManager.replicationManager(self, registry, AcceptingReplicationTransport.accepting((_, message) -> record(sent, message)));
         // Payload bytes alone (1.6 MB) fit one chunk many times over, but one message carrying all of them
         // would encode to more than the frame limit once each event's framing is counted.
         var count = QuicClusterServer.MAX_FRAME_LENGTH / 20;

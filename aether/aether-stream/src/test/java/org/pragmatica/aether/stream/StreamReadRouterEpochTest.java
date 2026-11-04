@@ -4,8 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import org.pragmatica.aether.stream.forward.AcceptingStreamForwardTransport;
 import java.util.List;
-
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -62,9 +62,9 @@ class StreamReadRouterEpochTest {
         assigneePartitions.createStream(StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 600_000), "earliest"))
                           .onFailure(cause -> fail(cause.message()));
         var clientRef = new StreamForwardClient[1];
-        StreamForwardTransport ownerToAssignee = (_, message) -> clientRef[0].onReadForwardResponse((ReadForwardResponse) message);
+        StreamForwardTransport ownerToAssignee = AcceptingStreamForwardTransport.accepting((_, message) -> clientRef[0].onReadForwardResponse((ReadForwardResponse) message));
         var ownerHandler = StreamForwardHandler.streamForwardHandler(OWNER, ownerPartitions, ownerToAssignee);
-        StreamForwardTransport assigneeToOwner = (_, message) -> ownerHandler.onReadForward((ReadForward) message);
+        StreamForwardTransport assigneeToOwner = AcceptingStreamForwardTransport.accepting((_, message) -> ownerHandler.onReadForward((ReadForward) message));
 
         clientRef[0] = StreamForwardClient.streamForwardClient(ASSIGNEE, assigneeToOwner, TimeSpan.timeSpan(5).seconds());
         ownerRouter = StreamReadRouter.localOnly(ownerPartitions);

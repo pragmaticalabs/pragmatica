@@ -96,7 +96,7 @@ private void sendRemotePut(NodeId target, byte[] key, byte[] value, long version
                             QuorumCollector<Unit> collector) {
     var correlationId = KSUID.ksuid().toString();
     pendingOps.put(correlationId, new PendingOperation<>(collector));
-    network.sendOutcome(target, new DHTMessage.PutRequest(...))
+    network.send(target, new DHTMessage.PutRequest(...))   // Promise<WriteOutcome> (#2583 P1)
            .onSuccess(outcome -> {
                if (!(outcome instanceof WriteOutcome.Sent)) {
                    pendingOps.remove(correlationId);
@@ -147,7 +147,7 @@ The architectural change converts a wait-and-mask pipeline into a signal-and-rou
 
 ## Risks
 
-- **`sendOutcome` is an additive API** but Rabia and other consensus consumers should NOT switch to it — they rely on broadcast-and-retry semantics. Only DHT uses it.
+- **Unicast `send` returns `Promise<WriteOutcome>` for every caller since #2583 P1** (the separate `sendOutcome` is gone). Rabia and the other consensus consumers carry the signature but do not act on the outcome: they keep broadcast-and-retry, and each such outcome-blind send is listed with its compensator in `TransportOutcomeDisciplineTest`'s allow-list. The DHT client reads the outcome to fail fast.
 - **Live-replica filter** narrows the quorum set during partial unavailability. If quorum=3 and 2 replicas reachable, the put fails fast (deliberate). Callers must understand that "DHT unavailable for this key" is a real outcome under chaos, not a system bug. Rabia consensus has its own quorum logic and isn't affected.
 - **`connectedPeers()` is a snapshot** — race between filter computation and dispatch is acceptable (worst case: send to a peer that just disconnected; outcome surface returns `ConnectionDead`; collector handles it).
 

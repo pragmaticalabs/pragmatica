@@ -21,6 +21,9 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.consensus.net.WriteOutcome;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
@@ -37,9 +40,14 @@ class RabiaHierarchySafetyTest {
     private final List<Delivery> delivered = new java.util.concurrent.CopyOnWriteArrayList<>();
     private final TestClusterNetwork network = new TestClusterNetwork() {
         @Override public Set<NodeId> connectedPeers() { return Set.of(CORE_2, CORE_3, STAGED_CORE, WORKER); }
-        @Override public <M extends org.pragmatica.consensus.ProtocolMessage> org.pragmatica.lang.Unit send(NodeId recipient, M message) {
+        @Override public <M extends org.pragmatica.consensus.ProtocolMessage> Promise<WriteOutcome> send(NodeId recipient, M message) {
             delivered.add(new Delivery(recipient, message));
             return super.send(recipient, message);
+        }
+
+        @Override
+        public <M extends org.pragmatica.consensus.ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+            return send(nodeId, message);
         }
     };
     private final TestStateMachine stateMachine = new TestStateMachine();
