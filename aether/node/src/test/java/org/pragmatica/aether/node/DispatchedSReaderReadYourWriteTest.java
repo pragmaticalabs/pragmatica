@@ -5,6 +5,9 @@
 package org.pragmatica.aether.node;
 
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -19,33 +22,54 @@ import org.pragmatica.aether.api.DynamicConfigManager;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementIndex;
 import org.pragmatica.aether.deployment.cluster.UpgradeRunIndex;
+import org.pragmatica.aether.http.HttpRoutePublisher;
+import org.pragmatica.aether.http.SecurityOverrideSynchronizer;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
 import org.pragmatica.aether.invoke.ScheduledTaskStateRegistry;
+import org.pragmatica.aether.node.projection.CommitWitness;
 import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
+import org.pragmatica.aether.slice.blueprint.SecurityOverridePolicy;
+import org.pragmatica.aether.slice.blueprint.SecurityOverrides;
 import org.pragmatica.aether.slice.fence.OwnershipDomain;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterIncarnationKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerAssignmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeReplacementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskPauseKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskStateKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamCursorCheckpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.UpgradeRunKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementPhase;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskPauseValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskStateValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeRunState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeRunValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeStop;
+import org.pragmatica.aether.stream.EvictionListener;
+import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.replication.ReplicationManager;
+import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.DispatcherFailureSink;
 import org.pragmatica.cluster.state.kvstore.HeldDelivery;
@@ -61,6 +85,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -76,11 +101,11 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// at the moment the promise resolves: it must be the new value. S2/S3 go through the reader's own write path
 /// (`DynamicConfigManager.setConfig`); the others commit the command their writer commits.
 ///
-/// Covered: S2/S3 (config overlay), S4/S6 (task state), S5 (paused flag), S8/S9 (ownership high-water), S11
-/// (node-replacement index), S12 (upgrade-run index), S13 (incarnation mirror). Not covered here: S1, S7, S10 (their
-/// fixtures need an HTTP route publisher, the stream partition manager, and an assignment-token-guarded checkpoint).
-/// Mutation: `NotificationDispatcher.completeAfterDelivery` completes at apply (`now = true`): every arm reads the old
-/// value, red.
+/// Covered: S1 (security overrides), S2/S3 (config overlay), S4/S6 (task state), S5 (paused flag), S7 (stream config
+/// commit), S8/S9 (ownership high-water), S10 (commit witness), S11 (node-replacement index), S12 (upgrade-run index),
+/// S13 (incarnation mirror). The last arm is the FSM2 seam (R-3.1.7): `notificationRevision` per delivered batch.
+/// Mutation: `NotificationDispatcher.completeAfterDelivery` completes at apply (`now = true`): every S arm reads the
+/// old value, red. The seam arm's own mutation is a constant revision in `NotificationDispatcher.batch`.
 @Timeout(value = 60, unit = TimeUnit.SECONDS)
 class DispatchedSReaderReadYourWriteTest {
     private static final NodeId SELF = new NodeId("ryw-self");
@@ -91,7 +116,13 @@ class DispatchedSReaderReadYourWriteTest {
     private static final MethodName METHOD = MethodName.methodName("cleanup")
                                                        .unwrap();
 
+    private static final long FIRST_SLOT = 5L;
+    private static final long SECOND_SLOT = 9L;
+    private static final long INSTALL_SLOT = 12L;
+
     private final MessageRouter.MutableRouter router = MessageRouter.mutable();
+    private volatile Map<AetherKey, AetherValue> snapshot = Map.of();
+    private StreamPartitionManager streamManager;
     private final HeldDelivery hold = HeldDelivery.heldDelivery();
     private final KVStore<AetherKey, AetherValue> store = new KVStore<>(router,
                                                                         new Serializer() {
@@ -100,8 +131,9 @@ class DispatchedSReaderReadYourWriteTest {
                                                                         },
                                                                         new Deserializer() {
                                                                             @Override
+                                                                            @SuppressWarnings("unchecked")
                                                                             public <T> T read(ByteBuf buffer) {
-                                                                                return null;
+                                                                                return (T) snapshot;
                                                                             }
                                                                         },
                                                                         NotificationDelivery.dispatched("ryw-s",
@@ -111,7 +143,155 @@ class DispatchedSReaderReadYourWriteTest {
     @AfterEach
     void closeStore() {
         hold.release();
+        if (streamManager != null) {
+            streamManager.close();
+        }
         store.close();
+    }
+
+    /// S1: the HTTP route publisher is handed the derived overrides by the synchronizer's blueprint-put handler; a
+    /// route request after the blueprint write resolves enforces whatever the publisher holds.
+    @Test
+    void securityOverrideSynchronizer_publishesTheOverrideWhenTheBlueprintWriteResolves() {
+        var installed = new AtomicReference<>(SecurityOverrides.EMPTY);
+        var synchronizer = SecurityOverrideSynchronizer.securityOverrideSynchronizer(store,
+                                                                                     () -> Option.some(recordingPublisher(installed)));
+        routeOn(AppBlueprintKey.class, synchronizer::onAppBlueprintPut);
+        var id = BlueprintId.blueprintId(ARTIFACT);
+        var entry = SecurityOverrides.Entry.entry("GET /ryw/*", "role:admin");
+        var overrides = SecurityOverrides.securityOverrides(List.of(entry), SecurityOverridePolicy.STRENGTHEN_ONLY);
+        var blueprint = ExpandedBlueprint.expandedBlueprint(id, List.of(), Option.none(), overrides);
+
+        var seen = readAtResolution(() -> commit(new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(id),
+                                                                     AppBlueprintValue.appBlueprintValue(blueprint, false))),
+                                    () -> installed.get()
+                                                   .entries()
+                                                   .size());
+
+        assertThat(seen).isEqualTo(1);
+    }
+
+    /// S7: `proposalOutcome` / ruling A. A stream created through the node's commit path is writable the moment the
+    /// create resolves, because the entry latches committed when its own config put is delivered; the create blocks
+    /// on the dispatcher and resolves after that delivery.
+    @Test
+    void streamPartitionManager_readsTheProposalOutcomeWhenTheConfigWriteResolves() {
+        streamManager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE,
+                                                                      EvictionListener.NOOP,
+                                                                      ReplicationManager.NONE,
+                                                                      committingStreamNode());
+        routeOn(StreamConfigKey.class, streamManager::onStreamConfigPut);
+        var config = StreamConfig.streamConfig("ryw-stream",
+                                               1,
+                                               RetentionPolicy.retentionPolicy(1000, 1024 * 1024, 600_000),
+                                               "earliest");
+
+        var seen = readAtResolution(() -> inBackground(() -> streamManager.createStream(config)),
+                                    () -> streamManager.publishLocal("ryw-stream", 0, new byte[]{1}, 1L)
+                                                       .isSuccess());
+
+        assertThat(seen).isEqualTo(true);
+    }
+
+    /// S10: `NodeReplayCursor` treats a watched checkpoint as committed once the witness saw its put. The checkpoint key
+    /// is assignment-guarded (#1271), so the assignment is committed first or the put would be refused without a
+    /// notification.
+    @Test
+    void commitWitness_seesTheCheckpointWhenTheWriteResolves() {
+        var witness = CommitWitness.commitWitness();
+        routeOn(StreamCursorCheckpointKey.class, witness::onPut);
+        var assignment = ConsumerAssignmentValue.consumerAssignmentValue(SELF, Epoch.epoch(0L, 1L, 0), 1L, HlcTimestamp.ZERO);
+        settle(commit(new KVCommand.Put<>(ConsumerAssignmentKey.consumerAssignmentKey("ryw-stream", 0, "ryw-group"), assignment)));
+        var key = StreamCursorCheckpointKey.streamCursorCheckpointKey("ryw-stream", 0, "ryw-group");
+        var record = StreamCursorCheckpointValue.streamCursorCheckpointValue(5L, assignment.token());
+        var watch = witness.watch(key, record);
+
+        var seen = readAtResolution(() -> commit(new KVCommand.Put<>(key, record)), watch::seen);
+
+        watch.close();
+        assertThat(seen).isEqualTo(true);
+    }
+
+    /// FSM2 seam (R-3.1.7; a KV notification only enqueues FSM work, ordered by this revision): batches delivered in
+    /// order carry increasing revisions, and a replayed batch carries the revision of the state it replays. Not a
+    /// read-your-write arm: its mutation is a constant revision in `NotificationDispatcher.batch`.
+    @Test
+    void fsm2Seam_batchesCarryIncreasingRevisionsAndReplayKeepsItsOriginal() throws Exception {
+        var first = ConfigKey.forKey("fsm2.a");
+        var second = ConfigKey.forKey("fsm2.b");
+        var third = ConfigKey.forKey("fsm2.c");
+        var seen = new CopyOnWriteArrayList<String>();
+        var delivered = new CountDownLatch(5);
+        router.addRoute(ValuePut.class, (ValuePut put) -> recordRevision(seen, delivered, put));
+
+        committed(new KVCommand.Put<>(first, ConfigValue.configValue("fsm2.a", "1")), FIRST_SLOT);
+        committed(new KVCommand.Put<>(second, ConfigValue.configValue("fsm2.b", "2")), SECOND_SLOT);
+        assertThat(store.awaitDelivered(store.enqueuedSeq())
+                        .await(timeSpan(10).seconds())
+                        .isSuccess()).isTrue();
+        snapshot = Map.of(first, ConfigValue.configValue("fsm2.a", "1"), second, ConfigValue.configValue("fsm2.b", "2"), third, ConfigValue.configValue("fsm2.c", "3"));
+        store.restoreCommittedSnapshot(new byte[0], INSTALL_SLOT);
+        store.replayNotifications();
+
+        assertThat(delivered.await(10, TimeUnit.SECONDS)).isTrue();
+        assertThat(seen.subList(0, 3)).containsExactly("fsm2.a@5", "fsm2.b@9", "fsm2.c@12r");
+        assertThat(seen.subList(3, 5)).as("the replay burst re-delivers the unchanged keys under the install revision")
+                                      .containsExactlyInAnyOrder("fsm2.a@12r", "fsm2.b@12r");
+        assertThat(store.notificationRevision()
+                        .isEmpty()).as("no revision outside a delivery").isTrue();
+    }
+
+    private void recordRevision(List<String> seen, CountDownLatch delivered, ValuePut put) {
+        seen.add(((ConfigKey) put.cause()
+                                 .key()).key() + "@" + store.notificationRevision().or(-1L) + (store.isReplaying() ? "r" : ""));
+        delivered.countDown();
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private void committed(KVCommand command, long slot) {
+        store.processCommitted(store.createBatch(List.of(command)), slot);
+    }
+
+    private static HttpRoutePublisher recordingPublisher(AtomicReference<SecurityOverrides> installed) {
+        var publisher = Mockito.mock(HttpRoutePublisher.class);
+
+        Mockito.when(publisher.updateSecurityOverrides(Mockito.any()))
+               .thenAnswer(invocation -> install(installed, invocation.getArgument(0)));
+
+        return publisher;
+    }
+
+    private static Unit install(AtomicReference<SecurityOverrides> installed, SecurityOverrides overrides) {
+        installed.set(overrides);
+
+        return Unit.unit();
+    }
+
+    /// Runs a blocking write on its own thread (the manager's create awaits its commit): the promise resolves when the
+    /// write returned, which is the moment its caller would read.
+    private static Promise<?> inBackground(Supplier<?> blocking) {
+        var done = Promise.<Unit> promise();
+
+        Thread.ofVirtual()
+              .start(() -> finish(done, blocking));
+
+        return done;
+    }
+
+    private static void finish(Promise<Unit> done, Supplier<?> blocking) {
+        blocking.get();
+        done.succeed(Unit.unit());
+    }
+
+    /// A node whose `apply` is the engine's commit path, typed for the stream manager.
+    @SuppressWarnings("unchecked")
+    private ClusterNode<KVCommand<AetherKey>> committingStreamNode() {
+        ClusterNode<KVCommand<AetherKey>> node = Mockito.mock(ClusterNode.class);
+
+        Mockito.when(node.apply(Mockito.anyList()))
+               .thenAnswer(invocation -> commitAll(invocation.getArgument(0)));
+
+        return node;
     }
 
     /// S2, S3: ConfigRoutes reads the overlay right after `setConfig` resolves.
