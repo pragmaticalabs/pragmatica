@@ -146,7 +146,9 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     private final NodeId self;
     private final Option<MessageRouter> router;
     private final LeaseTiming timing;
+
     private final AtomicReference<OperatorWarningSink> warningSink = new AtomicReference<>(OperatorWarningSink.logOnly());
+
     /// Consecutive fenced-in-the-database outcomes per datasource ON THIS NODE; any other outcome clears it. A new
     /// leader starts from zero, so the warning threshold counts what this node observed.
     private final ConcurrentHashMap<String, Integer> consecutiveHelds = new ConcurrentHashMap<>();
@@ -716,8 +718,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     /// Re-dispatches the datasource after `delayMs`, on the injected scheduler; a manual re-dispatch cancels it.
     private Unit scheduleDispatch(String datasourceName, long delayMs) {
         scheduledRetries.put(datasourceName,
-                             timing.scheduler()
-                                   .schedule(() -> migrateIfNeeded(datasourceName), delayMs));
+                             timing.scheduler().schedule(() -> migrateIfNeeded(datasourceName), delayMs));
 
         return unit();
     }

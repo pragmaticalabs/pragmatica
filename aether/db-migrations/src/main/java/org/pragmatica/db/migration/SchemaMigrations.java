@@ -159,9 +159,10 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
                                               SqlConnector session,
                                               String nodeId,
                                               SqlConnector.TransactionCallback<T> body) {
-        return MigrationFence.acquire(session, datasource, nodeId)
-                             .flatMap(fence -> body.execute(new FencedSession(session, fence))
-                                                   .fold(outcome -> releaseIfStillHeld(session, outcome)));
+        return MigrationFence.acquire(session, datasource, nodeId).flatMap(fence -> body.execute(new FencedSession(session,
+                                                                                                                   fence))
+                                                                                        .fold(outcome -> releaseIfStillHeld(session,
+                                                                                                                            outcome)));
     }
 
     /// The courtesy unlock runs only for a run that TOOK the fence and did not lose it. A refused acquire (another
@@ -173,8 +174,7 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
     private static <T> Promise<T> releaseIfStillHeld(SqlConnector session, Result<T> outcome) {
         return lostTheFence(outcome)
                ? outcome.async()
-               : MigrationFence.release(session)
-                               .fold(_ -> outcome.async());
+               : MigrationFence.release(session).fold(_ -> outcome.async());
     }
 
     private static boolean lostTheFence(Result<?> outcome) {
@@ -727,7 +727,9 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
                               build -> checkIndexValid(migration, connector, build));
     }
 
-    private static Promise<Unit> checkIndexValid(ParsedMigration migration, SqlConnector connector, ConcurrentBuild build) {
+    private static Promise<Unit> checkIndexValid(ParsedMigration migration,
+                                                 SqlConnector connector,
+                                                 ConcurrentBuild build) {
         return invalidCount(connector, build).flatMap(invalid -> refuseInvalid(migration, build.index(), invalid));
     }
 
