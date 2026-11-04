@@ -548,6 +548,26 @@ class KVStoreDispatcherTest {
             assertThat(sink.causes.getFirst().getMessage()).contains("dispatcher thread");
         }
 
+        /// (u) mutationLock arm: a replay from a thread holding the mutation guard but not the monitor (the window in
+        /// which `mutate` appends a batch) is refused. No public path holds the guard alone, so the test takes the
+        /// store's private guard by reflection. Mutation: drop the guard check.
+        @Test
+        void replayHoldingTheMutationGuardIsRefused() throws Exception {
+            var store = store();
+            put(store, A, "one");
+            var guardField = KVStore.class.getDeclaredField("mutationLock");
+            guardField.setAccessible(true);
+            var guard = guardField.get(store);
+
+            assertTimeoutPreemptively(BOUND, () -> {
+                synchronized (guard) {
+                    store.replayNotifications();
+                }
+            });
+            assertThat(sink.awaitStopped()).isTrue();
+            assertThat(sink.causes.getFirst().getMessage()).contains("mutation guard");
+        }
+
         @Test
         void replayAfterASynchronizedSectionCompletesReturnsOnceDelivered() {
             var store = store();
