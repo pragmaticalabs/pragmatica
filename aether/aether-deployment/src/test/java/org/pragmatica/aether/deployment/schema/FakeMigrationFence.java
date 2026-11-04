@@ -29,6 +29,11 @@ final class FakeMigrationFence {
         return row(sql).map(values -> mapper.map(new MapRow(values)).async());
     }
 
+    /// A single-row answer carrying exactly `values`, for a double that answers one statement itself.
+    static <T> Promise<T> rowOf(Map<String, Object> values, RowMapper<T> mapper) {
+        return mapper.map(new MapRow(values)).async();
+    }
+
     /// The fence's list statements (topology probe, courtesy unlock) return no rows.
     static boolean isFenceListQuery(String sql) {
         return sql.contains("SHOW VARIABLES") || sql.contains("pg_advisory_unlock_all") || sql.contains("RELEASE_ALL_LOCKS");
@@ -45,7 +50,7 @@ final class FakeMigrationFence {
 
     private static Option<Map<String, Object>> row(String sql) {
         if (sql.contains("pg_try_advisory_lock")) {
-            return some(Map.of("granted", true));
+            return some(Map.of("granted", 1));
         }
         if (sql.contains("GET_LOCK(")) {
             return some(Map.of("granted", 1));

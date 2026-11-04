@@ -12,12 +12,14 @@ import java.util.stream.IntStream;
 
 import org.pragmatica.db.migration.MigrationDialects.ExecutionDialect;
 import org.pragmatica.db.migration.ParsedMigration.MigrationType;
+import org.pragmatica.db.migration.AutocommitStatement.ConcurrentBuild;
 import org.pragmatica.db.migration.SchemaHistoryRepository.AppliedMigration;
 import org.pragmatica.db.migration.SchemaHistoryRepository.MigrationProgress;
 import org.pragmatica.db.migration.SchemaHistoryRepository.MigrationStatus;
 import org.pragmatica.aether.pg.split.Statement;
 import org.pragmatica.aether.pg.split.StatementSplitter;
 import org.pragmatica.aether.resource.db.SqlConnector;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -149,7 +151,7 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
         return MigrationFence.isTierOne(connector.databaseType())
                ? connector.pinned(statementTimeout.duration(),
                                   session -> acquireThen(datasource, session, nodeId, body),
-                                  MigrationFence::release)
+                                  SchemaMigrations::closeIsTheRelease)
                : body.execute(connector);
     }
 
@@ -157,8 +159,32 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
                                               SqlConnector session,
                                               String nodeId,
                                               SqlConnector.TransactionCallback<T> body) {
-        return MigrationFence.acquire(session, datasource, nodeId).flatMap(fence -> body.execute(new FencedSession(session,
-                                                                                                                   fence)));
+        return MigrationFence.acquire(session, datasource, nodeId)
+                             .flatMap(fence -> body.execute(new FencedSession(session, fence))
+                                                   .fold(outcome -> releaseIfStillHeld(session, outcome)));
+    }
+
+    /// The courtesy unlock runs only for a run that TOOK the fence and did not lose it. A refused acquire (another
+    /// holder, or a transaction pooler's shared server session) and a run refused mid-way ([MigrationError.FenceUnavailable]
+    /// from a re-verification) have no lock of their own on this server session: `pg_advisory_unlock_all()` /
+    /// `RELEASE_ALL_LOCKS()` there would drop the lock of the client that does hold it, when a pooler shares the session
+    /// (CTO ruling, FDB-2a fix round 1). Design-out of the unlock's own failure: closing the session is the release, so
+    /// a failed courtesy unlock never changes the run's outcome.
+    private static <T> Promise<T> releaseIfStillHeld(SqlConnector session, Result<T> outcome) {
+        return lostTheFence(outcome)
+               ? outcome.async()
+               : MigrationFence.release(session)
+                               .fold(_ -> outcome.async());
+    }
+
+    private static boolean lostTheFence(Result<?> outcome) {
+        return outcome.fold(cause -> cause instanceof MigrationError.FenceUnavailable, _ -> false);
+    }
+
+    /// The pinned scope's own release step: nothing beyond closing the session ([#releaseIfStillHeld] already ran the
+    /// courtesy unlock where one is safe).
+    private static Promise<Unit> closeIsTheRelease(SqlConnector session) {
+        return Promise.unitPromise();
     }
 
     private Promise<SchemaResult> migrateOn(String datasource,
@@ -680,6 +706,8 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
                                             AutocommitStatement statement,
                                             int completed) {
         return connector.update(statement.text())
+                        .fold(outcome -> outcome.fold(cause -> explainFailedBuild(migration, connector, statement, cause),
+                                                      _ -> Promise.unitPromise()))
                         .flatMap(_ -> requireValidIndex(migration, connector, statement))
                         .flatMap(_ -> historyRepo.updateProgress(connector,
                                                                  migration.version(),
@@ -694,17 +722,52 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
     private static Promise<Unit> requireValidIndex(ParsedMigration migration,
                                                    SqlConnector connector,
                                                    AutocommitStatement statement) {
-        return statement.concurrentIndex()
+        return statement.concurrentBuild()
                         .fold(Promise::unitPromise,
-                              index -> checkIndexValid(migration, connector, index));
+                              build -> checkIndexValid(migration, connector, build));
     }
 
-    private static Promise<Unit> checkIndexValid(ParsedMigration migration, SqlConnector connector, String index) {
+    private static Promise<Unit> checkIndexValid(ParsedMigration migration, SqlConnector connector, ConcurrentBuild build) {
+        return invalidCount(connector, build).flatMap(invalid -> refuseInvalid(migration, build.index(), invalid));
+    }
+
+    /// F8 for a FAILED concurrent build too: one cancelled by the statement or lock bound, or a resumed build without
+    /// `IF NOT EXISTS` that meets the INVALID leftover ("already exists"). When the named index is INVALID the run stops
+    /// with [MigrationError.InvalidIndexLeftBehind] (its name and the DROP lever) instead of the raw error.
+    ///
+    /// Design-out of the check's own failure: the statement has already failed, so the run fails either way; a check
+    /// that cannot run (a dead or cancelled session) only loses the better explanation, and the statement's original
+    /// cause stands (the absorbed check failure is read as "no INVALID index found").
+    private static Promise<Unit> explainFailedBuild(ParsedMigration migration,
+                                                    SqlConnector connector,
+                                                    AutocommitStatement statement,
+                                                    Cause cause) {
+        return statement.concurrentBuild()
+                        .fold(cause::<Unit> promise,
+                              build -> invalidCount(connector, build).fold(counted -> invalidOr(migration,
+                                                                                                build.index(),
+                                                                                                counted.or(0),
+                                                                                                cause)));
+    }
+
+    private static Promise<Unit> invalidOr(ParsedMigration migration, String index, int invalid, Cause cause) {
+        return invalid == 0
+               ? cause.promise()
+               : invalidIndexLeftBehind(migration.entry().filename(),
+                                        index).promise();
+    }
+
+    /// INVALID indexes of this name ON THIS BUILD'S TABLE: an index name is unique per schema, not per database, so a
+    /// same-named index in another schema is not this build's. A table `to_regclass` cannot resolve (dropped, or not
+    /// visible to the runner) falls back to the name alone, which can only over-report: fail-safe.
+    private static Promise<Integer> invalidCount(SqlConnector connector, ConcurrentBuild build) {
         return connector.queryOne("SELECT count(*)::int AS n FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid"
-                                 + " WHERE c.relname = ? AND NOT i.indisvalid",
+                                 + " WHERE c.relname = ? AND NOT i.indisvalid"
+                                 + " AND (to_regclass(?) IS NULL OR i.indrelid = to_regclass(?))",
                                   row -> row.getInt("n"),
-                                  index)
-                        .flatMap(invalid -> refuseInvalid(migration, index, invalid));
+                                  build.index(),
+                                  build.table(),
+                                  build.table());
     }
 
     private static Promise<Unit> refuseInvalid(ParsedMigration migration, String index, int invalid) {

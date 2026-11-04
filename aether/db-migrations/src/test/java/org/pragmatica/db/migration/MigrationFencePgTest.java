@@ -6,6 +6,7 @@ package org.pragmatica.db.migration;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -23,6 +24,7 @@ import org.pragmatica.aether.resource.db.r2dbc.R2dbcSqlConnectorFactory;
 import org.pragmatica.db.migration.ParsedMigration.MigrationType;
 import org.pragmatica.db.migration.SchemaMigrations.SchemaResult;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 
@@ -319,6 +321,96 @@ class MigrationFencePgTest {
         assertThat(((MigrationError.InvalidIndexLeftBehind) causeOf(resumed)).index()).isEqualTo("t11_c_idx");
     }
 
+    /// T11b (F8, fix round 1 A3): a `CREATE INDEX CONCURRENTLY` WITHOUT `IF NOT EXISTS`, cancelled by the bound, then
+    /// resumed. The resumed build FAILS ("already exists", 42P07) instead of passing over the INVALID leftover; the
+    /// runner explains the failed build, so the resume names the index (`InvalidIndexLeftBehind`), not the raw error.
+    @ParameterizedTest
+    @EnumSource(names = {"JDBC", "ASYNC"})
+    void migrate_cicWithoutIfNotExistsCancelledByTheBound_resumeFailsWithInvalidIndexLeftBehind(Transport transport) throws Exception {
+        freshDatabase("CREATE TABLE t11 (c INT)", "INSERT INTO t11 VALUES (1)");
+        var connector = connector(transport, 2);
+        var script = script(1, "t11b", "CREATE INDEX CONCURRENTLY t11_c_idx ON t11 (c);\n");
+        var writer = superuserOnTestDb();
+
+        writer.setAutoCommit(false);
+        execute(writer, "INSERT INTO t11 VALUES (2)");
+
+        var first = runAsync(connector, timeSpan(2).seconds(), "node-a", script).get(WAIT_MS, TimeUnit.MILLISECONDS);
+
+        writer.rollback();
+        assertThat(first.isFailure()).as("the CIC is cancelled by the statement bound").isTrue();
+        assertThat(scalar("SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = 't11_c_idx' AND NOT i.indisvalid"))
+            .as("precondition: the cancelled CIC left an INVALID index").isEqualTo(1);
+
+        var resumed = migrate(connector, GENEROUS, "node-a", script);
+
+        assertThat(causeOf(resumed)).isInstanceOf(MigrationError.InvalidIndexLeftBehind.class);
+        assertThat(((MigrationError.InvalidIndexLeftBehind) causeOf(resumed)).index()).isEqualTo("t11_c_idx");
+    }
+
+    /// T11c (F8 scope, fix round 1 A3): index names are unique per SCHEMA. An INVALID `other.dup_idx` (a cancelled
+    /// build in another schema) must not fail a VALID `public.dup_idx` build: the check looks only at the build's table.
+    @ParameterizedTest
+    @EnumSource(names = {"JDBC", "ASYNC"})
+    void migrate_sameNameInvalidIndexInAnotherSchema_doesNotFailThisSchemasValidBuild(Transport transport) throws Exception {
+        freshDatabase("CREATE TABLE t13 (c INT)", "CREATE SCHEMA other", "CREATE TABLE other.t13 (c INT)", "INSERT INTO other.t13 VALUES (1)");
+        leaveInvalidIndex("other.t13", "dup_idx");
+
+        var result = migrate(connector(transport, 2), GENEROUS, "node-a",
+                             script(1, "t13", "CREATE INDEX CONCURRENTLY IF NOT EXISTS dup_idx ON public.t13 (c);\n"));
+
+        assertThat(result.isSuccess()).as("this build's index is valid: %s", result).isTrue();
+        assertThat(scalar("SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_namespace n ON n.oid = c.relnamespace"
+                          + " WHERE c.relname = 'dup_idx' AND n.nspname = 'public' AND i.indisvalid"))
+            .as("positive control: the public index exists and is valid").isEqualTo(1);
+    }
+
+    // ---------------------------------------------------------------- T12: server-side bounds
+
+    /// T12a (fix round 1 A4, CTO ruling): a positive bound governs lock waits on EVERY transport, a role default
+    /// `lock_timeout` notwithstanding (JDBC used to keep the role default). The CIC waits on an open writer for longer
+    /// than the role default (1 s); with that default in force it would be cancelled (`55P03`). The 2.5 s wait is a
+    /// duration the test must exceed, not an interleaving: the runner is first seen lock-waiting.
+    @ParameterizedTest
+    @EnumSource(names = {"JDBC", "ASYNC"})
+    void pinned_roleDefaultLockTimeout_isOverriddenByTheBound(Transport transport) throws Exception {
+        freshDatabase("CREATE TABLE t14 (c INT)", "INSERT INTO t14 VALUES (1)");
+        setRoleDefault("lock_timeout", "1s");
+        var connector = connector(transport, 2);
+
+        assertThat(shownOnPinnedSession(connector, Duration.ofSeconds(60), "lock_timeout")).isEqualTo("1min");
+
+        var writer = superuserOnTestDb();
+
+        writer.setAutoCommit(false);
+        execute(writer, "INSERT INTO t14 VALUES (2)");
+
+        var run = runAsync(connector, GENEROUS, "node-a", script(1, "t14", "CREATE INDEX CONCURRENTLY IF NOT EXISTS t14_c_idx ON t14 (c);\n"));
+
+        awaitRunnerWaitingOnLock("node-a");
+        Thread.sleep(2_500);
+        assertThat(run.isDone()).as("the role default (1 s) did not cancel the lock wait").isFalse();
+        writer.rollback();
+        assertThat(run.get(WAIT_MS, TimeUnit.MILLISECONDS).isSuccess()).isTrue();
+    }
+
+    /// T12b (fix round 1 A4, CTO ruling): a ZERO bound (Terra's) is sent to the server explicitly and means unbounded,
+    /// overriding a role default `statement_timeout`; before, nothing was set and the role default cancelled the run.
+    @ParameterizedTest
+    @EnumSource(names = {"JDBC", "ASYNC"})
+    void migrate_zeroBound_isUnboundedEvenUnderARoleDefaultStatementTimeout(Transport transport) throws Exception {
+        freshDatabase("CREATE TABLE ok (id INT)");
+        setRoleDefault("statement_timeout", "1s");
+        var connector = connector(transport, 2);
+
+        assertThat(shownOnPinnedSession(connector, Duration.ZERO, "statement_timeout")).isEqualTo("0");
+
+        var run = migrate(connector, timeSpan(0).nanos(), "node-a",
+                          script(1, "t12b", "DO $$ BEGIN PERFORM pg_sleep(2.5); END $$;\nINSERT INTO ok VALUES (1);\n"));
+
+        assertThat(run.isSuccess()).as("a zero-bound migration outlives the 1 s role default: %s", run).isTrue();
+    }
+
     // ---------------------------------------------------------------- R2DBC tripwire
 
     /// TRIPWIRE, asserting CURRENT behaviour: no migration runs through the R2DBC transport at all, fence or not. The
@@ -440,6 +532,40 @@ class MigrationFencePgTest {
                                       row -> row.getInt("n"))
                             .await()
                             .unwrap()).as("a pooled connection holds no advisory lock").isZero();
+    }
+
+    /// Leaves an INVALID index `index` on `table`: its concurrent build waits on an open writer and is cancelled.
+    private void leaveInvalidIndex(String table, String index) throws SQLException {
+        var writer = superuserOnTestDb();
+        var builder = superuserOnTestDb();
+
+        writer.setAutoCommit(false);
+        execute(writer, "INSERT INTO " + table + " VALUES (2)");
+        execute(builder, "SET statement_timeout = 1000");
+
+        try {
+            execute(builder, "CREATE INDEX CONCURRENTLY " + index + " ON " + table + " (c)");
+        } catch (SQLException expected) {
+            // cancelled by the 1 s statement_timeout, which is what leaves the index INVALID
+        }
+
+        writer.rollback();
+        assertThat(scalar("SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = '" + index + "' AND NOT i.indisvalid"))
+            .as("precondition: an INVALID " + index + " exists").isEqualTo(1);
+    }
+
+    private void setRoleDefault(String setting, String value) throws SQLException {
+        try (var admin = superuserOnTestDbScoped()) {
+            execute(admin, "ALTER ROLE " + RUNNER_ROLE + " IN DATABASE " + database + " SET " + setting + " = '" + value + "'");
+        }
+    }
+
+    private static String shownOnPinnedSession(SqlConnector connector, Duration bound, String setting) {
+        return connector.pinned(bound,
+                                session -> session.queryOne("SHOW " + setting, row -> row.getString(setting)),
+                                _ -> Promise.unitPromise())
+                        .await()
+                        .unwrap();
     }
 
     private Connection holdGate() throws SQLException {

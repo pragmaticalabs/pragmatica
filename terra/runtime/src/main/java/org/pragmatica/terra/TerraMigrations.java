@@ -33,6 +33,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// cleanup settle; there is no timeout-driven retry or claim of cross-process exclusion.
 public interface TerraMigrations {
     /// Zero means no statement bound on the pinned migration session (FDB-2a, #2591): Terra had no bound before the fence.
+    /// On PostgreSQL it is set explicitly (`statement_timeout = 0`, `lock_timeout = 0`), overriding role defaults.
     TimeSpan STATEMENT_TIMEOUT = timeSpan(0).nanos();
     Promise<List<Report>> apply();
 

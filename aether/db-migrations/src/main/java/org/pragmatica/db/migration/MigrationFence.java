@@ -39,7 +39,8 @@ import static org.pragmatica.db.migration.MigrationError.MigrationFencedInDataba
 ///
 /// **Engine identity is probed, not trusted:** a PostgreSQL-configured datasource whose `version()` names CockroachDB
 /// gets NO tier-1 fence ([Unfenced]): CockroachDB's advisory locks acquire nothing. Its tier-3 lock is FDB-2b; until
-/// then it runs as before this fence existed.
+/// then it runs as before this fence existed, never silently: the runner logs a warning on every unfenced run, and the
+/// schema orchestrator raises an operator warning ([#runsUnfenced]).
 ///
 /// **`verifyHeld`** confirms the lock is held by THIS session. It runs inside [#acquire], before any bootstrap write (a
 /// no-op lock or a pooler that swapped the session is refused before the first write), and before every write of the
@@ -67,14 +68,26 @@ public sealed interface MigrationFence {
         };
     }
 
-    /// The courtesy unlock run when the pinned scope ends. Closing the session is the real release (§2.1 rule 2), so the
-    /// caller's outcome never depends on this.
+    /// The courtesy unlock, run only by a session that took the fence and still holds it (never by a refused one: on a
+    /// pooler's shared server session it would drop the real holder's lock). Closing the session is the real release
+    /// (§2.1 rule 2), so the caller's outcome never depends on this.
     static Promise<Unit> release(SqlConnector session) {
         return switch (session.databaseType()) {
             case POSTGRESQL -> session.queryList("SELECT pg_advisory_unlock_all()", IGNORED).mapToUnit();
             case MYSQL, MARIADB -> session.queryList("SELECT RELEASE_ALL_LOCKS()", IGNORED).mapToUnit();
             case COCKROACHDB, H2, SQLITE, DB2, SQLSERVER, ORACLE -> Promise.unitPromise();
         };
+    }
+
+    /// Whether a schema operation on `connector` would run WITHOUT a tier-1 fence although its configured engine has
+    /// one: a PostgreSQL-configured CockroachDB, identified by the same `version()` probe [#acquire] makes. Every other
+    /// engine answers without a query.
+    static Promise<Boolean> runsUnfenced(SqlConnector connector) {
+        return connector.databaseType() == DatabaseType.POSTGRESQL
+               ? connector.queryOne("SELECT version() AS v",
+                                    row -> row.getString("v"))
+                          .map(PgFence::isCockroach)
+               : Promise.success(false);
     }
 
     RowMapper<Unit> IGNORED = _ -> Result.unitResult();
@@ -101,6 +114,16 @@ public sealed interface MigrationFence {
                                                + " AND objsubid = 2 AND granted";
 
         private static final String VERIFY = "SELECT count(*)::int AS n FROM pg_locks WHERE pid = pg_backend_pid() AND " + KEY_FILTER;
+
+        /// `pg_try_advisory_lock` is re-entrant: a server session that ALREADY holds the fence is granted it again, and
+        /// [#verifyHeld] then agrees. A transaction-mode pooler hands one server session to many clients, so a second
+        /// runner would pass the fence through the first runner's backend. A session must therefore not hold the fence
+        /// before it takes it; the check and the grant are one statement, so they run on one backend. -1: already
+        /// held by this server session; 1: granted; 0: held by another session.
+        private static final String TRY_LOCK = "SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_locks WHERE pid = pg_backend_pid() AND " + KEY_FILTER
+                                             + ") THEN -1 WHEN pg_try_advisory_lock(" + LOCK_CLASS
+                                             + ", " + LOCK_OBJECT
+                                             + ") THEN 1 ELSE 0 END AS granted";
 
         private static final String HOLDER = "SELECT 'pid=' || a.pid || ', application_name=' || coalesce(a.application_name, '')"
                                            + " || ', client=' || coalesce(host(a.client_addr), 'local')"
@@ -129,8 +152,15 @@ public sealed interface MigrationFence {
                                                         String nodeId,
                                                         String version) {
             return isCockroach(version)
-                   ? Promise.success(Unfenced.UNFENCED)
+                   ? unfenced(datasource)
                    : lockPostgres(session, datasource, nodeId);
+        }
+
+        private static Promise<MigrationFence> unfenced(String datasource) {
+            LOG.warn("Migration fence: datasource '{}' is CockroachDB configured as PostgreSQL; it has no tier-1 fence and this run is UNFENCED (FDB-2b adds its lock)",
+                     datasource);
+
+            return Promise.success(Unfenced.UNFENCED);
         }
 
         private static boolean isCockroach(String version) {
@@ -140,17 +170,17 @@ public sealed interface MigrationFence {
 
         private static Promise<MigrationFence> lockPostgres(SqlConnector session, String datasource, String nodeId) {
             return nameSession(session, nodeId).flatMap(_ -> setKeepalives(session))
-                              .flatMap(_ -> session.queryOne("SELECT pg_try_advisory_lock(" + LOCK_CLASS
-                                                            + ", " + LOCK_OBJECT
-                                                            + ") AS granted",
-                                                             row -> row.getBoolean("granted")))
+                              .flatMap(_ -> session.queryOne(TRY_LOCK,
+                                                             row -> row.getInt("granted")))
                               .flatMap(granted -> grantedOrHeld(session, datasource, granted));
         }
 
-        private static Promise<MigrationFence> grantedOrHeld(SqlConnector session, String datasource, boolean granted) {
-            return granted
-                   ? verified(session, new PgFence(datasource))
-                   : heldBy(session, datasource);
+        private static Promise<MigrationFence> grantedOrHeld(SqlConnector session, String datasource, int granted) {
+            return switch (granted) {
+                case 1 -> verified(session, new PgFence(datasource));
+                case 0 -> heldBy(session, datasource);
+                default -> sharedServerSession(datasource);
+            };
         }
 
         private static Promise<Unit> nameSession(SqlConnector session, String nodeId) {
@@ -259,8 +289,9 @@ public sealed interface MigrationFence {
         }
 
         private static Promise<MigrationFence> tryLock(SqlConnector session, String datasource, String name) {
-            return session.queryOne("SELECT COALESCE(GET_LOCK(?, 0), 0) AS granted",
+            return session.queryOne("SELECT CASE WHEN IS_USED_LOCK(?) = CONNECTION_ID() THEN -1 ELSE COALESCE(GET_LOCK(?, 0), 0) END AS granted",
                                     row -> row.getInt("granted"),
+                                    name,
                                     name)
                           .flatMap(granted -> grantedOrHeld(session, datasource, name, granted));
         }
@@ -269,9 +300,11 @@ public sealed interface MigrationFence {
                                                              String datasource,
                                                              String name,
                                                              int granted) {
-            return granted == 1
-                   ? verified(session, new MysqlFence(datasource, name))
-                   : heldBy(session, datasource, name);
+            return switch (granted) {
+                case 1 -> verified(session, new MysqlFence(datasource, name));
+                case 0 -> heldBy(session, datasource, name);
+                default -> sharedServerSession(datasource);
+            };
         }
 
         private static Promise<MigrationFence> heldBy(SqlConnector session, String datasource, String name) {
@@ -290,6 +323,15 @@ public sealed interface MigrationFence {
                                     lockName)
                           .flatMap(held -> requireHeld(held, datasource));
         }
+    }
+
+    /// `GET_LOCK` and `pg_try_advisory_lock` are re-entrant, so a session that already held the fence before taking it
+    /// is shared with another client: a transaction-mode connection pooler.
+    private static Promise<MigrationFence> sharedServerSession(String datasource) {
+        return fenceUnavailable(datasource,
+                                "this server session already held the fence before taking it: a connection pooler shares"
+                               + " server sessions between clients (transaction pooling); migrations need a direct"
+                               + " connection or session pooling").promise();
     }
 
     private static Promise<MigrationFence> verified(SqlConnector session, MigrationFence fence) {

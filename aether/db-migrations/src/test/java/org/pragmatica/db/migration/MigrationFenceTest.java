@@ -40,7 +40,7 @@ class MigrationFenceTest {
         /// a transaction pooler that swapped the session) is refused before the first write.
         @Test
         void acquire_postgresLockGrantedButNotHeldByThisSession_isFenceUnavailable() {
-            var session = new ScriptedSession(DatabaseType.POSTGRESQL, Map.of("pg_backend_pid", row("n", 0)));
+            var session = new ScriptedSession(DatabaseType.POSTGRESQL, Map.of("AS n FROM pg_locks", row("n", 0)));
 
             var cause = causeOf(MigrationFence.acquire(session, "ds", "node-1").await());
 
@@ -58,7 +58,7 @@ class MigrationFenceTest {
         @Test
         void acquire_postgresLockNotGranted_isFencedNamingTheHolder() {
             var session = new ScriptedSession(DatabaseType.POSTGRESQL,
-                                              Map.of("pg_try_advisory_lock", row("granted", false),
+                                              Map.of("pg_try_advisory_lock", row("granted", 0),
                                                      "AS holder", row("holder", "pid=7, application_name=aether-mig:node-0")));
 
             var cause = causeOf(MigrationFence.acquire(session, "ds", "node-1").await());
@@ -75,6 +75,55 @@ class MigrationFenceTest {
 
             assertThat(MigrationFence.acquire(session, "ds", "node-1").await().isSuccess()).isTrue();
             assertThat(session.statements).noneMatch(sql -> sql.contains("pg_try_advisory_lock"));
+        }
+
+        /// FDB-2a fix round 1 (A1): `pg_try_advisory_lock` is re-entrant, so a server session that already holds the
+        /// fence (a transaction-mode pooler handing one backend to two runners) would be granted it again. The grant
+        /// statement reports that case as -1 and the runner refuses it, naming the pooler.
+        @Test
+        void acquire_postgresServerSessionAlreadyHoldsTheFence_isFenceUnavailableNamingThePooler() {
+            var session = new ScriptedSession(DatabaseType.POSTGRESQL, Map.of("pg_try_advisory_lock", row("granted", -1)));
+
+            var cause = causeOf(MigrationFence.acquire(session, "ds", "node-1").await());
+
+            assertThat(cause).isInstanceOf(MigrationError.FenceUnavailable.class);
+            assertThat(cause.message()).contains("already held the fence before taking it").contains("pooler");
+        }
+
+        /// The MySQL half of the same: `GET_LOCK` is re-entrant too (5.7+), so `IS_USED_LOCK = CONNECTION_ID()` before
+        /// the grant reports -1 and the runner refuses.
+        @Test
+        void acquire_mysqlServerSessionAlreadyHoldsTheFence_isFenceUnavailableNamingThePooler() {
+            var session = new ScriptedSession(DatabaseType.MYSQL, Map.of("GET_LOCK(", row("granted", -1)));
+
+            var cause = causeOf(MigrationFence.acquire(session, "ds", "node-1").await());
+
+            assertThat(cause).isInstanceOf(MigrationError.FenceUnavailable.class);
+            assertThat(cause.message()).contains("already held the fence before taking it").contains("pooler");
+        }
+
+        /// FDB-2a ruling: CockroachDB under a PostgreSQL config is the one engine that runs unfenced, and the
+        /// orchestrator asks this probe so it can warn the operator.
+        @Test
+        void runsUnfenced_cockroachBehindAPostgresConfig_isTrue() {
+            var session = new ScriptedSession(DatabaseType.POSTGRESQL, Map.of("version()", row("v", "CockroachDB CCL v23.1.11")));
+
+            assertThat(MigrationFence.runsUnfenced(session).await().unwrap()).isTrue();
+        }
+
+        @Test
+        void runsUnfenced_postgres_isFalse() {
+            var session = new ScriptedSession(DatabaseType.POSTGRESQL, Map.of());
+
+            assertThat(MigrationFence.runsUnfenced(session).await().unwrap()).isFalse();
+        }
+
+        @Test
+        void runsUnfenced_mysql_isFalseWithoutAQuery() {
+            var session = new ScriptedSession(DatabaseType.MYSQL, Map.of());
+
+            assertThat(MigrationFence.runsUnfenced(session).await().unwrap()).isFalse();
+            assertThat(session.statements).isEmpty();
         }
 
         @Test
@@ -134,7 +183,7 @@ class MigrationFenceTest {
                             .migrate("ds", List.of(MigrationScript.migrationScript("V1__a.sql", "CREATE TABLE a (id INT);", 1L)), session, "node-1", "bp")
                             .await();
 
-            var verified = indexOf(session.statements, "pg_backend_pid");
+            var verified = indexOf(session.statements, "AS n FROM pg_locks");
             var firstHistory = indexOf(session.statements, "aether_schema");
 
             assertThat(session.pinnedCalls.get()).isEqualTo(1);
@@ -170,8 +219,54 @@ class MigrationFenceTest {
             assertThat(verifications(session)).isEqualTo(3);
         }
 
+        /// Positive control for the no-unlock tests below: a run that took the fence and kept it ends with the courtesy
+        /// unlock on its own session, on both engines.
+        @Test
+        void migrate_fencedRunThatKeptTheFence_runsTheCourtesyUnlock() {
+            var postgres = new ScriptedSession(DatabaseType.POSTGRESQL, Map.of());
+            var mysql = new ScriptedSession(DatabaseType.MYSQL, Map.of());
+
+            assertThat(migrateOneScript(postgres).isSuccess()).isTrue();
+            assertThat(migrateOneScript(mysql).isSuccess()).isTrue();
+            assertThat(postgres.statements).anyMatch(sql -> sql.contains("pg_advisory_unlock_all"));
+            assertThat(mysql.statements).anyMatch(sql -> sql.contains("RELEASE_ALL_LOCKS"));
+        }
+
+        /// CTO ruling (FDB-2a fix round 1): a runner refused at acquire never runs `pg_advisory_unlock_all()` /
+        /// `RELEASE_ALL_LOCKS()`. On a pooler's shared server session that would drop the lock of the client that does
+        /// hold it. Held by another session, and the shared-session refusal, on both engines.
+        @Test
+        void migrate_refusedAtAcquire_neverRunsTheCourtesyUnlock() {
+            var heldElsewhere = new ScriptedSession(DatabaseType.POSTGRESQL, Map.of("pg_try_advisory_lock", row("granted", 0)));
+            var sharedPostgres = new ScriptedSession(DatabaseType.POSTGRESQL, Map.of("pg_try_advisory_lock", row("granted", -1)));
+            var sharedMysql = new ScriptedSession(DatabaseType.MYSQL, Map.of("GET_LOCK(", row("granted", -1)));
+
+            assertThat(causeOf(migrateOneScript(heldElsewhere))).isInstanceOf(MigrationError.MigrationFencedInDatabase.class);
+            assertThat(causeOf(migrateOneScript(sharedPostgres))).isInstanceOf(MigrationError.FenceUnavailable.class);
+            assertThat(causeOf(migrateOneScript(sharedMysql))).isInstanceOf(MigrationError.FenceUnavailable.class);
+            assertThat(heldElsewhere.statements).noneMatch(sql -> sql.contains("unlock"));
+            assertThat(sharedPostgres.statements).noneMatch(sql -> sql.contains("unlock"));
+            assertThat(sharedMysql.statements).noneMatch(sql -> sql.contains("RELEASE_ALL_LOCKS"));
+        }
+
+        /// The same for a run that took the fence and then lost it (a pooler moved it to another server session): its
+        /// next write is refused, and the session it is on now holds nothing of its own to unlock.
+        @Test
+        void migrate_fenceLostMidRun_isRefusedAndNeverRunsTheCourtesyUnlock() {
+            var session = new ScriptedSession(DatabaseType.POSTGRESQL, Map.of()).losingTheFenceAfter(1);
+
+            assertThat(causeOf(migrateOneScript(session))).isInstanceOf(MigrationError.FenceUnavailable.class);
+            assertThat(session.statements).noneMatch(sql -> sql.contains("pg_advisory_unlock_all"));
+        }
+
+        private static Result<SchemaMigrations.SchemaResult> migrateOneScript(ScriptedSession session) {
+            return SchemaMigrations.schemaMigrations(timeSpan(1).minutes())
+                                   .migrate("ds", List.of(MigrationScript.migrationScript("V1__a.sql", "CREATE TABLE a (id INT);", 1L)), session, "node-1", "bp")
+                                   .await();
+        }
+
         private static long verifications(ScriptedSession session) {
-            return session.statements.stream().filter(sql -> sql.contains("pg_backend_pid")).count();
+            return session.statements.stream().filter(sql -> sql.contains("AS n FROM pg_locks")).count();
         }
 
         private static int indexOf(List<String> statements, String fragment) {
@@ -202,6 +297,19 @@ class MigrationFenceTest {
                                                                     MigrationDialects.POSTGRESQL);
 
             assertThat(statement.concurrentIndex()).isEqualTo(some("Big\"Idx"));
+        }
+
+        /// F8 scope (fix round 1, A3): the build's table is kept as written, schema and quotes included, so the
+        /// validity check can resolve it with `to_regclass`.
+        @Test
+        void concurrentBuild_keepsTheTableAsWritten() {
+            var qualified = AutocommitStatement.autocommitStatement("CREATE INDEX CONCURRENTLY IF NOT EXISTS dup_idx ON public.t13 (c)",
+                                                                    MigrationDialects.POSTGRESQL);
+            var quotedOnly = AutocommitStatement.autocommitStatement("CREATE INDEX CONCURRENTLY i ON ONLY \"Sch\" . \"T\"(c)",
+                                                                     MigrationDialects.POSTGRESQL);
+
+            assertThat(qualified.concurrentBuild().map(AutocommitStatement.ConcurrentBuild::table)).isEqualTo(some("public.t13"));
+            assertThat(quotedOnly.concurrentBuild().map(AutocommitStatement.ConcurrentBuild::table)).isEqualTo(some("\"Sch\" . \"T\""));
         }
 
         @Test
@@ -246,19 +354,20 @@ class MigrationFenceTest {
     /// An in-memory session that records every statement and answers the fence's statements as an uncontended
     /// database would, unless an override (matched by SQL fragment) says otherwise.
     private static final class ScriptedSession implements SqlConnector {
-        private static final Map<String, Map<String, Object>> DEFAULTS = Map.of("pg_try_advisory_lock", row("granted", true),
-                                                                                "pg_backend_pid", row("n", 1),
+        private static final Map<String, Map<String, Object>> DEFAULTS = Map.of("pg_try_advisory_lock", row("granted", 1),
+                                                                                "AS n FROM pg_locks", row("n", 1),
                                                                                 "version()", row("v", "PostgreSQL 16.4"),
                                                                                 "set_config", row("v", "set"),
                                                                                 "DATABASE()", row("db", "shop"),
                                                                                 "GET_LOCK(", row("granted", 1),
-                                                                                "IS_USED_LOCK", row("n", 1));
+                                                                                "CONNECTION_ID(), 0)", row("n", 1));
         private final DatabaseConnectorConfig config;
         private final Map<String, Map<String, Object>> overrides;
         private final List<Map<String, Object>> variables;
         private final List<String> statements = new ArrayList<>();
         private final List<Object> params = new ArrayList<>();
         private final AtomicInteger pinnedCalls = new AtomicInteger();
+        private Option<AtomicInteger> heldChecksLeft = none();
 
         ScriptedSession(DatabaseType type, Map<String, Map<String, Object>> overrides) {
             this(type, overrides, List.of());
@@ -271,6 +380,12 @@ class MigrationFenceTest {
             this.variables = variables;
         }
 
+        /// After `checks` fence verifications (the `AS n FROM pg_locks` check) this session no longer holds the fence.
+        ScriptedSession losingTheFenceAfter(int checks) {
+            heldChecksLeft = some(new AtomicInteger(checks));
+            return this;
+        }
+
         @Override
         public <T> Promise<T> queryOne(String sql, RowMapper<T> mapper, Object... args) {
             return queryOptional(sql, mapper, args).flatMap(row -> row.async(Causes.cause("no row for " + sql)));
@@ -279,8 +394,9 @@ class MigrationFenceTest {
         @Override
         public <T> Promise<Option<T>> queryOptional(String sql, RowMapper<T> mapper, Object... args) {
             record(sql, args);
-            return Promise.success(answer(overrides, sql).orElse(answer(DEFAULTS, sql))
-                                                         .flatMap(values -> mapper.map(new MapRow(values)).option()));
+            return Promise.success(lostFence(sql).orElse(answer(overrides, sql))
+                                                 .orElse(answer(DEFAULTS, sql))
+                                                 .flatMap(values -> mapper.map(new MapRow(values)).option()));
         }
 
         @Override
@@ -322,6 +438,12 @@ class MigrationFenceTest {
         @Override
         public Promise<Boolean> isHealthy() {
             return Promise.success(true);
+        }
+
+        private Option<Map<String, Object>> lostFence(String sql) {
+            return heldChecksLeft.filter(_ -> sql.contains("AS n FROM pg_locks"))
+                                 .filter(left -> left.getAndDecrement() <= 0)
+                                 .map(_ -> row("n", 0));
         }
 
         private void record(String sql, Object[] args) {

@@ -20,6 +20,7 @@ import java.util.Properties;
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
 import org.pragmatica.aether.resource.db.DatabaseType;
 import org.pragmatica.aether.resource.db.DatabaseConnectorError;
+import org.pragmatica.aether.resource.db.PinnedSessionBound;
 import org.pragmatica.aether.resource.db.RowMapper;
 import org.pragmatica.aether.resource.db.SqlConnector;
 import org.pragmatica.lang.Cause;
@@ -86,10 +87,13 @@ public final class JdbcSqlConnector implements SqlConnector {
     public <T> Promise<T> pinned(Duration statementTimeout,
                                  SqlConnector.TransactionCallback<T> body,
                                  SqlConnector.TransactionCallback<Unit> release) {
+        // The client-side query timeout cancels a hung statement; the server-side bounds additionally replace a role or
+        // database default `lock_timeout`/`statement_timeout` on the migration session (PinnedSessionBound).
         return Promise.lift(e -> mapException(e, PINNED), this::openDedicated).flatMap(conn -> runPinned(conn,
                                                                                                          pinnedSession(conn,
                                                                                                                        statementTimeout),
-                                                                                                         body,
+                                                                                                         PinnedSessionBound.serverBounded(statementTimeout,
+                                                                                                                                          body),
                                                                                                          release));
     }
 

@@ -45,7 +45,7 @@ final class FakeMigrationFence {
 
     private static Option<Map<String, Object>> row(String sql) {
         if (sql.contains("pg_try_advisory_lock")) {
-            return some(Map.of("granted", true));
+            return some(Map.of("granted", 1));
         }
         if (sql.contains("GET_LOCK(")) {
             return some(Map.of("granted", 1));

@@ -763,6 +763,15 @@ public enum OperatorWarningCode {
                                "rollback",
                                WarningLevel.INFO,
                                ROLLBACK_RECORD_RECONCILE_EXHAUSTED),
+    /// A schema migration has been fenced in the database several consecutive times (FDB-2a, #2591): another database
+    /// session holds the migration fence (`pg_try_advisory_lock` / `GET_LOCK`), so each attempt ran and read nothing. The
+    /// attempt is not consumed; the schema stays PENDING and is retried every 45 s at most. Raised from the 3rd consecutive
+    /// fenced attempt on, naming the holder. Subject is the datasource.
+    SCHEMA_MIGRATION_FENCE_HELD("schema-migration-fence-held", "schema-migration", WarningLevel.WARNING),
+    /// A schema operation runs WITHOUT a database fence (FDB-2a, #2591): the datasource is configured as PostgreSQL but
+    /// the server is CockroachDB, whose advisory locks acquire nothing; FDB-2b adds its lock. Raised on every such
+    /// operation. Subject is the datasource.
+    SCHEMA_MIGRATION_UNFENCED("schema-migration-unfenced", "schema-migration", WarningLevel.WARNING),
     /// The recovery of [#CONFIG_WATCH_CALLBACK_FAILED], same subject (#774): the next delivery bound and (when it called back) succeeded.
     /// INFO, published only after a published failure for the subject (#752 mechanism).
     CONFIG_WATCH_CALLBACK_RECOVERED("config-watch-callback-recovered",
