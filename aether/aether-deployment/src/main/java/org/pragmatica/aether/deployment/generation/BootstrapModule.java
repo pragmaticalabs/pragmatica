@@ -224,13 +224,22 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
             return Option.none();
         }
 
+        // #2654 design-out: a refused base (the life's incarnation is not committed) plans nothing, so no core ownership
+        // record can rank below the restored life's epochs, and no bootstrap attempt is spent. The incarnation commit
+        // re-drives the plan (`ClusterBootstrapAssembly.onIncarnationCommit` calls retryIfNeeded).
+        return currentEpoch().mintable()
+                             .option()
+                             .flatMap(epoch -> planCoreBootstrapAt(coreMembers, epoch));
+    }
+
+    private Option<CoreBootstrapPlan> planCoreBootstrapAt(Set<NodeId> coreMembers, Epoch epoch) {
         var self = selfSupplier.get();
         var partitions = collectPartitions(kvSnapshotSupplier.get());
         var existing = Option.option(partitions.get(BootstrapModule.CORE_PARTITION_ID));
 
-        return decideCoreOwnership(existing, coreMembers, self).map(command -> new CoreBootstrapPlan(command,
-                                                                                                     existing,
-                                                                                                     self));
+        return decideCoreOwnership(existing, coreMembers, self, epoch).map(command -> new CoreBootstrapPlan(command,
+                                                                                                            existing,
+                                                                                                            self));
     }
 
     private Option<ClusterConfigSeedPlan> planClusterConfigSeed() {
@@ -340,16 +349,18 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
 
     private Option<KVCommand<AetherKey>> decideCoreOwnership(Option<DhtPartitionOwnershipValue> existing,
                                                              Set<NodeId> coreMembers,
-                                                             NodeId self) {
-        return existing.fold(() -> Option.some(buildInitialCorePartition(self)),
-                             owner -> rewriteIfOwnerStale(owner, coreMembers, self));
+                                                             NodeId self,
+                                                             Epoch epoch) {
+        return existing.fold(() -> Option.some(buildInitialCorePartition(self, epoch)),
+                             owner -> rewriteIfOwnerStale(owner, coreMembers, self, epoch));
     }
 
     private Option<KVCommand<AetherKey>> rewriteIfOwnerStale(DhtPartitionOwnershipValue owner,
                                                              Set<NodeId> coreMembers,
-                                                             NodeId self) {
+                                                             NodeId self,
+                                                             Epoch epoch) {
         return shouldRewriteCoreOwnership(owner, coreMembers, self)
-               ? Option.some(buildRewrittenCorePartition(owner, self))
+               ? Option.some(buildRewrittenCorePartition(owner, self, epoch))
                : Option.none();
     }
 
@@ -367,12 +378,12 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         return ! coreMembers.contains(recordedOwner);
     }
 
-    private KVCommand<AetherKey> buildInitialCorePartition(NodeId self) {
-        return buildCorePartitionCommand(self, currentEpoch(), 1L);
+    private KVCommand<AetherKey> buildInitialCorePartition(NodeId self, Epoch epoch) {
+        return buildCorePartitionCommand(self, epoch, 1L);
     }
 
-    private KVCommand<AetherKey> buildRewrittenCorePartition(DhtPartitionOwnershipValue owner, NodeId self) {
-        return buildCorePartitionCommand(self, currentEpoch(), owner.ownershipTerm() + 1L);
+    private KVCommand<AetherKey> buildRewrittenCorePartition(DhtPartitionOwnershipValue owner, NodeId self, Epoch epoch) {
+        return buildCorePartitionCommand(self, epoch, owner.ownershipTerm() + 1L);
     }
 
     private Epoch currentEpoch() {

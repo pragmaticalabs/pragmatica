@@ -36,6 +36,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -51,6 +52,8 @@ class BootstrapModuleTest {
 
     private static final NodeId SELF = new NodeId("node-self");
     private static final long FIXTURE_RABIA_TERM = 1L;
+    /// #2654: a committed incarnation (genesis); at `Epoch.NO_INCARNATION` the module mints no ownership epoch.
+    private static final long FIXTURE_INCARNATION = 1L;
 
     @Nested
     class CorePartitionBootstrap {
@@ -83,7 +86,7 @@ class BootstrapModuleTest {
             assertThat(ownership.ownerNodeId()).isEqualTo(SELF);
             assertThat(ownership.ownerEpoch())
                 .as("the initial core-partition ownerEpoch couples rabiaTerm with the initial ownershipTerm 1")
-                .isEqualTo(Epoch.epoch(0L, FIXTURE_RABIA_TERM, 1L));
+                .isEqualTo(Epoch.epoch(FIXTURE_INCARNATION, FIXTURE_RABIA_TERM, 1L));
             assertThat(ownership.ownershipTerm()).isEqualTo(1L);
         }
 
@@ -96,7 +99,7 @@ class BootstrapModuleTest {
             var deposed = new NodeId("node-deposed");
             var existing = DhtPartitionOwnershipValue.dhtPartitionOwnershipValue(deposed,
                                                                                  BootstrapModule.CORE_COMMUNITY_ID,
-                                                                                 Epoch.epoch(0L, FIXTURE_RABIA_TERM, 1L),
+                                                                                 Epoch.epoch(FIXTURE_INCARNATION, FIXTURE_RABIA_TERM, 1L),
                                                                                  1L,
                                                                                  HlcTimestamp.ZERO);
             var fixture = newFixture(/* initialCoreSize */ 1);
@@ -110,7 +113,7 @@ class BootstrapModuleTest {
                 .isEqualTo(SELF);
             assertThat(ownership.ownerEpoch())
                 .as("same-term stale-owner takeover advances the epoch via the ownershipTerm local counter")
-                .isEqualTo(Epoch.epoch(0L, FIXTURE_RABIA_TERM, 2L));
+                .isEqualTo(Epoch.epoch(FIXTURE_INCARNATION, FIXTURE_RABIA_TERM, 2L));
             assertThat(ownership.ownerEpoch().isStrictlyAfter(existing.ownerEpoch()))
                 .as("(rabiaTerm, 2) strictly dominates the deposed owner's (rabiaTerm, 1) at the SAME term — fence holds")
                 .isTrue();
@@ -277,6 +280,40 @@ class BootstrapModuleTest {
         }
     }
 
+    /// #2654: before the life's cluster incarnation commits (the mirror reads `Epoch.NO_INCARNATION`), a core ownership
+    /// epoch minted then would rank below every epoch a restored life committed. The module plans no core partition,
+    /// spends no bootstrap attempt, and mints at the committed incarnation once the commit re-drives it.
+    @Nested
+    class MintBeforeIncarnationCommit {
+        @Test
+        void onLeaderGained_incarnationNone_mintsNoCorePartition() {
+            var fixture = newFixture(/* initialCoreSize */ 1);
+            fixture.incarnation.set(Epoch.NO_INCARNATION);
+
+            fixture.module.onLeaderGained();
+
+            assertThat(collectPuts(fixture.cluster.batches)).noneMatch(p -> p.key() instanceof DhtPartitionOwnershipKey);
+        }
+
+        @Test
+        void retryIfNeeded_afterTheIncarnationCommits_mintsAtTheCommittedIncarnation() {
+            var fixture = newFixture(/* initialCoreSize */ 1);
+            fixture.incarnation.set(Epoch.NO_INCARNATION);
+            fixture.module.onLeaderGained();
+            // More refused passes than the attempt budget: a refusal must not spend an attempt.
+            for (var pass = 0; pass < BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS; pass++) {
+                fixture.module.retryIfNeeded();
+            }
+
+            fixture.incarnation.set(FIXTURE_INCARNATION);
+            fixture.module.retryIfNeeded();
+
+            assertThat(coreOwnershipPut(fixture.cluster.batches).ownerEpoch())
+                .as("the core ownership epoch minted once the incarnation commit re-drives the module")
+                .isEqualTo(Epoch.epoch(FIXTURE_INCARNATION, FIXTURE_RABIA_TERM, 1L));
+        }
+    }
+
     @Nested
     class LeaderLossResetsBootstrapState {
         @Test
@@ -332,8 +369,9 @@ class BootstrapModuleTest {
         Map<AetherKey, AetherValue> kv = new HashMap<>();
         var isLeader = new AtomicBoolean(true);
         var cluster = new RecordingClusterNode(lateCommits);
+        var incarnation = new AtomicLong(FIXTURE_INCARNATION);
         var module = BootstrapModule.bootstrapModule(isLeader::get,
-                                                      () -> Epoch.epoch(0L, FIXTURE_RABIA_TERM, 0L),
+                                                      () -> Epoch.epoch(incarnation.get(), FIXTURE_RABIA_TERM, 0L),
                                                       () -> Option.<Long>none(),
                                                       hlcClock,
                                                       () -> Set.<NodeId>of(),
@@ -341,7 +379,7 @@ class BootstrapModuleTest {
                                                       () -> SELF,
                                                       () -> baseline,
                                                       cluster);
-        return new Fixture(module, cluster, kv);
+        return new Fixture(module, cluster, kv, incarnation);
     }
 
     @SuppressWarnings({"unchecked"})
@@ -372,11 +410,13 @@ class BootstrapModuleTest {
         final BootstrapModule module;
         final RecordingClusterNode cluster;
         final Map<AetherKey, AetherValue> kv;
+        final AtomicLong incarnation;
 
-        Fixture(BootstrapModule module, RecordingClusterNode cluster, Map<AetherKey, AetherValue> kv) {
+        Fixture(BootstrapModule module, RecordingClusterNode cluster, Map<AetherKey, AetherValue> kv, AtomicLong incarnation) {
             this.module = module;
             this.cluster = cluster;
             this.kv = kv;
+            this.incarnation = incarnation;
         }
     }
 

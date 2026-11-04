@@ -28,6 +28,7 @@ import org.pragmatica.aether.node.BootstrapAdminKeyRegistrar;
 import org.pragmatica.aether.node.ClusterIncarnationRegistrar;
 import org.pragmatica.aether.node.DhtReplicationSettlement;
 import org.pragmatica.aether.node.LeaderTerm;
+import org.pragmatica.aether.node.ObservedIncarnation;
 import org.pragmatica.aether.node.backup.BackupRestoreCoordinator;
 import org.pragmatica.aether.node.backup.BackupWarning;
 import org.pragmatica.aether.node.backup.GitBackupRepository;
@@ -138,7 +139,8 @@ public sealed interface ClusterBootstrapAssembly {
                                   AbTestManager abTestManager,
                                   ArrayList<MessageRouter.Entry<?>> allEntries,
                                   LeaderReconciler leaderReconciler,
-                                  BootstrapModule bootstrapModule) {}
+                                  BootstrapModule bootstrapModule,
+                                  ObservedIncarnation incarnation) {}
 
     /// The routes that drive the bootstrap module, the health KV router, the spokesman ping loop (started here) and its KV router.
     static SpokesmanPingLoop bootstrapRouting(BootstrapRoutingInputs in) {
@@ -157,6 +159,7 @@ public sealed interface ClusterBootstrapAssembly {
         var allEntries = in.allEntries();
         var leaderReconciler = in.leaderReconciler();
         var bootstrapModule = in.bootstrapModule();
+        var incarnation = in.incarnation();
 
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> onLeaderChangeForPublisher(change,
@@ -174,6 +177,11 @@ public sealed interface ClusterBootstrapAssembly {
         var healthKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
                                                  .onPut(AetherKey.SpokesmanKey.class,
                                                         _ -> bootstrapModule.retryIfNeeded())
+                                                 // #2654: the incarnation-commit re-drive — see onIncarnationCommit.
+                                                 .onPut(AetherKey.ClusterIncarnationKey.class,
+                                                        (KVStoreNotification.ValuePut<AetherKey.ClusterIncarnationKey, AetherValue.ClusterIncarnationValue> put) -> onIncarnationCommit(put,
+                                                                                                                                                                                       incarnation,
+                                                                                                                                                                                       bootstrapModule))
                                                  // #1533: the ONE restore-commit hook — see onRestoreDecision.
                                                  .onPut(AetherKey.BackupRestoreKey.class,
                                                         (KVStoreNotification.ValuePut<AetherKey.BackupRestoreKey, AetherValue.BackupRestoreValue> put) -> onRestoreDecision(put,
@@ -377,6 +385,20 @@ public sealed interface ClusterBootstrapAssembly {
             deploymentManager.reloadRestoredState();
             abTestManager.reloadRestoredState();
         }
+    }
+
+    /// #2654: the incarnation-commit re-drive. The bootstrap module refuses to mint the core partition's ownership
+    /// epoch while the life's incarnation is `ClusterIncarnation.NONE`, and on a fresh cluster the restore decision
+    /// (`FRESH`) commits BEFORE the registrar's genesis, so without this hook a refusal at leader gain has no re-drive
+    /// left. The hook reads the incarnation from the put: it applies the put to the mirror the module's epoch supplier
+    /// reads before it re-drives, so the re-drive mints at the committed incarnation whichever route the router
+    /// delivers first (the mirror's own route sets the same value, so applying it twice is idempotent).
+    @Contract
+    static void onIncarnationCommit(KVStoreNotification.ValuePut<AetherKey.ClusterIncarnationKey, AetherValue.ClusterIncarnationValue> put,
+                                    ObservedIncarnation incarnation,
+                                    BootstrapModule bootstrapModule) {
+        incarnation.onPut(put);
+        bootstrapModule.retryIfNeeded();
     }
 
     /// #1797: a committed `LeaderKey` naming this node raises the held term even without a leader-gain edge.
