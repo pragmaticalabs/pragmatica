@@ -7,11 +7,16 @@ on:
   pull_request:
     branches: [main, release-*, 'overhaul/**', 'rewrite/**']
     types: [opened, synchronize, reopened, labeled, unlabeled]
+  # Merge queue: `fragment` is a required context, so it must report on the queue's branch. The check itself is a
+  # pull-request check (it needs the PR's labels and base ref, neither exists on merge_group); it ran on the PR head
+  # and the merge_group run says so explicitly instead of skipping, because a skipped required job reads as success.
+  merge_group:
+    branches: [main, release-*, 'overhaul/**', 'rewrite/**']
 
 # A newer run on the same PR supersedes the in-progress one.
 concurrency:
-  group: changelog-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: changelog-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   fragment:
@@ -23,6 +28,11 @@ jobs:
           fetch-depth: 0
 
       - name: Check the changelog fragment
+        if: github.event_name == 'pull_request'
         env:
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
         run: scripts/changelog-check.sh "origin/${{ github.base_ref }}"
+
+      - name: Merge queue - fragment verified on the pull request
+        if: github.event_name == 'merge_group'
+        run: echo "changelog fragment not re-checked on merge_group (needs PR labels and base ref), the pull_request run of this check gates entry to the queue"
