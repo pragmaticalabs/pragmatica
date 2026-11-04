@@ -53,11 +53,16 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 /// keep this node from raising the fact. Two paths: the leader arrives as a notification (the route), and the leader is already in the store
 /// when no notification was delivered (the store lookup the assembly binds -- state restored from a snapshot is delivered only by a later replay).
 /// The control raises the same fact first, with nothing committed, so the gate is what holds it back.
+///
+/// The node's store delivers notifications on its dispatcher thread (D1), after `process()` returns, so every commit here waits for the
+/// delivery of its batch before the gate is read: the gate is defined by the DELIVERED notifications, and reading it before they are
+/// delivered asserts on a state the committed gate never claimed.
 class ClusterEventsCommittedGateBootTest {
     @TempDir
     Path tempDir;
 
     private static final TimeSpan START_BOUND = timeSpan(30).seconds();
+    private static final TimeSpan DELIVERY_BOUND = timeSpan(10).seconds();
     private static final NodeId OTHER = new NodeId("committed-leader-elsewhere");
 
     private static final org.pragmatica.serialization.SliceCodec CODEC = NodeCodecs.nodeCodecs(org.pragmatica.serialization.FrameworkCodecs.frameworkCodecs());
@@ -76,6 +81,10 @@ class ClusterEventsCommittedGateBootTest {
         ResourceProvider.clear();
     }
 
+    /// Becoming the committed leader makes the node bootstrap its own ownership record, which outranks the leader. The test only means
+    /// something with no record, so it waits for that record and removes it in the same batch that names the other leader: the batch
+    /// leaves no record, and a later bootstrap proposed for the old leader view is fenced by the new leader. (On rc5 the immediate second
+    /// commit fenced the bootstrap by luck of timing; once notifications are delivered after `process()`, the bootstrap lands first.)
     @Test
     @Timeout(value = 120, unit = SECONDS)
     void bootedNode_doesNotRaiseAKvDerivedFact_whenTheCommittedLeaderNotificationNamesAnotherNode() throws Exception {
@@ -83,9 +92,33 @@ class ClusterEventsCommittedGateBootTest {
         commitLeaderKey(node.self(), 500_000L);
         assertThat(raisedBy("control")).as("control: the committed leader is this node, so it raises the fact").isTrue();
 
-        commitLeaderKey(OTHER, 1_000_000L);
+        var record = StreamPartitionOwnershipKey.streamPartitionOwnershipKey(SystemStreams.CLUSTER_EVENTS.asString(), 0);
+        removeRecordAndCommitLeader(record, awaitOwnBootstrapRecord(record), OTHER, 1_000_000L);
+        assertThat(node.kvStore().getTyped(record, StreamPartitionOwnershipValue.class).isPresent())
+            .as("control: no ownership record, so the committed leader decides").isFalse();
 
         assertThat(raisedBy("after-leader-notification")).as("the leader notification route reaches the aggregator").isFalse();
+    }
+
+    /// One batch: as the current leader, remove the node's own ownership record; then commit `leader` as the new leader.
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private void removeRecordAndCommitLeader(StreamPartitionOwnershipKey record,
+                                             StreamPartitionOwnershipValue current,
+                                             NodeId leader,
+                                             long viewSequence) {
+        var kvStore = node.kvStore();
+        var currentLeader = kvStore.getTyped(LeaderKey.INSTANCE, LeaderValue.class).unwrap();
+        var removal = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(record,
+                                                                              UUID.randomUUID().toString(),
+                                                                              currentLeader,
+                                                                              List.of(),
+                                                                              List.of(new KVCommand.Mutation<>(record,
+                                                                                                               Option.some(current),
+                                                                                                               Option.none())));
+
+        kvStore.process(kvStore.createBatch((List) List.of(removal,
+                                                           new KVCommand.Put<>(LeaderKey.INSTANCE, LeaderValue.leaderValue(leader, viewSequence)))));
+        awaitDelivery();
     }
 
     @Test
@@ -162,6 +195,16 @@ class ClusterEventsCommittedGateBootTest {
                                                                                                                  leader,
                                                                                                                  List.of(),
                                                                                                                  List.of(new KVCommand.Mutation<>(key, expected, value))))));
+        awaitDelivery();
+    }
+
+    /// Waits until every batch the store has applied so far has been delivered to its subscribers (the aggregator among them).
+    private void awaitDelivery() {
+        var kvStore = node.kvStore();
+
+        kvStore.awaitDelivered(kvStore.enqueuedSeq())
+               .await(DELIVERY_BOUND)
+               .onFailure(cause -> fail("the committed batch must be delivered: " + cause.message()));
     }
 
     /// What the node holds is what the notifications delivered, in commit order, not what the store holds now: a store that is AHEAD of
@@ -242,6 +285,7 @@ class ClusterEventsCommittedGateBootTest {
         var kvStore = node.kvStore();
 
         kvStore.process(kvStore.createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, LeaderValue.leaderValue(leader, viewSequence)))));
+        awaitDelivery();
     }
 
     /// State that reaches the store with no notification: a snapshot of a donor store that holds the leader record.
