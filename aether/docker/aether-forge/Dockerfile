@@ -41,4 +41,4 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=3 \
 # Switch to non-root user
 USER aether
 
-ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar /app/aether-forge.jar"]
+ENTRYPOINT ["sh", "-c", "java -XX:+ExitOnOutOfMemoryError $JAVA_OPTS -jar /app/aether-forge.jar"]

@@ -63,10 +63,13 @@ import org.pragmatica.aether.node.labels.ContainerLabelInspector;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.cluster.state.kvstore.DispatcherFailureSink;
+import org.pragmatica.cluster.state.kvstore.FatalEscapeRelay;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.FatalEscapeHandler;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
@@ -98,6 +101,11 @@ public record Main(String[] args) {
     record TlsBundle(org.pragmatica.net.tcp.TlsConfig tls, CertificateProvider provider) {}
 
     private void run() {
+        // KVStore dispatcher design 8.1: first statement, so an Error escaping a continuation anywhere in this
+        // process (a static initializer before main included) reaches the same failure sink the node's store gets.
+        var dispatcherSink = DispatcherFailureSink.once(kvDispatcherSink(Main::flushLogs, Runtime.getRuntime()::halt));
+
+        installFatalEscapeRelay(dispatcherSink).expect("unreachable: Main installs the fatal-escape hook first");
         publishConfigPath();
         var aetherConfig = loadConfig();
 
@@ -141,9 +149,7 @@ public record Main(String[] args) {
         enforceIdentityLedgerBootable(config);
         // Review catch (#634 batch): assembly failures — the routed-type codec guard included — get
         // the same FATAL + exit shape as the other boot gates, not an uncaught-exception stack trace.
-        var node = AetherNode.aetherNode(config,
-                                         kvDispatcherSink(Main::flushLogs,
-                                                          Runtime.getRuntime()::halt))
+        var node = AetherNode.aetherNode(config, dispatcherSink)
                              .onFailure(this::abortBoot)
                              .expect("unreachable: abortBoot exits");
 
@@ -969,6 +975,12 @@ public record Main(String[] args) {
         } finally {
             haltFn.accept(AetherNode.EXIT_CONSENSUS_RESTORE_FAILED);
         }
+    }
+
+    /// Installs the process-wide fatal-escape hook (design 8.1): every `Error` escaping a `Promise` continuation stops
+    /// the node through `sink`. A second installer in the process is refused with `FatalEscapeError.ALREADY_INSTALLED`.
+    static Result<FatalEscapeHandler.Registration> installFatalEscapeRelay(DispatcherFailureSink sink) {
+        return Promise.installFatalEscapeHandler(FatalEscapeRelay.fatalEscapeRelay(sink));
     }
 
     /// The production KV dispatcher failure sink (KVStore dispatcher design §3.2 step 3, exit (s)): the
