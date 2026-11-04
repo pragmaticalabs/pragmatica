@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.function.Consumer;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.LongSupplier;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.deployment.wiring.FsmTimers.TimerService;
 import org.pragmatica.aether.node.ClusterIncarnation;
@@ -172,10 +173,7 @@ public final class EngineMarkerGuard {
     public void whenOpen(String name, Runnable action) {
         running.lock();
         try {
-            runDrained();
-            if (admitted(name, action)) {
-                action.run();
-            }
+            runAdmitted(name, action);
         } finally {
             running.unlock();
         }
@@ -205,17 +203,29 @@ public final class EngineMarkerGuard {
         return ! drained.isEmpty();
     }
 
-    /// Run or park, decided in one step. Actions themselves never run under the decision monitor.
-    private synchronized boolean admitted(String name, Runnable action) {
+    /// With `running` held: runs `action` behind everything drained so far, or parks it.
+    private void runAdmitted(String name, Runnable action) {
+        admitted(name, action).forEach(Runnable::run);
+    }
+
+    /// Run or park, decided in one step, and only once nothing drained is left ahead (P2, v-2643 finding 2). Drained work is handed back first,
+    /// followed by a fresh decision for `action`: an opening that lands while that work runs drains more, and the fresh decision runs it ahead
+    /// too, so an older parked action never runs after a newer admitted one. Actions themselves never run under the decision monitor.
+    private synchronized List<Runnable> admitted(String name, Runnable action) {
+        if (!drained.isEmpty()) {
+            return Stream.concat(takeDrained().stream(), Stream.<Runnable>of(() -> runAdmitted(name, action)))
+                         .toList();
+        }
+
         if (state == State.OPEN) {
-            return true;
+            return List.of(action);
         }
 
         if (state != State.REFUSED) {
             parked.put(name, action);
         }
 
-        return false;
+        return List.of();
     }
 
     private synchronized List<Runnable> takeDrained() {

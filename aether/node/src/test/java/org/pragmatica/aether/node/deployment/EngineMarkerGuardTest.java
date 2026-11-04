@@ -12,9 +12,11 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.node.deployment.EngineMarkerGuard.State;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngineValue;
@@ -345,6 +347,151 @@ class EngineMarkerGuardTest {
             later.join(5_000);
 
             assertThat(activations).containsExactly("parked-start", "parked-end", "later");
+        }
+
+        /// P2 (v-2643 finding 2), deterministic: an opening lands while the admitting thread runs drained work, and drains an older parked
+        /// activation. The newer action is decided only once nothing drained is left ahead of it, so the older one runs first. RED before the fix
+        /// (`runDrained` then `admitted` as two steps): the newer action ran, and the older one after it.
+        @Test
+        @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+        void aDrainedActionThatReopensTheGate_runsTheOlderParkedActionBeforeTheNewerOne() throws Exception {
+            var marker = new AtomicReference<>(Option.some(FSM2_MARKER));
+            var guard = sharedMarkerGuard(marker);
+            var order = Collections.synchronizedList(new ArrayList<String>());
+            var openers = new CopyOnWriteArrayList<Thread>();
+
+            guard.evaluate();
+            guard.whenOpen("hold", () -> {
+                parkAndReopen(guard, marker, openers, "w", () -> parkAndReopen(guard, marker, openers, "leader", () -> order.add("older")));
+                guard.whenOpen("leader", () -> order.add("newer"));
+            });
+            for (var opener : openers) {
+                opener.join(10_000);
+            }
+
+            assertThat(openers).as("both reopenings ran on their own threads").hasSize(2);
+            assertThat(order).as("the older parked activation runs before the newer admitted action").containsExactly("older", "newer");
+        }
+
+        /// P2 (v-2643 finding 2), the verifier's probe: the same placement reached through lock contention, repeated until the admitting thread
+        /// wins the lock twenty times. Verifier control: 20 inversions of 20 before the fix, 0 after.
+        @Test
+        @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+        void guard_parkedActivation_neverRunsAfterANewerAdmittedOne() throws Exception {
+            int inversions = 0;
+            int aWon = 0;
+            for (int i = 0; i < 200 && aWon < 20; i++) {
+                var order = Collections.synchronizedList(new ArrayList<String>());
+                var marker = new AtomicReference<>(Option.some(FSM2_MARKER));
+                var guard = sharedMarkerGuard(marker);
+                guard.evaluate();
+                assertThat(guard.state()).isEqualTo(State.OPEN);
+                var ranW = new AtomicReference<>("");
+                var openerB = new AtomicReference<Option<Thread>>(Option.none());
+                Runnable w = () -> {
+                    ranW.set(Thread.currentThread().getName());
+                    // close the gate, park Y (older), reopen from another thread whose decide() lands now
+                    marker.set(Option.some(LEGACY_MARKER));
+                    guard.evaluate();
+                    guard.whenOpen("leader", () -> order.add("Y-activate(older)"));
+                    marker.set(Option.some(FSM2_MARKER));
+                    openerB.set(Option.some(Thread.ofPlatform().name("B").start(guard::evaluate)));
+                    awaitOpen(guard);
+                    // give B time to pass decided() and block on the lock
+                    pause(20);
+                };
+                var latch = new CountDownLatch(1);
+                var parkedW = new CountDownLatch(1);
+                // H holds the lock while W is parked; A queues on the lock FIRST, then C's evaluate drains W and queues behind A
+                var h = Thread.ofPlatform().name("H").start(() -> guard.whenOpen("hold", () -> {
+                    marker.set(Option.some(LEGACY_MARKER));
+                    guard.evaluate();
+                    guard.whenOpen("w", w);
+                    parkedW.countDown();
+                    try {
+                        latch.await(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }));
+                parkedW.await(5, TimeUnit.SECONDS);
+                var a = Thread.ofPlatform().name("A").start(() -> guard.whenOpen("leader", () -> order.add("X-deactivate(newer)")));
+                Thread.sleep(30);
+                marker.set(Option.some(FSM2_MARKER));
+                var c = Thread.ofPlatform().name("C").start(guard::evaluate);
+                Thread.sleep(30);
+                latch.countDown();
+                c.join(10_000);
+                h.join(10_000);
+                a.join(10_000);
+                openerB.get().onPresent(this::joinQuietly);
+                if ("A".equals(ranW.get())) {
+                    aWon++;
+                    if (order.indexOf("X-deactivate(newer)") < order.indexOf("Y-activate(older)")) {
+                        inversions++;
+                    }
+                }
+            }
+            assertThat(aWon).as("the interleaving was reached").isGreaterThan(0);
+            assertThat(inversions).as("older parked activation ran after a newer admitted one, in %d runs that reached the interleaving", aWon).isZero();
+        }
+
+        /// Closes the gate, parks `action` under `name`, and reopens it from a new thread, returning once that thread's decision has drained it.
+        private void parkAndReopen(EngineMarkerGuard guard,
+                                   AtomicReference<Option<DeploymentEngineValue>> marker,
+                                   List<Thread> openers,
+                                   String name,
+                                   Runnable action) {
+            marker.set(Option.some(LEGACY_MARKER));
+            guard.evaluate();
+            assertThat(guard.isOpen()).as("the gate closed").isFalse();
+            guard.whenOpen(name, action);
+            marker.set(Option.some(FSM2_MARKER));
+            openers.add(Thread.ofPlatform().start(guard::evaluate));
+            awaitOpen(guard);
+        }
+
+        private void awaitOpen(EngineMarkerGuard guard) {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!guard.isOpen() && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertThat(guard.isOpen()).as("the reopening decided within 5 s").isTrue();
+        }
+
+        private void joinQuietly(Thread thread) {
+            try {
+                thread.join(10_000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        private void pause(long ms) {
+            try {
+                Thread.sleep(ms);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        private EngineMarkerGuard sharedMarkerGuard(AtomicReference<Option<DeploymentEngineValue>> marker) {
+            return EngineMarkerGuard.engineMarkerGuard(DeploymentEngine.FSM2, SELF, WINDOW_MS, new EngineMarkerGuard.Reader() {
+                @Override
+                public Option<DeploymentEngineValue> marker() {
+                    return marker.get();
+                }
+
+                @Override
+                public boolean incarnationPresent() {
+                    return true;
+                }
+
+                @Override
+                public Option<LeaderValue> leader() {
+                    return Option.some(new LeaderValue(MINTER, 1L));
+                }
+            }, new ManualClock(), () -> NOW, sink, exits::add);
         }
 
         private void hold(CountDownLatch entered, CountDownLatch release) {
