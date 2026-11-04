@@ -5,17 +5,23 @@
 package org.pragmatica.aether.deployment.wiring;
 
 import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// N-10, raced: start() against retireIfConsumerless(). Invariant: when retire says "consumerless" (the caller will run the
-/// shutdown itself), no consumer thread is alive afterwards. Counted violations must be 0 at the head and > 0 with the monitor removed.
+/// shutdown itself), no consumer thread is alive afterwards. The class @Timeout (120 s, separate thread) and the per-iteration deadlines bound a hang. Counted violations must be 0 at the head and > 0 with the monitor removed.
 class FsmMailboxStartRetireRaceTest {
+    // Bound: a regression (e.g. a stuck consumer or a lost start) must FAIL in bounded time, never hang the suite.
+    private static final long JOIN_DEADLINE_MS = 2_000;
+
     @Test
+    @Timeout(value = 120, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
     void retireAndStart_neverLeaveALiveConsumerBesideACallerShutdown() throws Exception {
         var violations = new AtomicInteger();
         var retiredTrue = new AtomicInteger();
@@ -34,7 +40,8 @@ class FsmMailboxStartRetireRaceTest {
             await(barrier);
             spin(java.util.concurrent.ThreadLocalRandom.current().nextInt(400));
             retired.set(mailbox.retireIfConsumerless());
-            starter.join();
+            starter.join(JOIN_DEADLINE_MS);
+            assertThat(starter.isAlive()).as("starter finished within the per-iteration deadline (iteration %d)", i).isFalse();
             if (retired.get()) {
                 retiredTrue.incrementAndGet();
                 if (mailbox.running()) {
@@ -55,7 +62,7 @@ class FsmMailboxStartRetireRaceTest {
 
     private static void await(CyclicBarrier barrier) {
         try {
-            barrier.await();
+            barrier.await(JOIN_DEADLINE_MS, TimeUnit.MILLISECONDS);
         } catch (Exception e) {
             throw new IllegalStateException(e);
         }
