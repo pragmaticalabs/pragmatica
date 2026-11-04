@@ -279,6 +279,19 @@ class SeamPollerTest {
         assertThat(refreshed).as("a stopped poller samples no more").hasSize(2);
     }
 
+    /// P1 (v-2643 finding 1): the node's stop reached `Fsm2System.stop()` before its start chain reached `armPeriodicTasks`; the late `start()`
+    /// must not resurrect the cadence on a stopped node (zombie timer).
+    @Test
+    void seamPoller_stopThenStart_armsNoTimer() {
+        var poller = poller();
+
+        poller.stop();
+        poller.start();
+
+        assertThat(clock.armedDelays()).as("a poller stopped before it started arms nothing when start() arrives late").isEmpty();
+        assertThat(refreshed).as("and samples nothing").isEmpty();
+    }
+
     // -- W-23 (core arms) ---------------------------------------------------------------------------------------------------
     @Test
     void nodeJoined_carriesTheAdmission_withTheTokenTheRegistryHasNow() {

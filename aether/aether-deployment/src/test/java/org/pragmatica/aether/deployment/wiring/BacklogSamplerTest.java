@@ -175,6 +175,19 @@ class BacklogSamplerTest {
         assertThat(armed).as("and no further tick armed").hasSize(1);
     }
 
+    /// P1 (v-2643 finding 1): the node's stop reached `Fsm2System.stop()` before its start chain reached `armPeriodicTasks`; the late `start()`
+    /// must not resurrect the cadence on a stopped node (zombie timer).
+    @Test
+    void backlogSampler_stopThenStart_armsNoTimer() {
+        node.set(20_000);
+
+        sampler.stop();
+        sampler.start();
+
+        assertThat(clock.armedCount()).as("a sampler stopped before it started arms nothing when start() arrives late").isZero();
+        assertThat(events).as("and samples nothing").isEmpty();
+    }
+
     @Test
     void stop_beforeStart_isHarmless() {
         sampler.stop();

@@ -72,6 +72,8 @@ public final class SeamPoller {
     private Runnable cancellation = () -> {};
 
     private boolean stopped;
+    /// Set by [#stop] and never cleared: a node stopped before its start chain reached `start()` (stop before formation) must not re-arm (P1).
+    private boolean closed;
 
     private SeamPoller(Sources sources, Sink sink, TimerService clock, long intervalMs) {
         this.sources = sources;
@@ -100,17 +102,21 @@ public final class SeamPoller {
                            sources.communityPolicies().get());
     }
 
-    /// Starts the 5 s cadence. The first sample is taken at once so the FSM does not wait a full interval for its first view.
+    /// Starts the 5 s cadence. The first sample is taken at once so the FSM does not wait a full interval for its first view. A poller already
+    /// stopped samples nothing and arms nothing: the stop is terminal.
     @Contract
     public synchronized void start() {
-        stopped = false;
-        poll();
-        arm();
+        if (!closed) {
+            stopped = false;
+            poll();
+            arm();
+        }
     }
 
-    /// Stops the cadence; a sample already running finishes.
+    /// Stops the cadence for good; a sample already running finishes, and a later [#start] does nothing.
     @Contract
     public synchronized void stop() {
+        closed = true;
         stopped = true;
         cancellation.run();
     }

@@ -52,6 +52,8 @@ public final class BacklogSampler {
     private final Set<String> raised = new HashSet<>();
     private Runnable cancellation = BacklogSampler::uncancellable;
     private boolean stopped = true;
+    /// Set by [#stop] and never cleared: a node stopped before its start chain reached `start()` (stop before formation) must not re-arm (P1).
+    private boolean closed;
 
     private BacklogSampler(List<Watched> watched, Alarm alarm, FsmTimers.TimerService clock, long intervalMs) {
         this.watched = List.copyOf(watched);
@@ -71,17 +73,21 @@ public final class BacklogSampler {
         return new BacklogSampler(watched, alarm, clock, intervalMs);
     }
 
-    /// Starts the cadence; the first sample is taken at once.
+    /// Starts the cadence; the first sample is taken at once. A sampler already stopped samples nothing and arms nothing: the stop is terminal.
     @Contract
     public synchronized void start() {
-        stopped = false;
-        poll();
-        arm();
+        if (!closed) {
+            stopped = false;
+            poll();
+            arm();
+        }
     }
 
-    /// Stops the cadence; a sample already running finishes. The alarm state is left as it is: a stopped node says nothing more.
+    /// Stops the cadence for good; a sample already running finishes, and a later [#start] does nothing. The alarm state is left as it is: a
+    /// stopped node says nothing more.
     @Contract
     public synchronized void stop() {
+        closed = true;
         stopped = true;
         cancellation.run();
     }
