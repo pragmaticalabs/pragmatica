@@ -151,7 +151,7 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
         return MigrationFence.isTierOne(connector.databaseType())
                ? connector.pinned(statementTimeout.duration(),
                                   session -> acquireThen(datasource, session, nodeId, body),
-                                  SchemaMigrations::closeIsTheRelease)
+                                  DefaultSchemaMigrations::closeIsTheRelease)
                : body.execute(connector);
     }
 
