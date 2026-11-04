@@ -762,6 +762,19 @@ public final class ClusterEventAggregator {
     /// replay-gate and publisher-not-bound bootstrap-drop behaviour as {@link #emit}.
     @Contract
     public void emitAsLeader(ClusterEvent event) {
+        emitAsLeaderWhen(event, leaderCheck);
+    }
+
+    /// [#emitAsLeader] for a receiver of a `LeaderChange`: the leadership verdict is the notification's own
+    /// `localNodeIsLeader` (R5.8), not a re-read of `leaderCheck` at run time, which can disagree with the
+    /// event once the notification is queued behind a reaction executor.
+    @Contract
+    public void emitAsLeader(ClusterEvent event, boolean localNodeIsLeader) {
+        emitAsLeaderWhen(event, () -> localNodeIsLeader);
+    }
+
+    @Contract
+    private void emitAsLeaderWhen(ClusterEvent event, BooleanSupplier leaderGate) {
         if (replayingCheck.getAsBoolean()) {
             LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing side-effect emit of {}",
                       event);
@@ -769,7 +782,7 @@ public final class ClusterEventAggregator {
             return;
         }
 
-        if (!leaderCheck.getAsBoolean()) {
+        if (!leaderGate.getAsBoolean()) {
             LOG.debug("ClusterEventAggregator: not leader — suppressing emit of {}", event);
 
             return;
@@ -1405,7 +1418,8 @@ public final class ClusterEventAggregator {
                                                                    Severity.INFO,
                                                                    "Node " + leaderId.id() + " elected as leader",
                                                                    Map.of("leaderId",
-                                                                          leaderId.id()))))
+                                                                          leaderId.id())),
+                                                 event.localNodeIsLeader()))
              .onEmpty(() -> {
                           LOG.warn("Leadership lost on {}, election in progress — cluster observability degraded",
                                    selfNode.id());

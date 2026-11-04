@@ -663,6 +663,27 @@ class ClusterEventAggregatorTest {
         assertThat(h.events()).isEmpty();
     }
 
+    /// R5.8 (D1-react G2b): the LEADER_ELECTED verdict is the notification's `localNodeIsLeader`, not a re-read of the
+    /// leader check. The check is stale (says not leader); the fresh payload says this node leads: the event is emitted.
+    /// Reverting `emitAsLeader(event, localNodeIsLeader)` to the `leaderCheck` form turns this red.
+    @Test
+    void onLeaderChange_emitsLeaderElected_whenPayloadSaysLocalLeaderButCheckIsStale() {
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, NOT_LEADER);
+        h.aggregator().onLeaderChange(LeaderNotification.leaderChange(Option.some(SELF), true));
+
+        assertThat(h.events()).hasSize(1);
+        assertThat(h.events().getFirst()).isInstanceOf(ClusterEvent.LeaderElected.class);
+    }
+
+    /// The mirror: the check is stale the other way (still says leader) while the payload says another node leads.
+    @Test
+    void onLeaderChange_suppressesLeaderElected_whenPayloadSaysNotLeaderButCheckIsStale() {
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, LEADER);
+        h.aggregator().onLeaderChange(LeaderNotification.leaderChange(Option.some(new NodeId("other")), false));
+
+        assertThat(h.events()).isEmpty();
+    }
+
     /// #926 — `QUORUM_LOST` is the most severe event this class emits and was the least emittable: a
     /// cluster that has gone PASSIVE cannot commit through consensus and so cannot sustain a leader
     /// lease, meaning `leaderCheck` is false on every node exactly when quorum is lost.

@@ -5,6 +5,7 @@
 
 package org.pragmatica.aether.invoke;
 
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -20,6 +21,7 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Option;
+import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.utility.react.ReactExecutor;
 import org.pragmatica.utility.react.ReactFailureSink;
 import org.pragmatica.utility.react.ReactGate;
@@ -37,6 +39,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Timeout(value = 60, unit = TimeUnit.SECONDS)
 class ScheduledTaskEngineStopGateTest {
     private static final String COMPONENT = "ScheduledTaskRegistry";
+
+    /// Exit (ab) log line (design R5: logged once per component per stop): the drop warns once; closed in tearDown.
+    private final LogCapture dropLog = LogCapture.capture(ReactExecutor.class, Level.WARN, false);
 
     /// The react executor under test, its engine flag (the gate's engine half) and the hold seam (§5 (ab): "hold the
     /// component's react executor, a latch on its next task"). The hold is an UNDO task, so the gate never drops it.
@@ -96,6 +101,7 @@ class ScheduledTaskEngineStopGateTest {
     void tearDown() {
         manager.stop();
         executor.close();
+        dropLog.close();
     }
 
     @Test
@@ -110,6 +116,10 @@ class ScheduledTaskEngineStopGateTest {
 
         assertThat(manager.activeTimerCount()).as("no timer armed after the engine stop").isZero();
         assertThat(executor.droppedEngineStopped()).as("dropped count rose by exactly 1").isEqualTo(1);
+        assertThat(dropLog.messages()).as("one warn for the first drop, naming the component")
+                                      .hasSize(1)
+                                      .allMatch(message -> message.contains("Engine stopped: react executor " + COMPONENT
+                                                                            + " drops side-effect reactions"));
     }
 
     @Test

@@ -7,6 +7,7 @@
 
 package org.pragmatica.consensus.leader.fsm;
 
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -22,6 +23,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmTestHarness;
+import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.utility.react.ReactExecutor;
 import org.pragmatica.utility.react.ReactFailureSink;
 import org.pragmatica.utility.react.ReactGate;
@@ -41,6 +43,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Timeout(value = 60, unit = TimeUnit.SECONDS)
 class LeaderChangeEngineStopGateTest {
     private static final String COMPONENT = "LeaderManager";
+
+    /// Exit (ab) log line (design R5: logged once per component per stop): the drop warns once; closed in tearDown.
+    private final LogCapture dropLog = LogCapture.capture(ReactExecutor.class, Level.WARN, false);
     private static final NodeId SELF = new NodeId("node-1");
     private static final NodeId PEER = new NodeId("node-2");
     private static final NodeId THIRD = new NodeId("node-3");
@@ -101,6 +106,7 @@ class LeaderChangeEngineStopGateTest {
     void tearDown() {
         manager.stop();
         executor.close();
+        dropLog.close();
     }
 
     @Test
@@ -116,6 +122,10 @@ class LeaderChangeEngineStopGateTest {
 
         assertThat(recorded).as("no leader re-activation after the engine stop").isEmpty();
         assertThat(executor.droppedEngineStopped()).as("dropped count rose by exactly 1").isEqualTo(1);
+        assertThat(dropLog.messages()).as("one warn for the first drop, naming the component")
+                                      .hasSize(1)
+                                      .allMatch(message -> message.contains("Engine stopped: react executor " + COMPONENT
+                                                                            + " drops side-effect reactions"));
     }
 
     @Test

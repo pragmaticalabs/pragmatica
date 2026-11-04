@@ -5,6 +5,7 @@
 
 package org.pragmatica.aether.deployment.loadbalancer;
 
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -21,6 +22,7 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.utility.react.ReactExecutor;
 import org.pragmatica.utility.react.ReactFailureSink;
 import org.pragmatica.utility.react.ReactGate;
@@ -38,6 +40,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Timeout(value = 60, unit = TimeUnit.SECONDS)
 class LoadBalancerEngineStopGateTest {
     private static final String COMPONENT = "LoadBalancerManager";
+
+    /// Exit (ab) log line (design R5: logged once per component per stop): the drop warns once; closed in tearDown.
+    private final LogCapture dropLog = LogCapture.capture(ReactExecutor.class, Level.WARN, false);
     private static final Artifact ARTIFACT = Artifact.artifact("com.example:svc:1.0.0").unwrap();
 
     /// The react executor under test, its engine flag (the gate's engine half) and the hold seam (§5 (ab): "hold the
@@ -98,6 +103,7 @@ class LoadBalancerEngineStopGateTest {
     @AfterEach
     void tearDown() {
         executor.close();
+        dropLog.close();
     }
 
     @Test
@@ -112,6 +118,10 @@ class LoadBalancerEngineStopGateTest {
 
         assertThat(provider.routeChanges).as("no cloud call after the engine stop").isEmpty();
         assertThat(executor.droppedEngineStopped()).as("dropped count rose by exactly 1").isEqualTo(1);
+        assertThat(dropLog.messages()).as("one warn for the first drop, naming the component")
+                                      .hasSize(1)
+                                      .allMatch(message -> message.contains("Engine stopped: react executor " + COMPONENT
+                                                                            + " drops side-effect reactions"));
     }
 
     @Test
