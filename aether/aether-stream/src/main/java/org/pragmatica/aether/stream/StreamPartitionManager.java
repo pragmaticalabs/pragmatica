@@ -2418,8 +2418,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// A rebuilt ring's replayed WAL tail is durable and not visible ([StreamEntry#placeRecord], #1387); this
     /// restores `visible` to what the ack state supports, before the ring can be read. The production [ReplicaRegistry]
     /// persists no acks (`WatermarkStore.NOOP`), so on an OWNER every peer is blind after a restart and the tail stays at
-    /// the seed until a live ack covers it; a stream with no peer barrier (`confirmationFactor <= 1`) sees the whole tail at
-    /// once, as before. The seed is the sealed floor, or the acked marker below it (#1463, [StreamEntry#visibleSeed]).
+    /// the seed here; it rises at the owner's first admission to the acked marker the owner recorded before the restart, when
+    /// that marker is trusted ([#admitAsOwner], PR-2f), and otherwise when a live ack covers it. A stream with no peer
+    /// barrier (`confirmationFactor <= 1`) sees the whole tail at once, as before. The seed is the sealed floor, or the acked marker below it (#1463, [StreamEntry#visibleSeed]).
     /// A REPLICA holds its recovered tail until it is verified against its owner ([#holdRecoveredTailUntilVerified]).
     ///
     /// PR-2f: OWNER and NONE are separate arms with the same rule. NONE -- the role unresolved -- must not expose more
