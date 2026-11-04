@@ -207,8 +207,17 @@ public sealed interface ConsumerGroupCoordinator {
             /// whose counter restarted) the counter is re-seeded above the committed one. When the committed
             /// epoch is AHEAD of the leader's, this node is deposed or its term source lags: the rebalance is
             /// refused here, loudly, because the applier would refuse it anyway and nothing would re-derive it.
+            /// #2654: while the life's incarnation is not committed the base is refused with
+            /// `EpochMintError.General.INCARNATION_NOT_COMMITTED` and nothing is minted, so no group epoch can rank
+            /// below the restored life's. The member stays registered; the caller gets the typed refusal, and the next
+            /// join or leave rebalances the group at the committed incarnation.
             private Result<Epoch> nextEpoch(String groupId, String streamName) {
-                var base = leaderEpoch.get();
+                return leaderEpoch.get()
+                                  .mintable()
+                                  .flatMap(base -> nextEpochFrom(groupId, streamName, base));
+            }
+
+            private Result<Epoch> nextEpochFrom(String groupId, String streamName, Epoch base) {
                 var committed = committedEpoch(groupId, streamName);
                 var seeded = committed.filter(c -> sameTerm(c, base)).map(Epoch::localCounter).or(0L);
                 var candidate = base.withCounter(Math.max(counter.get(), seeded) + 1);

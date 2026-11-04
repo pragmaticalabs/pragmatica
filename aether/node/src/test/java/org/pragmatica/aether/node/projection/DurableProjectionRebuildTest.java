@@ -201,7 +201,7 @@ class DurableProjectionRebuildTest {
                                                               this::applyAll,
                                                               this::committed,
                                                               this::committedAssignment,
-                                                              () -> 0L,
+                                                              () -> 1L, // #2654: a committed incarnation; at NONE no rewind is minted
                                                               witness);
         projection = support.attach(ARTIFACT.base(),
                                     TOPIC_STREAM,

@@ -10,6 +10,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.generation.EpochMintError;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerGroupKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerGroupValue;
@@ -24,6 +25,7 @@ import org.pragmatica.lang.Unit;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -37,13 +39,15 @@ class ConsumerGroupCoordinatorTest {
     private static final String STREAM = "events";
 
     private final List<List<KVCommand<AetherKey>>> appliedCommands = new ArrayList<>();
+    /// #2654: the life's committed incarnation; at `Epoch.NO_INCARNATION` the coordinator mints no group epoch.
+    private final AtomicLong incarnation = new AtomicLong(1L);
     private ConsumerGroupCoordinator coordinator;
 
     @BeforeEach
     void setUp() {
         coordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(stubClusterNode(),
                                                                   ConsumerGroupRegistry.consumerGroupRegistry(),
-                                                                  () -> Epoch.epoch(1L, 1L, 0L));
+                                                                  () -> Epoch.epoch(incarnation.get(), 1L, 0L));
     }
 
     private ClusterNode<KVCommand<AetherKey>> stubClusterNode() {
@@ -62,6 +66,40 @@ class ConsumerGroupCoordinatorTest {
 
     private void activateAsLeader() {
         coordinator.onLeaderChange(new LeaderChange(Option.some(SELF), true));
+    }
+
+    /// #2654: before the life's incarnation commits, a group epoch would rank below every epoch a restored life
+    /// committed. The rebalance is refused with the typed cause and writes nothing; the member stays registered, so the
+    /// next join after the commit assigns it at the committed incarnation.
+    @Nested
+    class MintBeforeIncarnationCommit {
+        @Test
+        void joinGroup_incarnationNone_isRefusedAsNotCommittedAndWritesNothing() {
+            incarnation.set(Epoch.NO_INCARNATION);
+            activateAsLeader();
+
+            var result = coordinator.joinGroup(GROUP, STREAM, 4, "c1", NODE_A);
+
+            result.onSuccess(_ -> Assertions.fail("Expected the NONE-incarnation rebalance to be refused"))
+                  .onFailure(cause -> assertThat(cause).isEqualTo(EpochMintError.General.INCARNATION_NOT_COMMITTED));
+            assertThat(appliedCommands).isEmpty();
+        }
+
+        @Test
+        void joinGroup_afterTheIncarnationCommits_assignsTheRefusedMemberAtTheCommittedIncarnation() {
+            incarnation.set(Epoch.NO_INCARNATION);
+            activateAsLeader();
+            coordinator.joinGroup(GROUP, STREAM, 4, "c1", NODE_A);
+
+            incarnation.set(1L);
+            coordinator.joinGroup(GROUP, STREAM, 4, "c2", NODE_B)
+                       .onFailure(cause -> Assertions.fail("Expected success, got: " + cause.message()));
+
+            assertThat(appliedCommands).hasSize(1);
+            var values = appliedCommands.getFirst().stream().map(ConsumerGroupCoordinatorTest::extractValue).toList();
+            assertThat(values).extracting(ConsumerGroupValue::consumerId).contains("c1", "c2");
+            assertThat(values).allMatch(value -> value.epoch().incarnation() == 1L);
+        }
     }
 
     @Nested
