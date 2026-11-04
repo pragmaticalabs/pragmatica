@@ -28,6 +28,7 @@ import org.pragmatica.aether.environment.RouteChange;
 import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.lang.Option;
@@ -66,6 +67,7 @@ class AetherNodeReactExecutorWiringBootTest {
     Path tempDir;
 
     private AetherNode node;
+    private final MessageRouter.DelegateRouter router = MessageRouter.DelegateRouter.delegate();
 
     @AfterEach
     void tearDown() {
@@ -135,9 +137,61 @@ class AetherNodeReactExecutorWiringBootTest {
                                .allMatch(thread -> thread == caller);
     }
 
+    /// v-2653 F5, the node-stopping half in isolation. The engine half of the gate is asked to stop only at the tail of
+    /// the stop chain (`clusterNode.stop()`), so a reaction that runs in the first step of `stop()` after the flag is
+    /// set is gated by `markStopping()` alone. The probe runs from inside `stop()`: the `ClusterStateNotification.passive()`
+    /// routed right after the periodic tasks are cancelled releases the held executors and drains them.
+    /// Red with `reactors.markStopping()` removed from `stop()`: the probes run (the engine is still alive).
+    @Test
+    @Timeout(value = 120, unit = SECONDS)
+    void stop_gatesReactionsBeforeTheEngineIsAskedToStop() throws InterruptedException {
+        node = boot();
+        var executors = node.reactExecutors()
+                            .stream()
+                            .filter(executor -> GATED_COMPONENTS.contains(executor.component()))
+                            .toList();
+        var ran = new AtomicInteger();
+        var dropped = new AtomicInteger();
+        var release = new CountDownLatch(1);
+        var reached = new CountDownLatch(1);
+        var hook = MessageRouter.mutable();
+
+        for (var executor : executors) {
+            hold(executor, release);
+            executor.react("v2653-early-probe", ran::incrementAndGet);
+        }
+        var droppedBefore = executors.stream().mapToLong(ReactExecutor::droppedEngineStopped).sum();
+
+        hook.addRoute(ClusterStateNotification.class, (ClusterStateNotification _) -> {
+            release.countDown();
+            executors.forEach(executor -> drainQuietly(executor));
+            dropped.set((int) (executors.stream().mapToLong(ReactExecutor::droppedEngineStopped).sum() - droppedBefore));
+            reached.countDown();
+        });
+        router.replaceDelegate(hook);
+        var stopped = node.stop();
+
+        assertThat(reached.await(30, SECONDS)).as("stop() reached its first routed step").isTrue();
+        assertThat(ran.get()).as("no side-effect reaction runs once stop() started, engine still alive").isZero();
+        assertThat(dropped.get()).as("each executor dropped its probe").isGreaterThanOrEqualTo(executors.size());
+        assertThat(stopped.await(timeSpan(60).seconds()).isSuccess()).as("the stop completed").isTrue();
+        node = null;
+    }
+
+    private static void drainQuietly(ReactExecutor executor) {
+        var done = new CountDownLatch(1);
+
+        executor.undo("v2653-drain-quiet", done::countDown);
+        try {
+            done.await(10, SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     private AetherNode boot() {
         return AetherNode.aetherNode(minimalConfig(tempDir),
-                                     MessageRouter.DelegateRouter.delegate(),
+                                     router,
                                      NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs()),
                                      () -> {})
                          .onFailure(cause -> fail("boot must succeed: " + cause.message()))
