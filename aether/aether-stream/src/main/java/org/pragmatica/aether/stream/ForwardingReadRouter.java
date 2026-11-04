@@ -214,15 +214,31 @@ public final class ForwardingReadRouter<E> {
         };
     }
 
-    /// `GOVERNOR` routing (PR-2f S2, know `e10cf838c9`): a copy {@link StaleReplica} reports behind the owner forwards to
-    /// the HRW owner without reading local, so the first read after a restart reaches the owner's admission, where its
-    /// acked marker raises visible; {@link #forwardToOwner} degrades to the local read when the owner is self or unknown,
-    /// no forward client is wired, or the forward fails as `afterForwardFailure` describes. Otherwise local, forwarding
-    /// on `PARTITION_NOT_LOCAL` ({@link #localOrForwardOnNotLocal}).
+    /// `GOVERNOR` routing (PR-2f S2, know `e10cf838c9`): a copy {@link StaleReplica} reports behind the owner forwards
+    /// without reading local ({@link #forwardStale}), so the first read after a restart reaches the owner's admission, where
+    /// its acked marker raises visible. Otherwise local, forwarding on `PARTITION_NOT_LOCAL` ({@link #localOrForwardOnNotLocal}).
     private Promise<List<E>> readGovernor(String streamName, int partition, long fromOffset, int maxEvents) {
         return staleReplica.behindOwner(streamName, partition)
-               ? forwardToOwner(streamName, partition, fromOffset, maxEvents)
+               ? forwardStale(streamName, partition, fromOffset, maxEvents)
                : localOrForwardOnNotLocal(streamName, partition, fromOffset, maxEvents);
+    }
+
+    /// A stale copy's read goes to the COMMITTED owner when another node holds the committed record: that is the owner
+    /// whose announcements the copy follows and whose admission restores the acked marker. After a restart it can differ
+    /// from the HRW owner, which would answer `PARTITION_NOT_LOCAL`. With no committed record, or one naming this node, it
+    /// goes to the HRW owner ({@link #forwardToOwner}). Either forward degrades to the local read as {@link #forwardReadToNode}
+    /// describes: the copy is behind, never ahead of what is committed, so the degraded read is a committed prefix.
+    private Promise<List<E>> forwardStale(String streamName, int partition, long fromOffset, int maxEvents) {
+        return committedOwnerSource.flatMap(source -> source.committedOwner(streamName, partition))
+                                   .map(CommittedOwner::owner)
+                                   .filter(owner -> !owner.equals(selfNodeId))
+                                   .flatMap(owner -> forwardClient.map(client -> forwardReadToNode(client,
+                                                                                                   owner,
+                                                                                                   streamName,
+                                                                                                   partition,
+                                                                                                   fromOffset,
+                                                                                                   maxEvents)))
+                                   .or(() -> forwardToOwner(streamName, partition, fromOffset, maxEvents));
     }
 
     /// `NEAREST` routing: LOCAL-FIRST, forward on a local MISS. If self is a registered caught-up

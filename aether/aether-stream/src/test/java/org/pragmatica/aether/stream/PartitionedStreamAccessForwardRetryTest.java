@@ -6,7 +6,12 @@ package org.pragmatica.aether.stream;
 
 import io.netty.buffer.ByteBuf;
 
+import org.pragmatica.aether.slice.ConsistencyMode;
+import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.StreamCompression;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
+import org.pragmatica.aether.stream.replication.ReplicaSetController;
 import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForwardResponse;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
@@ -93,6 +98,34 @@ class PartitionedStreamAccessForwardRetryTest {
         assertThat(forwardClient.publishCalls).isEqualTo(3);
     }
 
+    /// PR-2f S2 wiring pin (know `e10cf838c9`): the typed GOVERNOR read consults
+    /// [StreamPartitionManager#behindCommittedOwner]. A REPLICA that holds the materialized partition (a local read succeeds,
+    /// so the `PARTITION_NOT_LOCAL` forward does not apply) and has no announcement from the owner forwards the read. Red
+    /// when the probe is not wired into [PartitionedStreamAccess]'s router.
+    @Test
+    void governorRead_forwardsToOwner_whenTheLocalCopyHasNoAnnouncementFromTheOwner() {
+        partitionManager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
+        partitionManager.createStream(StreamConfig.streamConfig(STREAM,
+                                                                PARTITION_COUNT,
+                                                                RetentionPolicy.retentionPolicy(),
+                                                                "earliest",
+                                                                1_048_576L,
+                                                                ConsistencyMode.EVENTUAL,
+                                                                3,
+                                                                2,
+                                                                StreamCompression.NONE,
+                                                                Option.none()))
+                        .onFailure(cause -> Assertions.fail(cause.message()));
+        var forwardClient = ScriptedForwardClient.of(success());
+
+        assertThat(partitionManager.readLocal(STREAM, 0, 0L, 10).isSuccess()).as("control: the partition is local, so only the stale probe can forward")
+                                                                         .isTrue();
+
+        access(forwardClient).readRouter().route(STREAM, 0, 0L, 10).await().onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(forwardClient.readCalls).as("the read went to the owner").isEqualTo(1);
+    }
+
     private static Supplier<Promise<Long>> retryable() {
         return () -> new StreamForwardError.RemotePublishRetryable("config not yet visible").promise();
     }
@@ -146,6 +179,7 @@ class PartitionedStreamAccessForwardRetryTest {
     private static final class ScriptedForwardClient implements StreamForwardClient {
         private final List<Supplier<Promise<Long>>> script;
         private int publishCalls;
+        private int readCalls;
 
         private ScriptedForwardClient(List<Supplier<Promise<Long>>> script) {
             this.script = script;
@@ -173,6 +207,8 @@ class PartitionedStreamAccessForwardRetryTest {
                                                      int partition,
                                                      long fromOffset,
                                                      int maxEvents) {
+            readCalls++;
+
             return Promise.success(ReadForwardResult.readForwardResult(List.of(), false));
         }
 
