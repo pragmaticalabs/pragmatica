@@ -908,8 +908,28 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void restoreTrustedMarker(String streamName, int partition, AppendLog wal) {
         wal.takeAckedRestore()
-           .filter(marker -> trustedMarker(streamName, partition, wal, marker))
-           .onPresent(marker -> raiseToMarker(streamName, partition, marker));
+           .onPresent(marker -> restoreMarker(streamName, partition, wal, marker));
+    }
+
+    /// The marker is taken once per ring incarnation, so its verdict is logged once: an operator reading a restart that
+    /// still waits for replica re-acks can tell a distrusted marker from a missing one.
+    @Contract
+    private void restoreMarker(String streamName, int partition, AppendLog wal, AppendLog.AckedMark marker) {
+        var trusted = trustedMarker(streamName, partition, wal, marker);
+
+        log.info("Stream {} partition {}: acked marker at offset {} (epoch {}) {}",
+                 streamName,
+                 partition,
+                 marker.offset(),
+                 marker.epoch()
+                       .map(AppendLog.EpochKey::token)
+                       .or("none"),
+                 trusted
+                 ? "trusted at owner admission: visible raised to it"
+                 : "not trusted at owner admission: visible waits for replica re-acks");
+        if (trusted) {
+            raiseToMarker(streamName, partition, marker);
+        }
     }
 
     /// The trust predicate (I-05): the log's epoch history attributes the marker's offset to the marker's epoch, and the
