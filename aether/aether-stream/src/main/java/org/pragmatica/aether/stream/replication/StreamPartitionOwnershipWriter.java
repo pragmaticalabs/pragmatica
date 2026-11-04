@@ -47,7 +47,10 @@ import org.pragmatica.lang.Unit;
 /// ## Epoch-advance semantics
 /// The `ownerEpoch` is `Epoch.epoch(incarnation, rabiaTerm, ownershipTerm)`: the committed generation
 /// epoch — the cluster incarnation (#1529), which ranks first so a new run outranks a restored one, then
-/// the generation term — paired with the per-partition `ownershipTerm` as the local counter. Both are a
+/// the generation term — paired with the per-partition `ownershipTerm` as the local counter. While the life's
+/// incarnation is not committed (`ClusterIncarnation.NONE`: before genesis, or after a whole-cluster restore until
+/// the new incarnation commits) no record is minted (#2654, `Epoch.mintable`): it would rank below every epoch the
+/// restored life committed. The leader's batch driver re-arms its retry on that refusal ([#mintGate]). The generation term and `ownershipTerm` are a
 /// pure function of committed state — the generation term from the committed generation, the
 /// `ownershipTerm` read from (and bumped relative to) the committed `StreamPartitionOwnershipValue` —
 /// so two replicas presented the same committed state reach the IDENTICAL decision and write the
