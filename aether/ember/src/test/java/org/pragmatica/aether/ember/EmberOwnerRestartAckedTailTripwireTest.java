@@ -16,11 +16,12 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.config.BackupConfig.RestoreMode;
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.slice.ReadPreference;
+import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.lang.Cause;
@@ -49,11 +50,11 @@ import static org.pragmatica.aether.ember.StreamTripwireSupport.sleepQuietly;
 /// instant the node object exists (an installer thread polls for new node instances while `start()` runs; the filter is a
 /// transport fault, the ack-persistence gap is not simulated).
 ///
-/// - Tripwire: with acks held off for 15 s the owner HOLDS all 20 events in its ring but its visible head stays below the
-///   acked tail; when the filter is lifted the head reaches the tail inside 60 s (the stall is bounded, as 1b-core found).
-///   Controls: the filter dropped at least one ack (it was live), and the ring holds the full tail.
-/// - `@Disabled` acceptance: the owner's visible head covers the acked tail with the replicas' acks still held off, because
-///   the acknowledgement state survives the restart (persisted per epoch, or pulled by the owner on activation).
+/// - Acceptance (PR-2f flip; OWNER ruling S2 (a), know `3cde22c5af`): the first read served after the restart -- one consumer
+///   read through the router -- covers the acked tail with the replicas' acks still held off, and the owner's visible head
+///   then reports it. PR-2f's acked marker records the owner's visible position on its tick and at a graceful stop; the
+///   marker is trusted, and raises visible, only at the owner's first admission, which a read triggers. The tripwire that
+///   pinned the bounded stall (visible below the tail for 15 s, then caught up by re-acks) is deleted with this flip.
 /// - #2654: life 2's first ownership record carries an incarnation strictly above life 1's, because no ownership epoch is
 ///   minted before the life's cluster incarnation commits.
 @PortBudget
@@ -64,9 +65,9 @@ class EmberOwnerRestartAckedTailTripwireTest {
     private static final long ACKED_TAIL = ACKED - 1;
     private static final long ISR_BUDGET_MS = 90_000L;
     private static final long REBUILD_BUDGET_MS = 240_000L;
-    private static final long HOLD_MS = 15_000L;
-    private static final long CATCH_UP_BOUND_MS = 60_000L;
     private static final long BACKUP_QUIET_MS = 10_000L;
+    private static final long FIRST_READ_BOUND_MS = 60_000L;
+    private static final TimeSpan READ_BOUND = TimeSpan.timeSpan(15).seconds();
     private static final String STREAM = "b04";
     private static final String ENGINE_KEY = engineKey(STREAM);
 
@@ -86,34 +87,42 @@ class EmberOwnerRestartAckedTailTripwireTest {
         StreamTripwireSupport.deleteTree(baseDir);
     }
 
+    /// The acceptance (OWNER ruling S2 (a), know `3cde22c5af`): the first read served after the restart covers the acked tail
+    /// with the replicas' acks still held off. The owner's acked marker (PR-2f) is restored at its first owner admission, which
+    /// is demand-driven, so the arm issues one consumer read through the router of a node that is NOT the owner (a routed
+    /// GOVERNOR read, served by the owner) before it samples the owner's visible bounds.
     @Test
-    @Timeout(1200)
-    void ownerAfterColdRestart_tripwire_holdsItsAckedTailInvisibleUntilTheReplicasReAck() {
-        var owner = restartWithAcksHeldOff();
-
-        assertThat(ringHead(owner)).as("control: the WAL replay put the whole acked tail in the owner's rebuilt ring").isEqualTo(ACKED_TAIL);
-
-        var highestVisible = highestVisibleOver(owner, HOLD_MS);
-
-        assertThat(droppedAcks.get()).as("control: the inbound filter was live and dropped replica acks after the restart (read after the %d ms hold: a replica re-acks within about one backfill tick, so the count is not decided by the instant the ring is rebuilt)", HOLD_MS).isPositive();
-        assertThat(highestVisible).as("control: the owner reported visible bounds while its acks were held (-2 means no bounds at all, which would read as 'below the tail')").isGreaterThanOrEqualTo(-1L);
-        assertThat(highestVisible).as("B-04/B-17 fixed? The rebuilt owner's visible head covers the acked tail (%d) with replica acks held off. "
-                                      + "Delete this tripwire and enable ownerAfterColdRestart_seesItsAckedTailWithoutReplicaAcks (#2201)",
-                                      ACKED_TAIL)
-                                  .isLessThan(ACKED_TAIL);
-
-        dropAcks.set(false);
-        awaitUntil(() -> visibleHead(owner) >= ACKED_TAIL, CATCH_UP_BOUND_MS, "once the replicas' acks flow again the owner's visible head reaches the acked tail (bounded stall)");
-    }
-
-    @Test
-    @Disabled("B-04/B-17 (#2201): enable when ack state survives an owner ring rebuild; RED today: the rebuilt owner's visible head stays below the acked tail while replica acks are held off")
     @Timeout(1200)
     void ownerAfterColdRestart_seesItsAckedTailWithoutReplicaAcks() {
         var owner = restartWithAcksHeldOff();
 
-        assertThat(ringHead(owner)).as("control: the whole acked tail is in the owner's ring").isEqualTo(ACKED_TAIL);
-        assertThat(highestVisibleOver(owner, 5_000L)).as("the owner's visible head, with replica acks held off, after its ring was rebuilt").isEqualTo(ACKED_TAIL);
+        assertThat(ringHead(owner)).as("control: the whole acked tail is in the owner's rebuilt ring").isEqualTo(ACKED_TAIL);
+
+        var firstServed = firstServedRead(owner);
+
+        assertThat(firstServed).as("the first served read after the restart covers the acked tail without replica re-acks")
+                               .hasSize(ACKED);
+        assertThat(highestVisibleOver(owner, 5_000L)).as("the owner's visible head, with replica acks held off").isEqualTo(ACKED_TAIL);
+        assertThat(droppedAcks.get()).as("control: the inbound filter was live and dropped replica acks after the restart, so the tail was not released by an ack")
+                                     .isPositive();
+    }
+
+    /// The first successful GOVERNOR read of the partition from offset 0 through a non-owner's router; a refused read (the
+    /// owner's promotion still pending) is retried inside [#FIRST_READ_BOUND_MS].
+    private List<OffHeapRingBuffer.RawEvent> firstServedRead(AetherNode owner) {
+        var reader = cluster.allNodes().stream().filter(node -> node != owner).findFirst().orElseThrow();
+        var deadline = System.currentTimeMillis() + FIRST_READ_BOUND_MS;
+
+        while (System.currentTimeMillis() < deadline) {
+            var served = reader.streamReadRouter().read(ENGINE_KEY, PARTITION, 0L, 100, ReadPreference.GOVERNOR).await(READ_BOUND);
+
+            if (served.isSuccess()) {
+                return served.unwrap();
+            }
+            sleepQuietly(200L);
+        }
+
+        throw new AssertionError("no read was served within " + FIRST_READ_BOUND_MS + " ms after the restart");
     }
 
     /// #2654: after the whole-cluster restore the new life's ownership record must outrank every epoch life 1 committed, so its
