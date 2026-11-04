@@ -26,6 +26,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.utility.react.ReactExecutor;
 import org.pragmatica.statemachine.Fsm;
 
 
@@ -185,6 +186,8 @@ public final class LeaderElectionContext {
     }
 
     private final MessageRouter router;
+    /// D1-react (§3.5.1 row 107): where the `LeaderChange` route runs. Inline until a node installs its gated executor.
+    private final java.util.concurrent.atomic.AtomicReference<ReactExecutor> reactExecutor = new java.util.concurrent.atomic.AtomicReference<>(ReactExecutor.inline("LeaderManager"));
     private final TimeSpan proposalRetryDelay;
     private final TimeSpan baseElectionDelay;
     private final TimeSpan perRankDelay;
@@ -612,6 +615,16 @@ public final class LeaderElectionContext {
 
     public MessageRouter router() {
         return router;
+    }
+
+    public ReactExecutor reactExecutor() {
+        return reactExecutor.get();
+    }
+
+    public org.pragmatica.lang.Unit installReactExecutor(ReactExecutor executor) {
+        reactExecutor.set(executor);
+
+        return org.pragmatica.lang.Unit.unit();
     }
 
     public TimeSpan proposalRetryDelay() {

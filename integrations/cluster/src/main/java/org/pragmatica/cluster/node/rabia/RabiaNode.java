@@ -119,6 +119,12 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     /// task-group owner resolver (#329) to withhold ownership from a lagging leader so
     /// synchronous leader-local commits do not stall and 503. Default false for implementations
     /// without a Rabia engine.
+    /// True once this node's consensus engine was asked to stop (the D1-react engine-alive gate, KVStore dispatcher
+    /// design §3.5 R5). Default false for implementations without a Rabia engine.
+    default boolean isEngineStopRequested() {
+        return false;
+    }
+
     default boolean isPendingCatchUp() {
         return false;
     }
@@ -749,6 +755,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             @Override
             public boolean isActive() {
                 return consensus().isActive();
+            }
+
+            @Override
+            public boolean isEngineStopRequested() {
+                return consensus().isStopRequested();
             }
 
             @Override

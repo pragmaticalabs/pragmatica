@@ -53,6 +53,13 @@ public interface LeaderManager {
         return org.pragmatica.lang.Unit.unit();
     }
 
+    /// D1-react (KVStore dispatcher design §3.5.1 row 107): the executor the `LeaderChange` route runs on. A node installs
+    /// its gated executor once, at assembly; until then (and in a host that installs none) the route runs inline, as
+    /// before D1-react. Default no-op for implementations without an election FSM.
+    default org.pragmatica.lang.Unit installReactExecutor(org.pragmatica.utility.react.ReactExecutor executor) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
     /// Leader discovery eligibility for a passive client; caller must not treat this as voting authority.
     default org.pragmatica.lang.Unit installPassiveCoreDirectory(List<NodeId> members) {
         return org.pragmatica.lang.Unit.unit();
@@ -358,6 +365,11 @@ public interface LeaderManager {
     record FsmBackedLeaderManager(Fsm<LeaderElectionState, ClusterFsmEvent> fsm,
                                   LeaderElectionContext context,
                                   boolean localMode) implements LeaderManager {
+        @Override
+        public org.pragmatica.lang.Unit installReactExecutor(org.pragmatica.utility.react.ReactExecutor executor) {
+            return context.installReactExecutor(executor);
+        }
+
         @Override
         public org.pragmatica.lang.Unit installVoterConfiguration(org.pragmatica.consensus.rabia.VoterConfiguration configuration) {
             if (configuration.contains(context.self())) {

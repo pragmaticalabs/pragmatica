@@ -112,6 +112,12 @@ public interface ManageableNode {
     }
 
     KVStore<AetherKey, AetherValue> kvStore();
+
+    /// D1-react (KVStore dispatcher design §3.6): the node's react executors, one per C9 component, for the per-component
+    /// `react.queue.depth`, high-water and engine-stopped drop gauges. Default empty for node doubles.
+    default java.util.List<org.pragmatica.utility.react.ReactExecutor> reactExecutors() {
+        return java.util.List.of();
+    }
     SliceStore sliceStore();
     ClusterSyncCollector metricsCollector();
     DeploymentMetricsCollector deploymentMetricsCollector();
