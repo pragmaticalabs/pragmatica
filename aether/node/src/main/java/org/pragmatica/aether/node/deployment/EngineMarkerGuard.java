@@ -213,7 +213,8 @@ public final class EngineMarkerGuard {
     /// too, so an older parked action never runs after a newer admitted one. Actions themselves never run under the decision monitor.
     private synchronized List<Runnable> admitted(String name, Runnable action) {
         if (!drained.isEmpty()) {
-            return Stream.concat(takeDrained().stream(), Stream.<Runnable>of(() -> runAdmitted(name, action)))
+            return Stream.concat(takeDrained().stream(),
+                                 Stream.<Runnable> of(() -> runAdmitted(name, action)))
                          .toList();
         }
 

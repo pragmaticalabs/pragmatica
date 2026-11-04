@@ -43,7 +43,11 @@ public class DynamicConfigManager {
     private final List<AppliedListener> appliedListeners = new CopyOnWriteArrayList<>();
 
     /// A registered applied-listener, under the name its registration gave it.
-    private record AppliedListener(String name, Consumer<String> listener) {}
+    private record AppliedListener(String name, Consumer<String> listener) {
+        static AppliedListener appliedListener(String name, Consumer<String> listener) {
+            return new AppliedListener(name, listener);
+        }
+    }
 
     private DynamicConfigManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
                                  KVStore<AetherKey, AetherValue> kvStore,
@@ -125,7 +129,7 @@ public class DynamicConfigManager {
     /// As [#onApplied(Consumer)], under `name`: the registration is recorded, so the order the listeners run in can be read at runtime
     /// ([#appliedListenerNames]) instead of inferred from the order of the source text that registers them (v-2643 finding 3).
     public void onApplied(String name, Consumer<String> listener) {
-        appliedListeners.add(new AppliedListener(name, listener));
+        appliedListeners.add(AppliedListener.appliedListener(name, listener));
     }
 
     /// The names of the applied-listeners in the order they run: the order they were registered in.
