@@ -9,9 +9,13 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.AfterEach;
@@ -26,6 +30,13 @@ import org.pragmatica.aether.environment.LoadBalancerProvider;
 import org.pragmatica.aether.environment.LoadBalancerState;
 import org.pragmatica.aether.environment.RouteChange;
 import org.pragmatica.aether.resource.ResourceProvider;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
@@ -94,15 +105,41 @@ class AetherNodeReactExecutorWiringBootTest {
                              .containsAll(GATED_COMPONENTS);
     }
 
-    /// v-2653 F3. `assembleNode` hands the node store's replay bit to the leader manager, so a `LeaderChange` raised in a
-    /// replay burst carries `replayed` across the react hand-off. The source itself reads false off the delivery thread,
-    /// so the install is pinned by presence. Red with the `installReplaySource(kvStore::isReplaying)` line removed.
+    /// v-2653 F3 / V1. `assembleNode` hands the node store's replay bit to the leader manager, so a `LeaderChange` raised
+    /// in a replay burst carries `replayed` across the react hand-off. Pinned by VALUE: on the store's delivering thread
+    /// the leader manager's installed source reads exactly what the store reads, true for the delivery of a replay burst
+    /// and false for a live one (the bit is per delivering thread, so only a read there can tell). Red with the install
+    /// line removed, or with a constant `() -> false` / `() -> true` installed.
     @Test
     @Timeout(value = 120, unit = SECONDS)
-    void assembleNode_installsTheStoreReplaySourceIntoTheLeaderManager() {
+    void assembleNode_leaderManagerReadsTheStoreReplayBitOnTheDeliveringThread() {
         node = boot();
+        var store = node.kvStore();
+        var key = ConfigKey.forKey("d1react.v1");
+        var seen = new CopyOnWriteArrayList<String>();
+        var hook = MessageRouter.mutable();
 
-        assertThat(node.leaderReplaySourceInstalled()).as("the leader manager reads the node store's replay bit").isTrue();
+        hook.addRoute(ValuePut.class, (ValuePut<?, ?> _) -> seen.add(store.isReplaying() + "/" + node.leaderReplaying()));
+        router.replaceDelegate(hook);
+
+        store.processCommitted(store.createBatch(List.of(new KVCommand.Put<>(key, ConfigValue.configValue("d1react.v1", "one")))),
+                               10);
+        var snapshot = store.makeSnapshot().unwrap();
+        store.processCommitted(store.createBatch(List.of(new KVCommand.Put<>(key, ConfigValue.configValue("d1react.v1", "two")))),
+                               20);
+        awaitDelivered(store);
+        store.restoreCommittedSnapshot(snapshot, 30);
+        store.replayNotifications();
+        awaitDelivered(store);
+
+        assertThat(seen).as("two live deliveries, then the replay burst of the install").containsExactly("false/false",
+                                                                                                         "false/false",
+                                                                                                         "true/true");
+        assertThat(node.leaderReplaying()).as("off the delivering thread the bit reads false").isFalse();
+    }
+
+    private static void awaitDelivered(KVStore<AetherKey, AetherValue> store) {
+        assertThat(store.awaitDelivered(store.enqueuedSeq()).await(timeSpan(10).seconds()).isSuccess()).as("delivered").isTrue();
     }
 
     /// v-2653 F5. `stop()` sets the node-stopping half of the gate FIRST (#642): a side-effect reaction queued before
@@ -140,12 +177,33 @@ class AetherNodeReactExecutorWiringBootTest {
         assertThat(stopped.await(timeSpan(60).seconds()).isSuccess()).as("the stop completed").isTrue();
         node = null;
         var caller = Thread.currentThread();
-        var undoThreads = new CopyOnWriteArrayList<Thread>();
 
-        executors.forEach(executor -> executor.undo("v2653-after-stop", () -> undoThreads.add(Thread.currentThread())));
-        assertThat(undoThreads).as("every executor is closed after the stop: a refused undo runs on the caller")
-                               .hasSize(executors.size())
-                               .allMatch(thread -> thread == caller);
+        for (var executor : executors) {
+            assertThat(refusesOnTheCaller(executor, caller)).as("%s is closed after the stop: a refused undo runs on the caller",
+                                                                 executor.component()).isTrue();
+        }
+    }
+
+    /// The stop promise does not order `reactors.close()` (it is attached to the promise with `onResultRun`), so the
+    /// closure is awaited, not assumed: each attempt submits an undo and records the thread it ran on; an open executor
+    /// runs it on its own thread, a closed one refuses it and the caller runs it. The deadline only bounds a hang.
+    private static boolean refusesOnTheCaller(ReactExecutor executor, Thread caller) throws InterruptedException {
+        var deadline = System.nanoTime() + SECONDS.toNanos(30);
+
+        while (System.nanoTime() < deadline) {
+            var ranOn = new CompletableFuture<Thread>();
+
+            executor.undo("v2653-after-stop", () -> ranOn.complete(Thread.currentThread()));
+            try {
+                if (ranOn.get(10, SECONDS) == caller) {
+                    return true;
+                }
+            } catch (ExecutionException | TimeoutException e) {
+                return false;
+            }
+            Thread.sleep(5);
+        }
+        return false;
     }
 
     /// v-2653 F5, the node-stopping half in isolation. The engine half of the gate is asked to stop only at the tail of
@@ -153,6 +211,8 @@ class AetherNodeReactExecutorWiringBootTest {
     /// set is gated by `markStopping()` alone. The probe runs from inside `stop()`: the `ClusterStateNotification.passive()`
     /// routed right after the periodic tasks are cancelled releases the held executors and drains them.
     /// Red with `reactors.markStopping()` removed from `stop()`: the probes run (the engine is still alive).
+    /// Also red with the executors closed at the start of `stop()` instead (an undo submitted from the probe is refused
+    /// and runs on the probing thread): the gate closes first, the executors last.
     @Test
     @Timeout(value = 120, unit = SECONDS)
     void stop_gatesReactionsBeforeTheEngineIsAskedToStop() throws InterruptedException {
@@ -165,6 +225,8 @@ class AetherNodeReactExecutorWiringBootTest {
         var dropped = new AtomicInteger();
         var release = new CountDownLatch(1);
         var reached = new CountDownLatch(1);
+        var openRanOn = new CopyOnWriteArrayList<Thread>();
+        var hookThread = new AtomicReference<Thread>();
         var hook = MessageRouter.mutable();
 
         for (var executor : executors) {
@@ -176,6 +238,9 @@ class AetherNodeReactExecutorWiringBootTest {
         hook.addRoute(ClusterStateNotification.class, (ClusterStateNotification _) -> {
             release.countDown();
             executors.forEach(executor -> drainQuietly(executor));
+            executors.forEach(executor -> executor.undo("v2653-open-probe", () -> openRanOn.add(Thread.currentThread())));
+            executors.forEach(executor -> drainQuietly(executor));
+            hookThread.set(Thread.currentThread());
             dropped.set((int) (executors.stream().mapToLong(ReactExecutor::droppedEngineStopped).sum() - droppedBefore));
             reached.countDown();
         });
@@ -185,6 +250,9 @@ class AetherNodeReactExecutorWiringBootTest {
         assertThat(reached.await(30, SECONDS)).as("stop() reached its first routed step").isTrue();
         assertThat(ran.get()).as("no side-effect reaction runs once stop() started, engine still alive").isZero();
         assertThat(dropped.get()).as("each executor dropped its probe").isGreaterThanOrEqualTo(executors.size());
+        assertThat(openRanOn).as("the executors are still open at the first step of stop(): an undo runs on their own threads")
+                             .hasSize(executors.size())
+                             .noneMatch(thread -> thread == hookThread.get());
         assertThat(stopped.await(timeSpan(60).seconds()).isSuccess()).as("the stop completed").isTrue();
         node = null;
     }

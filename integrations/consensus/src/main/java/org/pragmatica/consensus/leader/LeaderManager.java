@@ -70,9 +70,9 @@ public interface LeaderManager {
         return org.pragmatica.lang.Unit.unit();
     }
 
-    /// True once a node installed its store's replay source (a wiring pin seam: the source itself reads false off the
-    /// delivery thread). Default false for implementations without an election FSM.
-    default boolean hasReplaySource() {
+    /// The installed replay source read on the calling thread (a wiring pin seam: true only on a thread that delivers a
+    /// replay burst of the node store). Default false for implementations without an election FSM.
+    default boolean replaying() {
         return false;
     }
 
@@ -392,8 +392,8 @@ public interface LeaderManager {
         }
 
         @Override
-        public boolean hasReplaySource() {
-            return context.hasReplaySource();
+        public boolean replaying() {
+            return context.replaying();
         }
 
         @Override

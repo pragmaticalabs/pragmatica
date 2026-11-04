@@ -192,7 +192,7 @@ public final class LeaderElectionContext {
     /// D1-react (§3.5.1 row 107): where the `LeaderChange` route runs. Inline until a node installs its gated executor.
     private final AtomicReference<ReactExecutor> reactExecutor = new AtomicReference<>(ReactExecutor.inline("LeaderManager"));
 
-    /// The replay source of a node that installed none; identity-compared by `hasReplaySource`.
+    /// The replay source of a node that installed none.
     private static final BooleanSupplier NEVER_REPLAYING = () -> false;
 
     /// R3 (v-2653 F3): the node store's replay bit, read where a `LeaderChange` is raised. Never replaying until a node
@@ -641,10 +641,6 @@ public final class LeaderElectionContext {
     public boolean replaying() {
         return replaySource.get()
                            .getAsBoolean();
-    }
-
-    public boolean hasReplaySource() {
-        return replaySource.get() != NEVER_REPLAYING;
     }
 
     public Unit installReplaySource(BooleanSupplier replaying) {

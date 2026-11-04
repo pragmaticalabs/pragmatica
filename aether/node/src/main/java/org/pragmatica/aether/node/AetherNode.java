@@ -1999,9 +1999,9 @@ public interface AetherNode extends ManageableNode {
             }
 
             @Override
-            public boolean leaderReplaySourceInstalled() {
+            public boolean leaderReplaying() {
                 return clusterNode.leaderManager()
-                                  .hasReplaySource();
+                                  .replaying();
             }
 
             @Contract

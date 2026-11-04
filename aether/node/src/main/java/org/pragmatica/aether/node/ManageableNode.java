@@ -120,8 +120,9 @@ public interface ManageableNode {
         return List.of();
     }
 
-    /// D1-react (v-2653 F3): whether the node installed its store's replay source into the leader manager. Wiring pin seam.
-    default boolean leaderReplaySourceInstalled() {
+    /// D1-react (v-2653 F3): the replay source the node installed into its leader manager, read on the calling thread:
+    /// true only while this thread delivers a replay burst of the node store. Wiring pin seam.
+    default boolean leaderReplaying() {
         return false;
     }
 
