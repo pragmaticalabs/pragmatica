@@ -1350,7 +1350,7 @@ public interface HttpForwarder {
                 // but the hop wait never is.
                 // The outcome tells a refusal before write (provably not sent: retry is safe for every method) from a
                 // frame that may be delivered. A refusal fails the hop now instead of waiting out the hop timeout.
-                clusterNetwork.sendOutcome(targetNode, forwardRequest, hopTimeout)
+                clusterNetwork.send(targetNode, forwardRequest, hopTimeout)
                               .onSuccess(outcome -> failHopIfRefused(outcome, internalPromise, requestId));
                 log.trace("Forwarded request to {} [{}] correlationId={}", targetNode, requestId, correlationId);
                 internalPromise.onSuccess(resultPromise::succeed)
@@ -1382,7 +1382,7 @@ public interface HttpForwarder {
             }
 
             /// `Sent` and `ConnectionDead` leave the hop waiting: a frame reported under either may still be delivered
-            /// from the offline buffer (see [ClusterNetwork#sendOutcome(NodeId, org.pragmatica.consensus.ProtocolMessage, TimeSpan)]).
+            /// from the offline buffer (see [ClusterNetwork#send(NodeId, org.pragmatica.consensus.ProtocolMessage, TimeSpan)]).
             private static void failHopIfRefused(WriteOutcome outcome,
                                                  Promise<HttpResponseData> hop,
                                                  String requestId) {

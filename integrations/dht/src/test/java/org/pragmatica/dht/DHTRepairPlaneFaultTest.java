@@ -351,7 +351,7 @@ class DHTRepairPlaneFaultTest {
 
             var config = new DHTConfig(2, 1, 1, timeSpan(5).seconds());
             var node = DHTNode.dhtNode(self, memoryStorageEngine(), ring, config);
-            var antiEntropy = DHTAntiEntropy.dhtAntiEntropy(node, (_, _) -> {}, config, timeSpan(1).millis());
+            var antiEntropy = DHTAntiEntropy.dhtAntiEntropy(node, AcceptingNetwork.accepting((_, _) -> {}), config, timeSpan(1).millis());
 
             node.repair().noteLegacyPeer(legacy);
             antiEntropy.synchronizeNow();

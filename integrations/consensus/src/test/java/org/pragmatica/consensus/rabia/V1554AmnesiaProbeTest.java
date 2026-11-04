@@ -25,6 +25,9 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
 import java.util.stream.IntStream;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.consensus.net.WriteOutcome;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
@@ -164,9 +167,14 @@ class V1554AmnesiaProbeTest {
                     }
                     return Unit.unit();
                 }
-                @Override public <M extends ProtocolMessage> Unit send(NodeId id, M message) {
+                @Override public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId id, M message) {
                     emitted.add(new Delivery(sender, members.indexOf(id), message));
-                    return Unit.unit();
+                    return Promise.success(new WriteOutcome.Sent(id));
+                }
+
+                @Override
+                public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+                    return send(nodeId, message);
                 }
             };
             return new RabiaEngine<>(topology, network, machines.get(index),

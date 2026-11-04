@@ -244,6 +244,22 @@ public sealed interface StreamAssembly {
                                                  streaming.sealMergeBytes());
     }
 
+    /// The network-backed replication transport: each send returns the cluster network's own outcome, and the
+    /// caller-wait overload reaches the network's TTL-bounded send (#1996, #2583 P1).
+    static ReplicationTransport replicationTransport(ClusterNetwork replicationNetwork) {
+        return new ReplicationTransport() {
+            @Override
+            public Promise<WriteOutcome> send(NodeId target, ReplicationMessage message) {
+                return replicationNetwork.send(target, message);
+            }
+
+            @Override
+            public Promise<WriteOutcome> send(NodeId target, ReplicationMessage message, TimeSpan callerWait) {
+                return replicationNetwork.send(target, message, callerWait);
+            }
+        };
+    }
+
     static StreamReplicationOutputs streamReplication(StreamReplicationInputs in) {
         var config = in.config();
         var delegateRouter = in.delegateRouter();
@@ -266,22 +282,7 @@ public sealed interface StreamAssembly {
         // registered replica set; the receive/apply side (streamReplicationReceiveHandler, wired below)
         // lands replicated events offset-preserving WITHOUT re-replicating (appendRecovered).
         var streamReplicaRegistry = ReplicaRegistry.replicaRegistry(config.streaming().caughtUpMaxLagOffsets());
-        var replicationNetwork = clusterNode.network();
-        org.pragmatica.aether.stream.replication.ReplicationTransport streamReplicationTransport = new org.pragmatica.aether.stream.replication.ReplicationTransport() {
-            @Contract
-            @Override
-            public void send(NodeId target, org.pragmatica.aether.stream.replication.ReplicationMessage message) {
-                replicationNetwork.send(target, message);
-            }
-
-            @Contract
-            @Override
-            public void send(NodeId target,
-                             org.pragmatica.aether.stream.replication.ReplicationMessage message,
-                             TimeSpan callerWait) {
-                replicationNetwork.send(target, message, callerWait);
-            }
-        };
+        var streamReplicationTransport = replicationTransport(clusterNode.network());
         // #261: the live-ack path promotes a replica to CAUGHT_UP only when its confirmed offset
         // reaches back to the owner's earliest retained offset. The partition manager is constructed
         // just below (it needs this manager), so the earliest-retained seam reads through a holder set
@@ -1967,27 +1968,18 @@ public sealed interface StreamAssembly {
         }
     }
 
-    /// Package-private so the wiring is pinnable (#2574): `sendOutcome` must reach the network's tracked write, or a
+    /// Package-private so the wiring is pinnable (#2574, #2583 P1): `send` must return the network's tracked write, or a
     /// refused forward silently waits out its timeout again.
     static StreamForwardTransport createStreamForwardTransport(ClusterNetwork network) {
         return new StreamForwardTransport() {
-            @Contract
             @Override
-            public void send(NodeId target, StreamForwardMessage message) {
-                network.send(target, message);
+            public Promise<WriteOutcome> send(NodeId target, StreamForwardMessage message) {
+                return network.send(target, message);
             }
 
-            @Contract
             @Override
-            public void send(NodeId target, StreamForwardMessage message, TimeSpan callerWait) {
-                network.send(target, message, callerWait);
-            }
-
-            /// #2574: the network's tracked write (the same dispatch, on the same FORWARD lane, as `send`), so a forward read
-            /// refused on a backpressured lane fails at once instead of waiting out its read timeout.
-            @Override
-            public Promise<WriteOutcome> sendOutcome(NodeId target, StreamForwardMessage message, TimeSpan callerWait) {
-                return network.sendOutcome(target, message, callerWait);
+            public Promise<WriteOutcome> send(NodeId target, StreamForwardMessage message, TimeSpan callerWait) {
+                return network.send(target, message, callerWait);
             }
         };
     }

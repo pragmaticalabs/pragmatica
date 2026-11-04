@@ -53,6 +53,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
+import org.pragmatica.consensus.net.WriteOutcome;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -1198,9 +1199,14 @@ class RabiaEngineTest {
         public void handleBroadcast(NetworkServiceMessage.Broadcast broadcast) {}
 
         @Override
-        public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
             if (messages.stream().noneMatch(existing -> existing == message)) { messages.add(message); }
-            return Unit.unit();
+            return Promise.success(new WriteOutcome.Sent(nodeId));
+        }
+
+        @Override
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+            return send(nodeId, message);
         }
 
         @Override

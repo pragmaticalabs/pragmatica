@@ -53,7 +53,7 @@ class DistributedDHTClientCapacityTest {
         var node = dhtNode(LOCAL, memoryStorageEngine(), ring, DHTConfig.DEFAULT);
 
         // RF=3, W=2: every node is a target
-        client = distributedDHTClient(node, (target, message) -> sent.add(new Sent(target, message)), DHTConfig.DEFAULT);
+        client = distributedDHTClient(node, AcceptingNetwork.accepting((target, message) -> sent.add(new Sent(target, message))), DHTConfig.DEFAULT);
     }
 
     private static byte[] bytes(String text) {

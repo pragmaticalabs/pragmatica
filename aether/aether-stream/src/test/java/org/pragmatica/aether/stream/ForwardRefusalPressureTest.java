@@ -80,12 +80,7 @@ class ForwardRefusalPressureTest {
         }
 
         @Override
-        public void send(NodeId target, StreamForwardMessage message) {
-            sentAtNanos.add(System.nanoTime());
-        }
-
-        @Override
-        public Promise<WriteOutcome> sendOutcome(NodeId target, StreamForwardMessage message, TimeSpan callerWait) {
+        public Promise<WriteOutcome> send(NodeId target, StreamForwardMessage message) {
             sentAtNanos.add(System.nanoTime());
 
             return Promise.success(arm == Arm.REFUSING

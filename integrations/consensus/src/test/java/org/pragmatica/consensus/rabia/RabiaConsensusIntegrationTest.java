@@ -51,6 +51,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import org.pragmatica.consensus.net.WriteOutcome;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
@@ -649,8 +650,14 @@ class RabiaConsensusIntegrationTest {
         }
 
         @Override
-        public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
-            return recordMessage(message);
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
+            recordMessage(message);
+            return Promise.success(new WriteOutcome.Sent(nodeId));
+        }
+
+        @Override
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+            return send(nodeId, message);
         }
 
         @Override

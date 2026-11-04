@@ -446,7 +446,7 @@ class DHTChurnSurvivalTest {
             ring.addNode(id);
             var storage = memoryStorageEngine();
             var node = dhtNode(id, storage, ring, CONFIG);
-            DHTNetwork network = this::deliver;
+            DHTNetwork network = AcceptingNetwork.accepting(this::deliver);
             var rebalancer = dhtRebalancer(node, network, CONFIG);
             var antiEntropy = dhtAntiEntropy(node, network, CONFIG, departing::contains);
             var member = new Member(id,
@@ -490,7 +490,7 @@ class DHTChurnSurvivalTest {
             var ring = ConsistentHashRing.<NodeId>consistentHashRing();
             var storage = memoryStorageEngine();
             var node = dhtNode(id, storage, ring, CONFIG);
-            DHTNetwork network = this::deliver;
+            DHTNetwork network = AcceptingNetwork.accepting(this::deliver);
             var rebalancer = dhtRebalancer(node, network, CONFIG);
             var antiEntropy = dhtAntiEntropy(node, network, CONFIG, departing::contains);
             var existing = List.copyOf(members.keySet());

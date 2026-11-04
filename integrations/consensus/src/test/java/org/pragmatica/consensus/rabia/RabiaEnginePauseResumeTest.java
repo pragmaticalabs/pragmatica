@@ -48,6 +48,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import org.pragmatica.consensus.net.WriteOutcome;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
@@ -447,9 +448,14 @@ class RabiaEnginePauseResumeTest {
 
         @Override public void handleBroadcast(NetworkServiceMessage.Broadcast broadcast) {}
 
-        @Override public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+        @Override public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
             messages.add(message);
-            return Unit.unit();
+            return Promise.success(new WriteOutcome.Sent(nodeId));
+        }
+
+        @Override
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+            return send(nodeId, message);
         }
 
         @Override public Promise<Unit> start() { return Promise.success(Unit.unit()); }

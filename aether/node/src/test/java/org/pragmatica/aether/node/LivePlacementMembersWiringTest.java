@@ -52,7 +52,7 @@ class LivePlacementMembersWiringTest {
     /// unit test cannot see, because the test constructs its own predicate.
     @Test
     void entityForwardService_isGivenTheCommittedStakeTest() {
-        assertThat(assemblyCode()).containsOnlyOnce("EntityForwardService.entityForwardService(config.self(),clusterNode.network()::sendOutcome,ENTITY_FORWARD_TIMEOUT,CommittedEntityStake.committedEntityStake(kvStore,config.self()));");
+        assertThat(assemblyCode()).containsOnlyOnce("EntityForwardService.entityForwardService(config.self(),clusterNode.network()::send,ENTITY_FORWARD_TIMEOUT,CommittedEntityStake.committedEntityStake(kvStore,config.self()));");
     }
 
     /// The reconciler's event triggers: a real executor (not a no-op) for the retract-driven pass, and the

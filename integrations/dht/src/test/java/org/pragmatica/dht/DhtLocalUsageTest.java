@@ -42,7 +42,7 @@ class DhtLocalUsageTest {
     @Test
     void theLocalAndTheDistributedClient_reportTheNodesLiveBytesAndCap_perPrefix() {
         var node = node();
-        var clients = List.<DHTClient>of(localDHTClient(node), distributedDHTClient(node, (target, message) -> {}, DHTConfig.SINGLE_NODE));
+        var clients = List.<DHTClient>of(localDHTClient(node), distributedDHTClient(node, AcceptingNetwork.accepting((target, message) -> {}), DHTConfig.SINGLE_NODE));
 
         for (var client : clients) {
             assertThat(client.localUsage("stream-segments")).isEqualTo(new LocalUsage(40L, 100L));
