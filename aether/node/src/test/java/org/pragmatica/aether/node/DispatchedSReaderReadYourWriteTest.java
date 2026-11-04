@@ -229,13 +229,16 @@ class DispatchedSReaderReadYourWriteTest {
         assertThat(store.awaitDelivered(store.enqueuedSeq())
                         .await(timeSpan(10).seconds())
                         .isSuccess()).isTrue();
-        snapshot = Map.of(first, ConfigValue.configValue("fsm2.a", "1"), second, ConfigValue.configValue("fsm2.b", "2"), third, ConfigValue.configValue("fsm2.c", "3"));
+        // The install changes all three keys: the replay burst is a diff against the delivered view, so an unchanged key is
+        // not re-delivered (`ConfigValue.configValue` stamps `updatedAt` in milliseconds, so "the same value again" was
+        // unchanged whenever the install fell in the same millisecond as the live write, and the burst then held only c).
+        snapshot = Map.of(first, ConfigValue.configValue("fsm2.a", "1-installed"), second, ConfigValue.configValue("fsm2.b", "2-installed"), third, ConfigValue.configValue("fsm2.c", "3"));
         store.restoreCommittedSnapshot(new byte[0], INSTALL_SLOT);
         store.replayNotifications();
 
-        assertThat(delivered.await(10, TimeUnit.SECONDS)).isTrue();
+        assertThat(delivered.await(10, TimeUnit.SECONDS)).as("five deliveries, seen: %s", seen).isTrue();
         assertThat(seen.subList(0, 3)).containsExactly("fsm2.a@5", "fsm2.b@9", "fsm2.c@12r");
-        assertThat(seen.subList(3, 5)).as("the replay burst re-delivers the unchanged keys under the install revision")
+        assertThat(seen.subList(3, 5)).as("the replay burst delivers the keys the install changed under the install revision")
                                       .containsExactlyInAnyOrder("fsm2.a@12r", "fsm2.b@12r");
         assertThat(store.notificationRevision()
                         .isEmpty()).as("no revision outside a delivery").isTrue();

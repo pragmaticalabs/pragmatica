@@ -91,6 +91,7 @@ class AetherNodePromotionDrainBootTest {
                                                 new org.pragmatica.cluster.state.kvstore.LeaderValue(node.self(), 1));
 
         store.process(store.createBatch(List.of(command)));
+        KvDelivery.awaitDelivered(store);
     }
 
     private ClusterSyncPing drainPing() {

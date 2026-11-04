@@ -7,9 +7,7 @@ package org.pragmatica.aether.api;
 
 import io.netty.buffer.ByteBuf;
 import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.lang.reflect.Modifier;
-import java.net.ServerSocket;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -26,6 +24,7 @@ import org.pragmatica.aether.invoke.ScheduledTaskManager;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
 import org.pragmatica.aether.invoke.ScheduledTaskStateRegistry;
 import org.pragmatica.aether.invoke.SliceInvoker;
+import org.pragmatica.aether.node.ClusterTestPorts;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.resource.entity.EntityCheckpointDriver;
 import org.pragmatica.aether.stream.StreamPartitionManager;
@@ -173,10 +172,6 @@ class ManagementServerKvDispatchGaugeTest {
     }
 
     private static int freePort() {
-        try (var socket = new ServerSocket(0)) {
-            return socket.getLocalPort();
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
+        return ClusterTestPorts.freeClusterPort();
     }
 }
