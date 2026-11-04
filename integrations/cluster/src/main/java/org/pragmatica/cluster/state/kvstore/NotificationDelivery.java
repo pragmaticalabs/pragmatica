@@ -67,6 +67,18 @@ public sealed interface NotificationDelivery {
     }
 
     static NotificationDelivery dispatched(String name, DispatcherFailureSink sink, DeliveryHook hook) {
-        return new Dispatched(name, ReplayRank.flat(), sink, hook, OperatorEvents.none(), DEFAULT_SLOW_HANDLER_NANOS);
+        return dispatched(name, ReplayRank.flat(), sink, hook);
+    }
+
+    /// A host that orders replay bursts (design §3.7, exit (z)) passes its rank; KVStore stays agnostic of the keys.
+    static NotificationDelivery dispatched(String name, ReplayRank replayRank, DispatcherFailureSink sink) {
+        return dispatched(name, replayRank, sink, DeliveryHook.none());
+    }
+
+    static NotificationDelivery dispatched(String name,
+                                           ReplayRank replayRank,
+                                           DispatcherFailureSink sink,
+                                           DeliveryHook hook) {
+        return new Dispatched(name, replayRank, sink, hook, OperatorEvents.none(), DEFAULT_SLOW_HANDLER_NANOS);
     }
 }

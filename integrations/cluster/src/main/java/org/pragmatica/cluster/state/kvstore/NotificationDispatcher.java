@@ -793,8 +793,14 @@ final class NotificationDispatcher {
         return unit();
     }
 
+    /// A close called on the delivery thread itself (a host stop that runs inline on the failing thread) does not wait
+    /// for itself: the loop sees `stopRequested` when the current batch returns.
     @Contract
     private void join(Thread delivery) {
+        if (delivery == Thread.currentThread()) {
+            return;
+        }
+
         delivery.interrupt();
         Result.lift(Causes::fromThrowable, () -> delivery.join(JOIN_TIMEOUT_MILLIS));
         if (delivery.isAlive()) {

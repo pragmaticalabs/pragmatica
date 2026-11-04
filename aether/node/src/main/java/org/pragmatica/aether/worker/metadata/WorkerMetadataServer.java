@@ -46,7 +46,9 @@ public final class WorkerMetadataServer {
                       "serverManifests",
                       (long) manifests.size(),
                       "serverManifestLimit",
-                      (long) limits.manifests());
+                      (long) limits.manifests(),
+                      "workerMetadata.capture.refused",
+                      captureRefused);
     }
 
     private final NodeId self;
@@ -74,6 +76,9 @@ public final class WorkerMetadataServer {
     private long budgetSecond;
     private long sentBytes;
     private long generation;
+    /// Captures refused because committed notifications were still undelivered (KVStore dispatcher design §3.7, R3.6):
+    /// under the dispatcher the refusal window is the delivery lag, so this counts how often liveness paid for it.
+    private long captureRefused;
 
     private record CachedScope(long revision, WorkerMetadataMessage.ScopeContent content) {}
 
@@ -186,6 +191,8 @@ public final class WorkerMetadataServer {
     private Result<CapturedCut> capture(NodeId worker) {
         synchronized (store) {
             if (store.hasPendingNotifications()) {
+                captureRefused++;
+
                 return Causes.cause("Committed metadata notifications are still being delivered").result();
             }
 

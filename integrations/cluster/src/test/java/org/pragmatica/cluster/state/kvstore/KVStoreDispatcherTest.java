@@ -255,6 +255,55 @@ class KVStoreDispatcherTest {
             assertThat(view).containsEntry(A, "one");
         }
 
+        /// Lane-1 decision review: a parked apply promise waits for the newest `enqueuedSeq` AT PARK TIME, a target fixed
+        /// when it parks, so a continuous writer stream can delay it only by the batches enqueued between its own batch
+        /// and its park, never starve it. A writer keeps the queue about 50 batches deep for up to 3 s while each
+        /// delivery takes about 1 ms; the parked promise must resolve within 1 s while the stream is still running.
+        /// Mutation: complete waiters only once the queue drains (`deliveredSeq >= enqueuedSeq` at delivery): it starves
+        /// until the stream stops, red.
+        @Test
+        void parkedPromiseCompletesUnderAContinuousWriterStream() throws Exception {
+            var store = store();
+            router.addRoute(KVStoreNotification.ValuePut.class, _ -> sleep(1));
+            var streamDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            var stop = new CountDownLatch(1);
+            var writer = Thread.ofPlatform().daemon().start(() -> writeContinuously(store, streamDeadline, stop));
+            awaitDepth(store, 20);
+
+            var promise = Promise.<Unit>promise();
+            put(store, A, "mine");
+            var target = store.enqueuedSeq();
+            store.completeAfterDelivery(promise, Unit.unit());
+
+            assertThat(resolvedWithin(promise, 1_000)).as("the parked promise completes while the stream runs").isTrue();
+            assertThat(writer.isAlive()).as("the stream was still running at completion").isTrue();
+            assertThat(store.enqueuedSeq()).as("later writers kept enqueuing").isGreaterThan(target);
+            stop.countDown();
+            writer.join(BOUND.toMillis());
+        }
+
+        private static void writeContinuously(KVStore<StructuredKey, Object> store, long deadline, CountDownLatch stop) {
+            var i = 0L;
+
+            while (System.nanoTime() < deadline && stop.getCount() > 0) {
+                if (store.enqueuedSeq() - store.deliveredSeq() < 50) {
+                    put(store, B, ++i);
+                } else {
+                    Thread.onSpinWait();
+                }
+            }
+        }
+
+        private static void awaitDepth(KVStore<StructuredKey, Object> store, long depth) {
+            var deadline = System.nanoTime() + BOUND.toNanos();
+
+            while (store.enqueuedSeq() - store.deliveredSeq() < depth && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+
+            assertThat(store.enqueuedSeq() - store.deliveredSeq()).as("the stream reached its depth").isGreaterThanOrEqualTo(depth);
+        }
+
         /// (q) a completion continuation awaiting a second commit does not delay a third writer's completion: mutation,
         /// one FIFO completion thread.
         @Test
@@ -320,17 +369,36 @@ class KVStoreDispatcherTest {
 
     @Nested
     class Replay {
-        /// (e) replayNotifications() returns only after its burst is delivered: mutation, return at enqueue.
+        /// (e) replayNotifications() returns only after its burst is delivered. The dispatcher is held before the
+        /// replay item, the replay runs on its own thread, and the call must not have returned while the hold stands,
+        /// so the probe never passes by race: mutation, return at enqueue.
         @Test
-        void replayReturnsOnlyAfterItsBurstIsDelivered() {
+        void replayReturnsOnlyAfterItsBurstIsDelivered() throws Exception {
             var store = store();
             var burst = new CopyOnWriteArrayList<Object>();
             router.addRoute(KVStoreNotification.ValuePut.class, (KVStoreNotification.ValuePut<StructuredKey, Object> p) -> burst.add(p.cause().key()));
             deserializer.next = Map.of(A, "one", B, "two");
             store.restoreSnapshot(new byte[0]);
+            hold.holdFrom(store.enqueuedSeq() + 1);
+            var returned = new CountDownLatch(1);
+            var burstAtReturn = new AtomicReference<List<Object>>();
 
-            assertTimeoutPreemptively(BOUND, store::replayNotifications);
-            assertThat(burst).containsExactlyInAnyOrder(A, B);
+            Thread.ofVirtual().start(() -> returnAfterReplay(store, burst, burstAtReturn, returned));
+
+            assertThat(hold.awaitHeld(10)).as("the replay item reached the hold").isTrue();
+            assertThat(returned.await(300, TimeUnit.MILLISECONDS)).as("not returned while its burst is held").isFalse();
+            hold.release();
+            assertThat(returned.await(BOUND.toSeconds(), TimeUnit.SECONDS)).isTrue();
+            assertThat(burstAtReturn.get()).as("the whole burst was delivered at return").containsExactlyInAnyOrder(A, B);
+        }
+
+        private static void returnAfterReplay(KVStore<StructuredKey, Object> store,
+                                              List<Object> burst,
+                                              AtomicReference<List<Object>> burstAtReturn,
+                                              CountDownLatch returned) {
+            store.replayNotifications();
+            burstAtReturn.set(List.copyOf(burst));
+            returned.countDown();
         }
 
         /// (t) boot read-ahead is zero: the replay caller is the only live applier, so a burst handler reading a key the
@@ -574,6 +642,18 @@ class KVStoreDispatcherTest {
 
     @Nested
     class Failures {
+        /// R4.4: the node stop runs once although the core fatal-escape hook and the store may both report the same
+        /// failure. Mutation: once() returns the sink unwrapped (red).
+        @Test
+        void onceSinkStopsTheNodeOnlyOnce() {
+            var once = DispatcherFailureSink.once(sink);
+
+            once.stopNode("kv-dispatcher-failed", new StackOverflowError("first"));
+            once.stopNode("fatal-escape", new StackOverflowError("second"));
+
+            assertThat(sink.reasons).containsExactly("kv-dispatcher-failed");
+        }
+
         /// (h) a handler Error stops the node through the sink, and the store closes: mutation, swallow.
         @Test
         void handlerErrorStopsTheNodeThroughTheSink() throws Exception {
@@ -685,6 +765,57 @@ class KVStoreDispatcherTest {
         }
 
         /// (n) both lags stay 0 across empty slots: the engine's phase hook moves the revision, not the seq.
+        /// (m) the watchdog fires on a held handler: while a handler is still running past the threshold, the slow-handler
+        /// event is raised, and the crossing is counted when the handler ends. Mutation: disable the watchdog (red).
+        @Test
+        void watchdogFiresOnAHeldHandler() throws Exception {
+            var events = new CopyOnWriteArrayList<String>();
+            var delivery = new NotificationDelivery.Dispatched("w" + System.nanoTime(),
+                                                               NotificationDelivery.ReplayRank.flat(),
+                                                               sink,
+                                                               DeliveryHook.none(),
+                                                               (event, detail) -> recordEvent(events, event),
+                                                               TimeUnit.MILLISECONDS.toNanos(20));
+            var store = new KVStore<StructuredKey, Object>(router, new Serializer() {
+                @Override public <T> void write(ByteBuf buffer, T value) {}
+            }, deserializer, delivery);
+            opened.add(store);
+            var handlerHeld = new CountDownLatch(1);
+            router.addRoute(KVStoreNotification.ValuePut.class, _ -> awaitQuietly(handlerHeld));
+
+            put(store, A, "one");
+
+            assertThat(eventuallyContains(events, "kv-dispatch-slow-handler")).as("raised while the handler runs").isTrue();
+            assertThat(store.hasPendingNotifications()).as("the handler is still held").isTrue();
+            handlerHeld.countDown();
+            store.awaitDelivered(store.enqueuedSeq()).await();
+            assertThat(store.deliveryMetrics().slowHandlers()).isEqualTo(1);
+        }
+
+        private static Unit recordEvent(List<String> events, String event) {
+            events.add(event);
+
+            return Unit.unit();
+        }
+
+        private static boolean eventuallyContains(List<String> events, String event) {
+            var deadline = System.nanoTime() + BOUND.toNanos();
+
+            while (!events.contains(event) && System.nanoTime() < deadline) {
+                sleep(10);
+            }
+
+            return events.contains(event);
+        }
+
+        private static void awaitQuietly(CountDownLatch latch) {
+            try {
+                latch.await(BOUND.toSeconds(), TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
         @Test
         void emptySlotsMoveNoLag() {
             var store = store();

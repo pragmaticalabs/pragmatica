@@ -1093,6 +1093,12 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
                                   long slowHandlerMaxNanos,
                                   boolean closed) {}
 
+    /// True when this store delivers its notifications on its own dispatcher thread ([NotificationDelivery.Dispatched]),
+    /// false for inline delivery. A node's store must be dispatched (AetherNodeKvDispatcherWiringBootTest pins it).
+    public boolean deliversOnDispatcherThread() {
+        return dispatcher.threaded();
+    }
+
     /// The name of this store's delivery thread (the teardown probe looks for it).
     public String dispatcherThreadName() {
         return dispatcher.threadName();

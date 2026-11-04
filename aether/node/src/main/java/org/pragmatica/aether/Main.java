@@ -62,6 +62,7 @@ import org.pragmatica.aether.node.SwimGossipEncryptors;
 import org.pragmatica.aether.node.labels.ContainerLabelInspector;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.cluster.state.kvstore.DispatcherFailureSink;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
@@ -140,7 +141,11 @@ public record Main(String[] args) {
         enforceIdentityLedgerBootable(config);
         // Review catch (#634 batch): assembly failures — the routed-type codec guard included — get
         // the same FATAL + exit shape as the other boot gates, not an uncaught-exception stack trace.
-        var node = AetherNode.aetherNode(config).onFailure(this::abortBoot).expect("unreachable: abortBoot exits");
+        var node = AetherNode.aetherNode(config,
+                                         kvDispatcherSink(Main::flushLogs,
+                                                          Runtime.getRuntime()::halt))
+                             .onFailure(this::abortBoot)
+                             .expect("unreachable: abortBoot exits");
 
         registerShutdownHook(node);
         startNodeAndWait(node, nodeId);
@@ -964,6 +969,30 @@ public record Main(String[] args) {
         } finally {
             haltFn.accept(AetherNode.EXIT_CONSENSUS_RESTORE_FAILED);
         }
+    }
+
+    /// The production KV dispatcher failure sink (KVStore dispatcher design §3.2 step 3, exit (s)): the
+    /// [#exitConsensusRestoreFailed] shape with its own code, [AetherNode#EXIT_KV_DISPATCHER_FAILED].
+    static DispatcherFailureSink kvDispatcherSink(Runnable flushLogs, IntConsumer haltFn) {
+        return (reason, cause) -> exitKvDispatcherFailed(reason, cause, flushLogs, haltFn);
+    }
+
+    /// FATAL first, then the log flush bounded by [#FLUSH_TIMEOUT], then `halt` in a `finally`: `halt` runs no shutdown
+    /// hook, so none can wait on the dead dispatcher (#838), and flushes no appender of its own. The store already logged
+    /// the handler, the sequence numbers and a thread dump before calling this.
+    static Unit exitKvDispatcherFailed(String reason, Throwable cause, Runnable flushLogs, IntConsumer haltFn) {
+        log.error("FATAL: this node's KV notification dispatcher failed ({}): {}. It holds committed state it can no longer "
+                 + "deliver to its own components, so it stops instead of serving it. Exiting with code {}; a restart re-syncs it.",
+                  reason,
+                  cause.toString(),
+                  AetherNode.EXIT_KV_DISPATCHER_FAILED);
+        try {
+            flushLogs.run();
+        } finally {
+            haltFn.accept(AetherNode.EXIT_KV_DISPATCHER_FAILED);
+        }
+
+        return Unit.unit();
     }
 
     /// #1052 fix round 2 (N-2): a stop requested while the DHT encryption-marker check is still retrying
