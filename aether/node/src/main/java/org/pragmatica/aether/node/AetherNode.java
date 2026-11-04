@@ -2982,7 +2982,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                               aetherEntries,
                                                                                                                               growthLog,
                                                                                                                               selfId,
-                                                                                                                              gossipKeyRotationHandler));
+                                                                                                                              gossipKeyRotationHandler,
+                                                                                                                              reactors.executor("WorkerActivation")));
         var governorAnnouncerHolder = workerActivationOut.governorAnnouncerHolder();
         var communityDirectory = workerActivationOut.communityDirectory();
         var activationKvRouter = workerActivationOut.activationKvRouter();
@@ -3260,7 +3261,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                               abTestManager,
                                                                                                                               allEntries,
                                                                                                                               leaderReconciler,
-                                                                                                                              bootstrapModule));
+                                                                                                                              bootstrapModule,
+                                                                                                                              reactors.executor("ClusterTopologyManager")));
         // D1-react (KVStore dispatcher design §3.5.1 rows 72/73): activation, deactivation and status writes run on its react executor.
         spokesmanPingLoop.installReactExecutor(reactors.executor("SpokesmanPingLoop"));
         // D1-react (KVStore dispatcher design §3.5.1 rows 66/67): the bootstrap retry attempt runs on its react executor.
