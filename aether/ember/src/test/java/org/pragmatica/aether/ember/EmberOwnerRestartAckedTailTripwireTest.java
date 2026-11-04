@@ -73,6 +73,8 @@ class EmberOwnerRestartAckedTailTripwireTest {
     private final AtomicLong droppedAcks = new AtomicLong();
     private final Set<AetherNode> filtered = ConcurrentHashMap.newKeySet();
     private EmberCluster cluster;
+    private long lifeOneIncarnation = -1L;
+    private long lifeTwoIncarnation = -1L;
     private Path baseDir;
 
     @AfterEach
@@ -89,6 +91,12 @@ class EmberOwnerRestartAckedTailTripwireTest {
         var owner = restartWithAcksHeldOff();
 
         assertThat(ringHead(owner)).as("control: the WAL replay put the whole acked tail in the owner's rebuilt ring").isEqualTo(ACKED_TAIL);
+        assertThat(lifeOneIncarnation).as("control: life 1's ownership record carries the committed genesis incarnation").isPositive();
+        assertThat(lifeTwoIncarnation).as("#2654 fixed? Life 2's first ownership record carries incarnation %d, above life 1's %d. "
+                                          + "Delete this assertion and enable ownerAfterColdRestart_lifeTwoOwnershipIncarnation_isAboveLifeOnes",
+                                          lifeTwoIncarnation,
+                                          lifeOneIncarnation)
+                                      .isLessThanOrEqualTo(lifeOneIncarnation);
 
         var highestVisible = highestVisibleOver(owner, HOLD_MS);
 
@@ -113,6 +121,18 @@ class EmberOwnerRestartAckedTailTripwireTest {
         assertThat(highestVisibleOver(owner, 5_000L)).as("the owner's visible head, with replica acks held off, after its ring was rebuilt").isEqualTo(ACKED_TAIL);
     }
 
+    /// #2654: after the whole-cluster restore the new life's ownership record must outrank every epoch life 1 committed, so its
+    /// incarnation is strictly above life 1's.
+    @Test
+    @Disabled("#2654: enable when no ownership epoch is minted before the life's incarnation commits; RED today: life 2's record is minted at incarnation 0 before the restore commits the new incarnation")
+    @Timeout(1200)
+    void ownerAfterColdRestart_lifeTwoOwnershipIncarnation_isAboveLifeOnes() {
+        restartWithAcksHeldOff();
+
+        assertThat(lifeOneIncarnation).as("control: life 1's ownership record carries the committed genesis incarnation").isPositive();
+        assertThat(lifeTwoIncarnation).as("life 2's first ownership record's incarnation, against life 1's").isGreaterThan(lifeOneIncarnation);
+    }
+
     /// Life 1: acknowledge [#ACKED] events. Then a whole-cluster stop and start over the same directories with replica acks
     /// dropped from the moment each node object exists. Returns the node that owns the partition in life 2, once its ring holds
     /// the replayed tail.
@@ -128,6 +148,8 @@ class EmberOwnerRestartAckedTailTripwireTest {
 
         var record = StreamTripwireSupport.awaitFullIsr(cluster, ENGINE_KEY, ISR_BUDGET_MS);
         var firstOwner = cluster.getNode(record.owner().id()).unwrap();
+
+        lifeOneIncarnation = record.ownerEpoch().incarnation();
         var router = StreamTripwireSupport.component(firstOwner, "streamWriteRouter", StreamWriteRouter.class);
 
         for (var i = 0; i < ACKED; i++) {
@@ -146,6 +168,7 @@ class EmberOwnerRestartAckedTailTripwireTest {
         try {
             LifecycleSettled.start(cluster, START_BOUND);
             awaitUntil(() -> restoredOwner().isPresent(), REBUILD_BUDGET_MS, "a node owns the restored partition with the replayed tail in its ring");
+            lifeTwoIncarnation = StreamTripwireSupport.committedRecord(cluster, ENGINE_KEY, PARTITION).map(value -> value.ownerEpoch().incarnation()).or(-1L);
         } finally {
             installerDone.set(true);
             StreamTripwireSupport.joinQuietly(installer);

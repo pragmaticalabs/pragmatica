@@ -25,6 +25,7 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
 import io.netty.buffer.ByteBuf;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
@@ -45,6 +46,55 @@ class IsrOwnershipWriterTest {
     private static final LeaderValue LEADER = new LeaderValue(A, 1L);
 
     private final IsrOwnershipWriter writer = writer(List.of(A, B, C, D), (_, _, owner) -> List.of(owner, B, C));
+
+    /// #2654: after a whole-cluster restore the incarnation mirror reads `ClusterIncarnation.NONE` (0) until the restore
+    /// commits the new life's incarnation, and stream ownership records are not backed up, so the leader mints the
+    /// partition's first record in that window. Minted at incarnation 0 it ranks below every epoch the restored life
+    /// committed (the #1529 hazard). The production path is the public driver, which reads the generation epoch itself.
+    @Nested
+    class MintBeforeIncarnationCommit {
+        private static final Epoch UNCOMMITTED = Epoch.epoch(0L, 2L, 0L);
+        private static final Epoch RESTORED = Epoch.epoch(1L, 1L, 1L);
+
+        private final IsrOwnershipWriter uncommitted = new IsrOwnershipWriter(() -> true,
+                                                                             () -> UNCOMMITTED,
+                                                                             HlcClock.hlcClock(A),
+                                                                             (_, _) -> Option.none(),
+                                                                             (_, _) -> Option.some(A),
+                                                                             new StreamPartitionOwnershipWriter.IsrInputs() {
+                                                                                 @Override
+                                                                                 public List<NodeId> liveMembers() {
+                                                                                     return List.of(A, B, C);
+                                                                                 }
+
+                                                                                 @Override
+                                                                                 public List<NodeId> initialIsr(String stream, int partition, NodeId owner) {
+                                                                                     return List.of(owner, B, C);
+                                                                                 }
+                                                                             },
+                                                                             () -> Option.some(LEADER));
+
+        @Test
+        void writeOwnershipChange_tripwire_mintsBelowTheRestoredEpoch_whileTheIncarnationIsNone() {
+            var minted = uncommitted.writeOwnershipChange(STREAM, PARTITION)
+                                    .map(IsrOwnershipWriterTest::mintedEpoch);
+
+            assertThat(minted.filter(epoch -> !epoch.isAtLeast(RESTORED)).isPresent())
+                .as("#2654 fixed? A record minted while the incarnation is NONE no longer ranks below the restored epoch %s (minted: %s). "
+                    + "Delete this tripwire and enable writeOwnershipChange_incarnationNone_mintsNothing",
+                    RESTORED,
+                    minted)
+                .isTrue();
+        }
+
+        @Test
+        @Disabled("#2654: enable when no ownership epoch is minted before the life's incarnation commits; RED today: the record is minted at incarnation 0, below the restored epoch")
+        void writeOwnershipChange_incarnationNone_mintsNothing() {
+            assertThat(uncommitted.writeOwnershipChange(STREAM, PARTITION).isEmpty())
+                .as("no ownership record is minted while the life's incarnation is NONE")
+                .isTrue();
+        }
+    }
 
     @Nested
     class FirstRecord {
@@ -365,6 +415,13 @@ class IsrOwnershipWriterTest {
                                           }
                                       },
                                       committedLeader);
+    }
+
+    private static Epoch mintedEpoch(KVCommand<AetherKey> command) {
+        var transaction = (KVCommand.LeaderTransaction<?, ?>) command;
+        var mutation = (KVCommand.Mutation<?, ?>) transaction.mutations().getFirst();
+
+        return ((StreamPartitionOwnershipValue) mutation.replacement().unwrap()).ownerEpoch();
     }
 
     @FunctionalInterface
