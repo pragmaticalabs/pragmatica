@@ -231,12 +231,11 @@ record StreamPartitionOwnershipWriterRecord(BooleanSupplier isLeaderSupplier,
         if (!isLeaderSupplier.getAsBoolean()) {
             return Option.none();
         }
-
         // #2654 design-out: a refused base (the life's incarnation is not committed) mints nothing, so no record can rank
         // below the restored life's epochs; the refusal itself reaches the batch driver, which re-drives the pass.
         return currentEpoch().mintable()
-                             .option()
-                             .flatMap(epoch -> decideAt(stream, partition, epoch));
+                           .option()
+                           .flatMap(epoch -> decideAt(stream, partition, epoch));
     }
 
     private Option<KVCommand<AetherKey>> decideAt(String stream, int partition, Epoch epoch) {
@@ -252,7 +251,7 @@ record StreamPartitionOwnershipWriterRecord(BooleanSupplier isLeaderSupplier,
     public Result<Unit> mintGate() {
         return isLeaderSupplier.getAsBoolean()
                ? currentEpoch().mintable()
-                               .mapToUnit()
+                             .mapToUnit()
                : Result.unitResult();
     }
 
@@ -333,7 +332,6 @@ record IsrOwnershipWriter(BooleanSupplier isLeaderSupplier,
         if (!isLeaderSupplier.getAsBoolean()) {
             return Option.none();
         }
-
         // #2654 design-out, as in the plain writer: a refused base mints nothing; the batch driver re-drives the pass.
         return generationEpochSupplier.get()
                                       .mintable()
@@ -346,11 +344,7 @@ record IsrOwnershipWriter(BooleanSupplier isLeaderSupplier,
 
         return hrwOwner.ownerOf(stream, partition)
                        .orElse(() -> committed.map(StreamPartitionOwnershipValue::owner))
-                       .flatMap(owner -> decide(stream,
-                                                partition,
-                                                committed,
-                                                owner,
-                                                epoch));
+                       .flatMap(owner -> decide(stream, partition, committed, owner, epoch));
     }
 
     @Override

@@ -5,6 +5,7 @@ package org.pragmatica.aether.slice.generation;
 
 import org.pragmatica.lang.Cause;
 
+
 /// Why an ownership or lineage epoch was not minted (#2654).
 public sealed interface EpochMintError extends Cause {
     enum General implements EpochMintError {
@@ -13,13 +14,10 @@ public sealed interface EpochMintError extends Cause {
         /// one. An epoch minted then ranks below every epoch the restored life committed. The mint succeeds
         /// once the commit is observed.
         INCARNATION_NOT_COMMITTED("No epoch is minted before the life's cluster incarnation commits");
-
         private final String message;
-
         General(String message) {
             this.message = message;
         }
-
         @Override
         public String message() {
             return message;

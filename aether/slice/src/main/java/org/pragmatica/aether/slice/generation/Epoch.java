@@ -33,8 +33,7 @@ public record Epoch(long incarnation, long rabiaTerm, long localCounter) impleme
     /// the life's incarnation commits, a mint would rank below every epoch a restored life committed, so the writer
     /// writes nothing and retries on its next pass.
     public Result<Epoch> mintable() {
-        return Result.success(this)
-                     .filter(EpochMintError.General.INCARNATION_NOT_COMMITTED, Epoch::incarnationCommitted);
+        return Result.success(this).filter(EpochMintError.General.INCARNATION_NOT_COMMITTED, Epoch::incarnationCommitted);
     }
 
     private boolean incarnationCommitted() {

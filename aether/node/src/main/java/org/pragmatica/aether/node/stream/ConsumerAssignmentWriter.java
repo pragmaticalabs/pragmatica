@@ -98,12 +98,7 @@ public interface ConsumerAssignmentWriter {
                                                         String group,
                                                         List<PartitionAssignment> assignments) {
         return assignments.stream()
-                          .flatMap(assignment -> decide(generation,
-                                                        clock,
-                                                        committed,
-                                                        stream,
-                                                        group,
-                                                        assignment).stream())
+                          .flatMap(assignment -> decide(generation, clock, committed, stream, group, assignment).stream())
                           .toList();
     }
 
