@@ -328,13 +328,14 @@ public interface ScheduledTaskManager {
         final Map<ScheduledTaskKey, ScheduledFuture<?>> activeTimers = new ConcurrentHashMap<>();
 
         /// D1-react (§3.5.1 rows 25/28, U2): a registry-driven arm is a reaction on this executor; the cancel stays in
-        /// absorb. Each cancel bumps its key's generation inside the key's `compute`, and every cancel-all bumps
-        /// [#stateGeneration] first; the arm runs inside the same `compute` only if neither moved since absorb, with
-        /// eligibility re-read at run time. Whichever runs first, the later one sees the other: no armed-after-cancel.
+        /// absorb. Every cancel, single or state-level (`cancelAllTimers`, `cancelAllModeTimers`), bumps its key's
+        /// generation inside the key's `compute`; the arm runs inside the same `compute` only if the generation did not
+        /// move since absorb, with eligibility re-read at run time. Whichever runs first, the later one sees the other:
+        /// no armed-after-cancel. A state-level cancel never invalidates a key it does not cancel (v-2653: a SINGLE arm
+        /// survives a drain, which stops only ALL-mode fires).
         final AtomicReference<ReactExecutor> react = new AtomicReference<>(ReactExecutor.inline("ScheduledTaskRegistry"));
 
         final Map<ScheduledTaskKey, Long> timerGenerations = new ConcurrentHashMap<>();
-        final AtomicLong stateGeneration = new AtomicLong();
         final Set<ScheduledTaskKey> inFlight = ConcurrentHashMap.newKeySet();
         final AtomicLong quorumSequence = new AtomicLong(0);
         /// #273: set once by [ScheduledTaskManager#onDrainInitiated], never cleared — the drain is
@@ -619,26 +620,16 @@ public interface ScheduledTaskManager {
         /// Absorb: the cancel and the generations captured. Reaction (behind the engine-alive gate): the arm, under U2.
         private void handleTaskAdded(ScheduledTaskKey key, ScheduledTask task) {
             var keyGeneration = TaskOps.cancelTimer(ctx, key);
-            var stateGeneration = ctx.stateGeneration.get();
 
-            ctx.react.get().react("ScheduledTask arm", () -> armIfCurrent(key, task, keyGeneration, stateGeneration));
+            ctx.react.get().react("ScheduledTask arm", () -> armIfCurrent(key, task, keyGeneration));
         }
 
-        private void armIfCurrent(ScheduledTaskKey key, ScheduledTask task, long keyGeneration, long stateGeneration) {
-            ctx.timerGenerations.compute(key,
-                                         (_, current) -> armUnderGuard(key,
-                                                                       task,
-                                                                       keyGeneration,
-                                                                       stateGeneration,
-                                                                       current));
+        private void armIfCurrent(ScheduledTaskKey key, ScheduledTask task, long keyGeneration) {
+            ctx.timerGenerations.compute(key, (_, current) -> armUnderGuard(key, task, keyGeneration, current));
         }
 
-        private Long armUnderGuard(ScheduledTaskKey key,
-                                   ScheduledTask task,
-                                   long keyGeneration,
-                                   long stateGeneration,
-                                   Long current) {
-            if (current != null && current == keyGeneration && ctx.stateGeneration.get() == stateGeneration && shouldRunInCurrentState(task)) {
+        private Long armUnderGuard(ScheduledTaskKey key, ScheduledTask task, long keyGeneration, Long current) {
+            if (current != null && current == keyGeneration && shouldRunInCurrentState(task)) {
                 TaskOps.startTimer(ctx, key, task);
             }
 
@@ -1223,7 +1214,6 @@ public interface ScheduledTaskManager {
                                                                                   task.methodName()))
                                    .toList();
 
-            ctx.stateGeneration.incrementAndGet();
             keys.forEach(key -> cancelTimer(ctx, key));
             log.info("Drain initiated on {} — cancelled {} ALL-mode scheduled timer(s); ALL-mode fires stop here",
                      ctx.self.id(),
@@ -1257,11 +1247,16 @@ public interface ScheduledTaskManager {
             }
         }
 
+        /// U2 for the state-level undo (v-2653 F1): every registry-armed key is cancelled through its own `compute`, which
+        /// bumps its generation, so an arm already inside its key's `compute` (past its generation and state checks)
+        /// completes first and its timer is cancelled here, never stored after the clear below; an arm not yet inside it
+        /// sees the bump. The clear below then covers any timer whose key never went through a `compute` (armed by state
+        /// entry only).
         static void cancelAllTimers(Context ctx) {
-            ctx.stateGeneration.incrementAndGet();
-            ctx.activeTimers.forEach((_, future) -> future.cancel(false));
             var count = ctx.activeTimers.size();
 
+            ctx.timerGenerations.keySet().forEach(key -> cancelTimer(ctx, key));
+            ctx.activeTimers.forEach((_, future) -> future.cancel(false));
             ctx.activeTimers.clear();
             if (count > 0) {
                 log.info("Cancelled {} scheduled task timers", count);

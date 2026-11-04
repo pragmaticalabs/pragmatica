@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SpokesmanKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -148,6 +149,71 @@ class SpokesmanEngineStopGateTest {
 
         assertThat(loop.isActive()).as("control arm").isTrue();
         assertThat(activeWrites).hasSize(1);
+    }
+
+    /// v-2653 (verifier): `stop()`'s deactivation is an undo (U1): with the gate closed (node stopping or engine stopped)
+    /// it still runs, so the ping timer cannot outlive the stop.
+    @Test
+    void stop_withGateClosed_stillDeactivates() throws InterruptedException {
+        loop.onSpokesmanPut(assigned());
+        drain();
+        assertThat(loop.isActive()).as("precondition: activated while the engine is alive").isTrue();
+
+        engineStopped.set(true);
+        loop.stop();
+        drain();
+
+        assertThat(loop.isActive()).as("stop's deactivation is never gated").isFalse();
+        assertThat(executor.droppedEngineStopped()).isZero();
+    }
+
+    /// v-2653 (verifier): an emptied or FAILED assignment deactivates through an ungated undo (U1).
+    @Test
+    void failedAssignment_engineStoppedBeforeRelease_undoStillRuns() throws InterruptedException {
+        loop.onSpokesmanPut(assigned());
+        drain();
+        var release = hold();
+
+        loop.onSpokesmanPut(withValue(assigned().cause().value().withFailure("x")));
+        engineStopped.set(true);
+        release.countDown();
+        drain();
+
+        assertThat(loop.isActive()).as("the FAILED put's deactivation is never gated").isFalse();
+        assertThat(executor.droppedEngineStopped()).isZero();
+    }
+
+    /// v-2653 (verifier): a Put(ACTIVE) activation is a side effect behind the gate (row 72), like Put(ASSIGNED).
+    @Test
+    void activeStatus_queuedBeforeEngineStop_isDropped() throws InterruptedException {
+        var release = hold();
+
+        loop.onSpokesmanPut(withValue(assigned().cause().value().withStatus(SpokesmanStatus.ACTIVE)));
+        engineStopped.set(true);
+        release.countDown();
+        drain();
+
+        assertThat(loop.isActive()).as("no ping timer armed after the engine stop").isFalse();
+        assertThat(executor.droppedEngineStopped()).isEqualTo(1);
+    }
+
+    /// v-2653 (verifier): U2 on rows 72/73 counts a later PUT as well as a remove: Put(ASSIGNED) then Put(FAILED), both
+    /// absorbed before the activation runs, write no ACTIVE status.
+    @Test
+    void assignedThenFailedPut_beforeActivationRuns_writesNoActive() throws InterruptedException {
+        var release = hold();
+
+        loop.onSpokesmanPut(assigned());
+        loop.onSpokesmanPut(withValue(assigned().cause().value().withFailure("x")));
+        release.countDown();
+        drain();
+
+        assertThat(activeWrites).as("a superseded assignment is never written ACTIVE").isEmpty();
+        assertThat(loop.isActive()).isFalse();
+    }
+
+    private static ValuePut<SpokesmanKey, SpokesmanValue> withValue(SpokesmanValue value) {
+        return new ValuePut<>(new KVCommand.Put<>(SpokesmanKey.spokesmanKey(SELF), value), Option.none());
     }
 
     private static ValuePut<SpokesmanKey, SpokesmanValue> assigned() {

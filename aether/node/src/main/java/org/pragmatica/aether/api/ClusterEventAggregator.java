@@ -766,16 +766,22 @@ public final class ClusterEventAggregator {
     }
 
     /// [#emitAsLeader] for a receiver of a `LeaderChange`: the leadership verdict is the notification's own
-    /// `localNodeIsLeader` (R5.8), not a re-read of `leaderCheck` at run time, which can disagree with the
-    /// event once the notification is queued behind a reaction executor.
+    /// `localNodeIsLeader` (R5.8), and the replay gate is its own `replayed` bit (R3, v-2653 F3), not re-reads of
+    /// `leaderCheck` and `replayingCheck` at run time: once the notification is queued behind a reaction executor the
+    /// first can disagree with the event and the second always reads false.
     @Contract
-    public void emitAsLeader(ClusterEvent event, boolean localNodeIsLeader) {
-        emitAsLeaderWhen(event, () -> localNodeIsLeader);
+    public void emitAsLeader(ClusterEvent event, LeaderNotification.LeaderChange change) {
+        emitAsLeaderWhen(event, change::localNodeIsLeader, change::replayed);
     }
 
     @Contract
     private void emitAsLeaderWhen(ClusterEvent event, BooleanSupplier leaderGate) {
-        if (replayingCheck.getAsBoolean()) {
+        emitAsLeaderWhen(event, leaderGate, replayingCheck);
+    }
+
+    @Contract
+    private void emitAsLeaderWhen(ClusterEvent event, BooleanSupplier leaderGate, BooleanSupplier replayed) {
+        if (replayed.getAsBoolean()) {
             LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing side-effect emit of {}",
                       event);
 
@@ -797,7 +803,13 @@ public final class ClusterEventAggregator {
     /// not-leader-gated contract. The replay gate and publisher-bound bootstrap drop still apply.
     @Contract
     public void emitLocal(ClusterEvent event) {
-        if (replayingCheck.getAsBoolean()) {
+        emitLocal(event, replayingCheck);
+    }
+
+    /// [#emitLocal] with the replay bit the caller captured (R3).
+    @Contract
+    private void emitLocal(ClusterEvent event, BooleanSupplier replayed) {
+        if (replayed.getAsBoolean()) {
             LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing local emit of {}", event);
 
             return;
@@ -1411,6 +1423,9 @@ public final class ClusterEventAggregator {
     /// instead: this is the "no leader, degraded observability" signal, and it is worthless if it can
     /// only be sent by a leader. Same at-least-once-per-observer contract as
     /// {@link #onConfirmedDeparture}, with the same bounded duplication and the same `observedBy` key.
+    ///
+    /// Both events honour the change's own `replayed` bit (KVStore dispatcher design §3.5 R3, v-2653 F3): a change raised
+    /// while the store delivered a replay burst is history, so it announces nothing.
     @Contract
     public void onLeaderChange(LeaderNotification.LeaderChange event) {
         event.leaderId()
@@ -1419,7 +1434,7 @@ public final class ClusterEventAggregator {
                                                                    "Node " + leaderId.id() + " elected as leader",
                                                                    Map.of("leaderId",
                                                                           leaderId.id())),
-                                                 event.localNodeIsLeader()))
+                                                 event))
              .onEmpty(() -> {
                           LOG.warn("Leadership lost on {}, election in progress — cluster observability degraded",
                                    selfNode.id());
@@ -1427,7 +1442,8 @@ public final class ClusterEventAggregator {
                                                    Severity.WARNING,
                                                    "Leadership lost, election in progress",
                                                    Map.of("observedBy",
-                                                          selfNode.id())));
+                                                          selfNode.id())),
+                                    event::replayed);
                       });
     }
 

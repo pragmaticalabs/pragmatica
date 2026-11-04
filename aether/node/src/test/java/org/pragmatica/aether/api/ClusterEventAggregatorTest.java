@@ -5,6 +5,7 @@
 package org.pragmatica.aether.api;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.controller.RollbackEvent;
@@ -51,6 +52,7 @@ import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import java.time.Instant;
+import java.util.concurrent.TimeUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
@@ -66,6 +68,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// generated `ApiCodecsNode.CODECS`, B5a), and wired via {@link SystemStreamFactories}. This drives
 /// the full create -> publish -> codec -> store -> fetch path, plus the owner-gated emit (folds B3)
 /// and the production count/byte/age retention.
+@Timeout(value = 60, unit = TimeUnit.SECONDS)
 class ClusterEventAggregatorTest {
 
     private static final NodeId SELF = new NodeId("self-node");
@@ -682,6 +685,27 @@ class ClusterEventAggregatorTest {
         h.aggregator().onLeaderChange(LeaderNotification.leaderChange(Option.some(new NodeId("other")), false));
 
         assertThat(h.events()).isEmpty();
+    }
+
+    /// R3 (v-2653 F3): a LeaderChange raised inside a replay burst reaches this receiver on the react executor, where
+    /// `replayingCheck` reads false; the change's own `replayed` bit suppresses the historical LEADER_ELECTED. The live
+    /// control is [#onLeaderChange_emitsLeaderElected_whenPayloadSaysLocalLeaderButCheckIsStale].
+    @Test
+    void onLeaderChange_replayedSelfElection_announcesNothing() {
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, LEADER);
+        h.aggregator().onLeaderChange(LeaderNotification.leaderChange(Option.some(SELF), true, true));
+
+        assertThat(h.events()).as("a replayed election is history: no LEADER_ELECTED").isEmpty();
+    }
+
+    /// R3 (v-2653 F3): the same for LEADER_LOST, which is not leader-gated, so only the replay bit can suppress it. The
+    /// live control is [#noLeader_stillEmitsLeaderLost].
+    @Test
+    void onLeaderChange_replayedLeaderLoss_announcesNothing() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().onLeaderChange(LeaderNotification.leaderChange(Option.none(), false, true));
+
+        assertThat(h.events()).as("a replayed leader loss is history: no LEADER_LOST").isEmpty();
     }
 
     /// #926 — `QUORUM_LOST` is the most severe event this class emits and was the least emittable: a

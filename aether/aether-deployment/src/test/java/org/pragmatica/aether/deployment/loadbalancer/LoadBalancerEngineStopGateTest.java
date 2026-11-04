@@ -19,6 +19,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue.RouteEntr
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageRouter;
@@ -136,6 +137,25 @@ class LoadBalancerEngineStopGateTest {
         assertThat(provider.routeChanges).as("control arm: exactly one cloud call").hasSize(1);
         assertThat(provider.routeChanges.getFirst().nodeIps()).containsExactly("10.0.0.1");
         assertThat(executor.droppedEngineStopped()).isZero();
+    }
+
+    /// v-2653 (verifier): row 54, the route removal's cloud call is a side effect behind the gate too.
+    @Test
+    void nodeRoutesRemove_reactionQueuedBeforeEngineStop_isDropped() throws InterruptedException {
+        manager.onNodeRoutesPut(put(node));
+        drain();
+        provider.clear();
+        var release = hold();
+
+        manager.onNodeRoutesRemove(new ValueRemove<>(new KVCommand.Remove<>(NodeRoutesKey.nodeRoutesKey(node, ARTIFACT)),
+                                                     Option.none()));
+        assertThat(executor.queueDepth()).as("the removal is queued").isEqualTo(1);
+        engineStopped.set(true);
+        release.countDown();
+        drain();
+
+        assertThat(provider.routeChanges).as("no cloud call after the engine stop").isEmpty();
+        assertThat(executor.droppedEngineStopped()).isEqualTo(1);
     }
 
     private static ValuePut<NodeRoutesKey, NodeRoutesValue> put(NodeId node) {

@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.DoubleSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -191,6 +192,9 @@ public final class LeaderElectionContext {
     /// D1-react (§3.5.1 row 107): where the `LeaderChange` route runs. Inline until a node installs its gated executor.
     private final AtomicReference<ReactExecutor> reactExecutor = new AtomicReference<>(ReactExecutor.inline("LeaderManager"));
 
+    /// R3 (v-2653 F3): the node store's replay bit, read where a `LeaderChange` is raised. Never replaying until a node
+    /// installs its store's source.
+    private final AtomicReference<BooleanSupplier> replaySource = new AtomicReference<>(() -> false);
     private final TimeSpan proposalRetryDelay;
     private final TimeSpan baseElectionDelay;
     private final TimeSpan perRankDelay;
@@ -626,6 +630,18 @@ public final class LeaderElectionContext {
 
     public Unit installReactExecutor(ReactExecutor executor) {
         reactExecutor.set(executor);
+
+        return Unit.unit();
+    }
+
+    /// True while the raising thread delivers a replay burst of the node store.
+    public boolean replaying() {
+        return replaySource.get()
+                           .getAsBoolean();
+    }
+
+    public Unit installReplaySource(BooleanSupplier replaying) {
+        replaySource.set(replaying);
 
         return Unit.unit();
     }

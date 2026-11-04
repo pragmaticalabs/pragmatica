@@ -7,6 +7,7 @@
 package org.pragmatica.consensus.leader;
 
 import java.util.List;
+import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
@@ -58,6 +59,14 @@ public interface LeaderManager {
     /// its gated executor once, at assembly; until then (and in a host that installs none) the route runs inline, as
     /// before D1-react. Default no-op for implementations without an election FSM.
     default org.pragmatica.lang.Unit installReactExecutor(ReactExecutor executor) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// KVStore dispatcher design §3.5 R3 (v-2653 F3): the node store's replay bit (`KVStore::isReplaying`), read on the
+    /// thread that raises a `LeaderChange` and carried in it as `replayed`, because the route runs on the react executor,
+    /// where the store's bit always reads false. Until installed, no change is marked replayed. Default no-op for
+    /// implementations without an election FSM.
+    default org.pragmatica.lang.Unit installReplaySource(BooleanSupplier replaying) {
         return org.pragmatica.lang.Unit.unit();
     }
 
@@ -369,6 +378,11 @@ public interface LeaderManager {
         @Override
         public org.pragmatica.lang.Unit installReactExecutor(ReactExecutor executor) {
             return context.installReactExecutor(executor);
+        }
+
+        @Override
+        public org.pragmatica.lang.Unit installReplaySource(BooleanSupplier replaying) {
+            return context.installReplaySource(replaying);
         }
 
         @Override

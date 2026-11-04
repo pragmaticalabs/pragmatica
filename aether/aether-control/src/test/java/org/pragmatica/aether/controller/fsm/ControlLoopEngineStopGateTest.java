@@ -144,6 +144,24 @@ class ControlLoopEngineStopGateTest {
         assertThat(loop.ctx().sliceCooldownsSnapshot()).as("no cooldown survives the reset it predates").isEmpty();
     }
 
+    /// v-2653 (verifier): the dispatch runs only when the put landed. A reset before the mark, then the loop back in
+    /// Evaluating before the reaction runs: the stale reaction neither marks nor transitions to Cooldown.
+    @Test
+    void protectionResetThenEvaluating_beforeMarkRuns_noCooldownTransition() throws InterruptedException {
+        var release = hold();
+
+        loop.onNodeArtifactPut(active());
+        loop.deactivate();
+        loop.activate();
+        loop.fsm().dispatch(new ActivationTimeReached());
+        assertThat(loop.fsm().current()).as("precondition: evaluating again").isInstanceOf(ControlLoopState.Evaluating.class);
+        release.countDown();
+        drain();
+
+        assertThat(loop.ctx().sliceCooldownsSnapshot()).isEmpty();
+        assertThat(loop.fsm().current()).as("a refused mark dispatches nothing").isInstanceOf(ControlLoopState.Evaluating.class);
+    }
+
     private static ValuePut<NodeArtifactKey, NodeArtifactValue> active() {
         return new ValuePut<>(new KVCommand.Put<>(NodeArtifactKey.nodeArtifactKey(HOST, ARTIFACT),
                                                   NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE)),

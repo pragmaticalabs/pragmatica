@@ -9,6 +9,9 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.AfterEach;
@@ -45,7 +48,9 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 /// C9 component. A component whose install line is missing keeps its default inline executor, so an engine stop
 /// would not gate its side effects (§3.5 R5); the per-component `*EngineStopGateTest`s run on a hand-installed
 /// executor and cannot see that. The node's executor registry creates an executor on first use, so a booted node
-/// lists exactly the components whose install line ran.
+/// lists exactly the components whose install line ran. The stop test pins the node's own use of the gate (v-2653 F5):
+/// `stop()` closes it first and closes the executors last; the gate's composition is pinned by [NodeReactorsGateTest].
+@Timeout(value = 120, unit = SECONDS)
 class AetherNodeReactExecutorWiringBootTest {
     static final Set<String> GATED_COMPONENTS = Set.of("LeaderManager",
                                                        "LoadBalancerManager",
@@ -76,12 +81,7 @@ class AetherNodeReactExecutorWiringBootTest {
     @Test
     @Timeout(value = 120, unit = SECONDS)
     void assembleNode_installsAnExecutorForEveryGatedComponent() {
-        node = AetherNode.aetherNode(minimalConfig(tempDir),
-                                     MessageRouter.DelegateRouter.delegate(),
-                                     NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs()),
-                                     () -> {})
-                         .onFailure(cause -> fail("boot must succeed: " + cause.message()))
-                         .unwrap();
+        node = boot();
 
         var installed = node.reactExecutors()
                             .stream()
@@ -90,6 +90,81 @@ class AetherNodeReactExecutorWiringBootTest {
 
         assertThat(installed).as("every gated component has its react executor installed by assembleNode")
                              .containsAll(GATED_COMPONENTS);
+    }
+
+    /// v-2653 F5. `stop()` sets the node-stopping half of the gate FIRST (#642): a side-effect reaction queued before
+    /// `stop()` and run right after it returns (the engine stop is the async tail of the stop chain) is dropped on every
+    /// gated executor. After the stop completed, every executor is closed: a refused undo runs on the caller's thread.
+    /// Red with `reactors.markStopping()` removed from `stop()` (the probes run) or `reactors.close()` removed (the undos
+    /// run on the executor threads).
+    @Test
+    @Timeout(value = 120, unit = SECONDS)
+    void stop_closesTheGateFirst_andTheExecutorsLast() throws InterruptedException {
+        node = boot();
+        var executors = node.reactExecutors()
+                            .stream()
+                            .filter(executor -> GATED_COMPONENTS.contains(executor.component()))
+                            .toList();
+        var ran = new AtomicInteger();
+        var release = new CountDownLatch(1);
+
+        assertThat(executors).as("precondition: every gated executor is present").hasSize(GATED_COMPONENTS.size());
+        for (var executor : executors) {
+            hold(executor, release);
+            executor.react("v2653-stop-probe", ran::incrementAndGet);
+        }
+        var droppedBefore = executors.stream().mapToLong(ReactExecutor::droppedEngineStopped).sum();
+        var stopped = node.stop();
+        release.countDown();
+        for (var executor : executors) {
+            drain(executor);
+        }
+
+        assertThat(ran.get()).as("no side-effect reaction runs once stop() started").isZero();
+        assertThat(executors.stream().mapToLong(ReactExecutor::droppedEngineStopped).sum() - droppedBefore)
+            .as("each executor dropped its probe").isGreaterThanOrEqualTo(executors.size());
+
+        assertThat(stopped.await(timeSpan(60).seconds()).isSuccess()).as("the stop completed").isTrue();
+        node = null;
+        var caller = Thread.currentThread();
+        var undoThreads = new CopyOnWriteArrayList<Thread>();
+
+        executors.forEach(executor -> executor.undo("v2653-after-stop", () -> undoThreads.add(Thread.currentThread())));
+        assertThat(undoThreads).as("every executor is closed after the stop: a refused undo runs on the caller")
+                               .hasSize(executors.size())
+                               .allMatch(thread -> thread == caller);
+    }
+
+    private AetherNode boot() {
+        return AetherNode.aetherNode(minimalConfig(tempDir),
+                                     MessageRouter.DelegateRouter.delegate(),
+                                     NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs()),
+                                     () -> {})
+                         .onFailure(cause -> fail("boot must succeed: " + cause.message()))
+                         .unwrap();
+    }
+
+    private static void hold(ReactExecutor executor, CountDownLatch release) throws InterruptedException {
+        var started = new CountDownLatch(1);
+
+        executor.undo("v2653-hold", () -> awaitQuietly(started, release));
+        assertThat(started.await(10, SECONDS)).as("%s held", executor.component()).isTrue();
+    }
+
+    private static void drain(ReactExecutor executor) throws InterruptedException {
+        var done = new CountDownLatch(1);
+
+        executor.undo("v2653-drain", done::countDown);
+        assertThat(done.await(10, SECONDS)).as("%s drained", executor.component()).isTrue();
+    }
+
+    private static void awaitQuietly(CountDownLatch started, CountDownLatch release) {
+        started.countDown();
+        try {
+            release.await(10, SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     /// Present only so the node builds its `LoadBalancerManager` (an environment with a load-balancer provider is

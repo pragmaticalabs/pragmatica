@@ -1562,6 +1562,8 @@ public interface AetherNode extends ManageableNode {
         // D1-react (KVStore dispatcher design §3.5 R5): the react gate reads this node's engine from here on.
         reactors.bindEngine(clusterNode::isEngineStopRequested);
         clusterNode.leaderManager().installReactExecutor(reactors.executor("LeaderManager"));
+        // R3 (v-2653 F3): a LeaderChange raised inside a replay burst carries the replay bit across the react hand-off.
+        clusterNode.leaderManager().installReplaySource(kvStore::isReplaying);
         // #329: leader-pinned task-group ownership is gated on consensus catch-up. A freshly
         // elected replacement leader whose Rabia log is still draining (isPendingCatchUp) is
         // isActive but not caught up; granting it ownership funnels every leader-pinned op

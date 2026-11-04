@@ -19,6 +19,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Option;
 import org.pragmatica.testlogging.LogCapture;
@@ -83,13 +84,14 @@ class ScheduledTaskEngineStopGateTest {
                                                                                    .unwrap(),
                                                                            MethodName.methodName("cleanup").unwrap());
     private final ScheduledTaskRegistry registry = ScheduledTaskRegistry.scheduledTaskRegistry();
+    private final ScheduledTaskManagerTest.TestLeaderManager leaderManager = new ScheduledTaskManagerTest.TestLeaderManager(self);
     private final ScheduledTaskManager manager = ScheduledTaskManager.scheduledTaskManager(
         registry,
         new ScheduledTaskManagerTest.StubSliceInvoker(new CopyOnWriteArrayList<>(), Option.none()),
         self,
         _ -> {},
         _ -> Option.none(),
-        new ScheduledTaskManagerTest.TestLeaderManager(self));
+        leaderManager);
 
     @BeforeEach
     void setUp() {
@@ -164,8 +166,9 @@ class ScheduledTaskEngineStopGateTest {
         assertThat(manager.activeTimerCount()).isZero();
     }
 
-    /// (ab+) state generation: the scheduler leaves its state (quorum lost) after the arm was queued; the arm, run later,
-    /// sees the state generation moved and arms nothing even though the key's generation did not move.
+    /// (ab+) state-level undo: the scheduler leaves its state (quorum lost) after the arm was queued; the exit's
+    /// cancel-all bumps every registry key's generation inside its `compute` (v-2653 F1), so the arm, run later, sees
+    /// the bump and arms nothing.
     @Test
     void taskPut_stateExitBeforeArmRuns_leavesNoTimer() throws InterruptedException {
         var release = hold();
@@ -181,8 +184,31 @@ class ScheduledTaskEngineStopGateTest {
         assertThat(manager.activeTimerCount()).as("the stale arm adds nothing").isEqualTo(1);
     }
 
+    /// v-2653: a drain stops ALL-mode fires only (a SINGLE task fires on the leader, hosting or draining). A SINGLE arm
+    /// queued before the drain still arms when it runs: the drain's cancel invalidates only the keys it cancels.
+    @Test
+    void singleTaskPut_drainBeforeArmRuns_stillArms() throws InterruptedException {
+        leaderManager.setLeader(true);
+        manager.onLeaderChange(LeaderNotification.leaderChange(Option.some(self), true));
+        assertThat(((ScheduledTaskManager.ScheduledTaskManagerAdapter) manager).fsm()
+                                                                       .current()).as("precondition: leading")
+                                                                                  .isInstanceOf(ScheduledTaskManager.Leading.class);
+        var release = hold();
+
+        registry.onScheduledTaskPut(put(ExecutionMode.SINGLE));
+        manager.onDrainInitiated();
+        release.countDown();
+        drain();
+
+        assertThat(manager.activeTimerCount()).as("the drain does not refuse a SINGLE arm").isEqualTo(1);
+    }
+
     private ValuePut<ScheduledTaskKey, ScheduledTaskValue> put() {
-        return new ValuePut<>(new KVCommand.Put<>(key, ScheduledTaskValue.intervalTask(self, "30s", ExecutionMode.ALL)),
+        return put(ExecutionMode.ALL);
+    }
+
+    private ValuePut<ScheduledTaskKey, ScheduledTaskValue> put(ExecutionMode mode) {
+        return new ValuePut<>(new KVCommand.Put<>(key, ScheduledTaskValue.intervalTask(self, "30s", mode)),
                               Option.none());
     }
 
