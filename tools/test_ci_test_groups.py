@@ -172,7 +172,7 @@ class RepositoryGroupsTest(unittest.TestCase):
     def test_the_ci_groups_run_the_statemachine_test_jar_consumers_from_an_install(self):
         ci = groups.CI.read_text()
         self.assertIn('mvn install -B -DskipTests -pl "${{ steps.plan.outputs.modules }}" -am', ci)
-        self.assertIn("needs: [static-gates, test-group]", ci)
+        self.assertIn("needs: [push-dedupe, static-gates, test-group]", ci)
         self.assertIn("python3 -B tools/ci-test-groups.py verify-reports reports", ci)
 
 
@@ -211,7 +211,7 @@ class RepositoryGroupsTest(unittest.TestCase):
 
     def test_the_aggregate_fails_unless_every_needed_job_passed(self):
         job = groups.CI.read_text().split("\n  build-and-test:\n", 1)[1].split("\n  forge-tests:\n", 1)[0]
-        self.assertIn("    if: always()\n", job)  # without it a failed group SKIPS the required check, which passes
+        self.assertIn("    if: always() && needs.push-dedupe.outputs.skip != 'true'\n", job)  # always() without it a failed group SKIPS the required check, which passes
         self.assertIn('[ "${{ needs.static-gates.result }}" = success ] && [ "${{ needs.test-group.result }}" = success ]', job)
 
     def test_the_group_job_keeps_build_and_tests_test_flags(self):

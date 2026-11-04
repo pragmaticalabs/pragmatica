@@ -289,7 +289,8 @@ class RepositoryQuarantineTest(unittest.TestCase):
 
     def test_the_quarantine_job_never_gates(self):
         self.assertNotIn("quarantine", re.search(r"needs: \[([^\]]*)\]", self._job("build-and-test")).group(1))
-        self.assertNotIn("needs:", self._job("quarantine"))
+        # the only dependency allowed is the push-dedupe lookup, which is not a test job; any other needs: would chain it to a gate
+        self.assertEqual(re.findall(r"^    needs: (.*)$", self._job("quarantine"), re.MULTILINE), ["push-dedupe"])
 
     def test_the_quarantine_job_selects_the_tag_and_clears_every_exclusion(self):
         job = self._job("quarantine")
