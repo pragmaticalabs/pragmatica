@@ -48,6 +48,7 @@ import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import org.pragmatica.consensus.net.WriteOutcome;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
@@ -435,9 +436,14 @@ class RabiaEngineApplyContainmentTest {
         public void handleBroadcast(NetworkServiceMessage.Broadcast broadcast) {}
 
         @Override
-        public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
             messages.add(message);
-            return Unit.unit();
+            return Promise.success(new WriteOutcome.Sent(nodeId));
+        }
+
+        @Override
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+            return send(nodeId, message);
         }
 
         @Override

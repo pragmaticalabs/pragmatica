@@ -4,8 +4,10 @@
 package org.pragmatica.aether.resource.db;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SqlStates;
 
 import static org.pragmatica.lang.Option.none;
@@ -197,6 +199,12 @@ public sealed interface DatabaseConnectorError extends Cause {
 
     static TransactionRolledBack transactionRollback(String reason) {
         return TransactionRolledBack.transactionRolledBack(reason).unwrap();
+    }
+
+    /// A pinned session was requested from a connector that cannot hold one. Carries what the transport reported.
+    record PinnedSessionUnsupported(String reason, String message) implements DatabaseConnectorError {
+        public static final Fn1<PinnedSessionUnsupported, String> FACTORY = Causes.forOneValue("Pinned session unsupported: %s",
+                                                                                               PinnedSessionUnsupported::new);
     }
 
     enum TransactionNotActive implements DatabaseConnectorError {

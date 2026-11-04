@@ -1923,6 +1923,29 @@ public sealed interface Promise<T> permits PromiseImpl {
         return Causes.composite(Stream.of(results).map(result -> (Result<?>) result).toArray(Result<?>[]::new)).result();
     }
 
+    /// **[Side Effect]**
+    /// Install the process-wide [FatalEscapeHandler], which then receives every [Error] escaping a continuation
+    /// of any promise in this JVM. Meant for a host's entry point (`main`, a test extension), never for a
+    /// component that can exist more than once per JVM. The escapes recorded before the first install in the
+    /// process (the first 16) are replayed to the handler before this returns.
+    ///
+    /// @param handler the handler to install
+    ///
+    /// @return the registration whose [FatalEscapeHandler.Registration#uninstall()] frees the slot, or
+    ///         [FatalEscapeError#ALREADY_INSTALLED] when another handler holds it
+    static Result<FatalEscapeHandler.Registration> installFatalEscapeHandler(FatalEscapeHandler handler) {
+        return FatalEscapes.install(handler);
+    }
+
+    /// The number of [Error]s that escaped a continuation and reached no handler: those that escaped while no
+    /// handler was installed after the first install, and those beyond the replay buffer before it. Each one
+    /// was still logged at ERROR where it escaped.
+    ///
+    /// @return the count since JVM start
+    static long unownedFatalEscapes() {
+        return FatalEscapes.unowned();
+    }
+
     /// **[Resolution]**
     /// Cancel all provided promises.
     ///
@@ -3627,15 +3650,35 @@ final class PromiseImpl<T> implements Promise<T> {
     /// stay wedged either, so both happen, in that order. Not classified [Cause.Terminal] or
     /// [Cause.Transient]: an escape is a bug, and whether a retry can help is the caller's call
     /// (#1297's sealer retries its drain after a pause by design).
+    ///
+    /// Every [Error], a [VirtualMachineError] or not, is then handed to the installed [FatalEscapeHandler]
+    /// (see [FatalEscapes]); a [RuntimeException] is not. This is the only call into the hook, and it sits on
+    /// the escape path: the completion path does not reach it.
     static Cause escaped(String continuation, Throwable escape) {
+        var origin = originOf(escape);
         var cause = new CoreError.Exception("Throwable escaped " + continuation
-                                           + " continuation at " + originOf(escape)
+                                           + " continuation at " + origin
                                            + ": " + escape,
                                             escape);
 
         log.error("{}", cause.message(), escape);
+        if (escape instanceof Error error) {
+            notifyFatalEscape(continuation, error, origin);
+        }
 
         return cause;
+    }
+
+    /// The hook must never change the escape's own handling: whatever it throws (a StackOverflowError on a
+    /// near-exhausted stack, a NoClassDefFoundError once its class failed to initialise) is dropped here, so
+    /// the caller still resolves the dependent and rethrows a VME exactly as without a handler.
+    @SuppressWarnings("JBCT-EX-03")
+    private static void notifyFatalEscape(String continuation, Error error, String origin) {
+        try {
+            FatalEscapes.escaped(continuation, error, origin);
+        } catch (Throwable hookFailure) {
+        // Nothing safe to do on this path; the escape itself was already logged above.
+        }
     }
 
     /// The origin named in the Cause is the first frame that belongs to neither the JDK nor this library:
@@ -3832,5 +3875,8 @@ final class PromiseImpl<T> implements Promise<T> {
         // LockSupport.park: https://bugs.openjdk.org/browse/JDK-8074773
         @SuppressWarnings("unused")
         Class<?> ensureLoaded = LockSupport.class;
+        // Initialise the fatal-escape hook here, on an ordinary stack: initialised first inside the catch of a
+        // StackOverflowError it can fail, and a class that failed to initialise stays unusable for the JVM's life.
+        FatalEscapes.unowned();
     }
 }

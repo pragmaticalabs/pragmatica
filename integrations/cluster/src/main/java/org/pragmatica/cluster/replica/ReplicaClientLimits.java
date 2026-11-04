@@ -20,4 +20,19 @@ public record ReplicaClientLimits(long staleMillis,
                                                                               3_000L,
                                                                               8L * 1024 * 1024,
                                                                               250L);
+
+    /// The most a chain of re-parents can extend the carry past the start of its first since the last counted beat: two silences. One silence waits out
+    /// the first silent source, the second its successor; a source that has not beaten after that is not coming back, and readiness has to follow the
+    /// freshness of beats the replica really counted. Without the cap every re-parent renews the grace and, against dead sources, readiness would last as
+    /// long as the heartbeats stay fresh at EVERY relay level (a governor's member twice the bound) (#2510).
+    public long carryCapMillis() {
+        return 2 * silenceMillis;
+    }
+
+    /// How long a re-parent keeps the old source's counted heartbeats: the silence that detects a dead new source, one tick of detection granularity,
+    /// the retry delay before the next source is asked, and one heartbeat interval for that source's first beat. A grace of `silenceMillis` alone
+    /// expires while a silent source is still being waited out (#2510).
+    public long carryGraceMillis() {
+        return silenceMillis + tickMillis + BusyBackoff.MIN_DELAY_MILLIS + ReplicaFeedServer.HEARTBEAT_INTERVAL_MILLIS;
+    }
 }

@@ -53,6 +53,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
+import org.pragmatica.consensus.net.WriteOutcome;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -234,11 +235,15 @@ class RabiaEngineTest {
             awaitOwnVote2(Phase.ZERO);
             target.processVoteRound2(new VoteRound2(NODE_2, Phase.ZERO, StateValue.V1));
             target.processVoteRound2(new VoteRound2(NODE_3, Phase.ZERO, StateValue.V1));
-            var firstResult = first.get().await(timeSpan(5).seconds());
-
+            // Wait for the slot itself, never for one named caller (#2645): the Decision carries the submission the
+            // engine registered first, and that is a race between the two submitting threads, not the test labels.
+            assertThat(awaitCondition(() -> !stateMachine.getProcessedCommands().isEmpty()))
+                .as("slot 0 must apply the command")
+                .isTrue();
             target.settleForTesting().await();
-            // The Decision carries c2 too when this voter's own merged proposal is the one stored for the slot.
-            var slotsCarryingIt = second.get().isResolved() ? 1 : 2;
+            // The Decision carries both ids when this voter's own merged proposal is the one stored for the slot;
+            // otherwise it carries one, and the other caller stays pending until a slot of its own.
+            var slotsCarryingIt = first.get().isResolved() && second.get().isResolved() ? 1 : 2;
 
             if (slotsCarryingIt == 2) {
                 awaitOwnPropose(new Phase(1));
@@ -258,6 +263,7 @@ class RabiaEngineTest {
                 target.processVoteRound2(new VoteRound2(NODE_3, new Phase(1), StateValue.V1));
             }
 
+            var firstResult = first.get().await(timeSpan(5).seconds());
             var secondResult = second.get().await(timeSpan(5).seconds());
 
             assertThat(stateMachine.getProcessedCommands()).as("applied once per slot that carried a submission of it")
@@ -1193,9 +1199,14 @@ class RabiaEngineTest {
         public void handleBroadcast(NetworkServiceMessage.Broadcast broadcast) {}
 
         @Override
-        public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
             if (messages.stream().noneMatch(existing -> existing == message)) { messages.add(message); }
-            return Unit.unit();
+            return Promise.success(new WriteOutcome.Sent(nodeId));
+        }
+
+        @Override
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+            return send(nodeId, message);
         }
 
         @Override

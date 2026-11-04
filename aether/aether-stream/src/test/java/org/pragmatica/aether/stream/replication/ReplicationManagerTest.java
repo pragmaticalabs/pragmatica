@@ -38,7 +38,7 @@ class ReplicationManagerTest {
     void setUp() {
         registry = replicaRegistry();
         sentMessages = new ArrayList<>();
-        ReplicationTransport capturingTransport = (target, message) -> sentMessages.add(new SentMessage(target, message));
+        ReplicationTransport capturingTransport = AcceptingReplicationTransport.accepting((target, message) -> sentMessages.add(new SentMessage(target, message)));
         manager = replicationManager(GOVERNOR, registry, capturingTransport);
     }
 
@@ -156,7 +156,7 @@ class ReplicationManagerTest {
         }
 
         private ReplicationTransport capturing() {
-            return (target, message) -> sentMessages.add(new SentMessage(target, message));
+            return AcceptingReplicationTransport.accepting((target, message) -> sentMessages.add(new SentMessage(target, message)));
         }
     }
 

@@ -6,10 +6,13 @@ on:
   pull_request:
     # overhaul/** and rewrite/** are long-lived integration branches (#2222): PRs into them get the same gate as release-*
     branches: [main, release-*, 'overhaul/**', 'rewrite/**']
+  # Merge queue (rc5): every required context below is produced here and runs unfiltered on the queue's temporary branch.
+  merge_group:
+    branches: [main, release-*, 'overhaul/**', 'rewrite/**']
   workflow_dispatch:
 
 # A newer run on the same PR supersedes the in-progress one. Pushes get a per-commit group and are never
-# cancelled: each merged commit's own run is evidence.
+# cancelled: each merged commit's own run is evidence. A merge_group run takes the sha group and is likewise never cancelled.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -146,11 +149,27 @@ jobs:
         timeout-minutes: 15
 
       # Ember's and Consensus's tests run in their shard jobs; postgres-async's integration tests are off by default and on here.
+      # aether.requireDocker: a live-database test that finds no Docker daemon FAILS here instead of self-skipping (#2591).
       - name: Test this group's modules
         run: >
           mvn verify -B -pl "${{ steps.plan.outputs.modules }}"
-          -Dember.skipTests=true -Dconsensus.skipTests=true -Dpostgres-async.skipTests=false
+          -Dember.skipTests=true -Dconsensus.skipTests=true -Dpostgres-async.skipTests=false -Daether.requireDocker=true
         timeout-minutes: 35
+
+      # The control for the guard above (#2591): with Docker "hidden" and the require property set, a live-database
+      # test must FAIL with the guard's own message. Fails this job if it passes, skips, or fails for any other reason.
+      # It writes NO report files (surefire has no property for a separate reports directory): the failing XML would overwrite the real
+      # TEST-...JdbcSqlConnectorPinnedTest.xml that the uploaded artifact must carry. The log it greps is its only output.
+      - name: Docker-hidden control (the require guard must fail, never skip)
+        if: matrix.group == 'g3'
+        run: |
+          if mvn test -B -pl aether/resource/db-jdbc -Daether.hideDocker=true -Daether.requireDocker=true \
+               -Dtest=JdbcSqlConnectorPinnedTest -Dsurefire.failIfNoSpecifiedTests=false \
+               -DdisableXmlReport=true -Dsurefire.useFile=false > docker-hidden-control.log 2>&1; then
+            echo "::error::the Docker-hidden control passed: requireDocker no longer fails when Docker is absent"; exit 1
+          fi
+          grep -q "refusing to skip" docker-hidden-control.log || { echo "::error::the control failed for another reason"; tail -50 docker-hidden-control.log; exit 1; }
+        timeout-minutes: 10
 
       - name: Verify examples (end-to-end pipeline check)
         if: steps.plan.outputs.examples == 'yes'

@@ -68,7 +68,7 @@ class DHTReplicationResolutionTest {
     class Unresolved {
         private final List<ProtocolMessage> sent = new ArrayList<>();
         private final DHTNode node = awaiting(FIVE.getFirst());
-        private final DHTNetwork network = (_, message) -> sent.add(message);
+        private final DHTNetwork network = AcceptingNetwork.accepting((_, message) -> sent.add(message));
         private final DistributedDHTClient client = distributedDHTClient(node, network, OwnerEpochSource.zero());
         private final byte[] key = "unresolved".getBytes(StandardCharsets.UTF_8);
 
@@ -214,8 +214,8 @@ class DHTReplicationResolutionTest {
 
         Cluster(DHTConfig config) {
             FIVE.forEach(id -> nodes.put(id, resolved(id, config)));
-            FIVE.forEach(id -> antiEntropies.put(id, dhtAntiEntropy(nodes.get(id), (target, message) -> route(target, message), _ -> false)));
-            FIVE.forEach(id -> clients.put(id, distributedDHTClient(nodes.get(id), (target, message) -> route(target, message), OwnerEpochSource.zero())));
+            FIVE.forEach(id -> antiEntropies.put(id, dhtAntiEntropy(nodes.get(id), AcceptingNetwork.accepting((target, message) -> route(target, message)), _ -> false)));
+            FIVE.forEach(id -> clients.put(id, distributedDHTClient(nodes.get(id), AcceptingNetwork.accepting((target, message) -> route(target, message)), OwnerEpochSource.zero())));
         }
 
         private void route(NodeId target, ProtocolMessage message) {
