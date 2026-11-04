@@ -57,7 +57,7 @@ class TransportOutcomeDisciplineTest {
                                                         "aether/aether-metrics",
                                                         "aether/aether-stream",
                                                         "aether/node");
-    static final Pattern TRANSPORT_TYPE = Pattern.compile("\\b(ClusterNetwork|DHTNetwork|ReplicationTransport|StreamForwardTransport)\\b");
+    static final Pattern TRANSPORT_TYPE = Pattern.compile("\\b(ClusterNetwork|DHTNetwork|ReplicationTransport|StreamForwardTransport|NetworkServiceMessage)\\b");
     /// The scanned file count at the commit that introduced the ratchet, rounded down: shrinking far below it means
     /// the walk lost part of its search space.
     static final int FILE_FLOOR = 650;
@@ -144,6 +144,17 @@ class TransportOutcomeDisciplineTest {
             assertThat(SendScanner.blindLines(onFailure)).containsExactly(1);
             assertThat(SendScanner.blindLines(mapToUnit)).containsExactly(1);
             assertThat(SendScanner.blindLines(readerSecond)).containsExactly(1);
+        }
+
+        @Test
+        void readerWhoseLambdaDiscardsItsParameter_isBlind() {
+            var onSuccess = "class A { void f() { var _ = network.send(p, m).onSuccess(_ -> {}); } }";
+            var map = "class A { void f() { var _ = network.send(p, m).map( _ -> unit()); } }";
+            var named = "class A { void f() { var _ = network.send(p, m).onSuccess(outcome -> policy(outcome)); } }";
+
+            assertThat(SendScanner.blindLines(onSuccess)).containsExactly(1);
+            assertThat(SendScanner.blindLines(map)).containsExactly(1);
+            assertThat(SendScanner.blindLines(named)).isEmpty();
         }
 
         @Test
@@ -317,6 +328,8 @@ class TransportOutcomeDisciplineTest {
         Pattern ROUTER_SEND = Pattern.compile("\\bnew\\s+(?:NetworkServiceMessage\\s*\\.\\s*)?Send\\s*\\(");
         /// The continuation a chained send must open with to count as reading the outcome.
         Pattern FIRST_CONTINUATION = Pattern.compile("^\\.\\s*(\\w+)");
+        /// A reader whose lambda discards its parameter (`onSuccess(_ -> ...)`, `map(_ -> ...)`) reads nothing.
+        Pattern UNNAMED_PARAMETER = Pattern.compile("^\\.\\s*\\w+\\s*\\(\\s*_\\s*->");
         Set<String> READERS = Set.of("onSuccess", "withSuccess", "map", "flatMap", "fold", "onResult");
 
         /// 1-based lines of the outcome-blind sites in `source`.
@@ -350,7 +363,7 @@ class TransportOutcomeDisciplineTest {
         private static boolean readsOutcome(String continuation) {
             var first = FIRST_CONTINUATION.matcher(continuation);
 
-            return first.find() && READERS.contains(first.group(1));
+            return first.find() && READERS.contains(first.group(1)) && !UNNAMED_PARAMETER.matcher(continuation).find();
         }
 
         private static boolean isReturned(String code, int dot) {
