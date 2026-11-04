@@ -39,6 +39,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.WitnessedRemoval;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.db.migration.MigrationError;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn3;
@@ -673,6 +674,21 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         // ArtifactNotFound stays unclassified, i.e. permanent).
         if (cause instanceof SliceLoadingFailure.Intermittent.ArtifactUnavailable) {
             return FailureClassification.TRANSIENT;
+        }
+        // FDB-2a (#2591, F5): another database session holds the migration fence, so this attempt ran and read nothing.
+        // Until FDB-3 classifies it FENCED (record stays MIGRATING), it takes the bounded TRANSIENT backoff back to
+        // PENDING, single-flighted by the KV lock, never a permanent FAILED for a run that never started.
+        if (cause instanceof MigrationError.MigrationFencedInDatabase) {
+            return FailureClassification.TRANSIENT;
+        }
+        // FDB-2a: a fence that cannot be held here (no grant, refused topology, a pooler that swapped the session) and an
+        // INVALID index left by a concurrent build (F8) both need the operator; a retry changes neither.
+        if (cause instanceof MigrationError.FenceUnavailable) {
+            return FailureClassification.PERMANENT;
+        }
+
+        if (cause instanceof MigrationError.InvalidIndexLeftBehind) {
+            return FailureClassification.PERMANENT;
         }
 
         if (cause instanceof SchemaError.MigrationFailed) {

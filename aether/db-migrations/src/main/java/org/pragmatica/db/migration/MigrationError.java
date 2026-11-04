@@ -111,14 +111,14 @@ public sealed interface MigrationError extends Cause {
     /// FDB-2a (#2591, F8): a `CREATE INDEX CONCURRENTLY` left an INVALID index behind (cancelled by the statement
     /// timeout, or its session died). `IF NOT EXISTS` passes over an invalid index silently, so the runner checks
     /// after every such statement and stops here instead of recording success.
-    record InvalidIndexLeftBehind(String datasource, String index) implements MigrationError {
-        public static InvalidIndexLeftBehind invalidIndexLeftBehind(String datasource, String index) {
-            return new InvalidIndexLeftBehind(datasource, index);
+    record InvalidIndexLeftBehind(String filename, String index) implements MigrationError {
+        public static InvalidIndexLeftBehind invalidIndexLeftBehind(String filename, String index) {
+            return new InvalidIndexLeftBehind(filename, index);
         }
 
         @Override
         public String message() {
-            return "Migration of datasource '" + datasource
+            return "Migration '" + filename
                  + "' stopped: index '" + index
                  + "' is INVALID (a CREATE INDEX CONCURRENTLY was cancelled or its session died). To recover: DROP INDEX CONCURRENTLY " + index
                  + "; then retry the migration.";

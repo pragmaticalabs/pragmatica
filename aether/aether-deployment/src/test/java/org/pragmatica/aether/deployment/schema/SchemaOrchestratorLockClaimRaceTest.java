@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.schema;
 
+import java.time.Duration;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.SocketAddress;
@@ -396,6 +397,12 @@ class SchemaOrchestratorLockClaimRaceTest {
 
     private static SqlConnector stubConnector() {
         return new SqlConnector() {
+            /// FDB-2a (#2591): one logical session; `body` runs on this double, then `release`; the result is `body`'s.
+            @Override
+            public <T> Promise<T> pinned(Duration statementTimeout, TransactionCallback<T> body, TransactionCallback<Unit> release) {
+                return body.execute(this).fold(bodyResult -> release.execute(this).fold(_ -> Promise.resolved(bodyResult)));
+            }
+
             @Override
             public DatabaseConnectorConfig config() {
                 return STUB_CONFIG;

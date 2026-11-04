@@ -11,6 +11,7 @@ import java.util.function.Consumer;
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
 import org.pragmatica.aether.resource.db.DatabaseType;
 import org.pragmatica.aether.resource.db.DatabaseConnectorError;
+import org.pragmatica.aether.resource.db.PinnedSessionBound;
 import org.pragmatica.aether.resource.db.RowMapper;
 import org.pragmatica.aether.resource.db.SqlConnector;
 import org.pragmatica.lang.Option;
@@ -101,7 +102,10 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
                                  TransactionCallback<T> body,
                                  TransactionCallback<Unit> release) {
         return dedicated.getConnection()
-                        .flatMap(conn -> runPinned(conn, config, body, release));
+                        .flatMap(conn -> runPinned(conn,
+                                                   config,
+                                                   PinnedSessionBound.serverBounded(statementTimeout, body),
+                                                   release));
     }
 
     @Override

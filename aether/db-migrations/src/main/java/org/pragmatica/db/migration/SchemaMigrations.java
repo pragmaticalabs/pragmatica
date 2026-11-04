@@ -27,6 +27,7 @@ import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.db.migration.MigrationError.BaselineConflict.baselineConflict;
 import static org.pragmatica.db.migration.MigrationError.ChecksumMismatch.checksumMismatch;
+import static org.pragmatica.db.migration.MigrationError.InvalidIndexLeftBehind.invalidIndexLeftBehind;
 import static org.pragmatica.db.migration.MigrationError.UndoNotAvailable.undoNotAvailable;
 import static org.pragmatica.db.migration.SchemaHistoryRepository.AppliedMigration.appliedMigration;
 
@@ -81,7 +82,7 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
 
     /// Claim ownership of the physical database IMMEDIATELY after bootstrap and BEFORE
     /// [SchemaHistoryRepository#queryApplied], so a refused claim short-circuits with no history read
-    /// and no migration applied.
+    /// and no migration applied. All three entry points run under the database fence ([#fenced]).
     @Override
     public Promise<SchemaResult> migrate(String datasource,
                                          List<MigrationScript> scripts,
@@ -89,16 +90,10 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
                                          String nodeId,
                                          String owner) {
         return parseAll(scripts).async()
-                       .flatMap(parsed -> historyRepo.bootstrap(connector)
-                                                     .flatMap(_ -> historyRepo.claimOwnership(connector,
-                                                                                              datasource,
-                                                                                              owner))
-                                                     .flatMap(_ -> historyRepo.queryApplied(connector))
-                                                     .flatMap(applied -> executeMigration(datasource,
-                                                                                          parsed,
-                                                                                          applied,
-                                                                                          connector,
-                                                                                          nodeId)));
+                       .flatMap(parsed -> fenced(datasource,
+                                                 connector,
+                                                 nodeId,
+                                                 session -> migrateOn(datasource, parsed, session, nodeId, owner)));
     }
 
     @Override
@@ -109,17 +104,15 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
                                       String nodeId,
                                       String owner) {
         return parseAll(scripts).async()
-                       .flatMap(parsed -> historyRepo.bootstrap(connector)
-                                                     .flatMap(_ -> historyRepo.claimOwnership(connector,
-                                                                                              datasource,
-                                                                                              owner))
-                                                     .flatMap(_ -> historyRepo.queryApplied(connector))
-                                                     .flatMap(applied -> executeUndo(datasource,
-                                                                                     targetVersion,
-                                                                                     parsed,
-                                                                                     applied,
-                                                                                     connector,
-                                                                                     nodeId)));
+                       .flatMap(parsed -> fenced(datasource,
+                                                 connector,
+                                                 nodeId,
+                                                 session -> undoOn(datasource,
+                                                                   targetVersion,
+                                                                   parsed,
+                                                                   session,
+                                                                   nodeId,
+                                                                   owner)));
     }
 
     @Override
@@ -130,17 +123,90 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
                                           String nodeId,
                                           String owner) {
         return parseAll(scripts).async()
-                       .flatMap(parsed -> historyRepo.bootstrap(connector)
-                                                     .flatMap(_ -> historyRepo.claimOwnership(connector,
-                                                                                              datasource,
-                                                                                              owner))
-                                                     .flatMap(_ -> historyRepo.queryApplied(connector))
-                                                     .flatMap(applied -> executeBaseline(datasource,
-                                                                                         baselineVersion,
-                                                                                         parsed,
-                                                                                         applied,
-                                                                                         connector,
-                                                                                         nodeId)));
+                       .flatMap(parsed -> fenced(datasource,
+                                                 connector,
+                                                 nodeId,
+                                                 session -> baselineOn(datasource,
+                                                                       baselineVersion,
+                                                                       parsed,
+                                                                       session,
+                                                                       nodeId,
+                                                                       owner)));
+    }
+
+    /// The database fence (FDB-2a, #2591; design §1, §2.3). On a tier-1 engine ([MigrationFence#isTierOne]) the whole
+    /// run happens on ONE dedicated session ([SqlConnector#pinned], bounded by the statement timeout): the fence is
+    /// acquired first, and only then are bootstrap, the ownership claim, the history read and every statement run, all
+    /// on that session ([FencedSession], which re-verifies the fence before each write). Leaving the scope closes the
+    /// session, which is what releases the fence; [MigrationFence#release] before it is a courtesy. Another holder ends
+    /// the attempt with [MigrationError.MigrationFencedInDatabase] having run and read nothing.
+    ///
+    /// Every other engine keeps today's unfenced path until FDB-2b gives it its tier-2/3 fence.
+    private <T> Promise<T> fenced(String datasource,
+                                  SqlConnector connector,
+                                  String nodeId,
+                                  SqlConnector.TransactionCallback<T> body) {
+        return MigrationFence.isTierOne(connector.databaseType())
+               ? connector.pinned(statementTimeout.duration(),
+                                  session -> acquireThen(datasource, session, nodeId, body),
+                                  MigrationFence::release)
+               : body.execute(connector);
+    }
+
+    private static <T> Promise<T> acquireThen(String datasource,
+                                              SqlConnector session,
+                                              String nodeId,
+                                              SqlConnector.TransactionCallback<T> body) {
+        return MigrationFence.acquire(session, datasource, nodeId).flatMap(fence -> body.execute(new FencedSession(session,
+                                                                                                                   fence)));
+    }
+
+    private Promise<SchemaResult> migrateOn(String datasource,
+                                            List<ParsedMigration> parsed,
+                                            SqlConnector session,
+                                            String nodeId,
+                                            String owner) {
+        return claimAndReadHistory(datasource, session, owner).flatMap(applied -> executeMigration(datasource,
+                                                                                                   parsed,
+                                                                                                   applied,
+                                                                                                   session,
+                                                                                                   nodeId));
+    }
+
+    private Promise<SchemaResult> undoOn(String datasource,
+                                         int targetVersion,
+                                         List<ParsedMigration> parsed,
+                                         SqlConnector session,
+                                         String nodeId,
+                                         String owner) {
+        return claimAndReadHistory(datasource, session, owner).flatMap(applied -> executeUndo(datasource,
+                                                                                              targetVersion,
+                                                                                              parsed,
+                                                                                              applied,
+                                                                                              session,
+                                                                                              nodeId));
+    }
+
+    private Promise<SchemaResult> baselineOn(String datasource,
+                                             int baselineVersion,
+                                             List<ParsedMigration> parsed,
+                                             SqlConnector session,
+                                             String nodeId,
+                                             String owner) {
+        return claimAndReadHistory(datasource, session, owner).flatMap(applied -> executeBaseline(datasource,
+                                                                                                  baselineVersion,
+                                                                                                  parsed,
+                                                                                                  applied,
+                                                                                                  session,
+                                                                                                  nodeId));
+    }
+
+    /// Bootstrap, then the ownership claim, then the applied-history read: on a fenced session all three run only
+    /// after the fence is held (design §1: history is read ONLY after acquire).
+    private Promise<List<AppliedMigration>> claimAndReadHistory(String datasource, SqlConnector session, String owner) {
+        return historyRepo.bootstrap(session)
+                          .flatMap(_ -> historyRepo.claimOwnership(session, datasource, owner))
+                          .flatMap(_ -> historyRepo.queryApplied(session));
     }
 
     private static Result<List<ParsedMigration>> parseAll(List<MigrationScript> scripts) {
@@ -382,7 +448,21 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
 
         return dialect.ddlTransactional() && !anyNonTransactional
                ? runInTransaction(migration, connector, texts, nodeId, startNanos)
-               : runAutocommit(datasource, migration, connector, texts, nodeId, startNanos, resumable);
+               : runAutocommit(datasource,
+                               migration,
+                               connector,
+                               autocommitStatements(statements, dialect),
+                               nodeId,
+                               startNanos,
+                               resumable);
+    }
+
+    private static List<AutocommitStatement> autocommitStatements(List<Statement> statements,
+                                                                  ExecutionDialect dialect) {
+        return statements.stream()
+                         .map(statement -> AutocommitStatement.autocommitStatement(statement.text(),
+                                                                                   dialect))
+                         .toList();
     }
 
     /// Transactional path (PG/DB2/SQL Server): the DDL statements AND the history-row insert run
@@ -404,8 +484,9 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
     /// Autocommit, checkpoint-aware path (MySQL/Oracle, whose DDL self-commits so it cannot be made
     /// atomic with the history row). FRESH RUN: write an `IN_PROGRESS` checkpoint row
     /// (`statements_completed = 0`) BEFORE the loop, then for each statement i (0-based) run it on
-    /// the base connector — each self-commits — and AFTER it succeeds advance the checkpoint to
-    /// `i + 1` (a separate auto-commit, so it advances durably); on full success transition the row
+    /// the migration's session and advance the checkpoint to `i + 1` — in the statement's own
+    /// transaction when the dialect allows one, else as a separate auto-commit right after it (see
+    /// BOUNDARY below); on full success transition the row
     /// to `SUCCESS` with the complete record (an UPDATE of the same row, never a second INSERT); on
     /// failure mark the row `FAILED` and propagate the [org.pragmatica.lang.Cause] so #118's retry
     /// re-enters and RESUMES.
@@ -421,18 +502,19 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
     /// advanced — never the reverse. Skipping an unapplied statement would silently corrupt the
     /// schema; re-attempting an already-applied statement is the safe failure mode.
     ///
-    /// INHERENT LIMITATION (shared with Flyway's non-transactional migrations): because an
-    /// autocommit statement and its `updateProgress` checkpoint are SEPARATE auto-commits, a crash
-    /// in the window BETWEEN a statement's own commit and its checkpoint advance leaves the
-    /// checkpoint one short, so on resume that ONE boundary statement is re-attempted. If it is
-    /// idempotent (e.g. `CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`) the re-attempt is
-    /// harmless; if it is non-idempotent the re-attempt errors and the migration is marked `FAILED`
-    /// for operator intervention. This is inherent to non-transactional migrations — but the rest of
-    /// the already-applied statements are still skipped, far better than replaying from statement 1.
+    /// BOUNDARY (FDB-2a, design §2.4): a statement the dialect can run in a transaction commits in ONE
+    /// transaction with its checkpoint advance, so it is applied exactly once across holder deaths
+    /// ([#runWithCheckpointInTransaction]). A statement that cannot (`CREATE INDEX CONCURRENTLY`, and
+    /// every DDL on engines whose DDL commits implicitly) still commits separately from its checkpoint:
+    /// a crash between the two leaves the checkpoint one short, so the next holder re-attempts that ONE
+    /// statement, sequentially (the database fence forbids a concurrent second runner). An idempotent
+    /// statement (`IF NOT EXISTS`) makes that harmless; a non-idempotent one errors and the migration is
+    /// marked `FAILED` for the operator; an error-free non-idempotent one (an unnamed index) is the
+    /// named residual.
     private Promise<Unit> runAutocommit(String datasource,
                                         ParsedMigration migration,
                                         SqlConnector connector,
-                                        List<String> statements,
+                                        List<AutocommitStatement> statements,
                                         String nodeId,
                                         long startNanos,
                                         boolean resumable) {
@@ -456,7 +538,7 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
     private Promise<Unit> runAutocommitFrom(String datasource,
                                             ParsedMigration migration,
                                             SqlConnector connector,
-                                            List<String> statements,
+                                            List<AutocommitStatement> statements,
                                             String nodeId,
                                             long startNanos,
                                             Option<MigrationProgress> progress) {
@@ -473,7 +555,7 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
     private Promise<Unit> resumeFromCheckpoint(String datasource,
                                                ParsedMigration migration,
                                                SqlConnector connector,
-                                               List<String> statements,
+                                               List<AutocommitStatement> statements,
                                                String nodeId,
                                                long startNanos,
                                                MigrationProgress checkpoint) {
@@ -498,7 +580,7 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
     /// from index 0 with the per-statement checkpoint advance, then finalize the row to `SUCCESS`.
     private Promise<Unit> runAutocommitFresh(ParsedMigration migration,
                                              SqlConnector connector,
-                                             List<String> statements,
+                                             List<AutocommitStatement> statements,
                                              String nodeId,
                                              long startNanos) {
         var record = appliedRecord(migration, nodeId, startNanos);
@@ -514,7 +596,7 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
     /// propagates the cause so #118's retry re-enters.
     private Promise<Unit> runAutocommitResume(ParsedMigration migration,
                                               SqlConnector connector,
-                                              List<String> statements,
+                                              List<AutocommitStatement> statements,
                                               String nodeId,
                                               long startNanos,
                                               int skip) {
@@ -540,7 +622,7 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
 
     private Promise<Unit> applyCheckpointed(ParsedMigration migration,
                                             SqlConnector connector,
-                                            List<String> statements,
+                                            List<AutocommitStatement> statements,
                                             int skip) {
         var result = Promise.unitPromise();
 
@@ -553,13 +635,83 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
 
     private Fn1<Promise<Unit>, Unit> chainCheckpointStep(ParsedMigration migration,
                                                          SqlConnector connector,
-                                                         String statement,
+                                                         AutocommitStatement statement,
                                                          int index) {
-        return _ -> connector.update(statement)
-                             .flatMap(_ -> historyRepo.updateProgress(connector,
-                                                                      migration.version(),
-                                                                      migration.type(),
-                                                                      index + 1));
+        return _ -> runCheckpointed(migration, connector, statement, index + 1);
+    }
+
+    private Promise<Unit> runCheckpointed(ParsedMigration migration,
+                                          SqlConnector connector,
+                                          AutocommitStatement statement,
+                                          int completed) {
+        return statement.transactional()
+               ? runWithCheckpointInTransaction(migration, connector, statement, completed)
+               : runThenCheckpoint(migration, connector, statement, completed);
+    }
+
+    /// H3 (FDB-2a, design §2.4): a statement the dialect can run in a transaction (DML; on PostgreSQL also ordinary
+    /// DDL) commits in ONE transaction with its checkpoint, so across any number of holder deaths it is applied exactly
+    /// once: a death before the commit rolls both back and the next holder re-runs it; a death after leaves the
+    /// checkpoint past it. Engines whose DDL commits implicitly (MySQL, Oracle) still commit such DDL on its own, so
+    /// for them DDL keeps the at-most-twice guarantee of the autocommit statement below.
+    private Promise<Unit> runWithCheckpointInTransaction(ParsedMigration migration,
+                                                         SqlConnector connector,
+                                                         AutocommitStatement statement,
+                                                         int completed) {
+        return connector.transactional(tx -> updateThenCheckpoint(migration, tx, statement, completed));
+    }
+
+    private Promise<Unit> updateThenCheckpoint(ParsedMigration migration,
+                                               SqlConnector tx,
+                                               AutocommitStatement statement,
+                                               int completed) {
+        return tx.update(statement.text())
+                 .flatMap(_ -> historyRepo.updateProgress(tx,
+                                                          migration.version(),
+                                                          migration.type(),
+                                                          completed));
+    }
+
+    /// A statement that cannot run in a transaction (`CREATE INDEX CONCURRENTLY` and its kin) runs in autocommit and
+    /// only THEN advances the checkpoint; under the fence it executes at most twice, sequentially, never concurrently
+    /// (design §2.4). After a concurrent index build, the F8 check runs BEFORE the checkpoint moves past it.
+    private Promise<Unit> runThenCheckpoint(ParsedMigration migration,
+                                            SqlConnector connector,
+                                            AutocommitStatement statement,
+                                            int completed) {
+        return connector.update(statement.text())
+                        .flatMap(_ -> requireValidIndex(migration, connector, statement))
+                        .flatMap(_ -> historyRepo.updateProgress(connector,
+                                                                 migration.version(),
+                                                                 migration.type(),
+                                                                 completed));
+    }
+
+    /// F8 (design §2.4): a `CREATE INDEX CONCURRENTLY` cancelled by the statement timeout, or killed with its session,
+    /// leaves an INVALID index, and a resumed `IF NOT EXISTS` passes over it silently. So after every such statement,
+    /// fresh or resumed, an invalid index of that name stops the run with [MigrationError.InvalidIndexLeftBehind]. An
+    /// unnamed concurrent index cannot be checked by name (the design's named residual: name every index).
+    private static Promise<Unit> requireValidIndex(ParsedMigration migration,
+                                                   SqlConnector connector,
+                                                   AutocommitStatement statement) {
+        return statement.concurrentIndex()
+                        .fold(Promise::unitPromise,
+                              index -> checkIndexValid(migration, connector, index));
+    }
+
+    private static Promise<Unit> checkIndexValid(ParsedMigration migration, SqlConnector connector, String index) {
+        return connector.queryOne("SELECT count(*)::int AS n FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid"
+                                 + " WHERE c.relname = ? AND NOT i.indisvalid",
+                                  row -> row.getInt("n"),
+                                  index)
+                        .flatMap(invalid -> refuseInvalid(migration, index, invalid));
+    }
+
+    private static Promise<Unit> refuseInvalid(ParsedMigration migration, String index, int invalid) {
+        return invalid == 0
+               ? Promise.unitPromise()
+               : invalidIndexLeftBehind(migration.entry().filename(),
+                                        index).promise();
     }
 
     private Promise<Unit> finalizeAutocommit(ParsedMigration migration,

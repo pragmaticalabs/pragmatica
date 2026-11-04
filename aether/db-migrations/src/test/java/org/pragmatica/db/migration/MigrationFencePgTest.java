@@ -29,6 +29,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
@@ -107,7 +108,7 @@ class MigrationFencePgTest {
     /// runs NOTHING (the rollback-proof entry counter is unchanged) and writes NOTHING (not even the history table:
     /// bootstrap runs only under the fence).
     @ParameterizedTest
-    @EnumSource(Transport.class)
+    @EnumSource(names = {"JDBC", "ASYNC"})
     void migrate_whileAnotherSessionHoldsTheFence_returnsFencedAndRunsNothing(Transport transport) throws Exception {
         freshDatabase("CREATE SEQUENCE entries", "CREATE TABLE entry_log (id BIGINT)");
         var holder = superuserOnTestDb();
@@ -130,7 +131,7 @@ class MigrationFencePgTest {
     /// lives; A is terminated, its transaction rolls back; only once A's session is gone does B acquire, and the
     /// script's effects commit exactly once.
     @ParameterizedTest
-    @EnumSource(Transport.class)
+    @EnumSource(names = {"JDBC", "ASYNC"})
     void migrate_holderDiesMidTransactionalScript_successorAcquiresOnlyAfterItsSessionIsGone_committedOnce(Transport transport) throws Exception {
         freshDatabase("CREATE SEQUENCE entries", "CREATE TABLE entry_log (id BIGINT)", "CREATE TABLE gate (id INT)");
         var connector = connector(transport, 2);
@@ -162,7 +163,7 @@ class MigrationFencePgTest {
     /// re-entered. Every history write, A's and B's, came from a fenced runner session (`aether-mig:*`), never from a
     /// pooled connection (M8: a write on the base connector would carry the pool's application name).
     @ParameterizedTest
-    @EnumSource(Transport.class)
+    @EnumSource(names = {"JDBC", "ASYNC"})
     void migrate_holderDiesMidAutocommitScript_successorResumesAtTheCheckpoint_statementOneNotReentered(Transport transport) throws Exception {
         freshDatabase("CREATE TABLE s1_log (id INT)", "CREATE TABLE gate (id INT)", "CREATE TABLE t5 (c INT)");
         var connector = connector(transport, 2);
@@ -199,7 +200,7 @@ class MigrationFencePgTest {
     /// history row the test holds FOR UPDATE; A is terminated there. Its INSERT rolls back with the checkpoint, so B
     /// re-runs it once: row count 1. Split from its checkpoint (M10), A's INSERT would have committed: count 2.
     @ParameterizedTest
-    @EnumSource(Transport.class)
+    @EnumSource(names = {"JDBC", "ASYNC"})
     void migrate_holderDiesBetweenDmlAndItsCheckpoint_successorReRunsTheDmlOnce(Transport transport) throws Exception {
         freshDatabase("CREATE TABLE keyless (v INT)", "CREATE TABLE t5b (c INT)");
         var connector = connector(transport, 2);
@@ -234,7 +235,7 @@ class MigrationFencePgTest {
     /// session (pooled ones included) holds the fence. Positive control: the run's history writes came from a fenced
     /// runner session, so a fence really existed to leak.
     @ParameterizedTest
-    @EnumSource(Transport.class)
+    @EnumSource(names = {"JDBC", "ASYNC"})
     void migrate_leavesNoFenceBehind_onSuccessFailureAndAFailedUnlock(Transport transport) throws Exception {
         freshDatabase("CREATE TABLE ok (id INT)");
         var connector = connector(transport, 2);
@@ -260,7 +261,7 @@ class MigrationFencePgTest {
     /// T9: four runners started together on an EMPTY database: bootstrap runs only under the fence, so exactly one
     /// meta row and one owner row exist, the script ran once, and every runner either succeeded or was fenced.
     @ParameterizedTest
-    @EnumSource(Transport.class)
+    @EnumSource(names = {"JDBC", "ASYNC"})
     void migrate_concurrentFirstBootstrap_writesExactlyOneMetaAndOneOwnerRow(Transport transport) throws Exception {
         freshDatabase("CREATE SEQUENCE entries", "CREATE TABLE entry_log (id BIGINT)");
         var connector = connector(transport, 8);
@@ -295,7 +296,7 @@ class MigrationFencePgTest {
     /// fails with `InvalidIndexLeftBehind` naming the index. The cancel comes from the pinned session's own statement
     /// bound: client-side on JDBC, server-side `statement_timeout` on R2DBC and pg-async.
     @ParameterizedTest
-    @EnumSource(Transport.class)
+    @EnumSource(names = {"JDBC", "ASYNC"})
     void migrate_cicCancelledByTheStatementTimeout_resumeFailsWithInvalidIndexLeftBehind(Transport transport) throws Exception {
         freshDatabase("CREATE TABLE t11 (c INT)", "INSERT INTO t11 VALUES (1)");
         var connector = connector(transport, 2);
@@ -316,6 +317,23 @@ class MigrationFencePgTest {
 
         assertThat(causeOf(resumed)).isInstanceOf(MigrationError.InvalidIndexLeftBehind.class);
         assertThat(((MigrationError.InvalidIndexLeftBehind) causeOf(resumed)).index()).isEqualTo("t11_c_idx");
+    }
+
+    // ---------------------------------------------------------------- R2DBC tripwire
+
+    /// TRIPWIRE, asserting CURRENT behaviour: no migration runs through the R2DBC transport at all, fence or not. The
+    /// history repository's statements bind `?` placeholders and r2dbc-postgresql accepts only `$n`, so the first
+    /// parameterised statement fails ("Binding index 0 when only 0 parameters are expected"). The fence tests above
+    /// therefore run on JDBC and pg-async only. When this goes red, R2DBC can run migrations: add `R2DBC` to every
+    /// `@EnumSource` in this class and delete this test.
+    @Test
+    void tripwire_r2dbcCannotRunAMigration_enableTheR2dbcRowsWhenThisGoesRed() throws Exception {
+        freshDatabase("CREATE TABLE ok (id INT)");
+
+        var result = migrate(connector(Transport.R2DBC, 2), GENEROUS, "node-a", script(1, "ok", "INSERT INTO ok VALUES (1);\n"));
+
+        assertThat(result.isFailure()).as("R2DBC now runs migrations: enable the R2DBC rows of MigrationFencePgTest").isTrue();
+        assertThat(causeOf(result).message()).contains("Binding index");
     }
 
     // ---------------------------------------------------------------- fixtures

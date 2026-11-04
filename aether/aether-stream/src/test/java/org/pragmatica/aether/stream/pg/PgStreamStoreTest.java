@@ -5,6 +5,7 @@
 
 package org.pragmatica.aether.stream.pg;
 
+import java.time.Duration;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -159,6 +160,12 @@ class PgStreamStoreTest {
     /// Minimal stub for SqlConnector. Only the methods used by PgStreamStore are implemented.
     @SuppressWarnings("unchecked")
     static final class StubSqlConnector implements SqlConnector {
+        /// FDB-2a (#2591): one logical session; `body` runs on this double, then `release`; the result is `body`'s.
+        @Override
+        public <T> Promise<T> pinned(Duration statementTimeout, TransactionCallback<T> body, TransactionCallback<Unit> release) {
+            return body.execute(this).fold(bodyResult -> release.execute(this).fold(_ -> Promise.resolved(bodyResult)));
+        }
+
         final AtomicReference<String> lastSql = new AtomicReference<>();
         final AtomicReference<Object[]> lastParams = new AtomicReference<>();
         final AtomicReference<Boolean> transactionalCalled = new AtomicReference<>(false);

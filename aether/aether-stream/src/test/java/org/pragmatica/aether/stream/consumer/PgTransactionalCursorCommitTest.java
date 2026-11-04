@@ -5,6 +5,8 @@
 
 package org.pragmatica.aether.stream.consumer;
 
+import org.pragmatica.lang.Unit;
+import java.time.Duration;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
@@ -90,6 +92,12 @@ class PgTransactionalCursorCommitTest {
 
     /// Recording SqlConnector that tracks transactional calls for testing.
     static final class RecordingSqlConnector implements SqlConnector {
+        /// FDB-2a (#2591): one logical session; `body` runs on this double, then `release`; the result is `body`'s.
+        @Override
+        public <T> Promise<T> pinned(Duration statementTimeout, TransactionCallback<T> body, TransactionCallback<Unit> release) {
+            return body.execute(this).fold(bodyResult -> release.execute(this).fold(_ -> Promise.resolved(bodyResult)));
+        }
+
         private final AtomicLong transactionalCallCount = new AtomicLong(0);
         private final AtomicReference<RecordingTxConnector> lastTxRef = new AtomicReference<>();
 
@@ -139,6 +147,12 @@ class PgTransactionalCursorCommitTest {
     }
 
     static final class RecordingTxConnector implements SqlConnector {
+        /// FDB-2a (#2591): one logical session; `body` runs on this double, then `release`; the result is `body`'s.
+        @Override
+        public <T> Promise<T> pinned(Duration statementTimeout, TransactionCallback<T> body, TransactionCallback<Unit> release) {
+            return body.execute(this).fold(bodyResult -> release.execute(this).fold(_ -> Promise.resolved(bodyResult)));
+        }
+
         private final CopyOnWriteArrayList<String> updates = new CopyOnWriteArrayList<>();
 
         List<String> updateCalls() {

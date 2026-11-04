@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.time.Duration;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.lang.reflect.Proxy;
@@ -296,6 +297,12 @@ class SchemaRoutesUndoRealManagerTest {
     /// same `update` override as one issued directly — exactly how `SchemaRoutesBaselineTest
     /// .stubConnector` already behaves.
     private static final class RecordingConnector implements SqlConnector {
+        /// FDB-2a (#2591): one logical session that answers the real runner's fence statements ([FakeMigrationFence]).
+        @Override
+        public <T> Promise<T> pinned(Duration statementTimeout, TransactionCallback<T> body, TransactionCallback<Unit> release) {
+            return FakeMigrationFence.pinnedOn(this, body, release);
+        }
+
         private final List<String> executedSql = new ArrayList<>();
         private final List<Integer> deletedVersions = new ArrayList<>();
 
@@ -314,7 +321,7 @@ class SchemaRoutesUndoRealManagerTest {
         }
 
         @Override public <T> Promise<T> queryOne(String sql, RowMapper<T> mapper, Object... params) {
-            return Causes.cause("Not supported in this stub").promise();
+            return FakeMigrationFence.answer(sql, mapper).or(() -> Causes.cause("Not supported in this stub").promise());
         }
 
         @Override public <T> Promise<Option<T>> queryOptional(String sql, RowMapper<T> mapper, Object... params) {

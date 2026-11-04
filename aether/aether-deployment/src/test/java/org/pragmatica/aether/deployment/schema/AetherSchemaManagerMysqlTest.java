@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.schema;
 
+import org.pragmatica.lang.Unit;
+import java.time.Duration;
 import org.pragmatica.db.migration.SchemaHistoryRepository;
 
 import org.pragmatica.db.migration.MigrationDialects;
@@ -258,9 +260,20 @@ class AetherSchemaManagerMysqlTest {
         private final String password;
         private final String database;
         private final Option<Connection> bound;
+        private final boolean pinnedSession;
         private final DatabaseConnectorConfig config;
 
         JdbcMysqlConnector(String url, String user, String password, String database, Option<Connection> bound) {
+            this(url, user, password, database, bound, false);
+        }
+
+        private JdbcMysqlConnector(String url,
+                                   String user,
+                                   String password,
+                                   String database,
+                                   Option<Connection> bound,
+                                   boolean pinnedSession) {
+            this.pinnedSession = pinnedSession;
             this.url = url;
             this.user = user;
             this.password = password;
@@ -302,6 +315,11 @@ class AetherSchemaManagerMysqlTest {
         @Override
         public Promise<int[]> batch(String sql, List<Object[]> paramsList) {
             return Causes.cause("batch not supported in MySQL migration test").promise();
+        }
+
+        @Override
+        public <T> Promise<T> pinned(Duration statementTimeout, TransactionCallback<T> body, TransactionCallback<Unit> release) {
+            return runPinned(body, release).async();
         }
 
         @Override
@@ -385,7 +403,43 @@ class AetherSchemaManagerMysqlTest {
         /// self-commits, so a rollback is a no-op for the DDL itself — the connector still honors the
         /// contract a production JDBC connector provides. The callback's [Promise] resolves
         /// synchronously here, so awaiting it to learn commit-vs-rollback is safe.
+        /// FDB-2a (#2591): a `pinned` scope's transaction begins and commits on the scope's own connection; any other
+        /// transaction borrows a fresh one, as before.
         private <T> Result<T> runTransaction(TransactionCallback<T> callback) {
+            return bound.filter(_ -> pinnedSession)
+                        .fold(() -> runTransactionOnNewConnection(callback),
+                              connection -> runTransactionOnPinned(connection, callback));
+        }
+
+        private <T> Result<T> runTransactionOnPinned(Connection connection, TransactionCallback<T> callback) {
+            try {
+                connection.setAutoCommit(false);
+                var txConnector = new JdbcMysqlConnector(url, user, password, database, some(connection));
+                Result<T> result = callback.execute(txConnector).await().fold(cause -> rollback(connection, cause),
+                                                                        value -> commit(connection, value));
+
+                connection.setAutoCommit(true);
+                return result;
+            } catch (Exception e) {
+                return Causes.fromThrowable(e).result();
+            }
+        }
+
+        /// FDB-2a (#2591): `pinned` holds ONE dedicated physical connection, in autocommit, for the whole scope; every
+        /// call and every `transactional(...)` the body makes runs on it, then `release`, then the connection closes.
+        private <T> Result<T> runPinned(TransactionCallback<T> body, TransactionCallback<Unit> release) {
+            try (var connection = openConnection()) {
+                var session = new JdbcMysqlConnector(url, user, password, database, some(connection), true);
+                var result = body.execute(session).await();
+
+                release.execute(session).await();
+                return result;
+            } catch (Exception e) {
+                return Causes.fromThrowable(e).result();
+            }
+        }
+
+        private <T> Result<T> runTransactionOnNewConnection(TransactionCallback<T> callback) {
             try (var connection = openConnection()) {
                 connection.setAutoCommit(false);
                 var txConnector = new JdbcMysqlConnector(url, user, password, database, some(connection));

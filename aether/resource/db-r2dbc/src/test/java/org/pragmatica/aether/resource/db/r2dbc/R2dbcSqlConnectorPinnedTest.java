@@ -360,6 +360,19 @@ class R2dbcSqlConnectorPinnedTest {
         assertThat(elapsedMs).as("cancelled near the 1 s bound, not after the 30 s sleep").isLessThan(15_000);
     }
 
+    /// A statement with no row count (`SET`) on a pinned session updated zero rows; it must not fail with `NoResult`
+    /// (it did before FDB-2a, which made the session's server-side timeout `SET`s impossible). DDL and a `SET` of a
+    /// server-reported parameter (`application_name`) through R2DBC fail for another reason ("Expected single result
+    /// but got 2") [unverified: its cause]; no fence statement is one of those, and the migration tripwire covers DDL.
+    @Test
+    void update_onAPinnedSession_setWithNoRowCount_returnsZero() {
+        var base = connector(1);
+
+        assertThat(base.pinned(NO_BOUND, session -> session.update("SET work_mem = '8MB'"), RELEASE_OK)
+                       .await()
+                       .unwrap()).isZero();
+    }
+
     private interface PinnedTimeoutProbe {
         static Promise<String> shownTimeouts(SqlConnector session) {
             return session.queryOne("SELECT current_setting('statement_timeout') AS st, current_setting('lock_timeout') AS lt",

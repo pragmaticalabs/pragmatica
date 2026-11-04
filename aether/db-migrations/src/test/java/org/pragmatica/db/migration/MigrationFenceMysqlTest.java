@@ -109,8 +109,10 @@ class MigrationFenceMysqlTest {
     }
 
     /// T5b (MySQL, H3): the DML statement and its checkpoint commit in ONE transaction. A resumes from a seeded
-    /// checkpoint 0, inserts, and its checkpoint UPDATE blocks on the history row the test holds FOR UPDATE; A is killed
-    /// there; B re-runs the INSERT once: row count 1.
+    /// checkpoint 0 and parks on its INSERT (the test holds the empty table's gap lock); the test then takes the history
+    /// row FOR UPDATE and opens the gate, so A's INSERT lands and its checkpoint UPDATE blocks on that row; A is killed
+    /// there; B re-runs the INSERT once: row count 1. (The history row cannot be locked before A starts: A's bootstrap
+    /// `CREATE TABLE IF NOT EXISTS` needs the table's exclusive metadata lock, which an open FOR UPDATE would withhold.)
     @Test
     void migrate_holderDiesBetweenDmlAndItsCheckpoint_successorReRunsTheDmlOnce() throws Exception {
         freshDatabase("CREATE TABLE keyless (v INT) ENGINE = InnoDB");
@@ -125,17 +127,27 @@ class MigrationFenceMysqlTest {
                   .await()
                   .unwrap();
 
+        var gate = rootOnTestDb();
+
+        gate.setAutoCommit(false);
+        execute(gate, "SELECT * FROM keyless FOR UPDATE");
+
+        var a = runners.submit(() -> migrate(connector, "node-a", script));
+
+        awaitFenceHolderLockWait("INSERT INTO keyless", a);
+
         var rowLock = rootOnTestDb();
 
         rowLock.setAutoCommit(false);
         execute(rowLock, "SELECT * FROM aether_schema_history WHERE version = 1 FOR UPDATE");
+        gate.commit();
 
-        var a = runners.submit(() -> migrate(connector, "node-a", script));
-        var aId = awaitFenceHolderWaitingOnRowLock();
+        var aId = awaitFenceHolderLockWait("UPDATE aether_schema_history", a);
 
         try (var killer = rootOnTestDbScoped()) {
             execute(killer, "KILL " + aId);
         }
+
         assertThat(a.get(WAIT_MS, TimeUnit.MILLISECONDS).isFailure()).isTrue();
         awaitTrue("SELECT IS_USED_LOCK('" + lockName() + "') IS NULL");
         rowLock.rollback();
@@ -267,13 +279,16 @@ class MigrationFenceMysqlTest {
         }
     }
 
-    private long awaitFenceHolderWaitingOnRowLock() throws Exception {
+    /// Waits until the fence holder's connection is parked on a statement starting with `statement`. Each statement
+    /// the test waits on is blocked by a lock the test holds, so seeing it as the connection's current statement means
+    /// it is waiting there (a premature match could only make the test fail, never pass).
+    private long awaitFenceHolderLockWait(String statement, Future<Result<SchemaResult>> runner) throws Exception {
         var deadline = System.currentTimeMillis() + WAIT_MS;
-        var sql = "SELECT t.trx_mysql_thread_id FROM information_schema.innodb_trx t WHERE t.trx_state = 'LOCK WAIT' "
-                  + "AND t.trx_mysql_thread_id = IS_USED_LOCK('" + lockName() + "')";
+        var sql = "SELECT p.ID FROM information_schema.PROCESSLIST p WHERE p.ID = IS_USED_LOCK('" + lockName() + "') AND p.INFO LIKE '"
+                  + statement + "%'";
 
         while (System.currentTimeMillis() < deadline) {
-            try (var conn = rootOnTestDbScoped(); var statement = conn.createStatement(); var rs = statement.executeQuery(sql)) {
+            try (var conn = rootOnTestDbScoped(); var query = conn.createStatement(); var rs = query.executeQuery(sql)) {
                 if (rs.next()) {
                     return rs.getLong(1);
                 }
@@ -282,7 +297,11 @@ class MigrationFenceMysqlTest {
             Thread.sleep(25);
         }
 
-        throw new AssertionError("the fence holder never reached the history-row lock wait");
+        throw new AssertionError("the fence holder never reached a lock wait on: " + statement + "; runner: "
+                                 + (runner.isDone() ? runner.get() : "still running") + "; transactions: "
+                                 + rows("SELECT CONCAT(trx_mysql_thread_id, ' ', trx_state, ' ', COALESCE(trx_query, '-')) FROM information_schema.innodb_trx")
+                                 + "; fence holder: " + rows("SELECT COALESCE(IS_USED_LOCK('" + lockName() + "'), -1)")
+                                 + "; processes: " + rows("SELECT CONCAT(ID, ' ', COALESCE(STATE, '-'), ' ', COALESCE(INFO, '-')) FROM information_schema.PROCESSLIST"));
     }
 
     private void awaitTrue(String sql) throws Exception {
@@ -297,6 +316,18 @@ class MigrationFenceMysqlTest {
         }
 
         throw new AssertionError("condition never held: " + sql);
+    }
+
+    private List<String> rows(String sql) throws SQLException {
+        try (var conn = rootOnTestDbScoped(); var statement = conn.createStatement(); var rs = statement.executeQuery(sql)) {
+            var out = new ArrayList<String>();
+
+            while (rs.next()) {
+                out.add(rs.getString(1));
+            }
+
+            return out;
+        }
     }
 
     private long scalar(String sql) throws SQLException {

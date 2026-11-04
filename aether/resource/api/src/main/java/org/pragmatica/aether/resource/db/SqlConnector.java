@@ -34,8 +34,9 @@ public interface SqlConnector extends DatabaseConnector {
     /// The close is chained to `body`'s own promise, never to a caller's timeout on it.
     ///
     /// **Contract.** No statement is retried on a connection error: a retry could silently land on another session
-    /// (fail-fast). Statements are bounded by `statementTimeout` where the transport can bound them (JDBC); a transport
-    /// that cannot, leaves the bound to the caller's own promise timeout.
+    /// (fail-fast). Statements are bounded by `statementTimeout`: client-side on JDBC; on R2DBC and pg-async, which have
+    /// no client-side bound, by the server-side `statement_timeout` and `lock_timeout` set first on a PostgreSQL session
+    /// ([PinnedSessionBound]). `Duration.ZERO` means unbounded.
     ///
     /// **Default.** Fails with [DatabaseConnectorError.PinnedSessionUnsupported]: a transport that does not implement
     /// this method cannot hold a session, and must never fall back to running unpinned.
