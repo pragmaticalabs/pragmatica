@@ -767,8 +767,9 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
             return FailureClassification.TRANSIENT;
         }
         // FDB-2a (#2591, F5): another database session holds the migration fence, so this attempt ran and read nothing.
-        // Until FDB-3 classifies it FENCED (record stays MIGRATING), it takes the bounded TRANSIENT backoff back to
-        // PENDING, single-flighted by the KV lock, never a permanent FAILED for a run that never started.
+        // A migration failure never reaches here with it: handleMigrationFailure re-dispatches it first without consuming
+        // an attempt (fix-round-1 ruling, rescheduleWhileHeld). Classified TRANSIENT for every other reader, until FDB-3
+        // classifies it FENCED.
         if (cause instanceof MigrationError.MigrationFencedInDatabase) {
             return FailureClassification.TRANSIENT;
         }
