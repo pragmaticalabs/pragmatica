@@ -120,8 +120,8 @@ public sealed interface MigrationError extends Cause {
         public String message() {
             return "Migration of datasource '" + datasource
                  + "' stopped: index '" + index
-                 + "' is INVALID (a CREATE INDEX CONCURRENTLY was cancelled or its session died). To recover: DROP INDEX CONCURRENTLY "
-                 + index + "; then retry the migration.";
+                 + "' is INVALID (a CREATE INDEX CONCURRENTLY was cancelled or its session died). To recover: DROP INDEX CONCURRENTLY " + index
+                 + "; then retry the migration.";
         }
     }
 }
