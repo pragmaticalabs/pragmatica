@@ -106,6 +106,25 @@ class ReplicaDivergentTailRepairTest {
         assertThat(manager.quarantinedAt(STREAM, PARTITION).isEmpty()).as("the divergence is repaired, not remembered").isTrue();
     }
 
+    /// PR-2f S2 (know `e10cf838c9`): a cut lowers the owner's reported position on this copy and keeps it an ANNOUNCEMENT, so
+    /// a copy whose visible position reaches the lowered mark serves its own GOVERNOR reads instead of forwarding until the
+    /// owner's next report. Red when the cut drops the announced flag.
+    @Test
+    void cutBelowTheReportedPosition_keepsItAnAnnouncement_soTheCopyIsNotBehind() {
+        manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
+        seedReplica(10, 3);
+        manager.commitAdvanced(STREAM, PARTITION, 9L, committedEpoch);
+
+        assertThat(manager.behindCommittedOwner(STREAM, PARTITION)).as("control: announced 9 and visible 9 before the cut").isFalse();
+
+        backfill(owner(5, 3, new AtomicLong()));
+
+        assertThat(manager.committedThrough(STREAM, PARTITION)).as("control: the cut lowered the reported position to 2").isEqualTo(2L);
+        assertThat(manager.visibleBounds(STREAM, PARTITION).map(bounds -> bounds.visibleHead()).or(-2L)).as("control: visible is at the cut")
+                                                                                                         .isEqualTo(2L);
+        assertThat(manager.behindCommittedOwner(STREAM, PARTITION)).as("the lowered mark is still the owner's announcement").isFalse();
+    }
+
     /// Same head, different records from offset 3: nothing is above the owner, and the replica is still not trusted
     /// until its records are compared.
     /// #1890, at the replication-manager level (the real manager reading the registry the real backfill wrote): the replica
