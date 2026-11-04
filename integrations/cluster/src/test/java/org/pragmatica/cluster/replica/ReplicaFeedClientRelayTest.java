@@ -242,6 +242,19 @@ class ReplicaFeedClientRelayTest {
             }
         }
 
+        /// `rounds` rounds of 300 ms in which the cores drain (grants, entries) but send no heartbeat, so a subscriber is granted and stays uncounted.
+        void runWithoutCoreBeats(int rounds) {
+            for (var i = 0; i < rounds; i++) {
+                advance(300);
+                cores.forEach(core -> core.server.tick());
+                pump();
+                workers.values().stream().filter(worker -> worker.up.get()).forEach(worker -> worker.client.tick());
+                pump();
+                cores.forEach(core -> core.server.tick());
+                pump();
+            }
+        }
+
         /// Commits one batch at the next slot on every core, the way the engine does (one shared batch, so every core records the same batch id).
         @SafeVarargs
         final void commit(KVCommand<StructuredKey>... commands) {
@@ -641,6 +654,87 @@ class ReplicaFeedClientRelayTest {
 
         assertThat(gov.gate.mayServeMembers()).as("17 s after the cores died: the governor serves nobody").isFalse();
         assertThat(member.readiness.ready()).as("17 s after the cores died: the member is not ready (spec bound 30 s from the last heartbeat, not 60 s)").isFalse();
+    }
+
+    /// #2510 phase three: the governor dies, the selector flips the member to a core (which grants but has not beaten yet) and back to the silent
+    /// governor, and the silent governor is waited out; the carried beats must hold until the core's first beat, and the member then converges on the
+    /// core without a snapshot. The member sits 1.8 s on the first core before the flip, so the carry set by the first subscribe (4.5 s) is spent before the
+    /// core beats: only a grace renewed by the second subscribe holds, inside the 6 s cap. Mutation: `carryBeatsFor` ignores a carry
+    /// already set (the rc5 guard), or the client passes `silenceMillis` as the grace.
+    @Test
+    void aMemberReparentedToACoreAndBackToASilentGovernor_staysReadyUntilTheCoreBeat() {
+        var mesh = meshWithData();
+        var gov = mesh.governorReady("w-gov");
+        var member = mesh.worker("w-1");
+
+        mesh.run(8);
+        assertThat(mesh.subscribeTargets(member)).containsExactly(gov.id);
+
+        gov.up.set(false);
+        mesh.announced.set(Option.none());
+        mesh.runWithoutCoreBeats(6);
+        assertThat(mesh.isCore(mesh.subscribeTargets(member).getLast())).as("first re-parent: a core, granted, 1.8 s without a beat (inside the 3 s silence)").isTrue();
+        mesh.announced.set(Option.some(gov.id));
+        mesh.runWithoutCoreBeats(2);
+        assertThat(mesh.subscribeTargets(member).getLast()).as("second re-parent: the silent governor, no counted beat in between").isEqualTo(gov.id);
+
+        for (var i = 0; i < 40 && mesh.subscribeTargets(member).getLast().equals(gov.id); i++) {
+            mesh.advance(300);
+            mesh.step();
+            assertThat(member.readiness.ready()).as("round %d: still waiting out the silent governor, the carried beats hold", i).isTrue();
+        }
+
+        assertThat(mesh.isCore(mesh.subscribeTargets(member).getLast())).as("the silence moved the member to a core").isTrue();
+        mesh.run(3);
+        assertThat(member.readiness.ready()).isTrue();
+        assertThat(member.installs.get()).as("no second snapshot").isEqualTo(1);
+    }
+
+    /// #2510 cap: with both cores gone every re-parent lands on a silent source, and readiness may be renewed only up to two silences past the start of the
+    /// first carry since the last counted beat, at each relay level: the governor, and its member from the moment the governor stops serving it. Mutation:
+    /// drop the `Math.min` against the anchor in `carryBeatsFor`.
+    @Test
+    void aChainOfReparentsOntoSilentSources_leavesReadinessByTheCap_forTheGovernorAndItsMember() {
+        var mesh = meshWithData();
+        var gov = mesh.governorReady("w-gov");
+        var member = mesh.worker("w-1");
+
+        mesh.run(8);
+        assertThat(mesh.subscribeTargets(member)).containsExactly(gov.id);
+        mesh.cores.forEach(core -> core.up.set(false));
+
+        var killMillis = (mesh.nanos.get() - 1_000_000_000L) / MS;
+        var capMillis = ReplicaClientLimits.DEFAULT.carryCapMillis();
+        var slackMillis = 600L;
+        var govLeft = -1L;
+        var memberLeft = -1L;
+
+        for (var i = 0; i < 300 && memberLeft < 0; i++) {
+            mesh.advance(300);
+            mesh.step();
+            var now = (mesh.nanos.get() - 1_000_000_000L) / MS;
+
+            govLeft = govLeft < 0 && !gov.readiness.ready() ? now : govLeft;
+            memberLeft = memberLeft < 0 && !member.readiness.ready() ? now : memberLeft;
+        }
+
+        assertThat(govLeft).as("the governor left readiness").isPositive();
+        assertThat(memberLeft).as("the member left readiness").isPositive();
+
+        var govAnchor = firstSubscribeToACoreSince(mesh, gov, killMillis);
+        var memberAnchor = firstSubscribeToACoreSince(mesh, member, govLeft - slackMillis);
+
+        assertThat(govLeft).as("governor: by its first re-parent + the cap").isLessThanOrEqualTo(govAnchor + capMillis + slackMillis);
+        assertThat(memberLeft).as("member: by its first re-parent after the governor stopped serving + the cap").isLessThanOrEqualTo(memberAnchor + capMillis + slackMillis);
+    }
+
+    private static long firstSubscribeToACoreSince(Mesh mesh, Worker worker, long sinceMillis) {
+        return mesh.sentBy(worker, ReplicaSubscribe.class)
+                   .stream()
+                   .filter(sent -> mesh.isCore(sent.to()) && sent.atMillis() >= sinceMillis)
+                   .mapToLong(Sent::atMillis)
+                   .min()
+                   .orElseThrow();
     }
 
     /// The hand-off acts only on a session that follows a governor: a node that becomes the governor while already on a core keeps its session.

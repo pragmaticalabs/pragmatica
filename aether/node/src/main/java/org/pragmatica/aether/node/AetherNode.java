@@ -2656,7 +2656,8 @@ public interface AetherNode extends ManageableNode {
                                                               clusterNode,
                                                               kvStore,
                                                               clusterNode.leaderManager(),
-                                                              delegateRouter::route);
+                                                              delegateRouter::route,
+                                                              operatorWarningSink);
         // #1573: the one producer of AllInstancesFailed. Every node ships its slice execution outcomes on the
         // cluster-sync pong; the leader alone judges "every ACTIVE instance of this version is broken" and
         // routes the event to rollback, the cluster event and the alert. The tick forgets its state on a
@@ -2742,7 +2743,9 @@ public interface AetherNode extends ManageableNode {
         var delegatedStorageAdapter = storageMaintenanceOut.delegatedStorageAdapter();
         var storageMaintenanceDriver = storageMaintenanceOut.storageMaintenanceDriver();
         var consumerGroupRegistry = ConsumerGroupRegistry.consumerGroupRegistry();
-        var consumerGroupCoordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(clusterNode);
+        var consumerGroupCoordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(clusterNode,
+                                                                                         consumerGroupRegistry,
+                                                                                         epochSources.leaderEpoch());
         var managementServerRef = new AtomicReference<Option<ManagementServer>>(Option.empty());
         // Hoisted before collectRouteEntries (Wave 9 Fix A): the PASSIVE→process-exit-drain bridge
         // routes through this detector's windowed path, so the route-collection needs the ref

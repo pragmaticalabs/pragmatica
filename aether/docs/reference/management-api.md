@@ -581,6 +581,8 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `stream-seal-stop-incomplete` (WARNING — a graceful stop did not seal everything the node's segment sealer held within 5 s; names each partition, its unsealed range and whether a WAL holds it. Raised once, while the node stops. Subject `node <nodeId> stream sealer` (know 73fd8d9759))
 - `backup-stop-flush-failed` (WARNING — the final KV-backup flush of a graceful stop failed or overran its deadline, so changes inside the backup's debounce window are not in the backup; `subject` is `kv-backup`; the stop itself proceeds; closed by `backup-stop-flush-recovered`)
 - `backup-stop-flush-recovered` (INFO — the recovery: a later flush of this node's backup succeeded after its stop-time flush had failed, in this or a later process; a marker file `<backup path>/kv-backup.stop-flush-failed` carries the open state across the restart, and is removed when this is raised; if that node never leads again the marker stays and no recovery is raised)
+- `rollback-record-reconcile-exhausted` (CRITICAL — the leader could not bring an artifact's rollback record up to its SliceTarget: its guarded write was refused three times in a row because the target or the record kept changing. The record still names an older version until a later SliceTarget update or the next leader activation re-derives it; subject is the artifact base)
+- `rollback-record-reconciled` (INFO — the recovery, same subject: the rollback record names its SliceTarget version again)
 
 Best-effort like every per-node event: during a partition or bootstrap the publish can be dropped, and the log line is then the only record.
 
@@ -1456,7 +1458,6 @@ individual request latencies. `errorRate` is the failed/completed invocation rat
     "proposalsCount": 998,
     "voteRound1Count": 2084,
     "voteRound2Count": 2011,
-    "fastPathCount": 812,
     "syncSuccessCount": 3,
     "syncFailureCount": 0,
     "avgDecisionLatencyMs": 4.7,
@@ -1498,7 +1499,7 @@ Get Prometheus-format metrics for scraping.
 **Content-Type**: `text/plain; version=0.0.4; charset=utf-8`
 
 Includes the consensus-load gauges (#674): `consensus_decisions_total`, `consensus_proposals_total`,
-`consensus_vote_round1_total`, `consensus_vote_round2_total`, `consensus_fast_path_total`,
+`consensus_vote_round1_total`, `consensus_vote_round2_total`,
 `consensus_sync_success_total`, `consensus_sync_failure_total`, `consensus_apply_timeouts_total` (monotonic
 totals), `consensus_pending_batches` and `consensus_oldest_pending_batch_age_ms` (levels) — the same names
 and values as the comprehensive response's `consensus` block (`oldestPendingBatchAgeMs`, `applyTimeoutCount`).

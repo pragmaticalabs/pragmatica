@@ -41,6 +41,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
@@ -193,7 +194,7 @@ class RollbackManagerAutoRollbackSafetyTest {
                                                       clusterNode,
                                                       kvStore,
                                                       new AlwaysLeaderManager(SELF),
-                                                      reported::add);
+                                                      reported::add, OperatorWarningSink.logOnly());
 
         manager.onAllInstancesFailed(failure(V2));
         assertThat(clusterNode.appliedCommands).as("disabled by the committed policy").isEmpty();
@@ -215,7 +216,7 @@ class RollbackManagerAutoRollbackSafetyTest {
                                                      TimeSpan.timeSpan(15).minutes())
                                      .unwrap();
 
-        RollbackManager.rollbackManager(SELF, () -> disabled, clusterNode, kvStore, new AlwaysLeaderManager(SELF), reported::add)
+        RollbackManager.rollbackManager(SELF, () -> disabled, clusterNode, kvStore, new AlwaysLeaderManager(SELF), reported::add, OperatorWarningSink.logOnly())
                        .onAllInstancesFailed(failure(V2));
 
         assertThat(disabled.triggerOnAllInstancesFailed()).as("arming: the trigger is on").isTrue();
@@ -232,7 +233,7 @@ class RollbackManagerAutoRollbackSafetyTest {
                                               kvStore,
                                               () -> seed(ClusterConfigKey.CURRENT, clusterConfig("[rollback]\nenabled = false\n", 2)));
 
-        RollbackManager.rollbackManager(SELF, () -> CONFIG, racing, kvStore, new AlwaysLeaderManager(SELF), reported::add)
+        RollbackManager.rollbackManager(SELF, () -> CONFIG, racing, kvStore, new AlwaysLeaderManager(SELF), reported::add, OperatorWarningSink.logOnly())
                        .onAllInstancesFailed(failure(V2));
 
         assertThat(racing.appliedCommands).as("arming: the rollback was decided and submitted").hasSize(1);
@@ -249,7 +250,7 @@ class RollbackManagerAutoRollbackSafetyTest {
                                               kvStore,
                                               () -> seed(SliceTargetKey.sliceTargetKey(BASE), SliceTargetValue.sliceTargetValue(V3, 3)));
 
-        RollbackManager.rollbackManager(SELF, () -> CONFIG, racing, kvStore, new AlwaysLeaderManager(SELF), reported::add)
+        RollbackManager.rollbackManager(SELF, () -> CONFIG, racing, kvStore, new AlwaysLeaderManager(SELF), reported::add, OperatorWarningSink.logOnly())
                        .onAllInstancesFailed(failure(V2));
 
         assertThat(racing.appliedCommands).as("arming: the rollback was decided and submitted").hasSize(1);
@@ -264,7 +265,7 @@ class RollbackManagerAutoRollbackSafetyTest {
     void targetMovedOnBeforeTheCommitReadsIt_isNeverRolledBack() {
         seed(PreviousVersionKey.previousVersionKey(BASE), record(V1, V2, now(), 0, 0, List.of()));
         var direct = new CapturingClusterNode(SELF, kvStore, () -> {});
-        var manager = RollbackManager.rollbackManager(SELF, () -> CONFIG, direct, kvStore, new AlwaysLeaderManager(SELF), reported::add);
+        var manager = RollbackManager.rollbackManager(SELF, () -> CONFIG, direct, kvStore, new AlwaysLeaderManager(SELF), reported::add, OperatorWarningSink.logOnly());
 
         seed(SliceTargetKey.sliceTargetKey(BASE), SliceTargetValue.sliceTargetValue(V3, 3));
         manager.onAllInstancesFailed(failure(V2));
@@ -313,7 +314,7 @@ class RollbackManagerAutoRollbackSafetyTest {
         seed(ClusterConfigKey.CURRENT, clusterConfig("[rollback]\nenabled = true\n", 1));
         var direct = new CapturingClusterNode(SELF, kvStore, () -> {});
 
-        RollbackManager.rollbackManager(SELF, () -> CONFIG, direct, kvStore, new AlwaysLeaderManager(SELF), reported::add)
+        RollbackManager.rollbackManager(SELF, () -> CONFIG, direct, kvStore, new AlwaysLeaderManager(SELF), reported::add, OperatorWarningSink.logOnly())
                        .onAllInstancesFailed(failure(V2));
 
         assertThat(currentTargetVersion()).isEqualTo(V1);
@@ -343,7 +344,7 @@ class RollbackManagerAutoRollbackSafetyTest {
                                                                               evidence,
                                                                               30_000L);
 
-        RollbackManager.rollbackManager(SELF, () -> CONFIG, clusterNode, kvStore, new AlwaysLeaderManager(SELF), reported::add)
+        RollbackManager.rollbackManager(SELF, () -> CONFIG, clusterNode, kvStore, new AlwaysLeaderManager(SELF), reported::add, OperatorWarningSink.logOnly())
                        .onAllInstancesFailed(trigger);
 
         assertThat(reported).hasSize(1);
