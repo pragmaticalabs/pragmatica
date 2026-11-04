@@ -265,6 +265,33 @@ class BlueprintApplyRecordTest {
         assertThat(node.batches.size()).as("the publish batch plus the budgeted re-applications").isEqualTo(1 + APPLY_RECORD_BUDGET);
     }
 
+    /// The ARTIFACT publish path confirms its apply record through its own call site (`applyAllCommands`), separate from the DSL path's: its retry
+    /// budget is the same exact one (F1 survivor adep-BlueprintService-13: the artifact path's initial attempt `0` -> `1` cost one re-application and
+    /// every DSL-path budget test stayed green).
+    @Test
+    void publishFromArtifact_whoseApplyRecordNeverLands_retriesExactlyTheBudget_thenFails() throws IOException {
+        var blueprintArtifact = Artifact.artifact("org.example:app-blueprint:1.0.0").unwrap();
+        var blueprintJar = tempDir.resolve("app-blueprint-1.0.0.jar");
+
+        try (var out = new JarOutputStream(Files.newOutputStream(blueprintJar))) {
+            out.putNextEntry(new ZipEntry("META-INF/blueprint.toml"));
+            out.write(DSL.getBytes(StandardCharsets.UTF_8));
+            out.closeEntry();
+        }
+
+        Repository artifactRepository = requested -> requested.equals(blueprintArtifact)
+                                                     ? Result.lift(Causes::fromThrowable, () -> blueprintJar.toUri().toURL()).flatMap(url -> Location.location(requested, url)).async()
+                                                     : repository.locate(requested);
+        var node = new Node();
+
+        node.drop = command -> command.key() instanceof AetherKey.DeploymentApplyKey;
+
+        var result = BlueprintService.blueprintService(node, store, artifactRepository, true).publishFromArtifact(blueprintArtifact.asString()).await();
+
+        assertThat(result.isFailure()).isTrue();
+        assertThat(node.batches.size()).as("the artifact publish batch plus the budgeted re-applications").isEqualTo(1 + APPLY_RECORD_BUDGET);
+    }
+
     /// The positive control, and the case where the apply already closed: the cluster FSM finished before the confirmation read, so the record is
     /// gone and this attempt's terminal outcome is committed. That is a landed record, not a missing one.
     @Test

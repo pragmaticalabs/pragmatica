@@ -65,6 +65,16 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG.hasRecovery()).isTrue();
     }
 
+    /// F1 survivor u16: a retirement refused for longer than its overdue bound leaves a terminated node's identity in the cluster view, so the
+    /// alarm is a WARNING; its recovery is the INFO.
+    @Test
+    void terminationRetirementOverdue_isAWarning_withAnInfoRecoveryOfTheSameSubsystem() {
+        assertThat(OperatorWarningCode.TERMINATION_RETIREMENT_OVERDUE.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.TERMINATION_RETIREMENT_OVERDUE.subsystem()).isEqualTo("deployment");
+        assertThat(OperatorWarningCode.TERMINATION_RETIREMENT_RESOLVED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.TERMINATION_RETIREMENT_RESOLVED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.TERMINATION_RETIREMENT_OVERDUE);
+    }
+
     @Test
     void codes_areKebabCase() {
         assertThat(Arrays.stream(OperatorWarningCode.values())
