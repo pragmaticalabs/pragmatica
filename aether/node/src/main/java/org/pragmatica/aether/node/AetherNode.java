@@ -3263,6 +3263,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                               bootstrapModule));
         // D1-react (KVStore dispatcher design §3.5.1 rows 72/73): activation, deactivation and status writes run on its react executor.
         spokesmanPingLoop.installReactExecutor(reactors.executor("SpokesmanPingLoop"));
+        // D1-react (KVStore dispatcher design §3.5.1 rows 66/67): the bootstrap retry attempt runs on its react executor.
+        bootstrapModule.installReactExecutor(reactors.executor("BootstrapModule"));
         var streamReplicationOut = StreamAssembly.streamReplication(new StreamAssembly.StreamReplicationInputs(config,
                                                                                                                delegateRouter,
                                                                                                                kvStore,
