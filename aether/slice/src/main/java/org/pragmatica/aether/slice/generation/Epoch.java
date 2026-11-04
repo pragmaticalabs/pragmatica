@@ -6,6 +6,8 @@ package org.pragmatica.aether.slice.generation;
 import org.pragmatica.lang.Result;
 import org.pragmatica.serialization.Codec;
 
+import static org.pragmatica.lang.Result.success;
+
 
 /// A fencing epoch: `(incarnation, rabiaTerm, localCounter)`, ordered lexicographically.
 ///
@@ -33,7 +35,7 @@ public record Epoch(long incarnation, long rabiaTerm, long localCounter) impleme
     /// the life's incarnation commits, a mint would rank below every epoch a restored life committed, so the writer
     /// writes nothing and retries on its next pass.
     public Result<Epoch> mintable() {
-        return Result.success(this).filter(EpochMintError.General.INCARNATION_NOT_COMMITTED, Epoch::incarnationCommitted);
+        return success(this).filter(EpochMintError.General.INCARNATION_NOT_COMMITTED, Epoch::incarnationCommitted);
     }
 
     private boolean incarnationCommitted() {
