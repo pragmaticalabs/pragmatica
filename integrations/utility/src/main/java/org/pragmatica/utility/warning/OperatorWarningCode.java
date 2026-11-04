@@ -763,6 +763,14 @@ public enum OperatorWarningCode {
                                "rollback",
                                WarningLevel.INFO,
                                ROLLBACK_RECORD_RECONCILE_EXHAUSTED),
+    /// The node's KV store delivers its notifications more slowly than it commits them (KVStore dispatcher design §3.6): the named
+    /// lag series (`kv.dispatch.lag.batches` or `kv.dispatch.queue.bytes`, the subject) rose over a whole sampling window without
+    /// falling once. A sustained slope, never a threshold: a high but steady lag raises nothing. The undelivered queue is the heap
+    /// it costs. Closed by [#KV_DISPATCH_CAUGHT_UP]. [guess: name, level, subsystem and window]
+    KV_DISPATCH_LAGGING("kv-dispatch-lagging", "kv-store", WarningLevel.WARNING),
+    /// The recovery of [#KV_DISPATCH_LAGGING], same subject: the series is back to zero, the queue drained. INFO, published only
+    /// after a published lagging event for the subject (#752 mechanism).
+    KV_DISPATCH_CAUGHT_UP("kv-dispatch-caught-up", "kv-store", WarningLevel.INFO, KV_DISPATCH_LAGGING),
     /// The recovery of [#CONFIG_WATCH_CALLBACK_FAILED], same subject (#774): the next delivery bound and (when it called back) succeeded.
     /// INFO, published only after a published failure for the subject (#752 mechanism).
     CONFIG_WATCH_CALLBACK_RECOVERED("config-watch-callback-recovered",

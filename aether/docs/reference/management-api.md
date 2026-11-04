@@ -583,6 +583,8 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `backup-stop-flush-recovered` (INFO — the recovery: a later flush of this node's backup succeeded after its stop-time flush had failed, in this or a later process; a marker file `<backup path>/kv-backup.stop-flush-failed` carries the open state across the restart, and is removed when this is raised; if that node never leads again the marker stays and no recovery is raised)
 - `rollback-record-reconcile-exhausted` (CRITICAL — the leader could not bring an artifact's rollback record up to its SliceTarget: its guarded write was refused three times in a row because the target or the record kept changing. The record still names an older version until a later SliceTarget update or the next leader activation re-derives it; subject is the artifact base)
 - `rollback-record-reconciled` (INFO — the recovery, same subject: the rollback record names its SliceTarget version again)
+- `kv-dispatch-lagging` (WARNING — the node's KV store delivers its notifications more slowly than it commits them: the subject series, `kv.dispatch.lag.batches` or `kv.dispatch.queue.bytes`, rose over a whole 30 s sampling window without falling once. A sustained slope, not a threshold: a high but steady lag raises nothing. The undelivered queue is retained heap; the `aether.kv.dispatch.*` gauges show it)
+- `kv-dispatch-caught-up` (INFO — its recovery, same subject: the series is back to zero, the queue drained)
 
 Best-effort like every per-node event: during a partition or bootstrap the publish can be dropped, and the log line is then the only record.
 

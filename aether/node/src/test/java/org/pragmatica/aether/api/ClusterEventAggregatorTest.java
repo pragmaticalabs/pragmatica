@@ -2697,6 +2697,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.JSON_CONFIG_APPLIED,
                 OperatorWarningCode.CONFIG_WATCH_CALLBACK_RECOVERED,
                 OperatorWarningCode.ROLLBACK_RECORD_RECONCILED,
+                OperatorWarningCode.KV_DISPATCH_CAUGHT_UP,
             });
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactlyInAnyOrder(new OperatorWarningCode[]{
@@ -2757,6 +2758,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.UPLOAD_BYTE_BUDGET_EXHAUSTED,
                 OperatorWarningCode.CONFIG_WATCH_CALLBACK_FAILED,
                 OperatorWarningCode.ROLLBACK_RECORD_RECONCILE_EXHAUSTED,
+                OperatorWarningCode.KV_DISPATCH_LAGGING,
             });
         var recoveries = java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).count();
         var t = new AtomicLong(1_000_000L);

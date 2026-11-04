@@ -13,6 +13,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.ReplicaEntry;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.TerminalOperation;
 import org.pragmatica.lang.Unit;
 
 
@@ -187,12 +188,31 @@ public final class ReplicaApplier<K extends StructuredKey, V> {
         return Step.APPLIED;
     }
 
-    /// Installs the filtered snapshot (`restoreCommittedSnapshot`, then the diff replay), makes `(tag, revision, anchor)` the position, and
-    /// replays the buffered live messages in order. A failed install changes nothing about the position.
+    /// Installs the filtered snapshot (`restoreCommittedSnapshot`, then the diff replay), makes `(tag, revision, anchor)` the position,
+    /// replays the buffered live messages in order, and returns only once every notification the install enqueued is delivered (KVStore
+    /// dispatcher design §3.3: the replica path sequences on `awaitDelivered` as the engine's apply path does), so whatever the client does
+    /// next (readiness, going live) follows the handlers' view of the install. A failed install changes nothing about the position; a store
+    /// closed during the wait fails the install with the store's outcome-unknown cause.
     public Result<Step> install(byte[] bytes, IncarnationTag tag, long revision, List<AnchorPair> anchor) {
         return store.restoreCommittedSnapshot(bytes, revision)
                     .map(_ -> adopt(tag, revision, anchor))
-                    .map(_ -> drainBuffer());
+                    .map(_ -> drainBuffer())
+                    .flatMap(this::afterDelivery);
+    }
+
+    private Result<Step> afterDelivery(Step drained) {
+        return store.deliversOnDispatcherThread()
+               ? awaitDelivery(drained)
+               : Result.success(drained);
+    }
+
+    /// Blocks the client's serial executor, as the snapshot replay in [#adopt] already does (design §3.7): the client's state is confined to
+    /// that executor, so the wait cannot be parked without letting its next step overtake the delivery.
+    @TerminalOperation
+    private Result<Step> awaitDelivery(Step drained) {
+        return store.awaitDelivered(store.enqueuedSeq())
+                    .await()
+                    .map(_ -> drained);
     }
 
     private Unit adopt(IncarnationTag tag, long revision, List<AnchorPair> anchor) {
