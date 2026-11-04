@@ -285,6 +285,9 @@ public interface AetherNode extends ManageableNode {
     /// resolved overlay. Unset on the forge / test paths, which then degrade to none() gracefully.
     String CONFIG_PATH_PROPERTY = "aether.config.path";
     String VERSION = BuildInfo.version();
+    /// #774: the applied-listener names, in the order the node registers them: the config change feed ahead of the deployment FSM's push.
+    String CONFIG_CHANGE_FEED_LISTENER = "config-change-feed";
+    String DEPLOYMENT_CONFIG_LISTENER = "deployment-config-applied";
     NodeId self();
     Promise<Unit> start();
     Promise<Unit> stop();
@@ -2564,7 +2567,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                              config.self()));
         // #774: the config change feed is registered BEFORE the FSM listener (`nodeDeploymentManager::onConfigChanged`,
         // registered with the KV routes), so a Watched subscription is triggered ahead of the legacy push path.
-        dynamicConfigManager.onPresent(dcm -> dcm.onApplied(configChangeFeed::publish));
+        dynamicConfigManager.onPresent(dcm -> dcm.onApplied(CONFIG_CHANGE_FEED_LISTENER, configChangeFeed::publish));
         var minuteAggregator = MinuteAggregator.minuteAggregator();
         var gcMetricsCollector = GCMetricsCollector.gcMetricsCollector();
         var eventLoopMetricsCollector = EventLoopMetricsCollector.eventLoopMetricsCollector(config.timeouts()
@@ -4786,7 +4789,7 @@ public interface AetherNode extends ManageableNode {
         // #381: push each applied config change to the registered slices' notifyConfigUpdate.
         var configApplied = deploymentWiring.configApplied(nodeDeploymentManager::onConfigChanged);
 
-        dynamicConfigManager.onPresent(dcm -> dcm.onApplied(configApplied));
+        dynamicConfigManager.onPresent(dcm -> dcm.onApplied(DEPLOYMENT_CONFIG_LISTENER, configApplied));
         kvRouterBuilder.onPut(AetherKey.ConsumerGroupKey.class, consumerGroupRegistry::onConsumerGroupPut);
         kvRouterBuilder.onRemove(AetherKey.ConsumerGroupKey.class, consumerGroupRegistry::onConsumerGroupRemove);
         // #345 1b: feed the per-ownership-domain epoch high-water table from committed EpochBearing puts.
