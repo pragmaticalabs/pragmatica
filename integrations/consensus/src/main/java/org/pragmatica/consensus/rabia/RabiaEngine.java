@@ -4008,7 +4008,8 @@ public class RabiaEngine<C extends Command> {
         committedLedger.record(decision.value().id(),
                                decided);
         for (var correlationId : decided) {
-            Option.option(correlationMap.remove(correlationId)).onPresent(promise -> promise.succeed(results));
+            Option.option(correlationMap.remove(correlationId)).onPresent(promise -> stateMachine.completeAfterDelivery(promise,
+                                                                                                                        results));
         }
     }
 

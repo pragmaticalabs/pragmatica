@@ -153,7 +153,12 @@ class KVStoreLeaderFenceTest {
 
         @Test
         void replay_doesNotExerciseFence_replayedLeaderKeyNeitherAdvancesNorRejects() {
-            apply(leaderValue(NODE_A, 5L));
+            // Installed silently (not delivered live): D1 keeps the delivered view current with live deliveries, so a
+            // replay re-emits only what subscribers have not been told (design §3.7, R2.4).
+            var codec = buildCodec();
+            var source = new KVStore<LeaderKey, LeaderValue>(MessageRouter.mutable(), codec, codec);
+            source.process(source.createBatch(List.of(new Put<>(LeaderKey.INSTANCE, leaderValue(NODE_A, 5L)))));
+            store.restoreSnapshot(source.makeSnapshot().unwrap());
             notified.clear();
 
             // Replay fires a synthetic ValuePut for the stored LeaderKey. It must NOT pass through
