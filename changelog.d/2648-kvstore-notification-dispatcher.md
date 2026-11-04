@@ -36,3 +36,14 @@
 - The Forge launchers (`aether/forge/Dockerfile`, `aether/docker/aether-forge/Dockerfile`, `aether/dist/build-dist.sh`,
   and the forge wrappers of `aether/install.sh` and `aether/upgrade.sh`) start the JVM with `-XX:+ExitOnOutOfMemoryError`.
   `[verified: NodeLauncherExitOnOomPinnedTest]`
+- **A reaction queued before an engine stop no longer runs after it (D1-react).** Reactions to delivered KV notifications run
+  on per-component react executors (`org.pragmatica.utility.react`) behind an engine-alive gate (`ReactGate`: the consensus
+  engine is alive and the node is not stopping), read when the reaction runs, never when it is queued. The scheduled-task
+  timer, the cloud-call, load-balancer, rollback and spokesman reactions, the leader re-activation, the bootstrap retry,
+  the cluster-config reconcile and the worker activation are dropped after an engine-only stop; `LeaderChange` carries the
+  replay bit and `ClusterEventAggregator` gates `LeaderElected` on its payload.
+  `[verified: ReactExecutorTest, NodeReactorsGateTest, LeaderChangeEngineStopGateTest, LeaderChangeReplayBitTest,
+  ScheduledTaskEngineStopGateTest, ScheduledTaskStateExitArmRaceTest, SpokesmanEngineStopGateTest,
+  LoadBalancerEngineStopGateTest, RollbackManagerEngineStopGateTest, ControlLoopEngineStopGateTest,
+  BootstrapEngineStopGateTest, ClusterConfigEngineStopGateTest, WorkerActivationEngineStopGateTest,
+  AetherNodeReactExecutorWiringBootTest]`
