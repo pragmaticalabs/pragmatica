@@ -8,6 +8,7 @@ package org.pragmatica.aether.controller;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
@@ -16,6 +17,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.PreviousVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.PreviousVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.consensus.topology.TopologyManager;
@@ -40,8 +42,10 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Timeout(value = 60, unit = SECONDS)
 class RollbackManagerTest {
     private static final NodeId SELF = NodeId.nodeId("node-1").unwrap();
     private static final NodeId LEADER = NodeId.nodeId("node-1").unwrap();
@@ -169,6 +173,7 @@ class RollbackManagerTest {
             clusterNode.appliedCommands.clear();
 
             rollbackManager.onAllInstancesFailed(createFailureEvent(v2));
+            deliverCommittedRecord(committedRollbackRecord());
 
             var stats = rollbackManager.getStats(v2.base());
             assertThat(stats.isPresent()).isTrue();
@@ -192,7 +197,16 @@ class RollbackManagerTest {
             clusterNode.appliedCommands.clear();
 
             rollbackManager.onAllInstancesFailed(createFailureEvent(v2));
+            var rolledBack = committedRollbackRecord();
+            deliverCommittedRecord(rolledBack);
             rollbackManager.resetRollbackCount(v2.base());
+
+            // D1-react: the mirror holds only committed values, so the reset reaches the stats when its record commits.
+            assertThat(rollbackManager.getStats(v2.base()).map(RollbackManager.RollbackStats::rollbackCount))
+                .as("an uncommitted reset leaves the committed count")
+                .isEqualTo(Option.some(1));
+
+            deliverCommittedRecord(rolledBack.withRollbackCountReset());
 
             var stats = rollbackManager.getStats(v2.base());
             assertThat(stats.isPresent()).isTrue();
@@ -201,6 +215,25 @@ class RollbackManagerTest {
     }
 
     // Helper methods
+
+    /// The rollback record the last submitted leader transaction writes (the double accepts it; it never reaches the store).
+    private PreviousVersionValue committedRollbackRecord() {
+        return clusterNode.appliedCommands.stream()
+                                          .filter(KVCommand.LeaderTransaction.class::isInstance)
+                                          .map(command -> (KVCommand.LeaderTransaction<?, ?>) command)
+                                          .flatMap(transaction -> transaction.mutations().stream())
+                                          .filter(mutation -> mutation.key() instanceof PreviousVersionKey)
+                                          .map(mutation -> (PreviousVersionValue) mutation.replacement().unwrap())
+                                          .reduce((first, second) -> second)
+                                          .orElseThrow();
+    }
+
+    /// The committed record's notification: the mirror's one counter writer.
+    private void deliverCommittedRecord(PreviousVersionValue record) {
+        var key = PreviousVersionKey.previousVersionKey(record.artifactBase());
+
+        rollbackManager.onPreviousVersionPut(new ValuePut<>(new KVCommand.Put<>(key, record), Option.none()));
+    }
     private void simulateSliceTargetChange(Artifact artifact) {
         var key = SliceTargetKey.sliceTargetKey(artifact.base());
         var replaced = kvStore.getTyped(key, SliceTargetValue.class);

@@ -30,6 +30,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.utility.react.ReactExecutor;
 import org.slf4j.LoggerFactory;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -118,6 +119,7 @@ class AetherNodeWorkerDirectiveAssignmentTest {
                                              announcer,
                                              Mockito.mock(GovernorAuthorityClient.class),
                                              () -> false,
-                                             LoggerFactory.getLogger(AetherNodeWorkerDirectiveAssignmentTest.class));
+                                             LoggerFactory.getLogger(AetherNodeWorkerDirectiveAssignmentTest.class),
+                                             ReactExecutor.inline("WorkerActivation"));
     }
 }

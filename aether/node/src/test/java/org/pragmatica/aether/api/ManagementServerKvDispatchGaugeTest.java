@@ -11,6 +11,8 @@ import java.lang.reflect.Modifier;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -43,6 +45,9 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.utility.react.ReactExecutor;
+import org.pragmatica.utility.react.ReactFailureSink;
+import org.pragmatica.utility.react.ReactGate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.RETURNS_DEFAULTS;
@@ -52,6 +57,7 @@ import static org.mockito.Mockito.when;
 /// D1 item 10 (KVStore dispatcher design §3.6): pins the `ManagementServer` registration of the node store's delivery metrics. A
 /// started management server must expose every `aether.kv.dispatch.*` gauge, reading the node's own store. Red with
 /// `registerKvDispatchMetrics()` removed from `start()`: the gauges are then absent.
+@Timeout(value = 60, unit = TimeUnit.SECONDS)
 class ManagementServerKvDispatchGaugeTest {
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(30).seconds();
     private static final List<String> GAUGES = List.of("aether.kv.dispatch.lag.batches",
@@ -63,6 +69,9 @@ class ManagementServerKvDispatchGaugeTest {
                                                        "aether.kv.dispatch.readahead.snapshot.reads",
                                                        "aether.kv.dispatch.slow.handlers",
                                                        "aether.kv.dispatch.slow.handler.max.nanos");
+    private static final List<String> REACT_GAUGES = List.of("aether.react.queue.depth",
+                                                             "aether.react.queue.high.water",
+                                                             "aether.react.dropped.engine.stopped");
 
     /// Unstubbed collaborators answer `Option.none()` for optional parts and a nested mock for the rest, as in
     /// `ManagementServerDhtCatchUpGaugeTest`.
@@ -131,15 +140,50 @@ class ManagementServerKvDispatchGaugeTest {
             .as("the high-water mark is read per phase").isNotNull();
     }
 
+    /// v-2653 F5 (n5): the started server registers the react gauges (KVStore dispatcher design §3.6, owner ruling 7) for
+    /// every executor the node lists, tagged by component and reading that executor. Red with the
+    /// `reactExecutors().forEach(this::registerReactGauges)` line removed.
+    @Test
+    @Timeout(60)
+    void startedServer_exposesTheReactGauges_perComponent() throws InterruptedException {
+        var executor = ReactExecutor.reactExecutor("GaugeProbe", ReactGate.reactGate(() -> false, () -> false),
+                                                   ReactFailureSink.loggingOnly());
+        try {
+            var done = new CountDownLatch(1);
+
+            executor.react("dropped-probe", () -> {});
+            executor.undo("drain", done::countDown);
+            assertThat(done.await(10, TimeUnit.SECONDS)).as("control: the probe was gated").isTrue();
+
+            server = managementServer(store, List.of(executor));
+            var started = server.start().await(START_BOUND);
+
+            assertThat(started.isSuccess()).as("control: the server started: %s", started).isTrue();
+            for (var name : REACT_GAUGES) {
+                assertThat(server.meterRegistry().find(name).tag("component", "GaugeProbe").gauge())
+                    .as("the started server registered %s for the component", name).isNotNull();
+            }
+            assertThat(server.meterRegistry().find("aether.react.dropped.engine.stopped").tag("component", "GaugeProbe")
+                             .gauge().value()).as("it reads the executor").isEqualTo(1.0);
+        } finally {
+            executor.close();
+        }
+    }
+
     @SuppressWarnings({"unchecked", "rawtypes"})
     private void put() {
         store.process(store.createBatch(List.of(new KVCommand.Put(LeaderKey.INSTANCE, new LeaderValue(new NodeId("gauge-node"), 1)))));
     }
 
     private static ManagementServer managementServer(KVStore<AetherKey, AetherValue> store) {
+        return managementServer(store, List.of());
+    }
+
+    private static ManagementServer managementServer(KVStore<AetherKey, AetherValue> store, List<ReactExecutor> reactors) {
         var node = mock(ManageableNode.class, NONE_OR_MOCK);
 
         when(node.kvStore()).thenReturn(store);
+        when(node.reactExecutors()).thenReturn(reactors);
         // Registered before the KV gauges; a final type the default answer leaves null.
         when(node.streamPartitionManager()).thenReturn(mock(StreamPartitionManager.class));
         return ManagementServer.managementServer(freePort(),

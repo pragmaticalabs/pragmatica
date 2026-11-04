@@ -65,6 +65,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
+import org.pragmatica.utility.react.ReactExecutor;
 
 
 public interface ManageableNode {
@@ -112,6 +113,19 @@ public interface ManageableNode {
     }
 
     KVStore<AetherKey, AetherValue> kvStore();
+
+    /// D1-react (KVStore dispatcher design §3.6): the node's react executors, one per C9 component, for the per-component
+    /// `react.queue.depth`, high-water and engine-stopped drop gauges. Default empty for node doubles.
+    default List<ReactExecutor> reactExecutors() {
+        return List.of();
+    }
+
+    /// D1-react (v-2653 F3): the replay source the node installed into its leader manager, read on the calling thread:
+    /// true only while this thread delivers a replay burst of the node store. Wiring pin seam.
+    default boolean leaderReplaying() {
+        return false;
+    }
+
     SliceStore sliceStore();
     ClusterSyncCollector metricsCollector();
     DeploymentMetricsCollector deploymentMetricsCollector();

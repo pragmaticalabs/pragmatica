@@ -1682,6 +1682,13 @@ public class RabiaEngine<C extends Command> {
                           .isActive();
     }
 
+    /// True once [#stop] was called on this engine: the one-way signal behind the D1-react engine-alive gate (KVStore
+    /// dispatcher design §3.5 R5). Not the Stopped state, which is also the state before the first start: boot-time reactions
+    /// must run.
+    public boolean isStopRequested() {
+        return stopping.get();
+    }
+
     /// Returns true when the engine is in the `Paused` state — quorum is currently
     /// unavailable, in-memory protocol state is retained, and new `apply()` submissions
     /// are rejected with [ConsensusError.QuorumPaused]. Mutually exclusive with `isActive`.

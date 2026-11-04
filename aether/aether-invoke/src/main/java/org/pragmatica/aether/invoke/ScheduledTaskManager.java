@@ -46,6 +46,7 @@ import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmState;
 import org.pragmatica.statemachine.TransitionRequest;
+import org.pragmatica.utility.react.ReactExecutor;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -80,6 +81,13 @@ public interface ScheduledTaskManager {
     default void onNodeDecommissioned(MembershipDecision.NodeDecommissioned event) {}
 
     int activeTimerCount();
+
+    /// D1-react (KVStore dispatcher design §3.5.1 rows 25/28): the executor a registry-driven timer arm runs on. A node
+    /// installs its gated executor once, at assembly; until then (and in a host that installs none) the arm runs inline,
+    /// as before D1-react. Default no-op so the route-test stubs that implement this interface stay compilable.
+    default Unit installReactExecutor(ReactExecutor executor) {
+        return Unit.unit();
+    }
 
     /// Why `task` is NOT firing on this node right now, or empty when it is eligible and its timer is armed (#1469).
     /// `activeTimerCount()` is one scalar and reads 0 for every cause below; this tells them apart. Default empty so the
@@ -318,6 +326,16 @@ public interface ScheduledTaskManager {
         /// The fire each claimed key is running (#1930), so a skipped tick can say how long it has been in flight.
         final Map<ScheduledTaskKey, FireInFlight> fires = new ConcurrentHashMap<>();
         final Map<ScheduledTaskKey, ScheduledFuture<?>> activeTimers = new ConcurrentHashMap<>();
+
+        /// D1-react (§3.5.1 rows 25/28, U2): a registry-driven arm is a reaction on this executor; the cancel stays in
+        /// absorb. Every cancel, single or state-level (`cancelAllTimers`, `cancelAllModeTimers`), bumps its key's
+        /// generation inside the key's `compute`; the arm runs inside the same `compute` only if the generation did not
+        /// move since absorb, with eligibility re-read at run time. Whichever runs first, the later one sees the other:
+        /// no armed-after-cancel. A state-level cancel never invalidates a key it does not cancel (v-2653: a SINGLE arm
+        /// survives a drain, which stops only ALL-mode fires).
+        final AtomicReference<ReactExecutor> react = new AtomicReference<>(ReactExecutor.inline("ScheduledTaskRegistry"));
+
+        final Map<ScheduledTaskKey, Long> timerGenerations = new ConcurrentHashMap<>();
         final Set<ScheduledTaskKey> inFlight = ConcurrentHashMap.newKeySet();
         final AtomicLong quorumSequence = new AtomicLong(0);
         /// #273: set once by [ScheduledTaskManager#onDrainInitiated], never cleared — the drain is
@@ -599,11 +617,23 @@ public interface ScheduledTaskManager {
             taskOption.onPresent(task -> handleTaskAdded(key, task)).onEmpty(() -> handleTaskRemoved(key));
         }
 
+        /// Absorb: the cancel and the generations captured. Reaction (behind the engine-alive gate): the arm, under U2.
         private void handleTaskAdded(ScheduledTaskKey key, ScheduledTask task) {
-            TaskOps.cancelTimer(ctx, key);
-            if (shouldRunInCurrentState(task)) {
+            var keyGeneration = TaskOps.cancelTimer(ctx, key);
+
+            ctx.react.get().react("ScheduledTask arm", () -> armIfCurrent(key, task, keyGeneration));
+        }
+
+        private void armIfCurrent(ScheduledTaskKey key, ScheduledTask task, long keyGeneration) {
+            ctx.timerGenerations.compute(key, (_, current) -> armUnderGuard(key, task, keyGeneration, current));
+        }
+
+        private Long armUnderGuard(ScheduledTaskKey key, ScheduledTask task, long keyGeneration, Long current) {
+            if (current != null && current == keyGeneration && shouldRunInCurrentState(task)) {
                 TaskOps.startTimer(ctx, key, task);
             }
+
+            return current;
         }
 
         private void handleTaskRemoved(ScheduledTaskKey key) {
@@ -1190,11 +1220,22 @@ public interface ScheduledTaskManager {
                      keys.size());
         }
 
-        static void cancelTimer(Context ctx, ScheduledTaskKey key) {
-            Option.option(ctx.activeTimers.remove(key)).onPresent(future -> {
-                future.cancel(false);
-                log.debug("Cancelled scheduled task timer: {}", key);
-            });
+        /// Cancels the key's timer and bumps its generation in one `compute` (U2); returns the new generation.
+        static long cancelTimer(Context ctx, ScheduledTaskKey key) {
+            return ctx.timerGenerations.compute(key, (_, generation) -> cancelUnderGuard(ctx, key, generation));
+        }
+
+        private static Long cancelUnderGuard(Context ctx, ScheduledTaskKey key, Long generation) {
+            Option.option(ctx.activeTimers.remove(key)).onPresent(future -> cancelFuture(key, future));
+
+            return generation == null
+                   ? 1L
+                   : generation + 1;
+        }
+
+        private static void cancelFuture(ScheduledTaskKey key, ScheduledFuture<?> future) {
+            future.cancel(false);
+            log.debug("Cancelled scheduled task timer: {}", key);
         }
 
         static void replaceTimer(Context ctx, ScheduledTaskKey key, ScheduledFuture<?> future) {
@@ -1206,10 +1247,16 @@ public interface ScheduledTaskManager {
             }
         }
 
+        /// U2 for the state-level undo (v-2653 F1): every registry-armed key is cancelled through its own `compute`, which
+        /// bumps its generation, so an arm already inside its key's `compute` (past its generation and state checks)
+        /// completes first and its timer is cancelled here, never stored after the clear below; an arm not yet inside it
+        /// sees the bump. The clear below then covers any timer whose key never went through a `compute` (armed by state
+        /// entry only).
         static void cancelAllTimers(Context ctx) {
-            ctx.activeTimers.forEach((_, future) -> future.cancel(false));
             var count = ctx.activeTimers.size();
 
+            ctx.timerGenerations.keySet().forEach(key -> cancelTimer(ctx, key));
+            ctx.activeTimers.forEach((_, future) -> future.cancel(false));
             ctx.activeTimers.clear();
             if (count > 0) {
                 log.info("Cancelled {} scheduled task timers", count);
@@ -1282,6 +1329,13 @@ public interface ScheduledTaskManager {
             if (ctx.draining.compareAndSet(false, true)) {
                 TaskOps.cancelAllModeTimers(ctx);
             }
+        }
+
+        @Override
+        public Unit installReactExecutor(ReactExecutor executor) {
+            ctx.react.set(executor);
+
+            return Unit.unit();
         }
 
         @Override

@@ -39,6 +39,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.utility.react.ReactExecutor;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -91,7 +92,8 @@ public interface LoadBalancerManager {
                       Map<NodeRoutesKey, Set<String>> contributions,
                       AtomicBoolean activated,
                       ConcurrentLinkedDeque<PendingRouteEvent> pendingEvents,
-                      ReentrantLock activationLock) implements LoadBalancerManagerState {
+                      ReentrantLock activationLock,
+                      ReactExecutor react) implements LoadBalancerManagerState {
             private static final Logger log = LoggerFactory.getLogger(Active.class);
 
             @Override
@@ -261,15 +263,16 @@ public interface LoadBalancerManager {
                 }
             }
 
+            /// D1-react (KVStore dispatcher design §3.5.1 row 54): the change is built here, in absorb, and only the cloud
+            /// call is a reaction behind the engine-alive gate, on the manager's one executor (FIFO keeps route order).
             private void handleRouteRemoval(String httpMethod, String pathPrefix) {
                 log.info("Route removed: {} {}", httpMethod, pathPrefix);
                 routeChange(httpMethod,
                             pathPrefix,
-                            Set.of()).onSuccess(change -> provider.onRouteChanged(change)
-                                                                  .onFailure(cause -> log.error("Failed to remove load balancer route {} {}: {}",
-                                                                                                httpMethod,
-                                                                                                pathPrefix,
-                                                                                                cause.message())))
+                            Set.of()).onSuccess(change -> react.react("NodeRoutes route removal",
+                                                                      () -> announceRemoval(change,
+                                                                                            httpMethod,
+                                                                                            pathPrefix)))
                            .onFailure(cause -> log.error("Failed to create route change for removal of {} {}: {}",
                                                          httpMethod,
                                                          pathPrefix,
@@ -284,15 +287,32 @@ public interface LoadBalancerManager {
                           httpMethod,
                           pathPrefix,
                           nodeIps.size());
-                routeChange(httpMethod, pathPrefix, nodeIps).onSuccess(change -> provider.onRouteChanged(change)
-                                                                                         .onFailure(cause -> log.error("Failed to update load balancer route {} {}: {}",
-                                                                                                                       httpMethod,
-                                                                                                                       pathPrefix,
-                                                                                                                       cause.message())))
+                routeChange(httpMethod, pathPrefix, nodeIps).onSuccess(change -> react.react("NodeRoutes route change",
+                                                                                             () -> announceChange(change,
+                                                                                                                  httpMethod,
+                                                                                                                  pathPrefix)))
                            .onFailure(cause -> log.error("Failed to create route change for {} {}: {}",
                                                          httpMethod,
                                                          pathPrefix,
                                                          cause.message()));
+            }
+
+            /// The row-54 reaction: `change` (identities and resolved IPs) was captured at absorb (U3).
+            private void announceRemoval(RouteChange change, String httpMethod, String pathPrefix) {
+                provider.onRouteChanged(change)
+                        .onFailure(cause -> log.error("Failed to remove load balancer route {} {}: {}",
+                                                      httpMethod,
+                                                      pathPrefix,
+                                                      cause.message()));
+            }
+
+            /// The row-53 reaction: `change` (identities and resolved IPs) was captured at absorb (U3).
+            private void announceChange(RouteChange change, String httpMethod, String pathPrefix) {
+                provider.onRouteChanged(change)
+                        .onFailure(cause -> log.error("Failed to update load balancer route {} {}: {}",
+                                                      httpMethod,
+                                                      pathPrefix,
+                                                      cause.message()));
             }
 
             public org.pragmatica.lang.Unit onNodeDeparture(NodeId departedNode) {
@@ -348,11 +368,28 @@ public interface LoadBalancerManager {
                                                    TopologyManager topologyManager,
                                                    LoadBalancerProvider provider,
                                                    int appHttpPort) {
+        return loadBalancerManager(self,
+                                   kvStore,
+                                   topologyManager,
+                                   provider,
+                                   appHttpPort,
+                                   ReactExecutor.inline("LoadBalancerManager"));
+    }
+
+    /// `react` is the manager's react executor (D1-react, §3.5.1 rows 53/54): a node passes its gated executor; the
+    /// overload above runs reactions inline, ungated, as before D1-react.
+    static LoadBalancerManager loadBalancerManager(NodeId self,
+                                                   KVStore<AetherKey, AetherValue> kvStore,
+                                                   TopologyManager topologyManager,
+                                                   LoadBalancerProvider provider,
+                                                   int appHttpPort,
+                                                   ReactExecutor react) {
         record loadBalancerManager(NodeId self,
                                    KVStore<AetherKey, AetherValue> kvStore,
                                    TopologyManager topologyManager,
                                    LoadBalancerProvider provider,
                                    int appHttpPort,
+                                   ReactExecutor react,
                                    AtomicReference<LoadBalancerManagerState> state) implements LoadBalancerManager {
             private static final Logger log = LoggerFactory.getLogger(loadBalancerManager.class);
 
@@ -368,7 +405,8 @@ public interface LoadBalancerManager {
                                                                       new ConcurrentHashMap<>(),
                                                                       new AtomicBoolean(false),
                                                                       new ConcurrentLinkedDeque<>(),
-                                                                      new ReentrantLock());
+                                                                      new ReentrantLock(),
+                                                                      react);
 
                 state.set(activeState);
                 activeState.reconcile();
@@ -422,6 +460,7 @@ public interface LoadBalancerManager {
                                        topologyManager,
                                        provider,
                                        appHttpPort,
+                                       react,
                                        new AtomicReference<>(new LoadBalancerManagerState.Dormant()));
     }
 }

@@ -13,11 +13,13 @@ import java.util.concurrent.atomic.AtomicReference;
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.controller.RollbackManagerOverridePreservationTest.AlwaysLeaderManager;
+import org.pragmatica.aether.controller.RollbackManagerGuardedRecordTest.HeldClusterNode;
 import org.pragmatica.aether.controller.RollbackManagerOverridePreservationTest.CapturingClusterNode;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
 import org.pragmatica.aether.slice.blueprint.SliceSpec;
@@ -34,6 +36,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.PreviousVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
@@ -45,11 +48,13 @@ import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
+import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// #1573 rollback safety, one property per test. Each negative case is armed by the positive
 /// `insideBakeWindow_rollsBack_recordFirstInOneBatch`: the same fixture rolls back unless the one
 /// condition under test holds.
+@Timeout(value = 60, unit = SECONDS)
 class RollbackManagerAutoRollbackSafetyTest {
     private static final NodeId SELF = NodeId.nodeId("node-1").unwrap();
     private static final ArtifactBase BASE = Artifact.artifact("org.test:my-slice:2.0.0").unwrap().base();
@@ -354,6 +359,52 @@ class RollbackManagerAutoRollbackSafetyTest {
         assertThat(executed.targetVersion()).isEqualTo(V1);
         assertThat(executed.defectsPerHost()).isEqualTo(evidence);
         assertThat(executed.windowMs()).isEqualTo(30_000L);
+    }
+
+    /// D1-react (the mirror holds only committed values): the rollback's continuation runs after a later reset has committed and
+    /// been delivered. The mirror's counters come only from delivered records, so the late continuation cannot write the
+    /// rollback's older count over the reset; it records only the in-memory last-rollback details.
+    @Test
+    void lateRollbackContinuation_keepsTheLaterCommittedCount() {
+        seed(PreviousVersionKey.previousVersionKey(BASE), record(V1, V2, now(), 0, 0, List.of()));
+        var held = new HeldClusterNode(SELF, kvStore);
+        var manager = RollbackManager.rollbackManager(SELF, CONFIG, held, kvStore, new AlwaysLeaderManager(SELF));
+
+        manager.onAllInstancesFailed(failure(V2));
+        assertThat(held.captured()).as("arming: the rollback is submitted and held").hasSize(1);
+        var rolledBack = (PreviousVersionValue) ((KVCommand.LeaderTransaction<?, ?>) held.captured()
+                                                                                          .getFirst()
+                                                                                          .commands()
+                                                                                          .getFirst()).mutations()
+                                                                                                      .getFirst()
+                                                                                                      .replacement()
+                                                                                                      .unwrap();
+        deliver(manager, rolledBack);
+        deliver(manager, rolledBack.withRollbackCountReset());
+        held.applyToStore(0);
+        awaitLastRolledBackFrom(manager);
+
+        assertThat(manager.getStats(BASE).flatMap(RollbackManager.RollbackStats::lastRolledBackFrom))
+            .as("the continuation ran: the last-rollback details are recorded")
+            .isEqualTo(Option.some(V2));
+        assertThat(manager.getStats(BASE).map(RollbackManager.RollbackStats::rollbackCount))
+            .as("the later committed reset survives the late continuation")
+            .isEqualTo(Option.some(0));
+    }
+
+    private static void awaitLastRolledBackFrom(RollbackManager manager) {
+        var deadline = System.nanoTime() + 5_000_000_000L;
+
+        while (manager.getStats(BASE).flatMap(RollbackManager.RollbackStats::lastRolledBackFrom).isEmpty()
+               && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+    }
+
+    private static void deliver(RollbackManager manager, PreviousVersionValue record) {
+        var key = PreviousVersionKey.previousVersionKey(record.artifactBase());
+
+        manager.onPreviousVersionPut(new ValuePut<>(new KVCommand.Put<>(key, record), Option.none()));
     }
 
     private RollbackManager manager() {

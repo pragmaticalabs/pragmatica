@@ -250,6 +250,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.utility.react.ReactExecutor;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -902,7 +903,8 @@ public interface AetherNode extends ManageableNode {
                                                              storageKeyring,
                                                              bootToken,
                                                              clusterEventsLimits,
-                                                             streamMemoryBudget));
+                                                             streamMemoryBudget,
+                                                             NodeReactors.nodeReactors(dispatcherSink)));
     }
 
     /// #253 — resolves the boot-time storage-encryption keyring before any storage tier exists. No
@@ -1555,7 +1557,13 @@ public interface AetherNode extends ManageableNode {
                                                    Option<EncryptionKeyring> storageKeyring,
                                                    long bootToken,
                                                    ClusterEventsLimits clusterEventsLimits,
-                                                   StreamMemoryBudget streamMemoryBudget) {
+                                                   StreamMemoryBudget streamMemoryBudget,
+                                                   NodeReactors reactors) {
+        // D1-react (KVStore dispatcher design §3.5 R5): the react gate reads this node's engine from here on.
+        reactors.bindEngine(clusterNode::isEngineStopRequested);
+        clusterNode.leaderManager().installReactExecutor(reactors.executor("LeaderManager"));
+        // R3 (v-2653 F3): a LeaderChange raised inside a replay burst carries the replay bit across the react hand-off.
+        clusterNode.leaderManager().installReplaySource(kvStore::isReplaying);
         // #329: leader-pinned task-group ownership is gated on consensus catch-up. A freshly
         // elected replacement leader whose Rabia log is still draining (isPendingCatchUp) is
         // isActive but not caught up; granting it ownership funnels every leader-pinned op
@@ -1752,7 +1760,8 @@ public interface AetherNode extends ManageableNode {
                           Option<SpiResourceProvider> spiResourceProvider,
                           NodeReplacementService nodeReplacementService,
                           UpgradeRunService upgradeRunService,
-                          StoragePrefetchChannel prefetchChannel) implements AetherNode {
+                          StoragePrefetchChannel prefetchChannel,
+                          NodeReactors reactors) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
             @Override
@@ -1886,6 +1895,9 @@ public interface AetherNode extends ManageableNode {
             @Override
             public Promise<Unit> stop() {
                 log.info("Stopping Aether node {}", self());
+                // D1-react (KVStore dispatcher design §3.5.1 "Gate predicate"): the stopping flag is set FIRST, so a reaction
+                // still queued on a react executor cannot restart what the steps below cancel (#642).
+                reactors.markStopping();
                 // #499 zombie fix: cancel this node's periodic SharedScheduler tasks FIRST — the
                 // scheduler is JVM-global, so anything left armed keeps firing against torn-down
                 // state after stop (the killed-node zombie backfill loop). cancel(false) inside:
@@ -1981,9 +1993,21 @@ public interface AetherNode extends ManageableNode {
             /// KVStore dispatcher design §3.2 Lifecycle: after the engine stop (the last step above), whatever the stop's
             /// outcome, the store closes: its undelivered queue is dropped (the router is quiesced), every waiter fails
             /// with outcome-unknown, and the dispatcher thread is joined with a bound.
+            @Override
+            public List<ReactExecutor> reactExecutors() {
+                return reactors.all();
+            }
+
+            @Override
+            public boolean leaderReplaying() {
+                return clusterNode.leaderManager()
+                                  .replaying();
+            }
+
             @Contract
             private void closeKvStore() {
                 kvStore.close();
+                reactors.close();
             }
 
             /// After the stop seal: the partition manager closes the WALs, then (#932) the replication shutdown runs, after the
@@ -2589,7 +2613,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                  kvStore,
                                                                                                  clusterNode.topologyManager(),
                                                                                                  provider,
-                                                                                                 config.appHttp().port()));
+                                                                                                 config.appHttp().port(),
+                                                                                                 reactors.executor("LoadBalancerManager")));
         var discoveryProvider = config.environment().flatMap(EnvironmentIntegration::discovery);
         var registriesOut = SliceRuntimeAssembly.registries();
         var endpointRegistry = registriesOut.endpointRegistry();
@@ -2764,7 +2789,8 @@ public interface AetherNode extends ManageableNode {
                                                   config.controllerConfig().scalingConfig().evaluationInterval(),
                                                   config.controllerConfig(),
                                                   delegateRouter::route);
-
+        // D1-react (KVStore dispatcher design §3.5.1 row 39): the slice cooldown request runs on the control loop's react executor.
+        controlLoop.installReactExecutor(reactors.executor("ControlLoop"));
         metricsScheduler.setSourceMetricsSupplier(() -> List.copyOf(controlLoop.communitySnapshots().values()));
         var workerMetricsAggregator = WorkerMetricsAggregator.workerMetricsAggregator(config.self(),
                                                                                       () -> config.self()
@@ -2787,6 +2813,9 @@ public interface AetherNode extends ManageableNode {
                                                               clusterNode.leaderManager(),
                                                               delegateRouter::route,
                                                               operatorWarningSink);
+        // D1-react (KVStore dispatcher design §3.5.1 row 19): the record derivation and its bounded retry run on the rollback
+        // manager's react executor.
+        rollbackManager.installReactExecutor(reactors.executor("RollbackManager"));
         // #1573: the one producer of AllInstancesFailed. Every node ships its slice execution outcomes on the
         // cluster-sync pong; the leader alone judges "every ACTIVE instance of this version is broken" and
         // routes the event to rollback, the cluster event and the alert. The tick forgets its state on a
@@ -2825,6 +2854,8 @@ public interface AetherNode extends ManageableNode {
         var abTestManager = sliceInvokerOut.abTestManager();
         var sliceInvoker = sliceInvokerOut.sliceInvoker();
         var scheduledTaskManager = sliceInvokerOut.scheduledTaskManager();
+        // D1-react (KVStore dispatcher design §3.5.1 rows 25/28): registry-driven timer arms run on the scheduler's react executor.
+        scheduledTaskManager.installReactExecutor(reactors.executor("ScheduledTaskRegistry"));
         var selfAddress = findSelfAddress(config);
         var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManagerFromSnapshot(config.self(),
                                                                                             selfAddress,
@@ -2959,7 +2990,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                               aetherEntries,
                                                                                                                               growthLog,
                                                                                                                               selfId,
-                                                                                                                              gossipKeyRotationHandler));
+                                                                                                                              gossipKeyRotationHandler,
+                                                                                                                              reactors.executor("WorkerActivation")));
         var governorAnnouncerHolder = workerActivationOut.governorAnnouncerHolder();
         var communityDirectory = workerActivationOut.communityDirectory();
         var activationKvRouter = workerActivationOut.activationKvRouter();
@@ -3237,7 +3269,12 @@ public interface AetherNode extends ManageableNode {
                                                                                                                               abTestManager,
                                                                                                                               allEntries,
                                                                                                                               leaderReconciler,
-                                                                                                                              bootstrapModule));
+                                                                                                                              bootstrapModule,
+                                                                                                                              reactors.executor("ClusterTopologyManager")));
+        // D1-react (KVStore dispatcher design §3.5.1 rows 72/73): activation, deactivation and status writes run on its react executor.
+        spokesmanPingLoop.installReactExecutor(reactors.executor("SpokesmanPingLoop"));
+        // D1-react (KVStore dispatcher design §3.5.1 rows 66/67): the bootstrap retry attempt runs on its react executor.
+        bootstrapModule.installReactExecutor(reactors.executor("BootstrapModule"));
         var streamReplicationOut = StreamAssembly.streamReplication(new StreamAssembly.StreamReplicationInputs(config,
                                                                                                                delegateRouter,
                                                                                                                kvStore,
@@ -3537,7 +3574,8 @@ public interface AetherNode extends ManageableNode {
                                   resourceProviderSetup.spiProvider(),
                                   replacementWiring.service(),
                                   upgradeWiring.service(),
-                                  prefetchChannel);
+                                  prefetchChannel,
+                                  reactors);
 
         nodeDeploymentManager.setShutdownCallback(node::stop);
         StreamAssembly.retentionWatch(new StreamAssembly.RetentionWatchInputs(kvStore,
@@ -3698,7 +3736,8 @@ public interface AetherNode extends ManageableNode {
                                                                             resourceProviderSetup.spiProvider(),
                                                                             replacementWiring.service(),
                                                                             upgradeWiring.service(),
-                                                                            prefetchChannel);
+                                                                            prefetchChannel,
+                                                                            reactors);
                                                   }
 
                                                   return node;
