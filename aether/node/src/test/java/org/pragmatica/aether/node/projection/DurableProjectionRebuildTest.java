@@ -573,7 +573,7 @@ class DurableProjectionRebuildTest {
     private StreamConsumerManager.AssignmentAuthority authority() {
         return StreamConsumerManager.AssignmentAuthority.assignmentAuthority(this::committedAssignment,
                                                                              ConsumerAssignmentWriter.consumerAssignmentWriter(() -> true,
-                                                                                                                               () -> Epoch.epoch(0L, 1L, 0L),
+                                                                                                                               () -> Epoch.epoch(1L, 1L, 0L),
                                                                                                                                HlcClock.hlcClock(SELF),
                                                                                                                                this::committedAssignment),
                                                                              this::applyAll);

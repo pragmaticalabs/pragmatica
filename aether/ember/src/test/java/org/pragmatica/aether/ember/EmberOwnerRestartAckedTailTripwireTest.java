@@ -54,6 +54,8 @@ import static org.pragmatica.aether.ember.StreamTripwireSupport.sleepQuietly;
 ///   Controls: the filter dropped at least one ack (it was live), and the ring holds the full tail.
 /// - `@Disabled` acceptance: the owner's visible head covers the acked tail with the replicas' acks still held off, because
 ///   the acknowledgement state survives the restart (persisted per epoch, or pulled by the owner on activation).
+/// - #2654: life 2's first ownership record carries an incarnation strictly above life 1's, because no ownership epoch is
+///   minted before the life's cluster incarnation commits.
 @PortBudget
 class EmberOwnerRestartAckedTailTripwireTest {
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(180).seconds();
@@ -91,12 +93,6 @@ class EmberOwnerRestartAckedTailTripwireTest {
         var owner = restartWithAcksHeldOff();
 
         assertThat(ringHead(owner)).as("control: the WAL replay put the whole acked tail in the owner's rebuilt ring").isEqualTo(ACKED_TAIL);
-        assertThat(lifeOneIncarnation).as("control: life 1's ownership record carries the committed genesis incarnation").isPositive();
-        assertThat(lifeTwoIncarnation).as("#2654 fixed? Life 2's first ownership record carries incarnation %d, above life 1's %d. "
-                                          + "Delete this assertion and enable ownerAfterColdRestart_lifeTwoOwnershipIncarnation_isAboveLifeOnes",
-                                          lifeTwoIncarnation,
-                                          lifeOneIncarnation)
-                                      .isLessThanOrEqualTo(lifeOneIncarnation);
 
         var highestVisible = highestVisibleOver(owner, HOLD_MS);
 
@@ -122,9 +118,9 @@ class EmberOwnerRestartAckedTailTripwireTest {
     }
 
     /// #2654: after the whole-cluster restore the new life's ownership record must outrank every epoch life 1 committed, so its
-    /// incarnation is strictly above life 1's.
+    /// incarnation is strictly above life 1's. The control is the genesis half of the same defect: before the fix life 1's
+    /// first record could be minted at incarnation 0, ahead of the registrar's genesis commit.
     @Test
-    @Disabled("#2654: enable when no ownership epoch is minted before the life's incarnation commits; RED today: life 2's record is minted at incarnation 0 before the restore commits the new incarnation")
     @Timeout(1200)
     void ownerAfterColdRestart_lifeTwoOwnershipIncarnation_isAboveLifeOnes() {
         restartWithAcksHeldOff();

@@ -218,12 +218,20 @@ record StreamPartitionOwnershipWriterRecord(BooleanSupplier isLeaderSupplier,
             return Option.none();
         }
 
+        // #2654 design-out: a refused base (the life's incarnation is not committed) mints nothing, so no record can rank
+        // below the restored life's epochs; the refusal itself reaches the batch driver, which re-drives the pass.
+        return currentEpoch().mintable()
+                             .option()
+                             .flatMap(epoch -> decideAt(stream, partition, epoch));
+    }
+
+    private Option<KVCommand<AetherKey>> decideAt(String stream, int partition, Epoch epoch) {
         return hrwOwner.ownerOf(stream, partition)
                        .flatMap(owner -> decide(stream,
                                                 partition,
                                                 committedOwnership.ownershipOf(stream, partition),
                                                 owner,
-                                                currentEpoch()));
+                                                epoch));
     }
 
     private Option<KVCommand<AetherKey>> rewriteIfOwnerChanged(String stream,
@@ -304,6 +312,14 @@ record IsrOwnershipWriter(BooleanSupplier isLeaderSupplier,
             return Option.none();
         }
 
+        // #2654 design-out, as in the plain writer: a refused base mints nothing; the batch driver re-drives the pass.
+        return generationEpochSupplier.get()
+                                      .mintable()
+                                      .option()
+                                      .flatMap(epoch -> decideAt(stream, partition, epoch));
+    }
+
+    private Option<KVCommand<AetherKey>> decideAt(String stream, int partition, Epoch epoch) {
         var committed = committedOwnership.ownershipOf(stream, partition);
 
         return hrwOwner.ownerOf(stream, partition)
@@ -312,7 +328,7 @@ record IsrOwnershipWriter(BooleanSupplier isLeaderSupplier,
                                                 partition,
                                                 committed,
                                                 owner,
-                                                generationEpochSupplier.get()));
+                                                epoch));
     }
 
     /// The record the leader should commit next, or none when the committed one stands (or no owner may be chosen).

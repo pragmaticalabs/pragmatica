@@ -257,7 +257,7 @@ class DurableTopicContextDeliveryTest {
 
         return StreamConsumerManager.AssignmentAuthority.assignmentAuthority(committed,
                                                                              ConsumerAssignmentWriter.consumerAssignmentWriter(() -> true,
-                                                                                                                               () -> Epoch.epoch(0L, 1L, 0L),
+                                                                                                                               () -> Epoch.epoch(1L, 1L, 0L),
                                                                                                                                HlcClock.hlcClock(SELF),
                                                                                                                                committed),
                                                                              commands -> applyAssignments(committedAssignments, commands));

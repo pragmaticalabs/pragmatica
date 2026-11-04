@@ -55,7 +55,7 @@ class AetherNodeStreamOwnershipRetryTest {
         var applies = new AtomicInteger();
         var scheduled = new CopyOnWriteArrayList<Scheduled>();
         var writer = StreamPartitionOwnershipWriter.streamPartitionOwnershipWriter(() -> true,
-                                                                                    () -> Epoch.epoch(0L, 1L, 0L),
+                                                                                    () -> Epoch.epoch(1L, 1L, 0L),
                                                                                     HlcClock.hlcClock(A),
                                                                                     (_, _) -> committedOwner.get().map(AetherNodeStreamOwnershipRetryTest::ownership),
                                                                                     (stream, partition) -> controllerRef.get().desiredOwner(stream, partition));

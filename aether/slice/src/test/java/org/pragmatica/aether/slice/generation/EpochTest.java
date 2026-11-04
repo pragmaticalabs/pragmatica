@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.generation;
 
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
@@ -128,6 +129,27 @@ class EpochTest {
             var next = base.nextCounter();
 
             assertThat(next.isStrictlyAfter(base)).isTrue();
+        }
+    }
+
+    /// #2654: an epoch is a mint base only once its incarnation is committed.
+    @Nested
+    class Mintable {
+        @Test
+        void mintable_incarnationNone_isRefusedAsNotCommitted() {
+            Epoch.epoch(Epoch.NO_INCARNATION, 3L, 0L)
+                 .mintable()
+                 .onSuccess(epoch -> Assertions.fail("minted at incarnation NONE: " + epoch))
+                 .onFailure(cause -> assertThat(cause).isEqualTo(EpochMintError.General.INCARNATION_NOT_COMMITTED));
+        }
+
+        @Test
+        void mintable_committedIncarnation_isTheEpochItself() {
+            var epoch = Epoch.epoch(1L, 3L, 0L);
+
+            epoch.mintable()
+                 .onFailure(cause -> Assertions.fail("refused a committed incarnation: " + cause.message()))
+                 .onSuccess(base -> assertThat(base).isEqualTo(epoch));
         }
     }
 

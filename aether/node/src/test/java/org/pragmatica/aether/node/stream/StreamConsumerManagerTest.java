@@ -132,9 +132,9 @@ class StreamConsumerManagerTest {
     /// Wide enough that HRW concentrating every partition on one of three candidates has probability
     /// 3 x (1/3)^32 — the point at which a distribution assertion stops being a coin flip.
     private static final int WIDE_PARTITION_COUNT = 32;
-    private static final Epoch EPOCH_1 = Epoch.epoch(0L, 1L, 1L);
-    private static final Epoch EPOCH_2 = Epoch.epoch(0L, 1L, 2L);
-    private static final Epoch EPOCH_3 = Epoch.epoch(0L, 1L, 3L);
+    private static final Epoch EPOCH_1 = Epoch.epoch(1L, 1L, 1L);
+    private static final Epoch EPOCH_2 = Epoch.epoch(1L, 1L, 2L);
+    private static final Epoch EPOCH_3 = Epoch.epoch(1L, 1L, 3L);
 
     private StreamConsumerRegistry registry;
     private RecordingRuntime runtime;
@@ -197,7 +197,7 @@ class StreamConsumerManagerTest {
 
         return AssignmentAuthority.assignmentAuthority(committed,
                                                        ConsumerAssignmentWriter.consumerAssignmentWriter(() -> leader,
-                                                                                                         () -> Epoch.epoch(0L, 1L, 0L),
+                                                                                                         () -> Epoch.epoch(1L, 1L, 0L),
                                                                                                          HlcClock.hlcClock(SELF),
                                                                                                          committed),
                                                        this::applyAssignments);
@@ -237,7 +237,7 @@ class StreamConsumerManagerTest {
                                                            SELF,
                                                            AssignmentAuthority.assignmentAuthority(committed,
                                                                                                    ConsumerAssignmentWriter.consumerAssignmentWriter(() -> false,
-                                                                                                                                                     () -> Epoch.epoch(0L, 1L, 0L),
+                                                                                                                                                     () -> Epoch.epoch(1L, 1L, 0L),
                                                                                                                                                      HlcClock.hlcClock(SELF),
                                                                                                                                                      committed),
                                                                                                    this::applyAssignments));
