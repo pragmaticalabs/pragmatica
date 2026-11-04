@@ -154,6 +154,51 @@ class MigrationFenceTest {
             assertRefused(session, "no default schema");
         }
 
+        /// F26a, F26b, F18b: MySQL `verifyHeld` compares the lock's holder with THIS connection. A `GET_LOCK` that reports
+        /// "granted" while `IS_USED_LOCK` names another connection (a pooler swapped the server session) is refused at acquire.
+        @Test
+        void acquire_mysqlLockGrantedButHeldByAnotherConnection_isFenceUnavailable() {
+            var session = new ScriptedSession(DatabaseType.MYSQL, Map.of("IS_USED_LOCK(?) = CONNECTION_ID(), 0)", row("n", 0)));
+
+            var cause = causeOf(MigrationFence.acquire(session, "ds", "node-1").await());
+
+            assertThat(cause).isInstanceOf(MigrationError.FenceUnavailable.class);
+            assertThat(cause.message()).contains("does not hold the fence it took");
+            assertThat(session.statements).anyMatch(sql -> sql.contains("GET_LOCK("));
+        }
+
+        /// Positive control for the test above (same session, holder answered as this connection): the fence is taken,
+        /// and the verification statement named the lock.
+        @Test
+        void acquire_mysqlLockHeldByThisConnection_verifiesTheNamedLockAndSucceeds() {
+            var session = new ScriptedSession(DatabaseType.MYSQL, Map.of());
+
+            assertThat(MigrationFence.acquire(session, "ds", "node-1").await().isSuccess()).isTrue();
+            assertThat(session.statements).anyMatch(sql -> sql.contains("IS_USED_LOCK(?) = CONNECTION_ID(), 0)"));
+            assertThat(session.params).contains(MigrationFence.MysqlFence.lockName("shop").unwrap());
+        }
+
+        /// F1: MariaDB is a tier-1 engine; F3: acquire on a MariaDB session takes the MySQL lock.
+        @Test
+        void isTierOne_mariadb_isTrue() {
+            assertThat(MigrationFence.isTierOne(DatabaseType.MARIADB)).isTrue();
+            assertThat(MigrationFence.isTierOne(DatabaseType.MYSQL)).isTrue();
+            assertThat(MigrationFence.isTierOne(DatabaseType.POSTGRESQL)).isTrue();
+            assertThat(MigrationFence.isTierOne(DatabaseType.H2)).isFalse();
+        }
+
+        @Test
+        void acquire_mariadb_takesTheMysqlNamedLock() {
+            var session = new ScriptedSession(DatabaseType.MARIADB, Map.of());
+
+            var fence = MigrationFence.acquire(session, "ds", "node-1").await();
+
+            assertThat(fence.isSuccess()).isTrue();
+            assertThat(fence.unwrap()).isInstanceOf(MigrationFence.MysqlFence.class);
+            assertThat(session.statements).anyMatch(sql -> sql.contains("GET_LOCK("));
+            assertThat(session.params).contains(MigrationFence.MysqlFence.lockName("shop").unwrap());
+        }
+
         private static void assertRefused(ScriptedSession session, String reason) {
             var cause = causeOf(MigrationFence.acquire(session, "ds", "node-1").await());
 
@@ -257,6 +302,61 @@ class MigrationFenceTest {
 
             assertThat(causeOf(migrateOneScript(session))).isInstanceOf(MigrationError.FenceUnavailable.class);
             assertThat(session.statements).noneMatch(sql -> sql.contains("pg_advisory_unlock_all"));
+        }
+
+        /// G4: `migrate()` runs its body through the [FencedSession], not the bare pinned session. The fence is granted and
+        /// verified at acquire (check 1), held for the first write (check 2) and lost before the second (check 3): the
+        /// run must end `FenceUnavailable` with exactly ONE write executed. Without the wrapper nothing re-verifies and the
+        /// run completes.
+        @Test
+        void migrate_fenceLostAfterTheFirstWrite_failsBeforeTheSecondWrite() {
+            var session = new ScriptedSession(DatabaseType.POSTGRESQL, Map.of()).losingTheFenceAfter(2);
+
+            var outcome = migrateOneScript(session);
+
+            assertThat(causeOf(outcome)).isInstanceOf(MigrationError.FenceUnavailable.class);
+            assertThat(session.writes.get()).as("the second write must be refused before it reaches the session").isEqualTo(1);
+        }
+
+        /// M8 for `migrate`, G5a for `undo`, G5b for `baseline`: on a tier-1 engine every statement of the run, history
+        /// bootstrap and ownership claim included, goes to the PINNED session; the base connector (the pool) sees none.
+        /// Positive control: the pinned session did receive the run.
+        @Test
+        void migrate_everyStatementRunsOnThePinnedSession_noneOnTheBaseConnector() {
+            var dedicated = new ScriptedSession(DatabaseType.POSTGRESQL, Map.of());
+            var base = new ScriptedSession(DatabaseType.POSTGRESQL, Map.of()).pinningTo(dedicated);
+
+            assertThat(migrateOneScript(base).isSuccess()).isTrue();
+
+            assertRanOnlyOnThePinnedSession(base, dedicated);
+        }
+
+        @Test
+        void undo_everyStatementRunsOnThePinnedSession_noneOnTheBaseConnector() {
+            var dedicated = new ScriptedSession(DatabaseType.POSTGRESQL, Map.of());
+            var base = new ScriptedSession(DatabaseType.POSTGRESQL, Map.of()).pinningTo(dedicated);
+
+            var outcome = SchemaMigrations.schemaMigrations(timeSpan(1).minutes()).undo("ds", 0, List.of(), base, "node-1", "bp").await();
+
+            assertThat(outcome.isSuccess()).isTrue();
+            assertRanOnlyOnThePinnedSession(base, dedicated);
+        }
+
+        @Test
+        void baseline_everyStatementRunsOnThePinnedSession_noneOnTheBaseConnector() {
+            var dedicated = new ScriptedSession(DatabaseType.POSTGRESQL, Map.of());
+            var base = new ScriptedSession(DatabaseType.POSTGRESQL, Map.of()).pinningTo(dedicated);
+
+            var outcome = SchemaMigrations.schemaMigrations(timeSpan(1).minutes()).baseline("ds", 1, List.of(), base, "node-1", "bp").await();
+
+            assertThat(outcome.isSuccess()).isTrue();
+            assertRanOnlyOnThePinnedSession(base, dedicated);
+        }
+
+        private static void assertRanOnlyOnThePinnedSession(ScriptedSession base, ScriptedSession dedicated) {
+            assertThat(base.pinnedCalls.get()).isEqualTo(1);
+            assertThat(dedicated.statements).as("the run reached the pinned session").anyMatch(sql -> sql.contains("aether_schema"));
+            assertThat(base.statements).as("nothing may run on the base connector").isEmpty();
         }
 
         private static Result<SchemaMigrations.SchemaResult> migrateOneScript(ScriptedSession session) {
@@ -367,7 +467,9 @@ class MigrationFenceTest {
         private final List<String> statements = new ArrayList<>();
         private final List<Object> params = new ArrayList<>();
         private final AtomicInteger pinnedCalls = new AtomicInteger();
+        private final AtomicInteger writes = new AtomicInteger();
         private Option<AtomicInteger> heldChecksLeft = none();
+        private Option<ScriptedSession> pinnedSession = none();
 
         ScriptedSession(DatabaseType type, Map<String, Map<String, Object>> overrides) {
             this(type, overrides, List.of());
@@ -378,6 +480,13 @@ class MigrationFenceTest {
                                                       PoolConfig.DEFAULT, Map.of(), none(), none(), none());
             this.overrides = overrides;
             this.variables = variables;
+        }
+
+        /// `pinned` opens THIS dedicated session instead of the connector itself, so a statement on the connector
+        /// (the pool) is distinguishable from one on the pinned session.
+        ScriptedSession pinningTo(ScriptedSession dedicated) {
+            pinnedSession = some(dedicated);
+            return this;
         }
 
         /// After `checks` fence verifications (the `AS n FROM pg_locks` check) this session no longer holds the fence.
@@ -410,12 +519,14 @@ class MigrationFenceTest {
         @Override
         public Promise<Integer> update(String sql, Object... args) {
             record(sql, args);
+            writes.incrementAndGet();
             return Promise.success(0);
         }
 
         @Override
         public Promise<int[]> batch(String sql, List<Object[]> paramsList) {
             record(sql, new Object[0]);
+            writes.incrementAndGet();
             return Promise.success(new int[0]);
         }
 
@@ -427,7 +538,10 @@ class MigrationFenceTest {
         @Override
         public <T> Promise<T> pinned(Duration statementTimeout, TransactionCallback<T> body, TransactionCallback<Unit> release) {
             pinnedCalls.incrementAndGet();
-            return body.execute(this).fold(result -> release.execute(this).fold(_ -> Promise.resolved(result)));
+
+            var dedicated = pinnedSession.or(this);
+
+            return body.execute(dedicated).fold(result -> release.execute(dedicated).fold(_ -> Promise.resolved(result)));
         }
 
         @Override
