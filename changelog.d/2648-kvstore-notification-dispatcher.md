@@ -9,4 +9,13 @@
   pending wait with `DeliveryOutcomeUnknown` and stops the node through an injected `DispatcherFailureSink`.
 - `replayNotifications()` waits for its burst outside every store lock and refuses a caller that would wait for itself.
   The replay diff baseline follows every delivered notification, so a key put live and missing from a later snapshot
-  gets its remove. Existing constructors keep inline delivery; production wiring follows in the same PR.
+  gets its remove. Existing constructors keep inline delivery.
+- **Every Aether node's store is dispatched.** The node passes `NotificationDelivery.dispatched` at its one store
+  construction site, with the replay rank of design §3.7 (VersionRouting, then AppBlueprint and SchemaVersion, then
+  SliceTarget, then NodeArtifact; the cluster incarnation first). `[verified: AetherNodeKvDispatcherWiringBootTest,
+  AetherNodeReplayRankTest]`
+- A dispatcher failure in a production node logs a FATAL line, flushes the log (bounded) and halts with the new exit code
+  **70**; an in-JVM host (Forge, Ember) stops only that node, off the failing thread. The sink runs once per node. The
+  node's stop sequence closes the store after the engine stop. `[verified: MainShutdownTest$KvDispatcherSink]`
+- `WorkerMetadataClient` replays after its `synchronized (store)` section, and `WorkerMetadataServer` counts refused
+  captures (`workerMetadata.capture.refused` in its resource metrics). `[verified: WorkerMetadataChannelTest]`

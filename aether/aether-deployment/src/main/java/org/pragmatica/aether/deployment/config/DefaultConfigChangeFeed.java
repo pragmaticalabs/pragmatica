@@ -45,9 +45,12 @@ import static org.pragmatica.lang.Unit.unit;
 /// already in the overlay (the overlay write precedes the publish) and so in the bind; one published after finds
 /// the subscription and triggers it.
 ///
-/// **`feedLock` is a leaf lock.** The applier thread holds the KV mutation lock, takes `feedLock`, and inside it
-/// reads `committedRevision()`; registration takes only `feedLock`. Nothing under `feedLock` takes the mutation
-/// lock, binds, or calls user code.
+/// **`feedLock` is a leaf lock.** A change is published from the KV store's notification dispatcher thread (KVStore
+/// dispatcher design §3.2), which holds neither the store's mutation lock nor its monitor; it takes `feedLock` and,
+/// inside it, reads `committedRevision()`, which takes the store monitor for the read only. Registration takes only
+/// `feedLock`. Nothing under `feedLock` takes the mutation lock, binds, or calls user code. Because delivery trails the
+/// apply, `asOf` may already include later batches than the change being published: it is a label, never compared, and
+/// the dispatcher's read-ahead fence does not count it.
 public final class DefaultConfigChangeFeed implements ConfigChangeFeed {
     private static final String CALLBACK_TIMEOUT_KEY = "config.watch.callback.timeout";
     private static final TimeSpan DEFAULT_CALLBACK_TIMEOUT = TimeSpan.timeSpan(30).seconds();
