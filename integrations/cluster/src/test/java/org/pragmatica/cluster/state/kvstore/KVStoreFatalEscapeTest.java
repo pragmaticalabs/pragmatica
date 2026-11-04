@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.AfterEach;
@@ -32,8 +33,9 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// promise and throws from its `onSuccess`; the sink must be asked to stop the node, with the thrown `Error`.
 ///
 /// Mutations, each RED through this class: the relay's handler is a no-op (hook "not installed", both arms red);
-/// the relay forwards only a `VirtualMachineError` (the `AssertionError` arm red). The control arm pins that a
-/// `RuntimeException` never reaches the sink.
+/// the relay forwards only a `VirtualMachineError` (the `AssertionError` arm red); the delivery hold is not armed (the
+/// promise resolves inline on the caller, and every arm fails at "the delivery loop reached the hold"). The control arm
+/// pins that a `RuntimeException` never reaches the sink.
 class KVStoreFatalEscapeTest {
     record Key(String value) implements StructuredKey {}
 
@@ -56,6 +58,7 @@ class KVStoreFatalEscapeTest {
 
     final MessageRouter.MutableRouter router = MessageRouter.mutable();
     final RecordingSink sink = new RecordingSink();
+    final HeldDelivery hold = HeldDelivery.heldDelivery();
     final List<KVStore<StructuredKey, Object>> opened = new ArrayList<>();
     FatalEscapeHandler.Registration registration;
 
@@ -75,7 +78,8 @@ class KVStoreFatalEscapeTest {
     KVStore<StructuredKey, Object> store() {
         var delivery = NotificationDelivery.dispatched("fatal-escape-" + System.nanoTime(),
                                                        NotificationDelivery.ReplayRank.flat(),
-                                                       DispatcherFailureSink.loggingOnly());
+                                                       DispatcherFailureSink.loggingOnly(),
+                                                       hold);
         var store = new KVStore<StructuredKey, Object>(router, new Serializer() {
             @Override public <T> void write(ByteBuf buffer, T value) {}
         }, new Deserializer() {
@@ -86,13 +90,22 @@ class KVStoreFatalEscapeTest {
         return store;
     }
 
-    private Promise<List<Object>> parkedApplyPromise() {
+    /// Parks an apply promise for real: the delivery loop is held before the batch, so the promise cannot resolve inline
+    /// on the caller. The handler is attached while the promise is provably unresolved, then the hold is released and
+    /// the handler runs on the delivery thread.
+    private void parkThenRun(Consumer<List<Object>> onSuccess) {
         var store = store();
         var promise = Promise.<List<Object>>promise();
+
+        hold.holdFrom(1);
+
         var results = store.process(store.createBatch(List.of(new KVCommand.Put<>(A, "one"))));
 
         store.completeAfterDelivery(promise, results);
-        return promise;
+        assertThat(hold.awaitHeld(10)).as("the delivery loop reached the hold").isTrue();
+        assertThat(promise.isResolved()).as("the apply promise is parked, not resolved inline").isFalse();
+        promise.onSuccess(onSuccess);
+        hold.release();
     }
 
     @Test
@@ -100,7 +113,7 @@ class KVStoreFatalEscapeTest {
     void assertionErrorFromAnOnSuccessHandler_stopsTheNodeThroughTheSink() throws Exception {
         var error = new AssertionError("onSuccess handler");
 
-        parkedApplyPromise().onSuccess(_ -> { throw error; });
+        parkThenRun(_ -> { throw error; });
 
         assertThat(sink.stopped.await(10, TimeUnit.SECONDS)).as("the sink was asked to stop the node").isTrue();
         assertThat(sink.reasons).containsExactly(FatalEscapeRelay.REASON);
@@ -112,7 +125,7 @@ class KVStoreFatalEscapeTest {
     void stackOverflowErrorFromAnOnSuccessHandler_stopsTheNodeThroughTheSink() throws Exception {
         var error = new StackOverflowError("onSuccess handler");
 
-        parkedApplyPromise().onSuccess(_ -> { throw error; });
+        parkThenRun(_ -> { throw error; });
 
         assertThat(sink.stopped.await(10, TimeUnit.SECONDS)).as("the sink was asked to stop the node").isTrue();
         assertThat(sink.causes).containsExactly(error);
@@ -125,7 +138,7 @@ class KVStoreFatalEscapeTest {
     void runtimeExceptionFromAnOnSuccessHandler_neverReachesTheSink() throws Exception {
         var handlerRan = new CountDownLatch(1);
 
-        parkedApplyPromise().onSuccess(_ -> raise(handlerRan));
+        parkThenRun(_ -> raise(handlerRan));
 
         assertThat(handlerRan.await(10, TimeUnit.SECONDS)).as("control: the handler ran").isTrue();
         assertThat(sink.stopped.await(500, TimeUnit.MILLISECONDS)).as("no stop for a RuntimeException").isFalse();
