@@ -180,8 +180,8 @@ public sealed interface ClusterBootstrapAssembly {
                                                  // #2654: the incarnation-commit re-drive — see onIncarnationCommit.
                                                  .onPut(AetherKey.ClusterIncarnationKey.class,
                                                         (KVStoreNotification.ValuePut<AetherKey.ClusterIncarnationKey, AetherValue.ClusterIncarnationValue> put) -> onIncarnationCommit(put,
-                                                                                                                                                                                       incarnation,
-                                                                                                                                                                                       bootstrapModule))
+                                                                                                                                                                                        incarnation,
+                                                                                                                                                                                        bootstrapModule))
                                                  // #1533: the ONE restore-commit hook — see onRestoreDecision.
                                                  .onPut(AetherKey.BackupRestoreKey.class,
                                                         (KVStoreNotification.ValuePut<AetherKey.BackupRestoreKey, AetherValue.BackupRestoreValue> put) -> onRestoreDecision(put,

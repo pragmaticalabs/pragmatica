@@ -223,13 +223,12 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         if (bootstrapComplete.get()) {
             return Option.none();
         }
-
         // #2654 design-out: a refused base (the life's incarnation is not committed) plans nothing, so no core ownership
         // record can rank below the restored life's epochs, and no bootstrap attempt is spent. The incarnation commit
         // re-drives the plan (`ClusterBootstrapAssembly.onIncarnationCommit` calls retryIfNeeded).
         return currentEpoch().mintable()
-                             .option()
-                             .flatMap(epoch -> planCoreBootstrapAt(coreMembers, epoch));
+                           .option()
+                           .flatMap(epoch -> planCoreBootstrapAt(coreMembers, epoch));
     }
 
     private Option<CoreBootstrapPlan> planCoreBootstrapAt(Set<NodeId> coreMembers, Epoch epoch) {
@@ -382,7 +381,9 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         return buildCorePartitionCommand(self, epoch, 1L);
     }
 
-    private KVCommand<AetherKey> buildRewrittenCorePartition(DhtPartitionOwnershipValue owner, NodeId self, Epoch epoch) {
+    private KVCommand<AetherKey> buildRewrittenCorePartition(DhtPartitionOwnershipValue owner,
+                                                             NodeId self,
+                                                             Epoch epoch) {
         return buildCorePartitionCommand(self, epoch, owner.ownershipTerm() + 1L);
     }
 

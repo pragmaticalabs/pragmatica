@@ -179,9 +179,8 @@ public record NodeReplayCursor(String topicStream,
     }
 
     private Result<Long> committedIncarnation() {
-        return Result.success(clusterIncarnation.getAsLong())
-                     .filter(EpochMintError.General.INCARNATION_NOT_COMMITTED,
-                             incarnation -> incarnation != Epoch.NO_INCARNATION);
+        return Result.success(clusterIncarnation.getAsLong()).filter(EpochMintError.General.INCARNATION_NOT_COMMITTED,
+                                                                     incarnation -> incarnation != Epoch.NO_INCARNATION);
     }
 
     /// Strictly newer than `newest`: past it in its own incarnation, or the first rewind of a newer one.
