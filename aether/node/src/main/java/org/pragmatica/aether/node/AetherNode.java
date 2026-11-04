@@ -2781,7 +2781,8 @@ public interface AetherNode extends ManageableNode {
                                                   config.controllerConfig().scalingConfig().evaluationInterval(),
                                                   config.controllerConfig(),
                                                   delegateRouter::route);
-
+        // D1-react (KVStore dispatcher design §3.5.1 row 39): the slice cooldown request runs on the control loop's react executor.
+        controlLoop.installReactExecutor(reactors.executor("ControlLoop"));
         metricsScheduler.setSourceMetricsSupplier(() -> List.copyOf(controlLoop.communitySnapshots().values()));
         var workerMetricsAggregator = WorkerMetricsAggregator.workerMetricsAggregator(config.self(),
                                                                                       () -> config.self()
@@ -2804,6 +2805,9 @@ public interface AetherNode extends ManageableNode {
                                                               clusterNode.leaderManager(),
                                                               delegateRouter::route,
                                                               operatorWarningSink);
+        // D1-react (KVStore dispatcher design §3.5.1 row 19): the record derivation and its bounded retry run on the rollback
+        // manager's react executor.
+        rollbackManager.installReactExecutor(reactors.executor("RollbackManager"));
         // #1573: the one producer of AllInstancesFailed. Every node ships its slice execution outcomes on the
         // cluster-sync pong; the leader alone judges "every ACTIVE instance of this version is broken" and
         // routes the event to rollback, the cluster event and the alert. The tick forgets its state on a

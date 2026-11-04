@@ -43,10 +43,12 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.NullReturn;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.statemachine.Fsm;
+import org.pragmatica.utility.react.ReactExecutor;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -78,6 +80,17 @@ public final class ControlLoopContext {
     private final ConcurrentHashMap<Artifact, SliceTargetValue> sliceTargets = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<SliceNodeKey, SliceState> sliceStates = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Artifact, Long> sliceActivationTimes = new ConcurrentHashMap<>();
+
+    /// D1-react (KVStore dispatcher design §3.5.1 row 39): the executor the slice cooldown request runs on. A node installs
+    /// its gated executor once, at assembly; until then (and in a host that installs none) the request runs inline, as
+    /// before D1-react.
+    private final AtomicReference<ReactExecutor> react = new AtomicReference<>(ReactExecutor.inline("ControlLoop"));
+
+    /// Row 39, U2: the undo of a cooldown is [#resetSliceProtectionState] (Warmup entry, an FSM state change that cannot
+    /// move to the executor). It bumps this generation before it clears; a cooldown captured under an older generation
+    /// marks nothing. Row 48 (`clearSliceState`) removes only the slice's state, never its cooldown entry, so it is not an
+    /// undo of this reaction and bumps nothing.
+    private final AtomicLong protectionGeneration = new AtomicLong();
 
     private final ConcurrentHashMap<String, CommunityMetricsSnapshot> communitySnapshotStore = new ConcurrentHashMap<>();
 
@@ -144,6 +157,12 @@ public final class ControlLoopContext {
 
     public long nowMs() {
         return clock.getAsLong();
+    }
+
+    public Unit installReactExecutor(ReactExecutor executor) {
+        react.set(executor);
+
+        return Unit.unit();
     }
 
     public Fsm<ControlLoopState, ClusterFsmEvent> fsm() {
@@ -275,7 +294,7 @@ public final class ControlLoopContext {
         var previous = sliceStates.put(key, newState);
 
         if (newState == SliceState.ACTIVE && previous != SliceState.ACTIVE) {
-            markSliceCooldown(key.artifact());
+            requestSliceCooldown(key.artifact());
         }
 
         if (newState.isInProgress()) {
@@ -321,6 +340,7 @@ public final class ControlLoopContext {
 
     @Contract
     public void resetSliceProtectionState() {
+        protectionGeneration.incrementAndGet();
         sliceStates.clear();
         sliceActivationTimes.clear();
     }
@@ -467,12 +487,39 @@ public final class ControlLoopContext {
         eventPublisher.accept(event);
     }
 
-    private void markSliceCooldown(Artifact artifact) {
+    /// Row 39 absorb: the slice state stays in [#recordSliceState]; the timestamp and the protection generation are captured
+    /// here. Reaction (behind the engine-alive gate): the whole cooldown mark, map put and FSM dispatch together, because the
+    /// FSM transition arms the evaluation and expiry timers and cannot be separated from the dispatch.
+    @Contract
+    private void requestSliceCooldown(Artifact artifact) {
         var timestamp = nowMs();
+        var generation = protectionGeneration.get();
 
-        sliceActivationTimes.put(artifact, timestamp);
-        log.debug("Slice {} reached ACTIVE, cooldown started", artifact);
-        fsm.dispatch(new ControlLoopEvents.CooldownRequested(artifact, timestamp));
+        react.get().react("ControlLoop slice cooldown", () -> markSliceCooldown(artifact, timestamp, generation));
+    }
+
+    /// U2: the put runs inside the slice's `compute` only if no protection reset ran since absorb. The reset bumps the generation
+    /// before it clears, so whichever runs first the later one sees the other: no cooldown survives a reset it predates. The
+    /// dispatch runs after the `compute` (an FSM transition must not run under a map bin lock) and only when the put landed; a
+    /// reset between the two leaves a `CooldownRequested` that Warmup and Dormant ignore.
+    @Contract
+    private void markSliceCooldown(Artifact artifact, long timestamp, long generation) {
+        var marked = sliceActivationTimes.compute(artifact,
+                                                  (_, current) -> cooldownUnderGuard(timestamp, generation, current));
+
+        if (Option.option(marked).filter(value -> value == timestamp).isPresent()) {
+            log.debug("Slice {} reached ACTIVE, cooldown started", artifact);
+            fsm.dispatch(new ControlLoopEvents.CooldownRequested(artifact, timestamp));
+        }
+    }
+
+    @NullReturn
+    private Long cooldownUnderGuard(long timestamp, long generation, Long current) {
+        if (protectionGeneration.get() == generation) {
+            return timestamp;
+        }
+
+        return current;
     }
 
     private Map<Artifact, ArtifactLoad> computeArtifactLoads() {
