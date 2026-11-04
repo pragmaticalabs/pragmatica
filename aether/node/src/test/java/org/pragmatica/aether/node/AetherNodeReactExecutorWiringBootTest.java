@@ -94,6 +94,17 @@ class AetherNodeReactExecutorWiringBootTest {
                              .containsAll(GATED_COMPONENTS);
     }
 
+    /// v-2653 F3. `assembleNode` hands the node store's replay bit to the leader manager, so a `LeaderChange` raised in a
+    /// replay burst carries `replayed` across the react hand-off. The source itself reads false off the delivery thread,
+    /// so the install is pinned by presence. Red with the `installReplaySource(kvStore::isReplaying)` line removed.
+    @Test
+    @Timeout(value = 120, unit = SECONDS)
+    void assembleNode_installsTheStoreReplaySourceIntoTheLeaderManager() {
+        node = boot();
+
+        assertThat(node.leaderReplaySourceInstalled()).as("the leader manager reads the node store's replay bit").isTrue();
+    }
+
     /// v-2653 F5. `stop()` sets the node-stopping half of the gate FIRST (#642): a side-effect reaction queued before
     /// `stop()` and run right after it returns (the engine stop is the async tail of the stop chain) is dropped on every
     /// gated executor. After the stop completed, every executor is closed: a refused undo runs on the caller's thread.

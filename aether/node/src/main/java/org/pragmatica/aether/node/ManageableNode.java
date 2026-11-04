@@ -120,6 +120,11 @@ public interface ManageableNode {
         return List.of();
     }
 
+    /// D1-react (v-2653 F3): whether the node installed its store's replay source into the leader manager. Wiring pin seam.
+    default boolean leaderReplaySourceInstalled() {
+        return false;
+    }
+
     SliceStore sliceStore();
     ClusterSyncCollector metricsCollector();
     DeploymentMetricsCollector deploymentMetricsCollector();

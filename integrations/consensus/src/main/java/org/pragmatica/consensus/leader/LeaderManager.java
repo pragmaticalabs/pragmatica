@@ -70,6 +70,12 @@ public interface LeaderManager {
         return org.pragmatica.lang.Unit.unit();
     }
 
+    /// True once a node installed its store's replay source (a wiring pin seam: the source itself reads false off the
+    /// delivery thread). Default false for implementations without an election FSM.
+    default boolean hasReplaySource() {
+        return false;
+    }
+
     /// Leader discovery eligibility for a passive client; caller must not treat this as voting authority.
     default org.pragmatica.lang.Unit installPassiveCoreDirectory(List<NodeId> members) {
         return org.pragmatica.lang.Unit.unit();
@@ -383,6 +389,11 @@ public interface LeaderManager {
         @Override
         public org.pragmatica.lang.Unit installReplaySource(BooleanSupplier replaying) {
             return context.installReplaySource(replaying);
+        }
+
+        @Override
+        public boolean hasReplaySource() {
+            return context.hasReplaySource();
         }
 
         @Override

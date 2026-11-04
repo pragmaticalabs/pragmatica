@@ -1998,6 +1998,12 @@ public interface AetherNode extends ManageableNode {
                 return reactors.all();
             }
 
+            @Override
+            public boolean leaderReplaySourceInstalled() {
+                return clusterNode.leaderManager()
+                                  .hasReplaySource();
+            }
+
             @Contract
             private void closeKvStore() {
                 kvStore.close();
