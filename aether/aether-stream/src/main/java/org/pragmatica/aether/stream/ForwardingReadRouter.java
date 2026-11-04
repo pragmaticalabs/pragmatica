@@ -29,9 +29,11 @@ import org.pragmatica.lang.Promise;
 /// ({@link PartitionedStreamAccess}) and the raw-event reader ({@link StreamReadRouter}) cannot drift.
 ///
 /// Routing precedence ({@link #route}):
-///   1. `GOVERNOR` reads local, forwarding to the HRW owner ONLY when the local read fails
-///      `PARTITION_NOT_LOCAL` (a metadata-only node that holds the stream config but never the ring — the
-///      metadata-only-node read recovery); any other local failure propagates. `NEAREST` is LOCAL-FIRST:
+///   1. `GOVERNOR` reads local, forwarding to the HRW owner when the local read fails `PARTITION_NOT_LOCAL` (a
+///      metadata-only node that holds the stream config but never the ring — the metadata-only-node read recovery)
+///      or, BEFORE reading, when {@link StaleReplica} reports this node's copy behind the owner (PR-2f S2, know
+///      `e10cf838c9`: no announcement from the current owner in this life, or local visible below the announced
+///      one); any other local failure propagates. `NEAREST` is LOCAL-FIRST:
 ///      read local when self covers the partition (caught-up replica, or no registry), else forward to the
 ///      HRW owner — never to a lagging remote — and, like `GOVERNOR`, forward on a `PARTITION_NOT_LOCAL`
 ///      local failure rather than surfacing it. `ANY_REPLICA` enters remote-preferring replica selection
@@ -73,6 +75,15 @@ public final class ForwardingReadRouter<E> {
         Option<NodeId> resolve(String streamName, int partition);
     }
 
+    /// PR-2f S2: whether this node's copy of `(streamName, partition)` is behind the owner, so a `GOVERNOR` read goes to
+    /// the owner instead of serving the copy (`StreamPartitionManager#behindCommittedOwner`).
+    @FunctionalInterface
+    public interface StaleReplica {
+        boolean behindOwner(String streamName, int partition);
+
+        StaleReplica NEVER = (_, _) -> false;
+    }
+
     private final Option<ReplicaRegistry> registry;
     private final NodeId selfNodeId;
     private final Option<StreamForwardClient> forwardClient;
@@ -83,6 +94,7 @@ public final class ForwardingReadRouter<E> {
     private final StreamReadForwardMetrics metrics;
     private final Option<CommittedStreamOwnerSource> committedOwnerSource;
     private final LinearizableOwnerServe<E> ownerServe;
+    private final StaleReplica staleReplica;
 
     private ForwardingReadRouter(Option<ReplicaRegistry> registry,
                                  NodeId selfNodeId,
@@ -94,8 +106,10 @@ public final class ForwardingReadRouter<E> {
                                  StreamReadForwardMetrics metrics,
                                  Option<CommittedStreamOwnerSource> committedOwnerSource,
                                  Option<OwnershipEpochHighWater> epochHighWater,
-                                 Option<LinearizableBarrier> barrier) {
+                                 Option<LinearizableBarrier> barrier,
+                                 StaleReplica staleReplica) {
         this.registry = registry;
+        this.staleReplica = staleReplica;
         this.selfNodeId = selfNodeId;
         this.forwardClient = forwardClient;
         this.readPreference = readPreference;
@@ -130,7 +144,8 @@ public final class ForwardingReadRouter<E> {
                                           metrics,
                                           Option.none(),
                                           Option.none(),
-                                          Option.none());
+                                          Option.none(),
+                                          StaleReplica.NEVER);
     }
 
     /// #345 item 1e overload: wires the COMMITTED-owner source + the ownership epoch high-water + the
@@ -158,16 +173,56 @@ public final class ForwardingReadRouter<E> {
                                           metrics,
                                           committedOwnerSource,
                                           epochHighWater,
-                                          barrier);
+                                          barrier,
+                                          StaleReplica.NEVER);
+    }
+
+    /// PR-2f S2 overload: as the #345 item 1e overload, plus the {@link StaleReplica} probe the `GOVERNOR` arm consults
+    /// before it reads local. The other arms ignore it.
+    public static <E> ForwardingReadRouter<E> forwardingReadRouter(Option<ReplicaRegistry> registry,
+                                                                   NodeId selfNodeId,
+                                                                   Option<StreamForwardClient> forwardClient,
+                                                                   ReadPreference readPreference,
+                                                                   OwnerResolver ownerResolver,
+                                                                   LocalReader<E> localReader,
+                                                                   RemoteDecoder<E> remoteDecoder,
+                                                                   StreamReadForwardMetrics metrics,
+                                                                   Option<CommittedStreamOwnerSource> committedOwnerSource,
+                                                                   Option<OwnershipEpochHighWater> epochHighWater,
+                                                                   Option<LinearizableBarrier> barrier,
+                                                                   StaleReplica staleReplica) {
+        return new ForwardingReadRouter<>(registry,
+                                          selfNodeId,
+                                          forwardClient,
+                                          readPreference,
+                                          ownerResolver,
+                                          localReader,
+                                          remoteDecoder,
+                                          metrics,
+                                          committedOwnerSource,
+                                          epochHighWater,
+                                          barrier,
+                                          staleReplica);
     }
 
     public Promise<List<E>> route(String streamName, int partition, long fromOffset, int maxEvents) {
         return switch (readPreference) {
-            case GOVERNOR -> localOrForwardOnNotLocal(streamName, partition, fromOffset, maxEvents);
+            case GOVERNOR -> readGovernor(streamName, partition, fromOffset, maxEvents);
             case NEAREST -> readLocalFirstThenOwner(streamName, partition, fromOffset, maxEvents);
             case ANY_REPLICA -> readFromReplicaOrLocal(streamName, partition, fromOffset, maxEvents);
             case LINEARIZABLE -> readLinearizable(streamName, partition, fromOffset, maxEvents);
         };
+    }
+
+    /// `GOVERNOR` routing (PR-2f S2, know `e10cf838c9`): a copy {@link StaleReplica} reports behind the owner forwards to
+    /// the HRW owner without reading local, so the first read after a restart reaches the owner's admission, where its
+    /// acked marker raises visible; {@link #forwardToOwner} degrades to the local read when the owner is self or unknown,
+    /// no forward client is wired, or the forward fails as `afterForwardFailure` describes. Otherwise local, forwarding
+    /// on `PARTITION_NOT_LOCAL` ({@link #localOrForwardOnNotLocal}).
+    private Promise<List<E>> readGovernor(String streamName, int partition, long fromOffset, int maxEvents) {
+        return staleReplica.behindOwner(streamName, partition)
+               ? forwardToOwner(streamName, partition, fromOffset, maxEvents)
+               : localOrForwardOnNotLocal(streamName, partition, fromOffset, maxEvents);
     }
 
     /// `NEAREST` routing: LOCAL-FIRST, forward on a local MISS. If self is a registered caught-up

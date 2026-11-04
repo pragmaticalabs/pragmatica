@@ -171,6 +171,52 @@ class ForwardingReadRouterTest {
               .onSuccess(events -> assertThat(events).containsExactly("local"));
     }
 
+    /// PR-2f S2 (know `e10cf838c9`): a copy behind the owner forwards a GOVERNOR read without reading local.
+    @Test
+    void route_forwardsToOwner_whenGovernorCopyIsBehindTheOwner() {
+        var router = staleRouter(true, owner(OWNER));
+
+        router.route(STREAM, PARTITION, 0, 10)
+              .await()
+              .onFailure(ForwardingReadRouterTest::failUnexpected)
+              .onSuccess(events -> assertThat(events).containsExactly("owner-served"));
+    }
+
+    @Test
+    void route_readsLocal_whenGovernorCopyIsNotBehindTheOwner() {
+        var router = staleRouter(false, owner(OWNER));
+
+        router.route(STREAM, PARTITION, 0, 10)
+              .await()
+              .onFailure(ForwardingReadRouterTest::failUnexpected)
+              .onSuccess(events -> assertThat(events).containsExactly("local"));
+    }
+
+    @Test
+    void route_readsLocal_whenGovernorCopyIsBehindButTheOwnerIsSelf() {
+        var router = staleRouter(true, owner(SELF));
+
+        router.route(STREAM, PARTITION, 0, 10)
+              .await()
+              .onFailure(ForwardingReadRouterTest::failUnexpected)
+              .onSuccess(events -> assertThat(events).containsExactly("local"));
+    }
+
+    private static ForwardingReadRouter<String> staleRouter(boolean behind, OwnerResolver ownerResolver) {
+        return ForwardingReadRouter.forwardingReadRouter(Option.none(),
+                                                         SELF,
+                                                         Option.some(forwardClientServing("owner-served")),
+                                                         ReadPreference.GOVERNOR,
+                                                         ownerResolver,
+                                                         successReader("local"),
+                                                         ForwardingReadRouterTest::decode,
+                                                         StreamReadForwardMetrics.NOOP,
+                                                         Option.none(),
+                                                         Option.none(),
+                                                         Option.none(),
+                                                         (_, _) -> behind);
+    }
+
     // ---- helpers -------------------------------------------------------------------------------
 
     private static ForwardingReadRouter<String> router(ReadPreference preference,
