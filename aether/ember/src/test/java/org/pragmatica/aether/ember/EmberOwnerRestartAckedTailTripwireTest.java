@@ -89,8 +89,11 @@ class EmberOwnerRestartAckedTailTripwireTest {
 
     /// The acceptance (OWNER ruling S2 (a), know `3cde22c5af`): the first read served after the restart covers the acked tail
     /// with the replicas' acks still held off. The owner's acked marker (PR-2f) is restored at its first owner admission, which
-    /// is demand-driven, so the arm issues one consumer read through the router of a node that is NOT the owner (a routed
-    /// GOVERNOR read, served by the owner) before it samples the owner's visible bounds.
+    /// is demand-driven, so the arm issues one consumer read through the OWNER's router (a GOVERNOR read served from the
+    /// owner's ring behind its owner gate) before it samples the owner's visible bounds. A non-owner's router would not do: a
+    /// GOVERNOR read there is served from that node's own replica ring and forwarded only on `PARTITION_NOT_LOCAL`
+    /// (`ForwardingReadRouter`), so it never reaches the owner's admission, and a replica never raises visible from the
+    /// marker (know `6665558916` S5).
     @Test
     @Timeout(1200)
     void ownerAfterColdRestart_seesItsAckedTailWithoutReplicaAcks() {
@@ -107,14 +110,13 @@ class EmberOwnerRestartAckedTailTripwireTest {
                                      .isPositive();
     }
 
-    /// The first successful GOVERNOR read of the partition from offset 0 through a non-owner's router; a refused read (the
+    /// The first successful GOVERNOR read of the partition from offset 0 through the owner's router; a refused read (the
     /// owner's promotion still pending) is retried inside [#FIRST_READ_BOUND_MS].
     private List<OffHeapRingBuffer.RawEvent> firstServedRead(AetherNode owner) {
-        var reader = cluster.allNodes().stream().filter(node -> node != owner).findFirst().orElseThrow();
         var deadline = System.currentTimeMillis() + FIRST_READ_BOUND_MS;
 
         while (System.currentTimeMillis() < deadline) {
-            var served = reader.streamReadRouter().read(ENGINE_KEY, PARTITION, 0L, 100, ReadPreference.GOVERNOR).await(READ_BOUND);
+            var served = owner.streamReadRouter().read(ENGINE_KEY, PARTITION, 0L, 100, ReadPreference.GOVERNOR).await(READ_BOUND);
 
             if (served.isSuccess()) {
                 return served.unwrap();
