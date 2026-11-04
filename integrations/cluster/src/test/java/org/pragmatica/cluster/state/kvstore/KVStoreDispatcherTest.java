@@ -7,6 +7,7 @@ import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
@@ -29,6 +30,8 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 /// D1 exits at the store level (KVStore dispatcher design §5). Every probe that could pass by race holds the dispatcher
 /// with [HeldDelivery] and asserts the hold was reached before it asserts anything else.
+/// Every test is bounded on a separate thread: a mutation that deadlocks an arm reads red, never as a hung fork.
+@Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
 class KVStoreDispatcherTest {
     record Key(String value) implements StructuredKey {}
 
