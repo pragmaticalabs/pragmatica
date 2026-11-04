@@ -8,6 +8,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
@@ -168,6 +169,35 @@ class KVStoreDispatcherTest {
             assertThat(resolvedWithin(promise, 10_000)).isTrue();
             assertThat(notifications).isEmpty();
             assertThat(store.get(A).isEmpty()).isTrue();
+        }
+
+        /// (f) the epoch-fence arm: a `Put` whose epoch is older than the committed one is refused, emits nothing, and
+        /// its batch still delivers (empty), so its promise completes. Mutation: publish the refused put.
+        @Test
+        void staleEpochPutEmitsNothingButItsBatchStillCompletes() {
+            record Epoched(String v, Long epoch) implements EpochBearing<Long> {
+                @Override
+                public Long fenceEpoch() {
+                    return epoch;
+                }
+            }
+            var store = store();
+            var notifications = new CopyOnWriteArrayList<Object>();
+            put(store, A, new Epoched("current", 2L));
+            var current = Promise.<Unit>promise();
+            store.completeAfterDelivery(current, Unit.unit());
+            assertThat(resolvedWithin(current, 10_000)).isTrue();
+            router.addRoute(KVStoreNotification.ValuePut.class, notifications::add);
+
+            put(store, A, new Epoched("stale", 1L));
+            var promise = Promise.<Unit>promise();
+            store.completeAfterDelivery(promise, Unit.unit());
+
+            assertThat(resolvedWithin(promise, 10_000)).isTrue();
+            assertThat(notifications).isEmpty();
+            assertThat(store.get(A)
+                            .map(Epoched.class::cast)
+                            .map(Epoched::v)).isEqualTo(Option.some("current"));
         }
 
         /// (g) enqueue never blocks: with the dispatcher held, the writer applies N batches: mutation, a capacity-1
