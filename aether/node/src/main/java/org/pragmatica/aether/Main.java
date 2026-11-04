@@ -983,6 +983,13 @@ public record Main(String[] args) {
         return Promise.installFatalEscapeHandler(FatalEscapeRelay.fatalEscapeRelay(sink));
     }
 
+    /// The in-JVM-cluster host's install (design 8.1, "Who installs what", Forge row; #2652): the relay with the production
+    /// sink, so an `Error` escaping any continuation stops the whole Forge JVM as it does on OOM (ruling 5). The Forge
+    /// launcher's `main` calls it; `halt` is injected so the sink stays testable.
+    public static Result<FatalEscapeHandler.Registration> installHostFatalEscapeRelay(IntConsumer haltFn) {
+        return installFatalEscapeRelay(DispatcherFailureSink.once(kvDispatcherSink(Main::flushLogs, haltFn)));
+    }
+
     /// The production KV dispatcher failure sink (KVStore dispatcher design §3.2 step 3, exit (s)): the
     /// [#exitConsensusRestoreFailed] shape with its own code, [AetherNode#EXIT_KV_DISPATCHER_FAILED].
     static DispatcherFailureSink kvDispatcherSink(Runnable flushLogs, IntConsumer haltFn) {
