@@ -239,15 +239,32 @@ class Issue1117ReadinessTracerTest {
     // --- the tracer's assertions ------------------------------------------------------------------------------
 
     private void assertTracer(List<Sample> samples, long succeededAt, Artifact artifact, NodeId target) {
-        var violations = new ArrayList<String>();
+        var late = lateNonActive(samples, succeededAt);
+        var violations = new ArrayList<String>(late);
 
-        violations.addAll(lateNonActive(samples, succeededAt));
         violations.addAll(FSM2 ? fsm2Sensors(target) : forcedTransitions(artifact));
         violations.addAll(FSM2 ? notDeterminable() : lateAssignmentMoves(samples, succeededAt));
         violations.addAll(mapLocalDisagreement(samples, succeededAt));
 
+        if (!FSM2 && INJECT) {
+            assertLegacyReproducerStillRed(late);
+            return;
+        }
         assertThat(violations).describedAs("T1117 tracer violations (engine=%s, inject=%s); timeline above", FSM2 ? "FSM2" : "LEGACY", INJECT)
                               .isEmpty();
+    }
+
+    /// #1117 is the LEGACY engine's defect and this tracer is its reproducer: with the fault armed, LEGACY is RED BY DESIGN
+    /// (10 of 10 inject runs red, 10 of 10 control runs green; oss `sweep-state/s34/t-1117-report.md`), and the defect closes only when
+    /// LEGACY is deleted (plan F7). So on LEGACY with the fault armed the enabled assertion is a tripwire on the CURRENT behaviour: the late
+    /// ACTIVE (a) must still be there. The real assertion (no violations) is what runs in the other three arms: LEGACY control
+    /// (`-Dt1117.inject=false`) and FSM2 with or without the fault. If this tripwire goes red, LEGACY stopped reproducing #1117 (it was
+    /// fixed, or the fault no longer reaches the write): drop the tripwire and let LEGACY+inject use the real assertion.
+    private static void assertLegacyReproducerStillRed(List<String> late) {
+        assertThat(late).describedAs("#1117 no longer reproduces on LEGACY with the fault armed (no instance stayed non-ACTIVE past X after "
+                                     + "SUCCEEDED); the tracer's LEGACY+inject arm is a tripwire that expects the defect. Remove the "
+                                     + "tripwire and assert 'no violations' for this arm")
+                        .isNotEmpty();
     }
 
     /// (c) under FSM2: the stream-consumer reader is not FSM2-fed until phase 4a, so no assignment exists to move. Reported, not faked; not a
