@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// so `VersionRouting` precedes `SliceTarget` (D0 PAIR-1) and `AppBlueprint` precedes `SliceTarget` and `NodeArtifact`
 /// (PAIR-2), with `ClusterIncarnationKey` first. Mutations: the node delivery passes the flat rank (the wiring arm red) /
 /// a rank entry changed (the order arm red). The Active-CDM arm (no UNLOAD of an old version, no ACTIVATE ahead of its
-/// dependencies under a rolling-update burst) is not written here.
+/// dependencies under a rolling-update burst) is `ClusterDeploymentManagerReplayBurstTest`.
 class AetherNodeReplayRankTest {
     @TempDir
     Path tempDir;

@@ -18,6 +18,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
+import org.pragmatica.aether.Main;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.ember.EmberCluster.ClusterStatus;
@@ -103,6 +104,9 @@ public final class ForgeServer {
     }
 
     public static void main(String[] args) {
+        // KVStore dispatcher design 8.1 / #2652: first statement, so an Error escaping a continuation anywhere in this JVM
+        // stops it (flush, then halt) exactly as an OOM does.
+        Main.installHostFatalEscapeRelay(Runtime.getRuntime()::halt).expect("unreachable: the Forge launcher installs the fatal-escape hook first");
         if (hasFlag(args, "--help", "-h")) {
             printHelp();
 

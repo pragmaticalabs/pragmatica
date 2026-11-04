@@ -28,6 +28,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /// D1 exits at the store level (KVStore dispatcher design §5). Every probe that could pass by race holds the dispatcher
 /// with [HeldDelivery] and asserts the hold was reached before it asserts anything else.
@@ -657,6 +658,29 @@ class KVStoreDispatcherTest {
                 var result = promise.await(TimeSpan.timeSpan(2).seconds());
                 assertThat(result.isFailure()).isTrue();
                 result.onFailure(cause -> assertThat(cause).isInstanceOf(KVDeliveryError.DeliveryOutcomeUnknown.class));
+            }
+        }
+
+        /// §3.2 step 1 / Lifecycle: `awaitDelivered` on an already closed store completes at once, never parks, with the
+        /// outcome-unknown failure, for a seq not yet delivered and for one already delivered: mutations, closed check
+        /// removed (the future seq parks, unresolved) and closed check after the delivered check (the delivered seq
+        /// succeeds). The node-stop test cannot pin this, a real stop never awaits on a closed store.
+        @Test
+        void awaitDeliveredOnAClosedStore_failsAtOnce_neverParks() {
+            var store = store();
+            router.addRoute(KVStoreNotification.ValuePut.class, _ -> {});
+            put(store, A, "one");
+            store.awaitDelivered(store.enqueuedSeq()).await();
+            store.close();
+
+            var alreadyDelivered = store.awaitDelivered(store.enqueuedSeq());
+            var notYetDelivered = store.awaitDelivered(store.enqueuedSeq() + 5);
+
+            for (var promise : List.of(alreadyDelivered, notYetDelivered)) {
+                assertThat(promise.isResolved()).isTrue();
+                promise.await()
+                       .onSuccess(_ -> fail("a closed store must fail the wait"))
+                       .onFailure(cause -> assertThat(cause).isInstanceOf(KVDeliveryError.DeliveryOutcomeUnknown.class));
             }
         }
 
