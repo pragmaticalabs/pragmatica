@@ -135,8 +135,7 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
     @Contract
     @Override
     public void retryIfNeeded() {
-        react.get()
-             .react("bootstrap-retry", this::retryBootstrapIfNeeded);
+        react.get().react("bootstrap-retry", this::retryBootstrapIfNeeded);
     }
 
     @Override

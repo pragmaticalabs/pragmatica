@@ -341,9 +341,9 @@ public sealed interface ClusterBootstrapAssembly {
     /// changes only after a consensus handoff has established its successor electorate.
     @Contract
     static void onClusterConfigPut(ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue> put,
-                                           ClusterTopologyManager clusterTopologyManager,
-                                           LeaderReconciler leaderReconciler,
-                                           ReactExecutor react) {
+                                   ClusterTopologyManager clusterTopologyManager,
+                                   LeaderReconciler leaderReconciler,
+                                   ReactExecutor react) {
         clusterTopologyManager.onClusterConfigChanged();
         // D1-react (KVStore dispatcher design §3.5.1 row 68): the cloud-facing reconcile calls are the reaction; the
         // config-changed state step above stays in absorb. Level-triggered: a dropped reaction heals at the next pass.
