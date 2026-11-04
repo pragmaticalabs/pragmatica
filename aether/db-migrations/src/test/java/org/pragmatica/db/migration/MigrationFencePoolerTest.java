@@ -27,7 +27,6 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.Network;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.images.builder.Transferable;
 
@@ -61,7 +60,6 @@ class MigrationFencePoolerTest {
                                               + " AND objid = " + FENCE_OBJECT + " AND granted";
     private static final String ENTRY = "INSERT INTO entry_log VALUES (nextval('entries'));\n";
     private static final AtomicInteger DATABASES = new AtomicInteger();
-    private static Network network;
     private static PostgreSQLContainer<?> postgres;
     private static GenericContainer<?> bouncer;
 
@@ -73,8 +71,7 @@ class MigrationFencePoolerTest {
     @BeforeAll
     static void startPostgresBehindAPooler() throws SQLException {
         assumeTrue(DockerRequirement.dockerAvailable(), "Docker is required for the PgBouncer migration fence tests");
-        network = Network.newNetwork();
-        postgres = new PostgreSQLContainer<>("postgres:16").withNetwork(network).withNetworkAliases("pg");
+        postgres = new PostgreSQLContainer<>("postgres:16");
         postgres.start();
 
         try (var admin = superuser(postgres.getDatabaseName())) {
@@ -83,7 +80,7 @@ class MigrationFencePoolerTest {
 
         var ini = """
             [databases]
-            * = host=pg port=5432
+            * = host=%s port=5432
             [pgbouncer]
             listen_addr = 0.0.0.0
             listen_port = 6432
@@ -93,10 +90,9 @@ class MigrationFencePoolerTest {
             default_pool_size = 1
             max_client_conn = 200
             ignore_startup_parameters = extra_float_digits,options,search_path,statement_timeout
-            """;
+            """.formatted(postgres.getContainerInfo().getNetworkSettings().getIpAddress());
 
-        bouncer = new GenericContainer<>(BOUNCER_IMAGE).withNetwork(network)
-                                                       .withExposedPorts(6432)
+        bouncer = new GenericContainer<>(BOUNCER_IMAGE).withExposedPorts(6432)
                                                        .withCopyToContainer(Transferable.of(ini), "/etc/pgbouncer/pgbouncer.ini")
                                                        .withCopyToContainer(Transferable.of("\"" + RUNNER_ROLE + "\" \"" + RUNNER_PASSWORD + "\"\n"),
                                                                             "/etc/pgbouncer/userlist.txt");
@@ -111,10 +107,6 @@ class MigrationFencePoolerTest {
 
         if (postgres != null) {
             postgres.stop();
-        }
-
-        if (network != null) {
-            network.close();
         }
     }
 
