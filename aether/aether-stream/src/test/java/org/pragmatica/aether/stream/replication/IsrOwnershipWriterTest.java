@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.generation.EpochMintError;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -80,6 +81,26 @@ class IsrOwnershipWriterTest {
                 .isTrue();
         }
 
+        /// The refusal reaches the batch driver through the gate, so the driver can re-drive the pass.
+        @Test
+        void mintGate_leaderIncarnationNone_isRefusedAsNotCommitted() {
+            assertThat(uncommitted.mintGate().<Object>fold(cause -> cause, _ -> "passed"))
+                .isEqualTo(EpochMintError.General.INCARNATION_NOT_COMMITTED);
+        }
+
+        @Test
+        void mintGate_followerIncarnationNone_passes_becauseAFollowerMintsNothing() {
+            var follower = new IsrOwnershipWriter(() -> false,
+                                                  uncommitted.generationEpochSupplier(),
+                                                  uncommitted.hlcClock(),
+                                                  uncommitted.committedOwnership(),
+                                                  uncommitted.hrwOwner(),
+                                                  uncommitted.isrInputs(),
+                                                  uncommitted.committedLeader());
+
+            assertThat(follower.mintGate().isSuccess()).isTrue();
+        }
+
         /// Control: the same writer mints once the incarnation is committed, so the refusal above is the guard.
         @Test
         void writeOwnershipChange_incarnationCommitted_mintsAtThatIncarnation() {
@@ -91,6 +112,7 @@ class IsrOwnershipWriterTest {
                                                    uncommitted.isrInputs(),
                                                    uncommitted.committedLeader());
 
+            assertThat(committed.mintGate().isSuccess()).isTrue();
             assertThat(committed.writeOwnershipChange(STREAM, PARTITION).map(IsrOwnershipWriterTest::mintedEpoch))
                 .isEqualTo(Option.some(GENERATION.withCounter(1L)));
         }

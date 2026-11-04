@@ -1358,6 +1358,16 @@ public interface AetherNode extends ManageableNode {
             }
         }
 
+        /// #2654: the writer refused the pass before minting (the life's incarnation is not committed). Nothing else
+        /// re-runs it once the commit lands, so the reconcile is re-armed, backed off like a failure.
+        @Contract
+        public void refused(Cause cause) {
+            var delay = delayAfter(consecutiveFailures.getAndIncrement());
+
+            LOG.debug("Stream ownership pass refused: {} — reconcile re-armed in {}", cause.message(), delay);
+            schedule.accept(reconcile, delay);
+        }
+
         @Contract
         public void failed(int moved, Cause cause) {
             var delay = delayAfter(consecutiveFailures.getAndIncrement());

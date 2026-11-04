@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.generation.EpochMintError;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
@@ -243,6 +244,20 @@ class StreamPartitionOwnershipWriterTest {
             assertThat(writer.writeOwnershipChange(STREAM, PARTITION))
                 .as("no ownership record is minted while the life's incarnation is NONE")
                 .isEqualTo(Option.none());
+            assertThat(writer.mintGate().<Object>fold(cause -> cause, _ -> "passed"))
+                .as("the refusal reaches the batch driver through the gate")
+                .isEqualTo(EpochMintError.General.INCARNATION_NOT_COMMITTED);
+        }
+
+        @Test
+        void mintGate_followerIncarnationNone_passes_committedIncarnation_passes() {
+            assertThat(writer(FOLLOWER, () -> Epoch.epoch(0L, COMMITTED_TERM, 0L), committed(Option.none()), hrw(Option.some(OWNER_A))).mintGate()
+                                                                                                                         .isSuccess())
+                .as("a follower mints nothing, so its gate passes")
+                .isTrue();
+            assertThat(writer(LEADER, committed(Option.none()), hrw(Option.some(OWNER_A))).mintGate().isSuccess())
+                .as("a leader at a committed incarnation passes")
+                .isTrue();
         }
 
         @Test

@@ -22,6 +22,8 @@ import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 
 /// Leader-only, idempotent, deterministic writer of per-`(stream, partition)` ownership records
@@ -105,11 +107,23 @@ public interface StreamPartitionOwnershipWriter {
     /// `Put` per GENUINELY-moved partition. An empty `partitions` list — or a pass with no moved
     /// partitions — yields an empty list and the caller applies nothing.
     default List<KVCommand<AetherKey>> writeOwnershipChanges(List<PartitionKey> partitions) {
+        // The per-pair calls answer a refused mint (#2654) with none, like an unchanged owner; the driver tells the two
+        // apart through [#mintGate] before it asks for the batch.
         return partitions.stream()
                          .map(partition -> writeOwnershipChange(partition.streamName(),
                                                                 partition.partition()))
                          .flatMap(Option::stream)
                          .toList();
+    }
+
+    /// #2654: whether this node may mint ownership epochs now. Refused with
+    /// `EpochMintError.General.INCARNATION_NOT_COMMITTED` while this node leads and the life's cluster incarnation is
+    /// not committed (genesis not yet committed, or a whole-cluster restore not yet committed), so the batch driver can
+    /// re-drive the pass instead of reading the empty batch as "nothing moved": nothing else re-runs the pass when the
+    /// commit lands. A follower mints nothing anyway, and passes. The default passes: a hand-driven writer with no
+    /// generation epoch of its own has nothing to refuse.
+    default Result<Unit> mintGate() {
+        return Result.unitResult();
     }
 
     /// The pre-#1730 writer: plain `Put`s of records carrying no committed ISR (`isrVersion` 0), which the ack
@@ -234,6 +248,14 @@ record StreamPartitionOwnershipWriterRecord(BooleanSupplier isLeaderSupplier,
                                                 epoch));
     }
 
+    @Override
+    public Result<Unit> mintGate() {
+        return isLeaderSupplier.getAsBoolean()
+               ? currentEpoch().mintable()
+                               .mapToUnit()
+               : Result.unitResult();
+    }
+
     private Option<KVCommand<AetherKey>> rewriteIfOwnerChanged(String stream,
                                                                int partition,
                                                                NodeId owner,
@@ -329,6 +351,15 @@ record IsrOwnershipWriter(BooleanSupplier isLeaderSupplier,
                                                 committed,
                                                 owner,
                                                 epoch));
+    }
+
+    @Override
+    public Result<Unit> mintGate() {
+        return isLeaderSupplier.getAsBoolean()
+               ? generationEpochSupplier.get()
+                                        .mintable()
+                                        .mapToUnit()
+               : Result.unitResult();
     }
 
     /// The record the leader should commit next, or none when the committed one stands (or no owner may be chosen).
