@@ -498,7 +498,8 @@ public class RabiaEngine<C extends Command> {
     }
 
     /// Closes [OperatorWarningCode#GENESIS_SEAT_UNREACHABLE] for every seat this node raised it for that is a connected peer again
-    /// or has left the voter roster (replaced). Runs on the phase-stall tick, so a seat closes within one stall-check interval.
+    /// or has left the voter roster (replaced). Runs on the phase-stall tick (InPhase) and on the idle slot probe tick (Idle), so a seat
+    /// closes within one tick interval whether or not a phase is in progress.
     private void resolveUnreachableGenesisSeats() {
         if (unreachableGenesisSeats.isEmpty()) {
             return;
@@ -538,6 +539,13 @@ public class RabiaEngine<C extends Command> {
     @Contract
     public void useOperatorWarningSink(OperatorWarningSink sink) {
         operatorWarningSink.set(sink);
+    }
+
+    /// Test hook: one idle slot probe tick on the apply executor, which also runs the unreachable-genesis-seat check.
+    Unit runQuietSlotProbeForTesting() {
+        safeExecute(this::probeQuietSlot);
+
+        return Unit.unit();
     }
 
     /// Test hook: one phase-stall tick on the apply executor, which also runs the unreachable-genesis-seat check.
@@ -3626,6 +3634,7 @@ public class RabiaEngine<C extends Command> {
     /// answered this replica still cannot know it is behind. Cost in a quiet cluster: one `RoundRequest`
     /// per voter pair per `syncRetryInterval`. InPhase replicas are covered by the stall detector instead.
     private void probeQuietSlot() {
+        resolveUnreachableGenesisSeats();
         if (! (engineState.get() instanceof EngineState.Idle)) {
             return;
         }

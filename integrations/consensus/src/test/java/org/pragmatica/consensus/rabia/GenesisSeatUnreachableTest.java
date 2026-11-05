@@ -119,6 +119,22 @@ class GenesisSeatUnreachableTest {
         assertThat(seatWarnings()).containsExactly(code(GENESIS_SEAT_UNREACHABLE, Y), code(GENESIS_SEAT_REACHABLE, Y));
     }
 
+    /// F2: the engine is Idle once genesis has formed (no phase, no stall detector), so the close must also run on the idle
+    /// slot probe tick; the stall tick is never invoked here.
+    @Test
+    void unreachableSeat_reconnectsWhileEngineIdle_isClosedByTheIdleProbeTick() {
+        formWithYGone();
+        engine.runQuietSlotProbeForTesting();
+        settle();
+        assertThat(seatWarnings()).as("still unreachable: nothing closes").containsExactly(code(GENESIS_SEAT_UNREACHABLE, Y));
+
+        connected.add(Y);
+        engine.runQuietSlotProbeForTesting();
+        settle();
+
+        assertThat(seatWarnings()).containsExactly(code(GENESIS_SEAT_UNREACHABLE, Y), code(GENESIS_SEAT_REACHABLE, Y));
+    }
+
     /// The replacement arm: a LIVE sync answer carries a newer roster without the seat (the committed reconfiguration that
     /// replaced it), which the engine adopts; the next tick closes the warning.
     @Test
