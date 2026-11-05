@@ -34,6 +34,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.LockSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -54,10 +55,8 @@ class GenesisSeatUnreachableTest {
     private static final NodeId Y = new NodeId("node-5");
     private static final NodeId Z = new NodeId("node-6");
     private static final ClusterConfig VIEW = new ClusterConfig(List.of(B, X, Y));
-    private static final OperatorWarning SENTINEL = OperatorWarning.operatorWarning(OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED,
-                                                                                    "sentinel",
-                                                                                    "sentinel");
 
+    private final AtomicInteger sentinels = new AtomicInteger();
     private final Set<NodeId> connected = ConcurrentHashMap.newKeySet();
     private final List<OperatorWarning> published = new CopyOnWriteArrayList<>();
     private final OperatorWarningSink sink = OperatorWarningSink.handingOffTo(published::add);
@@ -194,20 +193,26 @@ class GenesisSeatUnreachableTest {
         return code.code() + " " + subject.id();
     }
 
-    /// Pushes a sentinel through the same in-order hand-off and waits for it, so every warning raised before it is published.
+    /// Pushes a fresh sentinel through the same in-order hand-off and waits for it, so every warning raised before it is
+    /// published. Each call uses its own sentinel: a shared one is already published after the first call and would make
+    /// every later drain return at once.
     private List<String> seatWarnings() {
-        sink.accept(SENTINEL);
+        var sentinel = OperatorWarning.operatorWarning(OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED,
+                                                       "sentinel",
+                                                       "sentinel-" + sentinels.incrementAndGet());
+
+        sink.accept(sentinel);
 
         var deadline = System.nanoTime() + 5_000_000_000L;
 
-        while (!published.contains(SENTINEL) && System.nanoTime() < deadline) {
+        while (!published.contains(sentinel) && System.nanoTime() < deadline) {
             LockSupport.parkNanos(10_000_000L);
         }
 
-        assertThat(published).as("the hand-off drained up to the sentinel").contains(SENTINEL);
+        assertThat(published).as("the hand-off drained up to the sentinel").contains(sentinel);
 
         return published.stream()
-                        .filter(warning -> warning != SENTINEL)
+                        .filter(warning -> warning.code() != OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED)
                         .map(warning -> warning.code().code() + " " + warning.subject())
                         .toList();
     }
