@@ -191,8 +191,10 @@ public class RabiaEngine<C extends Command> {
     /// re-persist failure, so a supervisor that bounds the stop (`OwnRestoreWatchdog`) acts only on the arms
     /// it was given.
     private volatile Option<Cause> ownRestoreFailure = Option.none();
+
     /// #2316: identical failed restores of one responder snapshot that refuse it ([#RESTORE_REFUSAL_ROUNDS]).
     private static final int RESTORE_REFUSAL_ROUNDS = 3;
+
     /// The current run of identical failed restores of one responder snapshot (#2316). Reset by a different failure
     /// and cleared by any successful restore.
     private volatile Option<RestoreFailureStreak> restoreFailureStreak = Option.none();
@@ -200,7 +202,9 @@ public class RabiaEngine<C extends Command> {
     /// as a whole and never decoded row by row). Set after [#RESTORE_REFUSAL_ROUNDS] identical failures and cleared by any
     /// successful restore. It is not a fence: only candidate selection ([#adoptableCandidate]) and the status read it.
     private volatile Option<RefusedSnapshot> refusedSnapshot = Option.none();
+
     private final AtomicReference<OperatorWarningSink> operatorWarningSink = new AtomicReference<>(OperatorWarningSink.logOnly());
+
     /// Why the re-persist of a restored or adopted state failed (#1516): the second permanent fence the watchdog
     /// bounds. Set only by [#recordRestoredStateSaveFailure], and like `ownRestoreFailure` never cleared in-process:
     /// that arm too runs only after a genesis has resolved. It is deliberately NOT `authorityFailure` itself, which
@@ -229,16 +233,21 @@ public class RabiaEngine<C extends Command> {
         }
 
         String describe() {
-            return "Responder snapshot refused after " + RESTORE_REFUSAL_ROUNDS + " failed restores (responder " + responder
-                   + ", phase " + phase + ", digest " + digest + "): " + cause
-                   + ". This node stays in Syncing until a readable snapshot at or above that phase arrives";
+            return "Responder snapshot refused after " + RESTORE_REFUSAL_ROUNDS
+                 + " failed restores (responder " + responder
+                 + ", phase " + phase
+                 + ", digest " + digest
+                 + "): " + cause
+                 + ". This node stays in Syncing until a readable snapshot at or above that phase arrives";
         }
     }
 
     /// A run of identical failed restores of one responder snapshot (#2316): same responder, phase, digest and cause.
     private record RestoreFailureStreak(NodeId responder, Phase phase, String digest, String cause, int rounds) {
         boolean sameFailure(NodeId otherResponder, Phase otherPhase, String otherDigest, String otherCause) {
-            return responder.equals(otherResponder) && phase.equals(otherPhase) && digest.equals(otherDigest)
+            return responder.equals(otherResponder)
+                   && phase.equals(otherPhase)
+                   && digest.equals(otherDigest)
                    && cause.equals(otherCause);
         }
 
@@ -246,6 +255,7 @@ public class RabiaEngine<C extends Command> {
             return new RefusedSnapshot(responder, phase, digest, cause);
         }
     }
+
     /// Members added by [#lastChange] from which a ballot past R has been accepted.
     private final Set<NodeId> caughtUp = ConcurrentHashMap.newKeySet();
 
@@ -2504,7 +2514,8 @@ public class RabiaEngine<C extends Command> {
     private void adoptCollectedState(List<SyncResponse<C>> candidates) {
         var persisted = persistence.load();
         var responses = candidates.stream()
-                                  .sorted(Comparator.comparing(response -> response.state().lastCommittedPhase()))
+                                  .sorted(Comparator.comparing(response -> response.state()
+                                                                                   .lastCommittedPhase()))
                                   .toList();
 
         if (responses.isEmpty()) {
@@ -2524,8 +2535,9 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        adoptableCandidate(responses).onPresent(candidate -> restoreResponse(candidate, responses.size()))
-                                     .onEmpty(this::holdForReadableSnapshot);
+        adoptableCandidate(responses).onPresent(candidate -> restoreResponse(candidate,
+                                                                             responses.size()))
+                          .onEmpty(this::holdForReadableSnapshot);
     }
 
     /// #2316 candidate selection. With no refused snapshot it is the most advanced response, as before. With one, the
@@ -2533,17 +2545,23 @@ public class RabiaEngine<C extends Command> {
     /// than the refused one (owner ruling Q-16): the responders intersect every commit quorum, and a lower candidate can
     /// lack a commit only the refused responder saw. `responses` is sorted by phase, ascending.
     private Option<SyncResponse<C>> adoptableCandidate(List<SyncResponse<C>> responses) {
-        return refusedSnapshot.fold(() -> Option.some(responses.getLast()),
-                                    refused -> highestNotRefused(responses, refused));
+        return refusedSnapshot.fold(() -> highest(responses), refused -> highestNotRefused(responses, refused));
     }
 
     private Option<SyncResponse<C>> highestNotRefused(List<SyncResponse<C>> responses, RefusedSnapshot refused) {
-        return Option.from(responses.stream()
-                                    .filter(response -> !refused.matches(response.state()))
-                                    .reduce((lower, higher) -> higher))
-                     .filter(response -> response.state()
-                                                 .lastCommittedPhase()
-                                                 .compareTo(refused.phase()) >= 0);
+        var readable = responses.stream().filter(response -> !refused.matches(response.state())).toList();
+
+        return highest(readable).filter(response -> atOrAbove(response, refused.phase()));
+    }
+
+    private Option<SyncResponse<C>> highest(List<SyncResponse<C>> responses) {
+        return Option.from(responses.stream().reduce((lower, higher) -> higher));
+    }
+
+    private static boolean atOrAbove(SyncResponse<?> response, Phase phase) {
+        return response.state()
+                       .lastCommittedPhase()
+                       .compareTo(phase) >= 0;
     }
 
     /// #2316, owner ruling Q-16: no usable candidate at or above the refused snapshot's phase. Nothing is adopted; the
@@ -2578,7 +2596,10 @@ public class RabiaEngine<C extends Command> {
     private RestoreFailureStreak nextFailureStreak(SyncResponse<C> response, Cause cause) {
         var phase = response.state().lastCommittedPhase();
         var digest = snapshotDigest(response.state().snapshot());
-        var rounds = restoreFailureStreak.filter(streak -> streak.sameFailure(response.sender(), phase, digest, cause.message()))
+        var rounds = restoreFailureStreak.filter(streak -> streak.sameFailure(response.sender(),
+                                                                              phase,
+                                                                              digest,
+                                                                              cause.message()))
                                          .map(RestoreFailureStreak::rounds)
                                          .or(0);
 
