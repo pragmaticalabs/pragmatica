@@ -362,12 +362,15 @@ public final class ClusterBootstrapConfigValidator {
             errors.add("PF-37: cost_class = \"spot\" only allowed on cloud sources, found on '" + name
                       + "' (type: " + source.type().value()
                       + ")");
+
             return;
         }
 
         source.provider()
               .flatMap(ClusterBootstrapConfigValidator::spotUnsupportedReason)
-              .onPresent(reason -> errors.add("PF-37: " + reason + " on source '" + name + "': cost_class = \"spot\" refused"));
+              .onPresent(reason -> errors.add("PF-37: " + reason
+                                             + " on source '" + name
+                                             + "': cost_class = \"spot\" refused"));
     }
 
     /// rc6 spec §8.1 — the fleet cap moved from `[source.<name>.node_config.cluster]` to the first-class

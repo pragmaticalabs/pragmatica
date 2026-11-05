@@ -101,7 +101,8 @@ public record SourceProfile(SourceName name,
 
     private TimeSpan defaultLeadTime() {
         return type == SourceType.CLOUD
-               ? provider.map(SourceProfile::cloudLeadTime).or(OTHER_CLOUD_LEAD_TIME)
+               ? provider.map(SourceProfile::cloudLeadTime)
+                         .or(OTHER_CLOUD_LEAD_TIME)
                : NON_CLOUD_LEAD_TIME;
     }
 
@@ -210,28 +211,28 @@ public record SourceProfile(SourceName name,
                                               Option<TomlDocument> nodeConfig,
                                               Option<TimeSpan> replacementCeiling) {
         return sourceProfile(name,
-                                 type,
-                                 provider,
-                                 credentials,
-                                 region,
-                                 zone,
-                                 zones,
-                                 user,
-                                 key,
-                                 sshPort,
-                                 loadBalancer,
-                                 loadBalancerIps,
-                                 loadBalancerEndpoint,
-                                 databases,
-                                 roles,
-                                 firewallRules,
-                                 nodeConfig,
-                                 replacementCeiling,
-                                 Map.of(),
-                                 Option.empty(),
-                                 DEFAULT_PREFERENCE,
-                                 CostClass.ONDEMAND,
-                                 SourceFallback.ALLOW);
+                             type,
+                             provider,
+                             credentials,
+                             region,
+                             zone,
+                             zones,
+                             user,
+                             key,
+                             sshPort,
+                             loadBalancer,
+                             loadBalancerIps,
+                             loadBalancerEndpoint,
+                             databases,
+                             roles,
+                             firewallRules,
+                             nodeConfig,
+                             replacementCeiling,
+                             Map.of(),
+                             Option.empty(),
+                             DEFAULT_PREFERENCE,
+                             CostClass.ONDEMAND,
+                             SourceFallback.ALLOW);
     }
 
     public static SourceProfile sourceProfile(SourceName name,

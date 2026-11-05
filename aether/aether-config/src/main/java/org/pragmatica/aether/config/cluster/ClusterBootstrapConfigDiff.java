@@ -67,6 +67,7 @@ public final class ClusterBootstrapConfigDiff {
                                                                 stored.cluster().version(),
                                                                 desired.cluster().version()));
         }
+
         if (!Objects.equals(stored.maxNodes(), desired.maxNodes())) {
             modifications.add(new DiffAction.ClusterLevelChange("max_nodes",
                                                                 String.valueOf(stored.maxNodes()),

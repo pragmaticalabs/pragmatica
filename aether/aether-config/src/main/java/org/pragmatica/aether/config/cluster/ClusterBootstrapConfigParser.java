@@ -96,14 +96,14 @@ public final class ClusterBootstrapConfigParser {
                           CommunityPolicyParser.parse(doc),
                           parseFleetMaxNodes(doc))
                      .flatMap((s, ops, policy, maxNodes) -> CommunityPlacementParser.parse(doc, s).map(communities -> ClusterBootstrapConfig.clusterBootstrapConfig(cluster,
-                                                                                                                                                          coreTopology,
-                                                                                                                                                          s,
-                                                                                                                                                          runtimes,
-                                                                                                                                                          infrastructure,
-                                                                                                                                                          ops,
-                                                                                                                                                          communities,
-                                                                                                                                                          policy,
-                                                                                                                                                          maxNodes)));
+                                                                                                                                                                    coreTopology,
+                                                                                                                                                                    s,
+                                                                                                                                                                    runtimes,
+                                                                                                                                                                    infrastructure,
+                                                                                                                                                                    ops,
+                                                                                                                                                                    communities,
+                                                                                                                                                                    policy,
+                                                                                                                                                                    maxNodes)));
     }
 
     /// `[cluster] max_nodes` — the fleet-wide node cap, a first-class cluster field (rc6 spec §8.1).
@@ -361,13 +361,13 @@ public final class ClusterBootstrapConfigParser {
         return Result.all(parseLeadTimes(doc, section),
                           parseSourceMaxNodes(doc, section),
                           parseCostClass(doc, section),
-                          parseSourceFallback(doc, section))
-                     .map((leadTime, maxNodes, costClass, fallback) -> new CapacityProfile(leadTime,
-                                                                                           maxNodes,
-                                                                                           doc.getInt(section, PREFERENCE_KEY)
-                                                                                              .or(SourceProfile.DEFAULT_PREFERENCE),
-                                                                                           costClass,
-                                                                                           fallback));
+                          parseSourceFallback(doc, section)).map((leadTime, maxNodes, costClass, fallback) -> new CapacityProfile(leadTime,
+                                                                                                                                  maxNodes,
+                                                                                                                                  doc.getInt(section,
+                                                                                                                                             PREFERENCE_KEY)
+                                                                                                                                     .or(SourceProfile.DEFAULT_PREFERENCE),
+                                                                                                                                  costClass,
+                                                                                                                                  fallback));
     }
 
     private static Result<Map<NodeRole, TimeSpan>> parseLeadTimes(TomlDocument doc, String section) {
@@ -387,19 +387,23 @@ public final class ClusterBootstrapConfigParser {
         return success(leadTimes);
     }
 
-    private static Result<Map.Entry<NodeRole, TimeSpan>> parseLeadTimeEntry(TomlDocument doc, String leadTimeSection, String roleName) {
+    private static Result<Map.Entry<NodeRole, TimeSpan>> parseLeadTimeEntry(TomlDocument doc,
+                                                                            String leadTimeSection,
+                                                                            String roleName) {
         return NodeRole.nodeRole(roleName)
                        .mapError(cause -> parseFailed(leadTimeSection + "." + roleName + ": " + cause.message()))
                        .flatMap(role -> doc.getString(leadTimeSection, roleName)
-                                           .toResult(parseFailed(leadTimeSection + "." + roleName + " must be a duration string, e.g. \"65s\""))
+                                           .toResult(parseFailed(leadTimeSection
+                                                                + "." + roleName
+                                                                + " must be a duration string, e.g. \"65s\""))
                                            .flatMap(raw -> parseLeadTime(leadTimeSection + "." + roleName, raw))
                                            .map(leadTime -> Map.entry(role, leadTime)));
     }
 
     private static Result<TimeSpan> parseLeadTime(String path, String raw) {
         return timeSpan(raw).mapError(cause -> parseFailed(path + ": " + cause.message() + " (was '" + raw + "')"))
-                            .map(parsed -> TimeSpan.fromDuration(parsed.duration()))
-                            .flatMap(leadTime -> requirePositiveLeadTime(path, raw, leadTime));
+                       .map(parsed -> TimeSpan.fromDuration(parsed.duration()))
+                       .flatMap(leadTime -> requirePositiveLeadTime(path, raw, leadTime));
     }
 
     private static Result<TimeSpan> requirePositiveLeadTime(String path, String raw, TimeSpan leadTime) {
@@ -423,17 +427,21 @@ public final class ClusterBootstrapConfigParser {
     private static Result<CostClass> parseCostClass(TomlDocument doc, String section) {
         return doc.getString(section, COST_CLASS_KEY)
                   .fold(() -> success(CostClass.ONDEMAND),
-                        raw -> CostClass.costClass(raw)
-                                        .mapError(cause -> parseFailed(section + "." + COST_CLASS_KEY + ": " + cause.message()
-                                                                      + " (was '" + raw + "')")));
+                        raw -> CostClass.costClass(raw).mapError(cause -> parseFailed(section
+                                                                                     + "." + COST_CLASS_KEY
+                                                                                     + ": " + cause.message()
+                                                                                     + " (was '" + raw
+                                                                                     + "')")));
     }
 
     private static Result<SourceFallback> parseSourceFallback(TomlDocument doc, String section) {
         return doc.getString(section, FALLBACK_KEY)
                   .fold(() -> success(SourceFallback.ALLOW),
-                        raw -> SourceFallback.sourceFallback(raw)
-                                             .mapError(cause -> parseFailed(section + "." + FALLBACK_KEY + ": " + cause.message()
-                                                                           + " (was '" + raw + "')")));
+                        raw -> SourceFallback.sourceFallback(raw).mapError(cause -> parseFailed(section
+                                                                                               + "." + FALLBACK_KEY
+                                                                                               + ": " + cause.message()
+                                                                                               + " (was '" + raw
+                                                                                               + "')")));
     }
 
     private static final String LEAD_TIME_KEY = "lead_time";
@@ -441,7 +449,6 @@ public final class ClusterBootstrapConfigParser {
     private static final String PREFERENCE_KEY = "preference";
     private static final String COST_CLASS_KEY = "cost_class";
     private static final String FALLBACK_KEY = "fallback";
-
     private static final String REPLACEMENT_CEILING_KEY = "replacement_ceiling";
 
     /// `provider` is optional (SSH / forge / docker sources have none) but must NOT be silently
