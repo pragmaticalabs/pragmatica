@@ -372,10 +372,11 @@ public final class ClusterBootstrapConfigParser {
 
     private static Result<Map<NodeRole, TimeSpan>> parseLeadTimes(TomlDocument doc, String section) {
         return doc.hasKey(section, LEAD_TIME_KEY)
-               ? parseFailed(section + "." + LEAD_TIME_KEY
-                             + " must be a per-role sub-table [" + section + "." + LEAD_TIME_KEY
-                             + "] with one duration per role, e.g. core = \"65s\"; a scalar or inline-table value is not accepted")
-                     .result()
+               ? parseFailed(section
+                            + "." + LEAD_TIME_KEY
+                            + " must be a per-role sub-table [" + section
+                            + "." + LEAD_TIME_KEY
+                            + "] with one duration per role, e.g. core = \"65s\"; a scalar or inline-table value is not accepted").result()
                : parseLeadTimeSubTable(doc, section);
     }
 
