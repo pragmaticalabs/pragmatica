@@ -23,6 +23,7 @@ import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
@@ -95,8 +96,12 @@ class SliceTargetWriterOrderingTest {
 
             node.commitAllAsTheyArrive();
 
-            assertThat(started.join().isSuccess()).isTrue();
+            var deployment = started.join().unwrap();
+
             assertThat(committedTarget().map(SliceTargetValue::currentVersion)).isEqualTo(Option.some(V2));
+            assertThat(store.get(DeploymentKey.deploymentKey(deployment.deploymentId())))
+                .as("the deployment record commits in the same transaction as the target")
+                .isNotEqualTo(Option.none());
         }
 
         @Test

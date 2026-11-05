@@ -150,6 +150,37 @@ class ControlLoopTargetOrderingTest {
         assertThat(ctx.observedTarget(V1).map(SliceTargetValue::targetInstances)).isEqualTo(Option.some(2));
     }
 
+    /// A write refused because the target is gone drops the registration: the autoscaler keeps no count for a target that is not
+    /// committed.
+    @Test
+    void applyScaling_notWritten_targetGone_registrationDropped() {
+        ctx.runEvaluationCycle();
+        cluster.awaitHeld(1);
+
+        commit(new KVCommand.Remove<>(BLUEPRINT_KEY));
+        commit(new KVCommand.Remove<>(TARGET_KEY));
+        cluster.commitAllAsTheyArrive();
+        awaitRegistration(Option.none());
+
+        assertThat(ctx.observedTarget(V1)).isEqualTo(Option.none());
+    }
+
+    /// A write refused after the target moved to another version (and its blueprint was then deleted) does not register that version's
+    /// value under the version the decision was made for.
+    @Test
+    void applyScaling_notWritten_targetMoved_registrationDropped() {
+        ctx.runEvaluationCycle();
+        cluster.awaitHeld(1);
+
+        commit(new KVCommand.Put<>(BLUEPRINT_KEY, blueprintOf(V2)));
+        commit(new KVCommand.Put<>(TARGET_KEY, targetOf(V2, 2)));
+        commit(new KVCommand.Remove<>(BLUEPRINT_KEY));
+        cluster.commitAllAsTheyArrive();
+        awaitRegistration(Option.none());
+
+        assertThat(ctx.observedTarget(V1)).isEqualTo(Option.none());
+    }
+
     private void awaitRegistration(Option<Integer> instances) {
         var deadline = System.currentTimeMillis() + 2_000;
 

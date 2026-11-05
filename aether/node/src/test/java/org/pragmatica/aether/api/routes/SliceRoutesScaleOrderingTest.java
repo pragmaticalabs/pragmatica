@@ -100,6 +100,21 @@ class SliceRoutesScaleOrderingTest {
         assertThat(status(response)).isEqualTo(HttpStatus.OK);
     }
 
+    /// The blueprint is deleted after the read while its target is still committed (its removal has not committed yet). The scale is
+    /// refused by the owner witness, and its rebuild refuses to write the orphan: the request answers 409 and the target is unchanged.
+    @Test
+    void scale_blueprintDeleteCommitsFirst_targetStillCommitted_refusedWithConflict() {
+        commit(new KVCommand.Put<>(TARGET_KEY, ownedTarget(SLICE, 2)));
+
+        var response = scaleTo(4);
+
+        commit(new KVCommand.Remove<>(BLUEPRINT_KEY));
+        commitAllAsTheyArrive();
+
+        assertThat(committedTarget().map(SliceTargetValue::targetInstances)).as("the orphan is not scaled").isEqualTo(Option.some(2));
+        assertThat(status(response)).as("the request lost to the delete").isEqualTo(HttpStatus.CONFLICT);
+    }
+
     /// No target yet, so the route creates one (a register-only blueprint's slice). The blueprint is deleted before the creation commits:
     /// the creation must not leave an unowned target that no delete will ever sweep.
     @Test
