@@ -119,6 +119,25 @@ class GenesisSeatUnreachableTest {
         assertThat(seatWarnings()).containsExactly(code(GENESIS_SEAT_UNREACHABLE, Y), code(GENESIS_SEAT_REACHABLE, Y));
     }
 
+    /// `cluster.genesis_voters` fixes the view, so a seat can be agreed and connected while membership discovery does not
+    /// count it yet. Connectivity decides, not discovery: no warning, and nothing to close.
+    @Test
+    void fixedViewSeatConnectedButNotDiscovered_raisesNothing() {
+        engine = pendingB(Set.of(B), Option.some(VIEW));
+        engine.runGenesisRoundForTesting();
+        engine.runGenesisRoundForTesting();
+        settle();
+        announceStably(Y);
+        announceStably(X);
+        settle();
+        engine.runPhaseStallCheckForTesting();
+        settle();
+
+        assertThat(engine.voterConfiguration()).as("precondition: genesis formed on the fixed view")
+                                               .isEqualTo(Option.some(new VoterConfiguration(0, VIEW)));
+        assertThat(seatWarnings()).isEmpty();
+    }
+
     /// F2: the engine is Idle once genesis has formed (no phase, no stall detector), so the close must also run on the idle
     /// slot probe tick; the stall tick is never invoked here.
     @Test
@@ -200,6 +219,10 @@ class GenesisSeatUnreachableTest {
     }
 
     private RabiaEngine<TestCommand> pendingB() {
+        return pendingB(Set.of(B, X, Y), Option.none());
+    }
+
+    private RabiaEngine<TestCommand> pendingB(Set<NodeId> discovered, Option<ClusterConfig> fixedView) {
         connected.addAll(Set.of(B, X, Y));
 
         var created = new RabiaEngine<>(new TestTopologyManager(B, 3),
@@ -211,7 +234,7 @@ class GenesisSeatUnreachableTest {
                                         RabiaPersistence.<TestCommand>inMemory());
 
         created.useOperatorWarningSink(sink);
-        assertThat(created.deferGenesis(() -> Set.of(B, X, Y), 3, Option.none(), Set.of(B, X, Y)).isSuccess()).isTrue();
+        assertThat(created.deferGenesis(() -> discovered, 3, fixedView, Set.of(B, X, Y)).isSuccess()).isTrue();
         created.clusterState(ClusterStateNotification.active());
 
         return created;

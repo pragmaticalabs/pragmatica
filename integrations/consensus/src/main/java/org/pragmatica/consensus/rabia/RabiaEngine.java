@@ -478,9 +478,19 @@ public class RabiaEngine<C extends Command> {
     /// twice and then died can be agreed. Formation goes ahead; every agreed seat that is not a connected, authenticated
     /// peer now is named once, loudly, for auto-heal to replace.
     private void signalUnreachableSeats(VoterConfiguration configuration) {
-        var reachable = authenticatedDiscovery();
+        var reachable = connectedSeats();
 
         configuration.members().stream().filter(seat -> !reachable.contains(seat)).forEach(this::signalUnreachableSeat);
+    }
+
+    /// Connectivity only, not discovery: with `cluster.genesis_voters` a seat can be connected before membership counts it,
+    /// and that must not raise the warning. Same source as the close path ([#resolveUnreachableGenesisSeats]), plus self.
+    private Set<NodeId> connectedSeats() {
+        var connected = new HashSet<>(network.connectedPeers());
+
+        connected.add(self);
+
+        return Set.copyOf(connected);
     }
 
     private Unit signalUnreachableSeat(NodeId seat) {
