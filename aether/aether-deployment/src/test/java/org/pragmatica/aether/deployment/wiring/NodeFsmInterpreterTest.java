@@ -203,10 +203,11 @@ class NodeFsmInterpreterTest {
                 var stamps = new ConcurrentHashMap<ArtifactBase, Long>();
 
                 rig.router.addRoute(KVStoreNotification.ValuePut.class, (KVStoreNotification.ValuePut put) -> stampTarget(rig, stamps, put));
-                rig.permit(ORDERS).goal(ORDERS, SliceGoal.LOADED).permit(BILLING);
+                rig.permit(ORDERS).permit(BILLING);
                 var n = rig.applier.slot();
 
                 rig.enter();
+                assertThat(rig.applier.slot()).as("the entry commits nothing, so the next batch is N + 1").isEqualTo(n);
                 var stepped = rig.countOf("TargetPut");
                 var dropped = rig.metric("TargetPut", "dropped_revision");
 
@@ -214,9 +215,9 @@ class NodeFsmInterpreterTest {
                 rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(BILLING.base(), BILLING.version()), stamps.get(BILLING.base()), false);
                 rig.settle();
 
-                assertThat(stamps).containsEntry(BILLING.base(), n).containsEntry(AUDIT.base(), n + 1);
                 assertThat(rig.countOf("TargetPut")).as("N + 1 is stepped, N is not").isEqualTo(stepped + 1);
                 assertThat(rig.metric("TargetPut", "dropped_revision")).as("N is in the snapshot").isEqualTo(dropped + 1);
+                assertThat(stamps).containsEntry(BILLING.base(), n).containsEntry(AUDIT.base(), n + 1);
             }
         }
 
