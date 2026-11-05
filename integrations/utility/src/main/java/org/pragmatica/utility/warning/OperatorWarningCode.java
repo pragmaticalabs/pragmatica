@@ -783,9 +783,9 @@ public enum OperatorWarningCode {
                                       WarningLevel.INFO,
                                       KV_DISPATCH_SLOW_HANDLER),
     /// A KV notification handler read a key that a LATER batch than the one it is handling had already written (KVStore
-    /// dispatcher design §3.4): it saw state ahead of its notification. The first such read per notification type per process;
-    /// the `kv.dispatch.readahead.reads` counter carries every one. The subject is the notification type. A point event that opens
-    /// nothing, so INFO. [guess: level]
+    /// dispatcher design §3.4): it saw state ahead of its notification. The first such read per key type per process;
+    /// the `kv.dispatch.readahead.reads` counter carries every one. The subject is the key type of the notification being handled
+    /// (`SliceTargetKey`). A point event that opens nothing, so INFO. [guess: level]
     KV_DISPATCH_READ_AHEAD("kv-dispatch-read-ahead", "kv-store", WarningLevel.INFO),
     /// The node's KV notification dispatcher failed (KVStore dispatcher design §3.2, owner ruling 1): the store is closed, every
     /// waiting write fails as outcome-unknown, and the node stops (the production node halts). The subject is the store; the

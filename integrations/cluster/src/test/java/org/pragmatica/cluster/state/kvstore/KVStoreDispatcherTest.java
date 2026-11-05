@@ -378,11 +378,11 @@ class KVStoreDispatcherTest {
         /// (c) fence, both directions: hold at batch 1 whose handler reads K; batch 2 changes K: one read-ahead for that
         /// handler and K, phase=live. Control: batch 2 changes L: zero. Mutations: skip the check (first arm red) /
         /// compare against enqueuedSeq instead of K's seq (control red).
-        /// The first read-ahead of a notification type also raises `kv-dispatch-read-ahead` with the type as its subject (v-2648 F5).
+        /// The first read-ahead of a notification type also raises `kv-dispatch-read-ahead` with the key type as its subject (v-2648 F5).
         @Test
         void readOfAKeyALaterBatchWroteCountsOneReadAhead() throws Exception {
             assertThat(readAheadsWhenBatchTwoWrites(K)).isEqualTo(1);
-            assertThat(eventsOf("kv-dispatch-read-ahead")).containsExactly("kv-dispatch-read-ahead|ValuePut Key");
+            assertThat(eventsOf("kv-dispatch-read-ahead")).containsExactly("kv-dispatch-read-ahead|Key");
         }
 
         @Test

@@ -47,3 +47,9 @@
   LoadBalancerEngineStopGateTest, RollbackManagerEngineStopGateTest, ControlLoopEngineStopGateTest,
   BootstrapEngineStopGateTest, ClusterConfigEngineStopGateTest, WorkerActivationEngineStopGateTest,
   AetherNodeReactExecutorWiringBootTest]`
+- The node raises the dispatcher's operator events through its own operator-warning sink: `kv-dispatch-slow-handler`
+  (WARNING, closed by `kv-dispatch-slow-handler-returned` when that handler returns), `kv-dispatch-read-ahead` (INFO, first
+  per key type) and `kv-dispatcher-failed` (CRITICAL; the node stops, a restart is the recovery).
+  `[verified: AetherNodeKvDispatcherWiringBootTest, KVStoreDispatcherTest]`. The node's `stop()` resolves only after its store
+  is closed. The delivery loop ends only by `close()`: an interrupt flag a handler leaves set is cleared and logged, and any
+  other interrupt takes the failure path. `[verified: DispatcherInterruptTest]`
