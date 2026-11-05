@@ -7,6 +7,7 @@ package org.pragmatica.aether.api.routes;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
+import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.aether.stream.forward.StreamForwardHandler;
@@ -63,6 +64,19 @@ class StreamPublishStatusTest {
                                      Stream.of((Cause) ReplicationError.General.NOT_ENOUGH_REPLICAS));
 
         return refusals.map(raw -> DynamicTest.dynamicTest(label(raw), () -> assertSameStatusOnBothPaths(raw)));
+    }
+
+    /// #1750: the route has no message ID to retry with, so the unknown-outcome advice must not tell the caller to use one.
+    @Test
+    void publishOutcomeUnknown_keylessRoute_adviceDoesNotInviteAMessageId() {
+        var unknown = PublishOutcomeUnknown.FACTORY.apply(ReplicationError.General.REPLICATION_TIMEOUT);
+        var onPublish = StreamApiRoutes.retryableRefusal("s", unknown);
+
+        assertThat(ManagementStatus.statusOf(onPublish)).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+        assertThat(onPublish.message()).contains("may already be in the log")
+                                       .contains("takes no message ID")
+                                       .contains(ReplicationError.General.REPLICATION_TIMEOUT.message())
+                                       .doesNotContain("retry only with the same message ID");
     }
 
     private static void assertSameStatusOnBothPaths(Cause raw) {
