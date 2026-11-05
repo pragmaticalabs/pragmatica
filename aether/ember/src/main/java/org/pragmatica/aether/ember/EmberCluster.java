@@ -62,7 +62,6 @@ import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SecurityMode;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.StreamingConfig;
-import org.pragmatica.aether.config.TtmConfig;
 import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.aether.config.TimeoutsConfig;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
@@ -1595,7 +1594,6 @@ public final class EmberCluster {
                                           DHTConfig.CACHE_DEFAULT,
                                           Option.empty(),
                                           quicTls,
-                                          TtmConfig.ttmConfig(),
                                           appHttpConfigFor(appHttpPort),
                                           ControllerConfig.forgeDefaults(),
                                           Option.some(nodeConfiguration(nodeId)),

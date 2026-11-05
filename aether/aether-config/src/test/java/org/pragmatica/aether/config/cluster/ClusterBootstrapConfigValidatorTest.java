@@ -736,11 +736,10 @@ class ClusterBootstrapConfigValidatorTest {
         void validate_anyNodeConfigTheNodeRefuses_returnsPf35NamingTheKey() {
             var refused = List.of(
                 Map.<String, Map<String, Object>>of("cluster", Map.<String, Object>of("tls", "yes")),
-                Map.<String, Map<String, Object>>of("ttm", Map.<String, Object>of("enabled", "on")),
                 Map.<String, Map<String, Object>>of("app-http", Map.<String, Object>of("protocol", "h2")),
                 Map.<String, Map<String, Object>>of("timeouts.invocation", Map.<String, Object>of("timeout", "fast")),
                 Map.<String, Map<String, Object>>of("cluster", Map.<String, Object>of("nodes", "many")));
-            var keys = List.of("cluster.tls", "ttm.enabled", "app-http.protocol", "timeouts.invocation.timeout", "cluster.nodes");
+            var keys = List.of("cluster.tls", "app-http.protocol", "timeouts.invocation.timeout", "cluster.nodes");
 
             for (var i = 0; i < refused.size(); i++) {
                 var key = keys.get(i);

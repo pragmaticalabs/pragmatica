@@ -150,31 +150,6 @@ class MinuteAggregatorTest {
     }
 
     @Nested
-    class TTMInputTests {
-        @BeforeEach
-        void setUp() {
-            aggregator = MinuteAggregator.minuteAggregator();
-        }
-
-        @Test
-        void toTTMInput_zeroPadding_whenInsufficientData() {
-            aggregator.addSample(snapshot(1000L, 0.5, 5.0));
-            aggregator.flush();
-
-            float[][] result = aggregator.toTTMInput(5);
-
-            assertThat(result).hasNumberOfRows(5);
-            // First 4 rows should be zero-padded
-            assertThat(result[0]).containsOnly(0.0f);
-            assertThat(result[1]).containsOnly(0.0f);
-            assertThat(result[2]).containsOnly(0.0f);
-            assertThat(result[3]).containsOnly(0.0f);
-            // Last row should have data
-            assertThat(result[4]).isNotEqualTo(new float[11]);
-        }
-    }
-
-    @Nested
     class CapacityEvictionTests {
         @Test
         void capacityEviction_exceedsCapacity_evictsOldest() {

@@ -59,7 +59,6 @@ Migration execution/history now lives in the shared [`db-migrations`](../../db-m
 | 8 | minInstances enforcement | Complete | Blueprint minimum instance count as hard floor across auto-scaler, manual API, and rolling updates |
 | 9 | Manual scale API | Complete | `POST /api/v1/scale` with blueprint membership guard and minInstances validation |
 | 10 | Dynamic controller config | Complete | Runtime-adjustable CPU thresholds and evaluation interval |
-| 11 | TTM predictive scaling | Partial | ONNX model inference, forecast analysis, adaptive decision tree. **Gap:** Not connected to live model training, disabled by default |
 | 12 | Dynamic aspects | Complete (superseded by #42) | Runtime method-level instrumentation (LOG, METRICS, LOG_AND_METRICS) via KV-Store. CLI and API control |
 
 ## Cluster & Consensus
@@ -187,7 +186,7 @@ Migration execution/history now lives in the shared [`db-migrations`](../../db-m
 
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
-| 49 | REST management API | Battle-tested | 187 routes (`ManagementRoute` enum; was 188 before #957 removed `ALERTS_CLEAR`) across 32 `RouteSource` classes in `aether/node/.../api/routes/` (verified 2026-09-03): status, health, blueprints, slices, scaling, rolling updates, config, thresholds, alerts, aspects, logging, TTM, invocation metrics, controller config, node lifecycle |
+| 49 | REST management API | Battle-tested | 185 routes (`ManagementRoute` enum; was 187 before the TTM removal dropped `TTM_STATUS` and `TTM_TRAINING_DATA`) across 32 `RouteSource` classes in `aether/node/.../api/routes/` (verified 2026-09-03): status, health, blueprints, slices, scaling, rolling updates, config, thresholds, alerts, aspects, logging, invocation metrics, controller config, node lifecycle |
 | 50 | Interactive CLI | Complete | Batch and REPL modes. Commands: status, nodes, slices, routes, metrics, health, scale, artifact, blueprint, deploy, invocation-metrics, controller, alerts, thresholds, aspects, traces, observability, config, logging, events, node lifecycle/drain/activate/shutdown |
 | 213 | Cluster init wizard | Complete | `aether cluster init` interactive wizard + batch-mode flags generating a ready-to-bootstrap `cluster-config.toml`. All 4 deployment targets (Docker / SSH / Cloud / Forge), topology auto-derive (refuses N<3, requires odd core), firewall presets (Standard / Restrictive / Open / Custom), TLS auto-generate vs env-var, optional database, offline IP auto-detect for restrictive admin CIDR. Shared `Prompt` utility consolidates 3 ad-hoc stdin readers. 67 tests across 6 classes. |
 | 51 | WebSocket streams | Complete | `/ws/status` (cluster state), `/ws/events` (real-time cluster events with delta broadcasting) |
@@ -323,7 +322,7 @@ HTTP API-key and JWT/JWKS verification is shared with Terra through `aether/http
 |---|---------|--------|-------------|
 | 200 | Per-route rate limiting | Planned | Per-HTTP-route rate limiting via blueprint or management API. Token bucket or sliding window. Cluster-aware distributed counters |
 | 201 | Spot instance support | Planned | Elastic pool of spot/preemptible instances for cost-optimized scaling. Core (on-demand) + elastic (spot) pools |
-| 1251 | Deterministic cluster supervision and predictive capacity planning | Planned | Executable bounded runbooks (flapping/replacement/provisioning recovery with escalation), continuously active reactive scaling, and calendar-aware predictive capacity preparation (year-plus horizons, moving events, declared campaigns) behind one fenced admission authority and the existing reconcilers/budget channels. **Target 1.0.0-rc5** (owner ruling 2026-09-19). Design only — `[design intent — unverified]`; prerequisites #1230, #1231–#1239, #1250, #1038, #365/#367. Makes TTM (#11) a proposal-only forecast provider. See [`cluster-supervision-spec.md`](../specs/cluster-supervision-spec.md) |
+| 1251 | Deterministic cluster supervision and predictive capacity planning | Planned | Executable bounded runbooks (flapping/replacement/provisioning recovery with escalation), continuously active reactive scaling, and calendar-aware predictive capacity preparation (year-plus horizons, moving events, declared campaigns) behind one fenced admission authority and the existing reconcilers/budget channels. **Target 1.0.0-rc5** (owner ruling 2026-09-19). Design only — `[design intent — unverified]`; prerequisites #1230, #1231–#1239, #1250, #1038, #365/#367. See [`cluster-supervision-spec.md`](../specs/cluster-supervision-spec.md) |
 | 202 | Cluster expense tracking | Planned | Real-time cost visibility from cloud billing APIs. Per-node, per-slice, per-request cost derivation. Budget alerts |
 | 70 | Aether runtime rolling upgrade | Partial | Phase 1: `POST /api/v1/cluster/upgrade` endpoint and CLI. Full rolling orchestration deferred to Phase 2 |
 | 71 | Email notification resource | Complete | `integrations/net/smtp` (async Netty SMTP client), `integrations/email-http` (HTTP sender with SendGrid/Mailgun/Postmark/Resend SPI), `aether/resource/notification` (ResourceFactory + @Notify qualifier). 57 tests |
@@ -404,7 +403,6 @@ table above):
 
 | Feature | Key Gap |
 |---------|---------|
-| TTM predictive scaling (#11) | Disabled by default, no live model training |
 | Aether runtime rolling upgrade (#70) | Phase 1 only — full rolling orchestration deferred |
 | Streaming retention / failover / memory / cursor / tiered-reader (#179/#180/#181/#185/#190) | Sealed segments DO flow to AHSE (`StorageSegmentSink` wired — the old `EvictionListener.NOOP` claim was stale, #634 item 6); the segment tiers are disk-backed (`StorageFactory.java:891-904`); a blueprint declaring a STRONG stream is refused at deploy (`StreamResourceValidator.java:257`). Cursor persistence is row 185. Guarantee & scope framing (crash-durability, at-most-once, replication factor) lives in [`guarantees.md`](guarantees.md) §4 and [`known-limitations.md`](known-limitations.md) — not restated per-row |
 | Segment compression & encryption (#142/#143) | Codec + AES-GCM encryptor exist and are tested, but the AHSE engine write path applies neither. AHSE-engine write-pipeline gap (no scheduled phase yet) |

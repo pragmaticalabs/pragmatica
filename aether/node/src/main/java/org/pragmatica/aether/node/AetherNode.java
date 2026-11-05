@@ -152,8 +152,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipV
 import org.pragmatica.aether.slice.kvstore.ReplicaFilter;
 import org.pragmatica.aether.slice.repository.CompositeRepository;
 import org.pragmatica.aether.slice.repository.Repository;
-import org.pragmatica.aether.ttm.AdaptiveDecisionTree;
-import org.pragmatica.aether.ttm.TTMManager;
 import org.pragmatica.aether.update.AbTestManager;
 import org.pragmatica.aether.update.DeploymentManager;
 import org.pragmatica.aether.worker.governor.GovernorAnnouncer;
@@ -303,7 +301,6 @@ public interface AetherNode extends ManageableNode {
     Option<DynamicConfigManager> dynamicConfigManager();
     AppHttpServer appHttpServer();
     HttpRouteRegistry httpRouteRegistry();
-    TTMManager ttmManager();
     RollbackManager rollbackManager();
     ComprehensiveSnapshotCollector snapshotCollector();
     ArtifactMetricsCollector artifactMetricsCollector();
@@ -1704,7 +1701,6 @@ public interface AetherNode extends ManageableNode {
                           LogLevelRegistry logLevelRegistry,
                           Option<DynamicConfigManager> dynamicConfigManager,
                           AppHttpServer appHttpServer,
-                          TTMManager ttmManager,
                           RollbackManager rollbackManager,
                           ScheduledTaskManager scheduledTaskManager,
                           ComprehensiveSnapshotCollector snapshotCollector,
@@ -1927,7 +1923,6 @@ public interface AetherNode extends ManageableNode {
                 workerMetricsAggregator.stop();
                 metricsScheduler.stop();
                 deploymentMetricsScheduler.stop();
-                ttmManager.stop();
                 scheduledTaskManager.stop();
                 snapshotCollector.stop();
                 SliceRuntime.clear();
@@ -2221,7 +2216,6 @@ public interface AetherNode extends ManageableNode {
                                   ? config.appHttp().port()
                                   : 0;
                 var peerCount = config.topology().coreNodes().size();
-                var ttmEnabled = ttmManager.isEnabled();
                 var tlsEnabled = config.tls().isPresent();
 
                 log.info("{}", "+-----------------------------------------------------------------+");
@@ -2242,11 +2236,6 @@ public interface AetherNode extends ManageableNode {
                 }
 
                 log.info("|  Peers:          {}", pad(peerCount + " configured", 46) + "|");
-                log.info("|  TTM:            {}",
-                         pad(ttmEnabled
-                             ? "enabled"
-                             : "disabled",
-                             46) + "|");
                 log.info("|  TLS:            {}",
                          pad(tlsEnabled
                              ? "enabled"
@@ -2786,15 +2775,8 @@ public interface AetherNode extends ManageableNode {
                                                                                     eventAggregator,
                                                                                     kvStore,
                                                                                     clusterEventsStreamName));
-        var ttmManager = TTMManager.ttmManager(config.ttm(),
-                                               minuteAggregator,
-                                               controller::configuration)
-                                   .or(TTMManager.noOp(config.ttm()));
-        ClusterController effectiveController = ttmManager.isEnabled()
-                                                ? AdaptiveDecisionTree.adaptiveDecisionTree(controller, ttmManager)
-                                                : controller;
         var controlLoop = ControlLoop.controlLoop(config.self(),
-                                                  effectiveController,
+                                                  controller,
                                                   metricsCollector,
                                                   Option.some(invocationMetrics),
                                                   clusterNode,
@@ -2950,7 +2932,6 @@ public interface AetherNode extends ManageableNode {
                                                 logLevelRegistry,
                                                 ownershipEpochHighWater,
                                                 dynamicConfigManager,
-                                                ttmManager,
                                                 rabiaMetricsCollector,
                                                 deploymentManager,
                                                 abTestManager,
@@ -3537,7 +3518,6 @@ public interface AetherNode extends ManageableNode {
                                   logLevelRegistry,
                                   dynamicConfigManager,
                                   appHttpServer,
-                                  ttmManager,
                                   rollbackManager,
                                   scheduledTaskManager,
                                   snapshotCollector,
@@ -3699,7 +3679,6 @@ public interface AetherNode extends ManageableNode {
                                                                             logLevelRegistry,
                                                                             dynamicConfigManager,
                                                                             appHttpServer,
-                                                                            ttmManager,
                                                                             rollbackManager,
                                                                             scheduledTaskManager,
                                                                             snapshotCollector,
@@ -4426,16 +4405,6 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
-    /// TTMManager — TaskGroup SCALING.
-    @SuppressWarnings("JBCT-RET-01")
-    private static void toggleTtmOnLeaderChange(LeaderNotification.LeaderChange change, TTMManager ttmManager) {
-        if (change.localNodeIsLeader()) {
-            ttmManager.activate();
-        } else {
-            ttmManager.deactivate();
-        }
-    }
-
     /// RollbackManager — TaskGroup SCALING.
     @SuppressWarnings("JBCT-RET-01")
     private static void toggleRollbackOnLeaderChange(LeaderNotification.LeaderChange change,
@@ -4684,7 +4653,6 @@ public interface AetherNode extends ManageableNode {
                                                                     LogLevelRegistry logLevelRegistry,
                                                                     OwnershipEpochHighWater ownershipEpochHighWater,
                                                                     Option<DynamicConfigManager> dynamicConfigManager,
-                                                                    TTMManager ttmManager,
                                                                     RabiaMetricsCollector rabiaMetricsCollector,
                                                                     DeploymentManager deploymentManager,
                                                                     AbTestManager abTestManager,
@@ -4877,13 +4845,11 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> toggleDeploymentMetricsOnLeaderChange(change,
                                                                                               deploymentMetricsScheduler)));
-        // #231 Step 2 — SCALING (ControlLoop, TTMManager, RollbackManager), STRATEGIES (AbTestManager),
+        // #231 Step 2 — SCALING (ControlLoop, RollbackManager), STRATEGIES (AbTestManager),
         // and DeploymentManager leader-pinned. ControlLoop did NOT previously receive LeaderChange
         // (only ClusterStateNotification + MembershipDecision), so this toggle is additive — no duplicate.
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> toggleControlLoopOnLeaderChange(change, controlLoop)));
-        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                              change -> toggleTtmOnLeaderChange(change, ttmManager)));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> toggleRollbackOnLeaderChange(change, rollbackManager)));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,

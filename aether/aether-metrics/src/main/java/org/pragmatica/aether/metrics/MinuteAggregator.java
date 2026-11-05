@@ -84,18 +84,6 @@ public final class MinuteAggregator {
         return aggregates.size();
     }
 
-    public synchronized float[][] toTTMInput(int windowMinutes) {
-        var recent = recent(windowMinutes);
-        var result = new float[windowMinutes][MinuteAggregate.featureNames().length];
-        var offset = windowMinutes - recent.size();
-
-        for (var index = 0; index < recent.size(); index++) {
-            result[offset + index] = recent.get(index).toFeatureArray();
-        }
-
-        return result;
-    }
-
     private void finalizeCurrentMinute() {
         if (currentSamples.isEmpty()) {
             return;
