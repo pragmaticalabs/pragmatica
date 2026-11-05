@@ -13,7 +13,6 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
-import org.pragmatica.aether.slice.blueprint.SliceSpec;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -102,15 +101,15 @@ class AbTestOperatorFloorTest {
                                                             .isEqualTo(OPERATOR_FLOOR);
         }
 
-        /// Opposite polarity: the canary must still be a canary. An implementation that preserved
-        /// the floor by leaving `targetInstances` alone would pass the test above and deploy the
-        /// variant at the baseline's full scale (6 here).
+        /// rc6 §3.1 (INV-02): the requirement combiner is the only writer of `targetInstances` after a
+        /// target's creation, so the canary write carries the committed count (6 here) instead of pinning
+        /// it to the slice floor; the runtime floor of #1721 is the combiner's clamp, not this writer's.
         @Test
-        void createTest_placesTheVariantAtTheSliceFloor_neverBelow() {
+        void createTest_carriesTheCommittedCount_neverWritesIt() {
             startTest();
 
-            assertThat(onlySliceTargetWrite().targetInstances()).as("#1721: the slice's own target must never go below the runtime floor")
-                                                               .isEqualTo(SliceSpec.MIN_INSTANCES);
+            assertThat(onlySliceTargetWrite().targetInstances()).as("rc6 INV-02: the canary write must not change the committed count")
+                                                               .isEqualTo(OPERATOR_TARGET);
         }
     }
 
@@ -123,8 +122,8 @@ class AbTestOperatorFloorTest {
             var testId = startTest();
             var canary = onlySliceTargetWrite();
 
-            assertThat(canary.targetInstances()).as("the canary write must have happened, or the promotion below is vacuous")
-                                               .isEqualTo(SliceSpec.MIN_INSTANCES);
+            assertThat(canary.currentVersion()).as("the canary write must have happened, or the promotion below is vacuous")
+                                               .isEqualTo(SliceTargetOverridePreservationTest.V2);
 
             observe(canary);
 
@@ -134,8 +133,8 @@ class AbTestOperatorFloorTest {
                                                  .isEqualTo(SliceTargetOverridePreservationTest.V2);
             assertThat(promoted.minInstances()).as("#982: the operator's floor must survive a test it never agreed to")
                                                .isEqualTo(OPERATOR_FLOOR);
-            assertThat(promoted.targetInstances()).as("#982: the promoted version must not be parked below the floor it declares")
-                                                  .isEqualTo(OPERATOR_FLOOR);
+            assertThat(promoted.targetInstances()).as("rc6 INV-02: the promotion carries the committed count, the combiner's")
+                                                  .isEqualTo(OPERATOR_TARGET);
         }
 
         /// Rollback is the other conclusion write and carries the identical defect, so pinning only
@@ -158,13 +157,12 @@ class AbTestOperatorFloorTest {
                                                  .isEqualTo(SliceTargetOverridePreservationTest.V1);
             assertThat(restored.minInstances()).as("#982: rollback must restore the operator's floor")
                                                .isEqualTo(OPERATOR_FLOOR);
-            assertThat(restored.targetInstances()).as("#982: the restored baseline must not be left at the canary's count")
-                                                  .isEqualTo(OPERATOR_FLOOR);
+            assertThat(restored.targetInstances()).as("rc6 INV-02: the restored baseline carries the committed count, the combiner's")
+                                                  .isEqualTo(OPERATOR_TARGET);
         }
 
-        /// An operator floor of 1 is carried as written (#982) but the slice still concludes at the
-        /// runtime floor of 3 (#1721). Without the observed floor being read, an implementation that
-        /// wrote a constant 5 would pass every assertion above.
+        /// An operator floor of 1 is carried as written (#982). The count stays the committed one: the runtime
+        /// floor of 3 (#1721) is enforced by the combiner's clamp, not by this writer.
         @Test
         void concludeTest_withAFloorOfOne_concludesAtTheSliceFloor() {
             seedSliceTarget(operatorTarget(SliceTargetOverridePreservationTest.V1, 1));
@@ -177,8 +175,8 @@ class AbTestOperatorFloorTest {
 
             assertThat(promoted.minInstances()).as("a floor of 1 is a real floor, carried like any other")
                                                .isEqualTo(1);
-            assertThat(promoted.targetInstances()).as("#1721: the conclusion never parks the slice under the runtime floor, whatever minInstances says")
-                                                  .isEqualTo(SliceSpec.MIN_INSTANCES);
+            assertThat(promoted.targetInstances()).as("rc6 INV-02: the conclusion carries the committed count whatever minInstances says")
+                                                  .isEqualTo(OPERATOR_TARGET);
         }
 
         /// The overrides #424, #698 and #937 fixed must still survive now that the conclusion write
