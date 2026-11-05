@@ -67,6 +67,11 @@ public final class ClusterBootstrapConfigDiff {
                                                                 stored.cluster().version(),
                                                                 desired.cluster().version()));
         }
+        if (!Objects.equals(stored.maxNodes(), desired.maxNodes())) {
+            modifications.add(new DiffAction.ClusterLevelChange("max_nodes",
+                                                                String.valueOf(stored.maxNodes()),
+                                                                String.valueOf(desired.maxNodes())));
+        }
     }
 
     /// #1966: profile CONTENT was never diffed, so editing `image` or `jvm_args` of a profile that both configs declare
@@ -186,6 +191,11 @@ public final class ClusterBootstrapConfigDiff {
                          stored.replacementCeiling(),
                          desired.replacementCeiling(),
                          modifications);
+        checkSourceField(sourceName, "leadTime", stored.leadTime(), desired.leadTime(), modifications);
+        checkSourceField(sourceName, "maxNodes", stored.maxNodes(), desired.maxNodes(), modifications);
+        checkSourceField(sourceName, "preference", stored.preference(), desired.preference(), modifications);
+        checkSourceField(sourceName, "costClass", stored.costClass(), desired.costClass(), modifications);
+        checkSourceField(sourceName, "fallback", stored.fallback(), desired.fallback(), modifications);
     }
 
     private static void checkSourceField(SourceName sourceName,

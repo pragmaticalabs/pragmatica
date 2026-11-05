@@ -345,6 +345,40 @@ public final class ClusterBootstrapConfigValidator {
         validateRuntimeTypeCompatibility(name, source, runtimes, errors);
         validatePortConflictsOnSameHost(name, source, errors);
         rejectReplacementCeilingOffCloud(name, source, errors);
+        rejectSpotCostClassWhereSpotRefused(name, source, errors);
+        rejectNodeConfigFleetCap(name, source, errors);
+    }
+
+    /// rc6 spec §8.1 — `cost_class = "spot"` declares the source's capacity preemptible, so it is refused
+    /// wherever a `spot` role would be: off a cloud source (mirrors PF-15) and on a provider with no spot
+    /// arm (mirrors PF-16, same [#SPOT_UNSUPPORTED_REASONS] table). Declaring it anyway would rank the
+    /// source as spot capacity it can never provide.
+    private static void rejectSpotCostClassWhereSpotRefused(String name, SourceProfile source, List<String> errors) {
+        if (source.costClass() != CostClass.SPOT) {
+            return;
+        }
+
+        if (source.type() != SourceType.CLOUD) {
+            errors.add("PF-37: cost_class = \"spot\" only allowed on cloud sources, found on '" + name
+                      + "' (type: " + source.type().value()
+                      + ")");
+            return;
+        }
+
+        source.provider()
+              .flatMap(ClusterBootstrapConfigValidator::spotUnsupportedReason)
+              .onPresent(reason -> errors.add("PF-37: " + reason + " on source '" + name + "': cost_class = \"spot\" refused"));
+    }
+
+    /// rc6 spec §8.1 — the fleet cap moved from `[source.<name>.node_config.cluster]` to the first-class
+    /// `[cluster] max_nodes`. A node_config copy would be a second, per-source value for one fleet-wide
+    /// cap, so it is refused rather than letting the two disagree.
+    private static void rejectNodeConfigFleetCap(String name, SourceProfile source, List<String> errors) {
+        if (source.nodeConfig().map(doc -> doc.hasKey("cluster", "max_nodes")).or(false)) {
+            errors.add("PF-38: Source '" + name
+                      + "' sets node_config.cluster.max_nodes; the fleet cap is now the cluster-level [cluster] max_nodes."
+                      + " Move it there.");
+        }
     }
 
     /// #1049 — the runtime reads `replacement_ceiling` only from the CLOUD source backing a replacement's

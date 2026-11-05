@@ -65,12 +65,11 @@ swim       = 6100
 enabled          = true
 # No other key is accepted here (#675): auto-heal settings live in the NODE config, under
 # node_config — [timeouts.scaling] auto_heal_startup_cooldown / auto_heal_provisioning_timeout /
-# auto_heal_swim_hints_ttl, and [cluster] max_nodes.
+# auto_heal_swim_hints_ttl. (The fleet cap is the cluster-level [cluster] max_nodes.)
 
 # --- Cost guardrail (#298): refuse provisioning past 12 nodes for this cluster.
 # Opt-in — omit it and provisioning stays unbounded, as it always has. See "Fleet cap" below.
-[source.hetzner-eu.node_config.cluster]
-max_nodes = 12
+# It is the cluster-level `max_nodes = 12` key in the [cluster] table at the top of this file.
 
 # --- Trap (a): without this, JVM nodes default to API_KEY security mode and the
 # bootstrap's own cluster-config write is rejected with 401 Unauthorized. See "Traps" below.
@@ -95,6 +94,7 @@ This is a **dev/eval** config (`security_mode = "NONE"`) — see Trap (a) for wh
 |---|---|---|---|---|
 | `name` | string | — | **yes** | Cluster identity. Overridable by `aether cluster bootstrap --cluster <name>` (CLI > TOML). |
 | `version` | string | — | **yes** | Target Aether version for provisioned nodes. Drives the auto-derived `jar_url` / image tag — see Trap (b). |
+| `max_nodes` | int (>= 1) | unbounded | no | The fleet-wide node cap (#298), a first-class cluster field. Rendered into every provisioned node's `[cluster] max_nodes`, where it reaches `NodeLifecycleManager.provisionNode`. `0` or a negative value is refused at load. Replaces the former `[source.<name>.node_config.cluster] max_nodes`, which is now refused (PF-38). See "Fleet cap" below. |
 
 Top-level `config_version` (outside any table) is also required and must equal exactly `"1.0.0"` for
 this build; absent, older, or newer values are rejected before any other field is parsed.
@@ -129,6 +129,11 @@ If `[cluster.core]` is absent entirely, `min`/`max` are unset (no bound) and `ma
 | `load_balancer_ips` | string list | `[]` | no | Used with `external` mode. |
 | `load_balancer_endpoint` | string | — | no | Used with `external` mode. |
 | `replacement_ceiling` | duration string | `"10m"` | no | Cloud sources only (rejected on any other type — PF-26). The longest an auto-heal replacement from this source may stay in flight while the provider still reports it provisioning or running, reports a status it cannot state, or cannot report at all; past it, the leader re-dispatches. A replacement is re-dispatched sooner, after the deficit debounce, when the provider reports it stopped, terminated or failed; when an instance the provider has listed is no longer listed; when an instance the provider has never listed is omitted by twelve consecutive successful listings spanning at least three minutes since its create call resolved; or when the provider's readiness check fails the provision (on a cloud, after 5 minutes still provisioning). A replacement the leader gives up on is terminated (#1111): the leader looks the instance up by its node-id label, WARNs with the source, node id and instance id, terminates it and confirms by listing, retrying 12 times; a termination it cannot confirm raises `instance-termination-unconfirmed` (recovery: verify at the provider and terminate by hand, or find it by the `auto-heal PROVISIONED a billable instance` WARN line's `instanceId`). A create that failed is looked up too, unless the provider refused it for capacity; if twelve listings show no instance it is confirmed absent and nothing is raised. A replacement that has joined is never terminated. Two bounds apply to a create that failed: it is confirmed absent only by 12 consecutive successful empty listings spaced a sixth of the provisioning window apart (about 110 s at the default window), so an instance first listed later than that is not reaped by this path and is left to the next leader activation's orphan replay; and a listing that fails is retried, not read as absent, until 12 consecutive failures, which end in `instance-termination-unconfirmed`. Must exceed `5m` (the three-minute first-listing floor plus a two-minute join allowance); a shorter value is refused at load. Read at runtime by the leader from the persisted cluster config (#1049). |
+| `max_nodes` | int (>= 1) | unbounded | no | Per-source node limit (capacity profile, rc6 §8.1). `0` or a negative value is refused at load. Parsed and persisted; consumed by source selection in a later change. The fleet-wide cap is `[cluster] max_nodes`. |
+| `preference` | int | `100` | no | Source rank, lower is preferred. Parsed and persisted; consumed by source selection in a later change. |
+| `cost_class` | string | `"ondemand"` | no | `ondemand` \| `spot` \| `reserved` \| `free` (static). An unknown value is refused at load. `spot` is refused (PF-37) on a non-cloud source and on a provider with no spot arm (hetzner, gcp, azure; same table as PF-16). |
+| `fallback` | string | `"allow"` | no | `allow` \| `forbid`. An unknown value is refused at load. Parsed and persisted; consumed by source selection in a later change. |
+| `[source.<name>.lead_time]` | table of role → duration string | provider constant | no | Conservative mint-to-ready per role, e.g. `core = "90s"`. Keys are `core` \| `worker` \| `spot`; a role not listed takes the provider constant: hetzner 65s (measured worst 63.3s), aws/gcp/azure 2m and non-cloud sources 30s (both unmeasured judgements, stated in `SourceProfile`). A non-duration, a non-positive value or an unknown role is refused at load. Parsed and persisted; consumed by source selection in a later change. |
 | `databases.<name> = "url"` (inline) or `[source.<name>.databases]` (subtable) | string map | `{}` | no | Maps to composed **`[database.<name>]`** (nested), never flat `[database]` — see Trap (c). |
 | `[source.<name>.node_config.<section>]` | raw TOML overlay | — | no | Merged verbatim as `[<section>]` into the composed per-node `aether.toml`, prefix-stripped. Escape hatch for any node-level setting not otherwise modeled (used above for `[app-http]`). |
 
@@ -465,14 +470,19 @@ so, you're editing the wrong schema.
 cluster's live instances (scoped by the `aether-cluster` label) before each provision and refusing with
 `EnvironmentError.NodeCapExceeded` once the count reaches the cap.
 
-It is a **node-level** setting, so for a cloud source it is supplied through the `node_config` overlay:
+It is a **cluster-level** field of the bootstrap config:
 
 ```toml
-[source.<name>.node_config.cluster]
+[cluster]
+name = "production"
+version = "1.0.0"
 max_nodes = 12
 ```
 
-For a hand-managed node it goes directly in that node's `aether.toml` under `[cluster]`.
+Bootstrap renders it into every node's composed `[cluster] max_nodes` (including CTM replacement nodes), and
+the node carries it to `provisionNode` unchanged. A `[source.<name>.node_config.cluster] max_nodes` is refused
+(PF-38): one fleet cap, one place. For a hand-managed node outside a bootstrap config it still goes directly
+in that node's `aether.toml` under `[cluster]`. A per-source limit is the separate `[source.<name>] max_nodes`.
 
 **Opt-in, and unbounded by default.** Omitting `max_nodes` (or setting `0`) preserves today's behaviour
 exactly. There is deliberately no numeric default: any default we picked would silently refuse
@@ -490,7 +500,7 @@ WARN naming the cluster, the cap, and the observed count.
 
 > **`[operations.auto_heal]` carries `enabled` and nothing else (#675).** The eight tunables that used
 > to be accepted here parsed into `AutoHealSpec` and reached no node: every running node builds its
-> `AutoHealConfig` from its OWN config — `[cluster] max_nodes` (the fleet cap, via `node_config.cluster`)
+> `AutoHealConfig` from its OWN config — `[cluster] max_nodes` (the fleet cap, rendered from the cluster-level key)
 > and, under `node_config.timeouts.scaling`, `auto_heal_startup_cooldown` (the formation-check delay, 15s),
 > `auto_heal_provisioning_timeout` (the replacement boot window, circuit backoff and drain grace, 60s) and
 > `auto_heal_swim_hints_ttl` (the SUSPECTED-hint decay, 15s). The parser now refuses any of the eight with
