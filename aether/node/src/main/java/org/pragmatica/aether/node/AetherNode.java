@@ -3119,7 +3119,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                               allEntries,
                                                                                                                               leaderReconciler,
                                                                                                                               bootstrapModule,
-                                                                                                                              epochSources.incarnation()));
+                                                                                                                              epochSources));
         var streamReplicationOut = StreamAssembly.streamReplication(new StreamAssembly.StreamReplicationInputs(config,
                                                                                                                delegateRouter,
                                                                                                                kvStore,

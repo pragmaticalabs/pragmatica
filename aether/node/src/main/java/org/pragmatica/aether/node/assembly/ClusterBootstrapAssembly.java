@@ -140,26 +140,18 @@ public sealed interface ClusterBootstrapAssembly {
                                   ArrayList<MessageRouter.Entry<?>> allEntries,
                                   LeaderReconciler leaderReconciler,
                                   BootstrapModule bootstrapModule,
-                                  ObservedIncarnation incarnation) {}
+                                  AetherNode.EpochSources epochSources) {}
 
     /// The routes that drive the bootstrap module, the health KV router, the spokesman ping loop (started here) and its KV router.
     static SpokesmanPingLoop bootstrapRouting(BootstrapRoutingInputs in) {
         var config = in.config();
         var kvStore = in.kvStore();
         var clusterNode = in.clusterNode();
-        var dhtNode = in.dhtNode();
         var leaderTerm = in.leaderTerm();
-        var cacheDhtConfig = in.cacheDhtConfig();
-        var dhtSettlement = in.dhtSettlement();
         var metricsCollector = in.metricsCollector();
         var rabiaTermSupplier = in.rabiaTermSupplier();
-        var clusterTopologyManager = in.clusterTopologyManager();
-        var deploymentManager = in.deploymentManager();
-        var abTestManager = in.abTestManager();
         var allEntries = in.allEntries();
-        var leaderReconciler = in.leaderReconciler();
         var bootstrapModule = in.bootstrapModule();
-        var incarnation = in.incarnation();
 
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> onLeaderChangeForPublisher(change,
@@ -174,13 +166,54 @@ public sealed interface ClusterBootstrapAssembly {
         // Membership derives from the authoritative MembershipFsm delta edge; there is no
         // node-state KV listener.
         wireMembershipDecisionTail(allEntries, bootstrapModule::onMembershipDecision);
-        var healthKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+        var healthKvRouter = healthKvRouter(in);
+
+        allEntries.addAll(healthKvRouter.asRouteEntries());
+        var spokesmanPingLoop = SpokesmanPingLoop.spokesmanPingLoop(config.self(),
+                                                                    clusterNode.network(),
+                                                                    config.timeouts().cluster().pingInterval(),
+                                                                    rabiaTermSupplier,
+                                                                    metricsCollector::allObservations,
+                                                                    communityId -> lookupGovernor(kvStore, communityId),
+                                                                    SpokesmanPingLoop.SpokesmanStatusWriter.fromCluster(clusterNode));
+
+        spokesmanPingLoop.start();
+        metricsCollector.setCommunityReportSupplier(spokesmanPingLoop::currentReports);
+        var spokesmanKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                                    .onPut(AetherKey.SpokesmanKey.class,
+                                                           spokesmanPingLoop::onSpokesmanPut)
+                                                    .onRemove(AetherKey.SpokesmanKey.class,
+                                                              spokesmanPingLoop::onSpokesmanRemove)
+                                                    .build();
+
+        allEntries.addAll(spokesmanKvRouter.asRouteEntries());
+        metricsCollector.addPongListener(spokesmanPingLoop::onClusterSyncPong);
+
+        return spokesmanPingLoop;
+    }
+
+    /// The KV routes that re-drive the bootstrap module and follow the committed cluster configuration. Split out for
+    /// the #2654 wiring test: the incarnation-commit route must reach the module through the SAME mirror its epoch supplier
+    /// reads, so it takes the whole `EpochSources` rather than a separately passed mirror.
+    static KVNotificationRouter<AetherKey, AetherValue> healthKvRouter(BootstrapRoutingInputs in) {
+        var config = in.config();
+        var dhtNode = in.dhtNode();
+        var cacheDhtConfig = in.cacheDhtConfig();
+        var dhtSettlement = in.dhtSettlement();
+        var clusterTopologyManager = in.clusterTopologyManager();
+        var deploymentManager = in.deploymentManager();
+        var abTestManager = in.abTestManager();
+        var leaderReconciler = in.leaderReconciler();
+        var bootstrapModule = in.bootstrapModule();
+        var epochSources = in.epochSources();
+
+        return KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
                                                  .onPut(AetherKey.SpokesmanKey.class,
                                                         _ -> bootstrapModule.retryIfNeeded())
                                                  // #2654: the incarnation-commit re-drive — see onIncarnationCommit.
                                                  .onPut(AetherKey.ClusterIncarnationKey.class,
                                                         (KVStoreNotification.ValuePut<AetherKey.ClusterIncarnationKey, AetherValue.ClusterIncarnationValue> put) -> onIncarnationCommit(put,
-                                                                                                                                                                                        incarnation,
+                                                                                                                                                                                        epochSources.incarnation(),
                                                                                                                                                                                         bootstrapModule))
                                                  // #1533: the ONE restore-commit hook — see onRestoreDecision.
                                                  .onPut(AetherKey.BackupRestoreKey.class,
@@ -211,29 +244,6 @@ public sealed interface ClusterBootstrapAssembly {
                                                  .onPut(AetherKey.DhtReplicationReportKey.class,
                                                         _ -> dhtSettlement.evaluate())
                                                  .build();
-
-        allEntries.addAll(healthKvRouter.asRouteEntries());
-        var spokesmanPingLoop = SpokesmanPingLoop.spokesmanPingLoop(config.self(),
-                                                                    clusterNode.network(),
-                                                                    config.timeouts().cluster().pingInterval(),
-                                                                    rabiaTermSupplier,
-                                                                    metricsCollector::allObservations,
-                                                                    communityId -> lookupGovernor(kvStore, communityId),
-                                                                    SpokesmanPingLoop.SpokesmanStatusWriter.fromCluster(clusterNode));
-
-        spokesmanPingLoop.start();
-        metricsCollector.setCommunityReportSupplier(spokesmanPingLoop::currentReports);
-        var spokesmanKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
-                                                    .onPut(AetherKey.SpokesmanKey.class,
-                                                           spokesmanPingLoop::onSpokesmanPut)
-                                                    .onRemove(AetherKey.SpokesmanKey.class,
-                                                              spokesmanPingLoop::onSpokesmanRemove)
-                                                    .build();
-
-        allEntries.addAll(spokesmanKvRouter.asRouteEntries());
-        metricsCollector.addPongListener(spokesmanPingLoop::onClusterSyncPong);
-
-        return spokesmanPingLoop;
     }
 
     /// What `bootstrapRegistrars` reads from the assembly built so far.
