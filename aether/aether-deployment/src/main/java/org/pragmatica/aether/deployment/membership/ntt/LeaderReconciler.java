@@ -1874,7 +1874,8 @@ public final class LeaderReconciler {
     private Set<NodeId> departedWithReplacementInFlight() {
         return inFlightProvisioning.values()
                                    .stream()
-                                   .flatMap(entry -> entry.departed().stream())
+                                   .flatMap(entry -> entry.departed()
+                                                          .stream())
                                    .collect(Collectors.toSet());
     }
 
@@ -2484,7 +2485,13 @@ public final class LeaderReconciler {
         }
 
         InFlightEntry withAbsentListing() {
-            return new InFlightEntry(sinceNanos, ceiling, state, pollableSinceNanos, absentListings + 1, generation, departed);
+            return new InFlightEntry(sinceNanos,
+                                     ceiling,
+                                     state,
+                                     pollableSinceNanos,
+                                     absentListings + 1,
+                                     generation,
+                                     departed);
         }
 
         boolean isDispatching() {
