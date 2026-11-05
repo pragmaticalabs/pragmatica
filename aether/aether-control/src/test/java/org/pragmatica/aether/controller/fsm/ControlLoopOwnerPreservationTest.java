@@ -313,6 +313,7 @@ class ControlLoopOwnerPreservationTest {
                                        new ControlLoopContextAttributionTest.StubMetricsCollector(),
                                        Option.none(),
                                        cluster,
+                                       FencedTargetWrites.fencedStore(SELF, OWNER),
                                        TimeSpan.timeSpan(5_000).millis(),
                                        ControllerConfig.DEFAULT.withScalingConfig(smallWindowConfig()),
                                        sink);
@@ -334,10 +335,7 @@ class ControlLoopOwnerPreservationTest {
 
         List<SliceTargetValue> sliceTargets() {
             return commands.stream()
-                           .filter(KVCommand.Put.class::isInstance)
-                           .map(command -> ((KVCommand.Put<?, ?>) command).value())
-                           .filter(SliceTargetValue.class::isInstance)
-                           .map(SliceTargetValue.class::cast)
+                           .flatMap(FencedTargetWrites::targetValues)
                            .toList();
         }
 
@@ -354,7 +352,7 @@ class ControlLoopOwnerPreservationTest {
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> toApply) {
             commands.addAll(toApply);
 
-            return (Promise<List<R>>) (Promise<?>) Promise.success(List.of());
+            return (Promise<List<R>>) (Promise<?>) Promise.success(FencedTargetWrites.acceptedResults(toApply));
         }
     }
 

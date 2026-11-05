@@ -78,6 +78,7 @@ class ControlLoopFsmTest {
                                          new StubMetricsCollector(),
                                          Option.none(),
                                          new StubClusterNode(),
+                                         FencedTargetWrites.fencedStore(SELF),
                                          TimeSpan.timeSpan(60_000).millis(),
                                          ControllerConfig.DEFAULT
                                                          .withScalingConfig(ControllerConfig.DEFAULT.scalingConfig()),

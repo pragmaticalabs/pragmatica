@@ -35,15 +35,21 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
+import org.pragmatica.aether.slice.kvstore.SliceTargetFence;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
 import org.pragmatica.aether.worker.metrics.PerSliceMetrics;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVCommand.LeaderTransaction;
+import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.statemachine.Fsm;
@@ -63,6 +69,7 @@ public final class ControlLoopContext {
     private final ClusterSyncCollector metricsCollector;
     private final Option<InvocationMetricsCollector> invocationMetricsCollector;
     private final ClusterNode<KVCommand<AetherKey>> cluster;
+    private final KVStore<AetherKey, AetherValue> kvStore;
     private final TimeSpan interval;
     private final Consumer<ScalingEvent> eventPublisher;
     private final LongSupplier clock;
@@ -103,6 +110,7 @@ public final class ControlLoopContext {
                               ClusterSyncCollector metricsCollector,
                               Option<InvocationMetricsCollector> invocationMetricsCollector,
                               ClusterNode<KVCommand<AetherKey>> cluster,
+                              KVStore<AetherKey, AetherValue> kvStore,
                               TimeSpan interval,
                               ControllerConfig config,
                               Consumer<ScalingEvent> eventPublisher) {
@@ -112,6 +120,7 @@ public final class ControlLoopContext {
              metricsCollector,
              invocationMetricsCollector,
              cluster,
+             kvStore,
              interval,
              config,
              eventPublisher,
@@ -124,6 +133,7 @@ public final class ControlLoopContext {
                               ClusterSyncCollector metricsCollector,
                               Option<InvocationMetricsCollector> invocationMetricsCollector,
                               ClusterNode<KVCommand<AetherKey>> cluster,
+                              KVStore<AetherKey, AetherValue> kvStore,
                               TimeSpan interval,
                               ControllerConfig config,
                               Consumer<ScalingEvent> eventPublisher,
@@ -134,6 +144,7 @@ public final class ControlLoopContext {
         this.metricsCollector = metricsCollector;
         this.invocationMetricsCollector = invocationMetricsCollector;
         this.cluster = cluster;
+        this.kvStore = kvStore;
         this.interval = interval;
         this.eventPublisher = eventPublisher;
         this.configRef = new AtomicReference<>(config);
@@ -563,17 +574,65 @@ public final class ControlLoopContext {
             return;
         }
 
-        var commands = new ArrayList<KVCommand<AetherKey>>();
-
-        decisions.changes().forEach(change -> prepareGuardedChange(change).onPresent(commands::add));
-        if (!commands.isEmpty()) {
-            cluster.apply(commands)
-                   .onFailure(cause -> log.error("Failed to apply blueprint changes: {}",
-                                                 cause.message()));
-        }
+        decisions.changes().forEach(change -> prepareGuardedChange(change).onPresent(this::submitScaling));
     }
 
-    private Option<KVCommand<AetherKey>> prepareGuardedChange(BlueprintChange change) {
+    /// One scaling decision's write: the instance count chosen for `artifact`, derived from `observed`.
+    private record Scaling(Artifact artifact, SliceTargetValue observed, int newInstances) {}
+
+    /// #2662: the scaling write is fenced. It is ONE leader transaction whose mutation expects the target the decision was made from (the
+    /// observed value) and whose witness holds the target's owning blueprint at its committed value, so a write racing a blueprint delete
+    /// (the target removed) or a republish (the target moved) is refused instead of re-creating or reverting the target. A refused write is
+    /// rebuilt from the committed target with the same instance count, at most [SliceTargetFence#MAX_REBUILDS] times; a target that is
+    /// gone, or whose blueprint is gone, is not written.
+    @Contract
+    private void submitScaling(Scaling scaling) {
+        SliceTargetFence.submit("autoscale " + scaling.artifact(),
+                                cluster::apply,
+                                () -> scalingTransaction(scaling,
+                                                         Option.some(scaling.observed())),
+                                () -> committedScalingTransaction(scaling))
+                        .onFailure(cause -> scalingNotWritten(scaling.artifact(),
+                                                              cause));
+    }
+
+    private Result<LeaderTransaction<AetherKey, AetherValue>> committedScalingTransaction(Scaling scaling) {
+        return SliceTargetFence.presentTarget(kvStore,
+                                              SliceTargetKey.sliceTargetKey(scaling.artifact().base()))
+                               .flatMap(read -> scalingTransaction(new Scaling(scaling.artifact(),
+                                                                               read,
+                                                                               scaling.newInstances()),
+                                                                   Option.some(read)));
+    }
+
+    private Result<LeaderTransaction<AetherKey, AetherValue>> scalingTransaction(Scaling scaling,
+                                                                                 Option<SliceTargetValue> read) {
+        var key = SliceTargetKey.sliceTargetKey(scaling.artifact().base());
+
+        return SliceTargetFence.targetWrite(kvStore,
+                                            key,
+                                            read,
+                                            scaling.observed().withInstances(scaling.newInstances()))
+                               .flatMap(write -> SliceTargetFence.transaction(kvStore,
+                                                                              List.of(write),
+                                                                              List.of()));
+    }
+
+    /// FER (degrade forward): a scaling decision that was not written is reported, and the registration is re-read from the committed
+    /// target, so the autoscaler never holds a count that did not commit. Guarantee earned: the next evaluation decides from committed
+    /// state. Mechanism: the registration is replaced by the committed target of this version, or dropped when none is committed.
+    @Contract
+    private void scalingNotWritten(Artifact artifact, Cause cause) {
+        log.warn("Scaling decision for {} not written: {}", artifact, cause.message());
+        SliceTargetFence.committedTarget(kvStore,
+                                         SliceTargetKey.sliceTargetKey(artifact.base()))
+                        .filter(committed -> committed.currentVersion()
+                                                      .equals(artifact.version()))
+                        .onPresent(committed -> putBlueprint(artifact, committed))
+                        .onEmpty(() -> removeBlueprint(artifact));
+    }
+
+    private Option<Scaling> prepareGuardedChange(BlueprintChange change) {
         var artifact = change.artifact();
 
         if (isArtifactInCooldown(artifact)) {
@@ -594,15 +653,15 @@ public final class ControlLoopContext {
                      .or(false);
     }
 
-    private Option<KVCommand<AetherKey>> prepareChange(BlueprintChange change) {
+    private Option<Scaling> prepareChange(BlueprintChange change) {
         var artifact = change.artifact();
 
         return observedTarget(artifact).flatMap(observed -> prepareChangeToTarget(change, artifact, observed));
     }
 
-    private Option<KVCommand<AetherKey>> prepareChangeToTarget(BlueprintChange change,
-                                                               Artifact artifact,
-                                                               SliceTargetValue observed) {
+    private Option<Scaling> prepareChangeToTarget(BlueprintChange change,
+                                                  Artifact artifact,
+                                                  SliceTargetValue observed) {
         var currentBlueprint = blueprintOf(artifact, observed);
         var requestedInstances = computeRequestedInstances(change, currentBlueprint);
         var clusterSize = effectiveClusterSize();
@@ -680,22 +739,23 @@ public final class ControlLoopContext {
     /// number.
     ///
     /// The same instance is written to the in-memory registration and to the Put, so the mirror and
-    /// the durable record cannot disagree — and their disagreement is what #936 reported.
+    /// the durable record cannot disagree — and their disagreement is what #936 reported. Since #2662
+    /// the Put is the fenced write of [#submitScaling], and a write that does not commit re-reads the
+    /// registration from the committed target ([#scalingNotWritten]).
     ///
     /// No store read happens here. The observed value is carried in the registration map rather than
     /// re-read, deliberately: a re-read would add a read-then-Put on the autoscaler's hot path, the
     /// shape flagged by #906 and #805. The map has exactly one feeder,
     /// `ControlLoop.onSliceTargetPut`, and an artifact with no observed value has no registration,
     /// so `prepareChange` returns `none()` and this method is never reached for it.
-    private Option<KVCommand<AetherKey>> applyScaling(BlueprintChange change,
-                                                      Artifact artifact,
-                                                      SliceTargetValue observed,
-                                                      int requestedInstances,
-                                                      int newInstances,
-                                                      boolean capped) {
+    private Option<Scaling> applyScaling(BlueprintChange change,
+                                         Artifact artifact,
+                                         SliceTargetValue observed,
+                                         int requestedInstances,
+                                         int newInstances,
+                                         boolean capped) {
         var currentBlueprint = blueprintOf(artifact, observed);
         var scaled = observed.withInstances(newInstances);
-        var key = SliceTargetKey.sliceTargetKey(artifact.base());
 
         log.info("Applying scaling decision: {} from {} to {} instances",
                  artifact,
@@ -705,7 +765,7 @@ public final class ControlLoopContext {
         publishScalingEvent(change, artifact, currentBlueprint.instances(), newInstances);
         recordScaled(change, artifact, currentBlueprint, requestedInstances, newInstances, capped);
 
-        return Option.some(new KVCommand.Put<>(key, scaled));
+        return Option.some(new Scaling(artifact, observed, newInstances));
     }
 
     private static int computeRequestedInstances(BlueprintChange change, ClusterController.Blueprint currentBlueprint) {

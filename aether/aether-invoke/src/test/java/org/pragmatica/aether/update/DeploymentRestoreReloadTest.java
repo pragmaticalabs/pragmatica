@@ -45,6 +45,7 @@ class DeploymentRestoreReloadTest {
     void setUp() {
         rabiaNode = new CapturingRabiaNode(SELF);
         kvStore = new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+        SliceTargetOverridePreservationTest.seedLeaderAndOwner(kvStore);
         manager = DeploymentManager.deploymentManager(rabiaNode, kvStore);
         manager.activate()
                .await()
@@ -54,6 +55,7 @@ class DeploymentRestoreReloadTest {
     @Test
     void reloadRestoredState_resumesARolloutRestoredAfterActivation_soRollbackRemovesItsRouting() {
         seed(kvStore, DeploymentKey.deploymentKey(DEPLOYMENT_ID), inFlightRollout());
+        seed(kvStore, VersionRoutingKey.versionRoutingKey(BASE), AetherValue.VersionRoutingValue.versionRoutingValue(OLD_VERSION, NEW_VERSION));
 
         assertThat(manager.list()).as("activation ran before the restore").isEmpty();
         assertThat(manager.rollback(DEPLOYMENT_ID)
@@ -68,10 +70,14 @@ class DeploymentRestoreReloadTest {
         manager.rollback(DEPLOYMENT_ID)
                .onFailure(cause -> Assertions.fail("rollback of the restored rollout: " + cause.message()));
 
-        assertThat(rabiaNode.appliedCommands).as("the rollback removes the rollout's routing")
-                                             .anyMatch(command -> command instanceof KVCommand.Remove<?> remove
-                                                                  && remove.key()
-                                                                           .equals(VersionRoutingKey.versionRoutingKey(BASE)));
+        assertThat(rabiaNode.appliedCommands).as("the rollback removes the rollout's routing (a mutation of its transaction since #2662)")
+                                             .anyMatch(command -> command instanceof KVCommand.LeaderTransaction<?, ?> transaction
+                                                                  && transaction.mutations()
+                                                                                .stream()
+                                                                                .anyMatch(mutation -> mutation.key()
+                                                                                                              .equals(VersionRoutingKey.versionRoutingKey(BASE))
+                                                                                                      && mutation.replacement()
+                                                                                                                 .isEmpty()));
     }
 
     @Test

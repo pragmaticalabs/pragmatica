@@ -6,6 +6,7 @@ package org.pragmatica.aether.api.routes;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -16,6 +17,7 @@ import java.util.stream.Stream;
 import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.cluster.PublishedBlueprint;
 import org.pragmatica.aether.http.security.AuditLog;
@@ -29,15 +31,23 @@ import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.blueprint.SliceSpec;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
+import org.pragmatica.aether.slice.kvstore.SliceTargetFence;
+import org.pragmatica.aether.slice.kvstore.SliceTargetFence.SliceTargetFenceError;
+import org.pragmatica.aether.slice.kvstore.SliceTargetFence.TargetWrite;
 import org.pragmatica.aether.slice.topology.SliceTopology;
 import org.pragmatica.aether.slice.topology.TopologyGraph;
 import org.pragmatica.aether.slice.topology.TopologyParser;
-import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVCommand.LeaderTransaction;
+import org.pragmatica.cluster.state.kvstore.KVCommand.Mutation;
+import org.pragmatica.cluster.state.kvstore.KVCommand.ReadWitness;
+import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.LayeredConfigProvider;
 import org.pragmatica.consensus.NodeId;
@@ -645,23 +655,96 @@ public final class SliceRoutes implements RouteSource {
                                                warnings);
     }
 
-    private Promise<List<Long>> applyDeployCommand(Artifact artifact, int instances, Option<String> placement) {
+    /// #2662: the scale write is fenced: ONE leader transaction whose mutation expects the target read and whose witness holds the
+    /// target's owning blueprint at its committed value, rebuilt from a fresh read while refused (bounded by
+    /// [SliceTargetFence#MAX_REBUILDS]). A target the blueprint has been deleted from under, or that moved, is refused (409) rather
+    /// than re-created or reverted.
+    ///
+    /// A slice with no target yet is still created, unowned, as before: this is the standalone deploy of a slice a committed blueprint
+    /// declares without writing its target (a register-only publish). The creation expects the target absent and witnesses every
+    /// committed blueprint declaring the slice, so a create racing the blueprint's own target put, or its delete, is refused; its
+    /// rebuild finds the put's target (and scales it) or no declaring blueprint (409).
+    private Promise<Unit> applyDeployCommand(Artifact artifact, int instances, Option<String> placement) {
         var node = nodeSupplier.get();
-        var key = AetherKey.SliceTargetKey.sliceTargetKey(artifact.base());
-        var existing = node.kvStore()
-                           .get(key)
-                           .filter(v -> v instanceof AetherValue.SliceTargetValue)
-                           .map(v -> applyScaleToExisting((AetherValue.SliceTargetValue) v,
-                                                          instances,
-                                                          placement));
-        var defaultPlacement = placement.or("CORE_ONLY");
-        AetherValue value = existing.or(AetherValue.SliceTargetValue.sliceTargetValue(artifact.version(),
-                                                                                      instances,
-                                                                                      AetherValue.SliceTargetValue.defaultMinInstances(instances),
-                                                                                      defaultPlacement));
-        KVCommand<AetherKey> command = new KVCommand.Put<>(key, value);
 
-        return node.apply(List.of(command));
+        return SliceTargetFence.submit("scale " + artifact.base().asString(),
+                                       node::apply,
+                                       () -> scaleTransaction(node.kvStore(),
+                                                              artifact,
+                                                              instances,
+                                                              placement))
+                               .mapError(SliceRoutes::scaleRefusal);
+    }
+
+    private static Result<LeaderTransaction<AetherKey, AetherValue>> scaleTransaction(KVStore<AetherKey, AetherValue> store,
+                                                                                      Artifact artifact,
+                                                                                      int instances,
+                                                                                      Option<String> placement) {
+        var key = SliceTargetKey.sliceTargetKey(artifact.base());
+
+        return SliceTargetFence.committedTarget(store, key)
+                               .fold(() -> createWrite(store, key, artifact, instances, placement),
+                                     read -> SliceTargetFence.targetWrite(store,
+                                                                          key,
+                                                                          Option.some(read),
+                                                                          applyScaleToExisting(read,
+                                                                                               instances,
+                                                                                               placement)))
+                               .flatMap(write -> SliceTargetFence.transaction(store,
+                                                                              List.of(write),
+                                                                              List.of()));
+    }
+
+    /// The first write of a slice's target: expects it absent, witnessed by every committed blueprint declaring the slice.
+    private static Result<TargetWrite> createWrite(KVStore<AetherKey, AetherValue> store,
+                                                   SliceTargetKey key,
+                                                   Artifact artifact,
+                                                   int instances,
+                                                   Option<String> placement) {
+        var declarers = declaringBlueprints(store, artifact.base());
+
+        if (declarers.isEmpty()) {
+            return NOT_IN_BLUEPRINT.result();
+        }
+
+        var created = SliceTargetValue.sliceTargetValue(artifact.version(),
+                                                        instances,
+                                                        SliceTargetValue.defaultMinInstances(instances),
+                                                        placement.or("CORE_ONLY"));
+
+        return Result.success(new TargetWrite(new Mutation<>(key, Option.none(), Option.some(created)),
+                                              declarers));
+    }
+
+    private static List<ReadWitness<AetherKey>> declaringBlueprints(KVStore<AetherKey, AetherValue> store,
+                                                                    ArtifactBase base) {
+        var witnesses = new ArrayList<ReadWitness<AetherKey>>();
+
+        store.forEach(AppBlueprintKey.class,
+                      AppBlueprintValue.class,
+                      (key, value) -> addIfDeclares(witnesses, key, value, base));
+
+        return witnesses;
+    }
+
+    private static void addIfDeclares(List<ReadWitness<AetherKey>> witnesses,
+                                      AppBlueprintKey key,
+                                      AppBlueprintValue value,
+                                      ArtifactBase base) {
+        if (value.blueprint().loadOrder().stream().anyMatch(slice -> slice.artifact()
+                                                                          .base()
+                                                                          .equals(base))) {
+            witnesses.add(new ReadWitness<>(key, Option.some(value)));
+        }
+    }
+
+    /// A fence refusal is a state of the cluster the request lost to (409), or an election in progress (503); anything else is the apply's.
+    private static Cause scaleRefusal(Cause cause) {
+        return switch (cause) {
+            case SliceTargetFenceError.NoCommittedLeader refusal -> new ManagementServerError.ServiceUnavailable(refusal.message());
+            case SliceTargetFenceError refusal -> new ManagementServerError.Conflict(refusal.message());
+            default -> cause;
+        };
     }
 
     private static AetherValue.SliceTargetValue applyScaleToExisting(AetherValue.SliceTargetValue existing,

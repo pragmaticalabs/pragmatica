@@ -16,16 +16,22 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
+import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.net.ClusterNetwork;
@@ -39,6 +45,7 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
 import java.util.List;
+import java.util.stream.Stream;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -71,15 +78,17 @@ class SliceTargetOverridePreservationTest {
 
         private CapturingRabiaNode rabiaNode;
         private DeploymentManager manager;
+        private KVStore<AetherKey, AetherValue> kvStore;
 
         @BeforeEach
         void setUp() {
             rabiaNode = new CapturingRabiaNode(SELF);
 
-            var kvStore = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(),
+            kvStore = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(),
                                                               stubSerializer(),
                                                               stubDeserializer());
 
+            seedLeaderAndOwner(kvStore);
             seed(kvStore, SliceTargetKey.sliceTargetKey(BASE), targetWithOverrides(V2));
             seed(kvStore, DeploymentKey.deploymentKey(DEPLOYMENT_ID), deployedDeploymentValue());
 
@@ -108,26 +117,32 @@ class SliceTargetOverridePreservationTest {
 
         /// #1068: a rolled-back rolling update must not leave its `VersionRoutingKey` behind — while it
         /// exists the rolled-back NEW version stays permitted to start and allocated. The removal must
-        /// follow the old-target restore in the same batch: the leader's routing-removal handler
-        /// deallocates every version the committed target does not name at that moment.
+        /// follow the old-target restore: the leader's routing-removal handler deallocates every version
+        /// the committed target does not name at that moment. Since #2662 both are mutations of one
+        /// transaction, the target first, and the applier commits every mutation before any notification.
         @Test
         void rollback_removesTheRoutingEntry_afterRestoringTheOldTarget() {
+            var routingKey = VersionRoutingKey.versionRoutingKey(BASE);
+
+            seed(kvStore, routingKey, AetherValue.VersionRoutingValue.versionRoutingValue(V1, V2));
             manager.rollback(DEPLOYMENT_ID).onFailure(cause -> Assertions.fail(cause.message()));
 
-            var commands = rabiaNode.appliedCommands;
-            var routingKey = VersionRoutingKey.versionRoutingKey(BASE);
-            var targetPutIndex = indexOf(commands, c -> c instanceof KVCommand.Put<AetherKey, ?> put && put.key().equals(SliceTargetKey.sliceTargetKey(BASE)));
-            var routingRemoveIndex = indexOf(commands, c -> c instanceof KVCommand.Remove<AetherKey> remove && remove.key().equals(routingKey));
+            var mutations = rabiaNode.appliedCommands.stream()
+                                                     .filter(KVCommand.LeaderTransaction.class::isInstance)
+                                                     .flatMap(command -> ((KVCommand.LeaderTransaction<AetherKey, ?>) command).mutations().stream())
+                                                     .toList();
+            var targetIndex = indexOf(mutations, m -> m.key().equals(SliceTargetKey.sliceTargetKey(BASE)) && m.replacement().isPresent());
+            var routingRemoveIndex = indexOf(mutations, m -> m.key().equals(routingKey) && m.replacement().isEmpty());
 
-            assertThat(routingRemoveIndex).as("the rollback batch removes the routing entry").isNotNegative();
-            assertThat(commands).as("and never rewrites it").noneMatch(c -> c instanceof KVCommand.Put<AetherKey, ?> put && put.key().equals(routingKey));
-            assertThat(targetPutIndex).as("the old target is restored in the same batch").isNotNegative();
-            assertThat(routingRemoveIndex).as("target restore precedes the routing removal").isGreaterThan(targetPutIndex);
+            assertThat(routingRemoveIndex).as("the rollback transaction removes the routing entry").isNotNegative();
+            assertThat(mutations).as("and never rewrites it").noneMatch(m -> m.key().equals(routingKey) && m.replacement().isPresent());
+            assertThat(targetIndex).as("the old target is restored in the same transaction").isNotNegative();
+            assertThat(routingRemoveIndex).as("target restore precedes the routing removal").isGreaterThan(targetIndex);
         }
 
-        private static int indexOf(List<KVCommand<AetherKey>> commands, java.util.function.Predicate<KVCommand<AetherKey>> test) {
-            for (var i = 0; i < commands.size(); i++) {
-                if (test.test(commands.get(i))) {
+        private static <T> int indexOf(List<T> items, java.util.function.Predicate<T> test) {
+            for (var i = 0; i < items.size(); i++) {
+                if (test.test(items.get(i))) {
                     return i;
                 }
             }
@@ -168,6 +183,7 @@ class SliceTargetOverridePreservationTest {
                                                               stubSerializer(),
                                                               stubDeserializer());
 
+            seedLeaderAndOwner(kvStore);
             seed(kvStore, SliceTargetKey.sliceTargetKey(BASE), targetWithOverrides(V1));
 
             manager = AbTestManager.abTestManager(rabiaNode,
@@ -276,18 +292,53 @@ class SliceTargetOverridePreservationTest {
                                .withPlacement(PLACEMENT);
     }
 
+    /// #2662: the target writers are leader transactions fenced on what they read, so a store they write needs a committed leader
+    /// and, for a target [#OWNER] owns, the owner's committed blueprint.
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    static void seedLeaderAndOwner(KVStore<AetherKey, AetherValue> kvStore) {
+        kvStore.process(kvStore.createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(SELF, 1)))));
+        seed(kvStore, AppBlueprintKey.appBlueprintKey(OWNER), ownerBlueprint());
+    }
+
+    static AppBlueprintValue ownerBlueprint() {
+        var slice = ResolvedSlice.resolvedSlice(BASE.withVersion(V1), 3, false).unwrap();
+
+        return AppBlueprintValue.appBlueprintValue(ExpandedBlueprint.expandedBlueprint(OWNER, List.of(slice)));
+    }
+
     static void seed(KVStore<AetherKey, AetherValue> kvStore, AetherKey key, AetherValue value) {
         kvStore.process(kvStore.createBatch(List.<KVCommand<AetherKey>>of(new KVCommand.Put<AetherKey, AetherValue>(key,
                                                                                                                     value))));
     }
 
+    /// The `SliceTargetValue`s written, whatever form the write took: a plain put, or the replacements of a transaction's mutations.
     static List<SliceTargetValue> capturedSliceTargets(List<KVCommand<AetherKey>> commands) {
         return commands.stream()
-                       .filter(KVCommand.Put.class::isInstance)
-                       .map(command -> ((KVCommand.Put<?, ?>) command).value())
+                       .flatMap(SliceTargetOverridePreservationTest::writtenValues)
                        .filter(SliceTargetValue.class::isInstance)
                        .map(SliceTargetValue.class::cast)
                        .toList();
+    }
+
+    static Stream<?> writtenValues(KVCommand<AetherKey> command) {
+        return switch (command) {
+            case KVCommand.Put<AetherKey, ?> put -> Stream.of(put.value());
+            case KVCommand.LeaderTransaction<AetherKey, ?> transaction -> transaction.mutations()
+                                                                                       .stream()
+                                                                                       .flatMap(mutation -> mutation.replacement().stream());
+            default -> Stream.empty();
+        };
+    }
+
+    /// The results of an apply in which every transaction was accepted, as the applier answers one nothing raced.
+    static List<Object> acceptedResults(List<KVCommand<AetherKey>> commands) {
+        return commands.stream().map(SliceTargetOverridePreservationTest::acceptedResult).toList();
+    }
+
+    private static Object acceptedResult(KVCommand<AetherKey> command) {
+        return command instanceof KVCommand.LeaderTransaction<?, ?> transaction
+               ? new KVCommand.TransactionResult(transaction.transactionId(), true)
+               : Unit.unit();
     }
 
     static Serializer stubSerializer() {
@@ -339,7 +390,7 @@ class SliceTargetOverridePreservationTest {
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
             appliedCommands.addAll(commands);
 
-            return Promise.success((List<R>) commands.stream().map(_ -> Unit.unit()).toList());
+            return Promise.success((List<R>) acceptedResults(commands));
         }
 
         @Override

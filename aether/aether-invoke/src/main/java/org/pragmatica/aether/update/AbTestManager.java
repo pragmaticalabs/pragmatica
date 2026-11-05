@@ -23,11 +23,17 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AbTestValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
+import org.pragmatica.aether.slice.kvstore.SliceTargetFence;
+import org.pragmatica.aether.slice.kvstore.SliceTargetFence.SliceTargetFenceError;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVCommand.LeaderTransaction;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageReceiver;
@@ -261,28 +267,34 @@ public interface AbTestManager {
                 return persistAndTransition(test, AbTestState.DEPLOYING_VARIANTS).flatMap(this::deployVariants);
             }
 
-            @SuppressWarnings("unchecked")
+            /// #2662: the variants are ONE fenced write of the slice's target. The puts this replaces all wrote the one target key, one per
+            /// variant in iteration order, so the last variant's version is what stayed committed; a transaction may name a key once, so
+            /// that last version is written directly. The write expects the target read and witnesses its owning blueprint; a target that
+            /// is no longer committed (its blueprint deleted since the test was created) is refused, never re-created.
             private Promise<AbTestDeployment> deployVariants(AbTestDeployment test) {
-                var commands = test.variantVersions()
-                                   .values()
-                                   .stream()
-                                   .map(version -> buildDeployCommand(test.artifactBase(),
-                                                                      version))
-                                   .toList();
+                var versions = List.copyOf(test.variantVersions().values());
 
-                log.info("Deploying {} variant versions for A/B test {}", commands.size(), test.testId());
+                log.info("Deploying {} variant versions for A/B test {}", versions.size(), test.testId());
 
-                return clusterNode.<Unit> apply(commands)
-                                  .timeout(kvOperationTimeout)
+                return lastVariant(versions).fold(Promise::unitPromise,
+                                                  last -> writeVariant(test, last))
                                   .flatMap(_ -> activateTest(test));
             }
 
-            @SuppressWarnings("unchecked")
-            private KVCommand<AetherKey> buildDeployCommand(ArtifactBase artifactBase, Version version) {
-                var key = SliceTargetKey.sliceTargetKey(artifactBase);
-                var value = variantTarget(key, version);
+            /// The version the per-variant puts left committed: the last in iteration order; none when there are no variants (the
+            /// unfenced writer then wrote nothing).
+            private static Option<Version> lastVariant(List<Version> versions) {
+                return versions.isEmpty()
+                       ? Option.none()
+                       : Option.some(versions.getLast());
+            }
 
-                return (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
+            private Promise<Unit> writeVariant(AbTestDeployment test, Version version) {
+                return SliceTargetFence.submit("ab-test-variants " + test.testId(),
+                                               clusterNode::apply,
+                                               () -> targetTransaction(test.artifactBase(),
+                                                                       current -> variantTarget(current, version)))
+                                       .timeout(kvOperationTimeout);
             }
 
             /// The one read both A/B lifecycle writers derive from, and the reason they can.
@@ -307,12 +319,22 @@ public interface AbTestManager {
             /// `owningBlueprint` matters beyond bookkeeping: `ClusterDeploymentState` resolves a
             /// slice's `schemaRequired` from its owner, and an erased owner silently takes the
             /// historical default `true`, flipping a `schema_required = false` slice on the next A/B
-            /// write. The single `kvStore.get` below is the read this method already performed, so
-            /// no control flow and no read-then-Put exposure changes here.
-            private Option<SliceTargetValue> observedTarget(SliceTargetKey key) {
-                return kvStore.get(key)
-                              .filter(SliceTargetValue.class::isInstance)
-                              .map(SliceTargetValue.class::cast);
+            /// write.
+            ///
+            /// #2662: the read is the committed target, re-read on every build of the fenced write, and
+            /// the write expects exactly the value read and witnesses its owning blueprint.
+            private Result<LeaderTransaction<AetherKey, AetherValue>> targetTransaction(ArtifactBase artifactBase,
+                                                                                        Fn1<SliceTargetValue, SliceTargetValue> derive) {
+                var key = SliceTargetKey.sliceTargetKey(artifactBase);
+
+                return SliceTargetFence.presentTarget(kvStore, key)
+                                       .flatMap(read -> SliceTargetFence.targetWrite(kvStore,
+                                                                                     key,
+                                                                                     Option.some(read),
+                                                                                     derive.apply(read)))
+                                       .flatMap(write -> SliceTargetFence.transaction(kvStore,
+                                                                                      List.of(write),
+                                                                                      List.of()));
             }
 
             /// The canary write. The variant runs at the slice floor, and the operator's floor is
@@ -331,10 +353,9 @@ public interface AbTestManager {
             /// teardown bypasses both by issuing unload commands directly. A preserved floor
             /// therefore cannot hold the canary above the slice floor, nor pin a variant that has to
             /// be removed.
-            private SliceTargetValue variantTarget(SliceTargetKey key, Version version) {
-                return observedTarget(key).map(current -> current.withVersion(version)
-                                                                 .withInstances(VARIANT_INSTANCES))
-                                     .or(() -> newSliceTarget(version));
+            private static SliceTargetValue variantTarget(SliceTargetValue current, Version version) {
+                return current.withVersion(version)
+                              .withInstances(VARIANT_INSTANCES);
             }
 
             /// The conclusion writes — promote a winner, or restore the baseline on rollback.
@@ -352,20 +373,13 @@ public interface AbTestManager {
             /// again on load. Recovering the exact pre-test count would mean persisting it in
             /// `AbTestValue` for the lifetime of the test; the floor is the operator's stated
             /// guarantee and is already in the record, so it is the honest thing to restore here.
-            private SliceTargetValue concludedTarget(SliceTargetKey key, Version version) {
-                return observedTarget(key).map(current -> current.withVersion(version)
-                                                                 .withInstances(Math.max(current.effectiveMinInstances(),
-                                                                                         VARIANT_INSTANCES)))
-                                     .or(() -> newSliceTarget(version));
-            }
-
-            /// A slice that has never been written has no placement, owner or bounds to carry, so
-            /// the creation factory is correct for it and the transformations above are correct for
-            /// every other case. The floor at birth is the shared default (#1497), like every other first write.
-            private static SliceTargetValue newSliceTarget(Version version) {
-                return SliceTargetValue.sliceTargetValue(version,
-                                                         VARIANT_INSTANCES,
-                                                         SliceTargetValue.defaultMinInstances(VARIANT_INSTANCES));
+            ///
+            /// #2662: an A/B test runs over a committed target ([#findCurrentVersion]), so no writer
+            /// here creates one: a target that is gone was removed with its blueprint.
+            private static SliceTargetValue concludedTarget(SliceTargetValue current, Version version) {
+                return current.withVersion(version)
+                              .withInstances(Math.max(current.effectiveMinInstances(),
+                                                      VARIANT_INSTANCES));
             }
 
             private Promise<AbTestDeployment> activateTest(AbTestDeployment test) {
@@ -397,16 +411,16 @@ public interface AbTestManager {
                            .flatMap(concluded -> promoteWinner(concluded, winningVariant));
             }
 
-            @SuppressWarnings("unchecked")
+            /// #2662: a fenced write; a target that is no longer committed is refused, and the test stays `CONCLUDING` (it can be rolled back).
             private Promise<AbTestDeployment> promoteWinner(AbTestDeployment test, String winningVariant) {
                 var winnerVersion = test.variantVersions().get(winningVariant);
-                var key = SliceTargetKey.sliceTargetKey(test.artifactBase());
-                var value = concludedTarget(key, winnerVersion);
-                var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
 
-                return clusterNode.<Unit> apply(List.of(command))
-                                  .timeout(kvOperationTimeout)
-                                  .flatMap(_ -> persistAndTransition(test, AbTestState.COMPLETED));
+                return SliceTargetFence.submit("ab-test-conclude " + test.testId(),
+                                               clusterNode::apply,
+                                               () -> targetTransaction(test.artifactBase(),
+                                                                       current -> concludedTarget(current, winnerVersion)))
+                                       .timeout(kvOperationTimeout)
+                                       .flatMap(_ -> persistAndTransition(test, AbTestState.COMPLETED));
             }
 
             private Promise<AbTestDeployment> validateAndRollback(AbTestDeployment test) {
@@ -425,16 +439,42 @@ public interface AbTestManager {
                                      .flatMap(this::restoreBaseline);
             }
 
-            @SuppressWarnings("unchecked")
+            /// #2662: a fenced write. A target that is not committed, or whose owning blueprint is not, is not restored: writing it would
+            /// re-create (or keep alive) the target of a deleted blueprint, and there is nothing left to roll back, so the test still ends.
+            /// This holds whether the absence is seen by the first build or by a rebuild after a refused submission.
             private Promise<AbTestDeployment> restoreBaseline(AbTestDeployment test) {
                 log.info("Restoring baseline {} for A/B test {}", test.baselineVersion(), test.testId());
-                var key = SliceTargetKey.sliceTargetKey(test.artifactBase());
-                var value = concludedTarget(key, test.baselineVersion());
-                var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
 
-                return clusterNode.<Unit> apply(List.of(command))
-                                  .timeout(kvOperationTimeout)
-                                  .flatMap(_ -> persistAndTransition(test, AbTestState.ROLLED_BACK));
+                return SliceTargetFence.submit("ab-test-rollback " + test.testId(),
+                                               clusterNode::apply,
+                                               () -> targetTransaction(test.artifactBase(),
+                                                                       current -> concludedTarget(current,
+                                                                                                  test.baselineVersion())))
+                                       .timeout(kvOperationTimeout)
+                                       .replaceResult(result -> result.fold(cause -> nothingToRestore(test, cause),
+                                                                            Result::success))
+                                       .flatMap(_ -> persistAndTransition(test, AbTestState.ROLLED_BACK));
+            }
+
+            /// FER (degrade forward): a rollback whose target, or the target's owning blueprint, is no longer committed has nothing to
+            /// restore, so it ends the test without writing. Guarantee: the test reaches `ROLLED_BACK` and no target of a deleted blueprint
+            /// is written. Mechanism: only [SliceTargetFenceError.TargetAbsent] and [SliceTargetFenceError.OrphanTarget] are absorbed;
+            /// every other failure (contention, no leader, a failed apply, the timeout) still fails the rollback.
+            private Result<Unit> nothingToRestore(AbTestDeployment test, Cause cause) {
+                return switch (cause) {
+                    case SliceTargetFenceError.TargetAbsent _, SliceTargetFenceError.OrphanTarget _ -> skipRestore(test,
+                                                                                                                   cause);
+                    default -> cause.result();
+                };
+            }
+
+            private Result<Unit> skipRestore(AbTestDeployment test, Cause cause) {
+                log.info("A/B test {} rollback does not restore the baseline of {}: {}",
+                         test.testId(),
+                         test.artifactBase(),
+                         cause.message());
+
+                return Result.unitResult();
             }
 
             private Promise<AbTestDeployment> persistAndTransition(AbTestDeployment test, AbTestState newState) {

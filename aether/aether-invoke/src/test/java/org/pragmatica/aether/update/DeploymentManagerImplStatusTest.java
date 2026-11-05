@@ -29,7 +29,6 @@ import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -64,6 +63,7 @@ class DeploymentManagerImplStatusTest {
                                                           stubSerializer(),
                                                           stubDeserializer());
 
+        SliceTargetOverridePreservationTest.seedLeaderAndOwner(kvStore);
         commit(kvStore, List.of(new KVCommand.Put<AetherKey, AetherValue>(DeploymentKey.deploymentKey(DEPLOYMENT_ID),
                                                                           deployedDeploymentValue())));
         manager = DeploymentManager.deploymentManager(committingNode(kvStore), kvStore);
@@ -167,6 +167,7 @@ class DeploymentManagerImplStatusTest {
                                                                      AppBlueprintValue.appBlueprintValue(blueprint)),
                            new KVCommand.Put<AetherKey, AetherValue>(SliceTargetKey.sliceTargetKey(QUALIFIED_SLICE.base()),
                                                                      SliceTargetValue.sliceTargetValue(OLD_QUALIFIED, 3))));
+            SliceTargetOverridePreservationTest.seedLeaderAndOwner(store);
             realManager = DeploymentManager.deploymentManager(committingNode(store), store);
             realManager.activate().await().onFailure(cause -> Assertions.fail(cause.message()));
         }
@@ -270,9 +271,7 @@ class DeploymentManagerImplStatusTest {
 
         var commands = (List<KVCommand<AetherKey>>) args[0];
 
-        commit(kvStore, commands);
-
-        return Promise.success(commands.stream().map(_ -> Unit.unit()).toList());
+        return Promise.success(kvStore.<Object> process(kvStore.createBatch(commands)));
     }
 
     static Serializer stubSerializer() {

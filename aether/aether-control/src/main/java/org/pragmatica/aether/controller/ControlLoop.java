@@ -22,11 +22,13 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
@@ -110,6 +112,7 @@ public interface ControlLoop {
                                    ClusterSyncCollector metricsCollector,
                                    Option<InvocationMetricsCollector> invocationMetricsCollector,
                                    ClusterNode<KVCommand<AetherKey>> cluster,
+                                   KVStore<AetherKey, AetherValue> kvStore,
                                    TimeSpan interval,
                                    ControllerConfig config,
                                    Consumer<ScalingEvent> eventPublisher) {
@@ -121,6 +124,7 @@ public interface ControlLoop {
                                                                                                                      metricsCollector,
                                                                                                                      invocationMetricsCollector,
                                                                                                                      cluster,
+                                                                                                                     kvStore,
                                                                                                                      interval,
                                                                                                                      config,
                                                                                                                      eventPublisher);
@@ -136,6 +140,7 @@ public interface ControlLoop {
                                                  ClusterSyncCollector metricsCollector,
                                                  Option<InvocationMetricsCollector> invocationMetricsCollector,
                                                  ClusterNode<KVCommand<AetherKey>> cluster,
+                                                 KVStore<AetherKey, AetherValue> kvStore,
                                                  TimeSpan interval,
                                                  ControllerConfig config,
                                                  Consumer<ScalingEvent> eventPublisher) {
@@ -145,6 +150,7 @@ public interface ControlLoop {
                                          metricsCollector,
                                          invocationMetricsCollector,
                                          cluster,
+                                         kvStore,
                                          interval,
                                          config,
                                          eventPublisher);
