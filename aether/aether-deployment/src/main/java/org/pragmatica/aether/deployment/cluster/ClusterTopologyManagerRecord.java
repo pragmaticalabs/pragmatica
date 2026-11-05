@@ -146,7 +146,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     org.pragmatica.lang.concurrent.CancellableTask workerTopologyPolling,
                                     ConcurrentHashMap<NodeId, SourceName> replacementSources,
                                     AtomicLong replayRunning,
-                                    AtomicLong lastSweepMs) implements ClusterTopologyManager {
+                                    AtomicLong lastSweepMs,
+                                    AtomicBoolean sourceUnresolved) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
     private static final int MINIMUM_CLUSTER_SIZE = 3;
     private static final int MAX_CONSECUTIVE_PROVISIONING_FAILURES = 3;
@@ -303,7 +304,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 org.pragmatica.lang.concurrent.CancellableTask.cancellableTask(),
                                                 new ConcurrentHashMap<>(),
                                                 new AtomicLong(NOT_RUN),
-                                                new AtomicLong(0L));
+                                                new AtomicLong(0L),
+                                                new AtomicBoolean(false));
     }
 
     @Override
@@ -854,26 +856,29 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// this live-set path gets for free from `clusterMembers` itself. `failedPeer` is
     /// observability-only.
     ///
-    /// The source profile name is resolved here from the persisted cluster config
-    /// ([#replacementSourceName]) rather than hardcoded, so a core replacement is stamped with the
-    /// `aether-source` label of the source that actually backs its role.
+    /// The source is the one of the node being replaced (#2115), resolved by [#healSource]: the source committed for
+    /// `failedPeer`, else the one the committed configuration names for a node that carries none. There is no preference between
+    /// source types, so a docker node is never replaced by a cloud VM. A source that cannot be resolved is a deferral
+    /// ([ProvisionDisposition.DeferralReason#SOURCE_UNRESOLVED]) told to the operator, never a guess.
     @Override
     public Promise<ProvisionDisposition> provisionReplacement(NodeId newNodeId,
                                                               Option<NodeId> failedPeer,
                                                               Set<NodeId> clusterMembers,
                                                               NodeRole intendedRole) {
-        return provisionReplacement(newNodeId,
-                                    failedPeer,
-                                    clusterMembers,
-                                    intendedRole,
-                                    replacementSourceName(intendedRole));
+        return healSource(failedPeer, intendedRole).onSuccess(_ -> resumeSourceResolution())
+                         .fold(this::deferUnresolvedSource,
+                               source -> provisionReplacement(newNodeId,
+                                                              failedPeer,
+                                                              clusterMembers,
+                                                              intendedRole,
+                                                              source));
     }
 
     /// RFC-0017 stage 5 — the source-explicit form. `sourceName` becomes the provider's
     /// `aether-source` label, which is one third of the selector the worker reconcile pass lists
     /// ACTUAL inventory with, so it MUST be the name the desired-topology entry was published
     /// under. The worker path passes `entry.sourceName()` verbatim; the core auto-heal path above
-    /// resolves it from the persisted cluster config.
+    /// resolves it from the departed node ([#healSource]).
     @Override
     public Promise<ProvisionDisposition> provisionReplacement(NodeId newNodeId,
                                                               Option<NodeId> failedPeer,
@@ -1267,23 +1272,50 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                             .or("default");
     }
 
-    /// RFC-0017 stage 5 — the source profile NAME backing a provision of `intendedRole`, resolved
-    /// from the persisted cluster TOML through the SAME [#cloudSourceFor] lookup that already
-    /// resolves the role's zones and instance type, so all three ride one source profile. This is
-    /// what the provider stamps as `aether-source`.
-    ///
-    /// Falls back to [ProvisionContext#DEFAULT_SOURCE_NAME] when no cloud source backs the role —
-    /// there is no committed TOML (the bootstrap seed: tests, forge) or it is unparseable or the provider is non-cloud (Docker) and has
-    /// no source concept at all. That fallback is honest rather than convenient: there is no source
-    /// name to round-trip, and nothing lists those instances by a source-scoped selector. The
-    /// worker reconcile path never relies on it — it passes the topology entry's own source name,
-    /// which is authoritative and, under multi-source topologies, the only correct answer
-    /// (`cloudSourceFor` returns the FIRST cloud source declaring the role).
-    private SourceName replacementSourceName(NodeRole intendedRole) {
-        return committedToml().flatMap(ClusterTopologyManagerRecord::parseConfig)
-                            .flatMap(config -> cloudSourceFor(config, intendedRole))
-                            .map(SourceProfile::name)
-                            .or(ProvisionContext.DEFAULT_SOURCE_NAME);
+    /// #2115 — the source a core auto-heal replacement is made in: the source of the node it replaces, resolved once and not by a
+    /// preference between source types. The source COMMITTED for `failedPeer` (its placement or membership descriptor) wins; a node that
+    /// carries none (a cluster bootstrapped from static PEERS) is resolved exactly as the replacement record resolves it
+    /// ([#sourceOfSourcelessNode]): the one source of the committed configuration declaring the role, "default" when there is no committed
+    /// configuration, and a typed refusal when several sources declare the role or the configuration does not parse.
+    private Result<SourceName> healSource(Option<NodeId> failedPeer, NodeRole intendedRole) {
+        return failedPeer.flatMap(lifecycleManager::committedSourceOf)
+                         .map(Result::success)
+                         .or(() -> sourceOfSourcelessNode(intendedRole));
+    }
+
+    private static final String SOURCE_SUBJECT = "core-replacement";
+
+    /// The refusal of [#healSource]: nothing was provisioned, and no source was guessed. The failure is absorbed into a deferral by design
+    /// (FER: the reconciler removes its placeholder and re-derives the deficit on its next pass, which asks again), and it is never silent:
+    /// it is counted like every refused provision, and told to the operator once per run of refusals (the flag is the flood guard;
+    /// [#resumeSourceResolution] clears it). No provider effect has happened on this path, so there is nothing to compensate.
+    private Promise<ProvisionDisposition> deferUnresolvedSource(Cause cause) {
+        return Promise.success(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.SOURCE_UNRESOLVED)).onSuccess(_ -> recordUnresolvedSource(cause));
+    }
+
+    @Contract
+    private void recordUnresolvedSource(Cause cause) {
+        recordProvisioningFailure(cause);
+        if (sourceUnresolved.compareAndSet(false, true)) {
+            OperatorWarnings.raise(log,
+                                   warningSink.get(),
+                                   OperatorWarningCode.CORE_REPLACEMENT_SOURCE_UNRESOLVED,
+                                   SOURCE_SUBJECT,
+                                   "Core replacement refused, nothing was provisioned: {}",
+                                   cause.message());
+        }
+    }
+
+    /// The recovery of [#recordUnresolvedSource]: a core replacement resolved its source, so the next provider effect is made in it.
+    @Contract
+    private void resumeSourceResolution() {
+        if (sourceUnresolved.compareAndSet(true, false)) {
+            OperatorWarnings.raise(log,
+                                   warningSink.get(),
+                                   OperatorWarningCode.CORE_REPLACEMENT_SOURCE_RESOLVED,
+                                   SOURCE_SUBJECT,
+                                   "Core replacement resolved its source");
+        }
     }
 
     /// #1543 F2 -- the source of a node whose record carries NO source (a cluster bootstrapped from static PEERS: its peers' descriptors hold
