@@ -21,6 +21,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand.LeaderTransaction;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
+import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.ContentType;
 import org.pragmatica.http.HttpStatus;
@@ -116,7 +117,7 @@ class SliceRoutesOperatorRequirementTest {
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
-    private static void commit(KVStore<AetherKey, AetherValue> store, Object key, Object value) {
+    private static void commit(KVStore<AetherKey, AetherValue> store, StructuredKey key, Object value) {
         store.process(store.createBatch((List) List.of(new KVCommand.Put(key, value))));
     }
 
