@@ -59,6 +59,7 @@ class ManagementStatusCoverageTest {
             entry(API + "ManagementServerError$InvalidArtifactPath", "BAD_REQUEST"),
             entry(API + "ManagementServerError$InvalidPartition", "BAD_REQUEST"),
             entry(API + "ManagementServerError$InvalidRequest", "BAD_REQUEST"),
+            entry(API + "ManagementServerError$KeylessPublishOutcomeUnknown", "INTERNAL_SERVER_ERROR"),
             entry(API + "ManagementServerError$MissingField", "BAD_REQUEST"),
             entry(API + "ManagementServerError$NotFound", "NOT_FOUND"),
             entry(API + "ManagementServerError$NotImplemented", "NOT_IMPLEMENTED"),
