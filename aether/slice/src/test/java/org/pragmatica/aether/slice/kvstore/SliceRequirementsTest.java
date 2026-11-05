@@ -169,12 +169,15 @@ class SliceRequirementsTest {
     void requirementKey_roundTripsThroughItsStringForm() {
         var base = ArtifactBase.artifactBase("org.example:orders-slice").unwrap();
 
-        for (var kind : RequirementKind.values()) {
+        for (var kind : RequirementKind.sources()) {
             var key = SliceRequirementKey.sliceRequirementKey(base, kind);
 
             assertThat(SliceRequirementKey.sliceRequirementKey(key.asString()).unwrap()).isEqualTo(key);
         }
 
+        assertThat(RequirementKind.sources()).doesNotContain(RequirementKind.UNKNOWN);
+        assertThat(SliceRequirementKey.sliceRequirementKey("slice-requirement/UNKNOWN/org.example:orders-slice")
+                                      .isFailure()).isTrue();
         assertThat(SliceRequirementKey.sliceRequirementKey("slice-requirement/BOGUS/org.example:orders-slice")
                                       .isFailure()).isTrue();
         assertThat(SliceRequirementKey.sliceRequirementKey("slice-target/org.example:orders-slice")
