@@ -15,6 +15,7 @@ import org.pragmatica.aether.example.inventory.InventoryService.ReleaseStockRequ
 import org.pragmatica.aether.example.inventory.InventoryService.ReserveStockRequest;
 import org.pragmatica.aether.example.inventory.InventoryService.StockReservation;
 import org.pragmatica.aether.example.payment.PaymentService;
+import org.pragmatica.aether.example.payment.PaymentService.PaymentError;
 import org.pragmatica.aether.example.payment.PaymentService.PaymentMethod;
 import org.pragmatica.aether.example.payment.PaymentService.PaymentResult;
 import org.pragmatica.aether.example.payment.PaymentService.ProcessPaymentRequest;
@@ -336,8 +337,18 @@ public interface PlaceOrder {
 
             private Promise<OrderWithPayment> settlePayment(OrderWithReservation context,
                                                             Result<PaymentResult> result) {
-                return result.fold(cause -> releaseStock(context, cause),
+                return result.fold(cause -> releaseStock(context, orderFailure(cause)),
                                    paid -> Promise.success(new OrderWithPayment(context, paid)));
+            }
+
+            /// A decline from the payment slice is re-expressed as this slice's own [OrderError.PaymentDeclined]:
+            /// the generated error mapper switches only over the Cause types of THIS package, so the payment
+            /// slice's `Declined` would otherwise fall to the default 500 (#2267). Any other payment failure
+            /// (gateway down, not-found) is not a refusal of the order and passes through unchanged.
+            private static Cause orderFailure(Cause paymentFailure) {
+                return paymentFailure instanceof PaymentError.Declined declined
+                       ? new OrderError.PaymentDeclined(declined.reason())
+                       : paymentFailure;
             }
 
             /// BER -- compensate-by-inverse. Stock was already reserved when payment failed, so the

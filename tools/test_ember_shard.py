@@ -69,7 +69,7 @@ class EmberShardTest(unittest.TestCase):
             self.assertEqual(shard.read_weights(w), {"ATest": 13, "BTest": 2})
 
     def test_current_split_is_within_the_budget_and_balanced(self):
-        self.assertEqual(matrix_shards(), 4)  # guards the guard: the plan below is the one ci.yml runs
+        self.assertEqual(matrix_shards(), 5)  # guards the guard: the plan below is the one ci.yml runs
         totals = [b["total"] for b in shard.assign(self.classes, self.weights, matrix_shards())]
         self.assertLess(max(totals), shard.BUDGET_SECONDS)
         self.assertLess(max(totals) - min(totals), 0.1 * max(totals))

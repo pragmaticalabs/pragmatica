@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.schema;
 
+import org.pragmatica.lang.Unit;
+import java.time.Duration;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -250,6 +252,25 @@ class SchemaHistoryEvolutionPgTest {
         @Override
         public <T> Promise<T> transactional(TransactionCallback<T> callback) {
             return callback.execute(this);
+        }
+
+        /// FDB-2a (#2591): `pinned` holds ONE dedicated physical connection for the whole scope (this double's
+        /// `transactional` runs on the same connector), then `release`, then the connection closes.
+        @Override
+        public <T> Promise<T> pinned(Duration statementTimeout, TransactionCallback<T> body, TransactionCallback<Unit> release) {
+            return runPinned(body, release).async();
+        }
+
+        private <T> Result<T> runPinned(TransactionCallback<T> body, TransactionCallback<Unit> release) {
+            try (var connection = openConnection()) {
+                var session = new JdbcPgConnector(url, user, password, some(connection));
+                var result = body.execute(session).await();
+
+                release.execute(session).await();
+                return result;
+            } catch (Exception e) {
+                return Causes.fromThrowable(e).result();
+            }
         }
 
         private void execUpdate(String sql) {

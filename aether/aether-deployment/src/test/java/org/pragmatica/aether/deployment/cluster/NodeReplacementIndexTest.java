@@ -123,7 +123,7 @@ class NodeReplacementIndexTest {
         var seen = new java.util.ArrayList<String>();
         var first = new NodeReplacementValue(NEW, "core", NodeReplacementPhase.PROVISIONING, 0L);
 
-        index.onTransition((original, before, after) -> {
+        index.onTransition((original, before, after, _) -> {
             seen.add(original.id() + ":" + before.map(value -> value.phase().name()).or("-") + ">" + after.phase());
 
             return org.pragmatica.lang.Unit.unit();

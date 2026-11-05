@@ -39,6 +39,8 @@ import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.aether.node.DhtReplicationSettlement;
 import org.pragmatica.aether.node.DhtWriterStaleWatch;
 import org.pragmatica.aether.node.GossipKeyRotationHandler;
+import org.pragmatica.aether.node.NodeReplacementWiring;
+import org.pragmatica.aether.node.UpgradeRunWiring;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.aether.node.health.WorkerEndpointDirectory;
 import org.pragmatica.aether.slice.*;
@@ -88,6 +90,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.utils.TimeSource;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.utility.react.ReactExecutor;
 import org.pragmatica.serialization.SliceCodec;
 
 import org.slf4j.Logger;
@@ -149,7 +152,8 @@ public sealed interface WorkerHierarchyAssembly {
                                   List<MessageRouter.Entry<?>> aetherEntries,
                                   Logger growthLog,
                                   NodeId selfId,
-                                  GossipKeyRotationHandler gossipKeyRotationHandler) {}
+                                  GossipKeyRotationHandler gossipKeyRotationHandler,
+                                  ReactExecutor react) {}
 
     /// What `workerActivation` hands back for the rest of the assembly.
     record WorkerActivationOutputs(AtomicReference<GovernorAnnouncer> governorAnnouncerHolder,
@@ -177,6 +181,7 @@ public sealed interface WorkerHierarchyAssembly {
         var growthLog = in.growthLog();
         var selfId = in.selfId();
         var gossipKeyRotationHandler = in.gossipKeyRotationHandler();
+        var react = in.react();
         // Worker-mode activation needs the SWIM detector to feed the governor announcer
         // (GAP 2). The detector is a local declared further down (after the SWIM config is
         // built), but this registration lambda is constructed here — so capture it through a
@@ -217,7 +222,8 @@ public sealed interface WorkerHierarchyAssembly {
                                                                                                                                                                                 governorAuthorityClient,
                                                                                                                                                                                 () -> runtimeReady(clusterNode) && workerProjectionFreshRef.get()
                                                                                                                                                                                                                                            .getAsBoolean(),
-                                                                                                                                                                                growthLog))
+                                                                                                                                                                                growthLog,
+                                                                                                                                                                                react))
                                                      .onPut(AetherKey.CommunityPlacementOperationKey.class,
                                                             (ValuePut<AetherKey.CommunityPlacementOperationKey, AetherValue.CommunityPlacementOperationValue> put) -> communityRetirements.put(put.cause()
                                                                                                                                                                                                   .value()))
@@ -226,16 +232,16 @@ public sealed interface WorkerHierarchyAssembly {
                                                                                                                                                                                                                  .key()
                                                                                                                                                                                                                  .communityId()))
                                                      .onPut(AetherKey.NodeReplacementKey.class,
-                                                            (ValuePut<AetherKey.NodeReplacementKey, AetherValue.NodeReplacementValue> put) -> nodeReplacements.put(put.cause()
-                                                                                                                                                                      .key(),
-                                                                                                                                                                   put.cause()
-                                                                                                                                                                      .value()))
+                                                            (ValuePut<AetherKey.NodeReplacementKey, AetherValue.NodeReplacementValue> put) -> NodeReplacementWiring.absorbPut(nodeReplacements,
+                                                                                                                                                                              kvStore::isReplaying,
+                                                                                                                                                                              put))
                                                      .onRemove(AetherKey.NodeReplacementKey.class,
                                                                (ValueRemove<AetherKey.NodeReplacementKey, AetherValue.NodeReplacementValue> remove) -> nodeReplacements.remove(remove.cause()
                                                                                                                                                                                      .key()))
                                                      .onPut(AetherKey.UpgradeRunKey.class,
-                                                            (ValuePut<AetherKey.UpgradeRunKey, AetherValue.UpgradeRunValue> put) -> upgradeRuns.put(put.cause()
-                                                                                                                                                       .value()))
+                                                            (ValuePut<AetherKey.UpgradeRunKey, AetherValue.UpgradeRunValue> put) -> UpgradeRunWiring.absorbPut(upgradeRuns,
+                                                                                                                                                               kvStore::isReplaying,
+                                                                                                                                                               put))
                                                      .onRemove(AetherKey.UpgradeRunKey.class,
                                                                (ValueRemove<AetherKey.UpgradeRunKey, AetherValue.UpgradeRunValue>_) -> upgradeRuns.remove())
                                                      .onPut(AetherKey.NodePlacementKey.class,
@@ -914,7 +920,8 @@ public sealed interface WorkerHierarchyAssembly {
                                           AtomicReference<GovernorAnnouncer> governorAnnouncerHolder,
                                           GovernorAuthorityClient governorAuthorityClient,
                                           java.util.function.BooleanSupplier ready,
-                                          Logger growthLog) {
+                                          Logger growthLog,
+                                          ReactExecutor react) {
         if (!put.cause().key().nodeId().equals(selfId)) {
             return;
         }
@@ -933,23 +940,28 @@ public sealed interface WorkerHierarchyAssembly {
             clusterNode.authorizeActivation();
         } else if (AetherValue.ActivationDirectiveValue.WORKER.equals(role)) {
             growthLog.info("Received worker activation directive from CDM");
-            swimHealthDetectorSupplier.get().markAssigned();
-            activateWorkerMode(selfId,
-                               clusterNode,
-                               switchableCluster,
-                               forwardingClusterNode,
-                               config,
-                               delegateRouter,
-                               kvStore,
-                               sliceStore,
-                               sliceInvoker,
-                               communityId,
-                               swimHealthDetectorSupplier.get(),
-                               communityDirectory,
-                               governorAnnouncerHolder,
-                               governorAuthorityClient,
-                               ready,
-                               growthLog);
+            var swimHealthDetector = swimHealthDetectorSupplier.get();
+
+            swimHealthDetector.markAssigned();
+            // D1-react (KVStore dispatcher design §3.5.1 row 92): the whole activateWorkerMode block is ONE reaction
+            // with communityId captured; CORE authorizeActivation above stays in absorb (it no-ops on a stopped engine).
+            react.react("activate-worker-mode",
+                        () -> activateWorkerMode(selfId,
+                                                 clusterNode,
+                                                 switchableCluster,
+                                                 forwardingClusterNode,
+                                                 config,
+                                                 delegateRouter,
+                                                 kvStore,
+                                                 sliceStore,
+                                                 sliceInvoker,
+                                                 communityId,
+                                                 swimHealthDetector,
+                                                 communityDirectory,
+                                                 governorAnnouncerHolder,
+                                                 governorAuthorityClient,
+                                                 ready,
+                                                 growthLog));
         }
     }
 

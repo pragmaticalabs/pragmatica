@@ -25,12 +25,14 @@ public final class UpgradeRunIndex {
         return new UpgradeRunIndex();
     }
 
+    /// `replayed` is the replay bit the KV handler captured when it absorbed the put (KVStore dispatcher design §3.5 R4): a
+    /// replayed run is committed history, not a transition.
     @FunctionalInterface
     public interface TransitionListener {
-        Unit onTransition(Option<UpgradeRunValue> before, UpgradeRunValue after);
+        Unit onTransition(Option<UpgradeRunValue> before, UpgradeRunValue after, boolean replayed);
     }
 
-    private final AtomicReference<TransitionListener> listener = new AtomicReference<>((_, _) -> Unit.unit());
+    private final AtomicReference<TransitionListener> listener = new AtomicReference<>((_, _, _) -> Unit.unit());
 
     public Unit onTransition(TransitionListener transitionListener) {
         listener.set(transitionListener);
@@ -38,10 +40,17 @@ public final class UpgradeRunIndex {
         return Unit.unit();
     }
 
+    /// A run applied live (never in a replay burst).
     public Unit put(UpgradeRunValue value) {
+        return put(value, false);
+    }
+
+    /// A run as the KV handler absorbed it, with the replay bit it captured on the delivering thread.
+    public Unit put(UpgradeRunValue value, boolean replayed) {
         return listener.get()
                        .onTransition(swap(value),
-                                     value);
+                                     value,
+                                     replayed);
     }
 
     private synchronized Option<UpgradeRunValue> swap(UpgradeRunValue value) {
