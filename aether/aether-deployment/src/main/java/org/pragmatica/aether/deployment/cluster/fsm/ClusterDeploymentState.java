@@ -972,6 +972,13 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// re-adopt it: adopting it would LOAD slices of a blueprint that no longer exists. It is swept by the same
         /// fenced removal a blueprint delete uses, which can only remove it while the blueprint is still absent.
         private void refuseOrphanTarget(SliceTargetKey sliceTargetKey, BlueprintId owner) {
+            committedDeclarer(sliceTargetKey.artifactBase()).apply(() -> sweepOrphanTarget(sliceTargetKey, owner),
+                                                                   declarer -> reOwnTarget(sliceTargetKey,
+                                                                                           owner,
+                                                                                           declarer));
+        }
+
+        private void sweepOrphanTarget(SliceTargetKey sliceTargetKey, BlueprintId owner) {
             log.warn("Restore: slice target {} names blueprint {}, which is not committed — not adopting it, removing the orphan",
                      sliceTargetKey.artifactBase(),
                      owner.asString());
@@ -979,6 +986,54 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                        owner,
                                        List.of(sliceTargetKey.artifactBase()),
                                        0);
+        }
+
+        /// A target whose owner is gone while another COMMITTED blueprint declares its base (the window between a
+        /// different-id rollback restoring `previous` and `previous`'s own target put) is live: sweeping it would UNLOAD
+        /// the running instances until the awaited resubmission re-creates it. It is re-owned instead, by the declarer's
+        /// own fenced put, which carries the committed scale and placement.
+        private void reOwnTarget(SliceTargetKey sliceTargetKey, BlueprintId owner, AppBlueprintValue declarer) {
+            var base = sliceTargetKey.artifactBase();
+            var slices = declarer.blueprint()
+                                 .loadOrder()
+                                 .stream()
+                                 .filter(slice -> slice.artifact()
+                                                       .base()
+                                                       .equals(base))
+                                 .toList();
+
+            log.warn("Restore: slice target {} names blueprint {}, which is not committed; committed blueprint {} declares it — re-owning",
+                     base,
+                     owner.asString(),
+                     declarer.blueprint().id().asString());
+            submitFencedTargetPuts(WriteSite.DEPLOY_TARGET_PUT, declarer, slices, 0);
+        }
+
+        /// A committed, non-register-only blueprint declaring a slice of this base, if any.
+        private Option<AppBlueprintValue> committedDeclarer(ArtifactBase base) {
+            var declarers = new ArrayList<AppBlueprintValue>();
+
+            ctx.kvStore()
+               .forEach(AppBlueprintKey.class,
+                        AppBlueprintValue.class,
+                        (_, value) -> addIfDeclaresBase(declarers, value, base));
+
+            return declarers.isEmpty()
+                   ? Option.none()
+                   : Option.some(declarers.getFirst());
+        }
+
+        private static void addIfDeclaresBase(List<AppBlueprintValue> declarers,
+                                              AppBlueprintValue value,
+                                              ArtifactBase base) {
+            if (!value.registerOnly() && value.blueprint()
+                                              .loadOrder()
+                                              .stream()
+                                              .anyMatch(slice -> slice.artifact()
+                                                                      .base()
+                                                                      .equals(base))) {
+                declarers.add(value);
+            }
         }
 
         private void adoptSliceTarget(SliceTargetKey sliceTargetKey, SliceTargetValue sliceTargetValue) {
@@ -2021,7 +2076,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                 BlueprintId removed,
                                                 List<ArtifactBase> bases,
                                                 int attempt) {
-            var mutations = bases.stream().distinct().flatMap(this::committedTargetRemoval).toList();
+            var mutations = bases.stream().distinct().flatMap(base -> committedTargetRemoval(removed, base)).toList();
 
             if (mutations.isEmpty()) {
                 return;
@@ -2036,15 +2091,29 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                       .onFailure(cause -> logTargetWriteFailure(site, cause));
         }
 
-        private Stream<KVCommand.Mutation<AetherKey, AetherValue>> committedTargetRemoval(ArtifactBase base) {
+        private Stream<KVCommand.Mutation<AetherKey, AetherValue>> committedTargetRemoval(BlueprintId removed,
+                                                                                          ArtifactBase base) {
             var key = SliceTargetKey.sliceTargetKey(base);
 
+            return removableTarget(removed, base).map(committed -> new KVCommand.Mutation<AetherKey, AetherValue>(key,
+                                                                                                                  Option.some(committed),
+                                                                                                                  Option.none()))
+                                  .stream();
+        }
+
+        /// The committed target of the base unless ANOTHER blueprint owns it. The mirror of a deleted blueprint can still
+        /// name a base whose target a different id of the same blueprint (an upgrade racing the delete of the old id) has
+        /// already re-owned: that target is the other blueprint's, and neither the removal nor its rebuild may take it.
+        private Option<AetherValue> removableTarget(BlueprintId removed, ArtifactBase base) {
             return ctx.kvStore()
-                      .get(key)
-                      .map(committed -> new KVCommand.Mutation<AetherKey, AetherValue>(key,
-                                                                                       Option.some(committed),
-                                                                                       Option.none()))
-                      .stream();
+                      .get(SliceTargetKey.sliceTargetKey(base))
+                      .filter(committed -> !ownedByAnother(committed, removed));
+        }
+
+        private static boolean ownedByAnother(AetherValue committed, BlueprintId removed) {
+            return committed instanceof SliceTargetValue target && target.owningBlueprint()
+                                                                         .filter(owner -> !owner.equals(removed))
+                                                                         .isPresent();
         }
 
         private void confirmTargetRemovals(WriteSite site, BlueprintId removed, List<ArtifactBase> bases, int attempt) {
@@ -2052,11 +2121,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 return;
             }
 
-            var remaining = bases.stream()
-                                 .filter(base -> ctx.kvStore()
-                                                    .get(SliceTargetKey.sliceTargetKey(base))
-                                                    .isPresent())
-                                 .toList();
+            var remaining = bases.stream().filter(base -> removableTarget(removed, base).isPresent()).toList();
 
             if (remaining.isEmpty()) {
                 return;

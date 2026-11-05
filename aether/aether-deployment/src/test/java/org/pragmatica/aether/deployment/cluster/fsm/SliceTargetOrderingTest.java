@@ -68,6 +68,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.apache.logging.log4j.Level;
 import org.pragmatica.testlogging.LogCapture;
 
@@ -91,6 +92,9 @@ class SliceTargetOrderingTest {
     private static final Artifact V1 = Artifact.artifact("com.example:orders-api:1.0.0").unwrap();
     private static final Artifact V2 = Artifact.artifact("com.example:orders-api:2.0.0").unwrap();
     private static final SliceTargetKey TARGET_KEY = SliceTargetKey.sliceTargetKey(V1.base());
+    /// What the ERRORs of a slice-target write that failed or was given up say (the write sites log "Slice-target write ..."
+    /// and "Slice targets ... NOT written/removed").
+    private static final List<String> TARGET_WRITE_REPORTS = List.of("Slice-target write", "Slice targets");
     private static final AppBlueprintKey BLUEPRINT_KEY = AppBlueprintKey.appBlueprintKey(OWNER);
 
     private KVStore<AetherKey, AetherValue> store;
@@ -124,15 +128,21 @@ class SliceTargetOrderingTest {
         assertThat(thrown).as("no notification handler of the leader threw").isEmpty();
     }
 
-    /// The ERROR lines logged so far, after the continuations of the promises the test resolved have had time to run.
+    /// The slice-target-write ERROR lines logged so far, after the continuations of the promises the test resolved have had
+    /// time to run. The `Active` logger is shared by every test of the JVM, and other classes' retry timers (ACTIVATE
+    /// re-issues) log ERRORs from threads that outlive their tests, so only this PR's own report is looked at.
     private List<String> awaitErrors() {
         try {
-            Awaitility.await().atMost(Duration.ofSeconds(2)).until(() -> !log.messages(Level.ERROR).isEmpty());
+            Awaitility.await().atMost(Duration.ofSeconds(2)).until(() -> !targetWriteErrors().isEmpty());
         } catch (ConditionTimeoutException _) {
             return List.of();
         }
 
-        return log.messages(Level.ERROR);
+        return targetWriteErrors();
+    }
+
+    private List<String> targetWriteErrors() {
+        return log.messages(Level.ERROR).stream().filter(message -> TARGET_WRITE_REPORTS.stream().anyMatch(message::contains)).toList();
     }
 
     // ---- D4 ----
@@ -244,7 +254,7 @@ class SliceTargetOrderingTest {
         }
 
         assertThat(cluster.targetWritesSince(before)).as("1 submission and 5 rebuilds, then it gives up").isEqualTo(6);
-        assertThat(log.messages(Level.ERROR)).as("and says so").anyMatch(message -> message.contains("NOT removed"));
+        assertThat(targetWriteErrors()).as("and says so").anyMatch(message -> message.contains("NOT removed"));
     }
 
     /// The last allowed attempt of a removal is allowed to land: it is not reported as given up.
@@ -261,7 +271,7 @@ class SliceTargetOrderingTest {
 
         assertThat(holdsTarget(store)).as("the sixth submission removed it").isFalse();
         assertThat(cluster.awaitHeldTargetWrite().isPresent()).as("and nothing is rebuilt after it").isFalse();
-        assertThat(log.messages(Level.ERROR)).as("and nothing is reported as given up").isEmpty();
+        assertThat(targetWriteErrors()).as("and nothing is reported as given up").isEmpty();
     }
 
     /// A removal refused because the blueprint was published again is not rebuilt: the publish owns the target now.
@@ -362,7 +372,7 @@ class SliceTargetOrderingTest {
 
         assertThat(cluster.targetWritesSince(before)).as("1 submission and 5 rebuilds, then it gives up").isEqualTo(6);
         assertThat(committedTarget().unwrap().currentVersion()).as("and the declaration never landed").isEqualTo(V1.version());
-        assertThat(log.messages(Level.ERROR)).as("and says so").anyMatch(message -> message.contains("NOT written"));
+        assertThat(targetWriteErrors()).as("and says so").anyMatch(message -> message.contains("NOT written"));
     }
 
     /// The last allowed attempt is allowed to land: it is not reported as given up.
@@ -379,7 +389,7 @@ class SliceTargetOrderingTest {
 
         assertThat(committedTarget().unwrap().currentVersion()).as("the sixth submission landed").isEqualTo(V2.version());
         assertThat(cluster.awaitHeldTargetWrite().isPresent()).as("and nothing is rebuilt after it").isFalse();
-        assertThat(log.messages(Level.ERROR)).as("and nothing is reported as given up").isEmpty();
+        assertThat(targetWriteErrors()).as("and nothing is reported as given up").isEmpty();
     }
 
     /// A target write that fails outright (consensus could not commit it) is reported, naming the write.
@@ -412,7 +422,7 @@ class SliceTargetOrderingTest {
         publish(AppBlueprintValue.appBlueprintValue(blueprintOf(V1, "attempt-1").blueprint(), true, "attempt-1"));
 
         assertThat(cluster.targetWritesSince(before)).isZero();
-        assertThat(log.messages(Level.ERROR)).isEmpty();
+        assertThat(targetWriteErrors()).isEmpty();
         assertThat(active().inFlightBlueprints()).as("and the apply is still tracked").containsKey(OWNER);
     }
 
@@ -530,6 +540,8 @@ class SliceTargetOrderingTest {
             assertThat(restored.blueprints()).as("the orphan is not re-adopted").doesNotContainKey(V1);
             assertThat(holdsTarget(fresh)).as("the orphan is swept from the store").isFalse();
             assertThat(applying.loads()).as("nothing is LOADed for it").isEmpty();
+            assertThat(log.messages(Level.WARN)).as("and the sweep is reported at WARN")
+                                                .anyMatch(message -> message.contains("Restore: slice target") && message.contains("removing the orphan"));
         }
 
         /// Control: a target whose blueprint is committed is adopted, so the refusal above is about the missing blueprint.
@@ -635,6 +647,8 @@ class SliceTargetOrderingTest {
             pastTheAwaitedBound();
 
             assertThat(cluster.targetWritesNaming(V2.version(), before)).as("nothing is written for the undeclared v2").isZero();
+            assertThat(log.messages(Level.INFO)).as("and the skip is reported")
+                                                .anyMatch(message -> message.contains("not resubmitted") && message.contains(V2.toString()));
         }
 
         /// An unowned slice has no blueprint to fence on and is resubmitted as the plain put it always was.
@@ -647,6 +661,266 @@ class SliceTargetOrderingTest {
 
             assertThat(cluster.plainTargetPutsSince(before)).isEqualTo(1);
         }
+    }
+
+    // ---- commit-order matrix, ownership-aware removal and restore (#2628) ----
+
+    private static final BlueprintId NEW_ID = BlueprintId.blueprintId("com.example:orders-app:2.0.0").unwrap();
+    private static final Artifact V3 = Artifact.artifact("com.example:orders-api:3.0.0").unwrap();
+
+    private static AppBlueprintValue blueprintOfId(BlueprintId id, Artifact slice, String attemptId) {
+        var resolved = ResolvedSlice.resolvedSlice(slice, 2, 1, false, Set.of()).unwrap();
+
+        return AppBlueprintValue.appBlueprintValue(ExpandedBlueprint.expandedBlueprint(id, List.of(resolved), Option.none()),
+                                                   false,
+                                                   attemptId);
+    }
+
+    /// Commits the given held target writes in the given order, then drains every rebuilt target write in submission order.
+    private void commitInOrderAndDrain(List<Integer> seqs) {
+        seqs.forEach(cluster::commit);
+        for (var round = 0; round < 20; round++) {
+            var next = cluster.awaitHeldTargetWrite();
+
+            if (next.isEmpty()) {
+                return;
+            }
+            cluster.commit(next.unwrap());
+        }
+    }
+
+    private static List<List<Integer>> permutations(List<Integer> items) {
+        if (items.size() <= 1) {
+            return List.of(items);
+        }
+        var result = new ArrayList<List<Integer>>();
+
+        for (var i = 0; i < items.size(); i++) {
+            var rest = new ArrayList<>(items);
+            var head = rest.remove(i);
+
+            for (var tail : permutations(rest)) {
+                var perm = new ArrayList<Integer>();
+
+                perm.add(head);
+                perm.addAll(tail);
+                result.add(perm);
+            }
+        }
+        return result;
+    }
+
+    /// S1 (D4 + D6): committed v1; publish v2 (same id), then delete. Both orders of {P2, R}: no target survives.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1})
+    void republishThenDelete_everyCommitOrder_leavesNoTarget(int permIndex) {
+        publish(blueprintOf(V1, "attempt-1"));
+        cluster.commitAllInSubmissionOrder();
+        publish(blueprintOf(V2, "attempt-2"));
+        var p2 = cluster.lastTargetWriteSeq();
+        delete();
+        var r = cluster.lastTargetWriteSeq();
+
+        assertThat(r).as("the delete submitted its removal").isNotEqualTo(p2);
+        var order = permutations(List.of(p2, r)).get(permIndex);
+        commitInOrderAndDrain(order);
+
+        assertThat(holdsTarget(store)).as("order " + order + ": no target survives the delete").isFalse();
+    }
+
+    /// S2 (D4): committed v1; delete, then publish v2 (same id). Both orders of {R, P2}: v2's target survives.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1})
+    void deleteThenRepublish_everyCommitOrder_leavesTheRepublishedTarget(int permIndex) {
+        publish(blueprintOf(V1, "attempt-1"));
+        cluster.commitAllInSubmissionOrder();
+        delete();
+        var r = cluster.lastTargetWriteSeq();
+        publish(blueprintOf(V2, "attempt-2"));
+        var p2 = cluster.lastTargetWriteSeq();
+
+        var order = permutations(List.of(r, p2)).get(permIndex);
+        commitInOrderAndDrain(order);
+
+        assertThat(committedTarget().map(SliceTargetValue::currentVersion)).as("order " + order)
+                                                                           .isEqualTo(Option.some(V2.version()));
+        assertThat(committedTarget().flatMap(SliceTargetValue::owningBlueprint)).isEqualTo(Option.some(OWNER));
+    }
+
+    /// S3 (D4 + D6): committed v1; publish v2, delete, publish v3. Every order of {P2, R, P3}: v3's target.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2, 3, 4, 5})
+    void publishDeletePublish_everyCommitOrder_leavesTheLastTarget(int permIndex) {
+        publish(blueprintOf(V1, "attempt-1"));
+        cluster.commitAllInSubmissionOrder();
+        publish(blueprintOf(V2, "attempt-2"));
+        var p2 = cluster.lastTargetWriteSeq();
+        delete();
+        var r = cluster.lastTargetWriteSeq();
+        publish(blueprintOf(V3, "attempt-3"));
+        var p3 = cluster.lastTargetWriteSeq();
+
+        var order = permutations(List.of(p2, r, p3)).get(permIndex);
+        commitInOrderAndDrain(order);
+
+        assertThat(committedTarget().map(SliceTargetValue::currentVersion)).as("order " + order)
+                                                                           .isEqualTo(Option.some(V3.version()));
+    }
+
+    /// F-A: delete of the OLD id (1.0.0) racing the NEW id's (2.0.0, same blueprint base) target put. The new id's put
+    /// commits first; the old id's removal must not remove the new id's target.
+    @Test
+    void deleteOfOldIdRacingNewIdsPut_newIdsTargetSurvives() {
+        publish(blueprintOf(V1, "attempt-1"));
+        cluster.commitAllInSubmissionOrder();
+        store.process(store.createBatch(List.<KVCommand<AetherKey>> of(new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(NEW_ID),
+                                                                                          blueprintOfId(NEW_ID, V2, "attempt-b2")))));
+        var b2PutSeq = cluster.lastTargetWriteSeq();
+        delete();
+        var removalSeq = cluster.lastTargetWriteSeq();
+
+        assertThat(removalSeq).as("the old id's removal was submitted").isNotEqualTo(b2PutSeq);
+        cluster.commit(b2PutSeq);
+        assertThat(committedTarget().flatMap(SliceTargetValue::owningBlueprint)).as("control: the new id owns the target")
+                                                                              .isEqualTo(Option.some(NEW_ID));
+        commitInOrderAndDrain(List.of(removalSeq));
+
+        assertThat(committedTarget().map(SliceTargetValue::currentVersion)).as("the new id's target survives the old id's delete")
+                                                                           .isEqualTo(Option.some(V2.version()));
+    }
+
+    /// F-B: a new leader restores a target whose owner id (2.0.0) is absent while ANOTHER committed id of the same
+    /// blueprint base (1.0.0) declares the slice, ACTIVE on two nodes (the different-id rollback window).
+    @Test
+    void restoreOfTargetDeclaredByAnotherCommittedId_reOwnsItAndUnloadsNothing() {
+        var fresh = freshStore();
+        var applying = new ApplyingClusterNode(fresh);
+        var clock = new AtomicLong(10_000_000L);
+
+        commitLeader(fresh);
+        fresh.process(fresh.createBatch(List.<KVCommand<AetherKey>> of(new KVCommand.Put<>(BLUEPRINT_KEY, blueprintOf(V1, "attempt-1")),
+                                                                     new KVCommand.Put<>(TARGET_KEY, targetOf(V1, Option.some(NEW_ID))),
+                                                                     new KVCommand.Put<>(NodeArtifactKey.nodeArtifactKey(SELF, V1),
+                                                                                         NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE)),
+                                                                     new KVCommand.Put<>(NodeArtifactKey.nodeArtifactKey(OTHER, V1),
+                                                                                         NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE)))));
+
+        var restored = (ClusterDeploymentState.Active) activeLeader(applying, fresh, clock::get).state();
+        var unloads = applying.commandsSoFar().stream().filter(c -> c.toString().contains("UNLOAD")).toList();
+
+        assertThat(unloads).as("a live slice of a committed blueprint is not unloaded by the restore sweep").isEmpty();
+        assertThat(fresh.get(TARGET_KEY).filter(SliceTargetValue.class::isInstance).map(SliceTargetValue.class::cast)
+                        .flatMap(SliceTargetValue::owningBlueprint)).as("the committed declarer owns the target")
+                                                                    .isEqualTo(Option.some(OWNER));
+        assertThat(restored.blueprints()).containsKey(V1);
+        assertThat(log.messages(Level.WARN)).as("and the re-own is reported at WARN")
+                                            .anyMatch(message -> message.contains("re-owning") && message.contains(OWNER.asString()));
+    }
+
+    /// A register-only blueprint declares a base without owning a target for it, so it does not make an orphan live: the
+    /// restore sweeps the orphan, as it does when no blueprint declares the base at all.
+    @Test
+    void restoreOfTargetWhoseOnlyDeclarerIsRegisterOnly_sweepsIt() {
+        var fresh = freshStore();
+        var applying = new ApplyingClusterNode(fresh);
+        var registerOnly = AppBlueprintValue.appBlueprintValue(blueprintOf(V1, "attempt-1").blueprint(), true, "attempt-1");
+
+        commitLeader(fresh);
+        fresh.process(fresh.createBatch(List.<KVCommand<AetherKey>> of(new KVCommand.Put<>(BLUEPRINT_KEY, registerOnly),
+                                                                     new KVCommand.Put<>(TARGET_KEY, targetOf(V1, Option.some(NEW_ID))))));
+
+        activeLeader(applying, fresh);
+
+        assertThat(holdsTarget(fresh)).as("the orphan is swept, not re-owned by a register-only declarer").isFalse();
+    }
+
+    /// A committed blueprint that declares another base does not make an orphan live either.
+    @Test
+    void restoreOfTargetWhoseCommittedBlueprintDeclaresAnotherBase_sweepsIt() {
+        var fresh = freshStore();
+        var applying = new ApplyingClusterNode(fresh);
+        var other = Artifact.artifact("com.example:billing-api:1.0.0").unwrap();
+
+        commitLeader(fresh);
+        fresh.process(fresh.createBatch(List.<KVCommand<AetherKey>> of(new KVCommand.Put<>(BLUEPRINT_KEY, blueprintOf(other, "attempt-1")),
+                                                                     new KVCommand.Put<>(TARGET_KEY, targetOf(V1, Option.some(NEW_ID))))));
+
+        activeLeader(applying, fresh);
+
+        assertThat(holdsTarget(fresh)).as("the orphan is swept: no committed blueprint declares its base").isFalse();
+    }
+
+    /// TRIPWIRE (an UNFENCED writer, out of scope of #2628 and tracked as the F-C follow-up; it flips when those writers are
+    /// fenced): an autoscaler/scale-API read-modify-write put built from the pre-delete target commits after the fenced removal. It re-creates an orphan owned by the deleted blueprint, the
+    /// leader allocates it, and only a leader change sweeps it. GREEN here = the gap exists.
+    @Test
+    void unfencedPutAfterRemoval_tripwire_leavesLoadedOrphanUntilLeaderChange() {
+        publish(blueprintOf(V1, "attempt-1"));
+        cluster.commitAllInSubmissionOrder();
+        var observed = committedTarget().unwrap();
+        delete();
+        commitInOrderAndDrain(List.of(cluster.lastTargetWriteSeq()));
+        assertThat(holdsTarget(store)).as("control: the fenced removal landed").isFalse();
+        var before = cluster.submittedCount();
+
+        store.process(store.createBatch(List.<KVCommand<AetherKey>> of(new KVCommand.Put<>(TARGET_KEY, observed.withInstances(3)))));
+
+        assertThat(holdsTarget(store)).as("the late unfenced put re-creates the target").isTrue();
+        assertThat(active().blueprints()).as("the in-term leader adopts the orphan").containsKey(V1);
+
+        var applying = new ApplyingClusterNode(store);
+        var successor = (ClusterDeploymentState.Active) activeLeader(applying, store).state();
+        assertThat(holdsTarget(store)).as("a leader change sweeps it").isFalse();
+        assertThat(successor.blueprints()).doesNotContainKey(V1);
+    }
+
+    /// TRIPWIRE (stale-wins via an UNFENCED writer, F-C follow-up; flips when those writers are fenced): an autoscaler put built from v1's target commits after
+    /// the same id's v2 publish landed: the committed target names v1 under a blueprint declaring v2, and nothing repairs it.
+    @Test
+    void unfencedPutAfterRepublish_tripwire_revertsVersionAndStays() {
+        publish(blueprintOf(V1, "attempt-1"));
+        cluster.commitAllInSubmissionOrder();
+        var observed = committedTarget().unwrap();
+        publish(blueprintOf(V2, "attempt-2"));
+        commitInOrderAndDrain(List.of(cluster.lastTargetWriteSeq()));
+        assertThat(committedTarget().map(SliceTargetValue::currentVersion)).as("control: v2 landed").isEqualTo(Option.some(V2.version()));
+
+        store.process(store.createBatch(List.<KVCommand<AetherKey>> of(new KVCommand.Put<>(TARGET_KEY, observed.withInstances(3)))));
+        pastTheAwaitedBound();
+        pastTheAwaitedBound();
+        commitInOrderAndDrain(List.of());
+
+        assertThat(committedTarget().map(SliceTargetValue::currentVersion)).as("stale v1 wins and is not repaired")
+                                                                           .isEqualTo(Option.some(V1.version()));
+    }
+
+    /// The put is fenced on the blueprint value the notification CARRIED, not on whatever the store holds when it is built: a
+    /// notification of a value the store does not hold (published, not committed) must be refused, not fenced on the stored one.
+    @Test
+    void targetPutOfANotificationedValueTheStoreDoesNotHold_isRefused() {
+        publish(blueprintOf(V1, "attempt-1"));
+        cluster.drop(cluster.lastTargetWriteSeq());
+        var carried = blueprintOf(V2, "attempt-2");
+
+        harness.dispatch(new AppBlueprintPutReceived(new ValuePut<>(new KVCommand.Put<>(BLUEPRINT_KEY, carried), Option.none())));
+        cluster.commit(cluster.lastTargetWriteSeq());
+
+        assertThat(committedTarget()).as("the fence names the carried value, which the store does not hold").isEqualTo(Option.none());
+    }
+
+    /// The removal is fenced on the blueprint being ABSENT, not on the value the store holds when it is built: a blueprint
+    /// republished (and committed) before the removal is built refuses it, whatever its notification said.
+    @Test
+    void removalBuiltWhileTheBlueprintIsRepublished_isRefused() {
+        publish(blueprintOf(V1, "attempt-1"));
+        cluster.commitAllInSubmissionOrder();
+
+        harness.dispatch(new AppBlueprintRemoveReceived(new ValueRemove<>(new KVCommand.Remove<>(BLUEPRINT_KEY), Option.some(blueprintOf(V1, "attempt-1")))));
+        var removalSeq = cluster.lastTargetWriteSeq();
+        cluster.commit(removalSeq);
+
+        assertThat(committedTarget().map(SliceTargetValue::currentVersion)).as("the republished blueprint keeps its target")
+                                                                           .isEqualTo(Option.some(V1.version()));
     }
 
     // ---- helpers ----
@@ -952,6 +1226,10 @@ class SliceTargetOrderingTest {
             commands.addAll(batch);
 
             return Promise.success((List<R>) store.<Object> process(store.createBatch(batch)));
+        }
+
+        List<KVCommand<AetherKey>> commandsSoFar() {
+            return List.copyOf(commands);
         }
 
         List<KVCommand<AetherKey>> loads() {
