@@ -32,6 +32,7 @@ class IsrMonitorTest {
     private static final NodeId OWNER = new NodeId("owner");
     private static final NodeId B = new NodeId("node-b");
     private static final NodeId C = new NodeId("node-c");
+    private static final NodeId D = new NodeId("node-d");
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
     private static final TimeSpan LAG_MAX = TimeSpan.timeSpan(30).seconds();
@@ -164,11 +165,46 @@ class IsrMonitorTest {
     /// #2694: a member's row from an earlier tenure is not a confirmation to this owner, as the ack path reads it.
     @Test
     void nextIsr_memberRowOfAnEarlierTenure_admitsNobody() {
-        confirmUnder(B, HEAD, EARLIER_TENURE);
-        confirm(C, 3L);
+        confirmUnder(B, 3L, EARLIER_TENURE);
+        confirm(C, HEAD);
 
         assertThat(monitor.nextIsr(owned(HEAD), clock.get()).isEmpty()).as("B confirmed nothing under this epoch")
                                                                         .isTrue();
+    }
+
+    /// #2694: one member of a two-peer ISR without a current-epoch row admits nobody, even though the other peer and
+    /// the candidate are caught up.
+    @Test
+    void twoPeers_oneWithoutACurrentRow_admitsNobody() {
+        registry.registerReplica(STREAM, PARTITION, D);
+        record = record.withIsrAndFenced(List.of(OWNER, B, D), List.of());
+        confirm(B, HEAD);
+        confirm(C, HEAD);
+
+        assertThat(monitor.nextIsr(owned(HEAD), clock.get()).isEmpty()).as("D has not confirmed under this epoch")
+                                                                        .isTrue();
+    }
+
+    /// #2694: an owner alone in the ISR has no peer to bound the high-water mark, so the owner's head bounds it: a
+    /// replica below the head is not admitted.
+    @Test
+    void ownerAlone_replicaBelowTheHead_isNotAdmitted() {
+        record = record.withIsrAndFenced(List.of(OWNER), List.of());
+        confirm(C, 3L);
+
+        assertThat(monitor.nextIsr(owned(HEAD), clock.get()).isEmpty()).as("C is at 3, the head is 10").isTrue();
+    }
+
+    /// #2694: with two peers the high-water mark is the lowest of their confirmed offsets, not the highest.
+    @Test
+    void twoPeers_highWaterIsTheLowest() {
+        registry.registerReplica(STREAM, PARTITION, D);
+        record = record.withIsrAndFenced(List.of(OWNER, B, D), List.of());
+        confirm(B, HEAD);
+        confirm(D, 5L);
+        confirm(C, 5L);
+
+        assertThat(monitor.nextIsr(owned(HEAD), clock.get()).unwrap()).containsExactly(OWNER, B, D, C);
     }
 
     private IsrMonitor.Owned owned(long head) {
