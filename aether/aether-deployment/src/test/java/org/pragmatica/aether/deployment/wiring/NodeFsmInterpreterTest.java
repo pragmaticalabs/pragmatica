@@ -6,7 +6,9 @@ package org.pragmatica.aether.deployment.wiring;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
@@ -17,6 +19,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.deployment.node.fsm.ActivationWriteFault;
 import org.pragmatica.aether.deployment.node.machine.LegCommand;
 import org.pragmatica.aether.deployment.node.machine.LocalOutcome;
@@ -31,6 +34,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
 import org.pragmatica.consensus.ConsensusError;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -46,6 +50,14 @@ import static org.pragmatica.aether.deployment.wiring.WiringFixtures.*;
 /// prove, because no route is bound in this PR, is named in the report: that the production `Fsm2Routes` stamp and deliver, and which
 /// timeout the production wiring passes to `nodeFsmTimings`.
 class NodeFsmInterpreterTest {
+    /// Records the stamp the store gave each `SliceTargetKey` put, read on the delivering thread as `Fsm2Routes` reads it.
+    @SuppressWarnings("rawtypes")
+    private static void stampTarget(NodeRig rig, Map<ArtifactBase, Long> stamps, KVStoreNotification.ValuePut put) {
+        if (put.cause().key() instanceof SliceTargetKey key) {
+            stamps.put(key.artifactBase(), rig.store.notificationRevision().or(-1L));
+        }
+    }
+
     private static boolean observedActive(List<KVCommand<AetherKey>> commands) {
         return commands.stream()
                        .anyMatch(command -> command instanceof KVCommand.Put<AetherKey, ?> put
@@ -176,6 +188,35 @@ class NodeFsmInterpreterTest {
 
                 assertThat(rig.cluster.applied).as("no Submit for a row the snapshot already supersedes").hasSize(applies);
                 assertThat(rig.localOps.count(LocalStep.LOAD)).isEqualTo(loads);
+            }
+        }
+
+        /// W-10 (e), the watermark space (CTO ruling 2026-11-05): `KvSnapshotter.cut()` reads the store's `committedRevision()` under the
+        /// monitor, i.e. the revision AFTER the snapshot's last batch applied, and `snapshotTakenAt` takes it as the watermark
+        /// (`NodeFsmInterpreter.enter`, `ClusterFsmInterpreter`). The store stamps a batch with its commit revision, the same value, so "in the
+        /// snapshot" iff "stamp <= watermark". Batch N (the snapshot's last) and N + 1 (the first after it) arrive with the stamps the real
+        /// store gave them; N again as a delivery that raced the cut would. Mutations: stamp the revision before the batch (N + 1 carries N
+        /// and is dropped), or one past it (N carries N + 1 and is stepped a second time).
+        @Test
+        void aBatchInTheSnapshot_isDropped_theNextBatchIsStepped_byTheStoresOwnStamps() {
+            try (var rig = new NodeRig()) {
+                var stamps = new ConcurrentHashMap<ArtifactBase, Long>();
+
+                rig.router.addRoute(KVStoreNotification.ValuePut.class, (KVStoreNotification.ValuePut put) -> stampTarget(rig, stamps, put));
+                rig.permit(ORDERS).goal(ORDERS, SliceGoal.LOADED).permit(BILLING);
+                var n = rig.applier.slot();
+
+                rig.enter();
+                var stepped = rig.countOf("TargetPut");
+                var dropped = rig.metric("TargetPut", "dropped_revision");
+
+                rig.permit(AUDIT);
+                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(BILLING.base(), BILLING.version()), stamps.get(BILLING.base()), false);
+                rig.settle();
+
+                assertThat(stamps).containsEntry(BILLING.base(), n).containsEntry(AUDIT.base(), n + 1);
+                assertThat(rig.countOf("TargetPut")).as("N + 1 is stepped, N is not").isEqualTo(stepped + 1);
+                assertThat(rig.metric("TargetPut", "dropped_revision")).as("N is in the snapshot").isEqualTo(dropped + 1);
             }
         }
 

@@ -37,14 +37,14 @@ class KVStoreNotificationRevisionTest {
     private void recordPuts() {
         router.addRoute(KVStoreNotification.ValuePut.class,
                         (KVStoreNotification.ValuePut<Key, String> put) -> stamps.add(new Stamp(put.cause().key(),
-                                                                                                store.notificationRevision(),
+                                                                                                store.notificationRevision().or(0L),
                                                                                                 store.isReplaying())));
     }
 
     private void recordRemoves() {
         router.addRoute(KVStoreNotification.ValueRemove.class,
                         (KVStoreNotification.ValueRemove<Key, String> remove) -> stamps.add(new Stamp(remove.cause().key(),
-                                                                                                      store.notificationRevision(),
+                                                                                                      store.notificationRevision().or(0L),
                                                                                                       store.isReplaying())));
     }
 
@@ -125,11 +125,11 @@ class KVStoreNotificationRevisionTest {
     }
 
     @Test
-    void notificationRevision_isZeroOutsideADispatch() {
+    void notificationRevision_isEmptyOutsideADispatch() {
         recordPuts();
         store.processCommitted(store.createBatch(List.of(new KVCommand.Put<>(FIRST, "one"))), 3);
 
-        assertThat(store.notificationRevision()).isZero();
+        assertThat(store.notificationRevision().isEmpty()).isTrue();
     }
 
     @Test
@@ -144,15 +144,19 @@ class KVStoreNotificationRevisionTest {
         assertThat(store.committedRevision()).isEqualTo(4);
     }
 
+    /// The replay is a DIFF against the delivered view (KVStore dispatcher design §3.7): a key already delivered with an unchanged value is not
+    /// re-delivered. Harmless to FSM2, which drops every replay-flagged input whatever its revision (`FsmRuntime.keyValue`: `kv.replay()` ->
+    /// `dropped_replay`). A replay that carries a change is stamped and flagged in
+    /// [#replayAfterACommittedSnapshotRestore_carriesTheRestoredRevision].
     @Test
-    void replayBurst_carriesTheCommittedRevision_andIsFlaggedReplay() {
+    void replayBurst_ofAnAlreadyDeliveredUnchangedKey_deliversNothing() {
         recordPuts();
         store.processCommitted(store.createBatch(List.of(new KVCommand.Put<>(FIRST, "one"))), 8);
         stamps.clear();
 
         store.replayNotifications();
 
-        assertThat(stamps).containsExactly(new Stamp(FIRST, 8, true));
+        assertThat(stamps).isEmpty();
     }
 
     @Test
@@ -185,7 +189,7 @@ class KVStoreNotificationRevisionTest {
 
         source.process(source.createBatch(List.of(new KVCommand.Put<>(new CodecKey("k"), "v"))));
         targetRouter.addRoute(KVStoreNotification.ValuePut.class,
-                              (KVStoreNotification.ValuePut<CodecKey, String> put) -> seen.add(target.notificationRevision()));
+                              (KVStoreNotification.ValuePut<CodecKey, String> put) -> seen.add(target.notificationRevision().or(0L)));
         target.restoreCommittedSnapshot(source.makeSnapshot().unwrap(), 10);
 
         target.replayNotifications();

@@ -32,7 +32,7 @@ class KVStoreReplicaStampPinTest {
     @Test
     void applyEffects_stampsNotificationsWithSlotPlusOne_forAnEntryAboveTheCommittedRevision() {
         router.addRoute(KVStoreNotification.ValuePut.class,
-                        (KVStoreNotification.ValuePut<Key, String> _) -> stamps.add(store.notificationRevision()));
+                        (KVStoreNotification.ValuePut<Key, String> _) -> stamps.add(store.notificationRevision().or(0L)));
 
         var applied = store.applyEffects(new ReplicaEntry(TAG, 4, 4, "id-4", List.of(new KVCommand.Put<>(FIRST, "one"))));
 

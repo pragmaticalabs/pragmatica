@@ -128,7 +128,7 @@ public final class DeploymentWiring {
                                 worker,
                                 registry,
                                 guard,
-                                new Node(config.self(), store::notificationRevision, store::isReplaying, admissions));
+                                new Node(config.self(), () -> store.notificationRevision().or(0L), store::isReplaying, admissions));
     }
 
     /// The routes resolve the interpreters when an input arrives, not when the routes are built: the system is assembled after the route table

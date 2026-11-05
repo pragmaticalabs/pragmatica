@@ -67,13 +67,16 @@ final class Fsm2Harness implements AutoCloseable {
     static final long SELF_TOKEN = 0xABCDL;
 
     final MessageRouter.MutableRouter router = MessageRouter.mutable();
+    /// What a snapshot install restores: the store's deserializer reads this map, whatever the snapshot bytes (no codec in this rig).
+    volatile Map<AetherKey, AetherValue> installing = Map.of();
     final KVStore<AetherKey, AetherValue> store = new KVStore<>(router, new Serializer() {
         @Override
         public <T> void write(ByteBuf buffer, T value) {}
     }, new Deserializer() {
         @Override
+        @SuppressWarnings("unchecked")
         public <T> T read(ByteBuf buffer) {
-            return null;
+            return (T) installing;
         }
     });
     final AtomicLong slot = new AtomicLong();
@@ -144,7 +147,7 @@ final class Fsm2Harness implements AutoCloseable {
                                                             worker,
                                                             registry,
                                                             guard,
-                                                            new DeploymentWiring.Node(SELF, store::notificationRevision, store::isReplaying, AdmissionSeam.admissionSeam(bootTokens::tokenOf, _ -> 0L)));
+                                                            new DeploymentWiring.Node(SELF, () -> store.notificationRevision().or(0L), store::isReplaying, AdmissionSeam.admissionSeam(bootTokens::tokenOf, _ -> 0L)));
         }
     }
 

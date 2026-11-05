@@ -99,7 +99,7 @@ class Fsm2RoutesTest {
         /// notification, so a route that reads it elsewhere reads `false`.
         Rig(UnaryOperator<Supplier<Long>> hop, BooleanSupplier replaying) {
             this((Function<Rig, Fsm2Routes.Targets>) rig -> new Fsm2Routes.Targets(SELF,
-                                               () -> hop.apply(rig.store::notificationRevision).get(),
+                                               () -> hop.apply(() -> rig.store.notificationRevision().or(0L)).get(),
                                                replaying == null
                                                ? rig.store::isReplaying
                                                : replaying,
@@ -121,7 +121,7 @@ class Fsm2RoutesTest {
         /// The routes as the deployment wiring builds them (`DeploymentWiring.routeTargets`), over `seam`.
         static Rig throughTheWiring(AdmissionSeam seam) {
             return new Rig((Function<Rig, Fsm2Routes.Targets>) rig -> DeploymentWiring.routeTargets(new DeploymentWiring.Node(SELF,
-                                                                                          rig.store::notificationRevision,
+                                                                                          () -> rig.store.notificationRevision().or(0L),
                                                                                           rig.store::isReplaying,
                                                                                           seam),
                                                                 rig::toNode,

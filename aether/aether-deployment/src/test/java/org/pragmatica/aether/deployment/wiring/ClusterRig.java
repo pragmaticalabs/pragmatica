@@ -158,7 +158,7 @@ final class ClusterRig implements AutoCloseable {
     }
 
     private void kv(ClusterInput input) {
-        interpreter.deliverKv(input, store.notificationRevision(), store.isReplaying());
+        interpreter.deliverKv(input, store.notificationRevision().or(0L), store.isReplaying());
     }
 
     // -- scenario steps ------------------------------------------------------------------------------------------------

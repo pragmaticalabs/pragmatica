@@ -130,7 +130,7 @@ final class NodeRig implements AutoCloseable {
     }
 
     private void kv(NodeFsmInput input) {
-        interpreter.deliverKv(input, store.notificationRevision(), store.isReplaying());
+        interpreter.deliverKv(input, store.notificationRevision().or(0L), store.isReplaying());
     }
 
     private Option<NodeFsmInput> input(Object key, Object value) {

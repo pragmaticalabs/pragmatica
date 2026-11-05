@@ -5,7 +5,9 @@
 package org.pragmatica.aether.node.deployment;
 
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
@@ -61,15 +63,22 @@ class DeploymentWiringProductionBindingTest {
         }
     }
 
-    /// The replay flag: a replayed view is dropped by the core rule, not applied as fact. A binding to `false` would apply it.
+    /// The replay flag: a replayed view is dropped by the core rule, not applied as fact. A binding to `false` would apply it. The replay is a
+    /// diff against the delivered view (KVStore dispatcher design §3.7), so it re-delivers only what the install changed: the install here
+    /// holds the delivered state with the observed row at a later version, and the replay carries that row, flagged.
     @Test
     void theFactoryBindsTheStoresReplayFlag_soAReplayedViewIsDropped() {
         try (var harness = Fsm2Harness.production(DeploymentEngine.FSM2).assembled()) {
             openAndEnter(harness);
-            harness.put(SliceObservedKey.sliceObservedKey(Fsm2Harness.PEER, ORDERS), observed(1L));
+            var key = SliceObservedKey.sliceObservedKey(Fsm2Harness.PEER, ORDERS);
+            harness.put(key, observed(1L));
             harness.awaitThat(() -> harness.count("ObservedPut", "applied", "node") >= 1);
             var applied = harness.count("ObservedPut", "applied", "node");
+            var installed = new HashMap<AetherKey, AetherValue>(harness.store.snapshot());
 
+            installed.put(key, observed(2L));
+            harness.installing = Map.copyOf(installed);
+            assertThat(harness.store.restoreCommittedSnapshot(new byte[0], harness.slot.incrementAndGet()).isSuccess()).isTrue();
             harness.store.replayNotifications();
 
             harness.awaitThat(() -> harness.count("ObservedPut", "dropped_replay", "node") >= 1);
