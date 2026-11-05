@@ -249,15 +249,10 @@ public sealed interface StreamAssembly {
     @Contract
     private static void committedOwnership(OwnerActivation ownerActivation,
                                            ValuePut<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> put) {
-        ownerActivation.onCommittedOwnership(put.cause()
-                                                .key()
-                                                .stream(),
-                                             put.cause()
-                                                .key()
-                                                .partition(),
+        ownerActivation.onCommittedOwnership(put.cause().key().stream(),
+                                             put.cause().key().partition(),
                                              put.oldValue(),
-                                             put.cause()
-                                                .value());
+                                             put.cause().value());
     }
 
     /// The replica registry, the replication manager and transport, the partition manager with its segment index and stores, the ISR announcer and the forward client.
