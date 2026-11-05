@@ -91,6 +91,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.utility.warning.WarningLevel;
 
 import org.slf4j.Logger;
@@ -761,14 +762,33 @@ public final class ClusterEventAggregator {
     /// replay-gate and publisher-not-bound bootstrap-drop behaviour as {@link #emit}.
     @Contract
     public void emitAsLeader(ClusterEvent event) {
-        if (replayingCheck.getAsBoolean()) {
+        emitAsLeaderWhen(event, leaderCheck);
+    }
+
+    /// [#emitAsLeader] for a receiver of a `LeaderChange`: the leadership verdict is the notification's own
+    /// `localNodeIsLeader` (R5.8), and the replay gate is its own `replayed` bit (R3, v-2653 F3), not re-reads of
+    /// `leaderCheck` and `replayingCheck` at run time: once the notification is queued behind a reaction executor the
+    /// first can disagree with the event and the second always reads false.
+    @Contract
+    public void emitAsLeader(ClusterEvent event, LeaderNotification.LeaderChange change) {
+        emitAsLeaderWhen(event, change::localNodeIsLeader, change::replayed);
+    }
+
+    @Contract
+    private void emitAsLeaderWhen(ClusterEvent event, BooleanSupplier leaderGate) {
+        emitAsLeaderWhen(event, leaderGate, replayingCheck);
+    }
+
+    @Contract
+    private void emitAsLeaderWhen(ClusterEvent event, BooleanSupplier leaderGate, BooleanSupplier replayed) {
+        if (replayed.getAsBoolean()) {
             LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing side-effect emit of {}",
                       event);
 
             return;
         }
 
-        if (!leaderCheck.getAsBoolean()) {
+        if (!leaderGate.getAsBoolean()) {
             LOG.debug("ClusterEventAggregator: not leader — suppressing emit of {}", event);
 
             return;
@@ -783,7 +803,13 @@ public final class ClusterEventAggregator {
     /// not-leader-gated contract. The replay gate and publisher-bound bootstrap drop still apply.
     @Contract
     public void emitLocal(ClusterEvent event) {
-        if (replayingCheck.getAsBoolean()) {
+        emitLocal(event, replayingCheck);
+    }
+
+    /// [#emitLocal] with the replay bit the caller captured (R3).
+    @Contract
+    private void emitLocal(ClusterEvent event, BooleanSupplier replayed) {
+        if (replayed.getAsBoolean()) {
             LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing local emit of {}", event);
 
             return;
@@ -978,17 +1004,32 @@ public final class ClusterEventAggregator {
     /// past its horizon, overflow) shortens the window to [#OPERATOR_WARNING_RETRY_MS], so the next occurrence after it
     /// is admitted and reports what this one could not, while a key whose events keep being lost is attempted at most
     /// once per retry window.
+    ///
+    /// This form reads `replayingCheck` on the CALLING thread, so it is right only for a caller on the raising thread. The
+    /// node's sink hands warnings off to another thread and enters through [#onHandedOffWarning].
     @Contract
     public void onOperatorWarning(OperatorWarning warning) {
+        onOperatorWarning(warning, replayingCheck);
+    }
+
+    /// The node sink's entry (KVStore dispatcher design §3.5 R4): the warning crossed the operator-warning hand-off thread,
+    /// where `isReplaying()` always reads false, so the replay bit it carries was captured on the raising thread.
+    @Contract
+    public void onHandedOffWarning(OperatorWarningSink.HandedOff handedOff) {
+        onOperatorWarning(handedOff.warning(), handedOff::replayed);
+    }
+
+    /// `replayed` is read only where the warning would be emitted, as `replayingCheck` always was.
+    private void onOperatorWarning(OperatorWarning warning, BooleanSupplier replayed) {
         var key = throttleKey(warning.code(), warning.subject());
 
         warning.code()
                .recoveryOf()
-               .onPresent(closes -> onRecovery(warning, closes))
-               .onEmpty(() -> onCondition(warning, key));
+               .onPresent(closes -> onRecovery(warning, closes, replayed))
+               .onEmpty(() -> onCondition(warning, key, replayed));
     }
 
-    private void onCondition(OperatorWarning warning, String key) {
+    private void onCondition(OperatorWarning warning, String key, BooleanSupplier replayed) {
         var spoofable = SPOOFABLE_SUBJECT_CODES.contains(warning.code());
 
         if (spoofable) {
@@ -1019,7 +1060,7 @@ public final class ClusterEventAggregator {
         var event = warningEvent(warning, window.suppressedBefore());
 
         lastRaisedOperatorWarning = Option.some(event);
-        if (replayingCheck.getAsBoolean()) {
+        if (replayed.getAsBoolean()) {
             LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing local emit of {}", event);
             shortenWindow(key, window);
 
@@ -1114,7 +1155,7 @@ public final class ClusterEventAggregator {
     /// closes it. It has no window of its own: one published warning allows one recovery. Publishing it also ends the
     /// warning's throttle window, so a condition that recurs right after its recovery is shown again rather than
     /// throttled behind a "repaired" that is no longer true (#752).
-    private void onRecovery(OperatorWarning warning, OperatorWarningCode closes) {
+    private void onRecovery(OperatorWarning warning, OperatorWarningCode closes, BooleanSupplier replayed) {
         var closedKey = throttleKey(closes, warning.subject());
         var event = warningEvent(warning, 0);
         var held = Option.option(awaitingDelivery.computeIfPresent(closedKey, (_, _) -> Option.some(event)));
@@ -1133,7 +1174,7 @@ public final class ClusterEventAggregator {
             openRecoverable.add(closedKey);
         }
 
-        if (replayingCheck.getAsBoolean()) {
+        if (replayed.getAsBoolean()) {
             holdDuringReplay(closedKey, event);
 
             return;
@@ -1382,6 +1423,9 @@ public final class ClusterEventAggregator {
     /// instead: this is the "no leader, degraded observability" signal, and it is worthless if it can
     /// only be sent by a leader. Same at-least-once-per-observer contract as
     /// {@link #onConfirmedDeparture}, with the same bounded duplication and the same `observedBy` key.
+    ///
+    /// Both events honour the change's own `replayed` bit (KVStore dispatcher design §3.5 R3, v-2653 F3): a change raised
+    /// while the store delivered a replay burst is history, so it announces nothing.
     @Contract
     public void onLeaderChange(LeaderNotification.LeaderChange event) {
         event.leaderId()
@@ -1389,7 +1433,8 @@ public final class ClusterEventAggregator {
                                                                    Severity.INFO,
                                                                    "Node " + leaderId.id() + " elected as leader",
                                                                    Map.of("leaderId",
-                                                                          leaderId.id()))))
+                                                                          leaderId.id())),
+                                                 event))
              .onEmpty(() -> {
                           LOG.warn("Leadership lost on {}, election in progress — cluster observability degraded",
                                    selfNode.id());
@@ -1397,7 +1442,8 @@ public final class ClusterEventAggregator {
                                                    Severity.WARNING,
                                                    "Leadership lost, election in progress",
                                                    Map.of("observedBy",
-                                                          selfNode.id())));
+                                                          selfNode.id())),
+                                    event::replayed);
                       });
     }
 

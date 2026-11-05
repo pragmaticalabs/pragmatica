@@ -18,6 +18,7 @@ import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 import org.pragmatica.lang.utils.TimeSource;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -406,22 +407,28 @@ public final class WorkerMetadataClient {
                      .flatMap(bytes -> installSnapshot(bytes, projection));
     }
 
+    /// KVStore dispatcher design §3.7, exit (u): the replay runs after the `synchronized (store)` section, never inside it.
+    /// A dispatched store's replay waits for its burst, and a caller holding the store monitor would wait for itself, so
+    /// the store refuses it (`replay-refused`) and stops the node.
     private Result<Unit> installSnapshot(byte[] bytes, Projection projection) {
+        return installUnderStoreMonitor(bytes, projection).onSuccess(_ -> store.replayNotifications());
+    }
+
+    private Result<Unit> installUnderStoreMonitor(byte[] bytes, Projection projection) {
         synchronized (store) {
             return directoryReceived.apply(projection.peers())
                                     .flatMap(_ -> store.restoreSnapshot(bytes))
-                                    .onSuccess(_ -> {
-                                                   endpointDirectoryReceived.accept(projection.endpoints());
-                                                   projection.dhtReplication()
-                                                             .onPresent(dhtReplicationReceived);
-                                                   assignedWorker = projection.entries()
-                                                                              .get(new AetherKey.ActivationDirectiveKey(self)) instanceof AetherValue.ActivationDirectiveValue directive && AetherValue.ActivationDirectiveValue.WORKER.equals(directive.role());
-                                                   if (assignedWorker) {
-                                                       projectionReady.run();
-                                                   }
+                                    .onSuccess(_ -> projectionInstalled(projection));
+        }
+    }
 
-                                                   store.replayNotifications();
-                                               });
+    @Contract
+    private void projectionInstalled(Projection projection) {
+        endpointDirectoryReceived.accept(projection.endpoints());
+        projection.dhtReplication().onPresent(dhtReplicationReceived);
+        assignedWorker = projection.entries().get(new AetherKey.ActivationDirectiveKey(self)) instanceof AetherValue.ActivationDirectiveValue directive && AetherValue.ActivationDirectiveValue.WORKER.equals(directive.role());
+        if (assignedWorker) {
+            projectionReady.run();
         }
     }
 

@@ -59,6 +59,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.SliceCodec;
+import org.pragmatica.utility.react.ReactExecutor;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import static org.pragmatica.aether.node.AetherNode.enabledBackup;
@@ -138,7 +139,8 @@ public sealed interface ClusterBootstrapAssembly {
                                   AbTestManager abTestManager,
                                   ArrayList<MessageRouter.Entry<?>> allEntries,
                                   LeaderReconciler leaderReconciler,
-                                  BootstrapModule bootstrapModule) {}
+                                  BootstrapModule bootstrapModule,
+                                  ReactExecutor configReact) {}
 
     /// The routes that drive the bootstrap module, the health KV router, the spokesman ping loop (started here) and its KV router.
     static SpokesmanPingLoop bootstrapRouting(BootstrapRoutingInputs in) {
@@ -157,6 +159,7 @@ public sealed interface ClusterBootstrapAssembly {
         var allEntries = in.allEntries();
         var leaderReconciler = in.leaderReconciler();
         var bootstrapModule = in.bootstrapModule();
+        var configReact = in.configReact();
 
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> onLeaderChangeForPublisher(change,
@@ -183,7 +186,8 @@ public sealed interface ClusterBootstrapAssembly {
                                                  .onPut(AetherKey.ClusterConfigKey.class,
                                                         (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue> put) -> onClusterConfigPut(put,
                                                                                                                                                                              clusterTopologyManager,
-                                                                                                                                                                             leaderReconciler))
+                                                                                                                                                                             leaderReconciler,
+                                                                                                                                                                             configReact))
                                                  // #1777 track 1: a committed `[replication]` change re-places the DHT live; R1b: the
                                                  // leader commits the change record it carries
                                                  .onPut(AetherKey.ClusterConfigKey.class,
@@ -336,10 +340,19 @@ public sealed interface ClusterBootstrapAssembly {
     /// Desired core capacity does not change voting authority. The installed voter configuration
     /// changes only after a consensus handoff has established its successor electorate.
     @Contract
-    private static void onClusterConfigPut(ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue> put,
-                                           ClusterTopologyManager clusterTopologyManager,
-                                           LeaderReconciler leaderReconciler) {
+    static void onClusterConfigPut(ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue> put,
+                                   ClusterTopologyManager clusterTopologyManager,
+                                   LeaderReconciler leaderReconciler,
+                                   ReactExecutor react) {
         clusterTopologyManager.onClusterConfigChanged();
+        // D1-react (KVStore dispatcher design §3.5.1 row 68): the cloud-facing reconcile calls are the reaction; the
+        // config-changed state step above stays in absorb. Level-triggered: a dropped reaction heals at the next pass.
+        react.react("cluster-config-reconcile", () -> reconcileOnConfigPut(clusterTopologyManager, leaderReconciler));
+    }
+
+    @Contract
+    private static void reconcileOnConfigPut(ClusterTopologyManager clusterTopologyManager,
+                                             LeaderReconciler leaderReconciler) {
         // RFC-0017 stage 5 — every committed config change (scale, apply, restore) converges worker
         // topology through ONE trigger source. Leader-gated and serialized inside the CTM.
         clusterTopologyManager.reconcileWorkerTopology();

@@ -173,6 +173,7 @@ class ScheduledTaskDrainWiringBootTest {
         KVCommand command = new KVCommand.Put<>(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
             new org.pragmatica.cluster.state.kvstore.LeaderValue(leader, 1));
         store.process(store.createBatch(List.of(command)));
+        KvDelivery.awaitDelivered(store);
     }
 
     /// The leader's heartbeat naming this node in `drainNodes` — the operator-drain wire form.
@@ -184,6 +185,7 @@ class ScheduledTaskDrainWiringBootTest {
         var kvStore = node.kvStore();
 
         kvStore.process(kvStore.createBatch(List.of(command)));
+        KvDelivery.awaitDelivered(kvStore);
     }
 
     private long count(String fragment) {

@@ -13,6 +13,8 @@ import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 
+import java.time.Duration;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Execution;
@@ -86,7 +88,7 @@ class LeaderTermFailoverTest {
         var leader = settledLeader(excluded).unwrap();
         var committed = committedLeader(leader).unwrap();
         var term = mintedTerm(leader);
-        var activation = activationSnapshot(leader);
+        var activation = activationSnapshot(leader, excluded.isPresent());
 
         assertThat(term).as("leader %s term vs its committed viewSequence",
                             leader.self().id())
@@ -97,21 +99,41 @@ class LeaderTermFailoverTest {
                                                            activation.reachedFullMembership());
     }
 
-    /// #1559: the reconciler's LeaderChange route runs BEFORE the one that adopts the committed term, so
-    /// what the pre-latch reads at activation is only visible until the first reconcile pass, which is
-    /// delayed by the activation quiesce and can latch the same flag from observed membership. The
-    /// snapshot is therefore read inside that window, and the window is asserted rather than assumed: a
-    /// snapshot taken after the first pass could not tell the pre-latch from the pass.
-    private static ProvisioningDecisionSnapshot activationSnapshot(AetherNode leader) {
-        var snapshot = leader.provisioningDiagnostics()
-                             .map(ProvisioningDiagnostics::decision)
-                             .unwrap();
+    /// #1559: what the pre-latch sets at activation is only visible until the first reconcile pass, which is
+    /// delayed by the activation quiesce and can latch the same flag from observed membership. The snapshot is
+    /// therefore read inside that window, and the window is asserted rather than assumed: a snapshot taken after
+    /// the first pass could not tell the pre-latch from the pass.
+    ///
+    /// D1-react (#2648): the reconciler activates on the LeaderManager react executor, after the store delivered the
+    /// `LeaderKey` notification, so a leader whose committed `LeaderKey` and minted term are visible may not have
+    /// activated yet. A successor (`awaitActivation`) is therefore polled until its activation latched the flag or its
+    /// first pass ran, whichever comes first; the pass is scheduled by the activation itself, one quiesce later, so a
+    /// pre-latch is always seen first, and a missing one shows as a snapshot taken after the pass (red). The first
+    /// leader of a fresh cluster never pre-latches, so there is nothing to wait for: it is read at once, as before.
+    private static ProvisioningDecisionSnapshot activationSnapshot(AetherNode leader, boolean awaitActivation) {
+        if (awaitActivation) {
+            await().atMost(BUDGET.duration())
+                   .pollInterval(Duration.ofMillis(5))
+                   .until(() -> latchedOrEvaluated(decisionOf(leader)));
+        }
+
+        var snapshot = decisionOf(leader);
 
         assertThat(snapshot.reason()).as("leader %s must be observed before its first reconcile pass",
                                          leader.self().id())
                   .isEqualTo("NOT_EVALUATED");
 
         return snapshot;
+    }
+
+    private static boolean latchedOrEvaluated(ProvisioningDecisionSnapshot snapshot) {
+        return snapshot.reachedFullMembership() || !"NOT_EVALUATED".equals(snapshot.reason());
+    }
+
+    private static ProvisioningDecisionSnapshot decisionOf(AetherNode leader) {
+        return leader.provisioningDiagnostics()
+                     .map(ProvisioningDiagnostics::decision)
+                     .unwrap();
     }
 
     private Option<AetherNode> settledLeader(Option<String> excluded) {

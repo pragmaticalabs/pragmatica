@@ -763,6 +763,39 @@ public enum OperatorWarningCode {
                                "rollback",
                                WarningLevel.INFO,
                                ROLLBACK_RECORD_RECONCILE_EXHAUSTED),
+    /// The node's KV store delivers its notifications more slowly than it commits them (KVStore dispatcher design §3.6): the named
+    /// lag series (`kv.dispatch.lag.batches` or `kv.dispatch.queue.bytes`, the subject) rose over a whole sampling window without
+    /// falling once. A sustained slope, never a threshold: a high but steady lag raises nothing. The undelivered queue is the heap
+    /// it costs. Closed by [#KV_DISPATCH_CAUGHT_UP]. [guess: name, level, subsystem and window]
+    KV_DISPATCH_LAGGING("kv-dispatch-lagging", "kv-store", WarningLevel.WARNING),
+    /// The recovery of [#KV_DISPATCH_LAGGING], same subject: the series is back to zero, the queue drained. INFO, published only
+    /// after a published lagging event for the subject (#752 mechanism).
+    KV_DISPATCH_CAUGHT_UP("kv-dispatch-caught-up", "kv-store", WarningLevel.INFO, KV_DISPATCH_LAGGING),
+    /// One KV notification handler has run longer than the slow-handler threshold (KVStore dispatcher design §3.6, the #1117
+    /// SLOW-APPLY threshold): it holds the node's store's notification delivery, so every later notification waits behind it. The
+    /// subject is the notification type (`ValuePut SliceTargetKey`); the node log carries the dispatcher's stack. Raised at most
+    /// once per type per 10 minutes. Closed by [#KV_DISPATCH_SLOW_HANDLER_RETURNED]. [guess: level]
+    KV_DISPATCH_SLOW_HANDLER("kv-dispatch-slow-handler", "kv-store", WarningLevel.WARNING),
+    /// The recovery of [#KV_DISPATCH_SLOW_HANDLER], same subject: the handler that was reported returned, so delivery moves again.
+    /// INFO, published only after a published slow-handler event for the subject (#752 mechanism).
+    KV_DISPATCH_SLOW_HANDLER_RETURNED("kv-dispatch-slow-handler-returned",
+                                      "kv-store",
+                                      WarningLevel.INFO,
+                                      KV_DISPATCH_SLOW_HANDLER),
+    /// A KV notification handler read a key that a LATER batch than the one it is handling had already written (KVStore
+    /// dispatcher design §3.4): it saw state ahead of its notification. The first such read per key type per process;
+    /// the `kv.dispatch.readahead.reads` counter carries every one. The subject is the key type of the notification being handled
+    /// (`SliceTargetKey`). A point event that opens nothing, so INFO. Known limit: when a type's first read-ahead happens
+    /// during a replay burst, the event is suppressed as replayed and that type raises no further one in this process (the
+    /// counter still counts every read). [guess: level]
+    KV_DISPATCH_READ_AHEAD("kv-dispatch-read-ahead", "kv-store", WarningLevel.INFO),
+    /// The node's KV notification dispatcher failed (KVStore dispatcher design §3.2, owner ruling 1): the store is closed, every
+    /// waiting write fails as outcome-unknown, and the node stops (the production node halts). The subject is the store; the
+    /// node log carries the failure, the batch and a thread dump. No recovery code: a restart is the recovery, as for
+    /// [#STORAGE_WAL_FAIL_STOPPED]. The node's operator-warning sink accepts this event (the publish call returns) before the
+    /// dispatcher calls `stopNode`; the sink hands it off asynchronously, so its delivery to the cluster event stream is
+    /// best-effort once the node halts.
+    KV_DISPATCHER_FAILED("kv-dispatcher-failed", "kv-store", WarningLevel.CRITICAL),
     /// The recovery of [#CONFIG_WATCH_CALLBACK_FAILED], same subject (#774): the next delivery bound and (when it called back) succeeded.
     /// INFO, published only after a published failure for the subject (#752 mechanism).
     CONFIG_WATCH_CALLBACK_RECOVERED("config-watch-callback-recovered",

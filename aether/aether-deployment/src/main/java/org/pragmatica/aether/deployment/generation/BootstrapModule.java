@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -28,6 +29,8 @@ import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.utility.react.ReactExecutor;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -51,8 +54,18 @@ public interface BootstrapModule {
     @Contract
     void onLeaderLost();
 
+    /// Re-drives the core-partition seeding and the cluster-config seed. D1-react (KVStore dispatcher design §3.5.1 rows
+    /// 66/67): the attempt and its `bootstrapAttempts` increment run as one reaction on the installed react executor,
+    /// so a notification absorbed before an engine-only stop does not burn an attempt after it. Every caller (the
+    /// membership tail, a Spokesman put, the restore-decision hook) shares that one seam.
     @Contract
     void retryIfNeeded();
+
+    /// The executor `retryIfNeeded` runs its attempt on. A node installs its gated executor once, at assembly; until
+    /// then (and in a host that installs none) the attempt runs inline, as before D1-react.
+    default Unit installReactExecutor(ReactExecutor executor) {
+        return Unit.unit();
+    }
 
     /// RC1 Step 2: tail `MembershipDecision` events from `TopologyObserver` so the
     /// bootstrap module retries its core-partition seeding whenever the membership
@@ -81,7 +94,8 @@ public interface BootstrapModule {
                                          configBaselineSupplier,
                                          Option.some(cluster),
                                          new AtomicBoolean(false),
-                                         new AtomicInteger());
+                                         new AtomicInteger(),
+                                         new AtomicReference<>(ReactExecutor.inline("BootstrapModule")));
     }
 }
 
@@ -95,7 +109,8 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
                              Supplier<BootstrapModule.ClusterConfigBaseline> configBaselineSupplier,
                              Option<ClusterNode<KVCommand<AetherKey>>> cluster,
                              AtomicBoolean bootstrapComplete,
-                             AtomicInteger bootstrapAttempts) implements BootstrapModule {
+                             AtomicInteger bootstrapAttempts,
+                             AtomicReference<ReactExecutor> react) implements BootstrapModule {
     private static final Logger log = LoggerFactory.getLogger(BootstrapModuleRecord.class);
     private static final int SEED_CORE_MIN = 3;
     private static final int SEED_CORE_MAX = 15;
@@ -120,7 +135,14 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
     @Contract
     @Override
     public void retryIfNeeded() {
-        retryBootstrapIfNeeded();
+        react.get().react("bootstrap-retry", this::retryBootstrapIfNeeded);
+    }
+
+    @Override
+    public Unit installReactExecutor(ReactExecutor executor) {
+        react.set(executor);
+
+        return Unit.unit();
     }
 
     @Contract

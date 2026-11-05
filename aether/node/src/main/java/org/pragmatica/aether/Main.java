@@ -62,10 +62,14 @@ import org.pragmatica.aether.node.SwimGossipEncryptors;
 import org.pragmatica.aether.node.labels.ContainerLabelInspector;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.cluster.state.kvstore.DispatcherFailureSink;
+import org.pragmatica.cluster.state.kvstore.FatalEscapeRelay;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.FatalEscapeHandler;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
@@ -97,6 +101,11 @@ public record Main(String[] args) {
     record TlsBundle(org.pragmatica.net.tcp.TlsConfig tls, CertificateProvider provider) {}
 
     private void run() {
+        // KVStore dispatcher design 8.1: first statement, so an Error escaping a continuation anywhere in this
+        // process (a static initializer before main included) reaches the same failure sink the node's store gets.
+        var dispatcherSink = DispatcherFailureSink.once(kvDispatcherSink(Main::flushLogs, Runtime.getRuntime()::halt));
+
+        installFatalEscapeRelay(dispatcherSink).expect("unreachable: Main installs the fatal-escape hook first");
         publishConfigPath();
         var aetherConfig = loadConfig();
 
@@ -140,7 +149,9 @@ public record Main(String[] args) {
         enforceIdentityLedgerBootable(config);
         // Review catch (#634 batch): assembly failures — the routed-type codec guard included — get
         // the same FATAL + exit shape as the other boot gates, not an uncaught-exception stack trace.
-        var node = AetherNode.aetherNode(config).onFailure(this::abortBoot).expect("unreachable: abortBoot exits");
+        var node = AetherNode.aetherNode(config, dispatcherSink)
+                             .onFailure(this::abortBoot)
+                             .expect("unreachable: abortBoot exits");
 
         registerShutdownHook(node);
         startNodeAndWait(node, nodeId);
@@ -964,6 +975,43 @@ public record Main(String[] args) {
         } finally {
             haltFn.accept(AetherNode.EXIT_CONSENSUS_RESTORE_FAILED);
         }
+    }
+
+    /// Installs the process-wide fatal-escape hook (design 8.1): every `Error` escaping a `Promise` continuation stops
+    /// the node through `sink`. A second installer in the process is refused with `FatalEscapeError.ALREADY_INSTALLED`.
+    static Result<FatalEscapeHandler.Registration> installFatalEscapeRelay(DispatcherFailureSink sink) {
+        return Promise.installFatalEscapeHandler(FatalEscapeRelay.fatalEscapeRelay(sink));
+    }
+
+    /// The in-JVM-cluster host's install (design 8.1, "Who installs what", Forge row; #2652): the relay with the production
+    /// sink, so an `Error` escaping any continuation stops the whole Forge JVM as it does on OOM (ruling 5). The Forge
+    /// launcher's `main` calls it; `halt` is injected so the sink stays testable.
+    public static Result<FatalEscapeHandler.Registration> installHostFatalEscapeRelay(IntConsumer haltFn) {
+        return installFatalEscapeRelay(DispatcherFailureSink.once(kvDispatcherSink(Main::flushLogs, haltFn)));
+    }
+
+    /// The production KV dispatcher failure sink (KVStore dispatcher design §3.2 step 3, exit (s)): the
+    /// [#exitConsensusRestoreFailed] shape with its own code, [AetherNode#EXIT_KV_DISPATCHER_FAILED].
+    static DispatcherFailureSink kvDispatcherSink(Runnable flushLogs, IntConsumer haltFn) {
+        return (reason, cause) -> exitKvDispatcherFailed(reason, cause, flushLogs, haltFn);
+    }
+
+    /// FATAL first, then the log flush bounded by [#FLUSH_TIMEOUT], then `halt` in a `finally`: `halt` runs no shutdown
+    /// hook, so none can wait on the dead dispatcher (#838), and flushes no appender of its own. The store already logged
+    /// the handler, the sequence numbers and a thread dump before calling this.
+    static Unit exitKvDispatcherFailed(String reason, Throwable cause, Runnable flushLogs, IntConsumer haltFn) {
+        log.error("FATAL: this node's KV notification dispatcher failed ({}): {}. It holds committed state it can no longer "
+                 + "deliver to its own components, so it stops instead of serving it. Exiting with code {}; a restart re-syncs it.",
+                  reason,
+                  cause.toString(),
+                  AetherNode.EXIT_KV_DISPATCHER_FAILED);
+        try {
+            flushLogs.run();
+        } finally {
+            haltFn.accept(AetherNode.EXIT_KV_DISPATCHER_FAILED);
+        }
+
+        return Unit.unit();
     }
 
     /// #1052 fix round 2 (N-2): a stop requested while the DHT encryption-marker check is still retrying

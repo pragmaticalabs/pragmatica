@@ -5,6 +5,7 @@
 package org.pragmatica.aether.api;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.controller.RollbackEvent;
@@ -51,6 +52,7 @@ import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import java.time.Instant;
+import java.util.concurrent.TimeUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
@@ -66,6 +68,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// generated `ApiCodecsNode.CODECS`, B5a), and wired via {@link SystemStreamFactories}. This drives
 /// the full create -> publish -> codec -> store -> fetch path, plus the owner-gated emit (folds B3)
 /// and the production count/byte/age retention.
+@Timeout(value = 60, unit = TimeUnit.SECONDS)
 class ClusterEventAggregatorTest {
 
     private static final NodeId SELF = new NodeId("self-node");
@@ -661,6 +664,48 @@ class ClusterEventAggregatorTest {
         var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, NOT_LEADER);
         h.aggregator().onLeaderChange(LeaderNotification.leaderChange(Option.some(new NodeId("other")), false));
         assertThat(h.events()).isEmpty();
+    }
+
+    /// R5.8 (D1-react G2b): the LEADER_ELECTED verdict is the notification's `localNodeIsLeader`, not a re-read of the
+    /// leader check. The check is stale (says not leader); the fresh payload says this node leads: the event is emitted.
+    /// Reverting `emitAsLeader(event, localNodeIsLeader)` to the `leaderCheck` form turns this red.
+    @Test
+    void onLeaderChange_emitsLeaderElected_whenPayloadSaysLocalLeaderButCheckIsStale() {
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, NOT_LEADER);
+        h.aggregator().onLeaderChange(LeaderNotification.leaderChange(Option.some(SELF), true));
+
+        assertThat(h.events()).hasSize(1);
+        assertThat(h.events().getFirst()).isInstanceOf(ClusterEvent.LeaderElected.class);
+    }
+
+    /// The mirror: the check is stale the other way (still says leader) while the payload says another node leads.
+    @Test
+    void onLeaderChange_suppressesLeaderElected_whenPayloadSaysNotLeaderButCheckIsStale() {
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, LEADER);
+        h.aggregator().onLeaderChange(LeaderNotification.leaderChange(Option.some(new NodeId("other")), false));
+
+        assertThat(h.events()).isEmpty();
+    }
+
+    /// R3 (v-2653 F3): a LeaderChange raised inside a replay burst reaches this receiver on the react executor, where
+    /// `replayingCheck` reads false; the change's own `replayed` bit suppresses the historical LEADER_ELECTED. The live
+    /// control is [#onLeaderChange_emitsLeaderElected_whenPayloadSaysLocalLeaderButCheckIsStale].
+    @Test
+    void onLeaderChange_replayedSelfElection_announcesNothing() {
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, LEADER);
+        h.aggregator().onLeaderChange(LeaderNotification.leaderChange(Option.some(SELF), true, true));
+
+        assertThat(h.events()).as("a replayed election is history: no LEADER_ELECTED").isEmpty();
+    }
+
+    /// R3 (v-2653 F3): the same for LEADER_LOST, which is not leader-gated, so only the replay bit can suppress it. The
+    /// live control is [#noLeader_stillEmitsLeaderLost].
+    @Test
+    void onLeaderChange_replayedLeaderLoss_announcesNothing() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().onLeaderChange(LeaderNotification.leaderChange(Option.none(), false, true));
+
+        assertThat(h.events()).as("a replayed leader loss is history: no LEADER_LOST").isEmpty();
     }
 
     /// #926 — `QUORUM_LOST` is the most severe event this class emits and was the least emittable: a
@@ -2697,6 +2742,8 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.JSON_CONFIG_APPLIED,
                 OperatorWarningCode.CONFIG_WATCH_CALLBACK_RECOVERED,
                 OperatorWarningCode.ROLLBACK_RECORD_RECONCILED,
+                OperatorWarningCode.KV_DISPATCH_CAUGHT_UP,
+                OperatorWarningCode.KV_DISPATCH_SLOW_HANDLER_RETURNED,
             });
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactlyInAnyOrder(new OperatorWarningCode[]{
@@ -2757,6 +2804,8 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.UPLOAD_BYTE_BUDGET_EXHAUSTED,
                 OperatorWarningCode.CONFIG_WATCH_CALLBACK_FAILED,
                 OperatorWarningCode.ROLLBACK_RECORD_RECONCILE_EXHAUSTED,
+                OperatorWarningCode.KV_DISPATCH_LAGGING,
+                OperatorWarningCode.KV_DISPATCH_SLOW_HANDLER,
             });
         var recoveries = java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).count();
         var t = new AtomicLong(1_000_000L);

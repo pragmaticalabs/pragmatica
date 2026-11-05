@@ -9,10 +9,12 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipTransitionRecord;
 import org.pragmatica.aether.node.assembly.MembershipAssembly;
@@ -42,6 +44,7 @@ import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.statemachine.FsmObserver;
 
+import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// #1339 / #1732 — the stream replica-set reconcile is a pure function of CURRENT state, so it is correct exactly
@@ -57,6 +60,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// Every test below isolates ONE input change, asserts first that the registry/commit has NOT moved without the
 /// trigger, and goes through the production wiring (`wireReplicaSetInputTriggers`, `onFsmTransition` hook,
 /// `livePlacementMembers`) with the real FSM, the real controller and the real ownership writer.
+@Timeout(value = 60, unit = SECONDS)
 class AetherNodeReplicaSetTriggersTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
@@ -69,6 +73,7 @@ class AetherNodeReplicaSetTriggersTest {
     private final List<Consumer<VoterConfiguration>> voterListeners = new ArrayList<>();
     private final AtomicReference<Option<NodeId>> committedOwner = new AtomicReference<>(Option.none());
     private final AtomicBoolean leader = new AtomicBoolean(false);
+    private final AtomicInteger passes = new AtomicInteger();
     private final List<KVCommand<AetherKey>> commits = new ArrayList<>();
     private final List<MessageRouter.Entry<?>> entries = new ArrayList<>();
     private final AtomicReference<ReplicaSetController> controllerRef = new AtomicReference<>();
@@ -100,13 +105,18 @@ class AetherNodeReplicaSetTriggersTest {
                                                                                                        replicationFactor,
                                                                                                        0)),
                                                               (_, _) -> {},
-                                                              (List<PartitionKey> reconciled) -> applyCommits(writer.writeOwnershipChanges(reconciled)),
+                                                              (List<PartitionKey> reconciled) -> applyPass(writer, reconciled),
                                                               Runnable::run);
         controllerRef.set(controller);
         controller.committedOwnerSource((_, _) -> committedOwner.get());
         StreamAssembly.wireReplicaSetInputTriggers(entries, controller::reconcile, this::voterSource);
         fsm.onTransition(record -> MembershipAssembly.reconcileReplicaSetOnCountedBoundary(controllerRef, record));
         controller.reconcile();
+    }
+
+    private void applyPass(StreamPartitionOwnershipWriter writer, List<PartitionKey> reconciled) {
+        passes.incrementAndGet();
+        applyCommits(writer.writeOwnershipChanges(reconciled));
     }
 
     private static StreamPartitionOwnershipValue ownership(NodeId owner) {
@@ -195,6 +205,33 @@ class AetherNodeReplicaSetTriggersTest {
         assertThat(committedOwner.get()).as("the committed owner moved off the departed node")
                                         .isNotEqualTo(Option.some(B))
                                         .isNotEqualTo(Option.none());
+    }
+
+    /// R5.8 exemption of `wireReplicaSetInputTriggers`' LeaderChange route (D1-react ruling): the route ignores the
+    /// event's payload because the reconcile reads CURRENT state on every pass, so a pass that read a stale view is
+    /// repaired by the next trigger. Here the leadership event is delivered before the writer's live leader gate has
+    /// caught up: that pass runs (stale read, writes nothing); once the gate converges, the next event's pass must
+    /// re-read it and commit. A reconcile that skipped its re-read (acted on its previous view) would never commit.
+    @Test
+    void leaderChangeDeliveredBeforeTheLiveGateConverges_theNextEventsPassRereadsAndCommits() {
+        assemble(2);
+        committedOwner.set(Option.some(B));
+        fsm.onDrainRequested(B);
+        controller.onMembershipDecision(MembershipDecision.nodeRemoved(B, List.of(A, C)));
+        var passesBefore = passes.get();
+
+        fire(LeaderNotification.leaderChange(Option.some(A), true));
+
+        assertThat(passes.get()).as("the event ran a pass, which read the stale gate").isEqualTo(passesBefore + 1);
+        assertThat(commits).as("stale read: the gate still says follower, nothing is written").isEmpty();
+
+        leader.set(true);
+        fire(LeaderNotification.leaderChange(Option.some(A), true));
+
+        assertThat(passes.get()).as("the next event ran another pass (the commit's own ownership put may add a third)")
+                                .isGreaterThanOrEqualTo(passesBefore + 2);
+        assertThat(commits).as("the second pass re-read the converged gate and committed").hasSize(1);
+        assertThat(committedOwner.get()).isNotEqualTo(Option.some(B)).isNotEqualTo(Option.none());
     }
 
     // ---- committed ownership record ---------------------------------------------------------------------

@@ -283,7 +283,7 @@ if echo "$TARGETS" | grep -q "forge"; then
         "aether-forge" \
         "$AETHER_DIR/forge/forge-core/target/aether-forge.jar" \
         "aether-forge" \
-        "-XX:+UseZGC -Xmx1g" \
+        "-XX:+ExitOnOutOfMemoryError -XX:+UseZGC -Xmx1g" \
         "Forge is the Aether cluster simulator: a REST API for load and chaos control.
 
 Default port: 8888

@@ -380,7 +380,7 @@ class BootstrapModuleTest {
         }
     }
 
-    private static final class RecordingClusterNode implements ClusterNode<KVCommand<AetherKey>> {
+    static final class RecordingClusterNode implements ClusterNode<KVCommand<AetherKey>> {
         final List<List<KVCommand<AetherKey>>> batches = new ArrayList<>();
         private final boolean lateCommits;
         private Promise<?> applied = Promise.success(Unit.unit());

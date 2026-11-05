@@ -22,6 +22,7 @@ import java.util.HexFormat;
 import java.util.List;
 
 import org.pragmatica.consensus.rabia.CorrelationId;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
@@ -101,6 +102,17 @@ public interface StateMachine<C extends Command> {
     /// replay as a competing write). Default no-op for state machines that have no notification
     /// surface.
     default Unit replayNotifications() {
+        return Unit.unit();
+    }
+
+    /// Completes a committed write's apply promise with `value`. Called by the engine right after [#processCommitted]
+    /// returned, on the applying thread. A state machine that delivers notifications asynchronously completes it only
+    /// after the notifications of that batch are delivered, so a caller that reads after the promise resolves reads its
+    /// own write in every subscriber's view (P3, KVStore dispatcher design §3.3); the engine learns nothing about how.
+    /// Default: at once, on the calling thread.
+    default <T> Unit completeAfterDelivery(Promise<T> promise, T value) {
+        promise.succeed(value);
+
         return Unit.unit();
     }
 

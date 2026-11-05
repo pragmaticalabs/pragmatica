@@ -2,7 +2,8 @@
 """Verify that selected authority guarantees have tests which reject their removal.
 
 Run in the foundation PR worktree after installing its dependencies. Temporarily mutates only
-KVStore.java, restores its exact bytes after every run, and refuses pre-existing edits to it.
+KVStore.java and NotificationDispatcher.java (the inline drain guard lives there since D1), restores their exact bytes
+after every run, and refuses pre-existing edits to either.
 Results/logs are written under target/hierarchy-mutations. This is not a performance benchmark.
 
 A kill is credited from a FAILING TEST, not from a failing build, so the suite must be green before
@@ -23,13 +24,22 @@ import time
 import xml.etree.ElementTree as ET
 
 root = Path(__file__).resolve().parents[1]
-relative = 'integrations/cluster/src/main/java/org/pragmatica/cluster/state/kvstore/KVStore.java'
-source = root / relative
-original = source.read_bytes()
-committed = subprocess.check_output(['git', 'show', 'HEAD:' + relative], cwd=root)
-if original != committed:
-    sys.exit('Refusing to mutate an edited KVStore.java')
-text = original.decode()
+directory = 'integrations/cluster/src/main/java/org/pragmatica/cluster/state/kvstore/'
+store_file = directory + 'KVStore.java'
+dispatcher_file = directory + 'NotificationDispatcher.java'
+originals = {}
+for relative in (store_file, dispatcher_file):
+    originals[relative] = (root / relative).read_bytes()
+    if originals[relative] != subprocess.check_output(['git', 'show', 'HEAD:' + relative], cwd=root):
+        sys.exit('Refusing to mutate an edited ' + relative)
+texts = {relative: original.decode() for relative, original in originals.items()}
+
+
+def restore():
+    for relative, original in originals.items():
+        (root / relative).write_bytes(original)
+
+
 output = root / 'target/hierarchy-mutations'
 output.mkdir(parents=True, exist_ok=True)
 mutations = [
@@ -41,8 +51,8 @@ mutations = [
      '((E) owner.fenceEpoch()).compareTo(committed.fenceEpoch()) >= 0', 'KVStoreOwnerFenceTest'),
     ('canonical-snapshot', 'serializer.canonical()\n                                           .encode(new HashMap<>(storage))',
      'serializer\n                                           .encode(new HashMap<>(storage))', 'KVStoreCanonicalSnapshotTest'),
-    ('reentrant-dispatch', 'if (dispatching) {', 'if (false) {',
-     'KVStoreNotificationIsolationTest#reentrantNotificationSeesStoreAfterAllNestedApplies'),
+    ('reentrant-dispatch', 'if (draining) {', 'if (false) {',
+     'KVStoreNotificationIsolationTest#reentrantNotificationSeesStoreAfterAllNestedApplies', dispatcher_file),
     ('atomic-reader', 'public synchronized Map<K, V> snapshot()', 'public Map<K, V> snapshot()',
      'KVStoreNotificationIsolationTest#snapshotCannotObserveHalfAppliedBatch'),
     ('leader-authority', 'transaction.leader().equals(storage.get(LeaderKey.INSTANCE))', 'true',
@@ -87,7 +97,7 @@ def run(name, test, timeout):
 baseline_command, baseline, baseline_reports = run('baseline', 'KVStore*Test', 300)
 baseline_failures = count_failures(baseline_reports.values())
 baseline_cases = sum(1 for suite in baseline_reports.values() for _ in suite.iter('testcase'))
-missing = sorted(target for target in {test.split('#')[0] for _, _, _, test in mutations}
+missing = sorted(target for target in {test.split('#')[0] for _, _, _, test, *_ in mutations}
                  if not any(fnmatch.fnmatch(reported, target) for reported in baseline_reports))
 if baseline.returncode != 0 or baseline_failures or missing or not baseline_cases:
     sys.exit(f'Refusing to score mutations: the baseline is not a green run of every target class '
@@ -98,19 +108,21 @@ if baseline.returncode != 0 or baseline_failures or missing or not baseline_case
 print('baseline', f'GREEN ({baseline_cases} tests, {len(baseline_reports)} classes)', flush=True)
 results = []
 try:
-    for name, before, after, test in mutations:
+    for name, before, after, test, *file in mutations:
+        relative = file[0] if file else store_file
+        text = texts[relative]
         if text.count(before) != 1:
             raise RuntimeError(f'{name}: mutation boundary not unique')
-        source.write_text(text.replace(before, after, 1))
+        (root / relative).write_text(text.replace(before, after, 1))
         command, mutated, mutated_reports = run(name, test, 180)
         failures = count_failures(mutated_reports.values())
         killed = mutated.returncode != 0 and failures > 0
         results.append(dict(mutation=name, test=test, command=command, exit=mutated.returncode,
                             assertion_failures=failures, killed=killed))
         print(name, 'KILLED' if killed else 'NOT VERIFIED', flush=True)
-        source.write_bytes(original)
+        restore()
 finally:
-    source.write_bytes(original)
+    restore()
     (output / 'results.json').write_text(json.dumps(dict(
         source_commit=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip(),
         worktree=str(root),
