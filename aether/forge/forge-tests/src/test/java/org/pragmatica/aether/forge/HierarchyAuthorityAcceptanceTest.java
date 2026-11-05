@@ -97,7 +97,7 @@ class HierarchyAuthorityAcceptanceTest {
             await().atMost(BUDGET.duration()).until(() -> worker.connectedPeerIds().contains(cold.self()));
             // Genuine core snapshot, but the authenticated response sender is a WORKER.
             var falseVote = new SyncResponse<>(worker.self(), coreState.state(), coreState.responder());
-            assertThat(runtime(worker).network().sendOutcome(cold.self(), falseVote).await(REQUEST).unwrap().isSent()).isTrue();
+            assertThat(runtime(worker).network().send(cold.self(), falseVote).await(REQUEST).unwrap().isSent()).isTrue();
         }
         await().during(2, TimeUnit.SECONDS).atMost(5, TimeUnit.SECONDS).untilAsserted(() -> {
             assertThat(runtime(cold).isActive()).as("four workers cannot replace core synchronization evidence").isFalse();
@@ -149,7 +149,7 @@ class HierarchyAuthorityAcceptanceTest {
             int previousSeen = seen.get();
             var ping = new ClusterSyncPing(sender.self(), Map.of(), term, 0L, term, 1, Set.of(),
                 Set.of(receiver.self()), Map.of(receiver.self(), "DRAINING"), Set.of(), true, true);
-            assertThat(runtime(sender).network().sendOutcome(receiver.self(), ping).await(REQUEST).unwrap().isSent()).isTrue();
+            assertThat(runtime(sender).network().send(receiver.self(), ping).await(REQUEST).unwrap().isSent()).isTrue();
             await().atMost(REQUEST.duration()).until(() -> seen.get() > previousSeen && pongs.get() > previousPongs);
             assertThat(receiver.inFlightRequestTracker().isAcceptingNewWork()).isTrue();
             assertThat(receiver.metricsCollector().observedRabiaTerm()).isLessThan(Long.MAX_VALUE - 1);
@@ -181,7 +181,7 @@ class HierarchyAuthorityAcceptanceTest {
         var overlapping = new org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot(community, producer.self(), 2,
             List.of(), sample.observedAtMs(), sample.incarnation(), sample.sequence() + 1);
         var batch = new org.pragmatica.aether.worker.metrics.SourceMetricsBatch(relay.self(), List.of(typed, typed, overlapping));
-        assertThat(runtime(relay).network().sendOutcome(receiver.self(), batch).await(REQUEST).unwrap().isSent()).isTrue();
+        assertThat(runtime(relay).network().send(receiver.self(), batch).await(REQUEST).unwrap().isSent()).isTrue();
         await().atMost(REQUEST.duration()).untilAsserted(() ->
             assertThat(receiver.controlLoop().communitySnapshots().get(producer.self().id())).isEqualTo(typed));
         assertThat(receiver.controlLoop().communitySnapshots().values().stream()
@@ -189,7 +189,7 @@ class HierarchyAuthorityAcceptanceTest {
         // Repeated receipts continue through expiry. They must not reset the producer timestamp.
         await().atMost(REQUEST.duration()).until(() -> {
             sendObservation(relay, receiver, producer.self(), sample);
-            assertThat(runtime(relay).network().sendOutcome(receiver.self(), batch).await(REQUEST).unwrap().isSent()).isTrue();
+            assertThat(runtime(relay).network().send(receiver.self(), batch).await(REQUEST).unwrap().isSent()).isTrue();
             return receiver.metricsCollector().metricsFor(producer.self()).isEmpty()
                 && !receiver.controlLoop().communitySnapshots().containsKey(producer.self().id());
         });
@@ -200,7 +200,7 @@ class HierarchyAuthorityAcceptanceTest {
         org.pragmatica.cluster.metrics.MetricObservation observation) {
         var ping = new ClusterSyncPing(sender.self(), Map.of(producer, observation), 0, 0L, 0, 0,
             Set.of(), Set.of(), Map.of(), Set.of(), false, false);
-        assertThat(runtime(sender).network().sendOutcome(receiver.self(), ping).await(REQUEST).unwrap().isSent()).isTrue();
+        assertThat(runtime(sender).network().send(receiver.self(), ping).await(REQUEST).unwrap().isSent()).isTrue();
     }
 
     private void assertPromotionRefused(AetherNode target, String requested) {

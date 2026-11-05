@@ -15,6 +15,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.NotificationDelivery;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.lang.Option;
@@ -472,6 +473,74 @@ class WorkerMetadataChannelTest {
         assertThat(fixture.client.hasFreshProjection()).isFalse();
     }
 
+    /// KVStore dispatcher design §3.7, exit (u), the install arm: on a dispatched worker store the client's replay runs
+    /// after its `synchronized (store)` section, so the install completes within its bound and nothing is refused.
+    /// Mutation: move the replay back inside `synchronized (store)`: the store refuses it (`replay-refused`), red.
+    @Test
+    void installOnADispatchedStoreReplaysOutsideTheStoreMonitor() {
+        var stops = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        var fixture = new Fixture(LIMITS, LIMITS, NotificationDelivery.dispatched("worker-install", (reason, cause) -> recordStop(stops, reason, cause)));
+
+        try {
+            fixture.seed(1, "initial");
+            fixture.client.tick();
+            org.junit.jupiter.api.Assertions.assertTimeoutPreemptively(java.time.Duration.ofSeconds(10), fixture::pump);
+
+            assertThat(stops).as("no replay refusal").isEmpty();
+            assertThat(fixture.worker.getTyped(fixture.configKey, AetherValue.ConfigValue.class).unwrap().value()).isEqualTo("initial");
+            assertThat(fixture.ready).hasValue(1);
+        } finally {
+            fixture.worker.close();
+        }
+    }
+
+    /// Exit (y), R3.6: with the core store's dispatcher held, a capture refuses and `workerMetadata.capture.refused`
+    /// rises; after release the same request is served. Mutation: read `hasPendingNotifications()` as false (red).
+    @Test
+    void captureUnderAHeldDispatcherIsRefusedAndCountedThenServedAfterRelease() {
+        var hold = org.pragmatica.cluster.state.kvstore.HeldDelivery.heldDelivery().holdFrom(1);
+        var fixture = new Fixture(LIMITS,
+                                  LIMITS,
+                                  NotificationDelivery.inline(),
+                                  NotificationDelivery.dispatched("core-capture",
+                                                                  org.pragmatica.cluster.state.kvstore.DispatcherFailureSink.loggingOnly(),
+                                                                  hold));
+
+        try {
+            fixture.seed(1, "initial");
+            assertThat(hold.awaitHeld(10)).as("the core dispatcher is held before batch 1").isTrue();
+            fixture.client.tick();
+            var request = (WorkerMetadataMessage.ManifestRequest) fixture.requests.remove();
+
+            fixture.server.onManifestRequest(request);
+            assertThat(fixture.server.resourceMetrics()).containsEntry("workerMetadata.capture.refused", 1L);
+            assertThat(servedManifests(fixture)).as("the refused capture serves no projection").isZero();
+
+            hold.release();
+            fixture.core.awaitDelivered(fixture.core.enqueuedSeq()).await();
+            fixture.server.onManifestRequest(request);
+            assertThat(servedManifests(fixture)).as("after release the same request is served").isEqualTo(1);
+            assertThat(fixture.server.resourceMetrics()).containsEntry("workerMetadata.capture.refused", 1L);
+        } finally {
+            hold.release();
+            fixture.core.close();
+        }
+    }
+
+    private static long servedManifests(Fixture fixture) {
+        return fixture.responses.stream()
+                                .filter(WorkerMetadataMessage.Manifest.class::isInstance)
+                                .map(WorkerMetadataMessage.Manifest.class::cast)
+                                .filter(manifest -> manifest.error().isEmpty())
+                                .count();
+    }
+
+    private static org.pragmatica.lang.Unit recordStop(List<String> stops, String reason, Throwable cause) {
+        stops.add(reason + ": " + cause.getMessage());
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
     private static WorkerMetadataLimits limits(int chunkBytes, long bandwidth, int scopes) {
         return new WorkerMetadataLimits(chunkBytes, LIMITS.scopeBytes(), LIMITS.cacheBytes(), bandwidth,
             LIMITS.manifests(), scopes, LIMITS.manifestTtl(), LIMITS.pollInterval());
@@ -481,8 +550,8 @@ class WorkerMetadataChannelTest {
         final org.pragmatica.serialization.SliceCodec codec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
 
         final MessageRouter.MutableRouter router = MessageRouter.mutable();
-        final KVStore<AetherKey, AetherValue> core = new KVStore<>(router, codec, codec);
-        final KVStore<AetherKey, AetherValue> worker = new KVStore<>(MessageRouter.mutable(), codec, codec);
+        final KVStore<AetherKey, AetherValue> core;
+        final KVStore<AetherKey, AetherValue> worker;
         final ArrayDeque<ProtocolMessage> requests = new ArrayDeque<>();
         final ArrayDeque<ProtocolMessage> responses = new ArrayDeque<>();
         final AtomicInteger ready = new AtomicInteger();
@@ -501,6 +570,19 @@ class WorkerMetadataChannelTest {
         Fixture() { this(LIMITS, LIMITS); }
 
         Fixture(WorkerMetadataLimits serverLimits, WorkerMetadataLimits clientLimits) {
+            this(serverLimits, clientLimits, NotificationDelivery.inline());
+        }
+
+        Fixture(WorkerMetadataLimits serverLimits, WorkerMetadataLimits clientLimits, NotificationDelivery workerDelivery) {
+            this(serverLimits, clientLimits, workerDelivery, NotificationDelivery.inline());
+        }
+
+        Fixture(WorkerMetadataLimits serverLimits,
+                WorkerMetadataLimits clientLimits,
+                NotificationDelivery workerDelivery,
+                NotificationDelivery coreDelivery) {
+        core = new KVStore<>(router, codec, codec, coreDelivery);
+        worker = new KVStore<>(MessageRouter.mutable(), codec, codec, workerDelivery);
         server = new WorkerMetadataServer(CORE,
                                                                      core,
                                                                      codec,

@@ -15,6 +15,7 @@ import java.util.function.Supplier;
 import org.pragmatica.aether.config.CommunitySizing;
 import org.pragmatica.aether.deployment.cluster.CommunityPolicyView;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.cluster.fsm.write.FsmWriter;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -35,7 +36,7 @@ import org.pragmatica.statemachine.Fsm;
 public final class ClusterDeploymentContext {
     private final Fsm<ClusterDeploymentState, ClusterFsmEvent> fsm;
     private final NodeId self;
-    private final ClusterNode<KVCommand<AetherKey>> cluster;
+    private final FsmWriter writer;
     private final KVStore<AetherKey, AetherValue> kvStore;
     private final MessageRouter router;
     private final TopologyManager topologyManager;
@@ -209,7 +210,7 @@ public final class ClusterDeploymentContext {
                                     CommunitySizing communitySizing) {
         this.fsm = fsm;
         this.self = self;
-        this.cluster = cluster;
+        this.writer = FsmWriter.fsmWriter(cluster, kvStore, self);
         this.kvStore = kvStore;
         this.router = router;
         this.topologyManager = topologyManager;
@@ -304,6 +305,8 @@ public final class ClusterDeploymentContext {
     }
 
     public ClusterDeploymentState.Active newActive() {
+        var deactivated = new AtomicBoolean(false);
+
         return new ClusterDeploymentState.Active(this,
                                                  new ConcurrentHashMap<>(),
                                                  new ConcurrentHashMap<>(),
@@ -317,9 +320,11 @@ public final class ClusterDeploymentContext {
                                                  new ConcurrentHashMap<>(),
                                                  new ConcurrentHashMap<>(),
                                                  new ConcurrentHashMap<>(),
+                                                 new ConcurrentHashMap<>(),
                                                  ConcurrentHashMap.newKeySet(),
                                                  new AtomicInteger(0),
-                                                 new AtomicBoolean(false),
+                                                 deactivated,
+                                                 writer.openTerm(deactivated::get),
                                                  CancellableTask.cancellableTask());
     }
 
@@ -327,8 +332,8 @@ public final class ClusterDeploymentContext {
         return self;
     }
 
-    public ClusterNode<KVCommand<AetherKey>> cluster() {
-        return cluster;
+    public FsmWriter writer() {
+        return writer;
     }
 
     public KVStore<AetherKey, AetherValue> kvStore() {

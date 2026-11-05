@@ -44,7 +44,7 @@ public final class AsyncSqlConnectorFactory implements ResourceFactory<SqlConnec
         configureConnection(builder, config);
         configurePool(builder, config);
 
-        return PgAsyncSqlConnector.pgAsyncSqlConnector(config, builder.pool());
+        return PgAsyncSqlConnector.pgAsyncSqlConnector(config, builder.pool(), builder.plain());
     }
 
     private static void configureConnection(NettyConnectibleBuilder builder, DatabaseConnectorConfig config) {

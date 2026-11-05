@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentNavigableMap;
 
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -25,6 +26,8 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.StateMachine;
+import org.pragmatica.consensus.rabia.RabiaEngine;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 
@@ -43,7 +46,10 @@ import com.sun.net.httpserver.HttpServer;
 ///
 /// Endpoints (text, one `name value` pair per line, loopback only):
 /// - `/m1/health` — `ok <nodeId>` once installed, `waiting` before, `failed <reason>` if installation threw;
-/// - `/m1/snapshot` — `now.ms`, `node`, then every counter of [M1Instrument#snapshot];
+/// - `/m1/snapshot` — `now.ms`, `node`, `heap.used` and `heap.max` (gauges of this JVM, bytes), then every counter of
+///   [M1Instrument#snapshot];
+/// - `/m1/pending` — the consensus engine's pending batches: `count`, then for the head (oldest id) `head.id`, `head.commands` and
+///   `head.timestamp`. Read-only; the idle-storm flag dumps it from a core that reports pending batches;
 /// - `/m1/ops?since=<epoch ms>` — for each op in the commit log at or after `since`, the epoch ms of its last commit (the settle rule);
 /// - `/m1/admit?node=<id>&role=<worker|core>` — on the LEADER core only: commits an OBSERVED `CapacityReservation` for a node the harness is
 ///   about to start, by leader transaction. Without it a hand-started node is never admitted
@@ -56,6 +62,7 @@ public final class M1ProbeAgent {
     private static final TimeSpan ADMIT_BOUND = TimeSpan.timeSpan(20).seconds();
     private static volatile M1Instrument instrument;
     private static volatile AetherNode node;
+    private static volatile RabiaEngine<?> engine;
     private static volatile String status = "waiting";
     private static volatile long baseMs;
     private static volatile long baseNanos;
@@ -106,6 +113,7 @@ public final class M1ProbeAgent {
                     baseNanos = System.nanoTime();
                     instrument = M1Instrument.install(found);
                     node = found;
+                    engine = (RabiaEngine<?>) M1Instrument.find(found, RabiaEngine.class);
                     status = "ok " + instrument.nodeId();
                     System.err.println("[m1probe] installed on " + instrument.nodeId() + ", serving 127.0.0.1:" + port);
 
@@ -186,6 +194,7 @@ public final class M1ProbeAgent {
         server.createContext("/m1/snapshot", M1ProbeAgent::snapshot);
         server.createContext("/m1/ops", M1ProbeAgent::ops);
         server.createContext("/m1/admit", M1ProbeAgent::admit);
+        server.createContext("/m1/pending", M1ProbeAgent::pending);
         server.setExecutor(null);
         server.start();
     }
@@ -203,11 +212,48 @@ public final class M1ProbeAgent {
 
         out.append("now.ms ").append(System.currentTimeMillis()).append('\n');
         out.append("node ").append(current.nodeId()).append('\n');
+        var runtime = Runtime.getRuntime();
+
+        out.append("heap.used ").append(runtime.totalMemory() - runtime.freeMemory()).append('\n');
+        out.append("heap.max ").append(runtime.maxMemory()).append('\n');
         current.snapshot().forEach((name, value) -> out.append(name)
                                                        .append(' ')
                                                        .append(value)
                                                        .append('\n'));
         reply(exchange, out.toString());
+    }
+
+    /// The engine's own pending-batch map, read by reflection (the field is private): the holder of a batch the other voters refuse to learn
+    /// keeps it here, and its head is the batch it proposes in every slot (`RabiaEngine.nextProposal`).
+    @SuppressWarnings("unchecked")
+    private static void pending(HttpExchange exchange) throws IOException {
+        var current = engine;
+
+        if (current == null) {
+            reply(exchange, 503, "no engine " + status + "\n");
+
+            return;
+        }
+
+        try {
+            var field = RabiaEngine.class.getDeclaredField("pendingBatches");
+
+            field.setAccessible(true);
+            var batches = (ConcurrentNavigableMap<Object, StateMachine.Batch<?>>) field.get(current);
+            var out = new StringBuilder();
+            var head = batches.firstEntry();
+
+            out.append("count ").append(batches.size()).append('\n');
+            if (head != null) {
+                out.append("head.id ").append(head.getKey()).append('\n');
+                out.append("head.commands ").append(head.getValue().commands().size()).append('\n');
+                out.append("head.timestamp ").append(head.getValue().timestamp()).append('\n');
+            }
+
+            reply(exchange, out.toString());
+        } catch (ReflectiveOperationException e) {
+            reply(exchange, 500, "failed " + e + "\n");
+        }
     }
 
     private static void ops(HttpExchange exchange) throws IOException {

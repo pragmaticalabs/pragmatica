@@ -310,7 +310,7 @@ class ReplicaDivergentTailRepairTest {
                                                             .or(-1L);
         ReplicaWatermarkProbe probe = (_, _, _) -> Promise.success(ownerHead(owner));
         CommittedStreamOwnerSource committed = (_, _) -> Option.some(new CommittedOwner(OWNER, committedEpoch));
-        ReplicationTransport toOwner = (_, message) -> sentToOwner.add(message);
+        ReplicationTransport toOwner = AcceptingReplicationTransport.accepting((_, message) -> sentToOwner.add(message));
         var orchestrator = partitionBackfill(registry,
                                              manager.alignedRecovery(),
                                              owner,

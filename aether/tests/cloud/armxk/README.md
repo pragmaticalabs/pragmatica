@@ -99,6 +99,30 @@ mixes two windows and is recorded only as `commitsPerOpRateRatio`. The summary r
 Evidence goes to `<run-dir>/evidence/*.jsonl`; host logs and samples are pulled to `<run-dir>/evidence/pull-<step>/` after every
 step and on failure.
 
+## Idle-storm flag
+
+Every window (each `measure()` window, every arm K step and every arm K c=0 control on each of its cores; each idle bracket on its one
+reference core) records: slots and commits (the agent), decisions and the pending queue at both ends with the oldest pending age at the
+end (`consensus.pendingBatches`, `oldestPendingBatchAgeMs` from `/api/v1/metrics/comprehensive`), and heap used/max (the agent's
+`heap.used`, `heap.max`). A Rabia or heap reading missing from its source is an error, never a zero. The control class proves the
+flag's numerator live: the control put must show at least one slot and one decision on every core, or the run stops (a dead slot hook
+would read 0 and never flag).
+
+A window is flagged `STORM` when some core ran more than 50 slots per committed mutation (zero commits count as one). The ratio alone
+decides: the empty-slot storm dry7 recorded (21217 slots, 1 put) is suspected to keep a pending batch (oss `wave3/inv-idle-spin.md`), but
+p4s6's N=100 Noop-driven flood had `pendingBatches` 0 on every core, so the pending queue is recorded as data and never used as a
+condition. On a flag the harness dumps every live core's pending map (`/m1/pending`: count, head id, command count, timestamp; a
+core with count > 0 is a holder), writes `evidence/storm.jsonl` and logs `STORM`. The dump's own control runs in arm K: after each
+step's readings the target's dump count is read beside its `pendingBatches`, and the summary's `pendingDumpControl` is `fail` when the
+metric saw pending batches and the dump never did. Run rules (CTO, 2026-11-02): a class with a STORM-flagged window is run **once** more (its flagged windows and holder dumps
+stay in the evidence, every record carries its `attempt`, the pull goes to `pull-<class>-rerun`; a second flag is recorded as
+`storm-after-rerun`, never a third run). The arm K summary reads its own attempt's rows only and leaves a STORM-flagged c=0 control
+out of the idle baseline (`stormControlsExcluded`; with no quiet control the net-of-idle rate is null, not the gross rate). Every core must be alive before and after
+each class: a dead core, an OutOfMemoryError exit above all (nodes run with `-XX:+ExitOnOutOfMemoryError`), aborts the run; the failure
+path (any exception, not only a harness error) pulls the evidence first and the cloud run's EXIT trap then tears down. A core whose
+host does not answer the liveness check counts as not alive. The rules are pinned by `lib/test_storm.py`
+(`python3 lib/test_storm.py`); no CI job runs it.
+
 ## Cost
 
 `armxk.sh estimate` prices the topology from the list prices recorded in `lib/estimate.py` (with the date and pages they were read

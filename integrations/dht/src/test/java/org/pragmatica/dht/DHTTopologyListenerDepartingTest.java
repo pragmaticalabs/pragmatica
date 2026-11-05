@@ -77,7 +77,7 @@ class DHTTopologyListenerDepartingTest {
     @Test
     void onNodeDeparting_removesNodeFromRing_soNodesForNoLongerReturnsIt() {
         var node = threeNodeNode();
-        var listener = DHTTopologyListener.dhtTopologyListener(node, dhtRebalancer(node, (target, message) -> {}, DHTConfig.DEFAULT));
+        var listener = DHTTopologyListener.dhtTopologyListener(node, dhtRebalancer(node, AcceptingNetwork.accepting((target, message) -> {}), DHTConfig.DEFAULT));
         assertThat(ringHoldsDepartingForAnyKey(node)).as("drainer is a replica before the prune").isTrue();
 
         listener.onNodeDeparting(DEPARTING);
@@ -89,7 +89,7 @@ class DHTTopologyListenerDepartingTest {
     @Test
     void onNodeDeparting_leavesOtherNodesInRing_prunesOnlyTheDrainer() {
         var node = threeNodeNode();
-        var listener = DHTTopologyListener.dhtTopologyListener(node, dhtRebalancer(node, (target, message) -> {}, DHTConfig.DEFAULT));
+        var listener = DHTTopologyListener.dhtTopologyListener(node, dhtRebalancer(node, AcceptingNetwork.accepting((target, message) -> {}), DHTConfig.DEFAULT));
 
         listener.onNodeDeparting(DEPARTING);
 
@@ -99,7 +99,7 @@ class DHTTopologyListenerDepartingTest {
     @Test
     void onNodeDeparting_thenDeadEdgeForSameNode_isIdempotentNoOp() {
         var node = threeNodeNode();
-        var listener = DHTTopologyListener.dhtTopologyListener(node, dhtRebalancer(node, (target, message) -> {}, DHTConfig.DEFAULT));
+        var listener = DHTTopologyListener.dhtTopologyListener(node, dhtRebalancer(node, AcceptingNetwork.accepting((target, message) -> {}), DHTConfig.DEFAULT));
 
         listener.onNodeDeparting(DEPARTING);
         var afterDeparting = node.ring().nodes();
@@ -124,7 +124,7 @@ class DHTTopologyListenerDepartingTest {
     @Test
     void onNodeRecovered_afterDepartingPrune_reAddsNodeToRing() {
         var node = threeNodeNode();
-        var listener = DHTTopologyListener.dhtTopologyListener(node, dhtRebalancer(node, (target, message) -> {}, DHTConfig.DEFAULT));
+        var listener = DHTTopologyListener.dhtTopologyListener(node, dhtRebalancer(node, AcceptingNetwork.accepting((target, message) -> {}), DHTConfig.DEFAULT));
 
         listener.onNodeDeparting(DEPARTING);
         assertThat(node.ring().nodes()).as("pruned on DEPARTING").doesNotContain(DEPARTING);
@@ -138,7 +138,7 @@ class DHTTopologyListenerDepartingTest {
     @Test
     void onNodeRecovered_thenNodeJoinedForSameNode_isIdempotentNoOp() {
         var node = threeNodeNode();
-        var listener = DHTTopologyListener.dhtTopologyListener(node, dhtRebalancer(node, (target, message) -> {}, DHTConfig.DEFAULT));
+        var listener = DHTTopologyListener.dhtTopologyListener(node, dhtRebalancer(node, AcceptingNetwork.accepting((target, message) -> {}), DHTConfig.DEFAULT));
 
         listener.onNodeDeparting(DEPARTING);
         listener.onNodeRecovered(DEPARTING);

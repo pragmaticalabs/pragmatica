@@ -783,6 +783,22 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// committed Put — bounded by consensus latency, not zero; a node behind on apply answers the
     /// previous value until then.
     @Override
+    public boolean nodeIsCloudBacked(NodeRole role, String sourceName) {
+        return committedToml().flatMap(ClusterTopologyManagerRecord::parseConfig)
+                            .map(config -> sourceIsCloud(config, role, sourceName))
+                            .or(false);
+    }
+
+    private static boolean sourceIsCloud(ClusterBootstrapConfig config, NodeRole role, String sourceName) {
+        var named = Option.option(config.sources().get(sourceName));
+
+        return named.isPresent()
+               ? named.unwrap()
+                      .type() == SourceType.CLOUD
+               : cloudSourceFor(config, role).isPresent();
+    }
+
+    @Override
     public boolean isAutoHealEnabled() {
         return autoHealStateReader.get()
                                   .map(AutoHealStateValue::enabled)

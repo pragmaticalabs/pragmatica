@@ -31,7 +31,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 # module -> (test source dir, weights file, shard budget in seconds)
 MODULES = {
-    # job timeout 35 min - ~2.5 min setup, / 1.3 headroom: 1500. Four shards plan about 1180 s each (regenerated weights).
+    # job timeout 35 min - ~2.5 min setup, / 1.3 headroom: 1500. Five shards plan about 950 s each (regenerated weights).
     "ember": (ROOT / "aether/ember/src/test/java", ROOT / "tools/ember-shard-weights.txt", 1500),
     # job timeout 30 min - ~4 min setup (bootstrap + upstream install), / 1.3 headroom, rounded down.
     "consensus": (ROOT / "integrations/consensus/src/test/java", ROOT / "tools/consensus-shard-weights.txt", 1200),
@@ -41,7 +41,7 @@ TEST_DIR, WEIGHTS, BUDGET_SECONDS = MODULES["ember"]
 TEST_NAME = re.compile(r"^(Test.*|.*Test|.*Tests|.*TestCase)$")
 # A top-level class tag in the root pom's surefire.excludedGroups: surefire selects the class and then runs nothing, so it
 # writes no report and a shard assigned it would fail --verify for a class that correctly did not run.
-EXCLUDED_CLASS_TAG = re.compile(r'^@Tag\("(Infinite|Slow|Benchmark|S3)"\)', re.MULTILINE)
+EXCLUDED_CLASS_TAG = re.compile(r'^@Tag\("(Infinite|Slow|Benchmark|S3|quarantine)"\)', re.MULTILINE)
 # A class with none of these is a fixture that only matches the name pattern (Test*): it writes no report either.
 HAS_TESTS = re.compile(r"@(Test|ParameterizedTest|RepeatedTest|TestFactory|TestTemplate)\b")
 

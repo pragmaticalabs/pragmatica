@@ -214,7 +214,7 @@ class AetherNodeDhtReplicationTest {
                                        DHTConfig.CACHE_DEFAULT,
                                        new AtomicReference<>());
         var replicated = org.pragmatica.dht.DistributedDHTClient.distributedDHTClient(node,
-                                                                                    (_, _) -> {},
+                                                                                    AcceptingTransports.acceptingDht((_, _) -> {}),
                                                                                     org.pragmatica.dht.OwnerEpochSource.zero());
         var cache = replicated.scoped(() -> DHTConfig.CACHE_DEFAULT);
         var captured = new AtomicReference<org.pragmatica.aether.slice.ProvisioningContext>();

@@ -54,6 +54,7 @@ import org.pragmatica.consensus.rabia.ConsensusMetrics;
 import org.pragmatica.consensus.rabia.RabiaEngine;
 import org.pragmatica.consensus.rabia.RabiaPersistence;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.BatchCommitted;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.NewBatch;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRequest;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.RoundRequest;
@@ -110,6 +111,12 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     LeaderManager leaderManager();
     /// Check if the consensus engine is active and ready for commands.
     boolean isActive();
+
+    /// True once this node's consensus engine was asked to stop (the D1-react engine-alive gate, KVStore dispatcher
+    /// design §3.5 R5). Default false for implementations without a Rabia engine.
+    default boolean isEngineStopRequested() {
+        return false;
+    }
 
     /// Check if the consensus engine is still draining the consensus log — i.e. its
     /// locally-applied frontier trails the cluster's observed committed frontier. True for a
@@ -694,7 +701,9 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                                        route(SyncRequest.class,
                                                                              consensus::handleSyncRequest),
                                                                        route(NewBatch.class,
-                                                                             (NewBatch b) -> consensus.handleNewBatch(b)));
+                                                                             (NewBatch b) -> consensus.handleNewBatch(b)),
+                                                                       route(BatchCommitted.class,
+                                                                             consensus::handleBatchCommitted));
         // Collect all entries
         var allEntries = new ArrayList<Entry<?>>();
 
@@ -746,6 +755,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             @Override
             public boolean isActive() {
                 return consensus().isActive();
+            }
+
+            @Override
+            public boolean isEngineStopRequested() {
+                return consensus().isStopRequested();
             }
 
             @Override

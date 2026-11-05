@@ -67,6 +67,7 @@ class KvBackupServiceTest {
     private static final BackupEntryCodec CODEC = BackupEntryCodec.backupEntryCodec(NODE_CODEC);
     private static final KvBackupService.Timing TIMING = KvBackupService.Timing.timing(500, 5_000, 1_000, 8_000, 3_000);
     private static final String LINEAGE = "01K4ZT9Q6W3X8Y2B7C5D1E0F9G";
+    private static final NodeId LEADER_NODE = NodeId.nodeId("node-1").unwrap();
 
     @TempDir
     Path temp;
@@ -87,9 +88,7 @@ class KvBackupServiceTest {
         kvStore = new KVStore<>(MessageRouter.mutable(), NODE_CODEC, NODE_CODEC);
         // The committed leader a declaration's leader transactions are authorized by.
         kvStore.processCommitted(kvStore.createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE,
-                                                                                       LeaderValue.leaderValue(NodeId.nodeId("node-1")
-                                                                                                                         .unwrap(),
-                                                                                                                   1L)))),
+                                                                                       LeaderValue.leaderValue(LEADER_NODE, 1L)))),
                                  ++slot);
     }
 
@@ -705,7 +704,7 @@ class KvBackupServiceTest {
             scheduler.runUntilIdle();
             assertThat(service.status()).isEqualTo(KvBackupService.Status.FORKED);
 
-            var declared = settle(BackupGenesis.backupGenesis(service)
+            var declared = settle(BackupGenesis.backupGenesis(service, LEADER_NODE)
                                         .declare(commands -> applyAndNotify(service, commands)))
                                         .unwrap();
             scheduler.runUntilIdle();
@@ -761,7 +760,7 @@ class KvBackupServiceTest {
 
             assertThat(service.status()).isEqualTo(KvBackupService.Status.GATED);
 
-            var declared = settle(BackupGenesis.backupGenesis(service)
+            var declared = settle(BackupGenesis.backupGenesis(service, LEADER_NODE)
                                         .declare(commands -> applyAndNotify(service, commands)))
                                         .unwrap();
 
@@ -790,7 +789,7 @@ class KvBackupServiceTest {
             seedRemote(remote, BackupHeader.backupHeader("another-cluster", 3, INCARNATION_ID, 40));
             var service = leaderService(Option.some(remote), 9);
 
-            var declared = settle(BackupGenesis.backupGenesis(service)
+            var declared = settle(BackupGenesis.backupGenesis(service, LEADER_NODE)
                                         .declare(commands -> applyAndNotify(service, commands)))
                                         .unwrap();
 
@@ -809,7 +808,7 @@ class KvBackupServiceTest {
             seedRemote(remote, BackupHeader.backupHeader("another-cluster", 3, INCARNATION_ID, 40));
             var service = leaderService(Option.some(remote), 1);
 
-            var declared = settle(BackupGenesis.backupGenesis(service)
+            var declared = settle(BackupGenesis.backupGenesis(service, LEADER_NODE)
                                         .declare(commands -> applyAndNotify(service, commands)))
                                         .unwrap();
 
@@ -829,7 +828,7 @@ class KvBackupServiceTest {
             var superseded = ClusterIncarnation.currentId(kvStore)
                                                .unwrap();
 
-            settle(BackupGenesis.backupGenesis(service)
+            settle(BackupGenesis.backupGenesis(service, LEADER_NODE)
                          .declare(commands -> applyAndNotify(service, commands)))
                          .unwrap();
 
@@ -848,11 +847,48 @@ class KvBackupServiceTest {
             var service = leaderService(Option.some(remote), 1);
             var concurrent = ClusterIncarnationValue.clusterIncarnationValue("restored-lineage", 3, "id-restored-lineage-3");
 
-            var refused = settle(BackupGenesis.backupGenesis(service)
+            var refused = settle(BackupGenesis.backupGenesis(service, LEADER_NODE)
                                        .declare(commands -> concurrentWriteThenApply(service, concurrent, commands)));
 
             assertThat(failureOf(refused)).isEqualTo(BackupGenesis.DeclareGenesisError.General.NOT_COMMITTED);
             assertThat(ClusterIncarnation.committed(kvStore)).isEqualTo(Option.some(concurrent));
+        }
+
+        /// #2594: a deposed leader still holds its local leader flag but has applied the new leader's record. The
+        /// supersede would carry that record, which the applier's equality fence accepts, so nothing is issued.
+        @Test
+        void declareGenesis_whenTheCommittedLeaderIsAnotherNode_issuesNothing() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 3, INCARNATION_ID, 40));
+            var service = leaderService(Option.some(remote), 1);
+            var before = ClusterIncarnation.committed(kvStore);
+
+            var refused = settle(BackupGenesis.backupGenesis(service, NodeId.nodeId("node-2").unwrap())
+                                       .declare(commands -> applyAndNotify(service, commands)));
+
+            assertThat(failureOf(refused)).isEqualTo(BackupGenesis.DeclareGenesisError.General.NOT_LEADER);
+            assertThat(ClusterIncarnation.committed(kvStore)).as("no supersede was committed").isEqualTo(before);
+        }
+
+        /// #2594: leadership ends while the head is read on the worker. The committed record still names this node, so only
+        /// the term check at issue time keeps the supersede from being written by a node that no longer leads.
+        @Test
+        void declareGenesis_whenLeadershipEndsWhileTheHeadIsRead_issuesNothing() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 3, INCARNATION_ID, 40));
+            var service = leaderService(Option.some(remote), 1);
+            var before = ClusterIncarnation.committed(kvStore);
+            var pending = BackupGenesis.backupGenesis(service, LEADER_NODE)
+                                       .declare(commands -> applyAndNotify(service, commands));
+
+            service.onLeaderChange(leaderChange(false));
+
+            var refused = settle(pending);
+
+            assertThat(failureOf(refused)).isEqualTo(BackupGenesis.DeclareGenesisError.General.NOT_LEADER);
+            assertThat(ClusterIncarnation.committed(kvStore)).as("no supersede was committed").isEqualTo(before);
         }
 
         /// B2: the push of the declaration is refused (not a fast-forward rejection — a remote policy or an
@@ -866,13 +902,13 @@ class KvBackupServiceTest {
             var service = leaderService(Option.some(remote), 1);
             var hook = installRefusingHook(remote);
 
-            var first = settle(BackupGenesis.backupGenesis(service)
+            var first = settle(BackupGenesis.backupGenesis(service, LEADER_NODE)
                                      .declare(commands -> applyAndNotify(service, commands)));
 
             assertThat(first.isFailure()).as("the remote refused the push").isTrue();
             deleteFile(hook);
 
-            var second = settle(BackupGenesis.backupGenesis(service)
+            var second = settle(BackupGenesis.backupGenesis(service, LEADER_NODE)
                                       .declare(commands -> applyAndNotify(service, commands)));
 
             assertThat(second.map(BackupGenesis.GenesisDeclared::incarnation)).isEqualTo(Result.success(4L));
@@ -893,7 +929,7 @@ class KvBackupServiceTest {
             seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 1, INCARNATION_ID, 1_000_000));
             var service = leaderService(Option.some(remote));
 
-            var refused = settle(BackupGenesis.backupGenesis(service)
+            var refused = settle(BackupGenesis.backupGenesis(service, LEADER_NODE)
                                         .declare(commands -> applyAndNotify(service, commands)));
 
             assertThat(failureOf(refused)).isInstanceOf(BackupGenesis.DeclareGenesisError.RemoteIsNewer.class);
@@ -907,7 +943,7 @@ class KvBackupServiceTest {
             incarnation(1);
             service.onLeaderChange(leaderChange(true));
 
-            var refused = settle(BackupGenesis.backupGenesis(service)
+            var refused = settle(BackupGenesis.backupGenesis(service, LEADER_NODE)
                                         .declare(commands -> applyAndNotify(service, commands)));
 
             assertThat(failureOf(refused)).isEqualTo(BackupGenesis.DeclareGenesisError.General.NOTHING_TO_SUPERSEDE);
@@ -919,7 +955,7 @@ class KvBackupServiceTest {
 
             incarnation(1);
 
-            var refused = settle(BackupGenesis.backupGenesis(service)
+            var refused = settle(BackupGenesis.backupGenesis(service, LEADER_NODE)
                                         .declare(commands -> applyAndNotify(service, commands)));
 
             assertThat(failureOf(refused)).isEqualTo(BackupGenesis.DeclareGenesisError.General.NOT_LEADER);

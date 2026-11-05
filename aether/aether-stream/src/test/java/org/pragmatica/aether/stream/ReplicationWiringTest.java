@@ -19,6 +19,7 @@ import org.pragmatica.consensus.NodeId;
 
 import java.util.ArrayList;
 import java.util.List;
+import org.pragmatica.aether.stream.replication.AcceptingReplicationTransport;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
@@ -41,7 +42,7 @@ class ReplicationWiringTest {
         @BeforeEach
         void setUp() {
             sentMessages = new ArrayList<>();
-            ReplicationTransport capturingTransport = (target, message) -> sentMessages.add(new SentMessage(target, message));
+            ReplicationTransport capturingTransport = AcceptingReplicationTransport.accepting((target, message) -> sentMessages.add(new SentMessage(target, message)));
             var registry = replicaRegistry();
             registry.registerReplica(STREAM, PARTITION, REPLICA);
             var replicationManager = replicationManager(GOVERNOR, registry, capturingTransport);

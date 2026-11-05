@@ -46,7 +46,7 @@ class RemoveWithoutFenceNoRollbackTest {
         var node = dhtNode(WRITER, memoryStorageEngine(), ring, CONFIG);
 
         node.storage().putVersioned(KEY, PRIOR, 1L, 0L, 0L, 0L).await();
-        var client = distributedDHTClient(node, (target, message) -> {}, CONFIG);
+        var client = distributedDHTClient(node, AcceptingNetwork.accepting((target, message) -> {}), CONFIG);
         var outcome = client.remove(KEY).await();
 
         assertThat(outcome.isFailure()).as("both remotes silent: the quorum is not reached").isTrue();

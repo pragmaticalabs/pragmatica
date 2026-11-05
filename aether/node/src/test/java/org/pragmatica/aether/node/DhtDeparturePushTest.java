@@ -35,6 +35,8 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.net.tcp.Server;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.consensus.net.WriteOutcome;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.dht.storage.MemoryStorageEngine.memoryStorageEngine;
@@ -115,7 +117,7 @@ class DhtDeparturePushTest {
 
     /// Records each departure-push target. The pushes are never acked; the test reads the targets only.
     private static DHTNetwork recordingNetwork(List<NodeId> pushedTo) {
-        return (target, message) -> recordPush(pushedTo, target, message);
+        return AcceptingTransports.acceptingDht((target, message) -> recordPush(pushedTo, target, message));
     }
 
     private static void recordPush(List<NodeId> pushedTo, NodeId target, ProtocolMessage message) {
@@ -141,8 +143,13 @@ class DhtDeparturePushTest {
 
     private static final class SilentClusterNetwork implements ClusterNetwork {
         @Override
-        public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
-            return Unit.unit();
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
+            return Promise.success(new WriteOutcome.Sent(nodeId));
+        }
+
+        @Override
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+            return send(nodeId, message);
         }
 
         @Override

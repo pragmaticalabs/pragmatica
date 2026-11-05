@@ -67,6 +67,7 @@ import static org.pragmatica.aether.stream.replication.ReplicationReceiveHandler
 import static org.pragmatica.aether.stream.segment.StorageSegmentSink.storageSegmentSink;
 import static org.pragmatica.aether.stream.segment.TieredStreamReader.tieredStreamReader;
 import org.pragmatica.storage.AppendLog;
+import org.pragmatica.aether.stream.replication.AcceptingReplicationTransport;
 
 /// #1383: a replacement replica's catch-up read is served from the owner's ring, or from the owner's tier for a
 /// prefix the ring has evicted but the tier retains, bounded by the APPENDED head. Before the fix the owner's
@@ -126,7 +127,7 @@ class GateSealedPeerRelaxationTest {
         replica.createStream(config()).onFailure(cause -> fail(cause.message()));
         client = clientAgainst(streamForwardHandler(OWNER,
                                                     owner,
-                                                    this::deliverToPeer,
+                                                    AcceptingStreamForwardTransport.accepting(this::deliverToPeer),
                                                     StreamForwardHandler.DEFAULT_MAX_READ_RESPONSE_BYTES,
                                                     StreamReadForwardMetrics.NOOP,
                                                     Option.none(),
@@ -279,7 +280,7 @@ class GateSealedPeerRelaxationTest {
     /// Without a tier wired (base handler) the read stays ring-only and the ring's refusal stands, as before.
     @Test
     void catchupRead_withoutATier_isCursorExpired() {
-        client = clientAgainst(streamForwardHandler(OWNER, owner, this::deliverToPeer));
+        client = clientAgainst(streamForwardHandler(OWNER, owner, AcceptingStreamForwardTransport.accepting(this::deliverToPeer)));
         publish(3);
         awaitSealedThrough(0);
 
@@ -295,7 +296,7 @@ class GateSealedPeerRelaxationTest {
         return partitionBackfill(registry,
                                  replica.alignedRecovery(),
                                  forwardCatchupTransport(client, 100),
-                                 this::deliverAckToOwner,
+                                 AcceptingReplicationTransport.accepting(this::deliverAckToOwner),
                                  (_, _, _) -> Promise.success(ownerRing().headOffset()),
                                  (stream, partition) -> replica.nextExpectedOffset(stream, partition) - 1,
                                  NEW_PEER,
@@ -322,7 +323,7 @@ class GateSealedPeerRelaxationTest {
     private StreamForwardClient clientAgainst(StreamForwardHandler ownerHandler) {
         handler = ownerHandler;
 
-        return streamForwardClient(NEW_PEER, (_, message) -> handler.onReadForward((ReadForward) message));
+        return streamForwardClient(NEW_PEER, AcceptingStreamForwardTransport.accepting((_, message) -> handler.onReadForward((ReadForward) message)));
     }
 
     private void deliverToPeer(NodeId target, StreamForwardMessage message) {

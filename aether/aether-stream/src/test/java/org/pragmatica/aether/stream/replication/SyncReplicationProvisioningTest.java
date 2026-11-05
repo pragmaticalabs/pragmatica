@@ -57,7 +57,7 @@ class SyncReplicationProvisioningTest {
 
             placement.replicas().forEach(node -> registry.registerReplica(STREAM, PARTITION, node));
 
-            var manager = replicationManager(placement.owner(), registry, (target, message) -> {});
+            var manager = replicationManager(placement.owner(), registry, AcceptingReplicationTransport.accepting((target, message) -> {}));
 
             return new Provisioned(placement, registry, manager);
         }

@@ -1445,7 +1445,7 @@ public final class DistributedDHTClient implements DHTClient {
                         collector);
     }
 
-    /// Fan a request to a remote target via `sendOutcome`, and short-circuit the per-op
+    /// Fan a request to a remote target via `send`, and short-circuit the per-op
     /// quorum waiting when the transport refuses synchronously.
     ///
     /// On `Sent` outcome: nothing else to do — the response will arrive via the regular
@@ -1460,7 +1460,7 @@ public final class DistributedDHTClient implements DHTClient {
                                      ProtocolMessage message,
                                      String correlationId,
                                      QuorumCollector<T> collector) {
-        var _ = network.sendOutcome(target, message)
+        var _ = network.send(target, message)
                        .onSuccess(outcome -> {
                                       if (!outcome.isSent()) {
                                           failOwnedSlot(correlationId,

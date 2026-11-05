@@ -70,6 +70,7 @@ class StatusRoutesDhtAdmissionTest {
                                                            case "isReady" -> false;
                                                            case "quorumLossSnapshot" -> Option.some(new QuorumLossSnapshot(1, 1, false, false));
                                                            case "storageSetups" -> Map.of();
+                                                           case "dhtNode" -> Option.none();
                                                            default -> throw new UnsupportedOperationException("Not stubbed in test proxy: "
                                                                                                               + method.getName());
                                                        });

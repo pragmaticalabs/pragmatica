@@ -265,6 +265,26 @@ class QuicConsensusBackpressureTest {
                 .isInstanceOf(WriteOutcome.BackpressureRefused.class);
             verify(ch, never()).writeAndFlush(any());
         }
+
+        /// #2574 lane pin: the FORWARD lane -- the stream forward reads' lane (`StreamForwardMessage.streamType()`), on which
+        /// `send` dispatches -- refuses at its watermark with BackpressureRefused, even
+        /// to a live peer, and writes nothing. That outcome is what lets a refused catch-up read fail at once instead of
+        /// waiting out its timeout; a FORWARD lane that retried and reported Sent (as CONSENSUS does) would hide it again.
+        @Test
+        void writeIfWritable_forwardBackpressured_refusesImmediately_evenWhenActive() {
+            var ch = mock(QuicStreamChannel.class);
+            when(ch.isActive()).thenReturn(true);
+            when(ch.isWritable()).thenReturn(false);
+
+            var network = network();
+
+            var outcome = network.writeIfWritableForTest(ch, payload(), PEER, StreamType.FORWARD);
+
+            assertThat(outcome)
+                .as("a backpressured FORWARD lane reports the refusal")
+                .isEqualTo(new WriteOutcome.BackpressureRefused(PEER));
+            verify(ch, never()).writeAndFlush(any());
+        }
     }
 
     @Nested

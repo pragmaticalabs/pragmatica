@@ -49,7 +49,7 @@ public sealed interface ReplicaFeedAssembly {
     int SERVE_THREADS = 4;
     int SERVE_QUEUE = 64;
     TimeSpan DRAIN_INTERVAL = TimeSpan.timeSpan(50).millis();
-    TimeSpan HEARTBEAT_INTERVAL = TimeSpan.timeSpan(1).seconds();
+    TimeSpan HEARTBEAT_INTERVAL = TimeSpan.timeSpan(ReplicaFeedServer.HEARTBEAT_INTERVAL_MILLIS).millis();
 
     /// A core serves the replica feed iff it takes part in consensus (`isActive`) and is not behind (`isPendingCatchUp`): a source that is itself
     /// behind is excluded here, and a heartbeat carries this flag so a subscriber notices a source that stopped serving. A worker serves only

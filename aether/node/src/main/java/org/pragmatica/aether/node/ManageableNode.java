@@ -42,6 +42,7 @@ import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.node.projection.ProjectionNodeSupport;
+import org.pragmatica.aether.node.stream.ConsensusBatchCounters;
 import org.pragmatica.aether.node.stream.StreamConsumerManager;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
@@ -64,6 +65,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
+import org.pragmatica.utility.react.ReactExecutor;
 
 
 public interface ManageableNode {
@@ -111,6 +113,19 @@ public interface ManageableNode {
     }
 
     KVStore<AetherKey, AetherValue> kvStore();
+
+    /// D1-react (KVStore dispatcher design §3.6): the node's react executors, one per C9 component, for the per-component
+    /// `react.queue.depth`, high-water and engine-stopped drop gauges. Default empty for node doubles.
+    default List<ReactExecutor> reactExecutors() {
+        return List.of();
+    }
+
+    /// D1-react (v-2653 F3): the replay source the node installed into its leader manager, read on the calling thread:
+    /// true only while this thread delivers a replay burst of the node store. Wiring pin seam.
+    default boolean leaderReplaying() {
+        return false;
+    }
+
     SliceStore sliceStore();
     ClusterSyncCollector metricsCollector();
     DeploymentMetricsCollector deploymentMetricsCollector();
@@ -156,6 +171,12 @@ public interface ManageableNode {
     DeploymentMap deploymentMap();
     ClusterEventAggregator eventAggregator();
     StreamPartitionManager streamPartitionManager();
+
+    /// #2590: consensus batches of consumer progress by key class, since boot. A node that proposes no cursor batches
+    /// (the test doubles) reports zeros; the assembled node reports its cursor command writer's counts.
+    default ConsensusBatchCounters consensusBatchCounters() {
+        return ConsensusBatchCounters.consensusBatchCounters();
+    }
 
     /// The node's sealed-segment index (#634-3/4): per-partition [SegmentIndex.SegmentRef] ranges, the
     /// third local retention-floor source beside the ring tail and the WAL watermark. The default is an

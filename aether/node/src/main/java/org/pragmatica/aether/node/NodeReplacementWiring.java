@@ -34,6 +34,8 @@ import org.pragmatica.aether.deployment.cluster.NodeReplacementService.Refusal;
 import org.pragmatica.aether.deployment.cluster.ProvisionDisposition;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeReplacementKey;
@@ -42,6 +44,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementPhase;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
@@ -96,12 +99,24 @@ public final class NodeReplacementWiring {
     }
 
     /// The listener that turns each committed transition into its operator events, on the node that owns the cluster-events
-    /// partition ONLY: every node applies every record, and the events of one transition must be raised exactly once.
+    /// partition ONLY: every node applies every record, and the events of one transition must be raised exactly once. A
+    /// replayed record announces nothing (KVStore dispatcher design §3.5 R4): it is committed history, not a transition.
     public static NodeReplacementIndex.TransitionListener announcer(BooleanSupplier ownsClusterEvents,
                                                                     OperatorWarningSink warnings) {
-        return (original, before, after) -> ownsClusterEvents.getAsBoolean()
-                                            ? announce(warnings, original, before, after)
-                                            : Unit.unit();
+        return (original, before, after, replayed) -> !replayed && ownsClusterEvents.getAsBoolean()
+                                                      ? announce(warnings, original, before, after)
+                                                      : Unit.unit();
+    }
+
+    /// The KV handler of a committed replacement record (the WorkerHierarchyAssembly route): captures the replay bit at
+    /// absorb, on the delivering thread, and passes it with the record (design §3.5 R4); `isReplaying()` read anywhere
+    /// else reads false.
+    public static Unit absorbPut(NodeReplacementIndex index,
+                                 BooleanSupplier replaying,
+                                 ValuePut<NodeReplacementKey, NodeReplacementValue> put) {
+        return index.put(put.cause().key(),
+                         put.cause().value(),
+                         replaying.getAsBoolean());
     }
 
     public record Inputs(NodeId self,
@@ -118,7 +133,7 @@ public final class NodeReplacementWiring {
                          ClusterTopologyManager ctm,
                          Function<NodeId, Promise<DrainOutcome>> drain,
                          Predicate<NodeId> draining,
-                         Supplier<String> idPrefix,
+                         Supplier<Option<ClusterName>> clusterName,
                          Predicate<NodeId> dhtHolds,
                          Supplier<Set<NodeId>> genesisVoters,
                          java.util.function.IntSupplier fleetLimit,
@@ -329,6 +344,17 @@ public final class NodeReplacementWiring {
                                                                                                      a.message()));
 
         return Unit.unit();
+    }
+
+    /// The node-id prefix of a replacement of a `role` node from `source`: the shape follows the SOURCE of the node being replaced
+    /// (cloud: `aether-node`, no cluster; Docker: `aether-<cluster>-node`), so a cluster with a Docker core and a cloud worker pool mints
+    /// each pool's own shape. The same rule PF-36 budgets (every cloud pool is sized with the cloud shape).
+    static String replacementIdPrefix(NodeReplacementWiring.Inputs in, String role, String source) {
+        return in.ctm()
+                 .nodeIsCloudBacked(NodeRole.nodeRole(role).or(NodeRole.CORE),
+                                    source)
+               ? ProvisionContext.CLOUD_NODE_PREFIX
+               : ProvisionContext.coreNodeNamePrefix(in.clusterName().get());
     }
 
     /// The provision of a replacement, from the source COMMITTED in its record. A record created with no source (a node of a cluster
@@ -786,10 +812,10 @@ public final class NodeReplacementWiring {
                 return new Refusal.FleetFull(ledger.unwrap().allocated()).promise();
             }
 
-            var replacement = chosen.or(() -> NodeId.randomNodeId(in.idPrefix().get()));
+            var source = descriptor.map(d -> d.source()).or("");
+            var replacement = chosen.or(() -> NodeId.randomNodeId(replacementIdPrefix(in, role, source)));
             var external = chosen.isPresent();
             var now = in.clock().getAsLong();
-            var source = descriptor.map(d -> d.source()).or("");
             var record = new NodeReplacementValue(replacement,
                                                   role.toLowerCase(),
                                                   NodeReplacementPhase.PROVISIONING,

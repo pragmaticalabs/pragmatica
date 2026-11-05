@@ -266,14 +266,13 @@ class DistributedDHTClientLateReplyTest {
 
     private DHTNetwork network() {
         return new DHTNetwork() {
-            @Override
-            public void send(NodeId nodeId, ProtocolMessage message) {
+            private void capture(NodeId nodeId, ProtocolMessage message) {
                 sent.add(message);
             }
 
             @Override
-            public Promise<WriteOutcome> sendOutcome(NodeId target, ProtocolMessage message) {
-                send(target, message);
+            public Promise<WriteOutcome> send(NodeId target, ProtocolMessage message) {
+                capture(target, message);
                 return Promise.success(new WriteOutcome.Sent(target));
             }
         };

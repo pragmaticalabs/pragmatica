@@ -176,7 +176,7 @@ class ProvisionContextTest {
         var withoutId = ProvisionContext.provisionContext(maybeClusterName("dock"), "core", sourceNameOrDefault("s"), ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
 
         assertThat(withId.resolveNodeId()).isEqualTo("aether-dock-node-planned");
-        assertThat(withoutId.resolveNodeId()).startsWith("aether-dock-node-");
+        assertThat(withoutId.resolveNodeId()).as("a cloud id carries no cluster (G1 flag day)").startsWith("aether-node-").doesNotContain("dock");
         assertThat(withoutId.resolveNodeId()).as("a minted id is fresh each time").isNotEqualTo(withoutId.resolveNodeId());
     }
 }

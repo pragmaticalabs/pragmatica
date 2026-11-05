@@ -752,6 +752,68 @@ public enum OperatorWarningCode {
     /// previous record stays in force and the next change is delivered; nothing is retried. Subject `<artifact>/<section>`. Raised on
     /// the transition into failure only; a repeat failure logs at ERROR without re-raising.
     CONFIG_WATCH_CALLBACK_FAILED("config-watch-callback-failed", "config", WarningLevel.WARNING),
+    /// The leader could not bring an artifact's rollback record up to its SliceTarget (#2613): the guarded record write was refused three times
+    /// in a row because the target or the record kept changing under it. The record still names an older version, so the next rollback
+    /// decision for the artifact reads stale bookkeeping until a later SliceTarget update or the next leader activation re-derives it. The
+    /// subject is the artifact base. Closed by [#ROLLBACK_RECORD_RECONCILED]. [guess: name, level and subsystem]
+    ROLLBACK_RECORD_RECONCILE_EXHAUSTED("rollback-record-reconcile-exhausted", "rollback", WarningLevel.CRITICAL),
+    /// The recovery of [#ROLLBACK_RECORD_RECONCILE_EXHAUSTED], same subject (#2613): the artifact's rollback record now names its target's
+    /// version. INFO, published only after a published exhaustion for the subject (#752 mechanism).
+    ROLLBACK_RECORD_RECONCILED("rollback-record-reconciled",
+                               "rollback",
+                               WarningLevel.INFO,
+                               ROLLBACK_RECORD_RECONCILE_EXHAUSTED),
+    /// A schema migration has been fenced in the database several consecutive times (FDB-2a, #2591): another database
+    /// session holds the migration fence (`pg_try_advisory_lock` / `GET_LOCK`), so each attempt ran and read nothing. The
+    /// attempt is not consumed; the schema stays PENDING and is retried every 45 s at most. Raised from the 3rd consecutive
+    /// fenced attempt on, naming the holder. Subject is the datasource.
+    SCHEMA_MIGRATION_FENCE_HELD("schema-migration-fence-held", "schema-migration", WarningLevel.WARNING),
+    /// A schema operation runs WITHOUT a database fence (FDB-2a, #2591): the datasource is configured as PostgreSQL but
+    /// the server is CockroachDB, whose advisory locks acquire nothing; FDB-2b adds its lock. Raised on every such
+    /// operation. Subject is the datasource.
+    SCHEMA_MIGRATION_UNFENCED("schema-migration-unfenced", "schema-migration", WarningLevel.WARNING),
+    /// The recovery of [#SCHEMA_MIGRATION_FENCE_HELD], same subject (FDB-2a, #2591): a later attempt on the datasource acquired the
+    /// fence and ran. INFO, published only after a published fence-held warning for the subject (#752 mechanism).
+    SCHEMA_MIGRATION_FENCE_RELEASED("schema-migration-fence-released",
+                                    "schema-migration",
+                                    WarningLevel.INFO,
+                                    SCHEMA_MIGRATION_FENCE_HELD),
+    /// The recovery of [#SCHEMA_MIGRATION_UNFENCED], same subject (FDB-2a, #2591): a later schema operation on the datasource ran
+    /// fenced. INFO, published only after a published unfenced warning for the subject (#752 mechanism).
+    SCHEMA_MIGRATION_FENCED("schema-migration-fenced", "schema-migration", WarningLevel.INFO, SCHEMA_MIGRATION_UNFENCED),
+    /// The node's KV store delivers its notifications more slowly than it commits them (KVStore dispatcher design §3.6): the named
+    /// lag series (`kv.dispatch.lag.batches` or `kv.dispatch.queue.bytes`, the subject) rose over a whole sampling window without
+    /// falling once. A sustained slope, never a threshold: a high but steady lag raises nothing. The undelivered queue is the heap
+    /// it costs. Closed by [#KV_DISPATCH_CAUGHT_UP]. [guess: name, level, subsystem and window]
+    KV_DISPATCH_LAGGING("kv-dispatch-lagging", "kv-store", WarningLevel.WARNING),
+    /// The recovery of [#KV_DISPATCH_LAGGING], same subject: the series is back to zero, the queue drained. INFO, published only
+    /// after a published lagging event for the subject (#752 mechanism).
+    KV_DISPATCH_CAUGHT_UP("kv-dispatch-caught-up", "kv-store", WarningLevel.INFO, KV_DISPATCH_LAGGING),
+    /// One KV notification handler has run longer than the slow-handler threshold (KVStore dispatcher design §3.6, the #1117
+    /// SLOW-APPLY threshold): it holds the node's store's notification delivery, so every later notification waits behind it. The
+    /// subject is the notification type (`ValuePut SliceTargetKey`); the node log carries the dispatcher's stack. Raised at most
+    /// once per type per 10 minutes. Closed by [#KV_DISPATCH_SLOW_HANDLER_RETURNED]. [guess: level]
+    KV_DISPATCH_SLOW_HANDLER("kv-dispatch-slow-handler", "kv-store", WarningLevel.WARNING),
+    /// The recovery of [#KV_DISPATCH_SLOW_HANDLER], same subject: the handler that was reported returned, so delivery moves again.
+    /// INFO, published only after a published slow-handler event for the subject (#752 mechanism).
+    KV_DISPATCH_SLOW_HANDLER_RETURNED("kv-dispatch-slow-handler-returned",
+                                      "kv-store",
+                                      WarningLevel.INFO,
+                                      KV_DISPATCH_SLOW_HANDLER),
+    /// A KV notification handler read a key that a LATER batch than the one it is handling had already written (KVStore
+    /// dispatcher design §3.4): it saw state ahead of its notification. The first such read per key type per process;
+    /// the `kv.dispatch.readahead.reads` counter carries every one. The subject is the key type of the notification being handled
+    /// (`SliceTargetKey`). A point event that opens nothing, so INFO. Known limit: when a type's first read-ahead happens
+    /// during a replay burst, the event is suppressed as replayed and that type raises no further one in this process (the
+    /// counter still counts every read). [guess: level]
+    KV_DISPATCH_READ_AHEAD("kv-dispatch-read-ahead", "kv-store", WarningLevel.INFO),
+    /// The node's KV notification dispatcher failed (KVStore dispatcher design §3.2, owner ruling 1): the store is closed, every
+    /// waiting write fails as outcome-unknown, and the node stops (the production node halts). The subject is the store; the
+    /// node log carries the failure, the batch and a thread dump. No recovery code: a restart is the recovery, as for
+    /// [#STORAGE_WAL_FAIL_STOPPED]. The node's operator-warning sink accepts this event (the publish call returns) before the
+    /// dispatcher calls `stopNode`; the sink hands it off asynchronously, so its delivery to the cluster event stream is
+    /// best-effort once the node halts.
+    KV_DISPATCHER_FAILED("kv-dispatcher-failed", "kv-store", WarningLevel.CRITICAL),
     /// The recovery of [#CONFIG_WATCH_CALLBACK_FAILED], same subject (#774): the next delivery bound and (when it called back) succeeded.
     /// INFO, published only after a published failure for the subject (#752 mechanism).
     CONFIG_WATCH_CALLBACK_RECOVERED("config-watch-callback-recovered",

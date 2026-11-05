@@ -31,6 +31,7 @@ import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
 
 import java.util.List;
+import org.pragmatica.aether.stream.replication.AcceptingReplicationTransport;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -83,10 +84,10 @@ class ByteCappedCatchupPageTest {
                                          segmentSealer(storageSegmentSink(replicaStorage, new SegmentIndex())));
         handler = streamForwardHandler(OWNER,
                                        owner,
-                                       (_, message) -> client.onReadForwardResponse((ReadForwardResponse) message),
+                                       AcceptingStreamForwardTransport.accepting((_, message) -> client.onReadForwardResponse((ReadForwardResponse) message)),
                                        ONE_EVENT_PER_PAGE_BYTES,
                                        StreamReadForwardMetrics.NOOP);
-        client = streamForwardClient(NEW_PEER, (_, message) -> handler.onReadForward((ReadForward) message));
+        client = streamForwardClient(NEW_PEER, AcceptingStreamForwardTransport.accepting((_, message) -> handler.onReadForward((ReadForward) message)));
     }
 
     @AfterEach
@@ -122,7 +123,7 @@ class ByteCappedCatchupPageTest {
         return partitionBackfill(registry,
                                  replica.alignedRecovery(),
                                  forwardCatchupTransport(client, 100),
-                                 (_, message) -> replication.handleAck((ReplicateAck) message),
+                                 AcceptingReplicationTransport.accepting((_, message) -> replication.handleAck((ReplicateAck) message)),
                                  (_, _, _) -> Promise.success(ownerRing().headOffset()),
                                  (s, p) -> replica.nextExpectedOffset(s, p) - 1,
                                  NEW_PEER,

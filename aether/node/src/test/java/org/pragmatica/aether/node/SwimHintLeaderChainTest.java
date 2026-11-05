@@ -52,6 +52,7 @@ import org.pragmatica.swim.TransportObservation;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.consensus.net.WriteOutcome;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -318,7 +319,12 @@ class SwimHintLeaderChainTest {
         @Override public void listNodes(ListConnectedNodes listConnectedNodes) {}
         @Override public void handleSend(Send send) {}
         @Override public void handleBroadcast(Broadcast broadcast) {}
-        @Override public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {return Unit.unit();}
+        @Override public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {return Promise.success(new WriteOutcome.Sent(nodeId));}
+
+        @Override
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+            return send(nodeId, message);
+        }
         @Override public Promise<Unit> start() {return Promise.success(Unit.unit());}
         @Override public Promise<Unit> stop() {return Promise.success(Unit.unit());}
         @Override public int connectedNodeCount() {return connected.size();}

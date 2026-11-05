@@ -397,7 +397,7 @@ class LoadBalancerManagerTest {
     /// No-op serializer: these tests apply commands to the KV store directly (not via the
     /// consensus dedup path), so the content-based batch id is irrelevant — an empty encoding
     /// is sufficient to satisfy `StateMachine.createBatch`.
-    private static org.pragmatica.serialization.Serializer noopSerializer() {
+    static org.pragmatica.serialization.Serializer noopSerializer() {
         return new org.pragmatica.serialization.Serializer() {
             @Override
             public <T> void write(io.netty.buffer.ByteBuf byteBuf, T object) {}

@@ -229,14 +229,16 @@ public class AlertManager {
 
         return clusterNode.<Unit> apply(List.of(command))
                           .mapToUnit()
-                          .onSuccess(_ -> applyThreshold(metric, warning, critical))
+                          .onSuccess(_ -> reportThresholdSet(metric, warning, critical))
                           .onFailure(cause -> log.error("Failed to persist threshold for {}: {}",
                                                         metric,
                                                         cause.message()));
     }
 
-    private void applyThreshold(String metric, double warning, double critical) {
-        thresholds.put(metric, new Threshold(warning, critical));
+    // The map is written only by the commit's own onAlertThresholdPut/onAlertThresholdRemove. These continuations
+    // used to write it a second time, after the fact, which could resurrect a value a later commit had already
+    // replaced (#2616; the DynamicConfigManager F4/W-9 hazard).
+    private void reportThresholdSet(String metric, double warning, double critical) {
         log.info("Threshold set and persisted for {}: warning={}, critical={}", metric, warning, critical);
     }
 
@@ -247,15 +249,14 @@ public class AlertManager {
 
         return clusterNode.<Unit> apply(List.of(command))
                           .mapToUnit()
-                          .onSuccess(_ -> applyThresholdRemoval(metric))
+                          .onSuccess(_ -> reportThresholdRemoved(metric))
                           .onFailure(cause -> log.error("Failed to persist threshold removal for {}: {}",
                                                         metric,
                                                         cause.message()));
     }
 
-    private void applyThresholdRemoval(String metric) {
-        Option.option(thresholds.remove(metric)).onPresent(_ -> log.info("Threshold removed and persisted for {}",
-                                                                         metric));
+    private void reportThresholdRemoved(String metric) {
+        log.info("Threshold removed and persisted for {}", metric);
     }
 
     public Map<String, double[]> getAllThresholds() {

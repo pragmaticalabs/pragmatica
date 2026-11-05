@@ -27,6 +27,8 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.statemachine.Fsm;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.consensus.net.WriteOutcome;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -166,10 +168,10 @@ class ClusterSyncMetricsScopeTest {
         }
 
         @Override
-        public <M extends ProtocolMessage> Unit send(NodeId peer, M message) {
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId peer, M message) {
             sent.add(new Sent(peer, message));
 
-            return Unit.unit();
+            return Promise.success(new WriteOutcome.Sent(peer));
         }
 
         List<ClusterSyncPing> pingsTo(NodeId peer) {

@@ -35,6 +35,7 @@ import org.pragmatica.net.tcp.Server;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.consensus.net.WriteOutcome;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -262,8 +263,13 @@ class SpokesmanPingLoopTest {
         public void handleBroadcast(Broadcast broadcast) {}
 
         @Override
-        public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
-            return Unit.unit();
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
+            return Promise.success(new WriteOutcome.Sent(nodeId));
+        }
+
+        @Override
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+            return send(nodeId, message);
         }
 
         @Override

@@ -84,7 +84,11 @@
         <!-- The surefire tag exclusion of the `exclude-tagged-tests` profile. A property, not a literal, so a job that runs one
              of these groups can clear it: `-Dgroups=S3 -Dsurefire.excludedGroups=` (#2256). A literal in the plugin
              configuration wins over -DexcludedGroups, so `-Dgroups=S3` alone selected S3 AND NOT S3: zero tests. -->
-        <surefire.excludedGroups>Infinite, Slow, Benchmark, S3</surefire.excludedGroups>
+        <!-- `quarantine`: flaky tests under the quarantine ruling (know 5544ec434b). Required jobs never run them; ci.yml's
+             non-required `quarantine` job runs exactly them. tools/check-quarantine.py fails CI if an exclusion drops it. -->
+        <surefire.excludedGroups>Infinite, Slow, Benchmark, S3, quarantine</surefire.excludedGroups>
+        <!-- Failsafe excludes nothing by default; this keeps quarantined ITs out of every required job too. -->
+        <failsafe.excludedGroups>quarantine</failsafe.excludedGroups>
 
         <!-- Dependencies -->
         <netty.version>4.2.18.Final</netty.version>
@@ -589,6 +593,7 @@
                     <artifactId>maven-failsafe-plugin</artifactId>
                     <version>${maven-failsafe-plugin.version}</version>
                     <configuration>
+                        <excludedGroups>${failsafe.excludedGroups}</excludedGroups>
                         <argLine>${vthread.argLine}</argLine>
                         <systemPropertyVariables>
                             <aether.state.dir>${project.build.directory}/aether-state</aether.state.dir>

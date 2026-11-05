@@ -5,6 +5,7 @@
 package org.pragmatica.aether.stream.forward;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 import org.pragmatica.http.HttpError;
@@ -17,6 +18,10 @@ import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.VisibleBounds;
+import org.pragmatica.aether.stream.control.ControlLog;
+import org.pragmatica.aether.stream.control.ControlOutcome;
+import org.pragmatica.aether.stream.forward.StreamForwardMessage.ControlAppendForward;
+import org.pragmatica.aether.stream.forward.StreamForwardMessage.ControlAppendForwardResponse;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForwardResponse;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
@@ -43,6 +48,13 @@ public interface StreamForwardHandler {
     @SuppressWarnings("JBCT-RET-01")
     void onReadForward(ReadForward request);
 
+    /// #2590 P1: the owner side of a forwarded control-log batch. A handler with no control log answers every record
+    /// [ControlOutcome.IndexUnavailable]: nothing was appended, and the writer retries.
+    @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
+    @Contract
+    default void onControlAppendForward(ControlAppendForward request) {}
+
     long DEFAULT_MAX_READ_RESPONSE_BYTES = 28L * 1024 * 1024;
 
     /// Whether a publish failure was refused before anything reached the ring, the WAL or a replica, so the publisher may
@@ -62,6 +74,7 @@ public interface StreamForwardHandler {
                                                DEFAULT_MAX_READ_RESPONSE_BYTES,
                                                StreamReadForwardMetrics.NOOP,
                                                Option.none(),
+                                               Option.none(),
                                                Option.none());
     }
 
@@ -75,6 +88,7 @@ public interface StreamForwardHandler {
                                                transport,
                                                maxReadResponseBytes,
                                                metrics,
+                                               Option.none(),
                                                Option.none(),
                                                Option.none());
     }
@@ -95,6 +109,7 @@ public interface StreamForwardHandler {
                                                maxReadResponseBytes,
                                                metrics,
                                                ownerServe,
+                                               Option.none(),
                                                Option.none());
     }
 
@@ -115,7 +130,24 @@ public interface StreamForwardHandler {
                                                maxReadResponseBytes,
                                                metrics,
                                                ownerServe,
-                                               tieredReader);
+                                               tieredReader,
+                                               Option.none());
+    }
+
+    /// #2590 P1 overload: a handler that serves forwarded control-log batches from `controlLog`. No production wiring
+    /// builds one in P1.
+    static StreamForwardHandler streamForwardHandler(NodeId selfNodeId,
+                                                     StreamPartitionManager partitionManager,
+                                                     StreamForwardTransport transport,
+                                                     ControlLog controlLog) {
+        return new DefaultStreamForwardHandler(selfNodeId,
+                                               partitionManager,
+                                               transport,
+                                               DEFAULT_MAX_READ_RESPONSE_BYTES,
+                                               StreamReadForwardMetrics.NOOP,
+                                               Option.none(),
+                                               Option.none(),
+                                               Option.some(controlLog));
     }
 
     StreamForwardHandler NOOP = new StreamForwardHandler() {
@@ -141,6 +173,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     private final StreamReadForwardMetrics metrics;
     private final Option<LinearizableOwnerServe<OffHeapRingBuffer.RawEvent>> ownerServe;
     private final Option<TieredStreamReader> tieredReader;
+    private final Option<ControlLog> controlLog;
 
     DefaultStreamForwardHandler(NodeId selfNodeId,
                                 StreamPartitionManager partitionManager,
@@ -148,7 +181,8 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                                 long maxReadResponseBytes,
                                 StreamReadForwardMetrics metrics,
                                 Option<LinearizableOwnerServe<OffHeapRingBuffer.RawEvent>> ownerServe,
-                                Option<TieredStreamReader> tieredReader) {
+                                Option<TieredStreamReader> tieredReader,
+                                Option<ControlLog> controlLog) {
         this.selfNodeId = selfNodeId;
         this.partitionManager = partitionManager;
         this.transport = transport;
@@ -156,6 +190,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
         this.metrics = metrics;
         this.ownerServe = ownerServe;
         this.tieredReader = tieredReader;
+        this.controlLog = controlLog;
     }
 
     /// #1236: the replica floor (`CF - 1` peers) is checked BEFORE the owner appends, so a forwarded
@@ -521,4 +556,43 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     }
 
     private record CappedEvents(List<RawEventDto> events, boolean truncated) {}
+
+    /// #2590 P1: the batch runs on the owner's control log as ONE append -- one queue item, one run append, one fsync --
+    /// through the same owner entry as [#onPublishForward]: [StreamPartitionManager#appendControlRun] materializes an
+    /// unmaterialized stream from its committed config, and the barrier reads the confirmation factor after the append
+    /// (#1391). The answer carries one outcome per record, in order; the control log never fails the batch as a whole.
+    @Contract
+    @Override
+    @SuppressWarnings("JBCT-RET-01")
+    public void onControlAppendForward(ControlAppendForward request) {
+        controlLog.map(owner -> owner.appendAsOwner(request.streamName(),
+                                                    request.partition(),
+                                                    request.records().stream().map(ControlRecordDto::toRecord).toList()))
+                  .or(() -> Promise.success(unavailable(request)))
+                  .onSuccess(outcomes -> sendControlResponse(request, outcomes))
+                  .onFailure(cause -> sendControlResponse(request,
+                                                          unknownOutcomes(request, cause)));
+    }
+
+    private static List<ControlOutcome> unavailable(ControlAppendForward request) {
+        return Collections.nCopies(request.records().size(),
+                                   ControlOutcome.IndexUnavailable.INDEX_UNAVAILABLE);
+    }
+
+    /// Recovery: design-out -- [ControlLog#appendAsOwner] resolves every record to an outcome and never fails the batch;
+    /// were it to, each record's outcome is unknown (it may have been appended), never a refusal.
+    private static List<ControlOutcome> unknownOutcomes(ControlAppendForward request, Cause cause) {
+        return Collections.nCopies(request.records().size(),
+                                   new ControlOutcome.OutcomeUnknown(cause));
+    }
+
+    @Contract
+    private void sendControlResponse(ControlAppendForward request, List<ControlOutcome> outcomes) {
+        transport.send(request.sender(),
+                       ControlAppendForwardResponse.controlAppendForwardResponse(selfNodeId,
+                                                                                 request.correlationId(),
+                                                                                 outcomes.stream()
+                                                                                         .map(ControlOutcomeDto::fromOutcome)
+                                                                                         .toList()));
+    }
 }

@@ -74,10 +74,10 @@ class ByteCappedPeerGateTest {
                                       replication);
         handler = streamForwardHandler(PEER,
                                        peer,
-                                       (_, message) -> client.onReadForwardResponse((ReadForwardResponse) message),
+                                       AcceptingStreamForwardTransport.accepting((_, message) -> client.onReadForwardResponse((ReadForwardResponse) message)),
                                        capBytes,
                                        StreamReadForwardMetrics.NOOP);
-        client = streamForwardClient(CANDIDATE, (_, message) -> handler.onReadForward((ReadForward) message));
+        client = streamForwardClient(CANDIDATE, AcceptingStreamForwardTransport.accepting((_, message) -> handler.onReadForward((ReadForward) message)));
         peer.createStream(config()).onFailure(cause -> fail(cause.message()));
     }
 

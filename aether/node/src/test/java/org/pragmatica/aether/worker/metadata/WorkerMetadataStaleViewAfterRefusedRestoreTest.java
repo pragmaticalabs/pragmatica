@@ -43,6 +43,7 @@ import org.pragmatica.net.tcp.Server;
 import org.pragmatica.serialization.FrameworkCodecs;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.consensus.net.WriteOutcome;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -226,7 +227,12 @@ class WorkerMetadataStaleViewAfterRefusedRestoreTest {
         public void listNodes(NetworkServiceMessage.ListConnectedNodes l) {}
         public void handleSend(NetworkServiceMessage.Send s) {}
         public void handleBroadcast(NetworkServiceMessage.Broadcast b) {}
-        public <M extends ProtocolMessage> Unit send(NodeId n, M m) { messages.add(m); return Unit.unit(); }
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId n, M m) { messages.add(m); return Promise.success(new WriteOutcome.Sent(n)); }
+
+        @Override
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+            return send(nodeId, message);
+        }
         public Promise<Unit> start() { return Promise.success(Unit.unit()); }
         public Promise<Unit> stop() { return Promise.success(Unit.unit()); }
         public int connectedNodeCount() { return 0; }

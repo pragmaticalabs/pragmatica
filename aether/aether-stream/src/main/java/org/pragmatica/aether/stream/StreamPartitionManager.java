@@ -48,6 +48,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryReasonKind;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.StreamFootprint;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
@@ -217,6 +218,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// #2201 A-14 (spec 5.1 target, bullet 4): the late-bound seams this manager's wiring has bound. Each setter registers its
     /// seam; the owner-epoch source registers when it is handed to the constructor by a caller rather than defaulted.
     private final Set<StreamSeam> boundSeams = ConcurrentHashMap.newKeySet();
+    /// #2627: tail of each stream name's in-flight config submission chain, see [#inLane].
+    private final ConcurrentHashMap<String, Promise<Unit>> commitLanes = new ConcurrentHashMap<>();
     private final AtomicLong totalAllocatedBytes = new AtomicLong(0);
     /// #2201 C-03 (spec 4.4 item 4): moved by every return of bytes to the pool ([#release]: a stream destroyed, a ring closed
     /// or released, a reservation handed back), so a ring frozen by a refused growth knows budget may have been freed since.
@@ -272,6 +275,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// #1730 phase 2 / #1873: the committed ownership records a validated consumer read is checked against, late-bound
     /// ([#ownershipRecords(OwnerActivation.OwnershipRecordSource)]); none until wired.
     private volatile OwnerActivation.OwnershipRecordSource ownershipRecords = (_, _) -> Option.none();
+    /// #2590 P1: where a partition's committed position and its suffix truncations are told, late-bound
+    /// ([#partitionLogEvents(PartitionLogEvents)]); nobody until wired.
+    private volatile PartitionLogEvents partitionLogEvents = PartitionLogEvents.NONE;
     /// #2201 C-16: the sealed tier a validated consumer read falls back to below the ring tail, late-bound
     /// ([#tieredReader(TieredStreamReader)]); none until wired, and then such a read answers `CursorExpired` at the ring tail.
     private volatile Option<TieredStreamReader> tieredReader = Option.none();
@@ -1096,6 +1102,26 @@ public final class StreamPartitionManager implements AutoCloseable {
         boundSeams.add(StreamSeam.OWNERSHIP_RECORDS);
     }
 
+    /// #2590 P1: bind the listener told each partition's committed position and suffix truncations. Not a safety seam:
+    /// until something builds an index over a partition's records there is nobody to tell.
+    @Contract
+    public void partitionLogEvents(PartitionLogEvents events) {
+        this.partitionLogEvents = events;
+    }
+
+    /// #2590 P1 (R4.1): the change counter of the committed in-sync set in the partition's ownership record, `0` for a
+    /// record minted before #1730 and for a partition with no record committed.
+    public long committedIsrVersion(String streamName, int partition) {
+        return ownershipRecords.committed(streamName, partition)
+                               .map(StreamPartitionOwnershipValue::isrVersion)
+                               .or(0L);
+    }
+
+    /// The ownership epoch an owner append of `(streamName, partition)` is stamped with now.
+    public Epoch currentOwnerEpoch(String streamName, int partition) {
+        return ownerEpochSource.currentOwnerEpoch(streamName, partition);
+    }
+
     private Result<Unit> ownerRoleGate(String streamName, int partition) {
         return placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER
                ? ownerServeGate.admit(streamName, partition)
@@ -1501,9 +1527,37 @@ public final class StreamPartitionManager implements AutoCloseable {
                      .onSuccess(_ -> publishStreamConfigRemoval(streamName));
     }
 
+    /// #2627: the Remove joins the name's commit lane ([#inLane]), so it is submitted only after an in-flight
+    /// config `Put` of the same name (a publish-path auto-create whose wait elapsed) has settled — the Remove can no
+    /// longer commit first and leave that `Put` to re-hydrate a ghost stream. A `createStream` that follows queues
+    /// behind this Remove the same way.
     @Contract
     private void publishStreamConfigRemoval(String streamName) {
-        clusterNode.onPresent(node -> applyRemoveCommand(node, streamName));
+        clusterNode.onPresent(node -> inLane(streamName, () -> applyRemoveCommand(node, streamName)));
+    }
+
+    /// #2627: per-name commit lane. Every `StreamConfigKey` submission for one name (create `Put`, publish-path
+    /// auto-create `Put`, destroy `Remove`) starts only after the previous submission for that name has SETTLED
+    /// (committed, or failed/timed out), so the order the callers issued is the order the engine receives. Rabia
+    /// commits pending batches in content-hash order, so two batches in flight at once commit in an order unrelated
+    /// to submission; the lane never has two of one name in flight. A settle is a promise resolution: a submission
+    /// the engine still holds after its apply timeout is not covered (that is the engine-side withdrawal, #2629).
+    private <T> Promise<T> inLane(String streamName, Supplier<Promise<T>> submit) {
+        var settled = Promise.<Unit> promise();
+
+        return option(commitLanes.put(streamName, settled)).map(prior -> prior.flatMap(_ -> submit.get()))
+                     .or(submit)
+                     .onResultRun(() -> settleLane(streamName, settled));
+    }
+
+    /// Names with a config submission still in flight; zero when every lane has settled (test seam, #2627).
+    int commitLaneCount() {
+        return commitLanes.size();
+    }
+
+    private void settleLane(String streamName, Promise<Unit> settled) {
+        commitLanes.remove(streamName, settled);
+        settled.succeed(unit());
     }
 
     /// Publish the stream config to cluster KV, latching `entry` committed when the commit succeeds.
@@ -1535,25 +1589,57 @@ public final class StreamPartitionManager implements AutoCloseable {
     private Result<Unit> applyPutCommand(ClusterNode<KVCommand<AetherKey>> node,
                                          StreamConfig config,
                                          StreamEntry entry) {
-        return node.apply(putCommand(config))
-                   .await(COMMIT_TIMEOUT)
-                   .mapToUnit()
-                   .onFailure(cause -> log.debug("Failed to publish stream config for {}: {}",
-                                                 config.name(),
-                                                 cause.message()))
-                   .mapError(_ -> StreamError.General.STREAM_CONFIG_COMMIT_FAILED)
-                   .flatMap(_ -> proposalOutcome(config, entry));
+        return inLane(config.name(),
+                      () -> node.<Object> apply(putCommand(config))).await(COMMIT_TIMEOUT)
+                     .onFailure(cause -> log.debug("Failed to publish stream config for {}: {}",
+                                                   config.name(),
+                                                   cause.message()))
+                     .mapError(_ -> StreamError.General.STREAM_CONFIG_COMMIT_FAILED)
+                     .flatMap(results -> proposalOutcome(config, entry, results));
     }
 
-    /// #1278 (ruling B): the consensus round resolving does not mean THIS proposal's life committed — the KV applier
-    /// refuses a second life over a committed one ([org.pragmatica.cluster.state.kvstore.IncarnationFenced]) without
-    /// a notification. The entry is latched committed only when its committed config applies here
+    /// #1278 (ruling B) and #2627: the consensus round resolving does not mean THIS proposal's life committed — the KV
+    /// applier refuses a second life over a committed one ([org.pragmatica.cluster.state.kvstore.IncarnationFenced])
+    /// without a notification. The applier DOES answer: a `Put` returns the value it replaced, and a refused one
+    /// returns the committed value that refused it. A different non-zero committed life in that answer is a refusal and
+    /// is reported as a duplicate create, never as success — and it does not depend on the notification having
+    /// reached this node. Otherwise the entry is latched committed only when its committed config applies here
     /// ([#commitOwnLife]); a different applied life means another create won, which is a duplicate create.
-    private Result<Unit> proposalOutcome(StreamConfig config, StreamEntry entry) {
+    private Result<Unit> proposalOutcome(StreamConfig config, StreamEntry entry, List<Object> results) {
+        return refusedByFence(config, results)
+               ? StreamError.General.STREAM_ALREADY_EXISTS.result()
+               : appliedLifeOutcome(config, entry);
+    }
+
+    private Result<Unit> appliedLifeOutcome(StreamConfig config, StreamEntry entry) {
         return option(entries.appliedConfigs().get(config.name())).filter(applied -> applied.incarnation() != entry.config()
                                                                                                                    .incarnation())
                      .fold(() -> success(unit()),
                            _ -> StreamError.General.STREAM_ALREADY_EXISTS.result());
+    }
+
+    /// Mirrors the applier's fence: a committed life of non-zero incarnation different from the proposed one refuses.
+    static boolean refusedByFence(StreamConfig proposed, List<Object> results) {
+        return displacedLife(results).filter(committed -> committed.incarnation() != 0 && committed.incarnation() != proposed.incarnation())
+                            .isPresent();
+    }
+
+    private static Option<StreamConfig> displacedLife(List<Object> results) {
+        return results.isEmpty()
+               ? none()
+               : replacedConfig(results.getFirst());
+    }
+
+    private static Option<StreamConfig> replacedConfig(Object result) {
+        return result instanceof Option<?> replaced
+               ? replaced.flatMap(StreamPartitionManager::configOf)
+               : none();
+    }
+
+    private static Option<StreamConfig> configOf(Object value) {
+        return value instanceof StreamConfigValue stored
+               ? some(stored.config())
+               : none();
     }
 
     /// Async sibling of {@link #applyPutCommand}: fire the idempotent config `Put` (the publish-path decoupling — Fix
@@ -1576,13 +1662,16 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Publish-path commit (#1278 ruling F): fire the config `Put` and wait at most [#PUBLISH_COMMIT_WAIT] for it to
     /// commit and apply here, so the first publish to a new stream normally lands in its committed life. The outcome
     /// is not read: the accept gate ([#committedLife]) decides from the applied life, and a commit slower than the
-    /// wait — a still-catching-up leader — leaves the publish refused retriably instead of stalling it.
+    /// wait — a still-catching-up leader — leaves the publish refused retriably instead of stalling it. The `Put` is
+    /// submitted through the name's commit lane ([#inLane], #2627): a wait that elapses leaves the `Put` in flight, and a
+    /// destroy of the name is then queued behind it instead of racing it.
     private Result<Unit> fireAsyncCommit(ClusterNode<KVCommand<AetherKey>> node,
                                          StreamConfig config,
                                          StreamEntry entry) {
-        return applyPutCommandAsync(node, config).await(PUBLISH_COMMIT_WAIT)
-                                   .fold(_ -> success(unit()),
-                                         _ -> success(unit()));
+        return inLane(config.name(),
+                      () -> applyPutCommandAsync(node, config)).await(PUBLISH_COMMIT_WAIT)
+                     .fold(_ -> success(unit()),
+                           _ -> success(unit()));
     }
 
     /// Commit strategy threaded through the shared create/materialize chain so `createStream` (explicit
@@ -1642,14 +1731,15 @@ public final class StreamPartitionManager implements AutoCloseable {
         abstract Result<Unit> republished();
     }
 
-    private void applyRemoveCommand(ClusterNode<KVCommand<AetherKey>> node, String streamName) {
+    private Promise<Unit> applyRemoveCommand(ClusterNode<KVCommand<AetherKey>> node, String streamName) {
         var key = StreamConfigKey.streamConfigKey(streamName);
         var remove = new KVCommand.Remove<AetherKey>(key);
 
-        node.apply(List.of(remove))
-            .onFailure(cause -> log.warn("Failed to publish stream config removal for {}: {}",
-                                         streamName,
-                                         cause.message()));
+        return node.apply(List.of(remove))
+                   .onFailure(cause -> log.warn("Failed to publish stream config removal for {}: {}",
+                                                streamName,
+                                                cause.message()))
+                   .mapToUnit();
     }
 
     @Contract
@@ -2232,6 +2322,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
 
         ring.addAppendListener(visible -> announceVisible(config.name(), partition, visible));
+        ring.addTruncationListener(keepThrough -> partitionLogEvents.truncated(config.name(), partition, keepThrough));
     }
 
     /// #2087: the owner's visible position moved: tell the replicas. Runs on the ring's serial notifier -- never under
@@ -2240,6 +2331,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void announceVisible(String streamName, int partition, long visible) {
         if (placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER) {
+            partitionLogEvents.committed(streamName, partition, visible);
             replicationManager.announceCommitted(streamName,
                                                  partition,
                                                  visible,
@@ -2279,6 +2371,17 @@ public final class StreamPartitionManager implements AutoCloseable {
         resolvePartitionBuffer(streamName, partition).onSuccess(ring -> exposeReplicaCommitted(streamName,
                                                                                                partition,
                                                                                                ring));
+        partitionLogEvents.committed(streamName, partition, committedMarkThrough(streamName, partition));
+    }
+
+    /// #2590 P1: how far this node knows `(streamName, partition)` to be committed. On the owner it is the ring's visible
+    /// position (fsync-durable here and acknowledged by the confirmation peers); on any other node it is the position the
+    /// committed owner announced (#2087), which may run ahead of what this node holds. `-1` when nothing is.
+    public long committedThrough(String streamName, int partition) {
+        return placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER
+               ? resolvePartitionBuffer(streamName, partition).map(OffHeapRingBuffer::visibleOffset)
+                                       .or(-1L)
+               : committedMarkThrough(streamName, partition);
     }
 
     /// A batch landed under `epoch`: the owner of that epoch is the one this replica now follows, so a position reported
@@ -3613,6 +3716,83 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// An owner append that has left the ordered section: its offset, and the group-commit fsync its WAL
     /// frame waits on (already resolved when the partition has no WAL).
     private record LoggedAppend(long offset, Promise<Unit> durable) {}
+
+    /// #2590 P1: a control-log run the owner appended, `[firstOffset, lastOffset]`, and the ONE group-commit fsync that
+    /// covers it. `durable` is not awaited here: the caller awaits it outside its own ordered section, and a failure of it
+    /// leaves the run appended and replicated, an unknown outcome rather than a refusal.
+    public record ControlRunAppend(long firstOffset, long lastOffset, Promise<Unit> durable) {}
+
+    /// #2590 P1: the control log's owner append of `payloads` as ONE run: the epoch fence, the owner admission (a
+    /// committed owner elsewhere answers [StreamError.NotOwnerAppend]), the replica floor, one run append, its WAL frames,
+    /// ONE replication message and ONE group commit, exactly as [#publishLocalBatchAtFloor]. A failure here is a refusal:
+    /// nothing reached the ring, the WAL or a replica. Unlike every publish path the fsync is NOT awaited: the returned
+    /// [ControlRunAppend] carries it. A stream this node has not materialized yet is materialized from the committed
+    /// config and the floor is that config's `CF - 1`, as [#publishForwarded] does.
+    public Result<ControlRunAppend> appendControlRun(String streamName,
+                                                     int partition,
+                                                     List<byte[]> payloads,
+                                                     long timestamp) {
+        return controlRun(streamName, partition, payloads, timestamp, confirmationFactorFor(streamName) - 1).fold(cause -> recoverControlRun(cause,
+                                                                                                                                             streamName,
+                                                                                                                                             partition,
+                                                                                                                                             payloads,
+                                                                                                                                             timestamp),
+                                                                                                                  Result::success);
+    }
+
+    private Result<ControlRunAppend> recoverControlRun(Cause cause,
+                                                       String streamName,
+                                                       int partition,
+                                                       List<byte[]> payloads,
+                                                       long timestamp) {
+        return cause instanceof StreamError.StreamNotFound
+               ? materializeThenControlRun(streamName, partition, payloads, timestamp)
+               : cause.result();
+    }
+
+    private Result<ControlRunAppend> materializeThenControlRun(String streamName,
+                                                               int partition,
+                                                               List<byte[]> payloads,
+                                                               long timestamp) {
+        return committedConfigSource.committedConfig(streamName)
+                                    .toResult(new StreamError.StreamConfigNotYetVisible(streamName))
+                                    .flatMap(config -> ensureStreamMaterialized(config).flatMap(_ -> controlRun(streamName,
+                                                                                                                partition,
+                                                                                                                payloads,
+                                                                                                                timestamp,
+                                                                                                                config.confirmationFactor() - 1)));
+    }
+
+    private Result<ControlRunAppend> controlRun(String streamName,
+                                                int partition,
+                                                List<byte[]> payloads,
+                                                long timestamp,
+                                                int minAcks) {
+        var ownerEpoch = ownerEpochSource.currentOwnerEpoch(streamName, partition);
+
+        return ensureWritableConsistency(streamName).flatMap(_ -> resolveWritableEntry(streamName))
+                                        .flatMap(entry -> publishBatchInSection(entry,
+                                                                                streamName,
+                                                                                partition,
+                                                                                payloads,
+                                                                                timestamp,
+                                                                                ownerEpoch,
+                                                                                minAcks))
+                                        .map(logged -> controlRunAppend(streamName,
+                                                                        partition,
+                                                                        payloads.size(),
+                                                                        logged));
+    }
+
+    /// The run's fsync, marking the run durable here once it resolves, as [#admittedBatch] does after its await.
+    private ControlRunAppend controlRunAppend(String streamName, int partition, int count, LoggedAppend logged) {
+        return new ControlRunAppend(logged.offset() - count + 1,
+                                    logged.offset(),
+                                    logged.durable()
+                                          .onSuccess(_ -> ownerDurable(streamName,
+                                                                       partition,
+                                                                       logged.offset())));
+    }
 
     /// Admitted storage run without single-event fallback: a caller retains per-event outcomes when
     /// an oversized run must be retried one event at a time. Refusals before append preserve the run.

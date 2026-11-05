@@ -334,6 +334,32 @@ public class QuicClusterNetwork implements ClusterNetwork {
         return Unit.unit();
     }
 
+    private volatile java.util.function.BiPredicate<NodeId, ProtocolMessage> outboundRefusalFilter = (_, _) -> false;
+
+    /// Test-only fault injection (#2574), on the QUIC transport alone (no [ClusterNetwork] method): a unicast send whose
+    /// peer and message the filter matches is refused before it is written, as a backpressured fast-fail lane refuses it --
+    /// the frame is dropped, and a caller that asks for the outcome gets [WriteOutcome.BackpressureRefused]. It stands in for
+    /// the FORWARD-lane refusal a loopback cluster cannot produce on demand. Broadcasts are not filtered.
+    public Unit setOutboundRefusalFilter(java.util.function.BiPredicate<NodeId, ProtocolMessage> filter) {
+        outboundRefusalFilter = filter;
+
+        return Unit.unit();
+    }
+
+    /// True when the test-only outbound filter refuses this send; the refusal is logged (no transport counter moves: it is
+    /// not a real backpressure drop).
+    private boolean refusedByFaultFilter(NodeId peerId, ProtocolMessage message) {
+        if (!outboundRefusalFilter.test(peerId, message)) {
+            return false;
+        }
+
+        log.warn("Outbound fault filter refused {} to peer {} (simulated backpressure)",
+                 message.getClass().getSimpleName(),
+                 peerId);
+
+        return true;
+    }
+
     private volatile java.util.function.BiPredicate<NodeId, Message.Wired> inboundMessagePolicy = (_, _) -> true;
 
     @Override
@@ -659,7 +685,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     @Override
     @Contract
     public void handleSend(NetworkServiceMessage.Send send) {
-        dispatchPayload(send.target(), send.payload());
+        var _ = dispatchPayloadWithOutcome(send.target(), send.payload());
     }
 
     @Override
@@ -1134,25 +1160,29 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     @Override
-    public <M extends ProtocolMessage> Unit send(NodeId peerId, M message) {
+    public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId peerId, M message) {
         if (blackholed) {
-            return unit();
+            return Promise.success(new WriteOutcome.Sent(peerId));
         }
 
-        dispatchPayload(peerId, message);
+        if (refusedByFaultFilter(peerId, message)) {
+            return Promise.success(new WriteOutcome.BackpressureRefused(peerId));
+        }
 
-        return unit();
+        return Promise.success(dispatchPayloadWithOutcome(peerId, message));
     }
 
     @Override
-    public <M extends ProtocolMessage> Unit send(NodeId peerId, M message, TimeSpan offlineTtl) {
+    public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId peerId, M message, TimeSpan offlineTtl) {
         if (blackholed) {
-            return unit();
+            return Promise.success(new WriteOutcome.Sent(peerId));
         }
 
-        dispatchPayload(peerId, message, expiryWithin(offlineTtl));
+        if (refusedByFaultFilter(peerId, message)) {
+            return Promise.success(new WriteOutcome.BackpressureRefused(peerId));
+        }
 
-        return unit();
+        return Promise.success(dispatchPayloadWithOutcome(peerId, message, expiryWithin(offlineTtl)));
     }
 
     @Override
@@ -1177,26 +1207,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                       ? ttl
                                       : cap,
                                       System.nanoTime());
-    }
-
-    @Override
-    public <M extends ProtocolMessage> Promise<WriteOutcome> sendOutcome(NodeId peerId, M message) {
-        if (blackholed) {
-            return Promise.success(new WriteOutcome.Sent(peerId));
-        }
-
-        return Promise.success(dispatchPayloadWithOutcome(peerId, message));
-    }
-
-    @Override
-    public <M extends ProtocolMessage> Promise<WriteOutcome> sendOutcome(NodeId peerId,
-                                                                         M message,
-                                                                         TimeSpan offlineTtl) {
-        if (blackholed) {
-            return Promise.success(new WriteOutcome.Sent(peerId));
-        }
-
-        return Promise.success(dispatchPayloadWithOutcome(peerId, message, expiryWithin(offlineTtl)));
     }
 
     @Override
@@ -2074,40 +2084,13 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// Dispatch a typed message to a single peer — runs through the PeerState machine:
     /// SendNow → write to captured connection; Queued → buffered for reconnect; Dropped → REMOVED.
     /// The lane is resolved once here (from the message's `streamType()`); the message object is
-    /// never threaded past this point.
-    private void dispatchPayload(NodeId peerId, Message.Wired message) {
-        dispatchPayload(peerId, message, capExpiry());
-    }
-
-    /// As [#dispatchPayload(NodeId, Message.Wired)], for a request frame whose caller stops waiting at `expiry`: held in
-    /// the offline buffer past that instant it is dropped at the flush, not delivered (#1996).
-    private void dispatchPayload(NodeId peerId, Message.Wired message, PeerState.Expiry expiry) {
-        if (peerId.equals(self.id())) {
-            var _ = loopbackToSelf(message);
-
-            return;
-        }
-
-        var state = peers.get(peerId);
-
-        if (state == null) {
-            var _ = dispatchToAbsentPeer(peerId, message, expiry);
-
-            return;
-        }
-
-        var _ = dispatchToPeer(state, message, expiry);
-    }
-
-    /// Outcome-tracking variant used by `sendOutcome` callers (DHT quorum path). Same
-    /// dispatch flow as `dispatchPayload` but surfaces the synchronous local-transport
-    /// verdict so the caller can fail-fast against unreachable replicas.
+    /// never threaded past this point. Returns the synchronous local-transport verdict that `send` reports.
     private WriteOutcome dispatchPayloadWithOutcome(NodeId peerId, Message.Wired message) {
         return dispatchPayloadWithOutcome(peerId, message, capExpiry());
     }
 
     /// As [#dispatchPayloadWithOutcome(NodeId, Message.Wired)], for a request frame whose caller stops waiting at
-    /// `expiry` (#1996), as [#dispatchPayload(NodeId, Message.Wired, PeerState.Expiry)] does for the untracked send.
+    /// `expiry`: held in the offline buffer past that instant it is dropped at the flush, not delivered (#1996).
     private WriteOutcome dispatchPayloadWithOutcome(NodeId peerId, Message.Wired message, PeerState.Expiry expiry) {
         if (peerId.equals(self.id())) {
             return loopbackToSelf(message);
@@ -2164,7 +2147,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     /// Pre-start (or cert-rotation) self-send with no pinned loop: report the drop HONESTLY (#487
-    /// finding 4) rather than a false `Sent` — a tracked `sendOutcome` to self must not claim delivery
+    /// finding 4) rather than a false `Sent` — a `send` to self must not claim delivery
     /// while dropping. Matches the unknown-peer outcome (`NoPeerState`): no delivery happened.
     private WriteOutcome dropLoopbackBeforeStart(Message.Wired message) {
         warnLoopbackBeforeStart(message);

@@ -256,10 +256,10 @@ class ReplicationBatcherTest {
         @Test
         void scheduledFlush_sendsAccumulatedEvents() throws InterruptedException {
             var latch = new CountDownLatch(1);
-            ReplicationTransport latchingTransport = (target, message) -> {
+            ReplicationTransport latchingTransport = AcceptingReplicationTransport.accepting((target, message) -> {
                 sentMessages.add(new SentMessage(target, message));
                 latch.countDown();
-            };
+            });
 
             batcher = replicationBatcher(latchingTransport, registry, GOVERNOR, 1000, TimeSpan.timeSpan(50).millis());
 
@@ -279,10 +279,10 @@ class ReplicationBatcherTest {
         void scheduledFlush_loneEvent_sentWithinMaxDelayBound() throws InterruptedException {
             var sentAt = new AtomicLong();
             var latch = new CountDownLatch(1);
-            ReplicationTransport timingTransport = (_, _) -> {
+            ReplicationTransport timingTransport = AcceptingReplicationTransport.accepting((_, _) -> {
                 sentAt.set(System.nanoTime());
                 latch.countDown();
-            };
+            });
 
             batcher = replicationBatcher(timingTransport, registry, GOVERNOR, 1000, TimeSpan.timeSpan(200).millis());
 
@@ -457,8 +457,8 @@ class ReplicationBatcherTest {
         }
 
         private static ReplicationTransport identityTransport(ConcurrentLinkedQueue<String> delivered) {
-            return (_, message) -> ((ReplicationMessage.ReplicateEvents) message).payloads()
-                                                                                 .forEach(payload -> delivered.add(new String(payload)));
+            return AcceptingReplicationTransport.accepting((_, message) -> ((ReplicationMessage.ReplicateEvents) message).payloads()
+                                                                                                                        .forEach(payload -> delivered.add(new String(payload))));
         }
     }
 
@@ -537,7 +537,7 @@ class ReplicationBatcherTest {
         };
 
         /// Blocks inside `send` until the test opens the gate.
-        private final ReplicationTransport held = (_, message) -> {
+        private final ReplicationTransport held = AcceptingReplicationTransport.accepting((_, message) -> {
             entered.countDown();
             try {
                 gate.await();
@@ -545,7 +545,7 @@ class ReplicationBatcherTest {
                 Thread.currentThread().interrupt();
             }
             delivered.addAndGet(((ReplicationMessage.ReplicateEvents) message).payloads().size());
-        };
+        });
 
         @Test
         void close_oneShotFlushBetweenDrainAndSend_waitsForItBeforeReturning() throws InterruptedException {
@@ -638,7 +638,7 @@ class ReplicationBatcherTest {
 
                 return SharedScheduler.schedule(() -> {}, TimeSpan.timeSpan(1).hours());
             };
-            ReplicationTransport transport = (_, message) -> {
+            ReplicationTransport transport = AcceptingReplicationTransport.accepting((_, message) -> {
                 var events = (ReplicationMessage.ReplicateEvents) message;
 
                 if (flushThreads.contains(Thread.currentThread())) {
@@ -650,7 +650,7 @@ class ReplicationBatcherTest {
                     startOtherPartitionFlush(flushes.get(1 - events.partition()), flushThreads, finished);
                 }
                 delivered.addAndGet(events.payloads().size());
-            };
+            });
 
             batcher = replicationBatcher(transport, registry, GOVERNOR, 100, TimeSpan.timeSpan(1).millis(), capturingBoth);
             for (long offset = 0; offset < EVENTS; offset++) {
@@ -772,11 +772,11 @@ class ReplicationBatcherTest {
     }
 
     private ReplicationTransport countingTransport(AtomicInteger delivered) {
-        return (_, message) -> delivered.addAndGet(((ReplicationMessage.ReplicateEvents) message).payloads().size());
+        return AcceptingReplicationTransport.accepting((_, message) -> delivered.addAndGet(((ReplicationMessage.ReplicateEvents) message).payloads().size()));
     }
 
     private ReplicationTransport capturingTransport() {
-        return (target, message) -> sentMessages.add(new SentMessage(target, message));
+        return AcceptingReplicationTransport.accepting((target, message) -> sentMessages.add(new SentMessage(target, message)));
     }
 
     /// Captured transport message for test assertions.

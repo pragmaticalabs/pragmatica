@@ -12,7 +12,7 @@ package org.pragmatica.consensus.net;
 import org.pragmatica.consensus.NodeId;
 
 
-/// Synchronous outcome of a per-peer message dispatch from [ClusterNetwork.sendOutcome].
+/// Synchronous outcome of a per-peer message dispatch from [ClusterNetwork.send].
 ///
 /// Replaces the prior fire-and-forget `Unit` semantics for callers that need to react
 /// immediately to transient or permanent transport failures (notably the DHT quorum
@@ -21,10 +21,14 @@ import org.pragmatica.consensus.NodeId;
 ///
 /// Semantics:
 ///
-///   - [Sent]            — message handed off to the transport queue successfully. The
-///                         caller should still await the receiver's reply via the
-///                         existing message-routing path (this outcome only signals
-///                         that the local enqueue succeeded).
+///   - [Sent]            — not refused locally. The frame was written, queued (offline
+///                         buffer, lane-open pending, backpressure retry) or silently
+///                         discarded (test blackhole, retry to a REMOVED peer). Never
+///                         evidence of delivery: the caller still awaits the receiver's
+///                         reply via the existing message-routing path. Only
+///                         [BackpressureRefused], [NoPeerState] and [EncodeFailed] prove
+///                         the frame never left; [ConnectionDead] proves it only for a
+///                         [NoOfflineBuffering] frame.
 ///   - [BackpressureRefused] — the per-peer channel is at the netty high-watermark.
 ///                             Transient; the peer is logically reachable but cannot
 ///                             accept more bytes right now. Caller can retry later or

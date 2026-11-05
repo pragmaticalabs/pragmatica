@@ -52,6 +52,7 @@ ENUM org.pragmatica.aether.slice.kvstore.AetherValue$UpgradeRunState RUNNING=0,P
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$UpgradeStop NONE=0,PAUSE=1,ABORT=2,UNKNOWN=3
 ENUM org.pragmatica.aether.slice.kvstore.CommunityState FORMING=0,ACTIVE=1,DEGRADED=2,DISSOLVING=3,DISSOLVED=4,UNKNOWN=5
 ENUM org.pragmatica.aether.slice.stream.StreamRegistryEntry$RegisteredByKind FRAMEWORK=0,BLUEPRINT=1,OPERATOR=2,UNKNOWN=3
+ENUM org.pragmatica.aether.stream.forward.ControlOutcomeDto$Kind ADMITTED=0,REFUSED=1,OUTCOME_UNKNOWN=2,INDEX_UNAVAILABLE=3,UNKNOWN=4
 ENUM org.pragmatica.aether.stream.forward.ReadRefusal$Kind STREAM_NOT_FOUND=0,PARTITION_OUT_OF_RANGE=1,PARTITION_NOT_LOCAL=2,BUFFER_CLOSED=3,CURSOR_EXPIRED=4,OWNER_NOT_ACTIVATED=5,REPLICA_NOT_VERIFIED=6,STALE_EPOCH_READ=7,NOT_CURRENT_OWNER=8,OWNER_CATCHUP_PENDING=9,LINEARIZABLE_ROUND_TIMEOUT=10,PARTITION_HELD_NOT_MATERIALIZED=11,RING_INDEX_CORRUPTED=12,SEAL_IN_FLIGHT=13,SEALED_RANGE_MISSING=14,UNKNOWN=15
 ENUM org.pragmatica.aether.stream.provenance.ProvenanceEntry$ProvenanceKind OWNED=0,UNATTRIBUTED=1,BASE=2,UNKNOWN=3
 ENUM org.pragmatica.cluster.metrics.ConnectivityState CONNECTED=0,DISCONNECTED=1,STALE=2,UNKNOWN=3
@@ -261,7 +262,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$CommunityValue (sourceName
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ConfigValue (key:java.lang.String,value:java.lang.String,updatedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerAssignmentValue (assignee:org.pragmatica.consensus.NodeId,epoch:org.pragmatica.aether.slice.generation.Epoch,assignmentTerm:long,assignedAt:org.pragmatica.hlc.HlcTimestamp)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerAssignmentValue$AssignmentToken (assignee:org.pragmatica.consensus.NodeId,epoch:org.pragmatica.aether.slice.generation.Epoch)
-SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerGroupValue (assignedTo:org.pragmatica.consensus.NodeId,consumerId:java.lang.String,assignedAt:long)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerGroupValue (assignedTo:org.pragmatica.consensus.NodeId,consumerId:java.lang.String,assignedAt:long,epoch:org.pragmatica.aether.slice.generation.Epoch)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$DeploymentApplyValue (attemptId:java.lang.String,previous:org.pragmatica.lang.Option<org.pragmatica.aether.slice.kvstore.AetherValue$AppBlueprintValue>,openedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$DeploymentOutcomeValue (status:org.pragmatica.aether.slice.kvstore.AetherValue$DeploymentOutcomeStatus,failingSlices:java.util.List<java.lang.String>,cause:java.lang.String,timestampMs:long,outcomeVersion:long,attemptId:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$DeploymentValue (deploymentId:java.lang.String,blueprintId:java.lang.String,oldVersion:java.lang.String,newVersion:java.lang.String,strategy:java.lang.String,state:java.lang.String,routing:java.lang.String,strategyConfig:java.lang.String,thresholds:java.lang.String,cleanupPolicy:java.lang.String,artifacts:java.lang.String,newInstances:int,createdAt:long,updatedAt:long)
@@ -323,8 +324,12 @@ SHAPE org.pragmatica.aether.slice.kvstore.LegacyScheduledTaskStateValue (lastExe
 SHAPE org.pragmatica.aether.slice.kvstore.LegacyTopicSubscriptionValue (nodeId:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.aether.slice.stream.StreamRegistryEntry (address:org.pragmatica.aether.slice.resource.ResourceAddress,retention:org.pragmatica.aether.slice.RetentionPolicy,registeredAtEpochMillis:long,registeredBy:org.pragmatica.aether.slice.stream.StreamRegistryEntry$RegisteredByKind,refCount:int)
 SHAPE org.pragmatica.aether.stream.consensus.StreamConsensusCommand (streamName:java.lang.String,partition:int,payload:byte[],timestamp:long)
+SHAPE org.pragmatica.aether.stream.forward.ControlOutcomeDto (kind:org.pragmatica.aether.stream.forward.ControlOutcomeDto$Kind,offset:long,message:java.lang.String,retryable:boolean)
+SHAPE org.pragmatica.aether.stream.forward.ControlRecordDto (kind:java.lang.String,key:java.lang.String,payload:byte[],hlc:long)
 SHAPE org.pragmatica.aether.stream.forward.RawEventDto (offset:long,timestamp:long,data:byte[])
 SHAPE org.pragmatica.aether.stream.forward.ReadRefusal (kind:org.pragmatica.aether.stream.forward.ReadRefusal$Kind,stream:java.lang.String,partition:int,first:long,second:long,flag:boolean,detail:java.lang.String,peerFirst:java.lang.String,peerSecond:java.lang.String,epochFirst:org.pragmatica.aether.slice.generation.Epoch,epochSecond:org.pragmatica.aether.slice.generation.Epoch)
+SHAPE org.pragmatica.aether.stream.forward.StreamForwardMessage$ControlAppendForward (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,streamName:java.lang.String,partition:int,records:java.util.List<org.pragmatica.aether.stream.forward.ControlRecordDto>)
+SHAPE org.pragmatica.aether.stream.forward.StreamForwardMessage$ControlAppendForwardResponse (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,outcomes:java.util.List<org.pragmatica.aether.stream.forward.ControlOutcomeDto>)
 SHAPE org.pragmatica.aether.stream.forward.StreamForwardMessage$PublishForward (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,streamName:java.lang.String,partition:int,payload:byte[],timestamp:long,systemWriter:boolean)
 SHAPE org.pragmatica.aether.stream.forward.StreamForwardMessage$PublishForwardResponse (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,success:boolean,offset:long,errorMessage:java.lang.String,retryable:boolean,outcomeUnknown:boolean)
 SHAPE org.pragmatica.aether.stream.forward.StreamForwardMessage$ReadForward (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,streamName:java.lang.String,partition:int,fromOffset:long,maxEvents:int,linearizable:boolean,catchup:boolean,consumerEpoch:org.pragmatica.aether.slice.generation.Epoch)
@@ -406,6 +411,7 @@ SHAPE org.pragmatica.consensus.rabia.ClusterConfig (members:java.util.List<org.p
 SHAPE org.pragmatica.consensus.rabia.CorrelationId (id:java.lang.String)
 SHAPE org.pragmatica.consensus.rabia.Phase (value:long)
 SHAPE org.pragmatica.consensus.rabia.RabiaPersistence$SavedState (snapshot:byte[],lastCommittedPhase:org.pragmatica.consensus.rabia.Phase,pendingBatches:java.util.List<org.pragmatica.consensus.StateMachine$Batch<C>>,configuration:org.pragmatica.lang.Option<org.pragmatica.consensus.rabia.VoterConfiguration>)
+SHAPE org.pragmatica.consensus.rabia.RabiaProtocolMessage$Asynchronous$BatchCommitted (sender:org.pragmatica.consensus.NodeId,batchId:org.pragmatica.consensus.StateMachine$Batch$Id,correlationIds:java.util.List<org.pragmatica.consensus.rabia.CorrelationId>)
 SHAPE org.pragmatica.consensus.rabia.RabiaProtocolMessage$Asynchronous$GenesisAnnouncement (sender:org.pragmatica.consensus.NodeId,round:long,view:org.pragmatica.lang.Option<org.pragmatica.consensus.rabia.ClusterConfig>,formed:org.pragmatica.lang.Option<org.pragmatica.consensus.rabia.VoterConfiguration>)
 SHAPE org.pragmatica.consensus.rabia.RabiaProtocolMessage$Asynchronous$NewBatch (sender:org.pragmatica.consensus.NodeId,batch:org.pragmatica.consensus.StateMachine$Batch<C>)
 SHAPE org.pragmatica.consensus.rabia.RabiaProtocolMessage$Asynchronous$ReconfigurationRequest (sender:org.pragmatica.consensus.NodeId,epoch:long,target:org.pragmatica.consensus.rabia.ClusterConfig)
@@ -774,9 +780,14 @@ TAG  org.pragmatica.aether.slice.kvstore.LegacyTopicSubscriptionValue 1655
 TAG  org.pragmatica.aether.slice.stream.StreamRegistryEntry 1071062
 TAG  org.pragmatica.aether.slice.stream.StreamRegistryEntry$RegisteredByKind 1762131
 TAG  org.pragmatica.aether.stream.consensus.StreamConsensusCommand 91
+TAG  org.pragmatica.aether.stream.forward.ControlOutcomeDto 2203
+TAG  org.pragmatica.aether.stream.forward.ControlOutcomeDto$Kind 2204
+TAG  org.pragmatica.aether.stream.forward.ControlRecordDto 2202
 TAG  org.pragmatica.aether.stream.forward.RawEventDto 92
 TAG  org.pragmatica.aether.stream.forward.ReadRefusal 2140
 TAG  org.pragmatica.aether.stream.forward.ReadRefusal$Kind 2141
+TAG  org.pragmatica.aether.stream.forward.StreamForwardMessage$ControlAppendForward 2205
+TAG  org.pragmatica.aether.stream.forward.StreamForwardMessage$ControlAppendForwardResponse 2206
 TAG  org.pragmatica.aether.stream.forward.StreamForwardMessage$PublishForward 93
 TAG  org.pragmatica.aether.stream.forward.StreamForwardMessage$PublishForwardResponse 94
 TAG  org.pragmatica.aether.stream.forward.StreamForwardMessage$ReadForward 95
@@ -863,6 +874,7 @@ TAG  org.pragmatica.consensus.rabia.ClusterConfig 24
 TAG  org.pragmatica.consensus.rabia.CorrelationId 25
 TAG  org.pragmatica.consensus.rabia.Phase 26
 TAG  org.pragmatica.consensus.rabia.RabiaPersistence$SavedState 27
+TAG  org.pragmatica.consensus.rabia.RabiaProtocolMessage$Asynchronous$BatchCommitted 2201
 TAG  org.pragmatica.consensus.rabia.RabiaProtocolMessage$Asynchronous$GenesisAnnouncement 89
 TAG  org.pragmatica.consensus.rabia.RabiaProtocolMessage$Asynchronous$NewBatch 28
 TAG  org.pragmatica.consensus.rabia.RabiaProtocolMessage$Asynchronous$ReconfigurationRequest 120

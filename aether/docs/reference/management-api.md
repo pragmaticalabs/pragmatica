@@ -581,6 +581,18 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `stream-seal-stop-incomplete` (WARNING — a graceful stop did not seal everything the node's segment sealer held within 5 s; names each partition, its unsealed range and whether a WAL holds it. Raised once, while the node stops. Subject `node <nodeId> stream sealer` (know 73fd8d9759))
 - `backup-stop-flush-failed` (WARNING — the final KV-backup flush of a graceful stop failed or overran its deadline, so changes inside the backup's debounce window are not in the backup; `subject` is `kv-backup`; the stop itself proceeds; closed by `backup-stop-flush-recovered`)
 - `backup-stop-flush-recovered` (INFO — the recovery: a later flush of this node's backup succeeded after its stop-time flush had failed, in this or a later process; a marker file `<backup path>/kv-backup.stop-flush-failed` carries the open state across the restart, and is removed when this is raised; if that node never leads again the marker stays and no recovery is raised)
+- `rollback-record-reconcile-exhausted` (CRITICAL — the leader could not bring an artifact's rollback record up to its SliceTarget: its guarded write was refused three times in a row because the target or the record kept changing. The record still names an older version until a later SliceTarget update or the next leader activation re-derives it; subject is the artifact base)
+- `schema-migration-fence-held` (WARNING — a schema migration was fenced in the database for the 3rd consecutive time or more: another database session holds the migration fence. The attempt is not consumed; the schema stays PENDING and retries every 45 s at most. The message names the holder; subject is the datasource)
+- `schema-migration-unfenced` (WARNING — a schema operation runs without a database fence: the datasource is configured as PostgreSQL but the server is CockroachDB, which has no tier-1 fence until FDB-2b; subject is the datasource)
+- `schema-migration-fence-released` (INFO — the recovery, same subject: a later migration attempt on the datasource acquired the fence and completed; published only after a published `schema-migration-fence-held` for the datasource, once per such warning. It is tracked in the memory of the node that raised the warning, so a leadership change leaves the warning open)
+- `schema-migration-fenced` (INFO — the recovery, same subject: a later schema operation on the datasource ran fenced after a published `schema-migration-unfenced`; published once per such warning, tracked in the raising node's memory)
+- `rollback-record-reconciled` (INFO — the recovery, same subject: the rollback record names its SliceTarget version again)
+- `kv-dispatch-lagging` (WARNING — the node's KV store delivers its notifications more slowly than it commits them: the subject series, `kv.dispatch.lag.batches` or `kv.dispatch.queue.bytes`, rose over a whole 30 s sampling window without falling once. A sustained slope, not a threshold: a high but steady lag raises nothing. The undelivered queue is retained heap; the `aether.kv.dispatch.*` gauges show it)
+- `kv-dispatch-caught-up` (INFO — its recovery, same subject: the series is back to zero, the queue drained)
+- `kv-dispatch-slow-handler` (WARNING — one KV notification handler on the node has run longer than the slow-handler threshold (5 ms) and holds the store's notification delivery; subject is the notification type, e.g. `ValuePut SliceTargetKey`; the node log carries the dispatcher's stack. At most once per type per 10 minutes)
+- `kv-dispatch-slow-handler-returned` (INFO — its recovery, same subject: that handler returned, delivery moves again)
+- `kv-dispatch-read-ahead` (INFO — a KV notification handler read a key a later batch had already written, so it saw state ahead of its notification; the first per key type per process, subject the key type; `aether.kv.dispatch.readahead.reads` counts every one)
+- `kv-dispatcher-failed` (CRITICAL — the node's KV notification dispatcher failed: the store is closed, waiting writes fail as outcome-unknown and the node stops; a production node halts with exit code 70. Subject is the store (the node id). No recovery code: restart the node; the node log carries the failure, the batch and a thread dump. Best-effort: the halt can overtake the publish)
 
 Best-effort like every per-node event: during a partition or bootstrap the publish can be dropped, and the log line is then the only record.
 
@@ -1456,12 +1468,12 @@ individual request latencies. `errorRate` is the failed/completed invocation rat
     "proposalsCount": 998,
     "voteRound1Count": 2084,
     "voteRound2Count": 2011,
-    "fastPathCount": 812,
     "syncSuccessCount": 3,
     "syncFailureCount": 0,
     "avgDecisionLatencyMs": 4.7,
     "oldestPendingBatchAgeMs": 0,
-    "applyTimeoutCount": 0
+    "applyTimeoutCount": 0,
+    "consecutiveEmptySlotsWithPending": 0
   }
 }
 ```
@@ -1497,7 +1509,7 @@ Get Prometheus-format metrics for scraping.
 **Content-Type**: `text/plain; version=0.0.4; charset=utf-8`
 
 Includes the consensus-load gauges (#674): `consensus_decisions_total`, `consensus_proposals_total`,
-`consensus_vote_round1_total`, `consensus_vote_round2_total`, `consensus_fast_path_total`,
+`consensus_vote_round1_total`, `consensus_vote_round2_total`,
 `consensus_sync_success_total`, `consensus_sync_failure_total`, `consensus_apply_timeouts_total` (monotonic
 totals), `consensus_pending_batches` and `consensus_oldest_pending_batch_age_ms` (levels) — the same names
 and values as the comprehensive response's `consensus` block (`oldestPendingBatchAgeMs`, `applyTimeoutCount`).
@@ -1505,6 +1517,14 @@ The age is 0 when no batch is pending (#1117): a value that keeps growing is a s
 decided, and `consensus_apply_timeouts_total` counts the applies that were never answered within the apply
 timeout (30 s by default). The engine also logs `SLOW-APPLY-RUNNING` with the worker's stack once a consensus
 task has run longer than one second.
+
+`consensus_consecutive_empty_slots_with_pending` (a level, #2045) counts the slots this node decided in a row
+without applying a batch while it held pending batches; it returns to 0 once a slot applies a batch or the queue
+empties. The comprehensive response carries it as `consecutiveEmptySlotsWithPending`, next to
+`firstChoiceBatchId`: the id of the batch this node proposes first, absent (or `null`, depending on the server's
+JSON null-inclusion setting) when nothing is pending, as in the example above. A counter that
+keeps climbing on several cores while pending stays non-zero is the empty-slot livelock: compare
+`firstChoiceBatchId` across the cores, and cores that disagree name the split. Each core answers for itself.
 
 ### GET /api/v1/metrics/transport
 

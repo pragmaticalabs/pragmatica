@@ -143,6 +143,7 @@ public class TestCluster {
                 case Asynchronous.ReconfigurationRequest request -> engine.reconfigurationRequest(request);
                 case Asynchronous.GenesisAnnouncement announcement -> engine.genesisAnnouncement(announcement);
                 case Asynchronous.NewBatch<?> newBatch -> engine.handleNewBatch(newBatch);
+                case Asynchronous.BatchCommitted committed -> engine.handleBatchCommitted(committed);
             }
         };
     }

@@ -152,7 +152,8 @@ public interface ObservabilityRegistry {
         /// #674: the consensus-load counters, served from the same supplier-map shape — and the same
         /// key vocabulary (`RabiaMetrics.counterMap()`) — as the HTTP consensus block, so Prometheus
         /// and the management API can never disagree about a counter's name or meaning. All are
-        /// monotonic totals except `consensus_pending_batches` and `consensus_oldest_pending_batch_age_ms`, which are levels.
+        /// monotonic totals except `consensus_pending_batches`, `consensus_oldest_pending_batch_age_ms` and
+        /// `consensus_consecutive_empty_slots_with_pending`, which are levels.
         @Override
         @SuppressWarnings("JBCT-PAT-01")
         public Result<Unit> registerConsensusMetrics(Supplier<java.util.Map<String, Number>> metricsSupplier) {
@@ -160,7 +161,6 @@ public interface ObservabilityRegistry {
             registerTransportGauge("consensus_proposals_total", "Rabia proposals submitted", metricsSupplier);
             registerTransportGauge("consensus_vote_round1_total", "Rabia round-1 votes processed", metricsSupplier);
             registerTransportGauge("consensus_vote_round2_total", "Rabia round-2 votes processed", metricsSupplier);
-            registerTransportGauge("consensus_fast_path_total", "Rabia fast-path agreements", metricsSupplier);
             registerTransportGauge("consensus_sync_success_total", "Rabia sync rounds succeeded", metricsSupplier);
             registerTransportGauge("consensus_sync_failure_total", "Rabia sync rounds failed", metricsSupplier);
             registerTransportGauge("consensus_pending_batches",
@@ -171,6 +171,9 @@ public interface ObservabilityRegistry {
                                    metricsSupplier);
             registerTransportGauge("consensus_apply_timeouts_total",
                                    "#1117: Rabia applies never answered within the apply timeout",
+                                   metricsSupplier);
+            registerTransportGauge("consensus_consecutive_empty_slots_with_pending",
+                                   "#2045: Rabia slots decided in a row without applying a batch while batches were pending (level)",
                                    metricsSupplier);
 
             return unitResult();

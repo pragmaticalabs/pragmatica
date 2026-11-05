@@ -106,6 +106,20 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// Put — bounded by consensus latency, not zero; a node behind on apply answers the previous
     /// value until then. Absent key means enabled (the pre-#685 default).
     boolean isAutoHealEnabled();
+
+    /// Whether a node of `role` from the source named `sourceName` is CLOUD-backed in the committed configuration. Cloud node ids carry no
+    /// cluster (the server name `<cluster>-<nodeId>` does), Docker ids do: the id shape of a replacement follows the source of the node
+    /// being replaced, never the cluster as a whole. A blank or unknown source name falls back to the first cloud source declaring `role`.
+    /// False without a parsed configuration.
+    default boolean nodeIsCloudBacked(NodeRole role, String sourceName) {
+        return false;
+    }
+
+    /// Whether the committed configuration backs the CORE role with a CLOUD source (the case of a core replacement, which has no worker source).
+    default boolean coresAreCloudBacked() {
+        return nodeIsCloudBacked(NodeRole.CORE, "");
+    }
+
     /// #685 — writes the durable KV record via the existing `commandApplier` channel and returns the
     /// PRIOR state once the write is applied. Same visibility caveat as [#isAutoHealEnabled]: other
     /// nodes (including a newly-elected leader) observe the change only after they apply the

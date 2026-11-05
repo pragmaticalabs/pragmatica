@@ -197,6 +197,7 @@ class ClusterConfigRoutesUpgradeRunTest {
             case "kvStore" -> store;
             case "upgradeRunService" -> runs;
             case "isLeader" -> true;
+            case "self" -> new NodeId("core");
             case "apply" -> applyBatch(store, args);
             default -> throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
         };

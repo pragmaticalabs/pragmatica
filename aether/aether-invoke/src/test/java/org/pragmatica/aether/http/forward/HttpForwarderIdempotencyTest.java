@@ -196,7 +196,7 @@ class HttpForwarderIdempotencyTest {
 
         List<HttpForwardRequest> requests() {return List.copyOf(requests);}
 
-        @Override public <M extends ProtocolMessage> Promise<WriteOutcome> sendOutcome(NodeId nodeId, M message, TimeSpan offlineTtl) {
+        @Override public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
             sends.computeIfAbsent(nodeId, _ -> new AtomicInteger()).incrementAndGet();
             requests.add((HttpForwardRequest) message);
             firstSend.succeed(unit());
@@ -205,8 +205,8 @@ class HttpForwarderIdempotencyTest {
                                    : new WriteOutcome.Sent(nodeId));
         }
 
-        @Override public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
-            throw new AssertionError("a forward must go through sendOutcome");
+        @Override public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
+            throw new AssertionError("a forward must go through the TTL-bounded send");
         }
 
         @Override public <M extends ProtocolMessage> Unit broadcast(M message) {return unit();}

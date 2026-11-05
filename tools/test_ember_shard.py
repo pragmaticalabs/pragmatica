@@ -52,6 +52,16 @@ class EmberShardTest(unittest.TestCase):
         self.assertGreaterEqual(placed["total"], shard.default_weight(self.weights))
         self.assertLess(shard.default_weight(self.weights), max(self.weights.values()))
 
+    def test_a_class_quarantined_at_class_level_is_not_planned_but_a_quarantined_method_keeps_its_class(self):
+        # a required shard excludes the tag, so a class-level tag would leave the class reportless and fail --verify
+        with tempfile.TemporaryDirectory() as d:
+            whole = Path(d) / "EmberWholeTest.java"
+            whole.write_text('// quarantine: #1\n@Tag("quarantine")\nclass EmberWholeTest { @Test void t() {} }')
+            one = Path(d) / "EmberOneTest.java"
+            one.write_text('class EmberOneTest {\n    // quarantine: #1\n    @Tag("quarantine")\n    @Test void t() {}\n'
+                           '    @Test void u() {}\n}')
+            self.assertEqual(shard.test_classes(Path(d)), ["EmberOneTest"])
+
     def test_weight_line_may_carry_a_trailing_provenance_comment(self):
         with tempfile.TemporaryDirectory() as d:
             w = Path(d) / "w.txt"
@@ -59,7 +69,7 @@ class EmberShardTest(unittest.TestCase):
             self.assertEqual(shard.read_weights(w), {"ATest": 13, "BTest": 2})
 
     def test_current_split_is_within_the_budget_and_balanced(self):
-        self.assertEqual(matrix_shards(), 4)  # guards the guard: the plan below is the one ci.yml runs
+        self.assertEqual(matrix_shards(), 5)  # guards the guard: the plan below is the one ci.yml runs
         totals = [b["total"] for b in shard.assign(self.classes, self.weights, matrix_shards())]
         self.assertLess(max(totals), shard.BUDGET_SECONDS)
         self.assertLess(max(totals) - min(totals), 0.1 * max(totals))

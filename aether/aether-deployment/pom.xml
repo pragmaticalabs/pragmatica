@@ -33,7 +33,8 @@
              these two properties:
              mvn test -DheavyDb.excludedGroups= -DheavyDb.includedGroups=heavy-db
              The untagged PostgreSQL tests still run by default. -->
-        <heavyDb.excludedGroups>heavy-db</heavyDb.excludedGroups>
+        <!-- quarantine: flaky tests under the quarantine ruling stay out of the default build (tools/check-quarantine.py). -->
+        <heavyDb.excludedGroups>heavy-db, quarantine</heavyDb.excludedGroups>
         <heavyDb.includedGroups></heavyDb.includedGroups>
     </properties>
 

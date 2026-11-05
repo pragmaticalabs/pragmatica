@@ -6,19 +6,69 @@ on:
   pull_request:
     # overhaul/** and rewrite/** are long-lived integration branches (#2222): PRs into them get the same gate as release-*
     branches: [main, release-*, 'overhaul/**', 'rewrite/**']
+  # Merge queue (rc5): every required context below is produced here and runs unfiltered on the queue's temporary branch.
+  merge_group:
+    branches: [main, release-*, 'overhaul/**', 'rewrite/**']
   workflow_dispatch:
 
 # A newer run on the same PR supersedes the in-progress one. Pushes get a per-commit group and are never
-# cancelled: each merged commit's own run is evidence.
+# cancelled: each merged commit's own run is evidence. A merge_group run takes the sha group and is likewise never cancelled.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Duplicate push CI (T18): a feature branch with an open PR runs CI on `push` AND on `pull_request` for every head (#2648: 26 runs
+  # for about 8 heads). On a push whose branch has an open PR into a base the pull_request trigger covers, every job below is
+  # skipped, because the pull_request run of the same head is the one that gates. A branch with no such PR (a stacked feature
+  # branch whose PR targets another feature branch, a branch with no PR yet) and every push to main or release-* still run.
+  # If the lookup fails the run proceeds: a duplicate run is cheaper than a missing one.
+  # A skipped job still posts a check run, and a skipped check run named like a required context SATISFIES it (observed on #2657:
+  # mergeStateStatus UNSTABLE, not BLOCKED, while the pull_request run's real build-and-test had not started). So every skipped
+  # job must post under a name no required context uses: the three single-instance required jobs (build-and-test, forge-tests,
+  # stub-suites) rename themselves when skipping; the matrix jobs post their unexpanded `name:` template, which matches nothing.
+  # The base list below must equal `pull_request.branches` above.
+  push-dedupe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      skip: ${{ steps.lookup.outputs.skip }}
+    steps:
+      - name: Does this pushed branch have an open PR that pull_request CI covers?
+        id: lookup
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          BRANCH: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          skip=false
+          case "$EVENT:$BRANCH" in
+            push:main|push:release-*) echo "push to a protected branch: its own run is the evidence" ;;
+            push:*)
+              if bases=$(gh api -X GET "repos/$REPO/pulls" -f state=open -f "head=$OWNER:$BRANCH" --paginate --jq '.[] | select(.head.repo.full_name == "'"$REPO"'") | .base.ref'); then
+                echo "open PR base(s) for $BRANCH: ${bases:-none}"
+                for base in $bases; do
+                  case "$base" in
+                    main|release-*|overhaul/*|rewrite/*) skip=true ;;
+                  esac
+                done
+              else
+                echo "::warning::PR lookup failed, running CI"
+              fi ;;
+          esac
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+          echo "skip=$skip"
   # The format/lint gate and the static pins: everything build-and-test checked before it tested. They need no module
   # build, so they run beside the test groups instead of in front of them; build-and-test needs this job, so a red here
   # still fails the required check.
   static-gates:
+    needs: push-dedupe
+    if: needs.push-dedupe.outputs.skip != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -60,6 +110,14 @@ jobs:
           python3 -B -m unittest discover -s tools -p test_ci_test_groups.py
           python3 -B tools/ci-test-groups.py check
 
+      # Flaky-test quarantine (know 5544ec434b): every @Tag("quarantine") cites an issue on or above its line, and every
+      # surefire/failsafe exclusion in the poms and in this workflow keeps the tag out of the required jobs. Offline by
+      # design: this job is required, so it must not depend on GitHub's API. The quarantine job checks the issues are open.
+      - name: Quarantine guard
+        run: |
+          python3 -B -m unittest discover -s tools -p test_check_quarantine.py
+          python3 -B tools/check-quarantine.py check
+
       - name: Set up Java 25
         uses: actions/setup-java@v5
         with:
@@ -99,6 +157,8 @@ jobs:
   # module it reads is compiled in the same checkout: dead-surface-gate reads every aether module's target/classes.
   # The groups are tools/ci-test-groups.txt (regenerated from a run's reports); the matrix list must name exactly its groups.
   test-group:
+    needs: push-dedupe
+    if: needs.push-dedupe.outputs.skip != 'true'
     name: test-group-${{ matrix.group }}
     runs-on: ubuntu-latest
     timeout-minutes: 50
@@ -138,11 +198,27 @@ jobs:
         timeout-minutes: 15
 
       # Ember's and Consensus's tests run in their shard jobs; postgres-async's integration tests are off by default and on here.
+      # aether.requireDocker: a live-database test that finds no Docker daemon FAILS here instead of self-skipping (#2591).
       - name: Test this group's modules
         run: >
           mvn verify -B -pl "${{ steps.plan.outputs.modules }}"
-          -Dember.skipTests=true -Dconsensus.skipTests=true -Dpostgres-async.skipTests=false
+          -Dember.skipTests=true -Dconsensus.skipTests=true -Dpostgres-async.skipTests=false -Daether.requireDocker=true
         timeout-minutes: 35
+
+      # The control for the guard above (#2591): with Docker "hidden" and the require property set, a live-database
+      # test must FAIL with the guard's own message. Fails this job if it passes, skips, or fails for any other reason.
+      # It writes NO report files (surefire has no property for a separate reports directory): the failing XML would overwrite the real
+      # TEST-...JdbcSqlConnectorPinnedTest.xml that the uploaded artifact must carry. The log it greps is its only output.
+      - name: Docker-hidden control (the require guard must fail, never skip)
+        if: matrix.group == 'g3'
+        run: |
+          if mvn test -B -pl aether/resource/db-jdbc -Daether.hideDocker=true -Daether.requireDocker=true \
+               -Dtest=JdbcSqlConnectorPinnedTest -Dsurefire.failIfNoSpecifiedTests=false \
+               -DdisableXmlReport=true -Dsurefire.useFile=false > docker-hidden-control.log 2>&1; then
+            echo "::error::the Docker-hidden control passed: requireDocker no longer fails when Docker is absent"; exit 1
+          fi
+          grep -q "refusing to skip" docker-hidden-control.log || { echo "::error::the control failed for another reason"; tail -50 docker-hidden-control.log; exit 1; }
+        timeout-minutes: 10
 
       - name: Verify examples (end-to-end pipeline check)
         if: steps.plan.outputs.examples == 'yes'
@@ -166,8 +242,9 @@ jobs:
   # The required check. It passes only when the static gates and every test group passed: `if: always()` is load-bearing,
   # because without it a failed group SKIPS this job, and a skipped required check counts as passing.
   build-and-test:
-    needs: [static-gates, test-group]
-    if: always()
+    name: ${{ needs.push-dedupe.outputs.skip == 'true' && 'build-and-test (duplicate push run, skipped)' || 'build-and-test' }}
+    needs: [push-dedupe, static-gates, test-group]
+    if: always() && needs.push-dedupe.outputs.skip != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -200,6 +277,9 @@ jobs:
           retention-days: 7
 
   forge-tests:
+    name: ${{ needs.push-dedupe.outputs.skip == 'true' && 'forge-tests (duplicate push run, skipped)' || 'forge-tests' }}
+    needs: push-dedupe
+    if: needs.push-dedupe.outputs.skip != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 35
 
@@ -242,7 +322,7 @@ jobs:
       - name: Run Forge tests
         run: >
           mvn verify -B -Pwith-e2e -pl aether/forge/forge-tests
-          -Dfailsafe.excludedGroups=Heavy
+          -Dfailsafe.excludedGroups=Heavy,quarantine
         timeout-minutes: 30
 
       - name: Upload Forge test results
@@ -256,17 +336,19 @@ jobs:
           retention-days: 7
 
   # Ember's tests (#1643), split by class across runners. They are serial in one module and took 53 of build-and-test's
-  # 89 minutes. The shard count is the matrix list's length: add an entry to go from 4 shards to 5. The required check
-  # names are ember-shard-1 .. ember-shard-N. Four shards, on weights regenerated from run 41371046891, plan about 19.6 min of
-  # tests each (3 shards on the old hand weights measured 23.3-29.2), so the job is about 22 min and fits 35 with headroom.
+  # 89 minutes. The shard count is the matrix list's length: add an entry to go from 5 shards to 6. The required check
+  # names are ember-shard-1 .. ember-shard-N. Five shards, on weights regenerated from run 41371046891, plan about 15.9 min of
+  # tests each (4 shards planned 19.9 and measured a job of 21-23 min, the critical path), so the job is about 18 min and fits 35 with headroom.
   ember-shard:
+    needs: push-dedupe
+    if: needs.push-dedupe.outputs.skip != 'true'
     name: ember-shard-${{ matrix.shard }}
     runs-on: ubuntu-latest
     timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5]
     env:
       SHARDS: ${{ strategy.job-total }}
       SHARD: ${{ matrix.shard }}
@@ -317,6 +399,8 @@ jobs:
   # sat on build-and-test's longest dependency chain (~18 of its ~46 min). The shard count is the matrix list's length:
   # add an entry to go from 2 shards to 3. The required check names are consensus-shard-1 .. consensus-shard-N.
   consensus-shard:
+    needs: push-dedupe
+    if: needs.push-dedupe.outputs.skip != 'true'
     name: consensus-shard-${{ matrix.shard }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -370,6 +454,81 @@ jobs:
             integrations/consensus/target/surefire-reports/*.xml
           retention-days: 7
 
+  # Flaky-test quarantine (know 5544ec434b): runs exactly the @Tag("quarantine") tests, so they stay exercised and visible.
+  # NOT a required check and not in build-and-test's needs: its result is reported and never gates a merge. Every required
+  # job excludes the tag (tools/check-quarantine.py); this job clears each exclusion and selects only the tag.
+  quarantine:
+    needs: push-dedupe
+    if: needs.push-dedupe.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX: mirror.gcr.io/
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Find the quarantined tests
+        id: plan
+        run: |
+          modules=$(python3 -B tools/check-quarantine.py modules)
+          echo "modules=$modules" >> "$GITHUB_OUTPUT"
+          echo "quarantined modules: ${modules:-none}"
+          [ -n "$modules" ] && echo "$modules" | tr ',' '\n' > quarantine-modules.txt || true
+
+      - name: Set up Java 25
+        if: steps.plan.outputs.modules != ''
+        uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: 'zulu'
+          cache: 'maven'
+
+      - name: Bootstrap annotation processors and Maven plugins
+        if: steps.plan.outputs.modules != ''
+        run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
+
+      # -Pwith-e2e makes a profile-only module such as forge-tests selectable by -pl.
+      - name: Install the quarantined modules' upstream
+        if: steps.plan.outputs.modules != ''
+        run: mvn install -B -DskipTests -Pwith-e2e -pl "${{ steps.plan.outputs.modules }}" -am
+
+      - name: Build test-stream-repl blueprint
+        if: contains(steps.plan.outputs.modules, 'aether/forge/forge-tests')
+        run: mvn -B -f aether/tests/blueprints/test-stream-repl/pom.xml clean install -DskipTests
+
+      # -Dgroups selects the tag in surefire and failsafe; each exclusion slot is cleared, and the two modules whose
+      # <groups> is a property get the tag through it. Ember's, Consensus's and postgres-async's tests are on.
+      - name: Run the quarantined tests
+        if: steps.plan.outputs.modules != ''
+        run: >
+          mvn verify -B -Pwith-e2e -pl "${{ steps.plan.outputs.modules }}"
+          -Dgroups=quarantine -Dsurefire.excludedGroups= -Dfailsafe.excludedGroups=
+          -DheavyDb.excludedGroups= -DheavyDb.includedGroups=quarantine -Dpostgres-async.excludedGroups=
+          -Dember.skipTests=false -Dconsensus.skipTests=false -Dpostgres-async.skipTests=false
+        timeout-minutes: 45
+
+      - name: Upload quarantine test results
+        uses: actions/upload-artifact@v6
+        if: always() && steps.plan.outputs.modules != ''
+        with:
+          name: quarantine-test-results
+          if-no-files-found: error
+          path: |
+            quarantine-modules.txt
+            **/target/surefire-reports/*.xml
+            **/target/failsafe-reports/*.xml
+          retention-days: 7
+
+      # A tag whose issue was closed is a quarantine nobody owns any more: it turns this job red. Last, and always, so the
+      # quarantined tests above still run. An API error here exits non-zero as "could not look"; this job never gates.
+      - name: Every quarantine tag cites an open issue
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -B tools/check-quarantine.py issues --repo "${{ github.repository }}"
+
   # The cloud harness stub suites (aether/tests/integration/test/test-*.sh) pin harness decisions such
   # as drain confirmation and reap refusal by stubbing ssh/hcloud/curl. They need no cluster, cloud or
   # docker, and before #1060 nothing ran them. The runner fails a suite that exits non-zero OR whose own
@@ -382,6 +541,9 @@ jobs:
   # so three suites all wedged are ~15.4 min; the 25-minute job cap covers that plus setup, holds a fourth
   # suite, and still stops a runner-level hang long before GitHub's 6-hour default.
   stub-suites:
+    name: ${{ needs.push-dedupe.outputs.skip == 'true' && 'stub-suites (duplicate push run, skipped)' || 'stub-suites' }}
+    needs: push-dedupe
+    if: needs.push-dedupe.outputs.skip != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
 

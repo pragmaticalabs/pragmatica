@@ -34,14 +34,13 @@ class V1770ProbeTest {
         final Set<NodeId> refuseAtSend = new HashSet<>();
         ConsistentHashRing<NodeId> ring;
 
-        @Override
-        public void send(NodeId nodeId, ProtocolMessage message) {
+        private void capture(NodeId nodeId, ProtocolMessage message) {
             sent.add(new Sent(nodeId, message));
         }
 
         @Override
-        public Promise<WriteOutcome> sendOutcome(NodeId target, ProtocolMessage message) {
-            send(target, message);
+        public Promise<WriteOutcome> send(NodeId target, ProtocolMessage message) {
+            capture(target, message);
             if (departAtSend.remove(target)) {
                 // the departure interleaves between pendingOps.put and the refusal the transport reports for it
                 ring.removeNode(target);

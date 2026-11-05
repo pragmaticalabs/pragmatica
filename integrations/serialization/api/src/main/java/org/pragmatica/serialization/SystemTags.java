@@ -724,7 +724,19 @@ public interface SystemTags {
         pin(table, 2198, "org.pragmatica.aether.slice.kvstore.AetherValue.CapacityFacet");
         pin(table, 2199, "org.pragmatica.aether.slice.kvstore.AetherValue.CapacityPhase");
         pin(table, 2200, "org.pragmatica.aether.slice.kvstore.AetherValue.FreedCause");
-        // ---- 2201..16383 RESERVED ----
+        // #2045: the answer to a proposal of an already-committed batch. Consensus-prefixed but exempt from the one-byte window
+        // like SyncRejected: it is sent only when a voter's ledger refuses a proposal, which is failure-bounded traffic.
+        // 2201 was free on every origin branch and every PR head (1,291 refs), scanned 2026-11-02.
+        pin(table, 2201, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.BatchCommitted");
+        // #2590 P1: the forwarded control-log batch-append, its record and its per-record outcome. 2201 is taken by
+        // origin/fix/2045-ledger-livelock (scanned across every origin branch, 306 refs including every open PR head, on
+        // 2026-11-02), so these take 2202..2206.
+        pin(table, 2202, "org.pragmatica.aether.stream.forward.ControlRecordDto");
+        pin(table, 2203, "org.pragmatica.aether.stream.forward.ControlOutcomeDto");
+        pin(table, 2204, "org.pragmatica.aether.stream.forward.ControlOutcomeDto.Kind");
+        pin(table, 2205, "org.pragmatica.aether.stream.forward.StreamForwardMessage.ControlAppendForward");
+        pin(table, 2206, "org.pragmatica.aether.stream.forward.StreamForwardMessage.ControlAppendForwardResponse");
+        // ---- 2207..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);

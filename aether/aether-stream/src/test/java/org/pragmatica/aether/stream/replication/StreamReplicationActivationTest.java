@@ -61,14 +61,14 @@ class StreamReplicationActivationTest {
         // captured (transport back to the owner).
         replicaManager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
         replicaManager.createStream(StreamConfig.streamConfig(STREAM).withReplication(new org.pragmatica.aether.slice.ReplicationFactors(3, 1)));
-        ReplicationTransport ackTransport = (target, message) -> acksToOwner.add(message);
+        ReplicationTransport ackTransport = AcceptingReplicationTransport.accepting((target, message) -> acksToOwner.add(message));
         var receiveHandler = replicationReceiveHandler(REPLICA, replicaManager::appendRecovered, ackTransport);
 
         // Owner side: real ReplicationManager whose transport delivers ReplicateEvents straight into
         // the replica's receive handler (loopback). The send is counted to prove replicate-once.
         ownerRegistry = replicaRegistry();
         ownerRegistry.registerReplica(STREAM, PARTITION, REPLICA);
-        ReplicationTransport loopback = (target, message) -> {
+        ReplicationTransport loopback = AcceptingReplicationTransport.accepting((target, message) -> {
             if (message instanceof ReplicationMessage.ReplicateEvents events) {
                 replicateSendCount.incrementAndGet();
                 receiveHandler.onReplicateEvents(events);
@@ -76,7 +76,7 @@ class StreamReplicationActivationTest {
             if (message instanceof ReplicationMessage.CommitAdvance) {
                 commitAdvanceCount.incrementAndGet();
             }
-        };
+        });
         var ownerReplication = replicationManager(OWNER, ownerRegistry, loopback);
         ownerManager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, ownerReplication);
         ownerManager.createStream(StreamConfig.streamConfig(STREAM).withReplication(new org.pragmatica.aether.slice.ReplicationFactors(3, 1)));
@@ -310,19 +310,19 @@ class StreamReplicationActivationTest {
     private ReplicationManager minSyncOwnerReplicationRef;
 
     private ReplicationTransport loopbackWithAckBack(AtomicInteger acksBack) {
-        ReplicationTransport ackRouter = (target, message) -> {
+        ReplicationTransport ackRouter = AcceptingReplicationTransport.accepting((target, message) -> {
             if (message instanceof ReplicationMessage.ReplicateAck ack) {
                 acksBack.incrementAndGet();
                 minSyncOwnerReplicationRef.handleAck(ack);
             }
-        };
+        });
         var receiveHandler = replicationReceiveHandler(REPLICA, replicaManager::appendRecovered, ackRouter);
 
-        return (target, message) -> {
+        return AcceptingReplicationTransport.accepting((target, message) -> {
             if (message instanceof ReplicationMessage.ReplicateEvents events) {
                 receiveHandler.onReplicateEvents(events);
             }
-        };
+        });
     }
 
     private PartitionedStreamAccess<byte[]> minSyncAccess(StreamPartitionManager manager) {

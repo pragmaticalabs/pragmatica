@@ -70,6 +70,9 @@ class SystemCodecPinningTest {
     /// `CommitAdvance` (#2087) is exempt like the refusals: one small message per coalesced visible advance and one per owned
     /// partition per tick -- no more than the ack it follows -- and no one-byte slot is free to give it (every slot
     /// 0..127 is pinned, 0..20 are the primitives, and a retired tag is never reused).
+    ///
+    /// `BatchCommitted` (#2045) is exempt like the refusals: a voter sends it only when its committed-batch ledger refuses a
+    /// proposal, none in steady state, and no one-byte slot is free to give it.
     /// The `provenance` package (#1596: `ProvenanceEntry` and its `ProvenanceEpoch` kinds) is exempt like the
     /// refusals: history entries, carried only by a replica catch-up answer (a handful per catch-up, none on any other read, and an empty list encodes no element tag),
     /// so it is not the per-message traffic the window was bought for -- and no one-byte slot is free to give it.
@@ -78,12 +81,23 @@ class SystemCodecPinningTest {
     /// answers the read in place of its events, and an answer that succeeds carries none), so it is not steady-state traffic, and
     /// no one-byte slot is free to give it.
     ///
+    /// The control-log forward types (#2590 P1, [#CONTROL_LOG_FORWARD], matched by full name) are exempt because no one-byte slot
+    /// is free to give them. Their cost, stated: the batch-append is one message per cursor partition per writer per window
+    /// (`N_nodes / W` per second, independent of the delivery rate), and P1 sends none (no user); each costs one extra byte per
+    /// type occurrence -- the message, and each record and outcome in it -- next to records of tens of bytes.
+    ///
     /// The A6 repair-plane types ([#A6_REPAIR_PLANE], matched by full name) are exempt because no one-byte slot is free
     /// to give them. The page pair and the verified read are not small-message traffic: a page exists only while a
     /// partition is repaired and carries up to 16 MiB, and a verified read answers with a content block. The stamp digest
     /// request IS steady-state traffic — it replaces the one-byte legacy digest request, one per owned partition per
     /// co-replica per anti-entropy round — so for it the exemption costs one byte per such message, next to a digest
     /// response that is unchanged; that cost is accepted because there is no slot to give it.
+    private static final Set<String> CONTROL_LOG_FORWARD = Set.of("org.pragmatica.aether.stream.forward.ControlRecordDto",
+                                                                  "org.pragmatica.aether.stream.forward.ControlOutcomeDto",
+                                                                  "org.pragmatica.aether.stream.forward.ControlOutcomeDto.Kind",
+                                                                  "org.pragmatica.aether.stream.forward.StreamForwardMessage.ControlAppendForward",
+                                                                  "org.pragmatica.aether.stream.forward.StreamForwardMessage.ControlAppendForwardResponse");
+
     private static final Set<String> A6_REPAIR_PLANE = Set.of("org.pragmatica.dht.DHTMessage.StampDigestRequest",
                                                                                  "org.pragmatica.dht.DHTMessage.MigrationPageRequest",
                                                                                  "org.pragmatica.dht.DHTMessage.MigrationPageResponse",
@@ -107,12 +121,14 @@ class SystemCodecPinningTest {
         var hot = SystemTags.TAGS.entrySet()
                                  .stream()
                                  .filter(entry -> !entry.getKey().endsWith(".SyncRejected") && !entry.getKey().endsWith(".HelloRefused")
+                                                  && !entry.getKey().endsWith(".BatchCommitted")
                                                   && !entry.getKey().endsWith(".IdentityRefused")
                                                   && !entry.getKey().endsWith(".AppGossip")
                                                   && !entry.getKey().endsWith(".LeaderPreVoteRequest")
                                                   && !entry.getKey().endsWith(".LeaderPreVoteResponse")
                                                   && !entry.getKey().endsWith(".CommitAdvance")
                                                   && !A6_REPAIR_PLANE.contains(entry.getKey())
+                                                  && !CONTROL_LOG_FORWARD.contains(entry.getKey())
                                                   && !W_OBS_REPLICA_FEED.contains(entry.getKey())
                                                   && !entry.getKey().startsWith("org.pragmatica.aether.stream.provenance.")
                                                   && !entry.getKey().startsWith("org.pragmatica.aether.stream.forward.ReadRefusal"))

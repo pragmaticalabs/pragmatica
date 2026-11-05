@@ -388,7 +388,7 @@ class PartitionBackfillLiveInterleaveTest {
         return replicationReceiveHandler(self,
                                          replica::appendRecovered,
                                          replica::nextExpectedOffset,
-                                         (_, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                         AcceptingReplicationTransport.accepting((_, message) -> acks.add((ReplicationMessage.ReplicateAck) message)),
                                          (_, _) -> {},
                                          replica::syncReplicated,
                                          CommittedStreamOwnerSource.none());
@@ -426,7 +426,7 @@ class PartitionBackfillLiveInterleaveTest {
         return partitionBackfill(registry,
                                  replica.alignedRecovery(),
                                  this::deferredCatchup,
-                                 (_, message) -> recordBackfillAck((ReplicationMessage.ReplicateAck) message),
+                                 AcceptingReplicationTransport.accepting((_, message) -> recordBackfillAck((ReplicationMessage.ReplicateAck) message)),
                                  (_, _, _) -> probeAnswer,
                                  (stream, partition) -> replica.partitionInfo(stream, partition)
                                                                .map(StreamPartitionManager.PartitionInfo::headOffset)

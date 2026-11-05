@@ -34,6 +34,7 @@ import org.pragmatica.statemachine.Fsm;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.consensus.net.WriteOutcome;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -341,12 +342,17 @@ class DrainCommandPlumbingTest {
         private final CopyOnWriteArrayList<ClusterSyncPing> broadcastPings = new CopyOnWriteArrayList<>();
 
         @Override
-        public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
             if (message instanceof ClusterSyncPing ping) {
                 sentPings.add(ping);
             }
 
-            return Unit.unit();
+            return Promise.success(new WriteOutcome.Sent(nodeId));
+        }
+
+        @Override
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+            return send(nodeId, message);
         }
 
         @Override

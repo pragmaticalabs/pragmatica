@@ -94,6 +94,7 @@ class ClusterConfigRoutesUpgradeRaceTest {
             case "kvStore" -> store;
             case "upgradeRunService" -> org.pragmatica.aether.deployment.cluster.UpgradeRunService.unavailable();
             case "isLeader" -> true;
+            case "self" -> CORE;
             case "apply" -> Promise.success(store.process(store.createBatch((List<KVCommand<AetherKey>>) args[0])));
             default -> throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
         };

@@ -8,6 +8,8 @@ import java.lang.reflect.Proxy;
 import java.time.Instant;
 import java.util.List;
 
+import org.pragmatica.lang.Promise;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.RetentionPolicy;
@@ -174,7 +176,7 @@ class StreamApiRoutesStreamInfoTest {
         declare(1);
         publish(0, 3);
 
-        var silent = StreamForwardClient.streamForwardClient(SERVING, (_, _) -> {}, TimeSpan.timeSpan(100).millis());
+        var silent = StreamForwardClient.streamForwardClient(SERVING, StreamForwardTransport.NOOP, TimeSpan.timeSpan(100).millis());
         var router = StreamReadRouter.streamReadRouter(servingPartitions,
                                                        Option.none(),
                                                        Option.some(silent),
@@ -271,9 +273,17 @@ class StreamApiRoutesStreamInfoTest {
     /// lands on SERVING's client. Nothing else is between them.
     private StreamReadRouter forwardingRouter() {
         var clientRef = new StreamForwardClient[1];
-        StreamForwardTransport ownerToServing = (_, message) -> clientRef[0].onReadForwardResponse((ReadForwardResponse) message);
+        StreamForwardTransport ownerToServing = (target, message) -> {
+            clientRef[0].onReadForwardResponse((ReadForwardResponse) message);
+
+            return Promise.success(new WriteOutcome.Sent(target));
+        };
         var ownerHandler = StreamForwardHandler.streamForwardHandler(OWNER, ownerPartitions, ownerToServing);
-        StreamForwardTransport servingToOwner = (_, message) -> ownerHandler.onReadForward((ReadForward) message);
+        StreamForwardTransport servingToOwner = (target, message) -> {
+            ownerHandler.onReadForward((ReadForward) message);
+
+            return Promise.success(new WriteOutcome.Sent(target));
+        };
 
         clientRef[0] = StreamForwardClient.streamForwardClient(SERVING, servingToOwner, TimeSpan.timeSpan(5).seconds());
 

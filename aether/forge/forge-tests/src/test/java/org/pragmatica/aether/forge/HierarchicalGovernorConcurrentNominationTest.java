@@ -109,7 +109,7 @@ class HierarchicalGovernorConcurrentNominationTest {
 
                         sends.add(HierarchyAuthorityAcceptanceTest.runtime(worker)
                                                                   .network()
-                                                                  .sendOutcome(leader().self(),
+                                                                  .send(leader().self(),
                                                                                request));
                     }
 

@@ -23,7 +23,7 @@ import org.pragmatica.lang.utils.Causes;
 /// server, so a name that is not already lower case would defeat the refusal. The grammar is therefore an RFC-1123 hostname
 /// label restricted to lower case: lowercase alphanumerics and hyphens, starting and ending alphanumeric, 1..63 characters.
 ///
-/// An id that does not fit (a hand-named node id with upper case, or a cluster name so long that `<cluster>-aether-<cluster>-node-<ulid>`
+/// An id that does not fit (a hand-named node id with upper case, or a cluster name so long that `<cluster>-aether-node-<ulid>`
 /// exceeds 63 characters: more than [#longestClusterNameForMintedIds]) is REFUSED, never truncated or lower-cased on the way: a
 /// derived name would no longer be the one the lookup that resolves a create by its id searches for.
 ///
@@ -51,13 +51,14 @@ public record OperationId(String value) {
     /// Digits of the per-pass ordinal of a CTM worker id, and of the index of a bootstrap id `<source>-<role>-<i>`. [guess] at most 999.
     static final int ORDINAL_DIGITS = 3;
 
-    /// The length of the longest node id a `(source, role)` pool of a cluster named with `clusterLength` characters can be given, by the
+    /// The length of the longest node id a `(source, role)` pool can be given, by the
     /// shapes the code mints:
-    /// - `aether-<cluster>-node-<ulid>`: core replacements ([ProvisionContext#mintNodeId], `LeaderReconciler`), and every node apply mints;
+    /// - `aether-node-<ulid>`: cloud core replacements ([ProvisionContext#mintCloudNodeId], `LeaderReconciler`), and every cloud node apply mints
+    ///   (no cluster in it since the flag day);
     /// - `<source>-<role>-r<clock36>-<ordinal>`: CTM worker and spot nodes (`mintWorkerNodeId`), no cluster in it;
     /// - `<source>-<role>-<i>`: bootstrap cloud nodes, no cluster in it.
-    public static int longestMintedIdLength(int clusterLength, String source, String role) {
-        var minted = ProvisionContext.mintNodeId(ClusterName.maybeClusterName("a")).length() - 1 + clusterLength;
+    public static int longestMintedIdLength(String source, String role) {
+        var minted = ProvisionContext.mintCloudNodeId().length();
         var worker = source.length() + 1 + role.length() + 2 + CLOCK_DIGITS + 1 + ORDINAL_DIGITS;
         var bootstrap = source.length() + 1 + role.length() + 1 + ORDINAL_DIGITS;
 
@@ -66,7 +67,7 @@ public record OperationId(String value) {
 
     /// The length of the operation id `<cluster>-<nodeId>` of the longest node id the pool can be given.
     public static int operationIdLength(int clusterLength, String source, String role) {
-        return clusterLength + 1 + longestMintedIdLength(clusterLength, source, role);
+        return clusterLength + 1 + longestMintedIdLength(source, role);
     }
 
     /// The longest cluster name (0 if none fits) for which every id the pool can be given yields an operation id within [#MAX_LENGTH].
@@ -80,7 +81,7 @@ public record OperationId(String value) {
         return longest;
     }
 
-    /// The longest cluster name whose MINTED core node ids (`aether-<cluster>-node-<ulid>`) still yield a fitting operation id: the
+    /// The longest cluster name whose MINTED cloud node ids (`aether-node-<ulid>`) still yield a fitting operation id: the
     /// bound when no configured source or role makes a longer id.
     public static int longestClusterNameForMintedIds() {
         return longestClusterNameFor("", "");

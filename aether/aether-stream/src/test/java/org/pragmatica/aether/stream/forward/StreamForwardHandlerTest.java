@@ -12,17 +12,25 @@ import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.EvictionListener;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForwardResponse;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
+import org.pragmatica.aether.stream.replication.ReplicaRegistry;
+import org.pragmatica.aether.stream.replication.ReplicationManager;
+import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.slice.StreamConfig.streamConfig;
@@ -52,7 +60,7 @@ class StreamForwardHandlerTest {
     void setUp() {
         partitionManager = streamPartitionManager(Long.MAX_VALUE);
         sentMessages = new ArrayList<>();
-        StreamForwardTransport capturingTransport = (target, message) -> sentMessages.add(new SentMessage(target, message));
+        StreamForwardTransport capturingTransport = AcceptingStreamForwardTransport.accepting((target, message) -> sentMessages.add(new SentMessage(target, message)));
         handler = streamForwardHandler(GOVERNOR, partitionManager, capturingTransport);
     }
 
@@ -195,8 +203,8 @@ class StreamForwardHandlerTest {
                                                      StreamCompression.NONE,
                                                      Option.none()));
             pendingManager.publishLocal(STREAM, PARTITION, PAYLOAD, TIMESTAMP);
-            handler = streamForwardHandler(GOVERNOR, pendingManager, (target, message) -> sentMessages.add(new SentMessage(target,
-                                                                                                                          message)));
+            handler = streamForwardHandler(GOVERNOR, pendingManager, AcceptingStreamForwardTransport.accepting((target, message) -> sentMessages.add(new SentMessage(target,
+                                                                                                                          message))));
         }
 
         @Test
@@ -358,7 +366,7 @@ class StreamForwardHandlerTest {
             // So only 1 event fits (64 + 280 = 344), second would hit 624 > 500.
             var tinyHandler = streamForwardHandler(GOVERNOR,
                                                    partitionManager,
-                                                   (target, message) -> sentMessages.add(new SentMessage(target, message)),
+                                                   AcceptingStreamForwardTransport.accepting((target, message) -> sentMessages.add(new SentMessage(target, message))),
                                                    500L,
                                                    StreamReadForwardMetrics.NOOP);
             var request = readForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, FROM_OFFSET, MAX_EVENTS);
@@ -393,7 +401,7 @@ class StreamForwardHandlerTest {
 
             return streamForwardHandler(GOVERNOR,
                                         barrierManager,
-                                        (target, message) -> sentMessages.add(new SentMessage(target, message)));
+                                        AcceptingStreamForwardTransport.accepting((target, message) -> sentMessages.add(new SentMessage(target, message))));
         }
 
         private static StreamConfig configWithMinSync(int minSyncReplicas) {
@@ -470,7 +478,7 @@ class StreamForwardHandlerTest {
             barrierManager.committedConfigSource(_ -> Option.some(configWithMinSync(2)));
             var handler = streamForwardHandler(GOVERNOR,
                                                barrierManager,
-                                               (target, message) -> sentMessages.add(new SentMessage(target, message)));
+                                               AcceptingStreamForwardTransport.accepting((target, message) -> sentMessages.add(new SentMessage(target, message))));
 
             handler.onPublishForward(publishForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, PAYLOAD, TIMESTAMP));
 
@@ -483,6 +491,86 @@ class StreamForwardHandlerTest {
                 .as("the stream is materialized and nothing was appended")
                 .isEqualTo(-1L);
         }
+
+        /// #1391: an owner that has not materialized the stream reads a confirmation factor of 0 for the pre-append floor, and
+        /// `publishForwarded` materializes it from the committed config (CF 2). The post-append barrier must read the factor
+        /// AGAIN, after the materialization: fed from the first read it is skipped, and the forward acks on the owner's local
+        /// append alone, silently at confirmation factor 1.
+        @Test
+        void onPublishForward_unmaterializedOwner_awaitsBarrierAtMaterializedConfirmationFactor() throws InterruptedException {
+            var awaitedMinAcks = new CopyOnWriteArrayList<Integer>();
+            var responses = new CopyOnWriteArrayList<SentMessage>();
+            Promise<Unit> peerAck = Promise.promise();
+            barrierManager = streamPartitionManager(Long.MAX_VALUE,
+                                                    EvictionListener.NOOP,
+                                                    new PendingPeerAck(awaitedMinAcks, peerAck));
+            barrierManager.committedConfigSource(_ -> Option.some(configWithMinSync(2)));
+            var handler = streamForwardHandler(GOVERNOR,
+                                               barrierManager,
+                                               AcceptingStreamForwardTransport.accepting((target, message) -> responses.add(new SentMessage(target, message))));
+            assertThat(barrierManager.confirmationFactorFor(STREAM)).as("precondition: the owner has not materialized the stream")
+                                                                    .isZero();
+
+            handler.onPublishForward(publishForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, PAYLOAD, TIMESTAMP));
+            // The ack is sent on the barrier's continuation, which may run on another thread: give a skipped barrier time to ack.
+            Thread.sleep(200);
+
+            assertThat(barrierManager.confirmationFactorFor(STREAM)).as("materialized from the committed config").isEqualTo(2);
+            assertThat(awaitedMinAcks).as("#1391: the barrier is awaited at the materialized factor, CF 2 - 1 peer")
+                                      .containsExactly(1);
+            assertThat(responses).as("#1391: the forward is not acknowledged before a peer acks").isEmpty();
+
+            peerAck.succeed(Unit.unit());
+            awaitFirst(responses);
+
+            assertThat(responses).hasSize(1);
+            var response = (PublishForwardResponse) responses.getFirst().message();
+            assertThat(response.success()).as("acknowledged once the peer acked: " + response.errorMessage()).isTrue();
+        }
+
+        /// Bounded: a response that never comes reddens the size assertion instead of hanging.
+        private static void awaitFirst(List<SentMessage> responses) throws InterruptedException {
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+
+            while (responses.isEmpty() && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+        }
+    }
+
+    /// A replication manager with one peer that has not acked yet: the pre-append floor admits the publish, and every barrier
+    /// records the `minAcks` it was awaited with and stays pending until the test acks for the peer through `peerAck`.
+    private record PendingPeerAck(List<Integer> awaitedMinAcks, Promise<Unit> peerAck) implements ReplicationManager {
+        @Override
+        public void replicateEvent(String streamName, int partition, long offset, byte[] payload, long timestamp, Epoch ownerEpoch) {}
+
+        @Override
+        public void handleAck(ReplicationMessage.ReplicateAck ack) {}
+
+        @Override
+        public ReplicaRegistry registry() {
+            return ReplicationManager.NONE.registry();
+        }
+
+        @Override
+        public Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks) {
+            awaitedMinAcks.add(minAcks);
+
+            return peerAck;
+        }
+
+        @Override
+        public long replicatedThrough(String streamName, int partition, int minAcks) {
+            return -1L;
+        }
+
+        @Override
+        public long replicatedThrough(ReplicationMessage.ReplicateAck pending, int minAcks) {
+            return -1L;
+        }
+
+        @Override
+        public void observeAcks(AckObserver observer) {}
     }
 
     record SentMessage(NodeId target, StreamForwardMessage message) {}

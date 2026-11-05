@@ -5,6 +5,8 @@
 
 package org.pragmatica.aether.controller;
 
+import io.netty.buffer.ByteBuf;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
@@ -29,10 +31,10 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.Serializer;
 
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -44,7 +46,7 @@ class RollbackManagerSsotTest {
 
     private RollbackConfig config;
     private TestClusterNode clusterNode;
-    private TestKVStore kvStore;
+    private KVStore<AetherKey, AetherValue> kvStore;
     private TestLeaderManager leaderManager;
     private RollbackManager rollbackManager;
 
@@ -52,7 +54,8 @@ class RollbackManagerSsotTest {
     void setup() {
         config = RollbackConfig.rollbackConfig();
         clusterNode = new TestClusterNode(SELF);
-        kvStore = new TestKVStore();
+        kvStore = new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+        RollbackManagerOverridePreservationTest.seedCommittedLeader(kvStore, SELF);
         leaderManager = new TestLeaderManager();
         rollbackManager = RollbackManager.rollbackManager(SELF, config, clusterNode, kvStore, leaderManager);
     }
@@ -70,18 +73,18 @@ class RollbackManagerSsotTest {
         // Flip SSOT only. No call into rollbackManager state.
         leaderManager.setLeader(true);
 
-        // Establish initial deployment state (under leader), then a follow-up version change
-        // must take effect (storePreviousVersion is invoked on transitions, not initial puts).
+        // The next version change takes effect: the record is derived from the committed target (v3, replacing v2) and the
+        // committed leader, with nothing dispatched into the manager. #2613: the write is one guarded leader transaction.
         var v3 = Artifact.artifact("org.example:test:3.0.0").unwrap();
-        var v4 = Artifact.artifact("org.example:test:4.0.0").unwrap();
+
         simulateSliceTargetChange(v3);
-        simulateSliceTargetChange(v4);
         assertThat(clusterNode.appliedCommands).hasSize(1);
+        assertThat(clusterNode.appliedCommands.getFirst()).isInstanceOf(KVCommand.LeaderTransaction.class);
 
         // Flip SSOT back to false. Subsequent failure event must NOT trigger rollback.
         leaderManager.setLeader(false);
         clusterNode.appliedCommands.clear();
-        rollbackManager.onAllInstancesFailed(failureEvent(v4));
+        rollbackManager.onAllInstancesFailed(failureEvent(v3));
         assertThat(clusterNode.appliedCommands).isEmpty();
     }
 
@@ -98,9 +101,12 @@ class RollbackManagerSsotTest {
 
     private void simulateSliceTargetChange(Artifact artifact) {
         var key = SliceTargetKey.sliceTargetKey(artifact.base());
+        var replaced = kvStore.getTyped(key, SliceTargetValue.class);
         var value = SliceTargetValue.sliceTargetValue(artifact.version(), 1);
         var put = new KVCommand.Put<SliceTargetKey, SliceTargetValue>(key, value);
-        rollbackManager.onSliceTargetPut(new ValuePut<>(put, Option.none()));
+
+        kvStore.process(kvStore.createBatch(List.<KVCommand<AetherKey>>of(new KVCommand.Put<AetherKey, AetherValue>(key, value))));
+        rollbackManager.onSliceTargetPut(new ValuePut<>(put, replaced));
     }
 
     private SliceFailureEvent.AllInstancesFailed failureEvent(Artifact artifact) {
@@ -139,20 +145,30 @@ class RollbackManagerSsotTest {
         @SuppressWarnings("unchecked")
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
             appliedCommands.addAll(commands);
-            return Promise.success((List<R>) commands.stream().map(_ -> Unit.unit()).toList());
+            return Promise.success((List<R>) commands.stream().map(TestClusterNode::accepted).toList());
+        }
+
+        private static Object accepted(KVCommand<AetherKey> command) {
+            return command instanceof KVCommand.LeaderTransaction<?, ?> transaction
+                   ? new KVCommand.TransactionResult(transaction.transactionId(), true)
+                   : Unit.unit();
         }
     }
 
-    static final class TestKVStore extends KVStore<AetherKey, AetherValue> {
-        private final ConcurrentHashMap<AetherKey, AetherValue> data = new ConcurrentHashMap<>();
+    private static Serializer stubSerializer() {
+        return new Serializer() {
+            @Override
+            public <T> void write(ByteBuf byteBuf, T object) {}
+        };
+    }
 
-        TestKVStore() {
-            super(MessageRouter.mutable(), null, null);
-        }
-
-        @Override public Map<AetherKey, AetherValue> snapshot() {
-            return new ConcurrentHashMap<>(data);
-        }
+    private static Deserializer stubDeserializer() {
+        return new Deserializer() {
+            @Override
+            public <T> T read(ByteBuf byteBuf) {
+                return null;
+            }
+        };
     }
 
     static final class TestLeaderManager implements LeaderManager {

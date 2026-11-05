@@ -47,7 +47,7 @@ class DHTDepartureAttributionTest {
             ring.addNode(new NodeId("replica-" + i));
         }
         var sent = new CopyOnWriteArrayList<Sent>();
-        DHTNetwork network = (target, message) -> sent.add(new Sent(target, message));
+        DHTNetwork network = AcceptingNetwork.accepting((target, message) -> sent.add(new Sent(target, message)));
         var miss = new AtomicReference<ResolveMiss>();
         ResolveFallbackObserver observer = new ResolveFallbackObserver() {
             @Override

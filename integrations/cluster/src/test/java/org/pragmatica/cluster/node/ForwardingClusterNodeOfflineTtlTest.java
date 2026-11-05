@@ -21,6 +21,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.Server;
+import org.pragmatica.consensus.net.WriteOutcome;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -78,17 +79,17 @@ class ForwardingClusterNodeOfflineTtlTest {
     private static ClusterNetwork recording(List<Sent> bounded, List<ProtocolMessage> plain) {
         return new ClusterNetwork() {
             @Override
-            public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+            public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
                 plain.add(message);
 
-                return Unit.unit();
+                return Promise.success(new WriteOutcome.Sent(nodeId));
             }
 
             @Override
-            public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+            public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
                 bounded.add(new Sent(message, offlineTtl));
 
-                return Unit.unit();
+                return Promise.success(new WriteOutcome.Sent(nodeId));
             }
 
             @Override public <M extends ProtocolMessage> Unit broadcast(M message) {return Unit.unit();}

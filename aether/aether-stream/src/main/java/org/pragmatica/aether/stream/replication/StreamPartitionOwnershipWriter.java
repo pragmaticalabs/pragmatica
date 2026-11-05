@@ -154,6 +154,17 @@ public interface StreamPartitionOwnershipWriter {
                                       committedLeader);
     }
 
+    /// #2594: the committed leader record the ISR-aware writer is authorized by, present only while it names `self` and
+    /// `self` leads. A deposed leader that has applied the new leader's record would otherwise carry that record, and the
+    /// applier's leader fence, an equality check, accepts it.
+    static Supplier<Option<LeaderValue>> ownCommittedLeader(Supplier<Option<LeaderValue>> committedLeader,
+                                                            NodeId self,
+                                                            BooleanSupplier isLeaderSupplier) {
+        return () -> committedLeader.get()
+                                    .filter(leader -> leader.leader()
+                                                            .equals(self) && isLeaderSupplier.getAsBoolean());
+    }
+
     /// What the ISR-aware writer reads besides the committed record (#1730).
     interface IsrInputs {
         /// The live placement members, as the leader sees them.

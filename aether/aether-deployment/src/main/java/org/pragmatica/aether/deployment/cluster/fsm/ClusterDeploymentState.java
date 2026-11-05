@@ -8,13 +8,19 @@ import java.util.HashMap;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
+import java.util.function.DoubleSupplier;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -49,6 +55,10 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Vers
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.WorkerJoinReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeDrainingReported;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.WorkerLeaveReceived;
+import org.pragmatica.aether.deployment.cluster.fsm.write.FsmWriteError;
+import org.pragmatica.aether.deployment.cluster.fsm.write.NotLeaderAction;
+import org.pragmatica.aether.deployment.cluster.fsm.write.TermWriter;
+import org.pragmatica.aether.deployment.cluster.fsm.write.WriteSite;
 import org.pragmatica.aether.deployment.schema.SchemaEvent.ActivationBlocked;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentFailed;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentStarted;
@@ -91,6 +101,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent.Shutdown;
@@ -255,6 +266,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                   Set<Artifact> permanentlyFailed,
                   Set<NodeId> workerNodes,
                   Map<SliceNodeKey, Long> transitionalStateTimestamps,
+                  // #2579: when the leader first saw each slice LOADED. LOADED has no timeout, so it is not in
+                  // transitionalStateTimestamps; the reconcile backstop reads this. In-memory, rebuilt on a new leader.
+                  Map<SliceNodeKey, Long> loadedSince,
                   Map<Artifact, Integer> consecutiveImbalancedTicks,
                   // Per-SliceNodeKey WARN/DEBUG dedup for schema holds (#760 follow-up). In-memory
                   // only, never persisted — resets on leader failover. See #reportSchemaHold's
@@ -266,6 +280,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                   Set<NodeId> drainEvictionsInProgress,
                   AtomicInteger allocationIndex,
                   AtomicBoolean deactivated,
+                  TermWriter termWriter,
                   CancellableTask reconcileTimer) implements ClusterDeploymentState {
         private static final Logger log = LoggerFactory.getLogger(Active.class);
         private static final int MAX_RETRIES = 5;
@@ -280,6 +295,17 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// The fallback source label for a joining worker whose membership `source` is absent or
         /// blank (worker-membership-spec D2).
         private static final String DEFAULT_SOURCE = "default";
+        /// #2579: a failed ACTIVATE write is re-checked after 5, 10, 20 and 40 s, each +-20% jittered (the base mirrors
+        /// the LOAD failure path's 5 s re-reconcile). The four attempts end by the time the reconcile backstop's window
+        /// opens; an overlap is harmless, because both re-issues are compare-and-sets on the same LOADED value.
+        private static final long ACTIVATE_RETRY_BASE_SECONDS = 5;
+        private static final int MAX_ACTIVATE_RETRIES = 4;
+
+        /// #2579: a slice committed LOADED this long with no ACTIVATE is re-issued by the reconcile backstop. The
+        /// activation timeout is ACTIVATING's: the budget a node has to activate once it is told to.
+        private static final long ACTIVATION_BACKSTOP_MS = SliceState.ACTIVATING.timeout()
+                                                                                .map(TimeSpan::millis)
+                                                                                .or(90_000L);
 
         // --- move-only extraction seams (package-private helpers operating on this Active) ---
         StuckTransitionalRemediator stuckRemediator() {
@@ -729,13 +755,29 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                 value.attemptCount());
             // The lock is NOT removed here (#806): this runs only for an EXPIRED lock, which the next
             // acquire takes over, and a bare Remove of a `WitnessedRemoval` value is refused anyway.
-            var commands = List.<KVCommand<AetherKey>> of(new KVCommand.Put<>(versionKey, updated));
+            termWriter.writeUnder(WriteSite.SCHEMA_STALLED_RESET,
+                                  leader -> stalledMigrationReset(versionKey, value, updated, leader))
+                      .onFailure(cause -> log.error("Failed to reset stalled migration for '{}': {}",
+                                                    datasourceName,
+                                                    cause.message()));
+        }
 
-            ctx.cluster()
-               .apply(commands)
-               .onFailure(cause -> log.error("Failed to reset stalled migration for '{}': {}",
-                                             datasourceName,
-                                             cause.message()));
+        /// #2584: the reset is a mutation guarded on the MIGRATING record it read, so the applier refuses it if the record
+        /// moved since (a migration that completed or failed meanwhile keeps its status). It carries the leader record
+        /// [TermWriter] checked, which names this node, so a newer leader's record makes the applier refuse it too.
+        private List<KVCommand<AetherKey>> stalledMigrationReset(SchemaVersionKey versionKey,
+                                                                 SchemaVersionValue read,
+                                                                 SchemaVersionValue updated,
+                                                                 org.pragmatica.cluster.state.kvstore.LeaderValue leader) {
+            var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(versionKey,
+                                                                          Option.some(read),
+                                                                          Option.some(updated));
+
+            return List.of(new KVCommand.LeaderTransaction<>(versionKey,
+                                                             UUID.randomUUID().toString(),
+                                                             leader,
+                                                             List.of(),
+                                                             List.of(mutation)));
         }
 
         private void triggerLoadedSliceActivation() {
@@ -918,6 +960,83 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private void restoreSliceTarget(SliceTargetKey sliceTargetKey, SliceTargetValue sliceTargetValue) {
+            sliceTargetValue.owningBlueprint()
+                            .filter(owner -> ctx.kvStore()
+                                                .get(AppBlueprintKey.appBlueprintKey(owner))
+                                                .isEmpty())
+                            .apply(() -> adoptSliceTarget(sliceTargetKey, sliceTargetValue),
+                                   owner -> refuseOrphanTarget(sliceTargetKey, owner));
+        }
+
+        /// #2628 (D4): a committed target whose owning blueprint is absent is an orphan, and a new leader does not
+        /// re-adopt it: adopting it would LOAD slices of a blueprint that no longer exists. It is swept by the same
+        /// fenced removal a blueprint delete uses, which can only remove it while the blueprint is still absent.
+        private void refuseOrphanTarget(SliceTargetKey sliceTargetKey, BlueprintId owner) {
+            committedDeclarer(sliceTargetKey.artifactBase()).apply(() -> sweepOrphanTarget(sliceTargetKey, owner),
+                                                                   declarer -> reOwnTarget(sliceTargetKey,
+                                                                                           owner,
+                                                                                           declarer));
+        }
+
+        private void sweepOrphanTarget(SliceTargetKey sliceTargetKey, BlueprintId owner) {
+            log.warn("Restore: slice target {} names blueprint {}, which is not committed — not adopting it, removing the orphan",
+                     sliceTargetKey.artifactBase(),
+                     owner.asString());
+            submitFencedTargetRemovals(WriteSite.BLUEPRINT_DELETE_TARGET_REMOVE,
+                                       owner,
+                                       List.of(sliceTargetKey.artifactBase()),
+                                       0);
+        }
+
+        /// A target whose owner is gone while another COMMITTED blueprint declares its base (the window between a
+        /// different-id rollback restoring `previous` and `previous`'s own target put) is live: sweeping it would UNLOAD
+        /// the running instances until the awaited resubmission re-creates it. It is re-owned instead, by the declarer's
+        /// own fenced put, which carries the committed scale and placement.
+        private void reOwnTarget(SliceTargetKey sliceTargetKey, BlueprintId owner, AppBlueprintValue declarer) {
+            var base = sliceTargetKey.artifactBase();
+            var slices = declarer.blueprint()
+                                 .loadOrder()
+                                 .stream()
+                                 .filter(slice -> slice.artifact()
+                                                       .base()
+                                                       .equals(base))
+                                 .toList();
+
+            log.warn("Restore: slice target {} names blueprint {}, which is not committed; committed blueprint {} declares it — re-owning",
+                     base,
+                     owner.asString(),
+                     declarer.blueprint().id().asString());
+            submitFencedTargetPuts(WriteSite.DEPLOY_TARGET_PUT, declarer, slices, 0);
+        }
+
+        /// A committed, non-register-only blueprint declaring a slice of this base, if any.
+        private Option<AppBlueprintValue> committedDeclarer(ArtifactBase base) {
+            var declarers = new ArrayList<AppBlueprintValue>();
+
+            ctx.kvStore()
+               .forEach(AppBlueprintKey.class,
+                        AppBlueprintValue.class,
+                        (_, value) -> addIfDeclaresBase(declarers, value, base));
+
+            return declarers.isEmpty()
+                   ? Option.none()
+                   : Option.some(declarers.getFirst());
+        }
+
+        private static void addIfDeclaresBase(List<AppBlueprintValue> declarers,
+                                              AppBlueprintValue value,
+                                              ArtifactBase base) {
+            if (!value.registerOnly() && value.blueprint()
+                                              .loadOrder()
+                                              .stream()
+                                              .anyMatch(slice -> slice.artifact()
+                                                                      .base()
+                                                                      .equals(base))) {
+                declarers.add(value);
+            }
+        }
+
+        private void adoptSliceTarget(SliceTargetKey sliceTargetKey, SliceTargetValue sliceTargetValue) {
             var artifact = sliceTargetKey.artifactBase().withVersion(sliceTargetValue.currentVersion());
             var instances = sliceTargetValue.targetInstances();
             var minInstances = sliceTargetValue.effectiveMinInstances();
@@ -947,6 +1066,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
             sliceStates.put(sliceKey, value.state());
             updateTransitionalTimestamp(sliceKey, value.state(), value.transitionedAt());
+            updateLoadedSince(sliceKey, value.state());
         }
 
         private void handleSchemaPending(String datasource) {
@@ -1059,15 +1179,16 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                             .equals(Option.some(removedBlueprintId)))
                                               .map(Map.Entry::getKey)
                                               .toList();
-            var consensusCommands = new ArrayList<KVCommand<AetherKey>>();
 
             for (var artifact : artifactsToRemove) {
                 blueprints.remove(artifact);
                 issueDeallocationCommands(artifact);
-                consensusCommands.add(new KVCommand.Remove<>(SliceTargetKey.sliceTargetKey(artifact.base())));
             }
 
-            submitBatch(consensusCommands);
+            submitFencedTargetRemovals(WriteSite.BLUEPRINT_DELETE_TARGET_REMOVE,
+                                       removedBlueprintId,
+                                       artifactsToRemove.stream().map(Artifact::base).toList(),
+                                       0);
             SharedScheduler.schedule(this::reconcile, timeSpan(5).seconds());
         }
 
@@ -1380,17 +1501,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                       .or(DEFAULT_SOURCE);
         }
 
-        private org.pragmatica.aether.deployment.cluster.HierarchyStateWriter hierarchyWriter() {
-            return org.pragmatica.aether.deployment.cluster.HierarchyStateWriter.hierarchyStateWriter(() -> ctx.kvStore()
-                                                                                                               .getTyped(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
-                                                                                                                         org.pragmatica.cluster.state.kvstore.LeaderValue.class)
-                                                                                                               .filter(value -> value.leader()
-                                                                                                                                     .equals(ctx.self()) && !deactivated.get()),
-                                                                                                      ctx.kvStore()::get,
-                                                                                                      commands -> ctx.cluster()
-                                                                                                                     .apply(commands));
-        }
-
         private void submitActivationDirective(NodeId targetNode, ActivationDirectiveValue directive) {
             var key = ActivationDirectiveKey.activationDirectiveKey(targetNode);
             var before = ctx.kvStore().get(key);
@@ -1401,25 +1511,25 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 return;
             }
 
-            hierarchyWriter().put(key, before, directive)
-                           .onFailure(cause -> log.warn("Activation refused for {}: {}",
-                                                        targetNode,
-                                                        cause.message()));
+            termWriter.hierarchyPut(key, before, directive)
+                      .onFailure(cause -> log.warn("Activation refused for {}: {}",
+                                                   targetNode,
+                                                   cause.message()));
         }
 
         private void submitActivationCommands(NodeId targetNode,
                                               String transactionId,
                                               List<KVCommand<AetherKey>> commands) {
-            ctx.cluster()
-               .<Object> apply(commands)
-               .onSuccess(results -> results.stream()
-                                            .filter(KVCommand.TransactionResult.class::isInstance)
-                                            .map(KVCommand.TransactionResult.class::cast)
-                                            .filter(result -> result.transactionId()
-                                                                    .equals(transactionId))
-                                            .forEach(result -> settleAssignment(targetNode,
-                                                                                result.accepted())))
-               .onFailure(cause -> commitLost(targetNode, cause));
+            termWriter.<Object> write(WriteSite.WORKER_ASSIGNMENT,
+                                      () -> commands)
+                      .onSuccess(results -> results.stream()
+                                                   .filter(KVCommand.TransactionResult.class::isInstance)
+                                                   .map(KVCommand.TransactionResult.class::cast)
+                                                   .filter(result -> result.transactionId()
+                                                                           .equals(transactionId))
+                                                   .forEach(result -> settleAssignment(targetNode,
+                                                                                       result.accepted())))
+                      .onFailure(cause -> commitLost(targetNode, cause));
         }
 
         private void commitLost(NodeId targetNode, Cause cause) {
@@ -1555,11 +1665,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                      artifactKeysToRemove.size(),
                      sliceKeysToRemove.size(),
                      nodeRouteCommands.size());
-            ctx.cluster()
-               .apply(consensusCommands)
-               .onFailure(cause -> log.error("Snapshot-delta cleanup for {} failed: {}",
-                                             departedNode,
-                                             cause.message()));
+            termWriter.write(WriteSite.DECOMMISSION_FOOTPRINT,
+                             () -> consensusCommands)
+                      .onFailure(cause -> log.error("Snapshot-delta cleanup for {} failed: {}",
+                                                    departedNode,
+                                                    cause.message()));
         }
 
         private void processActivationDirectivePut(NodeId nodeId, String role) {
@@ -1656,7 +1766,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
             if (hasActiveReplacement) {
                 log.info("Drain eviction: replacement ACTIVE for {}, unloading from {}", artifact, drainingNode);
-                issueUnloadCommand(originalKey);
+                issueUnloadCommand(WriteSite.UNLOAD_DRAIN, originalKey);
                 SharedScheduler.schedule(() -> evictNextSliceFromNode(drainingNode), timeSpan(2).seconds());
             } else {
                 log.debug("Drain eviction: replacement not yet ACTIVE for {}, rechecking", artifact);
@@ -1766,7 +1876,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 return;
             }
 
-            var consensusCommands = new ArrayList<KVCommand<AetherKey>>();
+            var targetedSlices = new ArrayList<ResolvedSlice>();
             var schemaRequired = resolveSchemaRequired(expanded.id());
 
             for (var slice : expanded.loadOrder()) {
@@ -1801,13 +1911,291 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                    target.minInstances(),
                                                    Option.some(expanded.id()),
                                                    schemaRequired));
-                consensusCommands.add(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()),
-                                                          target));
-                ctx.pendingTargetPuts().put(artifact.base(), target);
+                targetedSlices.add(slice);
             }
 
-            submitBatch(consensusCommands);
+            submitFencedTargetPuts(WriteSite.DEPLOY_TARGET_PUT, value, targetedSlices, 0);
             trackInFlightBlueprint(expanded, value.attemptId(), previousExpanded);
+        }
+
+        /// #2628 (D4, D6): the slice-target puts of a blueprint, fenced on the exact `AppBlueprintValue` they derive from.
+        ///
+        /// The put used to be fire-and-forget beside the removal that a delete submits on the blueprint's removal
+        /// notification, and Rabia commits pending batches in content-hash order, not submission order. A put that
+        /// committed after the removal re-added the target for a deleted blueprint (nothing swept it, and
+        /// `restoreSliceTarget` re-adopted it on a leader change); two publishes of one id could commit their puts in
+        /// either order, and the older one then won. Neither depends on an engine ordering any more: the puts are ONE
+        /// [KVCommand.LeaderTransaction] whose read set holds the `AppBlueprintKey` at the value the notification
+        /// carried (its `attemptId` is the generation) and whose mutations hold the target values they were derived
+        /// from. The applier refuses it unless the blueprint is still exactly that attempt, so a put of a deleted or
+        /// superseded blueprint is refused whatever the commit order, and the put of the current attempt is the only
+        /// one that can land.
+        ///
+        /// A refusal is silent (the applier's result is not attributable under batch merging), so after the apply
+        /// resolves this re-reads, as the rollback does: a committed blueprint that is no longer `source` means the
+        /// refusal was the fence working, and nothing is written for it (a newer publish writes its own targets);
+        /// a target that does not yet declare the blueprint while the blueprint is unchanged was refused for a moved
+        /// target (an autoscaler write), and is rebuilt against the current one, bounded by
+        /// [#MAX_OUTCOME_MERGE_ATTEMPTS].
+        private void submitFencedTargetPuts(WriteSite site,
+                                            AppBlueprintValue source,
+                                            List<ResolvedSlice> slices,
+                                            int attempt) {
+            if (slices.isEmpty()) {
+                return;
+            }
+
+            termWriter.<Object> writeUnder(site,
+                                           leader -> targetPutTransaction(leader, source, slices))
+                      .onSuccess(_ -> confirmTargetPuts(site, source, slices, attempt))
+                      .onFailure(cause -> logTargetWriteFailure(site, cause));
+        }
+
+        private List<KVCommand<AetherKey>> targetPutTransaction(LeaderValue leader,
+                                                                AppBlueprintValue source,
+                                                                List<ResolvedSlice> slices) {
+            var expanded = source.blueprint();
+            var mutations = distinctByBase(slices).stream().map(slice -> targetPutMutation(expanded, slice)).toList();
+
+            return fencedTransaction(leader,
+                                     appBlueprintWitness(expanded.id(), Option.some(source)),
+                                     mutations);
+        }
+
+        private static KVCommand.ReadWitness<AetherKey> appBlueprintWitness(BlueprintId id,
+                                                                            Option<AetherValue> expected) {
+            return new KVCommand.ReadWitness<>(AppBlueprintKey.appBlueprintKey(id), expected.map(Object.class::cast));
+        }
+
+        private static List<KVCommand<AetherKey>> fencedTransaction(LeaderValue leader,
+                                                                    KVCommand.ReadWitness<AetherKey> fence,
+                                                                    List<KVCommand.Mutation<AetherKey, AetherValue>> mutations) {
+            return List.of(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(mutations.getFirst().key(),
+                                                                                   UUID.randomUUID().toString(),
+                                                                                   leader,
+                                                                                   List.of(fence),
+                                                                                   mutations));
+        }
+
+        /// One mutation per target key: the applier refuses a transaction that names a key twice, and a blueprint
+        /// can list one slice base twice. The later declaration wins, as the sequence of puts it replaces did.
+        private static List<ResolvedSlice> distinctByBase(List<ResolvedSlice> slices) {
+            return List.copyOf(slices.stream()
+                                     .collect(Collectors.toMap(slice -> slice.artifact()
+                                                                             .base(),
+                                                               slice -> slice,
+                                                               (_, later) -> later,
+                                                               LinkedHashMap::new))
+                                     .values());
+        }
+
+        private KVCommand.Mutation<AetherKey, AetherValue> targetPutMutation(ExpandedBlueprint expanded,
+                                                                             ResolvedSlice slice) {
+            var key = SliceTargetKey.sliceTargetKey(slice.artifact().base());
+            var target = declaredTarget(expanded, slice);
+            // The value the leader last submitted for this base: what AwaitedTargetWatch resubmits if it never commits.
+            ctx.pendingTargetPuts().put(slice.artifact().base(),
+                                        target);
+
+            return new KVCommand.Mutation<>(key,
+                                            ctx.kvStore().get(key),
+                                            Option.some(target));
+        }
+
+        private void confirmTargetPuts(WriteSite site,
+                                       AppBlueprintValue source,
+                                       List<ResolvedSlice> slices,
+                                       int attempt) {
+            var expanded = source.blueprint();
+            // Design-out: the fence refused this attempt's stale write, so a delete or a newer attempt owns the
+            // targets and the refusal needs no repair. Rebuilding here would only be refused again.
+            if (!ctx.kvStore().get(AppBlueprintKey.appBlueprintKey(expanded.id())).equals(Option.some(source))) {
+                log.info("Slice targets of blueprint {} (attempt '{}') not written: the committed blueprint is no longer that attempt"
+                        + " (deleted or published again), so the fence refuses its targets and the current attempt owns them",
+                         expanded.id().asString(),
+                         source.attemptId());
+
+                return;
+            }
+
+            var unlanded = distinctByBase(slices).stream().filter(slice -> !declaresTarget(expanded, slice)).toList();
+
+            if (unlanded.isEmpty()) {
+                return;
+            }
+
+            if (attempt >= MAX_OUTCOME_MERGE_ATTEMPTS) {
+                log.error("Slice targets {} of blueprint {} were refused {} times by concurrent changes to the targets and are NOT written",
+                          unlanded.stream().map(ResolvedSlice::artifact).toList(),
+                          expanded.id().asString(),
+                          attempt + 1);
+
+                return;
+            }
+
+            submitFencedTargetPuts(site, source, unlanded, attempt + 1);
+        }
+
+        /// Whether the committed target of the slice's base is the one this blueprint declares for it.
+        private boolean declaresTarget(ExpandedBlueprint expanded, ResolvedSlice slice) {
+            return committed(SliceTargetKey.sliceTargetKey(slice.artifact().base()),
+                             SliceTargetValue.class).filter(target -> declares(target, expanded, slice))
+                            .isPresent();
+        }
+
+        private <V extends AetherValue> Option<V> committed(AetherKey key, Class<V> type) {
+            return ctx.kvStore()
+                      .get(key)
+                      .filter(type::isInstance)
+                      .map(type::cast);
+        }
+
+        private static boolean declares(SliceTargetValue target, ExpandedBlueprint expanded, ResolvedSlice slice) {
+            return target.currentVersion()
+                         .equals(slice.artifact().version())
+                   && target.owningBlueprint()
+                            .equals(Option.some(expanded.id()))
+                   && target.minInstances() == slice.minAvailable()
+                   && target.maxInstances()
+                            .equals(slice.maxInstances())
+                   && target.scaleUpThreshold()
+                            .equals(slice.scaleUpThreshold())
+                   && target.scaleDownThreshold()
+                            .equals(slice.scaleDownThreshold());
+        }
+
+        /// #2628 (D4): the removal of the slice targets a deleted blueprint owned, fenced on the blueprint being absent.
+        ///
+        /// The transaction's read set holds `AppBlueprintKey(removed)` as ABSENT and each mutation holds the target it
+        /// read, so a publish of the same id that committed first refuses the removal (its targets are not removed from
+        /// under it), and a target that moved is rebuilt against the current one, bounded by
+        /// [#MAX_OUTCOME_MERGE_ATTEMPTS]. A target not committed when this is built is not written for here: the put
+        /// that would commit it later is the one the blueprint fence of [#submitFencedTargetPuts] refuses. This is also
+        /// the sweep for an orphan found at restore, which is a target whose blueprint is already absent.
+        private void submitFencedTargetRemovals(WriteSite site,
+                                                BlueprintId removed,
+                                                List<ArtifactBase> bases,
+                                                int attempt) {
+            var mutations = bases.stream().distinct().flatMap(base -> committedTargetRemoval(removed, base)).toList();
+
+            if (mutations.isEmpty()) {
+                return;
+            }
+
+            termWriter.<Object> writeUnder(site,
+                                           leader -> fencedTransaction(leader,
+                                                                       appBlueprintWitness(removed,
+                                                                                           Option.none()),
+                                                                       mutations))
+                      .onSuccess(_ -> confirmTargetRemovals(site, removed, bases, attempt))
+                      .onFailure(cause -> logTargetWriteFailure(site, cause));
+        }
+
+        private Stream<KVCommand.Mutation<AetherKey, AetherValue>> committedTargetRemoval(BlueprintId removed,
+                                                                                          ArtifactBase base) {
+            var key = SliceTargetKey.sliceTargetKey(base);
+
+            return removableTarget(removed, base).map(committed -> new KVCommand.Mutation<AetherKey, AetherValue>(key,
+                                                                                                                  Option.some(committed),
+                                                                                                                  Option.none()))
+                                  .stream();
+        }
+
+        /// The committed target of the base unless ANOTHER blueprint owns it. The mirror of a deleted blueprint can still
+        /// name a base whose target a different id of the same blueprint (an upgrade racing the delete of the old id) has
+        /// already re-owned: that target is the other blueprint's, and neither the removal nor its rebuild may take it.
+        private Option<AetherValue> removableTarget(BlueprintId removed, ArtifactBase base) {
+            return ctx.kvStore()
+                      .get(SliceTargetKey.sliceTargetKey(base))
+                      .filter(committed -> !ownedByAnother(committed, removed));
+        }
+
+        private static boolean ownedByAnother(AetherValue committed, BlueprintId removed) {
+            return committed instanceof SliceTargetValue target && target.owningBlueprint()
+                                                                         .filter(owner -> !owner.equals(removed))
+                                                                         .isPresent();
+        }
+
+        private void confirmTargetRemovals(WriteSite site, BlueprintId removed, List<ArtifactBase> bases, int attempt) {
+            if (ctx.kvStore().get(AppBlueprintKey.appBlueprintKey(removed)).isPresent()) {
+                return;
+            }
+
+            var remaining = bases.stream().filter(base -> removableTarget(removed, base).isPresent()).toList();
+
+            if (remaining.isEmpty()) {
+                return;
+            }
+
+            if (attempt >= MAX_OUTCOME_MERGE_ATTEMPTS) {
+                log.error("Slice targets {} of deleted blueprint {} were refused {} times by concurrent changes and are NOT removed",
+                          remaining,
+                          removed.asString(),
+                          attempt + 1);
+
+                return;
+            }
+
+            submitFencedTargetRemovals(site, removed, remaining, attempt + 1);
+        }
+
+        /// FER (degrade forward): a target write that could not be issued or applied is reported and not retried here.
+        /// Guarantee earned: nothing was written, so the committed targets are exactly what they were. Mechanism: an
+        /// uncommitted put is resubmitted by [AwaitedTargetWatch] (#1109) while its blueprint is desired, and a target
+        /// left behind by a removal that failed is an orphan the next leader's restore sweeps.
+        private void logTargetWriteFailure(WriteSite site, Cause cause) {
+            if (deactivated.get()) {
+                log.debug("Suppressing {} failure handling - Active state deactivated", site);
+
+                return;
+            }
+
+            log.error("Slice-target write {} failed: {}", site, cause.message());
+        }
+
+        /// #2628: the resubmission of a slice target an awaited apply is still missing, fenced like its first put. A slice of
+        /// a blueprint is resubmitted only while the COMMITTED blueprint of its owner still declares it, and is written as
+        /// a compare-and-set on the committed target under that blueprint's value, so a resubmission racing a delete (or a
+        /// newer attempt) is refused rather than re-adding a target. The watch repeats once per bound, so a refused
+        /// resubmission needs no retry of its own. An unowned slice has no blueprint to fence on and stays a plain put.
+        @Contract
+        void resubmitTarget(Artifact artifact, Blueprint blueprint, SliceTargetValue pending) {
+            blueprint.owner()
+                     .apply(() -> submitBatch(WriteSite.AWAITED_TARGET_RESUBMIT,
+                                              List.of(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()),
+                                                                          pending))),
+                            owner -> resubmitOwnedTarget(artifact, owner, pending));
+        }
+
+        private void resubmitOwnedTarget(Artifact artifact, BlueprintId owner, SliceTargetValue pending) {
+            committed(AppBlueprintKey.appBlueprintKey(owner),
+                      AppBlueprintValue.class).filter(source -> declaresSlice(source, artifact))
+                     .onPresent(source -> writeResubmission(source, artifact, pending))
+                     .onEmpty(() -> log.info("Slice target of {} not resubmitted: blueprint {} is no longer committed or no longer declares it",
+                                             artifact,
+                                             owner.asString()));
+        }
+
+        private static boolean declaresSlice(AppBlueprintValue source, Artifact artifact) {
+            return source.blueprint()
+                         .loadOrder()
+                         .stream()
+                         .anyMatch(slice -> slice.artifact()
+                                                 .equals(artifact));
+        }
+
+        private void writeResubmission(AppBlueprintValue source, Artifact artifact, SliceTargetValue pending) {
+            var key = SliceTargetKey.sliceTargetKey(artifact.base());
+
+            termWriter.<Object> writeUnder(WriteSite.AWAITED_TARGET_RESUBMIT,
+                                           leader -> fencedTransaction(leader,
+                                                                       appBlueprintWitness(source.blueprint().id(),
+                                                                                           Option.some(source)),
+                                                                       List.of(new KVCommand.Mutation<>(key,
+                                                                                                        ctx.kvStore()
+                                                                                                           .get(key),
+                                                                                                        Option.some(pending)))))
+                      .onFailure(cause -> logTargetWriteFailure(WriteSite.AWAITED_TARGET_RESUBMIT, cause));
         }
 
         /// The `SliceTargetValue` a republish proposes: the committed value re-declared by the blueprint when
@@ -2001,6 +2389,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var previousState = sliceStates.put(sliceKey, state);
 
             updateTransitionalTimestamp(sliceKey, state, sliceNodeValue.transitionedAt());
+            updateLoadedSince(sliceKey, state);
             log.trace("Slice {} on {} state: {} -> {}",
                       sliceKey.artifact(),
                       sliceKey.nodeId(),
@@ -2115,7 +2504,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             sliceStates.remove(sliceKey);
             transitionalStateTimestamps.remove(sliceKey);
             reportedSchemaHolds.remove(sliceKey);
-            issueUnloadCommand(sliceKey);
+            issueUnloadCommand(WriteSite.UNLOAD_SLICE_FAILED, sliceKey);
             if (sliceNodeValue.fatal()) {
                 handleDeterministicFailure(sliceKey, failureReason);
             } else {
@@ -2249,10 +2638,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                     int attempt) {
             var command = List.<KVCommand<AetherKey>> of(bestEffortFailureCommand(blueprintId, artifact, failureReason));
 
-            ctx.cluster()
-               .apply(command)
-               .onSuccess(_ -> confirmBestEffortFailureOutcome(blueprintId, artifact, failureReason, attempt))
-               .onFailure(cause -> handleBatchFailure(cause, command));
+            termWriter.write(WriteSite.BEST_EFFORT_FAILURE_OUTCOME,
+                             () -> command)
+                      .onSuccess(_ -> confirmBestEffortFailureOutcome(blueprintId, artifact, failureReason, attempt))
+                      .onFailure(cause -> handleBatchFailure(cause, command));
         }
 
         private void confirmBestEffortFailureOutcome(BlueprintId blueprintId,
@@ -2644,6 +3033,12 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private void tryActivateIfDependenciesReady(SliceNodeKey sliceKey) {
+            tryActivateIfDependenciesReady(sliceKey, this::issueActivateCommand);
+        }
+
+        /// The hold and dependency checks, shared by the first ACTIVATE and by the #2579 re-issue: `activate` is the
+        /// write that runs once the slice is free to activate.
+        private void tryActivateIfDependenciesReady(SliceNodeKey sliceKey, Consumer<SliceNodeKey> activate) {
             var artifact = sliceKey.artifact();
             var blockingRecords = blockingSchemaRecords(sliceKey);
 
@@ -2658,14 +3053,14 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
             if (dependencies.isEmpty()) {
                 log.debug("Slice {} has no dependencies, activating immediately", artifact);
-                issueActivateCommand(sliceKey);
+                activate.accept(sliceKey);
 
                 return;
             }
 
             if (allDependenciesActive(dependencies)) {
                 log.debug("All {} dependencies of {} are ACTIVE, activating", dependencies.size(), artifact);
-                issueActivateCommand(sliceKey);
+                activate.accept(sliceKey);
             } else {
                 log.debug("Slice {} waiting for dependencies to become ACTIVE: {}",
                           artifact,
@@ -2771,19 +3166,134 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// between LOAD and LOADED) is UNLOADed instead of activated. Same predicate as the node-side
         /// gate and the orphan sweep, read from the committed store, never from `blueprints`.
         private void issueActivateCommand(SliceNodeKey sliceKey) {
-            if (!CommittedSliceTarget.permits(ctx.kvStore(), sliceKey.artifact())) {
-                log.warn("No committed SliceTarget names {} — issuing UNLOAD instead of ACTIVATE for {} (#1068)",
-                         sliceKey.artifact(),
-                         sliceKey.nodeId());
-                issueUnloadCommand(sliceKey);
-
+            if (unloadedForMissingTarget(sliceKey)) {
                 return;
             }
 
             log.debug("Issuing ACTIVATE command for {}", sliceKey);
-            applyStateWrite(sliceKey, SliceState.ACTIVATE).onFailure(cause -> log.error("Failed to issue ACTIVATE command for {}: {}",
-                                                                                        sliceKey,
-                                                                                        cause.message()));
+            applyStateWrite(WriteSite.ACTIVATE, sliceKey, SliceState.ACTIVATE).onFailure(cause -> onActivateWriteFailure(sliceKey,
+                                                                                                                         cause,
+                                                                                                                         0));
+        }
+
+        private boolean unloadedForMissingTarget(SliceNodeKey sliceKey) {
+            if (CommittedSliceTarget.permits(ctx.kvStore(), sliceKey.artifact())) {
+                return false;
+            }
+
+            log.warn("No committed SliceTarget names {} — issuing UNLOAD instead of ACTIVATE for {} (#1068)",
+                     sliceKey.artifact(),
+                     sliceKey.nodeId());
+            issueUnloadCommand(WriteSite.UNLOAD_NOT_PERMITTED, sliceKey);
+
+            return true;
+        }
+
+        /// #2579 layer 1: a failed ACTIVATE write is not left until a leader change. LOADED is neither in progress nor
+        /// transitional, so neither reconcile nor the stuck remediator would act on it, and the slice would serve
+        /// nothing. A recheck is scheduled with exponential backoff. Past the last attempt the reconcile backstop
+        /// ([#reissueStrandedActivations]) still covers the slice.
+        private void onActivateWriteFailure(SliceNodeKey sliceKey, Cause cause, int attempt) {
+            log.error("Failed to issue ACTIVATE command for {} (attempt {}): {}", sliceKey, attempt + 1, cause.message());
+            activateRetryDelay(attempt,
+                               () -> ThreadLocalRandom.current().nextDouble()).onPresent(delay -> SharedScheduler.schedule(() -> retryActivateIfStillLoaded(sliceKey,
+                                                                                                                                                            attempt + 1),
+                                                                                                                           delay))
+                              .onEmpty(() -> log.warn("ACTIVATE for {} not retried after {} attempts; the reconcile backstop re-issues it after {} ms in LOADED",
+                                                      sliceKey,
+                                                      attempt + 1,
+                                                      ACTIVATION_BACKSTOP_MS));
+        }
+
+        /// The delay before ACTIVATE retry `attempt + 1`, none past the last. The +-20% jitter (the 89e17399a9 shape)
+        /// keeps slices whose writes failed together, as they do under one backpressured lane, from re-issuing in
+        /// lockstep against the recovering lane.
+        static Option<TimeSpan> activateRetryDelay(int attempt, DoubleSupplier random) {
+            if (attempt >= MAX_ACTIVATE_RETRIES) {
+                return Option.none();
+            }
+
+            return Option.some(timeSpan(JitterUtil.applyJitter((ACTIVATE_RETRY_BASE_SECONDS << attempt) * 1000L,
+                                                               JitterUtil.LIGHT_MIN_FACTOR,
+                                                               JitterUtil.LIGHT_MAX_FACTOR,
+                                                               random)).millis());
+        }
+
+        /// Re-reads the committed state, the authority: a write that timed out may still have applied. Only a slice
+        /// the KV-Store still holds LOADED is re-issued.
+        private void retryActivateIfStillLoaded(SliceNodeKey sliceKey, int attempt) {
+            if (deactivated.get()) {
+                log.debug("Suppressing ACTIVATE retry for {} - Active state deactivated", sliceKey);
+
+                return;
+            }
+
+            committedLoaded(sliceKey).onPresent(committed -> reissueWhenReady(sliceKey, committed, attempt))
+                           .onEmpty(() -> log.debug("ACTIVATE retry for {} not needed: the committed state is no longer LOADED",
+                                                    sliceKey));
+        }
+
+        /// The committed node-artifact value for this slice, when it is LOADED.
+        private Option<NodeArtifactValue> committedLoaded(SliceNodeKey sliceKey) {
+            return ctx.kvStore()
+                      .get(NodeArtifactKey.nodeArtifactKey(sliceKey.nodeId(),
+                                                           sliceKey.artifact()))
+                      .filter(NodeArtifactValue.class::isInstance)
+                      .map(NodeArtifactValue.class::cast)
+                      .filter(value -> value.state() == SliceState.LOADED);
+        }
+
+        /// The re-issue passes the same schema-hold and dependency checks as the first ACTIVATE.
+        private void reissueWhenReady(SliceNodeKey sliceKey, NodeArtifactValue committedLoaded, int attempt) {
+            tryActivateIfDependenciesReady(sliceKey, key -> reissueActivateCommand(key, committedLoaded, attempt));
+        }
+
+        /// The re-issued ACTIVATE is a compare-and-set on the committed LOADED value that the recheck read. A plain
+        /// Put of a NodeArtifactValue is not merged, so an earlier ACTIVATE that applied late, followed by the node's
+        /// ACTIVATING, would otherwise be overwritten back to ACTIVATE. A refused or failed write takes the next
+        /// backoff step.
+        private void reissueActivateCommand(SliceNodeKey sliceKey, NodeArtifactValue committedLoaded, int attempt) {
+            if (unloadedForMissingTarget(sliceKey)) {
+                return;
+            }
+
+            log.info("Re-issuing ACTIVATE for {} (attempt {}): the committed state is still LOADED",
+                     sliceKey,
+                     attempt + 1);
+            termWriter.hierarchyPut(NodeArtifactKey.nodeArtifactKey(sliceKey.nodeId(),
+                                                                    sliceKey.artifact()),
+                                    Option.<AetherValue> some(committedLoaded),
+                                    NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVATE, 0L))
+                      .onFailure(cause -> onActivateWriteFailure(sliceKey, cause, attempt));
+        }
+
+        /// #2579 layer 2, the backstop for any lost ACTIVATE, not only a failed write: a slice the leader has seen
+        /// LOADED for longer than the activation timeout, and that the KV-Store still holds LOADED, is re-issued
+        /// once per window. A slice held by a schema or a dependency stays held, because the re-issue runs the same
+        /// checks. A failed backstop write starts no retry chain; the next window covers it.
+        private void reissueStrandedActivations() {
+            var now = ctx.nowMs();
+
+            loadedSince.keySet().removeIf(key -> sliceStates.get(key) != SliceState.LOADED);
+            loadedSince.entrySet()
+                       .stream()
+                       .filter(entry -> now - entry.getValue() > ACTIVATION_BACKSTOP_MS)
+                       .map(Map.Entry::getKey)
+                       .toList()
+                       .forEach(key -> reissueStranded(key, now));
+        }
+
+        private void reissueStranded(SliceNodeKey sliceKey, long now) {
+            loadedSince.put(sliceKey, now);
+            committedLoaded(sliceKey).onPresent(committed -> reissueWhenReady(sliceKey, committed, MAX_ACTIVATE_RETRIES));
+        }
+
+        private void updateLoadedSince(SliceNodeKey sliceKey, SliceState state) {
+            if (state == SliceState.LOADED) {
+                loadedSince.putIfAbsent(sliceKey, ctx.nowMs());
+            } else {
+                loadedSince.remove(sliceKey);
+            }
         }
 
         // Fire-and-forget LOAD: callers (allocation/reconcile sweeps, forEach state-mutators) ignore
@@ -2793,24 +3303,24 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             log.debug("Issuing LOAD command for {}", sliceKey);
             var timestamp = ctx.nowMs();
 
-            applyStateWrite(sliceKey, SliceState.LOAD).withSuccess(_ -> ctx.router()
-                                                                           .route(DeploymentStarted.deploymentStarted(sliceKey.artifact(),
-                                                                                                                      sliceKey.nodeId(),
-                                                                                                                      timestamp)))
+            applyStateWrite(WriteSite.LOAD, sliceKey, SliceState.LOAD).withSuccess(_ -> ctx.router()
+                                                                                           .route(DeploymentStarted.deploymentStarted(sliceKey.artifact(),
+                                                                                                                                      sliceKey.nodeId(),
+                                                                                                                                      timestamp)))
                            .onFailure(cause -> handleSliceNodeWriteFailure(sliceKey, cause));
         }
 
         // Fire-and-forget UNLOAD: callers (forEach(active::issueUnloadCommand), reconcile/eviction
         // sweeps) ignore the outcome; failure is logged inline. void is the contract.
         @Contract
-        void issueUnloadCommand(SliceNodeKey sliceKey) {
+        void issueUnloadCommand(WriteSite site, SliceNodeKey sliceKey) {
             log.debug("Issuing UNLOAD command for {}", sliceKey);
-            applyStateWrite(sliceKey, SliceState.UNLOAD).onFailure(cause -> log.error("Failed to issue UNLOAD command for {}: {}",
-                                                                                      sliceKey,
-                                                                                      cause.message()));
+            applyStateWrite(site, sliceKey, SliceState.UNLOAD).onFailure(cause -> log.error("Failed to issue UNLOAD command for {}: {}",
+                                                                                            sliceKey,
+                                                                                            cause.message()));
         }
 
-        private Promise<Unit> applyStateWrite(SliceNodeKey sliceKey, SliceState state) {
+        private Promise<Unit> applyStateWrite(WriteSite site, SliceNodeKey sliceKey, SliceState state) {
             var transitionedAt = state.isTransitional()
                                  ? ctx.nowMs()
                                  : 0L;
@@ -2819,32 +3329,32 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                    NodeArtifactValue.nodeArtifactValue(state,
                                                                                                        transitionedAt));
 
-            return ctx.cluster()
-                      .apply(List.of(putArtifact))
-                      .mapToUnit();
+            return termWriter.write(site,
+                                    () -> List.of(putArtifact))
+                             .mapToUnit();
         }
 
         // Fire-and-forget KV removal: callers (forEach(this::removeNodeArtifactKey), cleanup sweeps)
         // ignore the outcome; failure is logged inline. void is the contract.
         @Contract
-        void removeNodeArtifactKey(SliceNodeKey sliceKey) {
+        void removeNodeArtifactKey(WriteSite site, SliceNodeKey sliceKey) {
             KVCommand<AetherKey> removeArtifact = new KVCommand.Remove<>(NodeArtifactKey.nodeArtifactKey(sliceKey.nodeId(),
                                                                                                          sliceKey.artifact()));
 
-            ctx.cluster()
-               .apply(List.of(removeArtifact))
-               .onFailure(cause -> log.error("Failed to remove node-artifact-key for {}: {}",
-                                             sliceKey,
-                                             cause.message()));
+            termWriter.write(site,
+                             () -> List.of(removeArtifact))
+                      .onFailure(cause -> log.error("Failed to remove node-artifact-key for {}: {}",
+                                                    sliceKey,
+                                                    cause.message()));
         }
 
         @Contract
-        void submitBatch(List<KVCommand<AetherKey>> commands) {
+        void submitBatch(WriteSite site, List<KVCommand<AetherKey>> commands) {
             if (commands.isEmpty()) {
                 return;
             }
 
-            ctx.cluster().apply(commands).onFailure(cause -> handleBatchFailure(cause, commands));
+            termWriter.write(site, () -> commands).onFailure(cause -> handleBatchFailure(cause, commands));
         }
 
         private void handleBatchFailure(Cause cause, List<KVCommand<AetherKey>> commands) {
@@ -2876,7 +3386,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
             sliceKeysToRemove.forEach(sliceStates::remove);
             sliceKeysToRemove.forEach(transitionalStateTimestamps::remove);
-            sliceKeysToRemove.forEach(this::removeNodeArtifactKey);
+            sliceKeysToRemove.forEach(key -> removeNodeArtifactKey(WriteSite.NODE_ARTIFACT_REMOVE_DEPARTED, key));
             var artifactKeysToRemove = findNodeArtifactKeysForNode(removedNode);
             var nodeRouteCommands = cleanupNodeRoutesForNode(removedNode);
             List<KVCommand<AetherKey>> consensusCommands = new ArrayList<>();
@@ -2898,10 +3408,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                      nodeRouteCommands.size(),
                      removedNode);
 
-            return applyFootprintRemoval(consensusCommands).flatMap(_ -> hierarchyWriter().commit(List.of(new KVCommand.Mutation<>(directiveKey,
-                                                                                                                                   previousDirective,
-                                                                                                                                   Option.none())),
-                                                                                                  List.of()))
+            return applyFootprintRemoval(consensusCommands).flatMap(_ -> termWriter.hierarchyCommit(List.of(new KVCommand.Mutation<>(directiveKey,
+                                                                                                                                     previousDirective,
+                                                                                                                                     Option.none())),
+                                                                                                    List.of()))
                                         .onFailure(cause -> log.error("Failed to remove keys for departed node {}: {}",
                                                                       removedNode,
                                                                       cause.message()));
@@ -2914,9 +3424,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private Promise<Unit> applyFootprintRemoval(List<KVCommand<AetherKey>> commands) {
             return commands.isEmpty()
                    ? Promise.unitPromise()
-                   : ctx.cluster()
-                        .<Object> apply(commands)
-                        .mapToUnit();
+                   : termWriter.<Object> write(WriteSite.DEPARTURE_FOOTPRINT,
+                                               () -> commands)
+                               .mapToUnit();
         }
 
         private List<NodeArtifactKey> findNodeArtifactKeysForNode(NodeId nodeId) {
@@ -3060,7 +3570,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private void issueDeallocationCommands(Artifact artifact) {
-            getCurrentInstances(artifact).forEach(this::issueUnloadCommand);
+            getCurrentInstances(artifact).forEach(key -> issueUnloadCommand(WriteSite.UNLOAD_DEALLOCATION, key));
         }
 
         private void issueAllocationCommandsWithPlacement(Artifact artifact, int desiredInstances, String placement) {
@@ -3094,6 +3604,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             evaluateCommunityStates();
             sweepStaleEntries(true);
             detectStuckTransitionalStates();
+            reissueStrandedActivations();
             // A schema sweep does NOT belong here. It was added and reverted on 2026-08-31: sweeping
             // PENDING records on every reconcile re-dispatches a migration that is already running —
             // reconcile() is driven from many call sites, so three dispatches landed within two
@@ -3129,16 +3640,16 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                         CommunityValue.class,
                         (key, value) -> collectCommunityTransition(batch, key, value));
             if (!batch.isEmpty()) {
-                ctx.cluster()
-                   .<Object> apply(batch)
-                   .onSuccess(results -> results.stream()
-                                                .filter(KVCommand.TransactionResult.class::isInstance)
-                                                .map(KVCommand.TransactionResult.class::cast)
-                                                .filter(result -> !result.accepted())
-                                                .forEach(_ -> log.debug("Community state transition conflicted; next reconciliation will re-evaluate")))
-                   .onFailure(cause -> log.error("Failed to apply {} community state transition(s): {}",
-                                                 batch.size(),
-                                                 cause.message()));
+                termWriter.<Object> write(WriteSite.COMMUNITY_TRANSITIONS,
+                                          () -> batch)
+                          .onSuccess(results -> results.stream()
+                                                       .filter(KVCommand.TransactionResult.class::isInstance)
+                                                       .map(KVCommand.TransactionResult.class::cast)
+                                                       .filter(result -> !result.accepted())
+                                                       .forEach(_ -> log.debug("Community state transition conflicted; next reconciliation will re-evaluate")))
+                          .onFailure(cause -> log.error("Failed to apply {} community state transition(s): {}",
+                                                        batch.size(),
+                                                        cause.message()));
             }
         }
 
@@ -3345,7 +3856,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                      donorLoad,
                      target,
                      targetLoad);
-            issueUnloadCommand(donorKey);
+            issueUnloadCommand(WriteSite.UNLOAD_REBALANCE_DONOR, donorKey);
             tryAllocate(artifact, target);
 
             return true;
@@ -3419,10 +3930,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var value = DeploymentOutcomeValue.succeeded(ctx.nowMs(), nextOutcomeVersion(key), attemptId);
             var command = List.<KVCommand<AetherKey>> of(new KVCommand.Put<>(key, value));
 
-            ctx.cluster()
-               .apply(command)
-               .onSuccess(_ -> confirmSucceededOutcome(blueprintId, attemptId, attempt))
-               .onFailure(cause -> handleSucceededOutcomeWriteFailure(blueprintId, cause, command));
+            termWriter.write(WriteSite.SUCCEEDED_OUTCOME,
+                             () -> command)
+                      .onSuccess(_ -> confirmSucceededOutcome(blueprintId, attemptId, attempt))
+                      .onFailure(cause -> handleSucceededOutcomeWriteFailure(blueprintId, cause, command));
         }
 
         private void confirmSucceededOutcome(BlueprintId blueprintId, String attemptId, int attempt) {
@@ -3572,6 +4083,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         ///
         /// Without a committed `LeaderValue` to authorize a transaction the rollback is applied as a
         /// plain batch, unfenced, as it was before #972, and says so.
+        ///
+        /// #2592 — the applier's fence only checks that a transaction carries the committed `LeaderValue`,
+        /// not that its submitter is the leader it names. A committed `LeaderValue` naming another node, or
+        /// this node after its term was deactivated, therefore issues no rollback at all.
         private void submitRollback(InFlightBlueprint inflight,
                                     java.util.function.Supplier<List<KVCommand<AetherKey>>> commands,
                                     Runnable onLanded,
@@ -3623,10 +4138,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             log.warn("ALL_OR_NOTHING: no committed leader record to fence the rollback of blueprint {} with — applying it"
                     + " unfenced, so a publish of the same id racing it can be undone by it",
                      inflight.id().asString());
-            ctx.cluster()
-               .apply(batch)
-               .onSuccess(_ -> onLanded.run())
-               .onFailure(cause -> abandonRollback(inflight, cause, batch, onAbandoned));
+            termWriter.write(WriteSite.ROLLBACK_UNFENCED,
+                             () -> batch)
+                      .onSuccess(_ -> onLanded.run())
+                      .onFailure(cause -> rollbackRefused(inflight, cause, batch, onAbandoned));
 
             return Unit.unit();
         }
@@ -3649,10 +4164,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                                            .toList());
             var submitted = List.<KVCommand<AetherKey>> of(transaction);
 
-            ctx.cluster()
-               .apply(submitted)
-               .onSuccess(_ -> confirmRollback(inflight, rolledBack, commands, onLanded, onAbandoned, attempt))
-               .onFailure(cause -> abandonRollback(inflight, cause, submitted, onAbandoned));
+            termWriter.write(WriteSite.ROLLBACK_FENCED,
+                             () -> submitted)
+                      .onSuccess(_ -> confirmRollback(inflight, rolledBack, commands, onLanded, onAbandoned, attempt))
+                      .onFailure(cause -> rollbackRefused(inflight, cause, submitted, onAbandoned));
 
             return Unit.unit();
         }
@@ -3693,6 +4208,43 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             }
 
             submitRollback(inflight, commands, onLanded, onAbandoned, attempt + 1);
+        }
+
+        /// #2592, generalised by #2584: [TermWriter] issues no rollback unless the committed leader record names this
+        /// node and its term is live. A rollback site refused that way runs `onAbandoned`, not `onLanded` (nothing was
+        /// written, so the landed path's deallocations must not run), and schedules no failure reconcile: the term is
+        /// ending, and the next leader re-derives what is derivable.
+        private void rollbackRefused(InFlightBlueprint inflight,
+                                     Cause cause,
+                                     List<KVCommand<AetherKey>> submitted,
+                                     Runnable onAbandoned) {
+            switch (cause) {
+                case FsmWriteError.NotLeader notLeader when notLeader.site().notLeader() == NotLeaderAction.ABANDON_ROLLBACK -> rollbackNotIssued(inflight,
+                                                                                                                                                  notLeader,
+                                                                                                                                                  onAbandoned);
+                default -> abandonRollback(inflight, cause, submitted, onAbandoned);
+            }
+        }
+
+        /// Without a committed leader record the unfenced rollback can no longer be issued at all (#2584 P0): the
+        /// precondition needs a record naming this node. It is logged at WARN, and P2 removes the unfenced branch.
+        private void rollbackNotIssued(InFlightBlueprint inflight,
+                                       FsmWriteError.NotLeader notLeader,
+                                       Runnable onAbandoned) {
+            if (notLeader.site() == WriteSite.ROLLBACK_UNFENCED) {
+                log.warn("ALL_OR_NOTHING: rollback of blueprint {} not issued — there is no committed leader record naming"
+                        + " this node ({}) to issue it under",
+                         inflight.id().asString(),
+                         ctx.self());
+            } else {
+                log.info("ALL_OR_NOTHING: rollback of blueprint {} not issued — the committed leader record names {}, and"
+                        + " this node ({}) is not that leader or its term has ended",
+                         inflight.id().asString(),
+                         notLeader.committedLeader().map(NodeId::id).or("no node"),
+                         ctx.self());
+            }
+
+            onAbandoned.run();
         }
 
         private void abandonRollback(InFlightBlueprint inflight,
