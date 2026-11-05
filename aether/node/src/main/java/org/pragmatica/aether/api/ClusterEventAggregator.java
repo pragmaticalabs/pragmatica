@@ -148,10 +148,12 @@ public final class ClusterEventAggregator {
     /// Default owner-check used by the legacy factory overloads (tests / call sites that don't gate):
     /// always-owner, preserving prior unconditional-emit behaviour for those callers.
     private static final BooleanSupplier ALWAYS_OWNER = () -> true;
-
     /// Default replay-check for the legacy factories: never replaying, so emit is never suppressed on
     /// this account — preserves the prior unconditional-emit behaviour for test / non-gated callers.
     private static final BooleanSupplier NEVER_REPLAYING = () -> false;
+
+    /// The completion of a warning nobody awaits (every entry except [#raiseAwaited]).
+    private static final Runnable NO_SETTLE = () -> {};
 
     /// Default leader-check used by the legacy factory overloads (tests / call sites that don't gate
     /// on leadership): always-leader, preserving prior unconditional-emit behaviour through
@@ -229,8 +231,10 @@ public final class ClusterEventAggregator {
     /// Warnings with a recovery that are admitted but not yet in the log, each holding the recovery that arrived meanwhile.
     /// Recoveries raised during snapshot/resync replay, by the key of the warning they close, released after it (#752).
     private final ConcurrentHashMap<String, ClusterEvent> replayHeldRecoveries = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Option<HeldRecovery>> awaitingDelivery = new ConcurrentHashMap<>();
 
-    private final ConcurrentHashMap<String, Option<ClusterEvent>> awaitingDelivery = new ConcurrentHashMap<>();
+    /// A recovery held until the warning it closes lands, with the completion of whoever awaits it (#2034).
+    private record HeldRecovery(ClusterEvent event, Runnable settle) {}
 
     /// Per-task window for the scheduled-task outcome events (#1723): the same 60 s mechanism, its own key space
     /// (`task@node`), so one flapping task cannot starve another and neither starves the operator warnings.
@@ -1019,17 +1023,48 @@ public final class ClusterEventAggregator {
         onOperatorWarning(handedOff.warning(), handedOff::replayed);
     }
 
+    /// Raise `warning` from a thread that must know when its event's life ended (#2034: a draining node waits for its departure
+    /// events before it halts). The returned promise completes when the event lands, when redelivery gives up on it, or at once
+    /// when it is throttled, suppressed by replay, dropped by the open cap, refused (a recovery with no open warning), or when raising
+    /// it threw. A recovery held behind its warning completes once it is released and delivered (or dropped with the warning). It
+    /// never fails. Reads the replay bit on the calling thread, so the caller must not be a KV handler of a replay burst it wants
+    /// to count as live (the departure push thread is not one). The caller bounds the wait.
+    public Promise<Unit> raiseAwaited(OperatorWarning warning) {
+        Promise<Unit> settled = Promise.promise();
+        var settle = settleOnce(settled);
+
+        Result.lift(Causes::fromThrowable, () -> onOperatorWarning(warning, replayingCheck, settle)).onFailure(cause -> settleAfterThrow(warning.code()
+                                                                                                                                                .code(),
+                                                                                                                                         cause,
+                                                                                                                                         settle));
+
+        return settled;
+    }
+
+    private static Runnable settleOnce(Promise<Unit> settled) {
+        return () -> settled.succeed(Unit.unit());
+    }
+
+    private static void settleAfterThrow(String what, Cause cause, Runnable settle) {
+        LOG.warn("ClusterEventAggregator: raising {} failed: {}", what, cause.message());
+        settle.run();
+    }
+
     /// `replayed` is read only where the warning would be emitted, as `replayingCheck` always was.
     private void onOperatorWarning(OperatorWarning warning, BooleanSupplier replayed) {
+        onOperatorWarning(warning, replayed, NO_SETTLE);
+    }
+
+    private void onOperatorWarning(OperatorWarning warning, BooleanSupplier replayed, Runnable settle) {
         var key = throttleKey(warning.code(), warning.subject());
 
         warning.code()
                .recoveryOf()
-               .onPresent(closes -> onRecovery(warning, closes, replayed))
-               .onEmpty(() -> onCondition(warning, key, replayed));
+               .onPresent(closes -> onRecovery(warning, closes, replayed, settle))
+               .onEmpty(() -> onCondition(warning, key, replayed, settle));
     }
 
-    private void onCondition(OperatorWarning warning, String key, BooleanSupplier replayed) {
+    private void onCondition(OperatorWarning warning, String key, BooleanSupplier replayed, Runnable settle) {
         var spoofable = SPOOFABLE_SUBJECT_CODES.contains(warning.code());
 
         if (spoofable) {
@@ -1042,6 +1077,7 @@ public final class ClusterEventAggregator {
                       warning.code().code(),
                       warning.subject(),
                       MAX_OPEN_RECOVERABLE_PER_CODE);
+            settle.run();
 
             return;
         }
@@ -1053,6 +1089,7 @@ public final class ClusterEventAggregator {
             LOG.debug("ClusterEventAggregator: suppressing throttled OperatorWarning {} for {}",
                       warning.code().code(),
                       warning.subject());
+            settle.run();
 
             return;
         }
@@ -1063,6 +1100,7 @@ public final class ClusterEventAggregator {
         if (replayed.getAsBoolean()) {
             LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing local emit of {}", event);
             shortenWindow(key, window);
+            settle.run();
 
             return;
         }
@@ -1070,9 +1108,9 @@ public final class ClusterEventAggregator {
         // than lost. The window is shortened only if redelivery finally gives up on it: a failure it retries past is
         // not a gap, and shortening on it would admit a second event while the first is still being delivered.
         if (warning.code().hasRecovery()) {
-            deliverRecoverable(event, key, window);
+            deliverRecoverable(event, key, window, settle);
         } else {
-            redelivery.deliver(stampedOrAsIs(event), () -> shortenWindow(key, window));
+            redelivery.deliver(stampedOrAsIs(event), _ -> shortenWindowThenSettle(key, window, settle), settle);
         }
 
         if (spoofable) {
@@ -1106,7 +1144,10 @@ public final class ClusterEventAggregator {
 
                 iterator.remove();
                 openRecoverable.remove(mark.getKey());
-                awaitingDelivery.remove(mark.getKey());
+                Option.option(awaitingDelivery.remove(mark.getKey()))
+                      .flatMap(held -> held)
+                      .onPresent(held -> held.settle()
+                                             .run());
             }
         }
     }
@@ -1114,9 +1155,29 @@ public final class ClusterEventAggregator {
     /// #752: a warning that has a recovery is "shown" only once it is in the log. Until then a recovery that arrives is
     /// held in `awaitingDelivery` and released when the warning lands, or dropped with it if redelivery gives up, so a
     /// recovery never reaches the log without the warning it closes.
-    private void deliverRecoverable(ClusterEvent event, String key, ThrottleWindow window) {
+    private void deliverRecoverable(ClusterEvent event, String key, ThrottleWindow window, Runnable settle) {
         awaitingDelivery.put(key, Option.none());
-        redelivery.deliver(stampedOrAsIs(event), outcome -> warningLost(key, window, outcome), () -> warningLanded(key));
+        redelivery.deliver(stampedOrAsIs(event),
+                           outcome -> warningLostThenSettle(key, window, outcome, settle),
+                           () -> warningLandedThenSettle(key, settle));
+    }
+
+    private void shortenWindowThenSettle(String key, ThrottleWindow window, Runnable settle) {
+        shortenWindow(key, window);
+        settle.run();
+    }
+
+    private void warningLostThenSettle(String key,
+                                       ThrottleWindow window,
+                                       ClusterEventRedelivery.GiveUpOutcome outcome,
+                                       Runnable settle) {
+        warningLost(key, window, outcome);
+        settle.run();
+    }
+
+    private void warningLandedThenSettle(String key, Runnable settle) {
+        warningLanded(key);
+        settle.run();
     }
 
     /// A warning redelivery gave up on. If an attempt's outcome was unknown it may be in the log, so it is treated as
@@ -1129,10 +1190,14 @@ public final class ClusterEventAggregator {
         if (outcome == ClusterEventRedelivery.GiveUpOutcome.POSSIBLY_DELIVERED) {
             warningLanded(key);
         } else {
-            Option.option(awaitingDelivery.remove(key))
-                  .flatMap(held -> held)
-                  .filter(_ -> openRecoverable.contains(key))
-                  .onPresent(recovery -> releaseHeldRecovery(key, recovery));
+            var held = Option.option(awaitingDelivery.remove(key)).flatMap(recovery -> recovery);
+
+            if (openRecoverable.contains(key)) {
+                held.onPresent(recovery -> releaseHeldRecovery(key, recovery));
+            } else {
+                held.onPresent(recovery -> recovery.settle()
+                                                   .run());
+            }
         }
 
         shortenWindow(key, window);
@@ -1146,19 +1211,26 @@ public final class ClusterEventAggregator {
               .onPresent(recovery -> releaseHeldRecovery(key, recovery));
     }
 
-    private void releaseHeldRecovery(String key, ClusterEvent recovery) {
+    private void releaseHeldRecovery(String key, HeldRecovery recovery) {
         openRecoverable.remove(key);
-        redelivery.deliver(stampedOrAsIs(recovery));
+        redelivery.deliver(stampedOrAsIs(recovery.event()),
+                           _ -> recovery.settle()
+                                        .run(),
+                           recovery.settle());
     }
 
     /// A recovery is published iff the warning it closes was published for the same subject and is still open, and it
     /// closes it. It has no window of its own: one published warning allows one recovery. Publishing it also ends the
     /// warning's throttle window, so a condition that recurs right after its recovery is shown again rather than
     /// throttled behind a "repaired" that is no longer true (#752).
-    private void onRecovery(OperatorWarning warning, OperatorWarningCode closes, BooleanSupplier replayed) {
+    private void onRecovery(OperatorWarning warning,
+                            OperatorWarningCode closes,
+                            BooleanSupplier replayed,
+                            Runnable settle) {
         var closedKey = throttleKey(closes, warning.subject());
         var event = warningEvent(warning, 0);
-        var held = Option.option(awaitingDelivery.computeIfPresent(closedKey, (_, _) -> Option.some(event)));
+        var held = Option.option(awaitingDelivery.computeIfPresent(closedKey,
+                                                                   (_, _) -> Option.some(new HeldRecovery(event, settle))));
 
         if (held.isPresent()) {
             operatorWarningThrottle.remove(closedKey);
@@ -1176,6 +1248,7 @@ public final class ClusterEventAggregator {
 
         if (replayed.getAsBoolean()) {
             holdDuringReplay(closedKey, event);
+            settle.run();
 
             return;
         }
@@ -1185,11 +1258,12 @@ public final class ClusterEventAggregator {
             LOG.debug("ClusterEventAggregator: refusing OperatorWarning {} for {}, no published warning is open",
                       warning.code().code(),
                       warning.subject());
+            settle.run();
 
             return;
         }
 
-        publishRecovery(closedKey, event);
+        publishRecovery(closedKey, event, settle);
     }
 
     /// A shown warning must get its recovery, but replay suppresses local emits. So during replay the recovery is held
@@ -1212,13 +1286,13 @@ public final class ClusterEventAggregator {
     private void releaseReplayHeld(String closedKey) {
         Option.option(replayHeldRecoveries.remove(closedKey))
               .filter(_ -> openRecoverable.remove(closedKey))
-              .onPresent(recovery -> publishRecovery(closedKey, recovery));
+              .onPresent(recovery -> publishRecovery(closedKey, recovery, NO_SETTLE));
     }
 
-    private void publishRecovery(String closedKey, ClusterEvent event) {
+    private void publishRecovery(String closedKey, ClusterEvent event, Runnable settle) {
         operatorWarningThrottle.remove(closedKey);
         lastRaisedOperatorWarning = Option.some(event);
-        redelivery.deliver(stampedOrAsIs(event));
+        redelivery.deliver(stampedOrAsIs(event), _ -> settle.run(), settle);
     }
 
     private ClusterEvent.OperatorWarning warningEvent(OperatorWarning warning, long suppressedSince) {
@@ -1725,6 +1799,70 @@ public final class ClusterEventAggregator {
                                              + ": " + keysAtRisk
                                              + " chunk(s) at risk",
                                               buildDepartureDetails(departingNode, keysAtRisk, sampleKeys)));
+    }
+
+    /// The #2034 departure report: as [#onDeparturePushIncomplete], with the sole-copy share and the drain outcome. When
+    /// `soleCopyAtRisk > 0` the summary says the drain "completed with data at risk". The returned promise completes when the event
+    /// lands, when redelivery gives up on it, at once when replay suppresses it, or when publishing threw; it never fails. The caller
+    /// bounds the wait.
+    public Promise<Unit> onDeparturePushIncompleteAwaited(NodeId departingNode,
+                                                          int keysAtRisk,
+                                                          int soleCopyAtRisk,
+                                                          List<String> sampleKeys) {
+        Promise<Unit> settled = Promise.promise();
+        var settle = settleOnce(settled);
+        var event = new DeparturePushIncomplete(hlcClock.now(),
+                                                Severity.WARNING,
+                                                departureSummary(departingNode, keysAtRisk, soleCopyAtRisk),
+                                                departureDetails(departingNode, keysAtRisk, soleCopyAtRisk, sampleKeys));
+
+        emitLocalAwaited(event, replayingCheck, settle);
+
+        return settled;
+    }
+
+    private static String departureSummary(NodeId departingNode, int keysAtRisk, int soleCopyAtRisk) {
+        return soleCopyAtRisk > 0
+               ? "Drain of " + departingNode.id()
+                + " completed with data at risk: " + soleCopyAtRisk
+                + " sole-copy chunk(s) unconfirmed (" + keysAtRisk
+                + " chunk(s) at risk in total)"
+               : "Departure push incomplete on " + departingNode.id() + ": " + keysAtRisk + " chunk(s) at risk";
+    }
+
+    private static Map<String, String> departureDetails(NodeId departingNode,
+                                                        int keysAtRisk,
+                                                        int soleCopyAtRisk,
+                                                        List<String> sampleKeys) {
+        return Map.of("nodeId",
+                      departingNode.id(),
+                      "keysAtRisk",
+                      String.valueOf(keysAtRisk),
+                      "sampleKeys",
+                      String.join(",", sampleKeys),
+                      "soleCopyAtRisk",
+                      String.valueOf(soleCopyAtRisk),
+                      "outcome",
+                      soleCopyAtRisk > 0
+                      ? "COMPLETED_WITH_DATA_AT_RISK"
+                      : "COMPLETED");
+    }
+
+    /// [#emitLocal] for an awaited event (#2034): replay suppression settles at once, a synchronous throw is isolated and settles,
+    /// otherwise the event settles when it lands or redelivery gives up on it.
+    private void emitLocalAwaited(ClusterEvent event, BooleanSupplier replayed, Runnable settle) {
+        if (replayed.getAsBoolean()) {
+            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing local emit of {}", event);
+            settle.run();
+
+            return;
+        }
+
+        Result.lift(Causes::fromThrowable,
+                    () -> redelivery.deliver(stampedOrAsIs(event),
+                                             _ -> settle.run(),
+                                             settle))
+              .onFailure(cause -> settleAfterThrow("DeparturePushIncomplete", cause, settle));
     }
 
     private static Map<String, String> buildDepartureDetails(NodeId departingNode,

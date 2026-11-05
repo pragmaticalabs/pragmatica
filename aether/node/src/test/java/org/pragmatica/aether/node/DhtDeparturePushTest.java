@@ -11,6 +11,7 @@ import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.IntStream;
 
+import org.pragmatica.aether.deployment.membership.ntt.DrainWindow;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.consensus.NodeId;
@@ -69,7 +70,14 @@ class DhtDeparturePushTest {
         collector.setPingAuthority(LEADER::equals, LEADER::equals);
         collector.onClusterSyncPing(drainPing(Set.of(SELF, CO_DRAINER)));
 
-        DhtDeparturePush.dhtDeparturePush(rebalancer, collector, DeparturePushObserver::noop).get();
+        // #2034: the push resends an unacked page until its window ends, so it is awaited and the targets are read as a set. The
+        // default tuning keeps the last 2 s for event delivery, so 3 s leaves 1 s of sending.
+        var window = DrainWindow.drainWindow(System.nanoTime() + TimeSpan.timeSpan(3).seconds().nanos(),
+                                             System.currentTimeMillis(),
+                                             () -> false);
+        DhtDeparturePush.dhtDeparturePush(rebalancer, collector, SELF, () -> _ -> DeparturePushObserver.noop())
+                        .apply(window)
+                        .await();
 
         var vacatedSlots = ring.nodesFor(key, 3, id -> !id.equals(SELF) && !id.equals(CO_DRAINER))
                                .stream()
@@ -77,7 +85,8 @@ class DhtDeparturePushTest {
                                .toList();
 
         assertThat(vacatedSlots).as("control: both drainers held the key, so two slots open").hasSize(2);
-        assertThat(pushedTo).as("the push reached every node that newly owns the key").containsExactlyInAnyOrderElementsOf(vacatedSlots);
+        assertThat(pushedTo.stream().distinct().toList()).as("the push reached every node that newly owns the key")
+                                                     .containsExactlyInAnyOrderElementsOf(vacatedSlots);
     }
 
     /// #1818 round 3, the receiving side: a departure push is accepted from a node the leader's drain ping
