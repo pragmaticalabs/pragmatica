@@ -49,8 +49,8 @@ class IsrWriterMonitorFixedPointTest {
     @Test
     void leaderShrinkAndOwnerExpand_reachAFixedPoint_underAnAsymmetricViewOfOneReplica() {
         List.of(OWNER, B, X).forEach(node -> registry.registerReplica(STREAM, 0, node));
-        registry.updateWatermark(STREAM, 0, B, 10L);
-        registry.updateWatermark(STREAM, 0, X, 10L);
+        confirm(B);
+        confirm(X);
 
         var commits = rounds(5);
 
@@ -64,8 +64,8 @@ class IsrWriterMonitorFixedPointTest {
     @Test
     void memberListedLiveAgain_isUnfencedOnce_expandedOnce_thenTheRecordIsSettled() {
         List.of(OWNER, B, X).forEach(node -> registry.registerReplica(STREAM, 0, node));
-        registry.updateWatermark(STREAM, 0, B, 10L);
-        registry.updateWatermark(STREAM, 0, X, 10L);
+        confirm(B);
+        confirm(X);
         rounds(2);
         leaderLive.set(List.of(OWNER, B, X));
 
@@ -75,6 +75,11 @@ class IsrWriterMonitorFixedPointTest {
                            .isEqualTo(2);
         assertThat(record.isr()).containsExactly(OWNER, B, X);
         assertThat(record.fenced()).isEmpty();
+    }
+
+    /// A row confirmed through 10 under the records' owner epoch, as the owner's live ack path writes it (#2694).
+    private void confirm(NodeId replica) {
+        registry.updateWatermark(STREAM, 0, replica, 10L, ReplicationState.CAUGHT_UP, GENERATION.withCounter(1L));
     }
 
     private int rounds(int count) {
