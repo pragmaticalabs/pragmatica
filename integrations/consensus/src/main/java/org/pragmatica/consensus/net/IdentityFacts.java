@@ -23,6 +23,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.pragmatica.consensus.NodeId;
@@ -47,7 +48,7 @@ public record IdentityFacts(Map<NodeId, String> terminated) {
     private static final String HEADER = "aether-identity-ledger-v1";
     private static final String DIGEST_PREFIX = "D\t";
     private static final IdentityFacts EMPTY = new IdentityFacts(Map.of());
-    private static final Cause MALFORMED = Causes.cause("Identity ledger content is malformed");
+    static final Cause MALFORMED = Causes.cause("Identity ledger content is malformed");
 
     public IdentityFacts {
         terminated = Map.copyOf(terminated);
@@ -59,6 +60,23 @@ public record IdentityFacts(Map<NodeId, String> terminated) {
 
     public static IdentityFacts terminated(NodeId node, String cause) {
         return new IdentityFacts(Map.of(node, cause));
+    }
+
+    /// The set as it travels in a Hello: node id text to cause.
+    public Map<String, String> toWire() {
+        return terminated.entrySet()
+                         .stream()
+                         .collect(Collectors.toUnmodifiableMap(entry -> entry.getKey()
+                                                                             .id(),
+                                                               Map.Entry::getValue));
+    }
+
+    /// The set a Hello carried; the inverse of [#toWire].
+    public static IdentityFacts fromWire(Map<String, String> wire) {
+        return new IdentityFacts(wire.entrySet()
+                                     .stream()
+                                     .collect(Collectors.toUnmodifiableMap(entry -> new NodeId(entry.getKey()),
+                                                                           Map.Entry::getValue)));
     }
 
     public boolean isEmpty() {
@@ -160,7 +178,7 @@ public record IdentityFacts(Map<NodeId, String> terminated) {
         return URLDecoder.decode(text, StandardCharsets.UTF_8);
     }
 
-    private static String digestOf(String body) {
+    static String digestOf(String body) {
         return Result.lift(Causes::fromThrowable,
                            () -> MessageDigest.getInstance("SHA-256").digest(body.getBytes(StandardCharsets.UTF_8)))
                      .map(IdentityFacts::hex)

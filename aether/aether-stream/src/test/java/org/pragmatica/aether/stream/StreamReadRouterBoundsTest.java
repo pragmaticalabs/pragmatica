@@ -4,8 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import org.pragmatica.aether.stream.forward.AcceptingStreamForwardTransport;
 import java.util.concurrent.atomic.AtomicInteger;
-
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
@@ -57,12 +57,12 @@ class StreamReadRouterBoundsTest {
         // The transport is the wire: a ReadForward from the assignee lands on the owner's handler, whose
         // response lands on the assignee's client. Nothing else is between them.
         var clientRef = new StreamForwardClient[1];
-        StreamForwardTransport ownerToAssignee = (_, message) -> clientRef[0].onReadForwardResponse((ReadForwardResponse) message);
+        StreamForwardTransport ownerToAssignee = AcceptingStreamForwardTransport.accepting((_, message) -> clientRef[0].onReadForwardResponse((ReadForwardResponse) message));
         var ownerHandler = StreamForwardHandler.streamForwardHandler(OWNER, ownerPartitions, ownerToAssignee);
-        StreamForwardTransport assigneeToOwner = (_, message) -> {
+        StreamForwardTransport assigneeToOwner = AcceptingStreamForwardTransport.accepting((_, message) -> {
             forwardedReads.incrementAndGet();
             ownerHandler.onReadForward((ReadForward) message);
-        };
+        });
 
         clientRef[0] = StreamForwardClient.streamForwardClient(ASSIGNEE,
                                                                assigneeToOwner,

@@ -87,6 +87,7 @@ class OptionBindingSupportGateTest {
                                                                "org.pragmatica.aether.resource.notification.RetryConfig",
                                                                "org.pragmatica.aether.slice.JsonCodecSelection",
                                                                "org.pragmatica.aether.slice.PgNotificationConfig",
+                                                               "org.pragmatica.aether.slice.RetentionDimensions",
                                                                "org.pragmatica.aether.slice.RetentionPolicy",
                                                                "org.pragmatica.aether.slice.StreamConfig",
                                                                "org.pragmatica.aether.slice.TierAwareRetention",

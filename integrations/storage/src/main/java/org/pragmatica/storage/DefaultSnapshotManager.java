@@ -859,6 +859,7 @@ final class DefaultSnapshotManager implements SnapshotManager {
         // 0 (unorphaned) for a live one -- rather than duplicating it here.
         if (parts.length > 6) {
             var orphanedAt = Long.parseLong(parts[6]);
+            var flags = lineFlags(parts);
 
             return BlockLifecycle.blockLifecycle(id,
                                                  tiers,
@@ -867,17 +868,36 @@ final class DefaultSnapshotManager implements SnapshotManager {
                                                  created,
                                                  accessCount,
                                                  orphanedAt,
-                                                 hasCacheOnlyFlag(parts));
+                                                 flags.contains(MetadataSnapshot.LineFlag.CACHE_ONLY),
+                                                 sharedDeleteOf(flags));
         }
 
         return BlockLifecycle.blockLifecycle(id, tiers, refCount, lastAccessed, created, accessCount);
     }
 
-    /// The optional 8th field. Absent for every line an earlier encoder wrote; present means the record is a
-    /// cache-only marker. An unknown flag fails the line (and with it the snapshot) rather than being
-    /// dropped: a flag this code cannot read could be one whose absence changes what the record means.
-    private static boolean hasCacheOnlyFlag(String[] parts) {
-        return parts.length > 7 && MetadataSnapshot.LineFlag.valueOf(parts[7]) == MetadataSnapshot.LineFlag.CACHE_ONLY;
+    /// The optional 8th field, a `,`-joined set of flags. Absent for every line an earlier encoder wrote. An unknown flag
+    /// fails the line (and with it the snapshot) rather than being dropped: a flag this code cannot read could be one whose
+    /// absence changes what the record means.
+    private static java.util.EnumSet<MetadataSnapshot.LineFlag> lineFlags(String[] parts) {
+        var flags = java.util.EnumSet.noneOf(MetadataSnapshot.LineFlag.class);
+
+        if (parts.length > 7) {
+            for (var flag : parts[7].split(",")) {
+                flags.add(MetadataSnapshot.LineFlag.valueOf(flag));
+            }
+        }
+
+        return flags;
+    }
+
+    private static SharedDelete sharedDeleteOf(java.util.Set<MetadataSnapshot.LineFlag> flags) {
+        if (flags.contains(MetadataSnapshot.LineFlag.SHARED_DELETE_AUTHORISED)) {
+            return SharedDelete.AUTHORISED;
+        }
+
+        return flags.contains(MetadataSnapshot.LineFlag.SHARED_DELETE_IF_IDENTIFIED)
+               ? SharedDelete.IF_IDENTIFIED
+               : SharedDelete.NONE;
     }
 
     private static Set<TierLevel> parseTierSet(String tierString) {

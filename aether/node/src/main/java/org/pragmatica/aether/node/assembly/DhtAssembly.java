@@ -76,23 +76,15 @@ public sealed interface DhtAssembly {
         var clusterNode = in.clusterNode();
         var dhtNode = in.dhtNode();
         var membershipFsmRef = in.membershipFsmRef();
-        // Concrete adapter (not a lambda) so we can override `sendOutcome` and forward
-        // it to the QUIC transport's tracked-write API. The default DHTNetwork impl
-        // just calls `send` and reports Sent — but the DHT quorum collectors need the
-        // real synchronous refusal signal to fail-fast against unreachable replicas
-        // (see aether/docs/specs/dht-resilience-spec.md Layer 1/3).
+        // Concrete adapter (not a lambda) so it can also override `livePeers`. `send` returns the QUIC
+        // transport's own outcome: the DHT quorum collectors need the real synchronous refusal signal to
+        // fail-fast against unreachable replicas (see aether/docs/specs/dht-resilience-spec.md Layer 1/3).
         DHTNetwork dhtNetwork = new DHTNetwork() {
-            @Contract
             @Override
-            public void send(NodeId target, org.pragmatica.consensus.ProtocolMessage msg) {
-                var _ = clusterNode.network().send(target, msg);
-            }
-
-            @Override
-            public Promise<org.pragmatica.consensus.net.WriteOutcome> sendOutcome(NodeId target,
-                                                                                  org.pragmatica.consensus.ProtocolMessage msg) {
+            public Promise<org.pragmatica.consensus.net.WriteOutcome> send(NodeId target,
+                                                                           org.pragmatica.consensus.ProtocolMessage msg) {
                 return clusterNode.network()
-                                  .sendOutcome(target, msg);
+                                  .send(target, msg);
             }
 
             @Override
@@ -238,7 +230,10 @@ public sealed interface DhtAssembly {
                                                                                                                                                member),
                                                                                                                   delegateRouter::route,
                                                                                                                   System::currentTimeMillis,
-                                                                                                                  () -> !clusterNode.isPendingCatchUp()
+                                                                                                                  () -> !clusterNode.isPendingCatchUp(),
+
+        // #2553: a worker reads its own report from its replica only while the replica is ready
+        clusterNode::isPassiveClientReady
                                                                                                                   // v1882 r5: a replica accepts writes only once consensus has applied its log tail
                                                                                                                  ));
 

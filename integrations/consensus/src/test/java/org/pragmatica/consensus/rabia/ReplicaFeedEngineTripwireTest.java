@@ -12,7 +12,6 @@ import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
 
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.StateMachine;
@@ -32,10 +31,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
 
 /// Engine-side tripwires TW-O3, TW-O4 and the engine half of TW-O8 of the worker-replica-feed design (W-OBS).
-/// Each is an ENABLED test of today's behaviour, with the real assertion of the target design `@Disabled` beside it.
 ///
-/// - TW-O3: `authorizePassiveClient()` sets the passive-client flag once and nothing clears it, so a worker that
-///   loses its feed stays "ready" (W4 replaces the setter with `setPassiveClientReady(boolean)`).
+/// - TW-O3 (flipped by W4, the cutover): the passive-client flag is set AND cleared by `setPassiveClientReady(boolean)`, driven from the one
+///   readiness computation, so a worker that loses its feed stops reporting ready. The latch `authorizePassiveClient()` (set once, never
+///   cleared) is deleted.
 /// - TW-O4: a passive engine fed a `Decision` or a quorum notification applies nothing and stays out of every
 ///   serving state. The replica feed applies outside the engine (W3), so this must remain true; it fails if the
 ///   apply path is ever routed through the engine on a worker. There is no real-assertion twin: the design
@@ -143,33 +142,55 @@ class ReplicaFeedEngineTripwireTest {
         return new Decision<>(CORE_2, Phase.phase(phase), StateValue.V0, Batch.emptyBatch());
     }
 
+    /// TW-O3. The only setter: it sets and it clears (a quorum-lost notification and a decision change nothing). Mutation: `passiveClientReady =
+    /// ready` without `passiveClient &&` (a non-passive engine reports ready), or never clear.
     @Test
-    void authorizePassiveClient_setsTheFlagOnce_andNothingClearsIt() {
+    void setPassiveClientReady_setsAndClears_andWritesNoEngineState() {
+        var passive = passiveEngine(new TestStateMachine());
+        var coreEngine = engine(CORE_1, new TestStateMachine(), false);
+
+        passive.setPassiveClientReady(true);
+        assertThat(passive.isPassiveClientReady()).isTrue();
+        passive.setPassiveClientReady(false);
+        assertThat(passive.isPassiveClientReady()).as("unlike the latch, the seam clears").isFalse();
+        coreEngine.setPassiveClientReady(true);
+        assertThat(coreEngine.isPassiveClientReady()).as("ignored on an engine that is not a passive client").isFalse();
+        assertThat(passive.isActive() || passive.isPaused() || passive.isObserving()).as("no engine state moved").isFalse();
+        assertThat(passive.currentPhaseForTesting()).isEqualTo(Phase.ZERO);
+    }
+
+    /// Mutation: fire the listeners on an engine that is not a passive client; or never fire them.
+    @Test
+    void completePassiveRestore_firesThePostRestoreListeners_onlyOnAPassiveClient() {
+        var passive = passiveEngine(new TestStateMachine());
+        var coreEngine = engine(CORE_1, new TestStateMachine(), false);
+        var passiveFired = new AtomicInteger();
+        var coreFired = new AtomicInteger();
+
+        passive.onStateRestored(passiveFired::incrementAndGet);
+        coreEngine.onStateRestored(coreFired::incrementAndGet);
+        passive.completePassiveRestore();
+        passive.completePassiveRestore();
+        coreEngine.completePassiveRestore();
+
+        assertThat(passiveFired.get()).as("one run per install").isEqualTo(2);
+        assertThat(coreFired.get()).isZero();
+        assertThat(passive.isActive() || passive.isPaused() || passive.isObserving()).as("no engine state moved").isFalse();
+    }
+
+    /// TW-O3. The latch is gone: the setter is the only way to make a passive engine report ready. Mutation: restore `authorizePassiveClient`.
+    @Test
+    void isPassiveClientReady_isFalse_whenReadinessFails_andTheLatchIsGone() {
         var passive = passiveEngine(new TestStateMachine());
 
-        assertThat(passive.isPassiveClientReady()).as("before authorization").isFalse();
-        passive.authorizePassiveClient();
-        assertThat(passive.isPassiveClientReady()).as("after authorization").isTrue();
-
+        assertThat(methodOrNull(RabiaEngine.class, "authorizePassiveClient")).as("W4 deleted the latch").isNull();
+        passive.setPassiveClientReady(true);
         passive.clusterState(ClusterStateNotification.passive());
         passive.settleForTesting().await();
         passive.processDecision(empty(0));
         passive.settleForTesting().await();
-
-        assertThat(passive.isPassiveClientReady()).as("TW-O3: a quorum-lost notification and a decision change nothing, the flag is a latch").isTrue();
-        assertThat(clearingSetter()).as("TW-O3: no public method of the engine can clear the flag today; W4 adds setPassiveClientReady(boolean) and deletes authorizePassiveClient").isNull();
-    }
-
-    @Disabled("W4 (cutover): enable when RabiaEngine.setPassiveClientReady(boolean) replaces authorizePassiveClient and readiness is computed by ReplicaReadiness")
-    @Test
-    void isPassiveClientReady_isFalse_whenReadinessFails() {
-        var passive = passiveEngine(new TestStateMachine());
-        var setter = clearingSetter();
-
-        assertThat(setter).as("W4 adds RabiaEngine.setPassiveClientReady(boolean); readiness is set and cleared from one computation").isNotNull();
-        invoke(setter, passive, true);
-        assertThat(passive.isPassiveClientReady()).isTrue();
-        invoke(setter, passive, false);
+        assertThat(passive.isPassiveClientReady()).as("a quorum-lost notification and a decision change nothing").isTrue();
+        passive.setPassiveClientReady(false);
         assertThat(passive.isPassiveClientReady()).as("readiness failed, so the engine reports the worker as not ready").isFalse();
     }
 
@@ -354,23 +375,11 @@ class ReplicaFeedEngineTripwireTest {
         assertThat(machine.phaseFrontiers).as("the observer's completed slot 0 is reported as frontier 1").contains(1L);
     }
 
-    private static Method clearingSetter() {
-        return methodOrNull(RabiaEngine.class, "setPassiveClientReady", boolean.class);
-    }
-
     private static Method methodOrNull(Class<?> type, String name, Class<?>... parameters) {
         try {
             return type.getMethod(name, parameters);
         } catch (NoSuchMethodException _) {
             return null;
-        }
-    }
-
-    private static void invoke(Method method, Object target, Object... arguments) {
-        try {
-            method.invoke(target, arguments);
-        } catch (ReflectiveOperationException e) {
-            throw new AssertionError(e);
         }
     }
 

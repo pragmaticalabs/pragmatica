@@ -9,7 +9,6 @@ import java.util.function.Supplier;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.metrics.NodeReportedState;
@@ -21,13 +20,11 @@ import org.pragmatica.lang.io.TimeSpan;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 
-/// TW-O9 and TW-O12 of the worker-replica-feed design (W-OBS) on real nodes: 3 cores and one worker that has installed its metadata
-/// projection. Each is an ENABLED test of today's behaviour with the real assertion of the target design `@Disabled` beside it.
+/// TW-O9 and TW-O12 of the worker-replica-feed design (W-OBS), flipped by the W4 cutover, on real nodes: 3 cores and one worker.
 ///
-/// - TW-O12: the cluster incarnation a worker's OWN store reports is 0 (a worker holds no committed state), although the
-///   projection it installed carries incarnation 1. The design gives a worker the full replica, so after W3/W4 the two agree.
-/// - TW-O9 (positive control, the negative half is `ReplicaReadinessWiringTripwireTest`): a worker whose projection IS fresh reports `READY`,
-///   so the readiness computation can reach `READY` on a worker and the unit-level SYNCING is the missing projection.
+/// - TW-O12: the cluster incarnation a worker's OWN store reports equals the cores' (a worker holds the full replica). Before the cutover it
+///   was 0. Mutation: leave the worker without a replica client (`ReplicaClientAssembly.replicaClient` returns empty) and the store stays at 0.
+/// - TW-O9: a worker reports `READY` iff `ReplicaReadiness.ready()`. Before the cutover it needed a fresh metadata projection.
 @PortBudget
 class EmberReplicaTripwireTest {
     private static final int CORES = 3;
@@ -66,37 +63,28 @@ class EmberReplicaTripwireTest {
         assertThat(added.isSuccess()).as("the worker process starts").isTrue();
         var worker = cluster.getNode(added.unwrap().id()).unwrap();
 
-        awaitCondition("the worker installs a metadata projection of incarnation 1",
-                       () -> worker.metadataResourceMetrics().getOrDefault("clientInstalledIncarnation", 0L) == GENESIS_INCARNATION);
+        awaitCondition("the worker's store holds the cluster incarnation",
+                       () -> ClusterIncarnation.current(worker.kvStore()) == GENESIS_INCARNATION);
 
         return worker;
     }
 
     @Test
     @Timeout(420)
-    void workerStore_reportsIncarnationZero_whileTheCoresReportOne_today() {
-        var worker = startedWorker();
-
-        assertThat(ClusterIncarnation.current(leader().kvStore())).as("control: the cores hold incarnation 1").isEqualTo(GENESIS_INCARNATION);
-        assertThat(ClusterIncarnation.current(worker.kvStore())).as("TW-O12: the worker's own store reports 0 although its installed projection is incarnation 1").isZero();
-    }
-
-    @Disabled("W3/W4 (replica): enable when a worker holds the full KV replica; its store then reports the cores' incarnation")
-    @Test
-    @Timeout(420)
     void workerStore_reportsTheCoresIncarnation() {
         var worker = startedWorker();
 
-        awaitCondition("the worker's store catches up to the cluster incarnation",
+        assertThat(ClusterIncarnation.current(leader().kvStore())).as("control: the cores hold incarnation 1").isEqualTo(GENESIS_INCARNATION);
+        awaitCondition("TW-O12: the worker's own store reports the cores' incarnation",
                        () -> ClusterIncarnation.current(worker.kvStore()) == ClusterIncarnation.current(leader().kvStore()));
     }
 
     @Test
     @Timeout(420)
-    void workerWithAFreshProjection_reportsReady_today() {
+    void workerWithAReadyReplica_reportsReady() {
         var worker = startedWorker();
 
-        awaitCondition("TW-O9 control: a worker with a fresh projection reports READY", () -> reportedState(worker) == NodeReportedState.READY);
+        awaitCondition("TW-O9: a worker whose replica is ready reports READY", () -> reportedState(worker) == NodeReportedState.READY);
     }
 
     private static NodeReportedState reportedState(AetherNode node) {

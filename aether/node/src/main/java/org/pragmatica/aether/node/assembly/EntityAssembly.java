@@ -93,7 +93,7 @@ public sealed interface EntityAssembly {
         // Entity owner-forwarding (#596). Same `network::send` seam the stream forward client uses, so a
         // command reaches the committed owner over the ordinary FORWARD lane rather than a new transport.
         var entityForwardService = EntityForwardService.entityForwardService(config.self(),
-                                                                             clusterNode.network()::sendOutcome,
+                                                                             clusterNode.network()::send,
                                                                              ENTITY_FORWARD_TIMEOUT,
                                                                              CommittedEntityStake.committedEntityStake(kvStore,
                                                                                                                        config.self()));
@@ -198,8 +198,10 @@ public sealed interface EntityAssembly {
                                                                                                                                                                                                                     StreamPartitionOwnershipValue.class),
                                                                                                                                                                             entityArcOwner,
                                                                                                                                                                             streamIsrInputs(clusterEventsControllerRef),
-                                                                                                                                                                            () -> kvStore.getTyped(LeaderKey.INSTANCE,
-                                                                                                                                                                                                   LeaderValue.class)),
+                                                                                                                                                                            StreamPartitionOwnershipWriter.ownCommittedLeader(() -> kvStore.getTyped(LeaderKey.INSTANCE,
+                                                                                                                                                                                                                                                     LeaderValue.class),
+                                                                                                                                                                                                                              config.self(),
+                                                                                                                                                                                                                              isLeaderSupplier)),
                                                                                             clusterCommandApplier,
                                                                                             ENTITY_RECONCILE_KICK,
                                                                                             EntityOwnershipReconciler.SETTLE_TICKS,

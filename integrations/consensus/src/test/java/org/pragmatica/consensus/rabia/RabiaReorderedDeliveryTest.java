@@ -1,12 +1,12 @@
 package org.pragmatica.consensus.rabia;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.AfterEach;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.rabia.RabiaEngineTest.TestClusterNetwork;
+import org.pragmatica.consensus.rabia.ScheduledCluster.Delivery;
 import org.pragmatica.consensus.rabia.RabiaEngineTest.TestCommand;
 import org.pragmatica.consensus.rabia.RabiaEngineTest.TestStateMachine;
 import org.pragmatica.consensus.rabia.RabiaEngineTest.TestTopologyManager;
@@ -93,6 +93,41 @@ class RabiaReorderedDeliveryTest {
         cluster.engines.forEach(engine -> assertThat(engine.pendingBatchCountForTesting()).as("the stale delivery is not queued").isZero());
     }
 
+    /// #2045: a slot strips only the correlation ids its Decision carries, and that must never let ONE submission apply
+    /// twice. After the commit, its NewBatch reaches every voter again and its proposal is replayed to every voter in the
+    /// next slot, under reordered and duplicated delivery: applied exactly once everywhere, caller answered, nothing pending.
+    @Test
+    @SuppressWarnings("unchecked")
+    void singleSubmission_lateNewBatchAndReplayedProposal_isAppliedOnce() {
+        for (int seed = 0; seed < 6; seed++) {
+            var cluster = new ScheduledCluster(3, seed);
+            clusters.add(cluster);
+            cluster.start();
+            var command = new TestCommand("single-submission-" + seed);
+            var answer = cluster.engines.getFirst().apply(List.of(command));
+            cluster.pumpUntil(() -> answer.isResolved()
+                                    && cluster.machines.stream().allMatch(machine -> !machine.getProcessedCommands().isEmpty()));
+            cluster.settle();
+            var batch = cluster.sent.stream()
+                                    .filter(message -> message instanceof Propose<?> propose && propose.value().isNotEmpty())
+                                    .map(message -> ((Propose<TestCommand>) message).value())
+                                    .findFirst()
+                                    .orElseThrow();
+            for (int index = 0; index < cluster.engines.size(); index++) {
+                var engine = cluster.engines.get(index);
+                engine.handleNewBatch(new NewBatch<>(cluster.members.getFirst(), batch));
+                engine.processPropose(new Propose<>(cluster.members.get((index + 1) % 3), engine.currentPhaseForTesting(), batch));
+            }
+            cluster.pumpUntil(() -> cluster.pending.isEmpty() && cluster.emitted.isEmpty());
+            cluster.settle();
+
+            assertThat(answer.await(timeSpan(3).seconds()).isSuccess()).as("seed %s", seed).isTrue();
+            cluster.machines.forEach(machine -> assertThat(machine.getProcessedCommands()).containsExactly(command));
+            cluster.engines.forEach(engine -> assertThat(engine.pendingBatchCountForTesting()).isZero());
+            cluster.stop();
+        }
+    }
+
     /// The guard must not swallow a legitimate later submission of identical commands: it has a new correlation id.
     @Test
     void identicalCommandsSubmittedAgainAfterCommit_commitAgain() {
@@ -133,8 +168,8 @@ class RabiaReorderedDeliveryTest {
     }
 
     /// The Decision's batch carries correlation ids (c-decision) the committing voter never merged, while the voter's own
-    /// pending batch carries another (c-local). `commitChanges` records BOTH sets in the ledger; each of the two `record`
-    /// calls is pinned by its own late delivery below (deleting either one alone leaves the other test green).
+    /// pending batch carries another (c-local). #2045: `commitChanges` records only c-decision, the id the applied log
+    /// carries; c-local is a separate submission and stays pending as a request of its own.
     private static final class MergedVsDecision {
         final ScheduledCluster cluster = new ScheduledCluster(3, 0);
         final Batch<TestCommand> local;
@@ -155,15 +190,21 @@ class RabiaReorderedDeliveryTest {
     }
 
     @Test
-    void committedLocalCorrelationIds_areRecorded_soTheirLateNewBatchIsNotRequeued() {
+    void localCorrelationIdsNotInTheDecision_stayPending_andApplyInASlotOfTheirOwn() {
         var scenario = new MergedVsDecision(clusters);
 
         assertThat(scenario.cluster.machines.getFirst().getProcessedCommands()).as("CONTROL: the decision was applied").hasSize(1);
-        assertThat(scenario.voter.pendingBatchCountForTesting()).as("CONTROL: nothing pending after the commit").isZero();
+        assertThat(scenario.voter.pendingBatchCountForTesting()).as("c-local is still a request").isEqualTo(1);
         scenario.voter.handleNewBatch(new NewBatch<>(scenario.cluster.members.get(2), scenario.local));
         scenario.cluster.settle();
+        assertThat(scenario.voter.pendingBatchCountForTesting()).as("a late copy of c-local merges, it is not a second request")
+                                                                .isEqualTo(1);
+        scenario.voter.processDecision(new Decision<>(scenario.cluster.members.get(1), scenario.voter.currentPhaseForTesting(),
+                                                      StateValue.V1, scenario.local));
+        scenario.cluster.settle();
 
-        assertThat(scenario.voter.pendingBatchCountForTesting()).as("late copy of the voter's own merged cid").isZero();
+        assertThat(scenario.cluster.machines.getFirst().getProcessedCommands()).as("once per submission").hasSize(2);
+        assertThat(scenario.voter.pendingBatchCountForTesting()).isZero();
     }
 
     @Test
@@ -173,38 +214,119 @@ class RabiaReorderedDeliveryTest {
         assertThat(scenario.cluster.machines.getFirst().getProcessedCommands()).as("CONTROL: the decision was applied").hasSize(1);
         scenario.voter.handleNewBatch(new NewBatch<>(scenario.cluster.members.get(1), scenario.decided));
         scenario.cluster.settle();
+        // #2045: c-local is still pending as its own request. Committing it empties the queue only if the late copy of
+        // c-decision was refused; a re-queued c-decision would be left behind.
+        scenario.voter.processDecision(new Decision<>(scenario.cluster.members.get(1), scenario.voter.currentPhaseForTesting(),
+                                                      StateValue.V1, scenario.local));
+        scenario.cluster.settle();
 
         assertThat(scenario.voter.pendingBatchCountForTesting()).as("late copy of the decision's cid").isZero();
     }
 
-    /// TRIPWIRE for #2045 limit 2: a snapshot restore covers a slot this voter never committed, so the ledger has never seen
-    /// that batch and its late NewBatch is re-queued. It asserts TODAY's (wrong) behaviour and reddens the moment #2045 lands.
-    @Test
-    void tripwire_snapshotSkippedSlot_lateNewBatchIsRequeuedToday() {
-        var scenario = snapshotSkippedSlotThenLateNewBatch();
-
-        assertThat(scenario.recovering.pendingBatchCountForTesting())
-            .as("#2045 fixed: delete this tripwire and enable snapshotSkippedSlot_lateNewBatchOfCoveredBatch_isNotRequeued")
-            .isEqualTo(1);
-    }
-
-    @Disabled("#2045")
+    /// #2045 limit 2: a snapshot restore covers a slot this voter never committed, so its ledger has never seen that batch
+    /// and the late NewBatch is queued. The voters that committed it refuse its proposal and answer `BatchCommitted`; the
+    /// recovering voter records the ids and drops the batch, so it is applied once and nothing stays pending.
     @Test
     void snapshotSkippedSlot_lateNewBatchOfCoveredBatch_isNotRequeued() {
         var scenario = snapshotSkippedSlotThenLateNewBatch();
+        var cluster = scenario.cluster();
 
-        assertThat(scenario.recovering.pendingBatchCountForTesting()).as("covered batch re-queued after snapshot skip").isZero();
+        assertThat(scenario.recovering().pendingBatchCountForTesting()).as("CONTROL: the late delivery was queued").isEqualTo(1);
+        cluster.pumpUntil(() -> cluster.engines.stream().allMatch(engine -> engine.pendingBatchCountForTesting() == 0)
+                                && cluster.pending.isEmpty() && cluster.emitted.isEmpty());
+        cluster.settle();
+        List.of(1, 2).forEach(index -> assertThat(cluster.machines.get(index).getProcessedCommands()).as("voter %s", index)
+                                                                                                     .containsExactly(scenario.covered()));
+        scenario.recovering().handleNewBatch(new NewBatch<>(cluster.members.get(1), scenario.coveredBatch()));
+        cluster.settle();
+
+        assertThat(scenario.recovering().pendingBatchCountForTesting()).as("the answer was recorded in the ledger").isZero();
     }
 
-    private record SnapshotSkip(RabiaEngine<TestCommand> recovering) {}
+    /// The answer is the only repair: with `BatchCommitted` blocked the recovering voter proposes the covered batch forever,
+    /// every slot it holds it in decides empty, and the livelock counter and first-choice probe show it. Once delivered, the
+    /// answer empties the queue and the probe reads 0. (The counter's reset rules are pinned decision by decision in
+    /// `RabiaEngineSlowApplyDiagnosticsTest`; here the recovering voter may also adopt slots by snapshot, which never resets it.)
+    @Test
+    void snapshotSkippedSlot_withoutTheCommittedAnswer_spinsAndTheProbesShowIt() {
+        var scenario = snapshotSkippedSlotThenLateNewBatch();
+        var cluster = scenario.cluster();
+        cluster.blocked = delivery -> delivery.message() instanceof BatchCommitted;
+
+        // The slot rate under this schedule varies with executor interleaving (about 40 to 140 slots per 100k steps seen).
+        assertThat(cluster.pumpBounded(() -> scenario.recovering().consecutiveEmptySlotsWithPending() > 20, PUMP_BUDGET))
+            .as("empty slots while the covered batch stays queued").isNotNegative();
+        assertThat(scenario.recovering().firstChoiceBatchId()).isEqualTo(Option.some(scenario.coveredBatch().id().id()));
+        List.of(1, 2).forEach(index -> assertThat(cluster.engines.get(index).firstChoiceBatchId()).as("voter %s", index).isEqualTo(Option.none()));
+        List.of(1, 2).forEach(index -> assertThat(cluster.machines.get(index).getProcessedCommands()).as("voter %s", index)
+                                                                                                     .containsExactly(scenario.covered()));
+
+        var next = Batch.create(cluster.machines.getFirst().serializer(), List.of(new TestCommand("agreed-meanwhile")));
+        cluster.engines.get(1).handleNewBatch(new NewBatch<>(cluster.members.get(1), next));
+        cluster.settle();
+        assertThat(cluster.engines.get(1).consecutiveEmptySlotsWithPending())
+            .as("voter 1 had nothing pending through the empty slots, so its count starts at 0").isZero();
+
+        cluster.blocked = _ -> false;
+        cluster.pumpUntil(() -> scenario.recovering().pendingBatchCountForTesting() == 0);
+        assertThat(scenario.recovering().consecutiveEmptySlotsWithPending()).as("nothing pending").isZero();
+    }
+
+    /// A local caller whose correlation id a peer reports committed cannot get the slot's result from this voter: it fails
+    /// with an unknown outcome instead of waiting for an apply that will never happen here, and the queue drops the batch.
+    @Test
+    void batchCommittedFromATrustedPeer_dropsTheBatch_andTellsTheLocalCallerTheOutcomeIsUnknown() {
+        var cluster = new ScheduledCluster(3, 0);
+        clusters.add(cluster);
+        cluster.start();
+        var engine = cluster.engines.getFirst();
+        var commands = List.of(new TestCommand("committed-elsewhere"));
+        var answer = engine.apply(commands);
+        cluster.settle();
+        var batch = submittedBatch(cluster, commands);
+
+        engine.handleBatchCommitted(new BatchCommitted(cluster.members.get(1), batch.id(), batch.correlationIds()));
+        cluster.settle();
+
+        assertThat(engine.pendingBatchCountForTesting()).isZero();
+        var outcome = answer.await(timeSpan(3).seconds());
+        assertThat(outcome.isFailure()).isTrue();
+        outcome.onFailure(cause -> assertThat(cause).isInstanceOf(org.pragmatica.consensus.ConsensusError.CommittedOutcomeUnknown.class));
+    }
+
+    @Test
+    void batchCommittedFromAnUntrustedSender_isIgnored() {
+        var cluster = new ScheduledCluster(3, 0);
+        clusters.add(cluster);
+        cluster.start();
+        var engine = cluster.engines.getFirst();
+        var commands = List.of(new TestCommand("claimed-by-a-stranger"));
+        var answer = engine.apply(commands);
+        cluster.settle();
+        var batch = submittedBatch(cluster, commands);
+
+        engine.handleBatchCommitted(new BatchCommitted(nodeId("stranger").unwrap(), batch.id(), batch.correlationIds()));
+        cluster.settle();
+
+        assertThat(engine.pendingBatchCountForTesting()).isEqualTo(1);
+        assertThat(answer.isResolved()).isFalse();
+    }
+
+    private record SnapshotSkip(ScheduledCluster cluster, RabiaEngine<TestCommand> recovering, Batch<TestCommand> coveredBatch,
+                                TestCommand covered) {}
 
     private SnapshotSkip snapshotSkippedSlotThenLateNewBatch() {
         var cluster = new ScheduledCluster(3, 0);
         clusters.add(cluster);
         cluster.start();
         var recovering = cluster.engines.getFirst();
-        var covered = Batch.create(cluster.machines.getFirst().serializer(), List.of(new TestCommand("covered-by-snapshot")));
-        cluster.machines.get(1).process(covered);
+        var command = new TestCommand("covered-by-snapshot");
+        var covered = Batch.create(cluster.machines.getFirst().serializer(), List.of(command));
+        // Voters 1 and 2 commit the covered batch in slot 0; voter 0 never sees that slot.
+        List.of(1, 2).forEach(index -> cluster.engines.get(index)
+                                                      .processDecision(new Decision<>(cluster.members.get(3 - index), Phase.ZERO,
+                                                                                      StateValue.V1, covered)));
+        cluster.settle();
         recovering.processPropose(new Propose<>(cluster.members.get(1), Phase.phase(101), Batch.emptyBatch()));
         cluster.settle();
         var snapshot = cluster.machines.get(1).makeSnapshot().unwrap();
@@ -219,27 +341,19 @@ class RabiaReorderedDeliveryTest {
         recovering.handleNewBatch(new NewBatch<>(cluster.members.get(1), covered));
         cluster.settle();
 
-        return new SnapshotSkip(recovering);
+        return new SnapshotSkip(cluster, recovering, covered, command);
     }
 
-    /// TRIPWIRE for #2045 limit 3: voter-1 merges a concurrent identical submission c2 after proposing X{c1}; the slot decides
-    /// X{c1} (its Decision carries only c1); voter-1's NewBatch X{c2} then reaches voters 0 and 2, whose ledgers hold only
-    /// {c1}, so X is applied twice on every voter. Asserts TODAY's behaviour; reddens the moment #2045 lands.
+    /// #2045 limit 3 (know 32bd170946): voter-1 merges a concurrent identical submission c2 into X{c1}; the slot decides
+    /// X{c1}, whose Decision carries only c1. c2 is a genuine second submission: it stays pending on voter 1, its late
+    /// NewBatch reaches voters 0 and 2, and it applies once in a slot of its own. Two submissions, two applications, on
+    /// every voter, and never a third.
     @Test
-    void tripwire_mergedIdenticalSubmission_lateNewBatchIsCommittedTwiceToday() {
+    void mergedIdenticalSubmission_lateNewBatch_appliesOncePerSubmission() {
         var cluster = mergedIdenticalSubmissionThenLateNewBatch();
 
-        cluster.machines.forEach(machine -> assertThat(machine.getProcessedCommands())
-            .as("#2045 fixed: delete this tripwire and enable mergedIdenticalSubmission_lateNewBatch_isNotCommittedTwice")
-            .hasSize(2));
-    }
-
-    @Disabled("#2045")
-    @Test
-    void mergedIdenticalSubmission_lateNewBatch_isNotCommittedTwice() {
-        var cluster = mergedIdenticalSubmissionThenLateNewBatch();
-
-        cluster.machines.forEach(machine -> assertThat(machine.getProcessedCommands()).as("applied exactly once").hasSize(1));
+        cluster.machines.forEach(machine -> assertThat(machine.getProcessedCommands()).as("once per submission").hasSize(2));
+        cluster.engines.forEach(engine -> assertThat(engine.pendingBatchCountForTesting()).isZero());
     }
 
     private ScheduledCluster mergedIdenticalSubmissionThenLateNewBatch() {
@@ -256,9 +370,8 @@ class RabiaReorderedDeliveryTest {
         cluster.settle();
         cluster.engines.get(1).handleNewBatch(new NewBatch<>(cluster.members.get(1), c2));
         cluster.settle();
-        cluster.pumpUntil(() -> cluster.machines.stream().allMatch(machine -> machine.getProcessedCommands().size() == 1));
+        cluster.pumpUntil(() -> cluster.machines.stream().allMatch(machine -> !machine.getProcessedCommands().isEmpty()));
         cluster.settle();
-        assertThat(cluster.machines.getFirst().getProcessedCommands()).as("CONTROL: applied once before the late delivery").hasSize(1);
         cluster.engines.get(0).handleNewBatch(new NewBatch<>(cluster.members.get(1), c2));
         cluster.engines.get(2).handleNewBatch(new NewBatch<>(cluster.members.get(1), c2));
         cluster.settle();
@@ -266,6 +379,92 @@ class RabiaReorderedDeliveryTest {
         cluster.settle();
 
         return cluster;
+    }
+
+    /// About 50 deliveries per empty slot with four live voters: before #2045 the livelock decided about 1,900 empty slots in it.
+    private static final int PUMP_BUDGET = 100_000;
+
+    /// The #2045 empty-slot livelock (inv-flood-rootcause §4). Before the fix, voters 0 and 1 recorded the merged c2 as
+    /// committed and refused X{c2}, voters 2 and 3 re-queued it and proposed it forever (it sorts first), 0 and 1 proposed
+    /// H; 2-2 never reaches the quorum of 3, so every slot decided V0 and H was never applied (phase +1,867 in this budget).
+    /// With the ledger a function of the applied log, all four hold X{c2} as a request of its own: it applies, then H.
+    @Test
+    void pendingHead_requeuedOnTwoOfFourLiveVoters_laterRequestStillCommits() {
+        var scenario = pendingHeadRequeuedOnTwoOfFourLiveVoters();
+        var steps = scenario.cluster.pumpBounded(scenario::laterRequestAppliedOnLiveVoters, PUMP_BUDGET);
+
+        assertThat(steps).as("H applied on voters 0..3; phase advanced by %s", scenario.phaseAdvance()).isNotNegative();
+        IntStream.range(0, 4).forEach(index -> assertThat(scenario.cluster.machines.get(index).getProcessedCommands())
+            .as("voter %s: X once per submission, H once", index)
+            .containsExactlyInAnyOrder(scenario.requeued(), scenario.requeued(), scenario.later()));
+        IntStream.range(0, 4).forEach(index -> assertThat(scenario.cluster.engines.get(index).consecutiveEmptySlotsWithPending())
+            .as("voter %s", index).isZero());
+    }
+
+    private record RequeuedHead(ScheduledCluster cluster, TestCommand requeued, TestCommand later, long startPhase) {
+        boolean laterRequestAppliedOnLiveVoters() {
+            return IntStream.range(0, 4).allMatch(index -> cluster.machines.get(index).getProcessedCommands().contains(later));
+        }
+
+        long phaseAdvance() {
+            return cluster.engines.getFirst().currentPhaseForTesting().value() - startPhase;
+        }
+    }
+
+    /// inv-flood-rootcause §4: X{c1} decided on voters 0..3; voters 0 and 1 had merged c2 before the commit, voters 2
+    /// and 3 receive NewBatch X{c2} only after it. Then H, sorting above X, reaches voters 0..3. Today voters 0 and 1
+    /// keep X{c2} pending too (it is not in the Decision); before #2045 they had dropped it as committed.
+    private RequeuedHead pendingHeadRequeuedOnTwoOfFourLiveVoters() {
+        var cluster = new ScheduledCluster(5, 0);
+        clusters.add(cluster);
+        cluster.start();
+        cluster.allowIdenticalCommands = true;
+        cluster.kill(4);
+        var serializer = cluster.machines.getFirst().serializer();
+        var commands = List.of(new TestCommand("requeued-head"));
+        var c1 = Batch.create(serializer, commands);
+        var c2 = Batch.create(serializer, commands);
+        IntStream.range(0, 4).forEach(index -> cluster.engines.get(index).handleNewBatch(new NewBatch<>(cluster.members.getFirst(), c1)));
+        IntStream.range(0, 2).forEach(index -> cluster.engines.get(index).handleNewBatch(new NewBatch<>(cluster.members.get(1), c2)));
+        cluster.settle();
+        var slot = cluster.engines.getFirst().currentPhaseForTesting();
+        IntStream.range(0, 4).forEach(index -> cluster.engines.get(index)
+                                                      .processDecision(new Decision<>(cluster.members.get(1), slot, StateValue.V1, c1)));
+        cluster.settle();
+        IntStream.range(2, 4).forEach(index -> cluster.engines.get(index).handleNewBatch(new NewBatch<>(cluster.members.get(1), c2)));
+        cluster.settle();
+        IntStream.range(0, 4).forEach(index -> assertThat(cluster.machines.get(index).getProcessedCommands())
+            .as("CONTROL: X applied once on voter %s", index).containsExactlyElementsOf(commands));
+        assertThat(IntStream.range(2, 4).map(index -> cluster.engines.get(index).pendingBatchCountForTesting()).toArray())
+            .as("CONTROL: X{c2} pending where it arrived after the commit").containsExactly(1, 1);
+        var later = sortingAbove(serializer, c1.id());
+        var h = Batch.create(serializer, List.of(later));
+        assertThat(h.id().compareTo(c1.id())).as("CONTROL: H sorts above X").isPositive();
+        var startPhase = cluster.engines.getFirst().currentPhaseForTesting().value();
+        IntStream.range(0, 4).forEach(index -> cluster.engines.get(index).handleNewBatch(new NewBatch<>(cluster.members.getFirst(), h)));
+
+        return new RequeuedHead(cluster, commands.getFirst(), later, startPhase);
+    }
+
+    private static TestCommand sortingAbove(org.pragmatica.serialization.Serializer serializer, Batch.Id floor) {
+        return IntStream.range(0, 1_000)
+                        .mapToObj(index -> new TestCommand("later-" + index))
+                        .filter(command -> Batch.create(serializer, List.of(command)).id().compareTo(floor) > 0)
+                        .findFirst()
+                        .orElseThrow();
+    }
+
+    /// The batch an `apply` broadcast, with its caller's correlation id: #2045 completes a caller only through a Decision
+    /// that carries its id, so a Decision built from a fresh `Batch.create` (a new id) would answer nobody.
+    @SuppressWarnings("unchecked")
+    private static Batch<TestCommand> submittedBatch(ScheduledCluster cluster, List<TestCommand> commands) {
+        return java.util.stream.Stream.of(cluster.emitted.stream(), cluster.parked.stream(), cluster.pending.stream())
+                                      .flatMap(deliveries -> deliveries)
+                                      .map(Delivery::message)
+                                      .filter(message -> message instanceof NewBatch<?> newBatch && newBatch.batch().commands().equals(commands))
+                                      .map(message -> ((NewBatch<TestCommand>) message).batch())
+                                      .findFirst()
+                                      .orElseThrow();
     }
 
     @Test
@@ -280,7 +479,7 @@ class RabiaReorderedDeliveryTest {
         var retainedAnswer = recovering.apply(retained);
         cluster.settle();
         var committed = Batch.create(cluster.machines.getFirst().serializer(), covered);
-        var pending = Batch.create(cluster.machines.getFirst().serializer(), retained);
+        var pending = submittedBatch(cluster, retained);
         cluster.machines.get(1).process(committed);
         recovering.processPropose(new Propose<>(cluster.members.get(1), Phase.phase(101), Batch.emptyBatch()));
         cluster.settle();
@@ -325,7 +524,7 @@ class RabiaReorderedDeliveryTest {
         cluster.settle();
         assertThat(recovering.pendingBatchCountForTesting()).isEqualTo(1);
         assertThat(answer.isResolved()).isFalse();
-        var batch = Batch.create(cluster.machines.getFirst().serializer(), commands);
+        var batch = submittedBatch(cluster, commands);
         recovering.processDecision(new Decision<>(cluster.members.get(1), Phase.ZERO, StateValue.V1, batch));
         cluster.settle();
         assertThat(answer.await(timeSpan(3).seconds()).isSuccess()).isTrue();
@@ -976,273 +1175,5 @@ class RabiaReorderedDeliveryTest {
             assertThat(machine.getProcessedCommands()).doesNotHaveDuplicates().hasSize(size);
         }
         cluster.stop();
-    }
-
-    private record Delivery(int source, int target, ProtocolMessage message) {}
-
-    private static final class ScheduledCluster {
-        private final List<RabiaEngine<TestCommand>> engines = new ArrayList<>();
-        private final List<SnapshotMachine> machines = new ArrayList<>();
-        /// The `ConsensusActive` / `ConsensusPassive` edges each engine has published.
-        private final List<List<ConsensusEvent>> events = new ArrayList<>();
-        private final List<NodeId> members;
-        private final ConcurrentLinkedQueue<Delivery> emitted = new ConcurrentLinkedQueue<>();
-        private final List<Delivery> pending = new ArrayList<>();
-        /// Every Propose, ballot and Decision any engine emitted since the last clear.
-        private final List<ProtocolMessage> sent = new java.util.concurrent.CopyOnWriteArrayList<>();
-        private final java.util.Set<Integer> dead = new java.util.HashSet<>();
-        private final List<Delivery> parked = new ArrayList<>();
-        /// Deliveries that are lost outright.
-        private java.util.function.Predicate<Delivery> blocked = _ -> false;
-        /// Deliveries that wait, in emission order, until the predicate releases them.
-        private java.util.function.Predicate<Delivery> held = _ -> false;
-        private final Random random;
-        private volatile boolean splitHealth;
-        /// A test that SUBMITS identical commands twice expects them applied twice (#2011).
-        private volatile boolean allowIdenticalCommands;
-
-        ScheduledCluster(int size, int seed) { this(size, seed, size); }
-
-        ScheduledCluster(int size, int seed, int initialVoters) { this(size, seed, initialVoters, timeSpan(60).seconds()); }
-
-        ScheduledCluster(int size, int seed, org.pragmatica.lang.io.TimeSpan syncRetryInterval, org.pragmatica.lang.io.TimeSpan decisionGapTimeout) {
-            this(size, seed, size, syncRetryInterval, decisionGapTimeout);
-        }
-
-        ScheduledCluster(int size, int seed, int initialVoters, org.pragmatica.lang.io.TimeSpan syncRetryInterval) {
-            this(size, seed, initialVoters, syncRetryInterval, ProtocolConfig.DEFAULT_DECISION_GAP_TIMEOUT);
-        }
-
-        ScheduledCluster(int size, int seed, int initialVoters, org.pragmatica.lang.io.TimeSpan syncRetryInterval,
-                         org.pragmatica.lang.io.TimeSpan decisionGapTimeout) {
-            random = new Random(seed);
-            members = IntStream.range(0, size).mapToObj(index -> nodeId("voter-" + index).unwrap()).toList();
-            for (int index = 0; index < size; index++) {
-                var sender = index;
-                var machine = new SnapshotMachine();
-                var topology = new TestTopologyManager(members.get(index), size) {
-                    @Override
-                    public java.util.Set<NodeId> coreNodes() { return java.util.Set.copyOf(members); }
-                    @Override
-                    public boolean isConsensusMember(NodeId id) { return members.contains(id); }
-                    @Override
-                    public List<NodeId> topology() {
-                        return members.stream().filter(id -> !splitHealth || members.indexOf(id) % 2 == sender % 2).toList();
-                    }
-                    @Override
-                    public int clusterSize() { return topology().size(); }
-                };
-                var network = new TestClusterNetwork() {
-                    @Override public java.util.Set<NodeId> connectedPeers() { return java.util.Set.copyOf(members); }
-                    @Override
-                    public <M extends ProtocolMessage> Unit broadcast(M message) {
-                        for (int target = 0; target < members.size(); target++) {
-                            if (target != sender) {
-                                emit(new Delivery(sender, target, message));
-                            }
-                        }
-                        return Unit.unit();
-                    }
-
-                    @Override
-                    public <M extends ProtocolMessage> Unit send(NodeId id, M message) {
-                        emit(new Delivery(sender, members.indexOf(id), message));
-                        return Unit.unit();
-                    }
-                };
-                machines.add(machine);
-                var consensusEvents = new java.util.concurrent.CopyOnWriteArrayList<ConsensusEvent>();
-                events.add(consensusEvents);
-                var config = ProtocolConfig.consensusConfig(timeSpan(60).seconds(), syncRetryInterval)
-                                           .withDecisionGapTimeout(decisionGapTimeout);
-                var engine = new RabiaEngine<>(topology, network, machine, config, ConsensusMetrics.noop(), false,
-                                              RabiaPersistence.inMemory(), RabiaEngine.DEFAULT_PHASE_STALL_CHECK, consensusEvents::add);
-                assertThat(engine.initializeVoters(new VoterConfiguration(0, new ClusterConfig(members.subList(0, initialVoters)))).isSuccess()).isTrue();
-                if (index >= initialVoters) { engine.authorizeObservation(); }
-                engines.add(engine);
-            }
-        }
-
-        void emit(Delivery delivery) {
-            if (delivery.message() instanceof Propose<?> || delivery.message() instanceof VoteRound1
-                || delivery.message() instanceof VoteRound2 || delivery.message() instanceof Decision<?>) {
-                sent.add(delivery.message());
-            }
-            emitted.add(delivery);
-        }
-
-        /// Crash-stops a replica: nothing is delivered to or from it again.
-        void kill(int index) {
-            dead.add(index);
-            pending.removeIf(delivery -> delivery.source() == index || delivery.target() == index);
-            engines.get(index).stop().await();
-        }
-
-        void start() {
-            engines.forEach(engine -> engine.clusterState(ClusterStateNotification.active()));
-            pumpUntil(() -> engines.stream().allMatch(engine -> engine.isActive() || engine.isObserving()));
-        }
-
-        void submitConflictingBatches() {
-            var batches = IntStream.range(0, engines.size())
-                                   .mapToObj(index -> Batch.create(machines.getFirst().serializer(), List.of(new TestCommand("command-" + index))))
-                                   .toList();
-            // Each voter initially selects a different immutable proposal for slot zero.
-            for (int index = 0; index < engines.size(); index++) {
-                engines.get(index).handleNewBatch(new NewBatch<>(members.get(index), batches.get(index)));
-            }
-            settle();
-            // All requests become available before delivering ballots; proposal order still differs.
-            for (var engine : engines) {
-                batches.forEach(batch -> engine.handleNewBatch(new NewBatch<>(members.getFirst(), batch)));
-            }
-            settle();
-        }
-
-        void pumpUntil(BooleanSupplier completed) {
-            for (int step = 0; step < 30_000; step++) {
-                if (pumpStep(completed)) {
-                    return;
-                }
-            }
-            settle();
-            assertThat(completed.getAsBoolean()).as("schedule must make progress; pending=%s", pending.size()).isTrue();
-        }
-
-        /// Pumps against a wall-clock budget instead of a step count, for schedules whose progress comes
-        /// from an engine TIMER (a quiet cluster emits nothing until one fires), which a step budget can
-        /// exhaust in less time than one timer period.
-        void pumpWithTimersUntil(BooleanSupplier completed, long budgetMillis) {
-            var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(budgetMillis);
-            while (System.nanoTime() < deadline) {
-                if (pumpStep(completed)) {
-                    return;
-                }
-            }
-            settle();
-            assertThat(completed.getAsBoolean()).as("schedule must make progress within %sms; pending=%s", budgetMillis, pending.size()).isTrue();
-        }
-
-        /// One settle-collect-deliver step; true once `completed` holds.
-        private boolean pumpStep(BooleanSupplier completed) {
-            settle();
-            verifyPrefixes();
-            collectEmitted();
-            for (var iterator = parked.iterator(); iterator.hasNext(); ) {
-                var delivery = iterator.next();
-                if (!held.test(delivery)) {
-                    pending.add(delivery);
-                    iterator.remove();
-                }
-            }
-            if (completed.getAsBoolean()) {
-                return true;
-            }
-            if (pending.isEmpty()) {
-                return false;
-            }
-            var delivery = pending.remove(random.nextInt(pending.size()));
-            deliver(delivery);
-            if (random.nextInt(8) == 0) {
-                deliver(delivery);
-            }
-            return false;
-        }
-
-        void collectEmitted() {
-            for (var delivery = emitted.poll(); delivery != null; delivery = emitted.poll()) {
-                if (!dead.contains(delivery.source()) && !dead.contains(delivery.target()) && !blocked.test(delivery)) {
-                    parked.add(delivery);
-                }
-            }
-        }
-
-        /// Stops holding and delivers everything held so far, once each and in emission order, settling
-        /// after every delivery. Traffic the release provokes joins the ordinary randomized schedule.
-        void releaseHeldInOrder() {
-            var releasing = held;
-            held = _ -> false;
-            settle();
-            collectEmitted();
-            var released = new ArrayList<Delivery>();
-            for (var iterator = parked.iterator(); iterator.hasNext(); ) {
-                var delivery = iterator.next();
-                if (releasing.test(delivery)) {
-                    released.add(delivery);
-                    iterator.remove();
-                }
-            }
-            for (var delivery : released) {
-                deliver(delivery);
-                settle();
-                verifyPrefixes();
-            }
-        }
-
-        /// Runs `rounds` genesis rounds on the given engines, delivering all traffic between rounds.
-        void genesisRounds(List<Integer> indices, int rounds) {
-            for (int round = 0; round < rounds; round++) {
-                indices.forEach(index -> engines.get(index).runGenesisRoundForTesting());
-                pumpUntil(() -> pending.isEmpty() && emitted.isEmpty());
-            }
-        }
-
-        void settle() {
-            for (int index = 0; index < engines.size(); index++) {
-                if (!dead.contains(index)) {
-                    engines.get(index).settleForTesting().await();
-                }
-            }
-        }
-
-        void verifyPrefixes() {
-            var logs = machines.stream().map(machine -> List.copyOf(machine.getProcessedCommands())).toList();
-            var longest = logs.stream().max(java.util.Comparator.comparingInt(List::size)).orElse(List.of());
-            for (var log : logs) {
-                assertThat(log).containsExactlyElementsOf(longest.subList(0, log.size()));
-                if (!allowIdenticalCommands) {
-                    assertThat(log).doesNotHaveDuplicates();
-                }
-            }
-        }
-
-
-        @SuppressWarnings("unchecked")
-        void deliver(Delivery delivery) {
-            var engine = engines.get(delivery.target());
-            switch (delivery.message()) {
-                case Propose<?> message -> engine.processPropose((Propose<TestCommand>) message);
-                case VoteRound1 message -> engine.processVoteRound1(message);
-                case VoteRound2 message -> engine.processVoteRound2(message);
-                case Decision<?> message -> engine.processDecision((Decision<TestCommand>) message);
-                case SyncRequest message -> engine.handleSyncRequest(message);
-                case RoundRequest message -> engine.handleRoundRequest(message);
-                case ReconfigurationRequest message -> engine.reconfigurationRequest(message);
-                case GenesisAnnouncement message -> engine.genesisAnnouncement(message);
-                case SyncResponse<?> message -> engine.processSyncResponse((SyncResponse<TestCommand>) message);
-                default -> {}
-            }
-        }
-
-        void stop() {
-            engines.forEach(engine -> engine.stop().await());
-        }
-    }
-
-    private static final class SnapshotMachine extends TestStateMachine {
-        @Override
-        public Result<byte[]> makeSnapshot() {
-            return Result.success(String.join("\n", getProcessedCommands().stream().map(TestCommand::value).toList())
-                                        .getBytes(StandardCharsets.UTF_8));
-        }
-
-        @Override
-        public Result<Unit> restoreSnapshot(byte[] snapshot) {
-            reset();
-            if (snapshot.length > 0) {
-                process(Batch.create(serializer(), new String(snapshot, StandardCharsets.UTF_8).lines().map(TestCommand::new).toList()));
-            }
-            return Result.success(Unit.unit());
-        }
     }
 }

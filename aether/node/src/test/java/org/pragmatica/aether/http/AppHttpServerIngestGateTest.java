@@ -101,6 +101,10 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 @Timeout(180)
 class AppHttpServerIngestGateTest {
     private static final int MIB = 1024 * 1024;
+    /// A port is probed free and bound a moment later, and another process (a module in the `-T 1C` reactor) can take it in
+    /// between: "Address already in use" on a port nothing in this test holds. A start that fails is retried on a new port.
+    private static final int START_ATTEMPTS = 5;
+    private static final String ROUTE_TABLE_PROPAGATING = "Route table propagating";
     private static final Pattern CONTENT_LENGTH = Pattern.compile("(?im)^content-length:\\s*(\\d+)");
     private static final String KEY_A = "key-a";
     private static final String KEY_B = "key-b";
@@ -134,6 +138,22 @@ class AppHttpServerIngestGateTest {
     }
 
     private void start(Protocol protocol, UploadConfig upload, int maxRequestSize, SecurityMode securityMode) throws IOException {
+        var failures = new ArrayList<String>();
+
+        for (var attempt = 1; attempt <= START_ATTEMPTS && !startOnFreshPort(protocol, upload, maxRequestSize, securityMode, failures); attempt++) {
+            server.stop().await(timeSpan(30).seconds());
+        }
+
+        assertThat(failures.size() < START_ATTEMPTS).as("control: the server starts (%s)", failures).isTrue();
+        server.onQuorumStateChange(ClusterStateNotification.active());
+    }
+
+    /// One start on a newly probed port; true when it bound, the refusal recorded in `failures` when it did not.
+    private boolean startOnFreshPort(Protocol protocol,
+                                     UploadConfig upload,
+                                     int maxRequestSize,
+                                     SecurityMode securityMode,
+                                     List<String> failures) throws IOException {
         port = TlsProbe.freeTcpPort();
         var config = AppHttpConfig.appHttpConfig(true,
                                                  port,
@@ -163,12 +183,32 @@ class AppHttpServerIngestGateTest {
                                              Option.none(),
                                              Option.none(),
                                              Option.<DeploymentManager> none());
-        assertThat(server.start().await(timeSpan(30).seconds()).isSuccess()).as("control: the server starts").isTrue();
-        server.onQuorumStateChange(ClusterStateNotification.active());
+        return server.start()
+                     .await(timeSpan(30).seconds())
+                     .onFailure(cause -> failures.add("port " + port + ": " + cause.message()))
+                     .isSuccess();
     }
 
     private static UploadConfig defaults() {
         return UploadConfig.DEFAULT;
+    }
+
+    /// Republishes the route table until a request for `path` is no longer answered "Route table propagating". The table
+    /// published when the listener bound is read before the routes a test registers and can be installed after the test's
+    /// own publish, replacing it; the server says so (503, "retry after a moment") and the next publish repairs it.
+    private void publishRouteTableUntilServed(Protocol protocol, String path) throws Exception {
+        var client = client(protocol);
+        var reply = new Reply(0, "");
+
+        for (var attempt = 0; attempt < 100; attempt++) {
+            server.rebuildRouter();
+            reply = client.post(path, Option.some(KEY_A), 16, Mode.DECLARED);
+            if (reply.status() != 503 || !reply.text().contains(ROUTE_TABLE_PROPAGATING)) {
+                return;
+            }
+            Thread.sleep(50);
+        }
+        assertThat(reply.text()).as("control: the registered route reaches the server's route table").doesNotContain(ROUTE_TABLE_PROPAGATING);
     }
 
     /// Auth before body: no credentials, and the body is never read; with a key, the same request is served.
@@ -371,7 +411,7 @@ class AppHttpServerIngestGateTest {
         registry.onNodeRoutesPut(new ValuePut<>(new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(node, ARTIFACT),
                                                                     NodeRoutesValue.nodeRoutesValue(List.of(entry))),
                                                 Option.none()));
-        server.rebuildRouter();
+        publishRouteTableUntilServed(protocol, "/remote/");
         var client = client(protocol);
 
         var within = client.post("/remote/", Option.some(KEY_A), 16 * 1024, Mode.DECLARED);
@@ -939,14 +979,14 @@ class AppHttpServerIngestGateTest {
         }
     }
 
-    /// Polls a small upload by `key` until it is no longer refused 429 (the permit is returned on the event loop, so it is
-    /// not instant); returns the status that ended the polling.
+    /// Polls a small upload by `key` until it is no longer refused 429 (the permit) or 503 (the byte budget); both are
+    /// returned on the event loop, so neither lifts at once. Returns the status that ended the polling.
     private static int admittedAfterRelease(Client client, String path, String key) throws Exception {
         var status = 429;
 
-        for (int attempt = 0; attempt < 50 && status == 429; attempt++) {
+        for (int attempt = 0; attempt < 50 && (status == 429 || status == 503); attempt++) {
             status = client.post(path, Option.some(key), 16, Mode.DECLARED).status();
-            if (status == 429) {
+            if (status == 429 || status == 503) {
                 Thread.sleep(100);
             }
         }
@@ -1184,7 +1224,7 @@ class AppHttpServerIngestGateTest {
         registry.onNodeRoutesPut(new ValuePut<>(new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(node, ARTIFACT),
                                                                     NodeRoutesValue.nodeRoutesValue(List.of(entry))),
                                                 Option.none()));
-        server.rebuildRouter();
+        publishRouteTableUntilServed(protocol, "/remote/");
 
         assertThat(statusOf(protocol, "/remote/", multipart(Part.file("a", 10)))).as("one file: past the gate, to the absent forwarder").isEqualTo(503);
         assertThat(statusOf(protocol, "/remote/", multipart(Part.file("a", 10), Part.file("b", 10)))).as("two files, the serving node allows one").isEqualTo(413);

@@ -659,6 +659,29 @@ class ReplicaFeedServerTest {
             assertThat(harness.sentTo(PEER, ReplicaHeartbeat.class)).extracting(ReplicaHeartbeat::serving).containsExactly(true, false);
         }
 
+        /// W4 (relay, true-to-false edge): a node that stops serving (a governor deposed, or one that fell behind its core) tells every subscriber
+        /// `NOT_SERVING` and releases it at the next tick, so members leave at once instead of waiting out the silence. A queued heartbeat still goes
+        /// out first. Mutation: drop `dismissWhenNotServing` from `tick`, or send the refusal without releasing.
+        @Test
+        void tick_dismissesEverySubscriber_whenTheNodeStopsServing() {
+            var harness = new Harness();
+
+            harness.server.onSubscribe(liveOnly(PEER, 1));
+            harness.server.onSubscribe(liveOnly(OTHER, 2));
+            harness.server.tick();
+            harness.serving.set(false);
+            harness.server.tick();
+
+            assertThat(harness.sentTo(PEER, ReplicaRefused.class)).extracting(ReplicaRefused::reason).containsExactly(RefusalReason.NOT_SERVING);
+            assertThat(harness.sentTo(OTHER, ReplicaRefused.class)).extracting(ReplicaRefused::reason).containsExactly(RefusalReason.NOT_SERVING);
+            assertThat(harness.server.counters().get("replica_subscribers")).isZero();
+            assertThat(harness.store.replicaRing().subscriptionCount()).isZero();
+
+            harness.server.tick();
+
+            assertThat(harness.sentTo(PEER, ReplicaRefused.class)).as("once").hasSize(1);
+        }
+
         /// NT-O20. A peer whose link is gone (or that is no longer eligible) is released at the next tick, so the ring stops offering to it.
         /// Mutation: drop `releaseGone` from `tick`, or drop the `unsubscribe` call in `release` (the ring keeps filling an orphan subscription).
         @Test
@@ -677,6 +700,23 @@ class ReplicaFeedServerTest {
             assertThat(harness.store.replicaRing().subscriptionCount()).as("the ring no longer offers to the gone peers' subscriptions").isZero();
             assertThat(harness.sentTo(PEER, ReplicaEntries.class).stream().filter(message -> message.subSeq() > 0)).isEmpty();
             assertThat(harness.sentTo(OTHER, ReplicaEntries.class).stream().filter(message -> message.subSeq() > 0)).isEmpty();
+        }
+
+        /// Spec section 5 row 17 (W4): a source that loses its incarnation (reset: it is stopping, or restarting empty) tells its subscribers
+        /// `NOT_SERVING`, not `INCARNATION_MISMATCH`, so a member keeps its position and resumes from its anchor elsewhere instead of re-taking
+        /// a snapshot. Mutation: map every incarnation close to `INCARNATION_MISMATCH` (drop `mismatchOrNotServing`).
+        @Test
+        void aSubscriptionClosedByAReset_isToldNotServing_notIncarnationMismatch() {
+            var harness = new Harness();
+
+            harness.server.onSubscribe(liveOnly(PEER, 1));
+            harness.store.reset();
+
+            assertThat(harness.sentTo(PEER, ReplicaRefused.class)).singleElement().satisfies(refused -> {
+                assertThat(refused.reason()).isEqualTo(RefusalReason.NOT_SERVING);
+                assertThat(refused.requestId()).isEqualTo(1);
+            });
+            assertThat(harness.server.counters().get("replica_subscribers")).isZero();
         }
 
         /// NT-O20. A subscription the ring closes (here: the store jumps its floor) is dropped from the table and the subscriber is told, so it

@@ -52,7 +52,7 @@ class ReplicationReceiveHandlerTest {
         ReplicationReceiveHandler.RecoveredAppender appender = (_, _, _, _, _, _) -> Result.success(0L);
         var handler = replicationReceiveHandler(SELF,
                                                 appender,
-                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                AcceptingReplicationTransport.accepting((target, message) -> acks.add((ReplicationMessage.ReplicateAck) message)),
                                                 (_, _) -> gapFires.incrementAndGet());
 
         handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 10L, payloads(3), timestamps(3), Epoch.ZERO));
@@ -74,7 +74,7 @@ class ReplicationReceiveHandlerTest {
         ReplicationReceiveHandler.RecoveredAppender appender = (_, _, _, _, _, _) -> Result.success(0L);
         var handler = replicationReceiveHandler(SELF,
                                                 appender,
-                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                AcceptingReplicationTransport.accepting((target, message) -> acks.add((ReplicationMessage.ReplicateAck) message)),
                                                 (_, _) -> gapFires.incrementAndGet());
 
         handler.ackGate((_, _) -> verified.get());
@@ -96,7 +96,7 @@ class ReplicationReceiveHandlerTest {
         var epoch = Epoch.epoch(1L, 2L, 3L);
         var handler = replicationReceiveHandler(SELF,
                                                 (_, _, _, _, _, _) -> Result.success(0L),
-                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                AcceptingReplicationTransport.accepting((target, message) -> acks.add((ReplicationMessage.ReplicateAck) message)),
                                                 (_, _) -> {});
 
         handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 10L, payloads(2), timestamps(2), epoch));
@@ -115,7 +115,7 @@ class ReplicationReceiveHandlerTest {
                 (_, _, _, _, _, _) -> calls.getAndIncrement() < 2 ? Result.success(0L) : TestError.APPEND_FAILED.result();
         var handler = replicationReceiveHandler(SELF,
                                                 appender,
-                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                AcceptingReplicationTransport.accepting((target, message) -> acks.add((ReplicationMessage.ReplicateAck) message)),
                                                 (stream, partition) -> {
                                                     gapStream.add(stream);
                                                     gapPartition.set(partition);
@@ -140,7 +140,7 @@ class ReplicationReceiveHandlerTest {
         ReplicationReceiveHandler.RecoveredAppender appender = (_, _, _, _, _, _) -> TestError.APPEND_FAILED.result();
         var handler = replicationReceiveHandler(SELF,
                                                 appender,
-                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                AcceptingReplicationTransport.accepting((target, message) -> acks.add((ReplicationMessage.ReplicateAck) message)),
                                                 (_, _) -> gapFires.incrementAndGet());
 
         handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 10L, payloads(2), timestamps(2), Epoch.ZERO));
@@ -166,7 +166,7 @@ class ReplicationReceiveHandlerTest {
         var handler = ReplicationReceiveHandler.replicationReceiveHandler(SELF,
                                                                           appender,
                                                                           (_, _) -> 10L,
-                                                                          (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                                          AcceptingReplicationTransport.accepting((target, message) -> acks.add((ReplicationMessage.ReplicateAck) message)),
                                                                           (_, _) -> {},
                                                                           (_, _) -> barrier);
 
@@ -191,7 +191,7 @@ class ReplicationReceiveHandlerTest {
         var handler = ReplicationReceiveHandler.replicationReceiveHandler(SELF,
                                                                           appender,
                                                                           (_, _) -> 10L,
-                                                                          (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                                          AcceptingReplicationTransport.accepting((target, message) -> acks.add((ReplicationMessage.ReplicateAck) message)),
                                                                           (_, _) -> {},
                                                                           (_, _) -> Causes.cause("fsync failed").promise());
 
@@ -209,7 +209,7 @@ class ReplicationReceiveHandlerTest {
         var handler = ReplicationReceiveHandler.replicationReceiveHandler(SELF,
                                                                           appender,
                                                                           (_, _) -> 10L,
-                                                                          (_, _) -> {},
+                                                                          AcceptingReplicationTransport.accepting((_, _) -> {}),
                                                                           (_, _) -> {},
                                                                           (_, _) -> Causes.cause("fsync failed").promise(),
                                                                           CommittedStreamOwnerSource.none(),
@@ -308,7 +308,7 @@ class ReplicationReceiveHandlerTest {
         var handler = replicationReceiveHandler(SELF,
                                                 appender,
                                                 appender::nextExpected,
-                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                AcceptingReplicationTransport.accepting((target, message) -> acks.add((ReplicationMessage.ReplicateAck) message)),
                                                 (_, _) -> gapFires.incrementAndGet());
 
         // Local head empty (next-expected 0); batch starts at 0 — contiguous.
@@ -328,7 +328,7 @@ class ReplicationReceiveHandlerTest {
         var handler = replicationReceiveHandler(SELF,
                                                 appender,
                                                 appender::nextExpected,
-                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                AcceptingReplicationTransport.accepting((target, message) -> acks.add((ReplicationMessage.ReplicateAck) message)),
                                                 (_, _) -> gapFires.incrementAndGet());
 
         // Local head empty (next-expected 0) but the batch starts at 5: offsets [0,4] were dropped.
@@ -349,7 +349,7 @@ class ReplicationReceiveHandlerTest {
         var handler = replicationReceiveHandler(SELF,
                                                 appender,
                                                 appender::nextExpected,
-                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                AcceptingReplicationTransport.accepting((target, message) -> acks.add((ReplicationMessage.ReplicateAck) message)),
                                                 (_, _) -> gapFires.incrementAndGet());
 
         // Reordered: the [3,5] batch arrives first while local head is empty (next-expected 0) — gap.
@@ -372,7 +372,7 @@ class ReplicationReceiveHandlerTest {
         var handler = replicationReceiveHandler(SELF,
                                                 appender,
                                                 appender::nextExpected,
-                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                AcceptingReplicationTransport.accepting((target, message) -> acks.add((ReplicationMessage.ReplicateAck) message)),
                                                 (_, _) -> gapFires.incrementAndGet());
 
         // Apply [0,2] so local next-expected becomes 3.
@@ -396,7 +396,7 @@ class ReplicationReceiveHandlerTest {
         var handler = replicationReceiveHandler(SELF,
                                                 appender,
                                                 appender::nextExpected,
-                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                AcceptingReplicationTransport.accepting((target, message) -> acks.add((ReplicationMessage.ReplicateAck) message)),
                                                 (_, _) -> gapFires.incrementAndGet());
 
         // Apply [0,2] → local next-expected 3.
@@ -425,7 +425,7 @@ class ReplicationReceiveHandlerTest {
         var handler = replicationReceiveHandler(SELF,
                                                 appender,
                                                 localHead,
-                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                AcceptingReplicationTransport.accepting((target, message) -> acks.add((ReplicationMessage.ReplicateAck) message)),
                                                 (_, _) -> gapFires.incrementAndGet());
 
         // Contiguous from 10; only [10,11] land before the failure at index 2.
@@ -448,7 +448,7 @@ class ReplicationReceiveHandlerTest {
         var handler = replicationReceiveHandler(SELF,
                                                 appender,
                                                 appender::nextExpected,
-                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                AcceptingReplicationTransport.accepting((target, message) -> acks.add((ReplicationMessage.ReplicateAck) message)),
                                                 (_, _) -> gapFires.incrementAndGet());
 
         handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads(3), timestamps(3), Epoch.ZERO));
@@ -473,7 +473,7 @@ class ReplicationReceiveHandlerTest {
         var handler = replicationReceiveHandler(SELF,
                                                 appender,
                                                 appender::nextExpected,
-                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                AcceptingReplicationTransport.accepting((target, message) -> acks.add((ReplicationMessage.ReplicateAck) message)),
                                                 (_, _) -> gapFires.incrementAndGet());
 
         handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads(3), timestamps(3), Epoch.ZERO));
@@ -501,7 +501,7 @@ class ReplicationReceiveHandlerTest {
         var handler = replicationReceiveHandler(SELF,
                                                 appender,
                                                 appender::nextExpected,
-                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                AcceptingReplicationTransport.accepting((target, message) -> acks.add((ReplicationMessage.ReplicateAck) message)),
                                                 (_, _) -> {});
 
         handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads(3), timestamps(3), Epoch.ZERO));
@@ -522,7 +522,7 @@ class ReplicationReceiveHandlerTest {
         var handler = replicationReceiveHandler(SELF,
                                                 appender,
                                                 appender::nextExpected,
-                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                AcceptingReplicationTransport.accepting((target, message) -> acks.add((ReplicationMessage.ReplicateAck) message)),
                                                 (_, _) -> gapFires.incrementAndGet());
 
         handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads(3), timestamps(3), Epoch.ZERO));

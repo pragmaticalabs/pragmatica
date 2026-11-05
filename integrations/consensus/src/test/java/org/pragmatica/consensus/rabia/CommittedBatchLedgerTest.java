@@ -53,6 +53,28 @@ class CommittedBatchLedgerTest {
         assertThat(admitted.id()).isEqualTo(committed.id());
     }
 
+    /// #2045: what a voter answers a proposer with; only the ids actually committed under the batch id.
+    @Test
+    void committedOf_returnsOnlyTheCommittedCorrelationIds() {
+        var ledger = new CommittedBatchLedger(8);
+        var committed = batch("a", C1);
+
+        ledger.record(committed.id(), committed.correlationIds());
+
+        assertThat(ledger.committedOf(batch("a", C1, C2)).unwrap()).containsExactly(C1);
+    }
+
+    @Test
+    void committedOf_isEmpty_whenNoIdOfTheBatchWasCommitted() {
+        var ledger = new CommittedBatchLedger(8);
+        var committed = batch("a", C1);
+
+        ledger.record(committed.id(), committed.correlationIds());
+
+        assertThat(ledger.committedOf(batch("a", C2)).isEmpty()).as("same batch id, another submission").isTrue();
+        assertThat(ledger.committedOf(batch("b", C1)).isEmpty()).as("batch id never committed").isTrue();
+    }
+
     @Test
     void record_beyondCapacity_evictsTheOldestFirst() {
         var ledger = new CommittedBatchLedger(2);

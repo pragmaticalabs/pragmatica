@@ -140,6 +140,8 @@ class StreamingCoordinatorTest {
 
             awaitSuccess(coordinator.activate());
             assertThat(recoveredEvents).hasSize(2);
+            assertThat(retentionPass()).as("NT-123 (#2201 3.2 item 6): losing and regaining the leadership leaves this node's "
+                                            + "retention running; the 1970 segment is reclaimed").isEqualTo(1);
         }
     }
 
@@ -152,7 +154,6 @@ class StreamingCoordinatorTest {
 
             var unusedHandler = new GovernorFailoverHandler.unused();
             var coordinator = streamingCoordinator(unusedHandler,
-                                                    retentionEnforcer,
                                                     partitionManager,
                                                     watermarkTracker,
                                                     segmentIndex,
@@ -184,11 +185,27 @@ class StreamingCoordinatorTest {
 
     private StreamingCoordinator buildCoordinator() {
         return streamingCoordinator(failoverHandler,
-                                     retentionEnforcer,
                                      partitionManager,
                                      watermarkTracker,
                                      segmentIndex,
                                      segmentReader);
+    }
+
+    /// One retention pass on this node's enforcer, the method its tick calls (package-private, reached as the Ember tripwires
+    /// reach it).
+    private int retentionPass() {
+        try {
+            var method = RetentionEnforcer.class.getDeclaredMethod("enforceNow");
+
+            method.setAccessible(true);
+
+            @SuppressWarnings("unchecked")
+            var pass = (Promise<Integer>) method.invoke(retentionEnforcer);
+
+            return pass.await().fold(_ -> -1, removed -> removed);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("RetentionEnforcer.enforceNow is not reachable: " + e, e);
+        }
     }
 
     private void createStream(String name, int partitions) {

@@ -50,6 +50,9 @@ ALLOW=(
   'aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamCrashDurabilityTest.java|stop[(][)] then .*start[(][)] in restartCluster|owner question: data durability across a whole-cluster restart onto fresh nodes (#1968)'
   'aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/MultiPartitionCrashDurabilityTest.java|stop[(][)] then .*start[(][)] in restartCluster|owner question: data durability across a whole-cluster restart onto fresh nodes (#1968)'
   'aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/DurableEntityTimerDurabilityTest.java|stop[(][)] then .*start[(][)] in restartCluster|owner question: data durability across a whole-cluster restart onto fresh nodes (#1968)'
+  'aether/ember/src/test/java/org/pragmatica/aether/ember/EmberColdRestartAckedLossTripwireTest.java|stop[(][)] then .*start[(][)] in (runLateReturn|runRestartWithoutBackup)[(][)]|whole-cluster cold restart: all nodes stopped before relaunch (cluster.stop().await(STOP_BOUND) is asserted "stopped" before the first start; EmberCluster.stop settles every node stop and clears the registry first); census marks an unawaited stop UNSETTLED, which this entry does not cover (#1569)'
+  'aether/ember/src/test/java/org/pragmatica/aether/ember/EmberOwnerRestartAckedTailTripwireTest.java|stop[(][)] then .*start[(][)] in tearDown[(][)]|@AfterEach cleanup: tearDown only stops the cluster and deletes its directory, it never starts it; the census pairs it with the start() of the LifecycleSettled helper by method name'
+  'aether/ember/src/test/java/org/pragmatica/aether/ember/EmberOwnerRestartAckedTailTripwireTest.java|stop[(][)] then .*start[(][)] in stop[(][)]|stop-only helper (LifecycleSettled.stop): the census method extent runs on into the sibling start() helper, so the pair is a detector artefact, not a relaunch in this body'
   'aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/KvBackupGracefulStopTest.java|stop[(][)] then .*start[(][)] in gracefulStopInsideTheQuietWindow_streamConfigSurvivesTheRestore|owner question: data durability across a whole-cluster restart onto fresh nodes (#1968)'
 )
 # An entry is `path|regex|reason`; a regex may itself contain `|`, so the reason is the LAST field and the path
@@ -92,7 +95,10 @@ for f in sys.argv[1:]:
                 direct = re.search(r'\b' + v + r'\.start\(', after)
                 via = [n for n in re.findall(r'\b(\w+)\(', after) if n != name and v in starts.get(n, set())]
                 if direct or via:
-                    print(f'{f}:{line}:{v}.stop() then {v}.start() in {name}()'); break
+                    # An excusable whole-cluster cold restart settles the stop (`.await(` or `LifecycleAwait.settled(`, which fails the test on expiry) before anything restarts; a stop whose
+                    # outcome is not awaited may still be running when the start fires, so it is reported under a text no ALLOW matches.
+                    settled = re.match(r'\b' + v + r'\.stop\(\)\s*\.await\(', after) or re.search(r'LifecycleAwait\.settled\([^;]*$', body[:pos])
+                    print(f'{f}:{line}:{v}.stop()' + ('' if settled else ' UNSETTLED') + f' then {v}.start() in {name}()'); break
 PY
 
 # census <root> -> prints "path:line:text" for every non-comment line matching PATTERN under aether/ and
@@ -207,6 +213,14 @@ class HelperTest {
     }
 }
 JAVA
+cat > "$J/UnsettledTest.java" <<'JAVA'
+class UnsettledTest {
+    private void early() {
+        cluster.stop();
+        cluster.start().await();
+    }
+}
+JAVA
 cat > "$J/CleanTest.java" <<'JAVA'
 class CleanTest {
     private void swap() {
@@ -224,8 +238,9 @@ git -C "$G" add -A >/dev/null 2>&1
 vj=$(violations "$G" | grep 'forge-tests')
 if printf '%s' "$vj" | grep -q 'DirectTest.java:2:cluster.stop() then cluster.start() in bounce' \
    && printf '%s' "$vj" | grep -q 'HelperTest.java:2:cluster.stop() then cluster.start() in restartCluster' \
+   && printf '%s' "$vj" | grep -q 'UnsettledTest.java:2:cluster.stop() UNSETTLED then cluster.start() in early' \
    && ! printf '%s' "$vj" | grep -q 'CleanTest'; then
-    ok "C3e Java arm: direct and helper-mediated stop()->start() caught; different variables and start-then-stop are not"
+    ok "C3e Java arm: direct and helper-mediated stop()->start() caught, an unawaited stop marked UNSETTLED; different variables and start-then-stop are not"
 else fail "C3e Java arm wrong: ${vj:-<nothing>}"; fi
 
 echo "== H. 02w cleanup"

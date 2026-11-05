@@ -43,7 +43,7 @@ class ReplicationSenderValidationTest {
         return replicationReceiveHandler(SELF,
                                          (_, _, _, _, _, _) -> Result.success((long) appends.getAndIncrement()),
                                          (_, _) -> localNext,
-                                         (_, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                         AcceptingReplicationTransport.accepting((_, message) -> acks.add((ReplicationMessage.ReplicateAck) message)),
                                          (_, _) -> {},
                                          NO_DURABILITY_BARRIER,
                                          committedOwners);

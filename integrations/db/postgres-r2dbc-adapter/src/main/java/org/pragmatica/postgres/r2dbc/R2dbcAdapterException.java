@@ -64,6 +64,26 @@ final class R2dbcAdapterException extends R2dbcException {
         };
     }
 
+    /// A value the driver cannot convert to the requested type: the message names the column, its PostgreSQL type and the
+    /// target, never null. A column type the driver has no conversion for is a limit of the driver, not of the query.
+    static R2dbcAdapterException conversionFailed(String column,
+                                                  String pgType,
+                                                  Class<?> target,
+                                                  RuntimeException failure) {
+        return new R2dbcAdapterException("Cannot read column '" + column
+                                        + "' of PostgreSQL type " + pgType
+                                        + " as " + target.getName()
+                                        + ": " + describe(failure),
+                                         null,
+                                         failure);
+    }
+
+    private static String describe(RuntimeException failure) {
+        return failure.getMessage() == null
+               ? failure.toString()
+               : failure.getMessage();
+    }
+
     private static Option<String> sqlState(Cause cause) {
         return cause instanceof SqlError.ServerError server
                ? some(server.response().code())

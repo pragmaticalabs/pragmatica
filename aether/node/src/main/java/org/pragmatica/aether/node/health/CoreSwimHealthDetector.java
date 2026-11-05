@@ -44,6 +44,7 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.swim.GossipChannel;
+import org.pragmatica.swim.GossipDecryptObserver;
 import org.pragmatica.swim.GossipEncryptor;
 import org.pragmatica.swim.HealthSnapshot;
 import org.pragmatica.swim.NettySwimTransport;
@@ -380,7 +381,8 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         var selfHost = findSelfHost();
         var selfAddress = new InetSocketAddress(selfHost, swimPort);
 
-        return createTransport(sharedEventLoopGroup, gossipEncryptor).onSuccessRun(transportCreations::incrementAndGet)
+        return createTransport(sharedEventLoopGroup, gossipEncryptor).onSuccess(this::observeDecryption)
+                              .onSuccessRun(transportCreations::incrementAndGet)
                               .flatMap(transport -> createAndStartProtocol(transport,
                                                                            selfAddress,
                                                                            swimPort,
@@ -747,6 +749,14 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
             case SwimHealthState.Running r -> option(r.swim());
             default -> none();
         };
+    }
+
+    /// #1200: a datagram this node cannot open because its key id is unknown becomes a `gossip-key-unknown-from-peer` operator event
+    /// naming the sender, with `gossip-key-peer-decrypted` as its recovery. The sink is read when a warning is raised, so one bound
+    /// after the transport started is used.
+    @Contract
+    private void observeDecryption(SwimTransport transport) {
+        transport.decryptObserver(GossipDecryptObserver.reporting(() -> operatorWarningSink.or(OperatorWarningSink.logOnly())));
     }
 
     private Result<SwimTransport> createTransport(Option<EventLoopGroup> sharedEventLoopGroup,

@@ -48,6 +48,11 @@ public final class PgAsyncColumnMetadata implements ColumnMetadata {
         return pgColumn.name();
     }
 
+    /// The PostgreSQL type of the column, for messages that name it.
+    Oid pgType() {
+        return pgColumn.type();
+    }
+
     @Override
     public Type getType() {
         return mapOidToType(pgColumn.type());

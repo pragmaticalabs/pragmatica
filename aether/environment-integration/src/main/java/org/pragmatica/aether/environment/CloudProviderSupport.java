@@ -86,15 +86,24 @@ public final class CloudProviderSupport {
     }
 
     static Result<ProvisionSpec> buildProvisionSpec(NodeGroupConfig group, String nodeId) {
+        return provisionSpecFor(group, nodeId, Map.of());
+    }
+
+    /// The group's spec for ONE node whose id the caller minted, carrying `extraTags` as native labels. The group
+    /// path ([#provisionVia]) is this with no extra tags; a caller that must record the node id before the create
+    /// (the apply ledger) mints it first and builds the spec here.
+    public static Result<ProvisionSpec> provisionSpecFor(NodeGroupConfig group,
+                                                         String nodeId,
+                                                         Map<String, String> extraTags) {
         var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
                                                group.instanceType(),
                                                group.role(),
-                                               toContext(group, nodeId));
+                                               toContext(group, nodeId, extraTags));
 
         return spec.map(s -> withZonePlacement(s, group.zone()));
     }
 
-    private static ProvisionContext toContext(NodeGroupConfig group, String nodeId) {
+    private static ProvisionContext toContext(NodeGroupConfig group, String nodeId, Map<String, String> extraTags) {
         var tags = group.tags();
         var clusterName = ClusterName.maybeClusterName(tags.get("aether-cluster"));
 
@@ -105,7 +114,7 @@ public final class CloudProviderSupport {
                                                  Option.empty(),
                                                  ProvisionContext.DEFAULT_CORE_MAX,
                                                  ProvisionContext.PROVISIONED_BY_BOOTSTRAP,
-                                                 Map.of());
+                                                 extraTags);
     }
 
     private static ProvisionSpec withZonePlacement(ProvisionSpec spec, String zone) {

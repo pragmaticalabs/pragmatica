@@ -1,0 +1,32 @@
+# Level B input list (phase-3 design 9.2, review M4): the inputs the FSM2 boot test (T / E-01 scenario) must reach.
+# Checked in BEFORE the implementation (12 item 6). For every line, the boot test asserts
+#   aether_deployment_fsm_inputs_total{fsm=<fsm>, input=<name>, result="applied"} > 0
+# <name> is the input record's simple class name (NodeFsm.inputCounted, ClusterFsm.counted).
+# An input missing from this run is a dead wire. An amendment is a visible diff with a reason.
+#
+# Format: <fsm> <input>   # reason
+
+node QuorumEstablished     # genuine ACTIVE -> consumer snapshot -> entry (NI-1)
+node DesiredPut            # the leader's goal for this node, own-node filter (NI-2)
+node ObservedPut           # the node's own committed rows echo back (NI-3); confirms its writes
+node TargetPut             # the committed target (NI-4)
+node TimerFired            # WRITE_CONFIRM / WRITE_PROBE / CHAIN_BOUND / ACTIVATING_CHECK (NI-7)
+node WriteSettled          # the Submitter's settlement (NI-8)
+node LocalOpSettled        # the activation chain's local steps (NI-8)
+
+cluster Activate           # LeaderChange(self) (CI-1)
+cluster Rebuild            # the first input after Activate (R-3.1.6)
+cluster KvPut              # blueprint, target, desired, observed, outcome rows (CI-2..12)
+cluster LeaderObserved     # the only source of viewSequence (CI-16)
+cluster NodeJoined         # core admission with admission(n) (CI-8)
+cluster SeamsRefreshed     # SeamPoller sample incl. coreView (CI-15)
+cluster Timer              # POST_ACTIVATION, TICK, RECONCILE (CI-13)
+cluster WriteSettled       # the leader's transaction settlement (CI-14)
+cluster Reconcile          # coalesced reconcile pass
+cluster Flush              # end of drain: the intents become transactions
+
+# Not reached by T / E-01 and therefore NOT required (each is a component left unwired in this tracer, or needs a scenario this run lacks):
+# node: QuorumDisappeared (no quorum loss), RoutingPut/RoutingRemove/TargetRemove (no rolling update, no undeploy),
+#       DesiredRemove, ObservedRemove (no removal), ConfigChanged (no config section registered), ReconcileActivation (only while Dormant)
+# cluster: Deactivate (until stop), WorkerJoin, WorkerLeave (cores only), NodeRemoved, SelfShutdown, NodeDraining, ProcessKnown (tokens known at first sample),
+#          WitnessStale (no leader change mid-write), KvRemove

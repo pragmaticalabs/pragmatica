@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import org.pragmatica.aether.stream.forward.AcceptingStreamForwardTransport;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -195,7 +196,7 @@ class LinearizableForwardGuardTest {
 
     private StreamForwardHandler handler(List<StreamForwardMessage> sent,
                                          LinearizableOwnerServe<OffHeapRingBuffer.RawEvent> ownerServe) {
-        StreamForwardTransport transport = (target, message) -> sent.add(message);
+        StreamForwardTransport transport = AcceptingStreamForwardTransport.accepting((target, message) -> sent.add(message));
 
         return streamForwardHandler(SELF,
                                     partitionManager,

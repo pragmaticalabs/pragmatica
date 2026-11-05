@@ -306,6 +306,44 @@ public enum OperatorWarningCode {
     /// epoch below the consumer's cursor. The records the group processed above that offset are gone from the log and the
     /// records now at those offsets are delivered; the message names the group, the partition and the offsets.
     STREAM_CONSUMER_REWOUND("stream-consumer-rewound", "stream-consumer", WarningLevel.WARNING),
+    /// A stream consumer's cursor is below its partition's ring tail, so its reads are served from the sealed tier (#2201
+    /// C-16, owner ruling Q10): raised once per `(group, partition)` episode, when a read first needs the tier. A new group
+    /// that starts at `earliest` on a stream with sealed history raises one episode by design. The message names the group,
+    /// the partition and the cursor.
+    STREAM_CONSUMER_BEHIND_RING("stream-consumer-behind-ring", "stream-consumer", WarningLevel.WARNING),
+    /// The recovery of a [#STREAM_CONSUMER_BEHIND_RING], same subject: a read was served from the ring again, or the
+    /// consumer was cancelled while behind it (the message says which).
+    STREAM_CONSUMER_BACK_IN_RING("stream-consumer-back-in-ring",
+                                 "stream-consumer",
+                                 WarningLevel.INFO,
+                                 STREAM_CONSUMER_BEHIND_RING),
+    /// A stream consumer's position is no longer held by its partition's owner (reclaimed by retention) and the group had not
+    /// read it, so its cursor was moved forward to the earliest offset the owner holds and the range will never be delivered (#2201 C-16; the single exception to
+    /// redelivery-never-skip, owner ruling Q9). CRITICAL (Q11): the group lost records it was configured to receive. Raised
+    /// once per expiry, never per poll, and closed by [#STREAM_CONSUMER_CURSOR_RESUMED] once the cursor is re-established;
+    /// that closes the alert, never the loss: the skip is done and nothing later undoes it. The message names the group, the
+    /// partition, the skipped range and its count.
+    STREAM_CONSUMER_CURSOR_EXPIRED("stream-consumer-cursor-expired", "stream-consumer", WarningLevel.CRITICAL),
+    /// The recovery of a [#STREAM_CONSUMER_CURSOR_EXPIRED], same subject (owner ruling 2026-10-28 on Q11: no unclosed
+    /// expiry): the group's cursor is re-established, because a read from the offset it moved to succeeded, the cursor moved
+    /// again first (a later expiry or a rewind), or the consumer was cancelled (the message says which). The skipped range
+    /// stays undelivered.
+    STREAM_CONSUMER_CURSOR_RESUMED("stream-consumer-cursor-resumed",
+                                   "stream-consumer",
+                                   WarningLevel.INFO,
+                                   STREAM_CONSUMER_CURSOR_EXPIRED),
+    /// A stream consumer waits at an offset that no sealed segment holds while a later offset is sealed: a hole in the
+    /// sealed range, above what retention reclaimed (#2201 C-16). The cursor does not move; the group retries with the poll
+    /// backoff until the range is repaired. Retention never reclaims at or above a hole (its bound stops at the contiguous
+    /// sealed watermark), so an unfilled hole holds the group. Raised once per `(group, partition, offset)`. The message
+    /// names the range.
+    STREAM_CONSUMER_SEALED_RANGE_MISSING("stream-consumer-sealed-range-missing", "stream-consumer", WarningLevel.WARNING),
+    /// The recovery of a [#STREAM_CONSUMER_SEALED_RANGE_MISSING], same subject: a later read from that offset succeeded,
+    /// the cursor moved off it, or the consumer was cancelled while waiting at it (the message says which).
+    STREAM_CONSUMER_SEALED_RANGE_RESTORED("stream-consumer-sealed-range-restored",
+                                          "stream-consumer",
+                                          WarningLevel.INFO,
+                                          STREAM_CONSUMER_SEALED_RANGE_MISSING),
     /// A partition's owner promotion is refused because a peer ANSWERED its watermark probe with a page cut before its
     /// first event: that event alone exceeds the peer's read cap (#1431). Not an unreachable peer; the operator raises
     /// the peer's `maxReadResponseBytes`. The message names the partition, the peer and the offset.
@@ -626,9 +664,111 @@ public enum OperatorWarningCode {
     /// only after the warning for the subject. Detected at the next adoption of the same stream in this process; a life released while the
     /// process was down is announced afresh, or not at all, by the next boot.
     STORAGE_STREAM_WAL_RELEASED("storage-stream-wal-released", "storage", WarningLevel.INFO, STORAGE_STREAM_WAL_ORPHANED),
+    /// A node's stream retention has withheld a stream's sealed history for two consecutive passes (#2201 3.2 item 2): the node has
+    /// no retention policy it can read for the stream (its committed config is not applied there yet, or its retention mode is
+    /// unknown to the build), and a rule it cannot read is not authority to delete. Nothing of the stream is reclaimed on that
+    /// node meanwhile, so its disk use grows. The subject is `node <nodeId> stream <name>`. Closed by
+    /// [#STREAM_RETENTION_RESUMED].
+    STREAM_RETENTION_WITHHELD("stream-retention-withheld", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STREAM_RETENTION_WITHHELD], same subject: a pass judged the stream again, or the node no longer holds its
+    /// sealed segments (the message says which).
+    STREAM_RETENTION_RESUMED("stream-retention-resumed", "storage", WarningLevel.INFO, STREAM_RETENTION_WITHHELD),
+    /// The block of a sealed stream segment cannot be read for its age for a reason no retry changes (#2201 3.2 item 8): a missing
+    /// or wrong encryption key, a damaged or missing block. The segment is not read again until the node restarts, and retention
+    /// judges it by the age of the next newer segment, so it neither holds the stream's history for ever nor goes before a newer
+    /// segment. The subject is `node <nodeId> stream <name>[<partition>] <start>-<end>`. Closed by
+    /// [#STREAM_SEGMENT_UNREADABLE_RECLAIMED].
+    STREAM_SEGMENT_UNREADABLE("stream-segment-unreadable", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STREAM_SEGMENT_UNREADABLE], same subject: retention reclaimed the segment.
+    STREAM_SEGMENT_UNREADABLE_RECLAIMED("stream-segment-unreadable-reclaimed",
+                                        "storage",
+                                        WarningLevel.INFO,
+                                        STREAM_SEGMENT_UNREADABLE),
+    /// A peer's SWIM datagram was encrypted under a gossip key id this node does not hold (#1200), and was dropped. The usual cause is a node that
+    /// booted with only its `cluster_secret`-derived key after the cluster rotated its gossip key: its gossip and the cluster's cannot be read by
+    /// either side until the node joins consensus and replays the rotation record, which normally takes seconds. Subject is the sender's address
+    /// as `ip:port`, never a key; a UDP source address can be spoofed. An event that is not followed by its recovery means the sender did not
+    /// catch up: check its peer list and `cluster_secret`. At most 16 new senders raise it per minute. Closed by [#GOSSIP_KEY_PEER_DECRYPTED].
+    GOSSIP_KEY_UNKNOWN_FROM_PEER("gossip-key-unknown-from-peer", "membership", WarningLevel.WARNING),
+    /// The recovery of [#GOSSIP_KEY_UNKNOWN_FROM_PEER], same subject (#1200): a datagram from that sender decrypted. INFO, published only after
+    /// a published unknown-key event for the sender (#752 mechanism).
+    GOSSIP_KEY_PEER_DECRYPTED("gossip-key-peer-decrypted", "membership", WarningLevel.INFO, GOSSIP_KEY_UNKNOWN_FROM_PEER),
+    /// The summary of the senders [#GOSSIP_KEY_UNKNOWN_FROM_PEER] did not report one by one because more than 16 new sender addresses arrived within a
+    /// minute (#1200), almost certainly spoofed or a flood: the count of suppressed sender addresses (a lower bound when it reaches the tracking cap
+    /// of 1024). Subject is `unknown-gossip-key-senders`. INFO: it states a count, closes nothing and opens nothing (a WARNING needs a recovery), and the
+    /// per-datagram WARN in the node log carries every datagram.
+    GOSSIP_KEY_UNKNOWN_SENDERS_SUPPRESSED("gossip-key-unknown-senders-suppressed", "membership", WarningLevel.INFO),
+    /// A node's collection of released stream segments from the cluster-shared tier has failed for three consecutive runs
+    /// (#2258, spec 3.2 item 8): the DHT write quorum is unreachable or its removes fail. The released segments are already
+    /// out of the node's index (readers are answered `CursorExpired`), but their blocks stay on disk and in the DHT, so usage
+    /// does not fall while this lasts. The subject is `node <nodeId> storage streams`. Closed by
+    /// [#STREAM_SEGMENT_DELETE_RECOVERED].
+    STREAM_SEGMENT_DELETE_FAILING("stream-segment-delete-failing", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STREAM_SEGMENT_DELETE_FAILING], same subject: a run completed with no failed delete.
+    STREAM_SEGMENT_DELETE_RECOVERED("stream-segment-delete-recovered",
+                                    "storage",
+                                    WarningLevel.INFO,
+                                    STREAM_SEGMENT_DELETE_FAILING),
+    /// A node's DHT engine holds 85% or more of its `[streaming] dht_segment_max_bytes` as live plus tombstone bytes of the
+    /// `stream-segments` prefix (#2258, spec 3.2 item 8). Tombstones are not capped but are heap, so they count here: this is a
+    /// heap warning, not a refusal. Raised once per episode. The subject is `node <nodeId> dht prefix stream-segments`. Closed by
+    /// [#STREAM_SEGMENT_DHT_NEAR_FULL_CLEARED].
+    STREAM_SEGMENT_DHT_NEAR_FULL("stream-segment-dht-near-full", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STREAM_SEGMENT_DHT_NEAR_FULL], same subject: live plus tombstone bytes fell below 80% of the cap.
+    STREAM_SEGMENT_DHT_NEAR_FULL_CLEARED("stream-segment-dht-near-full-cleared",
+                                         "storage",
+                                         WarningLevel.INFO,
+                                         STREAM_SEGMENT_DHT_NEAR_FULL),
+    /// A node's DHT engine refused a client put because it would take the live bytes of the `stream-segments` prefix above
+    /// `[streaming] dht_segment_max_bytes` (#2258, spec 3.2 item 8). The message names the cap, the usage and the refused size.
+    /// Raised once per episode, at the first refusal; seals that need this replica fail until space is freed. The subject is
+    /// `node <nodeId> dht prefix stream-segments`. Closed by [#STREAM_SEGMENT_DHT_FULL_CLEARED].
+    STREAM_SEGMENT_DHT_FULL("stream-segment-dht-full", "storage", WarningLevel.CRITICAL),
+    /// The recovery of [#STREAM_SEGMENT_DHT_FULL], same subject: live bytes fell below 85% of the cap.
+    STREAM_SEGMENT_DHT_FULL_CLEARED("stream-segment-dht-full-cleared",
+                                    "storage",
+                                    WarningLevel.INFO,
+                                    STREAM_SEGMENT_DHT_FULL),
+    /// The durable local-disk tier of the streams instance is at or above its warning ratio on this node (#2258, spec 3.2 item 8,
+    /// #1574): stream seals fail when it is full and owner publishes are refused from the refuse ratio. Raised once per episode.
+    /// The subject is `node <nodeId> storage streams`. Closed by [#STREAM_SEGMENT_DISK_PRESSURE_RELIEVED].
+    STREAM_SEGMENT_DISK_PRESSURE("stream-segment-disk-pressure", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STREAM_SEGMENT_DISK_PRESSURE], same subject: the tier fell below its warning ratio.
+    STREAM_SEGMENT_DISK_PRESSURE_RELIEVED("stream-segment-disk-pressure-relieved",
+                                          "storage",
+                                          WarningLevel.INFO,
+                                          STREAM_SEGMENT_DISK_PRESSURE),
+    /// A graceful node stop did not seal everything its stream segment sealer held within the stop's sealing bound (know
+    /// 73fd8d9759): a seal in flight, or a run queued behind it, had not landed, and the stop went ahead. The message names
+    /// each such partition, its unsealed range and whether its WAL holds it: a range held by a WAL is replayed at restart;
+    /// one without a WAL is lost, acknowledged events included, as in a crash. Raised once, while the node stops: a fact
+    /// about one stop with no runtime recovery. The subject is `node <nodeId> stream sealer`. [guess: name and level]
+    STREAM_SEAL_STOP_INCOMPLETE("stream-seal-stop-incomplete", "storage", WarningLevel.WARNING),
     /// The recovery of [#JSON_CONFIG_REJECTED], same subject (#2378): a valid `[json]` configuration was adopted after a
     /// refusal. INFO, published only after a published rejection for the subject (#752 mechanism).
-    JSON_CONFIG_APPLIED("json-config-applied", "json", WarningLevel.INFO, JSON_CONFIG_REJECTED);
+    JSON_CONFIG_APPLIED("json-config-applied", "json", WarningLevel.INFO, JSON_CONFIG_REJECTED),
+    /// A `Watched`/`Live` configuration subscription could not take a change (#774): its callback threw, failed or timed out, or the
+    /// section's record could not be bound from the new configuration (the message names the phase and carries the `applySeq`). The
+    /// previous record stays in force and the next change is delivered; nothing is retried. Subject `<artifact>/<section>`. Raised on
+    /// the transition into failure only; a repeat failure logs at ERROR without re-raising.
+    CONFIG_WATCH_CALLBACK_FAILED("config-watch-callback-failed", "config", WarningLevel.WARNING),
+    /// The leader could not bring an artifact's rollback record up to its SliceTarget (#2613): the guarded record write was refused three times
+    /// in a row because the target or the record kept changing under it. The record still names an older version, so the next rollback
+    /// decision for the artifact reads stale bookkeeping until a later SliceTarget update or the next leader activation re-derives it. The
+    /// subject is the artifact base. Closed by [#ROLLBACK_RECORD_RECONCILED]. [guess: name, level and subsystem]
+    ROLLBACK_RECORD_RECONCILE_EXHAUSTED("rollback-record-reconcile-exhausted", "rollback", WarningLevel.CRITICAL),
+    /// The recovery of [#ROLLBACK_RECORD_RECONCILE_EXHAUSTED], same subject (#2613): the artifact's rollback record now names its target's
+    /// version. INFO, published only after a published exhaustion for the subject (#752 mechanism).
+    ROLLBACK_RECORD_RECONCILED("rollback-record-reconciled",
+                               "rollback",
+                               WarningLevel.INFO,
+                               ROLLBACK_RECORD_RECONCILE_EXHAUSTED),
+    /// The recovery of [#CONFIG_WATCH_CALLBACK_FAILED], same subject (#774): the next delivery bound and (when it called back) succeeded.
+    /// INFO, published only after a published failure for the subject (#752 mechanism).
+    CONFIG_WATCH_CALLBACK_RECOVERED("config-watch-callback-recovered",
+                                    "config",
+                                    WarningLevel.INFO,
+                                    CONFIG_WATCH_CALLBACK_FAILED);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

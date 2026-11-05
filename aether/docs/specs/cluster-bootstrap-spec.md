@@ -986,7 +986,7 @@ The diff operates at `(source, role)` granularity. Changes are classified, order
 
 **REQ-9.3.4**: Runtime changes that alter the wire protocol between Aether versions cannot use rolling restart — they require a full-cluster replacement via source-level change. The diff engine flags cross-major-version runtime upgrades and forces the replace-before-retire path.
 
-**REQ-9.3.5**: `apply --resume` reads the last wave state and continues from the first unfinished wave, re-running pre-flight before each resumption. `apply --rollback` is **not implemented (#686)**: it prints that and exits non-zero, before reading the file or contacting the cluster. The intended behaviour, to be rebuilt with the server-side wave design, was to reverse completed waves in LIFO order: re-provision drained nodes, re-join cluster, destroy nodes that were added, restore prior firewall rules.
+**REQ-9.3.5**: `apply --resume` reads the last wave state and continues from the first unfinished wave, re-running pre-flight before each resumption. `apply --rollback` (#686) terminates the VMs the ledger recorded, newest first, as described in `reference/cli.md`; it does not recreate nodes a wave removed (they are listed as not restored). The earlier design intent was to reverse completed waves in LIFO order: re-provision drained nodes, re-join cluster, destroy nodes that were added, restore prior firewall rules.
 
 > **Superseded by #1543 (2026-10-09):** the runtime-change and source-level rolling restarts described in this section (drain and destroy a node, then start another in its place, the SSH branch under the same id) are no longer executed: `apply` refuses a runtime change with an error naming the supported ways. Nodes move onto new software by replacement under a fresh id (`aether cluster upgrade --version X.Y.Z --wait`, `POST /api/v1/nodes/replace/{id}`). There is no supported way today to change a source role's runtime profile on a running cluster.
 
@@ -1026,7 +1026,7 @@ Apply these changes? [y/N]
 | `aether cluster apply --config <file> --dry-run` | Show diff plan only |
 | `aether cluster apply --config <file> --yes` | Apply without confirmation prompt |
 | `aether cluster apply --resume` | Resume a halted-in-place apply from the first unfinished wave |
-| `aether cluster apply --rollback` | Not implemented (#686): fails with a non-zero exit |
+| `aether cluster apply --rollback` | Terminates the VMs the halted apply's ledger recorded (#686); non-zero and ledger kept if any is left |
 | `aether cluster destroy [--yes]` | Full cluster teardown |
 
 ### 10.2 Operational Commands

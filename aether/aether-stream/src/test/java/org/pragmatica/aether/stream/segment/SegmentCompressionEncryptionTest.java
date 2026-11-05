@@ -77,7 +77,7 @@ class SegmentCompressionEncryptionTest {
             assertThat(ref.isEmpty()).isFalse();
             ref.onPresent(r -> {
                 assertThat(r.compressionOrdinal()).isEqualTo(Compression.LZ4.ordinal());
-                assertThat(r.originalSize()).isEqualTo(serialized.length);
+                assertThat(r.originalSize()).isEqualTo(identityHeaderBytes() + serialized.length);
                 assertThat(r.encrypted()).isFalse();
             });
         }
@@ -208,7 +208,7 @@ class SegmentCompressionEncryptionTest {
             ref.onPresent(r -> {
                 assertThat(r.compressionOrdinal()).isEqualTo(Compression.ZSTD.ordinal());
                 assertThat(r.encrypted()).isTrue();
-                assertThat(r.originalSize()).isEqualTo(serialized.length);
+                assertThat(r.originalSize()).isEqualTo(identityHeaderBytes() + serialized.length);
             });
         }
     }
@@ -246,7 +246,7 @@ class SegmentCompressionEncryptionTest {
             ref.onPresent(r -> {
                 assertThat(r.compressionOrdinal()).isEqualTo(0);
                 assertThat(r.encrypted()).isFalse();
-                assertThat(r.originalSize()).isEqualTo(serialized.length);
+                assertThat(r.originalSize()).isEqualTo(identityHeaderBytes() + serialized.length);
             });
         }
     }
@@ -257,6 +257,11 @@ class SegmentCompressionEncryptionTest {
             RawEvent.rawEvent(1L, "hello-world-event-data-two".getBytes(), 200L),
             RawEvent.rawEvent(2L, "hello-world-event-data-three".getBytes(), 300L)
         );
+    }
+
+    /// #2258: the identity header in front of the events, which `originalSize` counts (the block before compression).
+    private static int identityHeaderBytes() {
+        return SegmentProvenance.withIdentity(STREAM, 0, 0, 0, org.pragmatica.lang.Option.none(), new byte[0]).length;
     }
 
     private static void assertEventsMatch(List<RawEvent> actual, List<RawEvent> expected) {

@@ -473,8 +473,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     }
 
     private Promise<Unit> existingAttempt(NodeId node) {
-        return store.get(new AetherKey.CapacityReservationKey(node))
-                    .isPresent()
+        return records().holds(node)
                ? Causes.cause("Existing capacity reservation has an unresolved or already dispatched provider operation").promise()
                : Promise.unitPromise();
     }
@@ -493,13 +492,12 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
         dispatchStamps.put(node,
                            new DispatchStamp(leadershipGeneration.get(), clock.getAsLong()));
 
-        return store.getTyped(new AetherKey.CapacityReservationKey(node),
-                              CapacityReservationValue.class)
-                    .toResult(Causes.cause("Missing committed capacity binding before create"))
-                    .async()
-                    .flatMap(reservation -> dispatchBound(node,
-                                                          spec,
-                                                          reservation.sourceBinding()));
+        return records().reservation(node)
+                      .toResult(Causes.cause("Missing committed capacity binding before create"))
+                      .async()
+                      .flatMap(reservation -> dispatchBound(node,
+                                                            spec,
+                                                            reservation.sourceBinding()));
     }
 
     /// The reservation is committed and the provider was never asked: leadership moved between the two, so this create provably did not
@@ -517,6 +515,12 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
 
         return delegate.provisionNode(spec, binding)
                        .fold(result -> result.fold(cause -> {
+                                                       if (cause instanceof EnvironmentError.AlreadyExists existing) {
+                                                           return adoptExisting(existing.existing(),
+                                                                                spec.context().sourceName(),
+                                                                                binding);
+                                                       }
+
                                                        if (cause instanceof EnvironmentError.CapacityUnavailable || cause instanceof EnvironmentError.NodeCapExceeded) {
                                                            return recordRefusal(node,
                                                                                 spec.context().sourceName(),
@@ -531,6 +535,13 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                    instance -> observeBound(List.of(instance),
                                                                             spec.context().sourceName(),
                                                                             binding).map(_ -> instance)));
+    }
+
+    /// G1-a: the provider refused the create because the server named for this NodeId already exists and carries this create's labels: an
+    /// earlier attempt whose reply was lost made it. The create HAS happened, so the reservation is OBSERVED with that instance, exactly as
+    /// after a 201, and no refusal is recorded: a refusal would release the capacity of a server that exists. No second create follows.
+    private Promise<InstanceInfo> adoptExisting(InstanceInfo existing, SourceName source, String binding) {
+        return observeBound(List.of(existing), source, binding).map(_ -> existing);
     }
 
     private Promise<Unit> releaseRefusal(NodeId node, SourceName source, String binding) {
@@ -553,19 +564,17 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     /// Persist no-create evidence independently of the contended fleet counter.
     /// FER: a failed counter release retains RELEASED for the next inventory pass.
     private Promise<Unit> recordRefusal(NodeId node, SourceName source, String binding) {
-        var key = new AetherKey.CapacityReservationKey(node);
-
-        return store.getTyped(key, CapacityReservationValue.class)
-                    .filter(value -> value.phase() == CapacityReservationPhase.DISPATCHED
-                                     && value.sourceName()
-                                             .equals(source.value())
-                                     && value.sourceBinding()
-                                             .equals(binding))
-                    .fold(() -> HierarchyStateWriter.Refusal.CONFLICT.promise(),
-                          before -> persistRefusal(key, before));
+        return records().reservation(node)
+                      .filter(value -> value.phase() == CapacityReservationPhase.DISPATCHED
+                                       && value.sourceName()
+                                               .equals(source.value())
+                                       && value.sourceBinding()
+                                               .equals(binding))
+                      .fold(() -> HierarchyStateWriter.Refusal.CONFLICT.promise(),
+                            before -> persistRefusal(node, before));
     }
 
-    private Promise<Unit> persistRefusal(AetherKey.CapacityReservationKey key, CapacityReservationValue before) {
+    private Promise<Unit> persistRefusal(NodeId node, CapacityReservationValue before) {
         return leader().fold(() -> HierarchyStateWriter.Refusal.CONFLICT.promise(),
                              current -> {
                                  var id = UUID.randomUUID().toString();
@@ -573,10 +582,8 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                                           before.sourceBinding(),
                                                                           before.intendedRole(),
                                                                           CapacityReservationPhase.RELEASED);
-                                 var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(key,
-                                                                                               Option.some(before),
-                                                                                               Option.some(after));
-                                 var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                                 var mutation = records().replace(node, before, after);
+                                 var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(records().recordKey(node),
                                                                                                        id,
                                                                                                        current,
                                                                                                        List.of(),
@@ -613,14 +620,13 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     }
 
     private Promise<Unit> refuseUndispatched(NodeId node, SourceName source) {
-        return store.getTyped(new AetherKey.CapacityReservationKey(node),
-                              CapacityReservationValue.class)
-                    .filter(reservation -> reservation.phase() == CapacityReservationPhase.DISPATCHED)
-                    .fold(Promise::unitPromise,
-                          reservation -> recordRefusal(node,
-                                                       source,
-                                                       reservation.sourceBinding()))
-                    .onSuccess(_ -> undispatched.remove(node));
+        return records().reservation(node)
+                      .filter(reservation -> reservation.phase() == CapacityReservationPhase.DISPATCHED)
+                      .fold(Promise::unitPromise,
+                            reservation -> recordRefusal(node,
+                                                         source,
+                                                         reservation.sourceBinding()))
+                      .onSuccess(_ -> undispatched.remove(node));
     }
 
     private Promise<Unit> releaseRefusals() {
@@ -645,16 +651,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     }
 
     private Map<NodeId, CapacityReservationValue> reservations() {
-        var result = new java.util.HashMap<NodeId, CapacityReservationValue>();
-        Map<?, ?> snapshot = store.snapshot();
-
-        snapshot.forEach((key, value) -> {
-            if (key instanceof AetherKey.CapacityReservationKey reservation && value instanceof CapacityReservationValue state) {
-                result.put(reservation.nodeId(), state);
-            }
-        });
-
-        return Map.copyOf(result);
+        return records().reservations();
     }
 
     private Option<LeaderValue> leader() {
@@ -677,7 +674,12 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     }
 
     private Option<CapacityLedgerValue> ledger() {
-        return store.getTyped(AetherKey.CapacityLedgerKey.INSTANCE, CapacityLedgerValue.class);
+        return records().ledger();
+    }
+
+    /// Where the lifecycle keeps its reservations and the fleet counter (O3-2): every access to them goes through this port.
+    private CapacityRecords records() {
+        return CapacityRecords.overReservations(store);
     }
 
     /// Admission needs a committed configuration and every source it names inventoried: the returned configuration is the one the
@@ -881,12 +883,11 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                           String binding,
                                           String intendedRole,
                                           AetherValue.ClusterConfigValue inventoriedUnder) {
-        var key = new AetherKey.CapacityReservationKey(node);
         var current = ledger();
         var configuration = Option.some(inventoriedUnder);
 
-        if (store.get(key).isPresent() || current.filter(value -> value.inventoryComplete() && value.allocated() < limit.getAsInt())
-                                                 .isEmpty()) {
+        if (records().holds(node) || current.filter(value -> value.inventoryComplete() && value.allocated() < limit.getAsInt())
+                                            .isEmpty()) {
             return Promise.success(false);
         }
 
@@ -895,12 +896,11 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                             new CapacityLedgerValue(value.allocated() + 1, value.version() + 1, true),
                                             List.of(new KVCommand.ReadWitness<AetherKey>(AetherKey.ClusterConfigKey.CURRENT,
                                                                                          configuration.map(config -> (Object) config))),
-                                            List.of(new KVCommand.Mutation<>(key,
-                                                                             Option.none(),
-                                                                             Option.some(new CapacityReservationValue(source.value(),
-                                                                                                                      binding,
-                                                                                                                      intendedRole.toLowerCase(java.util.Locale.ROOT),
-                                                                                                                      CapacityReservationPhase.DISPATCHED))))));
+                                            List.of(records().create(node,
+                                                                     new CapacityReservationValue(source.value(),
+                                                                                                  binding,
+                                                                                                  intendedRole.toLowerCase(java.util.Locale.ROOT),
+                                                                                                  CapacityReservationPhase.DISPATCHED)))));
     }
 
     private Promise<Unit> observeBound(List<InstanceInfo> instances, SourceName source, String binding) {
@@ -911,8 +911,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
 
         for (var instance : instances) {
             var node = observedNode(instance, source);
-            var key = new AetherKey.CapacityReservationKey(node);
-            var existing = store.getTyped(key, CapacityReservationValue.class);
+            var existing = records().reservation(node);
 
             if (existing.filter(value -> !value.sourceName()
                                                .equals(source.value()) || !value.sourceBinding()
@@ -929,13 +928,13 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                 additions++;
             }
 
-            mutations.add(new KVCommand.Mutation<>(key,
-                                                   existing.map(value -> value),
-                                                   Option.some(new CapacityReservationValue(source.value(),
-                                                                                            binding,
-                                                                                            existing.map(CapacityReservationValue::intendedRole)
-                                                                                                    .or(""),
-                                                                                            CapacityReservationPhase.OBSERVED))));
+            mutations.add(records().put(node,
+                                        existing,
+                                        new CapacityReservationValue(source.value(),
+                                                                     binding,
+                                                                     existing.map(CapacityReservationValue::intendedRole)
+                                                                             .or(""),
+                                                                     CapacityReservationPhase.OBSERVED)));
         }
 
         if (mutations.isEmpty()) {
@@ -973,11 +972,9 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                              currentLeader -> {
                                  var mutations = new ArrayList<>(changes);
 
-                                 mutations.add(new KVCommand.Mutation<AetherKey, AetherValue>(AetherKey.CapacityLedgerKey.INSTANCE,
-                                                                                              before.map(value -> value),
-                                                                                              Option.some(after)));
+                                 mutations.add(records().ledgerChange(before, after));
                                  var id = UUID.randomUUID().toString();
-                                 var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(AetherKey.CapacityLedgerKey.INSTANCE,
+                                 var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(records().ledgerKey(),
                                                                                                        id,
                                                                                                        currentLeader,
                                                                                                        guards,
@@ -1000,13 +997,12 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                   SourceName source,
                                   String binding,
                                   CapacityReservationPhase expectedPhase) {
-        var key = new AetherKey.CapacityReservationKey(node);
-        var reservation = store.getTyped(key, CapacityReservationValue.class)
-                               .filter(value -> value.sourceName()
-                                                     .equals(source.value())
-                                                && value.sourceBinding()
-                                                        .equals(binding)
-                                                && value.phase() == expectedPhase);
+        var reservation = records().reservation(node)
+                                 .filter(value -> value.sourceName()
+                                                       .equals(source.value())
+                                                  && value.sourceBinding()
+                                                          .equals(binding)
+                                                  && value.phase() == expectedPhase);
 
         return reservation.fold(Promise::unitPromise,
                                 existing -> ledger().fold(Promise::unitPromise,
@@ -1016,17 +1012,16 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                                               new CapacityLedgerValue(current.allocated() - 1,
                                                                                                       current.version() + 1,
                                                                                                       current.inventoryComplete()),
-                                                                              releaseMutations(node, key, existing)).flatMap(accepted -> accepted
-                                                                                                                                         ? Promise.unitPromise()
-                                                                                                                                         : Causes.cause("Capacity release conflicted; retry absence confirmation").promise())));
+                                                                              releaseMutations(node, existing)).flatMap(accepted -> accepted
+                                                                                                                                    ? Promise.unitPromise()
+                                                                                                                                    : Causes.cause("Capacity release conflicted; retry absence confirmation").promise())));
     }
 
     private List<KVCommand.Mutation<AetherKey, AetherValue>> releaseMutations(NodeId node,
-                                                                              AetherKey.CapacityReservationKey key,
                                                                               CapacityReservationValue existing) {
         var changes = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
 
-        changes.add(new KVCommand.Mutation<>(key, Option.some(existing), Option.none()));
+        changes.add(records().remove(node, existing));
         if (existing.phase() != CapacityReservationPhase.RELEASED) {
             var placementKey = new AetherKey.NodePlacementKey(node);
 
@@ -1069,7 +1064,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
 
     @Override
     public Promise<List<InstanceInfo>> instancesForNode(NodeId node, SourceName source) {
-        var reservation = store.getTyped(new AetherKey.CapacityReservationKey(node), CapacityReservationValue.class);
+        var reservation = records().reservation(node);
 
         return reservation.fold(() -> delegate.sourceBinding(source),
                                 value -> org.pragmatica.lang.Result.success(value.sourceBinding()))
@@ -1101,10 +1096,9 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     }
 
     private org.pragmatica.lang.Result<String> reservationBinding(NodeId node, SourceName source) {
-        return store.getTyped(new AetherKey.CapacityReservationKey(node),
-                              CapacityReservationValue.class)
-                    .fold(() -> delegate.sourceBinding(source),
-                          value -> org.pragmatica.lang.Result.success(value.sourceBinding()));
+        return records().reservation(node)
+                      .fold(() -> delegate.sourceBinding(source),
+                            value -> org.pragmatica.lang.Result.success(value.sourceBinding()));
     }
 
     @Override
@@ -1119,9 +1113,8 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     }
 
     private Option<SourceName> source(NodeId node) {
-        return store.getTyped(new AetherKey.CapacityReservationKey(node),
-                              CapacityReservationValue.class)
-                    .map(value -> SourceName.sourceNameOrDefault(value.sourceName()));
+        return records().reservation(node)
+                      .map(value -> SourceName.sourceNameOrDefault(value.sourceName()));
     }
 
     /// The binding an EXTERNAL admission's reservation carries when the fleet ledger could not count it.
@@ -1135,10 +1128,9 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
 
     @Override
     public boolean externalNode(NodeId node) {
-        return store.getTyped(new AetherKey.CapacityReservationKey(node),
-                              CapacityReservationValue.class)
-                    .filter(value -> isExternalBinding(value.sourceBinding()))
-                    .isPresent();
+        return records().reservation(node)
+                      .filter(value -> isExternalBinding(value.sourceBinding()))
+                      .isPresent();
     }
 
     @Override
@@ -1150,24 +1142,22 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
 
     @Override
     public Promise<Unit> readmitExternal(NodeId node) {
-        var key = new AetherKey.CapacityReservationKey(node);
-
-        return store.getTyped(key, CapacityReservationValue.class)
-                    .fold(() -> admitReleased(node, key),
-                          reservation -> isExternalBinding(reservation.sourceBinding())
-                                         ? restamp(node, reservation, READMISSION_ATTEMPTS)
-                                         : Promise.unitPromise());
+        return records().reservation(node)
+                      .fold(() -> admitReleased(node),
+                            reservation -> isExternalBinding(reservation.sourceBinding())
+                                           ? restamp(node, reservation, READMISSION_ATTEMPTS)
+                                           : Promise.unitPromise());
     }
 
     /// The node joined and has NO reservation. A node retired by a replacement is SUPERSEDED (its tombstone): it is refused. When a release deleted an EXTERNAL reservation
     /// (the marker remembers it, whoever released it) the node is admitted again as a new admission, never left a member without a reservation and a slot. Anything
     /// else - no marker, or a marker with neither - is reported to the manager ([NoReservationOnJoin]); it is never silently left alone.
-    private Promise<Unit> admitReleased(NodeId node, AetherKey.CapacityReservationKey key) {
+    private Promise<Unit> admitReleased(NodeId node) {
         return admission(node).fold(() -> new NoReservationOnJoin(node.id()).<Unit> promise(),
                                     marker -> marker.supersededBy()
                                                     .fold(() -> marker.released()
                                                                       .fold(() -> new NoReservationOnJoin(node.id()).<Unit> promise(),
-                                                                            released -> admitAgain(node, key, released)),
+                                                                            released -> admitAgain(node, released)),
                                                           replacement -> new RetiredIdentityRejoined(node.id(),
                                                                                                      replacement).<Unit> promise()));
     }
@@ -1244,27 +1234,22 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     /// still exactly what was read. A release that read the marker earlier then fails; a release that committed first removed the reservation, which
     /// fails THIS transaction, and the node is then re-admitted as new ([#admitAgain]).
     private Promise<Unit> restamp(NodeId node, CapacityReservationValue reservation, int attemptsLeft) {
-        var key = new AetherKey.CapacityReservationKey(node);
-        var guard = new KVCommand.ReadWitness<AetherKey>(key, Option.some(reservation));
+        var guard = records().witness(node, Option.some(reservation));
 
-        return transact(key, List.of(guard), List.of(bumpMarker(node, marker(node)))).flatMap(done -> done
-                                                                                                      ? Promise.unitPromise()
-                                                                                                      : afterRestampConflict(node,
-                                                                                                                             key,
-                                                                                                                             reservation,
-                                                                                                                             attemptsLeft));
+        return transact(records().recordKey(node), List.of(guard), List.of(bumpMarker(node, marker(node)))).flatMap(done -> done
+                                                                                                                            ? Promise.unitPromise()
+                                                                                                                            : afterRestampConflict(node,
+                                                                                                                                                   reservation,
+                                                                                                                                                   attemptsLeft));
     }
 
-    private Promise<Unit> afterRestampConflict(NodeId node,
-                                               AetherKey.CapacityReservationKey key,
-                                               CapacityReservationValue read,
-                                               int attemptsLeft) {
-        var current = store.getTyped(key, CapacityReservationValue.class);
+    private Promise<Unit> afterRestampConflict(NodeId node, CapacityReservationValue read, int attemptsLeft) {
+        var current = records().reservation(node);
 
         if (current.isEmpty()) {
             return admission(node).flatMap(AetherValue.CapacityAdmissionValue::released)
-                            .fold(() -> admitAgain(node, key, read),
-                                  released -> admitAgain(node, key, released));
+                            .fold(() -> admitAgain(node, read),
+                                  released -> admitAgain(node, released));
         }
 
         return attemptsLeft > 1
@@ -1275,10 +1260,8 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     /// The release of the previous incarnation committed first: the node is a member with no reservation and no slot. It is admitted again, as a new
     /// admission (an expected-absent reservation and, when counted, its slot in the ledger), keeping the invariant that the ledger counts the live
     /// reservations. A counted reservation the ledger cannot count again is a REFUSAL.
-    private Promise<Unit> admitAgain(NodeId node,
-                                     AetherKey.CapacityReservationKey key,
-                                     CapacityReservationValue released) {
-        var reservation = new KVCommand.Mutation<AetherKey, AetherValue>(key, Option.none(), Option.some(released));
+    private Promise<Unit> admitAgain(NodeId node, CapacityReservationValue released) {
+        var reservation = records().create(node, released);
         var bump = bumpMarker(node, marker(node));
         var counted = !UNCOUNTED_BINDING.equals(released.sourceBinding());
         var accepted = counted
@@ -1289,7 +1272,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                                                current.version() + 1,
                                                                                current.inventoryComplete()),
                                                        List.of(reservation, bump)))
-                       : transact(key, List.of(), List.of(reservation, bump));
+                       : transact(records().recordKey(node), List.of(), List.of(reservation, bump));
 
         return accepted.flatMap(done -> done
                                         ? Promise.unitPromise()
@@ -1298,22 +1281,21 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
 
     @Override
     public Promise<Unit> releaseExternal(NodeId node) {
-        var key = new AetherKey.CapacityReservationKey(node);
-
-        return store.getTyped(key, CapacityReservationValue.class)
-                    .filter(value -> isExternalBinding(value.sourceBinding()))
-                    .fold(Promise::unitPromise,
-                          reservation -> releaseExternal(key, reservation));
+        return records().reservation(node)
+                      .filter(value -> isExternalBinding(value.sourceBinding()))
+                      .fold(Promise::unitPromise,
+                            reservation -> releaseExternal(node, reservation));
     }
 
     /// A counted reservation returns its slot with the delete; an uncounted one (no ledger could count it) is dropped without touching the
     /// counter, ledger or not.
-    private Promise<Unit> releaseExternal(AetherKey.CapacityReservationKey key, CapacityReservationValue reservation) {
-        var drop = new KVCommand.Mutation<AetherKey, AetherValue>(key, Option.some(reservation), Option.none());
+    private Promise<Unit> releaseExternal(NodeId node, CapacityReservationValue reservation) {
+        var key = records().recordKey(node);
+        var drop = records().remove(node, reservation);
         // The release commits only if the admission marker is still what it read - the marker mutation is a compare-and-set - and it leaves the marker
         // remembering the reservation it deleted. A join since the read bumped the marker, so a release that began before a rejoin cannot delete what the
         // new incarnation holds; a rejoin that finds the reservation already gone admits the node again from the remembered one.
-        var remember = rememberReleased(key.nodeId(), marker(key.nodeId()), reservation);
+        var remember = rememberReleased(node, marker(node), reservation);
         var counted = !UNCOUNTED_BINDING.equals(reservation.sourceBinding());
         var accepted = counted
                        ? ledger().fold(() -> transact(key, List.of(drop, remember)),
@@ -1328,8 +1310,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
 
         return accepted.flatMap(done -> done
                                         ? Promise.unitPromise()
-                                        : Causes.cause("The release of the reservation of " + key.nodeId()
-                                                                                                 .id()
+                                        : Causes.cause("The release of the reservation of " + node.id()
                                                       + " conflicted; retry").promise());
     }
 
@@ -1374,10 +1355,9 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
             return Promise.unitPromise();
         }
 
-        return ensureTerminationInventory().flatMap(_ -> store.getTyped(new AetherKey.CapacityReservationKey(node),
-                                                                        CapacityReservationValue.class)
-                                                              .toResult(Causes.cause("Cannot terminate without a committed capacity source binding"))
-                                                              .async())
+        return ensureTerminationInventory().flatMap(_ -> records().reservation(node)
+                                                                .toResult(Causes.cause("Cannot terminate without a committed capacity source binding"))
+                                                                .async())
                                          .flatMap(reservation -> terminateBound(node,
                                                                                 source,
                                                                                 reservation.sourceBinding()));
@@ -1388,15 +1368,14 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
             return Causes.cause("Core leadership required before provider termination").promise();
         }
 
-        return store.getTyped(new AetherKey.CapacityReservationKey(node),
-                              CapacityReservationValue.class)
-                    .filter(value -> value.sourceName()
-                                          .equals(source.value()) && value.sourceBinding()
-                                                                          .equals(binding))
-                    .toResult(Causes.cause("Termination does not match the committed capacity source binding"))
-                    .async()
-                    .flatMap(_ -> delegate.terminateNode(node, source, binding))
-                    .flatMap(_ -> instancesForNode(node, source, binding).mapToUnit());
+        return records().reservation(node)
+                      .filter(value -> value.sourceName()
+                                            .equals(source.value()) && value.sourceBinding()
+                                                                            .equals(binding))
+                      .toResult(Causes.cause("Termination does not match the committed capacity source binding"))
+                      .async()
+                      .flatMap(_ -> delegate.terminateNode(node, source, binding))
+                      .flatMap(_ -> instancesForNode(node, source, binding).mapToUnit());
     }
 
     @Override

@@ -3,8 +3,10 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
@@ -19,7 +21,9 @@ import org.pragmatica.aether.environment.CloudProviderSupport;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ClusterSecretSource;
 import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
+import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionContext;
@@ -49,7 +53,7 @@ import static org.pragmatica.lang.Result.success;
 ///
 /// #1695: this path used to hand the provider a spec with NO user-data, so an apply-minted cloud node booted with no
 /// identity and no runtime and could never join; and it asked for a location literally named `default` when the source
-/// declared no zone. #1027: the node id is minted HERE, in the CTM scheme (`aether-<cluster>-node-<ulid>`, unique per
+/// declared no zone. #1027: the node id is minted HERE, in the CTM scheme (`aether-node-<ulid>` for a cloud source, `aether-<cluster>-node-<ulid>` for Docker; unique per
 /// call), and the same id goes into the provisioning context and the rendered user-data. The old per-call
 /// `<source>-<role>-<i>` index restarted at 0 on every wave, so threading it would have handed a scale-up node the id of a
 /// live member. Known limitation: a minted id does not parse as `<source>-<role>-<i>`, exactly as a CTM replacement's
@@ -79,26 +83,32 @@ sealed interface WaveNodeProvisioning {
                                                                                                                     peers)));
     }
 
-    /// Provision `count` CLOUD nodes of `role` from `source`, each under a freshly minted id.
+    /// Provision `count` CLOUD nodes of `role` from `source`, each under a freshly minted id, each recorded in the
+    /// ledger BEFORE its create call (a failed write means no call) and after the provider's answer.
     static Result<List<ProvisionedNode>> provisionCloud(ComputeProvider compute,
                                                         ClusterBootstrapConfig desired,
                                                         SourceProfile source,
                                                         NodeRole role,
                                                         int count,
                                                         JoinInputs inputs,
-                                                        Supplier<String> nodeIds) {
+                                                        Supplier<String> nodeIds,
+                                                        ApplyRecorder recorder) {
         var nodes = new ArrayList<ProvisionedNode>();
 
         for (int i = 0; i < count; i++) {
             var nodeId = nodeIds.get();
-            var provisioned = cloudProvisionSpec(desired, source, role, nodeId, inputs).flatMap(spec -> CloudProviderSupport.provisionOne(compute,
-                                                                                                                                          nodeId,
-                                                                                                                                          spec).await());
+            var provisioned = cloudProvisionSpec(desired, source, role, nodeId, inputs, recorder.applyId()).flatMap(spec -> createRecorded(compute,
+                                                                                                                                           spec,
+                                                                                                                                           nodeId,
+                                                                                                                                           providerName(source),
+                                                                                                                                           recorder,
+                                                                                                                                           WaveNodeProvisioning::returnedLabels));
 
             if (provisioned.isFailure()) {
                 return provisioned.mapError(cause -> PartiallyProvisioned.partiallyProvisioned(tearDown(compute,
                                                                                                         created(nodes,
-                                                                                                                source)),
+                                                                                                                source),
+                                                                                                        recorder),
                                                                                                cause))
                                   .map(_ -> List.<ProvisionedNode> of());
             }
@@ -109,13 +119,207 @@ sealed interface WaveNodeProvisioning {
         return success(List.copyOf(nodes));
     }
 
-    /// A fresh node id in the CTM scheme, unique per call.
+    /// The write-ahead sequence for one node, shared by every source type that creates a billed or running VM:
+    /// S1 intent row, then the provider create, then the created row, after checking the VM carries its labels.
+    static Result<ProvisionedNode> createRecorded(ComputeProvider compute,
+                                                  ProvisionSpec spec,
+                                                  String nodeId,
+                                                  String provider,
+                                                  ApplyRecorder recorder,
+                                                  LabelCheck labelCheck) {
+        return recorder.intend(nodeId, provider)
+                       .flatMap(_ -> answered(compute.provision(spec).await(),
+                                              nodeId,
+                                              provider,
+                                              recorder))
+                       .flatMap(info -> recordCreated(compute, info, nodeId, provider, recorder, labelCheck));
+    }
+
+    /// How a source type proves its VM carries the labels it was asked for (F9). A cloud provider reports the labels on
+    /// the instance it returns; Docker re-stamps the returned instance from `docker inspect`, which lists no custom
+    /// labels, so there the daemon's own label filter answers.
+    @FunctionalInterface
+    interface LabelCheck {
+        Result<Unit> verify(ComputeProvider compute, InstanceInfo info, String nodeId, String applyId);
+    }
+
+    static Result<Unit> returnedLabels(ComputeProvider compute, InstanceInfo info, String nodeId, String applyId) {
+        return verifyLabels(info, nodeId, applyId);
+    }
+
+    static Result<Unit> filteredListing(ComputeProvider compute, InstanceInfo info, String nodeId, String applyId) {
+        var serverId = info.id().value();
+
+        return compute.listInstances(Map.of(APPLY_LABEL, applyId))
+                      .await()
+                      .flatMap(listed -> listed.stream()
+                                               .anyMatch(item -> item.id()
+                                                                     .value()
+                                                                     .equals(serverId)) && info.nodeId()
+                                                                                               .equals(Option.some(nodeId))
+                                         ? Result.unitResult()
+                                         : new LabelsMissing(nodeId, serverId).result());
+    }
+
+    /// Whether `info`, as a provider LISTED it, carries this cluster's label and this apply's label. Cloud providers report
+    /// custom labels on the instance; the Docker provider reports `aether.cluster` and never custom labels, so for Docker the
+    /// apply label is what the daemon's own label filter already proved. A listing the server-side selector got wrong (or
+    /// ignored) therefore never makes a server "ours" by itself.
+    static boolean ownedBy(String provider, InstanceInfo info, String cluster, String applyId) {
+        return "docker".equals(provider)
+               ? cluster.equals(info.tags().get("aether.cluster"))
+               : cluster.equals(info.tags().get("aether-cluster")) && applyId.equals(info.tags().get(APPLY_LABEL));
+    }
+
+    private static Result<InstanceInfo> answered(Result<InstanceInfo> answer,
+                                                 String nodeId,
+                                                 String provider,
+                                                 ApplyRecorder recorder) {
+        recorder.providerAnswered();
+
+        return answer.fold(cause -> unanswered(cause, nodeId, provider, recorder), Result::success);
+    }
+
+    /// G1-f: a create the provider refused, read by what it says. A refused NAME is not a failed create: the provider names the server
+    /// after the node id and refuses a second server with that name, so `AlreadyExists` means the earlier attempt (a lost reply, a racing
+    /// resume) made the server, and it is the answer, but only if it is OURS: the cluster and apply labels are checked here, whatever the
+    /// provider checked. A name held by anything else is refused, typed, and never adopted. Every other failure keeps the row INTENDED.
+    private static Result<InstanceInfo> unanswered(Cause cause,
+                                                   String nodeId,
+                                                   String provider,
+                                                   ApplyRecorder recorder) {
+        return switch (cause) {
+            case EnvironmentError.AlreadyExists existing -> adoptIfOwned(existing.existing(), nodeId, provider, recorder);
+            case EnvironmentError.NameHeldByOther held -> new NameHeld(nodeId,
+                                                                       held.holder().value()).result();
+            default -> new CreateUnconfirmed(nodeId, cause).result();
+        };
+    }
+
+    private static Result<InstanceInfo> adoptIfOwned(InstanceInfo existing,
+                                                     String nodeId,
+                                                     String provider,
+                                                     ApplyRecorder recorder) {
+        return ownedBy(provider,
+                       existing,
+                       recorder.snapshot().clusterName().value(),
+                       recorder.applyId())
+               ? success(existing)
+               : new NameHeld(nodeId,
+                              existing.id().value()).result();
+    }
+
+    /// The server name of a node's create is held by a server that is not this apply's (another cluster's, another apply's, or one
+    /// without the labels). Nothing was adopted and nothing was created; the row stays INTENDED. Resolve the holder, then `--resume`.
+    record NameHeld(String nodeId, String holder) implements Cause {
+        @Override
+        public String message() {
+            return "The provider refused the create for node " + nodeId
+                 + ": its server name is held by instance " + holder
+                 + ", which does not carry this cluster's and this apply's labels. It was not adopted and no second server was created;"
+                 + " the ledger keeps the node INTENDED. Remove or relabel the holder, then run `aether cluster apply --resume`.";
+        }
+    }
+
+    /// A create that failed or whose reply was lost (timeout, 5xx) may nevertheless have created the VM. The row stays
+    /// INTENDED. `--resume` looks the node up by label (ApplyReconciler), adopts it if it exists, and never creates an id twice.
+    record CreateUnconfirmed(String nodeId, Cause origin) implements Cause.Wrapped {
+        @Override
+        public String message() {
+            return "The create call for node " + nodeId
+                 + " failed: " + origin.message()
+                 + ". The node may nevertheless exist at the provider"
+                 + " (look for the label " + NODE_LABEL
+                 + "=" + nodeId
+                 + "); the ledger keeps it as INTENDED. Run `aether cluster apply --resume`, not a fresh apply:"
+                 + " it looks the node up by that label, adopts it if it exists and creates a node only for an id that is absent.";
+        }
+    }
+
+    /// The VM exists from here on. If the label check or the created row fails it is terminated NOW by the id the
+    /// provider returned; a failed terminate is named STILL RUNNING AND BILLED. (Not gated on a TERMINATING row: that
+    /// write would hit the same ledger that just failed, and the intent row already covers this VM.)
+    private static Result<ProvisionedNode> recordCreated(ComputeProvider compute,
+                                                         InstanceInfo info,
+                                                         String nodeId,
+                                                         String provider,
+                                                         ApplyRecorder recorder,
+                                                         LabelCheck labelCheck) {
+        var serverId = info.id().value();
+
+        return labelCheck.verify(compute,
+                                 info,
+                                 nodeId,
+                                 recorder.applyId())
+                         .flatMap(_ -> recorder.created(nodeId, serverId))
+                         .map(_ -> CloudProviderSupport.toProvisionedNode(nodeId, info))
+                         .mapError(cause -> terminateUnrecorded(compute, info, nodeId, provider, recorder, cause));
+    }
+
+    private static Cause terminateUnrecorded(ComputeProvider compute,
+                                             InstanceInfo info,
+                                             String nodeId,
+                                             String provider,
+                                             ApplyRecorder recorder,
+                                             Cause cause) {
+        var outcome = InstanceId.instanceId(info.id().value()).async().flatMap(compute::terminate).await();
+        var node = new CreatedNode(CloudProviderSupport.toProvisionedNode(nodeId, info), provider, Option.some(outcome));
+        // FER: when the terminate succeeded, a failed TERMINATED write only leaves the row INTENDED/CREATED for a VM that
+        // is gone. Guarantee earned: no billed VM is hidden. Mechanism: the resume lookup by label finds nothing and marks
+        // the row ABSENT.
+        outcome.onSuccess(_ -> bestEffort(recorder.terminated(nodeId)))
+               .onFailure(_ -> bestEffort(recorder.terminateFailed(nodeId,
+                                                                   info.id().value())));
+
+        return PartiallyProvisioned.partiallyProvisioned(List.of(node), cause);
+    }
+
+    static final String APPLY_LABEL = "aether-apply";
+    static final String NODE_LABEL = "aether-node-id";
+
+    /// F9: a provider may drop a label it dislikes without an error. The VM must carry the apply label (the audit and
+    /// the leak check find it by it) and its minted node identity, else it is invisible to every later audit.
+    static Result<Unit> verifyLabels(InstanceInfo info, String nodeId, String applyId) {
+        var identity = info.nodeId().orElse(() -> option(info.tags().get(NODE_LABEL)));
+
+        return applyId.equals(info.tags().get(APPLY_LABEL)) && identity.equals(Option.some(nodeId))
+               ? Result.unitResult()
+               : new LabelsMissing(nodeId,
+                                   info.id().value()).result();
+    }
+
+    record LabelsMissing(String nodeId, String serverId) implements Cause {
+        @Override
+        public String message() {
+            return "The provider created server " + serverId
+                 + " for node " + nodeId
+                 + " without its '" + APPLY_LABEL
+                 + "' / '" + NODE_LABEL
+                 + "' labels (a provider may drop a label it does not accept); a VM without them is"
+                 + " invisible to every audit, so it was terminated.";
+        }
+    }
+
+    /// The ids a resumed action asks for: first the ids of its rows the resume lookup found NEVER created (ABSENT), re-issued under the
+    /// same name, then freshly minted ones. A re-issue is safe because the provider refuses a second server with that name, so a create
+    /// that landed after the lookup window answers `AlreadyExists` and is adopted, not duplicated. Only ABSENT rows qualify: a CREATED
+    /// row whose VM vanished ends GONE and is never re-created (P-G1 A5: a name is free again once its server is deleted, so a re-create
+    /// would bring back a server somebody deleted).
+    static Supplier<String> reissuedThenMinted(ApplyRecorder recorder, Supplier<String> minted) {
+        var pending = new ArrayDeque<>(recorder.absentNodeIds());
+
+        return () -> option(pending.poll()).or(minted);
+    }
+
+    /// A fresh DOCKER node id (`aether-<cluster>-node-<ulid>`, cluster-scoped: a container name is unique per daemon and several clusters
+    /// share one), unique per call.
     static Supplier<String> mintedIds(ClusterName clusterName) {
-        return () -> ProvisionContext.provisionContext(Option.some(clusterName),
-                                                       "",
-                                                       SourceName.DEFAULT,
-                                                       ProvisionContext.PROVISIONED_BY_BOOTSTRAP)
-                                     .resolveNodeId();
+        return () -> ProvisionContext.mintNodeId(Option.some(clusterName));
+    }
+
+    /// A fresh CLOUD node id (`aether-node-<ulid>`, no cluster: the server name `<cluster>-<nodeId>` carries it), unique per call.
+    static Supplier<String> cloudMintedIds() {
+        return ProvisionContext::mintCloudNodeId;
     }
 
     /// The node's spec: its id and live peers in the context, rendered user-data, its role image, and a zone
@@ -124,7 +328,8 @@ sealed interface WaveNodeProvisioning {
                                                     SourceProfile source,
                                                     NodeRole role,
                                                     String nodeId,
-                                                    JoinInputs inputs) {
+                                                    JoinInputs inputs,
+                                                    String applyId) {
         var clusterName = desired.cluster().name();
         var context = ProvisionContext.provisionContext(Option.some(clusterName),
                                                         role.value(),
@@ -133,7 +338,10 @@ sealed interface WaveNodeProvisioning {
                                                         peersValue(inputs.peers()),
                                                         ProvisionContext.DEFAULT_CORE_MAX,
                                                         ProvisionContext.PROVISIONED_BY_BOOTSTRAP,
-                                                        WaveExecutor.provisionTags(clusterName, source.name(), role));
+                                                        WaveExecutor.provisionTags(clusterName,
+                                                                                   source.name(),
+                                                                                   role,
+                                                                                   applyId));
 
         return renderUserData(desired, source, role, nodeId, inputs).flatMap(userData -> ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
                                                                                                                      instanceType(source,
@@ -309,15 +517,37 @@ sealed interface WaveNodeProvisioning {
 
     /// The failing step's VMs are destroyed, best-effort: the apply persists the desired configuration only on success,
     /// so they belong to no desired state, and a retry mints new ids and never reuses them.
-    private static List<CreatedNode> tearDown(ComputeProvider compute, List<CreatedNode> created) {
+    private static List<CreatedNode> tearDown(ComputeProvider compute,
+                                              List<CreatedNode> created,
+                                              ApplyRecorder recorder) {
         return created.stream()
                       .map(node -> new CreatedNode(node.node(),
                                                    node.provider(),
-                                                   Option.some(InstanceId.instanceId(node.node().serverId())
-                                                                         .async()
-                                                                         .flatMap(compute::terminate)
-                                                                         .await())))
+                                                   Option.some(terminateRecorded(compute, node, recorder))))
                       .toList();
+    }
+
+    /// S6 then the provider terminate then S7: no terminate is issued when the TERMINATING row cannot be written.
+    private static Result<Unit> terminateRecorded(ComputeProvider compute, CreatedNode node, ApplyRecorder recorder) {
+        var nodeId = node.node().nodeId();
+
+        return recorder.terminating(nodeId)
+                       .flatMap(_ -> InstanceId.instanceId(node.node().serverId())
+                                               .async()
+                                               .flatMap(compute::terminate)
+                                               .await())
+                       .flatMap(_ -> recorder.terminated(nodeId))
+                       .onFailure(_ -> markTerminateFailed(nodeId, recorder));
+    }
+
+    // FER: the terminate already failed and is reported to the operator by name; failing to also write TERMINATE_FAILED
+    // leaves the row at TERMINATING, which the leak check and the resume audit read the same way (the VM may stand).
+    private static Unit markTerminateFailed(String nodeId, ApplyRecorder recorder) {
+        return bestEffort(recorder.terminateFailed(nodeId));
+    }
+
+    private static Unit bestEffort(Result<Unit> write) {
+        return write.or(Unit.unit());
     }
 
     static String providerName(SourceProfile source) {

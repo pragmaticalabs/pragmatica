@@ -35,6 +35,9 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.SyncRespo
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.testlogging.LogCapture;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.consensus.net.WriteOutcome;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
@@ -71,14 +74,19 @@ class RabiaElectorateRefusalLogTest {
         var target = new AtomicReference<RabiaEngine<TestCommand>>();
         var network = new TestClusterNetwork() {
             @Override
-            public <M extends ProtocolMessage> Unit send(NodeId peer, M message) {
+            public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId peer, M message) {
                 if (message instanceof SyncRequest) {
                     requests.incrementAndGet();
                     target.get().processSyncResponse(new SyncResponse<>(peer,
                                                                         SavedState.savedState(new byte[0], Phase.phase(3), List.of()),
                                                                         ResponderState.LIVE));
                 }
-                return Unit.unit();
+                return Promise.success(new WriteOutcome.Sent(peer));
+            }
+
+            @Override
+            public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+                return send(nodeId, message);
             }
         };
         engine = new RabiaEngine<>(new TestTopologyManager(nodeId("node-9").unwrap(), 3),

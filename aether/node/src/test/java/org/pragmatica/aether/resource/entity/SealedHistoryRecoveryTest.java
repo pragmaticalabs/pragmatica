@@ -203,7 +203,11 @@ class SealedHistoryRecoveryTest {
         /// has reclaimed leaks the raw stream cause instead of refusing the fold.
         @Test
         void read_refusesAsFoldFailedNamingCursorExpired_whenRetentionReclaimedTheOffset() throws InterruptedException {
-            var sealer = SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(storage, index));
+            // One segment per eviction (#2201 C-02 re-seat): `reclaimPrefix` drops refs without a floor and relies on later
+            // segments staying above the dropped prefix, which one run-formed block of the whole history would not leave.
+            var sealer = SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(storage, index),
+                                                     SegmentSealer.DEFAULT_PENDING_CAP_BYTES,
+                                                     org.pragmatica.aether.stream.segment.SealerThresholds.immediate());
             var substrate = substrate(sealingManager(sealer), sealer);
 
             substrate.ensureLog(KEYSPACE, 1, new org.pragmatica.aether.slice.ReplicationFactors(3, 1)).unwrap();

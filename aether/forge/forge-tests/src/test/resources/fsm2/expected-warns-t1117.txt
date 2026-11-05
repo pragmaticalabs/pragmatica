@@ -1,0 +1,32 @@
+# Expected operator WARNs and sensor lines for tracer T (Issue1117ReadinessTracerTest) on FSM2.
+# Checked in BEFORE the implementation (phase-3 design 9.5 O6, 12 item 6). An amendment is a visible diff with a reason.
+#
+# Scope: every WARN or ERROR line of the deployment FSM loggers and every operator warning raised during a run, from
+# cluster start until 75 s after SUCCEEDED and all-ACTIVE. A WARN not listed here fails the run.
+#
+# Format, one entry per line: <kind> <code-or-pattern> <min>..<max> # reason
+#   warn  = operator warning code or WARN-level log line (regex on the code or the first 120 chars of the line)
+#   line  = INFO sensor line that MUST appear (count range per run, on the fault's target node only)
+#   metric = Micrometer arm that MUST read the count range (aether_deployment_fsm_submissions_total{fsm="node", outcome})
+
+# --- inject mode (the fault drops attempt 1 of the target's ACTIVE write; spec O1, NT-134 (a), (d)) ---
+line   write-probe-resubmit                  1..1   # the 2 s probe finds the row absent and resubmits once; the resubmission commits
+metric probe_resubmit                        1..1   # same event, counted
+metric confirm_timeout                       0..0   # the 35 s attempt bound must not be reached
+warn   write-confirm-timeout                 0..0   # WARN level; any occurrence means the probe did not close the window
+
+# --- both modes: nothing else from the deployment FSMs ---
+warn   deployment-engine-mismatch            0..0   # every node is FSM2; a mismatch refuses the node
+warn   identity-process-mismatch             0..0   # no process is replaced in T
+warn   join-unmatched                        0..0   # every core is admitted at first join
+warn   departure-inferred                    0..0   # no node leaves
+warn   deployment-fsm-backlog                0..0   # mailbox depth stays under 1,000
+warn   deployment-localop-overrun            0..0   # no local step exceeds its bound
+warn   deployment-fsm-stop-timeout           0..0   # not wired in the tracer (Close only)
+warn   slice-start-awaiting-target           0..0   # the target is committed with the blueprint
+warn   stray-instance                        0..0   # one blueprint, no strays
+warn   blueprint-rejected                    0..0   # a single owner
+warn   boot-token-absent                     0..0   # every node has a token (L-17)
+
+# --- control mode (-Dt1117.inject=false): the sensor lines must be silent (NT-134 (d) control) ---
+# line   write-probe-resubmit 0..0 ; metric probe_resubmit 0..0 ; metric confirm_timeout 0..0

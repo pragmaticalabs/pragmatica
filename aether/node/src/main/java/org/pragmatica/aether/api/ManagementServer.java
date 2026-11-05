@@ -9,6 +9,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
@@ -101,6 +102,7 @@ import org.pragmatica.aether.metrics.observability.AetherMetrics;
 import org.pragmatica.aether.http.AetherVersioningMetricsSink;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.concurrent.PublishSlot;
+import org.pragmatica.aether.node.stream.ConsensusBatchCounters;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.node.StorageFactory.StorageSetup;
 import org.pragmatica.utility.warning.OperatorWarningCode;
@@ -114,6 +116,7 @@ import org.pragmatica.aether.api.routes.EntityCheckpointRoutes;
 import org.pragmatica.aether.resource.entity.EntityCheckpointDriver;
 import org.pragmatica.dht.DHTAntiEntropy;
 import org.pragmatica.dht.DHTNode;
+import org.pragmatica.dht.storage.DhtPrefixAccounting;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.http.server.HttpServerError;
@@ -762,9 +765,36 @@ class ManagementServerImpl implements ManagementServer {
         var spm = nodeSupplier.get().streamPartitionManager();
         Supplier<Number> usedBytes = spm::totalAllocatedBytes;
         Supplier<Number> usedRatio = () -> computeStreamMemoryRatio(spm);
+        // #2201 A-14: safety-relevant seams still at their default on a node with a WAL; anything but 0 is a wiring defect.
+        Supplier<Number> unboundSafetySeams = spm::unboundSafetySeamCount;
 
         observability.gauge("aether.streams.memory.used.bytes", usedBytes);
         observability.gauge("aether.streams.memory.used.ratio", usedRatio);
+        observability.gauge("aether.streams.seams.unbound.safety", unboundSafetySeams);
+        registerConsensusBatchMetrics();
+    }
+
+    /// #2590: consumer progress's load on consensus, cumulative since boot -- the batches the cursor command writer proposed
+    /// and their commands by key class. The S7 arms compare them before and after progress moves off consensus.
+    /// The node is an adapter boundary here: a node double (a Mockito mock) answers `null` for an accessor it does not stub,
+    /// and a missing instrument must not stop the management server from starting.
+    @Contract
+    private void registerConsensusBatchMetrics() {
+        Option.option(nodeSupplier.get().consensusBatchCounters()).onPresent(this::registerConsensusBatchGauges);
+    }
+
+    private void registerConsensusBatchGauges(ConsensusBatchCounters counters) {
+        Supplier<Number> batches = counters::batches;
+
+        observability.gauge("aether.consensus.cursor.batches", batches);
+        for (var keyClass : ConsensusBatchCounters.KeyClass.values()) {
+            Supplier<Number> commands = () -> counters.commands(keyClass);
+
+            observability.gauge("aether.consensus.cursor.commands",
+                                commands,
+                                "class",
+                                keyClass.name().toLowerCase(Locale.ROOT));
+        }
     }
 
     /// Promotion of each storage instance that promotes (an inert one has nothing to report), cumulative since boot, read
@@ -836,6 +866,32 @@ class ManagementServerImpl implements ManagementServer {
         observability.gauge("aether.dht.gc.unagreed.partitions",
                             dhtGauge(node -> node.unagreedPartitions(agreementWindow)));
         registerDhtRepairMetrics();
+        registerDhtPrefixMetrics();
+    }
+
+    /// #2258, the DHT engine's byte accounting per registered prefix (and `other`): the live bytes and the tombstone bytes, which
+    /// count toward the near-full warning; the cap of `stream-segments`; and the client puts refused for it. The labels are
+    /// bounded by the engine's registered table.
+    private void registerDhtPrefixMetrics() {
+        nodeSupplier.get().dhtNode().onPresent(this::registerDhtPrefixGauges);
+    }
+
+    private void registerDhtPrefixGauges(DHTNode dht) {
+        var storage = dht.storage();
+
+        storage.accountedPrefixes()
+               .forEach(prefix -> {
+                            Supplier<Number> live = () -> storage.usedBytes(prefix);
+                            Supplier<Number> tombstones = () -> storage.tombstoneBytes(prefix);
+
+                            observability.gauge("aether.dht.prefix.bytes", live, "prefix", prefix);
+                            observability.gauge("aether.dht.prefix.tombstone.bytes", tombstones, "prefix", prefix);
+                        });
+        Supplier<Number> cap = () -> storage.maxBytes(DhtPrefixAccounting.STREAM_SEGMENTS);
+        Supplier<Number> refused = storage::refusedPuts;
+
+        observability.gauge("aether.dht.prefix.max.bytes", cap, "prefix", DhtPrefixAccounting.STREAM_SEGMENTS);
+        observability.gauge("aether.dht.prefix.refused.puts", refused);
     }
 
     /// A6, the DHT repair plane: the repair deficit — partitions this node replicates that are catching up or

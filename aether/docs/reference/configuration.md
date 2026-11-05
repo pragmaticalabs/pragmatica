@@ -818,8 +818,15 @@ max_read_response_bytes = "28MB"
 reshuffle_concurrency = 2
 caught_up_max_lag_offsets = 1024
 # segment_disk_max_bytes = "200GB"   # unset: derived from the disk at boot
+# dht_segment_max_bytes = "128MB"    # unset: max(64 MiB, max heap / 4)
 isr_lag_max = "30s"
 promotion_escape_after = "120s"
+seal_run_bytes = "1MB"
+seal_run_events = 4096
+seal_run_age = "5s"
+seal_merge_bytes = "4MB"
+# max_memory_bytes = "512MB"         # unset: physical memory / 8, from 128 MiB to 1 GiB; STREAM_MAX_MEMORY_BYTES overrides
+# seal_pending_cap_bytes = "256MB"   # unset: the smaller of max_memory_bytes and 256 MiB
 ```
 
 | Field | Type | Default | Description |
@@ -830,8 +837,23 @@ promotion_escape_after = "120s"
 | `reshuffle_concurrency` | int | `2` | Partitions one node may hold in materialize+backfill at once. Must be `>= 1` |
 | `caught_up_max_lag_offsets` | long | `1024` | How far a `CAUGHT_UP` replica may trail the freshest peer watermark and still serve reads or count toward the ring-release catch-up gate. Must be `>= 0` |
 | `segment_disk_max_bytes` | data size | derived | Cap on this node's local-disk tier for sealed stream segments. Unset (or `0`): 40% of the usable space on the filesystem holding the stream data directory at boot, clamped to at least 1 GiB and at most usable space minus 2 GiB (the WAL usually shares the disk); the chosen value is logged at INFO. A value above the usable space is kept, with a WARN. Must be `>= 0` |
+| `dht_segment_max_bytes` | data size | derived | Cap on the live bytes of sealed stream segments this node's DHT engine holds (the `stream-segments` prefix). A replica refuses a client put that would take it above the cap, so seals fail with `TierFull` instead of the heap filling; repair writes (catch-up, migration, hand-off, re-homing) are accepted and counted, so a node can pass it after a re-replication, and concurrent puts overshoot by at most the bytes in flight. Tombstones are never capped; they count toward the `stream-segment-dht-near-full` warning (85%, cleared below 80%). Unset (or `0`): the larger of 64 MiB and a quarter of the maximum heap (128 MiB on the shipped `-Xmx512m` launchers). Per node, not cluster-wide. The refusal is always on. Must be `>= 0` |
 | `isr_lag_max` | duration | `30s` | How long a member of a partition's in-sync replica set (ISR) may stay behind the owner's head before the owner asks for it to leave the ISR (#1730; Kafka's `replica.lag.time.max.ms`). **Liveness only:** the ISR changes only by a committed write and a `confirmation_factor` ≥ 2 acknowledgement waits for every committed ISR member, so no value makes an acknowledgement unsafe. Smaller drops a slow replica sooner (shorter ack stalls, fewer in-sync copies); larger keeps it longer (an acknowledgement can wait up to this long for a lagging member) |
+| `seal_run_bytes` | data size | `1MB` | The segment sealer seals a partition's run of evicted events once their bytes reach this (#2201 C-02). With the next two, whichever comes first. A guess, as are the other three: settled by the seal rate and WAL size trend of a baseline run |
+| `seal_run_events` | int | `4096` | ... or once the run holds this many events (bounds the decode of a block of tiny events) |
+| `seal_run_age` | duration | `5s` | ... or once the run's oldest event has waited this long, at most `1d`. A read of a pending offset seals its run at once. Without a WAL this is also how much longer an acknowledged event can be lost to a crash; a graceful stop first seals every pending run, waiting up to 5 s, and raises `stream-seal-stop-incomplete` for what it could not seal |
+| `seal_merge_bytes` | data size | `4MB` | Cap on one sealed block when a backlog has queued behind a slow seal; a single larger hand-over still seals alone. At most `256MB` (a block is one array) |
+| `max_memory_bytes` | data size | derived | The node's off-heap stream memory budget (#2201 C-03): each partition ring reserves its floor (header, index of 24 B per retained event, first 256 KiB data segment) and every 256 KiB it grows against it. Unset (or `0`): one eighth of the physical memory the JVM reports (container-aware), clamped to at least 128 MiB and at most 1 GiB; **the formula is a guess**. The `STREAM_MAX_MEMORY_BYTES` environment variable overrides it (a size such as `512MB`, or a number of bytes). Ring growth is admitted only up to three quarters of the budget, a floor against all of it, so a stream created after the rings have grown still finds a quarter of the budget for its floors (**the quarter is a guess**). A ring refused growth stops growing and evicts at its current allocation (its oldest events go to the sealer sooner); it grows again once budget is released (a stream destroyed, a ring released), at the next append that wraps it. A written value that is not a positive size refuses the load, naming the key; a malformed or zero `STREAM_MAX_MEMORY_BYTES` refuses the boot, naming the variable |
+| `seal_pending_cap_bytes` | data size | derived | Cap on the heap the segment sealer holds as copies of evicted events not yet sealed (#1234). Unset (or `0`): the smaller of the stream memory budget and 256 MiB (**a guess**), so a larger off-heap budget does not raise this heap exposure past 256 MiB. At half the cap every partition's run is sealed at once; past it a partition with a WAL drops its copies and rebuilds the segments from the WAL, and one without a WAL refuses an append that needs an eviction (`SEALING_BEHIND`). A written value that is not a positive size refuses the load |
 | `promotion_escape_after` | duration | `120s` | How long a stream partition's promotion (the owner activation gate, the replica promotion contest) waits for members that do not answer (each unreachable member continuously for this long, on its own clock) before a candidate named in the partition's COMMITTED in-sync set goes ahead without them (#2080). A candidate outside the set, or a record with no committed set, never goes ahead. Refused if below the alarm bounds it follows: two `swim.suspect_timeout` windows (20 s at the default) and the contest's source wait (20 s at the default). **The default is a guess**: a lower value risks escaping past a node that only boots slowly after a full-cluster cold restart, which can leave acknowledged records behind (retained in a recovery segment and reported); the measured boot spread of a cold restart would settle it. Each escape raises the CRITICAL operator event `stream-promotion-past-unreachable-peers` naming this bound and the time elapsed |
+
+**The 1 GiB ceiling of the derived budget is a sizing assumption, not a mechanism.** It comes from an estimate of six typical
+small-business workloads at peak on one 3-node cluster (about 526 MiB per node of ring data grown to a 60 s window, ring
+indexes and entity floors; every rate a guess): how much ring growth a budget should afford. Nothing holds a ring to a time
+window. What holds the memory is the budget itself, the growth ceiling at three quarters of it, and each ring's own count and
+byte retention caps. A host whose derived budget is below that estimate (under about 4.1 GiB of memory) gives way in the growth
+share first: rings stop growing earlier and hand their oldest events to the sealer sooner, which costs seal traffic and
+consumers reading the sealed tier sooner, not events.
 
 `reshuffle_concurrency` paces backfill work so a large reshuffle cannot flood a node. Raise it when
 partitions queue behind slow backfills; lower it when backfill traffic competes with serving. A partition

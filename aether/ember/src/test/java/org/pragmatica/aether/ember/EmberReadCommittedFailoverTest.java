@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.AfterEach;
@@ -32,6 +33,7 @@ import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -237,16 +239,33 @@ class EmberReadCommittedFailoverTest {
         assertThat(payloads(owner, "owner")).containsExactly("acked-0", "acked-1", "acked-2", "unacked-0", "unacked-1");
     }
 
+    /// Appends `payload` ONCE and retries only the wait for its replication. `publish` appends before it waits, so publishing
+    /// again after a wait that timed out appended the record a second time, and a read then showed it twice.
     private Response publishAcked(AetherNode owner, String payload) {
         var deadline = System.currentTimeMillis() + ISR_BUDGET_MS;
-        var last = publish(owner, payload, 30);
+        var appendedAt = new AtomicLong(-1);
+        var last = publishOnce(owner, payload, appendedAt);
 
         while (!last.acked() && System.currentTimeMillis() < deadline) {
             sleepQuietly(500L);
-            last = publish(owner, payload, 30);
+            last = publishOnce(owner, payload, appendedAt);
         }
 
         return last;
+    }
+
+    private Response publishOnce(AetherNode node, String payload, AtomicLong appendedAt) {
+        var manager = node.streamPartitionManager();
+        var confirmations = manager.confirmationFactorFor(ENGINE_KEY) - 1;
+        var appended = appendedAt.get() >= 0
+                       ? Promise.success(appendedAt.get())
+                       : manager.publishLocalAtFloor(ENGINE_KEY, PARTITION, payload.getBytes(StandardCharsets.UTF_8), System.currentTimeMillis(), confirmations)
+                                .async()
+                                .onSuccess(appendedAt::set);
+
+        return appended.flatMap(offset -> manager.awaitReplication(ENGINE_KEY, PARTITION, offset, confirmations).map(_ -> offset))
+                       .await(TimeSpan.timeSpan(30).seconds())
+                       .fold(cause -> new Response(503, cause.message()), offset -> new Response(200, "offset " + offset));
     }
 
     /// The owner's own local publish path (what `StreamWriteRouter` runs for a self-owned partition): the owner-admitted

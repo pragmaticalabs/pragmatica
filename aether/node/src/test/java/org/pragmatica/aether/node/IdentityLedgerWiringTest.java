@@ -10,11 +10,18 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.Mockito;
 import org.pragmatica.aether.config.StorageConfig;
+import org.pragmatica.consensus.net.IdentityFacts;
+import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.rabia.ProtocolConfig;
+import org.pragmatica.consensus.topology.TopologyConfig;
+import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.BootTokens.Admission;
@@ -34,6 +41,8 @@ class IdentityLedgerWiringTest {
     private static final NodeId PEER_A = new NodeId("peer-a");
     private static final NodeId PEER_B = new NodeId("peer-b");
     private static final TimeSpan BOUND = TimeSpan.timeSpan(10).seconds();
+    private static final long POLL_WINDOW_NANOS = 500_000_000L;
+    private static final int WRITER_LIST_CAP = 2_000;
 
     @TempDir
     Path directory;
@@ -79,10 +88,16 @@ class IdentityLedgerWiringTest {
         }
     }
 
-    private boolean raised(OperatorWarningCode code) {
+    /// The one guarded read of `events`: `Collections.synchronizedList` locks single calls only, so every
+    /// iteration (stream, assertj traversal, failure-message rendering) must run over this copy, never the live list.
+    private List<OperatorWarning> raisedEvents() {
         synchronized (events) {
-            return events.stream().anyMatch(event -> event.code() == code);
+            return List.copyOf(events);
         }
+    }
+
+    private boolean raised(OperatorWarningCode code) {
+        return raisedEvents().stream().anyMatch(event -> event.code() == code);
     }
 
     @Test
@@ -231,7 +246,7 @@ class IdentityLedgerWiringTest {
         assertThat(tokens.admit(PEER_A, 10L)).isEqualTo(Admission.ADMITTED);
         assertThat(tokens.admitDurably(PEER_A, 11L).await(BOUND).unwrap()).isEqualTo(Admission.CONFLICT);
         assertThat(readFile(location.file())).contains("peer-a");
-        assertThat(events).as("a healthy ledger raises nothing").isEmpty();
+        assertThat(raisedEvents()).as("a healthy ledger raises nothing").isEmpty();
     }
 
     @Test
@@ -277,10 +292,10 @@ class IdentityLedgerWiringTest {
         assertThat(tokens.admit(PEER_A, 10L)).isEqualTo(Admission.UNAVAILABLE);
         assertThat(Files.exists(location.file())).as("not rewritten empty").isFalse();
         assertThat(tokens.ledgerDurable()).as("a wiped node does not claim the protection: the gauge reads 0").isFalse();
-        assertThat(events).singleElement().satisfies(event -> {
+        assertThat(raisedEvents()).singleElement().satisfies(event -> {
             assertThat(event.code()).isEqualTo(OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE);
             assertThat(event.subject()).as("the node's own id").isEqualTo(SELF.id());
-            assertThat(event.message()).as("isolation, and the remedy that is safe").contains("ISOLATED").contains("NEW node id");
+            assertThat(event.message()).as("isolation until a merge, and the remedy that is safe").contains("ISOLATED").contains("majority of the configured core seats").contains("NEW node id");
         });
     }
 
@@ -307,8 +322,99 @@ class IdentityLedgerWiringTest {
         assertThat(tokens.admitDurably(PEER_B, 21L).await(BOUND).unwrap()).isEqualTo(Admission.CONFLICT);
         await("the recovery event", () -> raised(OperatorWarningCode.IDENTITY_LEDGER_DURABLE));
         assertThat(tokens.ledgerDurable()).isTrue();
-        synchronized (events) {
-            assertThat(events).as("both transitions are about this node").allSatisfy(event -> assertThat(event.subject()).isEqualTo(SELF.id()));
+        assertThat(raisedEvents()).as("both transitions are about this node").allSatisfy(event -> assertThat(event.subject()).isEqualTo(SELF.id()));
+    }
+
+    /// The majority a wiped core waits for is counted over these seats: the core-role entries of the configured topology, this node
+    /// included, and no worker.
+    @Test
+    void configuredCoreSeats_areTheCoreRoleEntriesOfTheConfiguredTopology() {
+        var config = Mockito.mock(AetherNodeConfig.class);
+        var address = new NodeAddress("127.0.0.1", 9000);
+        var core = NodeInfo.nodeInfo(new NodeId("c1"), address);
+        var labelledCore = NodeInfo.nodeInfo(new NodeId("c2"), address, Map.of(NodeInfo.LABEL_ROLE, "core"));
+        var worker = NodeInfo.nodeInfo(new NodeId("w1"), address, Map.of(NodeInfo.LABEL_ROLE, "worker"));
+
+        Mockito.when(config.topology()).thenReturn(new TopologyConfig(new NodeId("c1"), 5, TimeSpan.timeSpan(1).seconds(), TimeSpan.timeSpan(10).seconds(), List.of(core, labelledCore, worker)));
+
+        assertThat(IdentityLedgerWiring.configuredCoreSeats(config)).containsExactlyInAnyOrder(new NodeId("c1"), new NodeId("c2"));
+    }
+
+    /// Booting from a configuration hands the registry the configured seats: a wiped node of three seats leaves that state on the
+    /// offers of two OTHER seats than the one joining, and not before.
+    @Test
+    void wire_fromAConfiguration_countsTheWipedMajorityOverTheConfiguredCoreSeats() throws Exception {
+        var ledger = directory.resolve("identity").resolve("c1").resolve("ledger");
+        var address = new NodeAddress("127.0.0.1", 9000);
+        var config = Mockito.mock(AetherNodeConfig.class);
+        var tokens = BootTokens.bootTokens(1L);
+
+        Files.createDirectories(ledger.getParent());
+        Mockito.when(config.self()).thenReturn(new NodeId("c1"));
+        Mockito.when(config.topology()).thenReturn(new TopologyConfig(new NodeId("c1"), 5, TimeSpan.timeSpan(1).seconds(), TimeSpan.timeSpan(10).seconds(),
+                                                                      List.of(NodeInfo.nodeInfo(new NodeId("c1"), address),
+                                                                              NodeInfo.nodeInfo(new NodeId("c2"), address),
+                                                                              NodeInfo.nodeInfo(new NodeId("c3"), address))));
+        Mockito.when(config.protocol()).thenReturn(ProtocolConfig.testConfig(Option.none(), Option.some(ledger)));
+        Mockito.when(config.storageConfig()).thenReturn(Map.of());
+        IdentityLedgerWiring.wire(config, tokens, sink);
+
+        assertThat(tokens.admit(PEER_A, 10L)).as("control: wiped").isEqualTo(Admission.UNAVAILABLE);
+
+        tokens.mergeOffered(new NodeId("c2"), Option.some(IdentityFacts.identityFacts())).await(BOUND);
+        assertThat(tokens.admit(PEER_A, 10L)).as("one seat heard: no majority without the joiner's own offer").isEqualTo(Admission.UNAVAILABLE);
+
+        tokens.mergeOffered(new NodeId("c3"), Option.some(IdentityFacts.identityFacts())).await(BOUND);
+        assertThat(tokens.admit(PEER_A, 10L)).as("two seats heard").isEqualTo(Admission.ADMITTED);
+    }
+
+    /// A wiped node whose offers journal is unreadable carries on as if it held no offers, but says so: the operator event names the
+    /// journal (the listener is registered before the journal is read).
+    @Test
+    void wire_anUnreadableOffersJournal_isReportedToTheOperator_andCountsAsNoOffers() throws Exception {
+        var location = new IdentityLedgerWiring.Location(directory.resolve("identity").resolve("n1").resolve("ledger"), true);
+        var tokens = BootTokens.bootTokens(1L);
+
+        Files.createDirectories(location.file().getParent());
+        Files.writeString(location.file().resolveSibling("ledger.offers"), "garbage, not a journal");
+        IdentityLedgerWiring.wire(location, SELF, tokens, sink);
+
+        await("the offers journal event", () -> raisedEvents().stream().anyMatch(event -> event.message().contains("offers journal")));
+        assertThat(tokens.admit(PEER_A, 10L)).as("no offers counted: still closed").isEqualTo(Admission.UNAVAILABLE);
+    }
+
+    /// Pins the guarded snapshot: a writer appends to the live list for the whole window while `raised` reads it.
+    /// Unguarded (`raisedEvents()` returning `events` itself) this throws a `ConcurrentModificationException`
+    /// within milliseconds; the copy taken under `synchronized (events)` never does.
+    @Test
+    void raised_whileAWriterAppendsContinuously_neverThrows() throws Exception {
+        var stop = new AtomicBoolean();
+        var writer = Thread.ofPlatform().start(() -> appendUntil(stop));
+
+        try {
+            var deadline = System.nanoTime() + POLL_WINDOW_NANOS;
+
+            while (System.nanoTime() < deadline) {
+                assertThat(raised(OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE)).isFalse();
+            }
+        } finally {
+            stop.set(true);
+            writer.join();
+        }
+    }
+
+    private void appendUntil(AtomicBoolean stop) {
+        var warning = OperatorWarning.operatorWarning(OperatorWarningCode.IDENTITY_LEDGER_DURABLE, SELF.id(), "probe");
+
+        while (!stop.get()) {
+            events.add(warning);
+            trimWhenLarge();
+        }
+    }
+
+    private void trimWhenLarge() {
+        if (events.size() > WRITER_LIST_CAP) {
+            events.clear();
         }
     }
 

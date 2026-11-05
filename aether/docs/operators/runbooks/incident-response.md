@@ -232,6 +232,125 @@ grep -i "slice\|artifact" /var/log/aether/aether.log | tail -100
 2. Bring the missing replica node back. When the leader sees it live it is unfenced, the owner expands it once it has caught up, and `STREAM_ISR_RESTORED` follows.
 3. If the replica is gone for good, replace the node; the replacement joins the ISR after backfill. To tolerate the loss of one replica without refusing writes, declare `confirmation_factor` below `replication_factor`. On a running stream lowering `confirmation_factor` is not applied (durability only increases online; a committed lowering raises `STREAM_CONFIG_CHANGE_NOT_APPLIED`): restore the replicas, or re-create the stream.
 
+### Stream Consumer Skipped Reclaimed Records (`stream-consumer-cursor-expired`)
+
+**Symptoms:** a CRITICAL `OPERATOR_WARNING` whose `details.code` is `stream-consumer-cursor-expired`; `details.subject` is `stream[partition]/group@offset`.
+
+**Cause:** the group's cursor pointed at records that the partition's owner no longer holds in its ring or sealed tier (reclaimed by retention, the expected cause; the warning reports what the owner holds, not why). The records are gone from the owner, so the group was moved forward once to the earliest retained offset and the range was not delivered. This is the one case in which a declarative consumer skips records; a checkpoint of the new cursor was requested at once, so a restart resumes there once it persists.
+
+**Actions:**
+
+1. Read the message: it names the group, the partition, the skipped range `[from, to)` and its count. Nothing reopens the range. The alert is closed by `stream-consumer-cursor-resumed` (INFO, same subject) once the cursor is re-established: a read from the new offset succeeded, the cursor moved again, or the consumer was cancelled. The recovery closes the alert, not the loss.
+2. If the records matter, replay that range from its source into the stream.
+3. Stop it recurring: raise the stream's retention, or give the group more capacity so it keeps up. A group that falls behind the ring first raises `stream-consumer-behind-ring`; acting on that is the early warning.
+
+### Stream Consumer Waiting at a Hole (`stream-consumer-sealed-range-missing`)
+
+**Symptoms:** a WARNING `OPERATOR_WARNING` with `details.code` `stream-consumer-sealed-range-missing`; the group delivers nothing past one offset.
+
+**Cause:** the offset is in no sealed segment while a later offset is sealed, and retention did not reclaim it: a hole in the sealed range. The group never skips a hole; it re-reads with the poll backoff.
+
+**Actions:**
+
+1. Read the message: it names the group, the partition and the missing range `[from, to]`.
+2. Wait briefly: a range whose seal was still in flight lands on its own, and the group resumes.
+3. If it persists, treat it as a defect report (#1234) and escalate. There is no operator command to repair a hole in place. The partition's WAL still holds the range, since WAL truncation never passes a hole `[design intent — unverified: no run has exercised a hole on a cluster]`. If nothing fills it, the group does not resume on its own: retention never reclaims at or above a hole (its bound stops at the contiguous sealed watermark, which stops below the hole), so the hole is never turned into a skip.
+4. `stream-consumer-sealed-range-restored` (INFO, same subject) confirms the end: a read from that offset succeeded, the cursor moved off it (a rewind), or the consumer was cancelled.
+
+### Stream Retention Withheld (`stream-retention-withheld`)
+
+**Symptoms:** a WARNING `OPERATOR_WARNING` with `details.code` `stream-retention-withheld`, subject `node <nodeId> stream <name>`; the node's stream disk use grows and the stream's sealed history on that node is not reclaimed.
+
+**Cause:** sealed-tier retention runs on every node over its own segments, and judges each stream by the retention policy of the committed config the node has applied. For two consecutive passes (about 10 minutes) this node had no policy it could read for the stream: it has not applied the stream's committed config (a node that has just restarted and has not yet restored its consensus state, or one lagging behind), or the stream's retention mode is unknown to this node's build (written by a newer node). A rule the node cannot read is not authority to delete, so nothing of the stream is reclaimed there.
+
+**Actions:**
+
+1. Check that the node is in the cluster and has caught up: a node that applies the committed config resumes on the next pass, and `stream-retention-resumed` (INFO, same subject) follows.
+2. If the stream was destroyed while this node was down, its segments stay withheld on this node, and so does the disk they hold: a node cannot yet tell a destroyed life from an orphaned one that holds acknowledged data, so it keeps both and announces them (`know:` `d19f755873`; retirement records, PR-8j/#2458, will let it reclaim the destroyed ones).
+3. If the mode is unknown to the build, upgrade the node to the build the rest of the cluster runs.
+
+### Stream Segment Unreadable (`stream-segment-unreadable`)
+
+**Symptoms:** a WARNING `OPERATOR_WARNING` with `details.code` `stream-segment-unreadable`, subject `node <nodeId> stream <name>[<partition>] <start>-<end>`.
+
+**Cause:** retention read the block of a sealed segment rebuilt after a restart to learn its age, and the read failed in a way a retry does not change: a missing or wrong encryption key, or a damaged or missing block. The node does not read it again until it restarts. Retention judges the segment by the age of the next newer segment, so it neither holds the stream's sealed history for ever nor goes before a newer segment; reads of its range fail as storage failures until then.
+
+**Actions:**
+
+1. Read the message: it names the segment and the read failure. Segment encryption is not wired in this release (#253), so the cause is in practice a damaged or missing block.
+2. The range is lost on this node; another holder of the partition may still serve it. Check the node's stream storage directory and disk for errors.
+3. Nothing needs to be done for retention: `stream-segment-unreadable-reclaimed` (INFO, same subject) follows when retention drops the segment.
+
+### Stream Segment Deletes Failing (`stream-segment-delete-failing`)
+
+**Symptoms:** a WARNING `OPERATOR_WARNING` with `details.code` `stream-segment-delete-failing`, subject `node <nodeId> storage streams`; the node's stream disk and the DHT's memory stop shrinking although retention keeps releasing segments.
+
+**Cause:** retention released expired segments, and the node's collection run, which deletes their blocks from every tier with the cluster-shared DHT first, has failed for three consecutive runs (one per minute). The DHT write quorum is unreachable, or its removes fail. Shared first means a failed run leaves the node's private copies too, and retries the whole delete on the next run. Readers are not affected: the released ranges are already out of the index and answer `CursorExpired`.
+
+**Actions:**
+
+1. Check DHT health: quorum, member reachability, and the node's DHT error logs.
+2. Restore the DHT; the next run deletes the backlog (up to 10,000 blocks per run), and `stream-segment-delete-recovered` (INFO, same subject) follows.
+3. If disk or heap pressure builds meanwhile, it is these released blocks; nothing else needs to be done for them.
+
+### Stream Segment DHT Near Full (`stream-segment-dht-near-full`)
+
+**Symptoms:** a WARNING `OPERATOR_WARNING` with `details.code` `stream-segment-dht-near-full`, subject `node <nodeId> dht prefix stream-segments`.
+
+**Cause:** this node's DHT engine holds 85% or more of `[streaming] dht_segment_max_bytes` as live plus tombstone bytes of the `stream-segments` prefix. Tombstones are never capped but are heap (about the key length plus 64 bytes each, for `tombstone_retention`), so they count here: this is a heap warning, not a refusal. Until the stream retention work reduces them, every sealed event leaves one tombstone per replica.
+
+**Actions:**
+
+1. Check the gauges `aether.dht.prefix.bytes{prefix="stream-segments"}` and `aether.dht.prefix.tombstone.bytes{prefix="stream-segments"}` to see which part is growing.
+2. Live bytes: shorten stream retention, or raise `[streaming] dht_segment_max_bytes` (and the heap with it). Tombstone bytes: they fall as `tombstone_retention` passes.
+3. `stream-segment-dht-near-full-cleared` (INFO, same subject) follows when live plus tombstone bytes fall below 80% of the cap.
+
+### Stream Segment DHT Full (`stream-segment-dht-full`)
+
+**Symptoms:** a CRITICAL `OPERATOR_WARNING` with `details.code` `stream-segment-dht-full`, subject `node <nodeId> dht prefix stream-segments`; stream seals fail, publishers to partitions without a WAL see `SEALING_BEHIND`, and seal failures log `TierFull` for the `REMOTE` tier.
+
+**Cause:** this node's DHT engine refused a client put because it would take the live bytes of `stream-segments` above `[streaming] dht_segment_max_bytes`. The message names the cap, the usage and the refused size. Raised once per episode, at the first refusal. The cap is per node and binds client writes only: repair writes (catch-up, migration, hand-off, re-homing) are accepted and counted, so a node can hold more than the cap after a re-replication. A put that reached its write quorum while one replica refused is a success with fewer than the full replica count, counted in `aether.dht.prefix.refused.puts`; anti-entropy repairs the copy later. Entity checkpoint blocks count against the cap and are not reclaimed yet, so a node hosting entity partitions can fill it quickly.
+
+**Actions:**
+
+1. Free space: retention passes and the collection run release expired segments; check `stream-segment-delete-failing` and `stream-retention-withheld` for a reason they do not.
+2. Raise `[streaming] dht_segment_max_bytes` together with the node's heap if the working set is legitimate.
+3. `stream-segment-dht-full-cleared` (INFO, same subject) follows when live bytes fall below 85% of the cap; the sealer retries on its own.
+
+### Stream Segment Disk Pressure (`stream-segment-disk-pressure`)
+
+**Symptoms:** a WARNING `OPERATOR_WARNING` with `details.code` `stream-segment-disk-pressure`, subject `node <nodeId> storage streams`.
+
+**Cause:** the durable local-disk tier of the streams instance is at or above its warning ratio on this node. Seals fail when it is full and owner publishes are refused (`SEGMENT_TIER_FULL`) from the refuse ratio. Raised once per episode, on every node.
+
+**Actions:**
+
+1. Raise `[streaming] segment_disk_max_bytes`, add disk, or shorten stream retention.
+2. `stream-segment-disk-pressure-relieved` (INFO, same subject) follows when the tier falls below the warning ratio.
+
+### Stream Seal Incomplete at Stop (`stream-seal-stop-incomplete`)
+
+**Symptoms:** a WARNING `OPERATOR_WARNING` with `details.code` `stream-seal-stop-incomplete`, subject `node <nodeId> stream sealer`, raised while the node stops; the message lists `stream/partition [from-to]` with `(held by its WAL)` or `(no WAL)`.
+
+**Cause:** a graceful stop waits up to 5 s (`AetherNode.SEALER_STOP_FLUSH_BOUND`) for the stream segment sealer to seal what it holds: each partition's seal in flight and the runs queued behind it. A seal had not landed by then, usually because the storage tier or the DHT was slow or failing, and the stop went ahead. There is no recovery event: the process that raised it has ended.
+
+**Actions:**
+
+1. A range `(held by its WAL)` is replayed when the node starts again and sealed then; nothing to do but check that it starts.
+2. A range `(no WAL)` is lost, acknowledged events included, as in a crash; consumers past it see the offsets assigned again (see `guarantees.md`, Restart without a WAL). Find why seals were slow (`stream-segment-dht-full`, `stream-segment-disk-pressure`, seal failure WARNs before the stop) before the next stop.
+
+### Stream Consumer Behind the Ring (`stream-consumer-behind-ring`)
+
+**Symptoms:** a WARNING `OPERATOR_WARNING` with `details.code` `stream-consumer-behind-ring`, subject `stream[partition]/group`.
+
+**Cause:** the group's cursor is below the partition's in-memory ring, so it reads from the sealed tier (slower, still complete). A new group that starts at `earliest` on a stream with sealed history raises it once by design.
+
+**Actions:**
+
+1. None if `stream-consumer-back-in-ring` (INFO, same subject) follows: the group caught up.
+2. If it persists, the group is slower than the stream; add capacity before retention reaches its position, or it will skip records (`stream-consumer-cursor-expired`).
+3. A group on a node that does not hold the partition reads through the owner, and learns whether it read the tier from the owner's ring tail as the owner reports it just after the read. A read served from the ring at its very edge while the ring evicted can therefore raise a spurious `stream-consumer-behind-ring` / `stream-consumer-back-in-ring` pair, and a group that keeps reading at the ring's edge can raise such a pair again on later reads. A pair that closes at once on such a group is this edge, not lag.
+
 ### High Latency
 
 **Symptoms:** Slow response times, `method.*.duration.avg` metrics elevated

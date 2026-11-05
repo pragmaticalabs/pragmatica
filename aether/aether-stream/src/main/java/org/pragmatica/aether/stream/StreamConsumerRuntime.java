@@ -217,13 +217,17 @@ public interface StreamConsumerRuntime extends AutoCloseable {
         };
     }
 
-    /// The default reader: this node's own ring, and nothing else.
+    /// The default reader: this node's own copy of the partition, and nothing else. A consumer's read (`readFrom`) is the
+    /// node's validated read of that copy, [StreamPartitionManager#readServingTiered], so below the ring tail it is served
+    /// from the sealed tier the partition manager has bound, through the one decision every consumer read shares (#2201
+    /// C-16, I-09); with no tier bound it answers `CursorExpired` at the ring tail.
     static PartitionReader localPartitionReader(StreamPartitionManager partitionManager) {
-        return (streamName, partition, fromOffset, maxEvents) -> partitionManager.readLocal(streamName,
-                                                                                            partition,
-                                                                                            fromOffset,
-                                                                                            maxEvents)
-                                                                                 .async();
+        return validatingReader((streamName, partition, fromOffset, maxEvents) -> partitionManager.readLocal(streamName,
+                                                                                                             partition,
+                                                                                                             fromOffset,
+                                                                                                             maxEvents)
+                                                                                                  .async(),
+                                partitionManager::readServingTiered);
     }
 
     @FunctionalInterface

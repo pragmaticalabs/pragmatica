@@ -21,6 +21,7 @@ import java.util.concurrent.TimeUnit;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.BootTokens;
+import org.pragmatica.consensus.net.IdentityFacts;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.OutboundMessageLimit;
 import org.pragmatica.lang.Contract;
@@ -578,8 +579,11 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             // Write-ahead (#2429): a first binding is answered only once the identity ledger holds it. The answer
             // is asynchronous, so a stalled ledger writer parks this Hello and nothing else: the I/O loop keeps
             // serving peers that are already bound.
-            bootTokens.admitDurably(hello.sender(),
-                                    hello.bootToken())
+            // The merge at join (ID-1c) comes first: what the dialer offers is durable here before it is judged. A WIPED acceptor keeps
+            // the offer and answers this Hello UNAVAILABLE (the dialer redials); it admits only against the merged ledger.
+            bootTokens.admitOffered(hello.sender(),
+                                    hello.bootToken(),
+                                    hello.offeredFacts())
                       .onSuccess(admission -> onEventLoop(ctx,
                                                           () -> completeHello(ctx, hello, admission)));
         }
@@ -687,7 +691,8 @@ final class QuicClusterServerInstance implements QuicClusterServer {
                                                                         selfAddress,
                                                                         selfLabels,
                                                                         bootTokens.self(),
-                                                                        Option.none()));
+                                                                        Option.none(),
+                                                                        bootTokens.offer().map(IdentityFacts::toWire)));
             var written = ctx.writeAndFlush(Unpooled.wrappedBuffer(helloBytes));
             // #726: PAYLOAD bytes at the lane boundary — same honesty boundary as every other write.
             quicMetrics.onBytesSent(helloBytes.length);

@@ -95,7 +95,7 @@ class ClusterSyncLeaderDirectoryTest {
         var leader = node(LEADER, true, network);
         var content = new AtomicReference<>(nodes("a"));
 
-        leader.context().setDirectorySources(content::get, () -> Result.success(DHT));
+        leader.context().setDirectorySources(content::get, () -> Result.success(DHT), Option::none);
         leader.context().broadcastPing(EPOCH, 5L);
         leader.context().broadcastPing(EPOCH, 5L);
 
@@ -137,7 +137,7 @@ class ClusterSyncLeaderDirectoryTest {
         }
 
         leader.context().setPeerMetricsForwarding(() -> true);
-        leader.context().setDirectorySources(() -> nodes("a"), () -> Result.success(DHT));
+        leader.context().setDirectorySources(() -> nodes("a"), () -> Result.success(DHT), Option::none);
         leader.collector().onClusterSyncPing(new ClusterSyncPing(STRANGER_PRODUCER,
                                                                  observations,
                                                                  5L,
@@ -170,7 +170,7 @@ class ClusterSyncLeaderDirectoryTest {
         var held = directory(1, 5, 0, 4);
 
         member.collector().setPingAuthority(CORE::equals, LEADER::equals);
-        member.context().setDirectorySources(() -> nodes("a"), () -> Result.success(DHT));
+        member.context().setDirectorySources(() -> nodes("a"), () -> Result.success(DHT), Option::none);
         member.collector().onClusterSyncPong(pong(CORE, held.version(), Option.some(held)));
         member.context().broadcastPing(EPOCH, 5L);
 
@@ -188,7 +188,7 @@ class ClusterSyncLeaderDirectoryTest {
         var network = new RecordingNetwork(Set.of(CORE));
         var member = node(SELF, false, network);
 
-        member.context().setDirectorySources(() -> nodes("a"), () -> Result.success(DHT));
+        member.context().setDirectorySources(() -> nodes("a"), () -> Result.success(DHT), Option::none);
         member.context().broadcastPing(EPOCH, 5L);
 
         assertThat(member.collector().heldDirectory().isPresent()).isFalse();

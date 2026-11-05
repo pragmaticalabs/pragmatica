@@ -100,7 +100,7 @@ final class Http3TestClient {
                                            .build();
             var codec = Http3.newQuicClientCodecBuilder()
                              .sslContext(ssl)
-                             .maxIdleTimeout(5000, TimeUnit.MILLISECONDS)
+                             .maxIdleTimeout(20_000, TimeUnit.MILLISECONDS)
                              .initialMaxData(10_000_000)
                              .initialMaxStreamDataBidirectionalLocal(1_000_000)
                              .build();

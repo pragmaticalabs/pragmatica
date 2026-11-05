@@ -9,6 +9,9 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.pragmatica.aether.stream.segment.SegmentSink;
+import org.pragmatica.aether.stream.segment.SealerThresholds;
+import org.pragmatica.aether.stream.segment.SegmentSealer;
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
@@ -39,7 +42,6 @@ import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 import static org.pragmatica.aether.stream.replication.ReplicaRegistry.replicaRegistry;
 import static org.pragmatica.aether.stream.replication.ReplicationManager.replicationManager;
-import static org.pragmatica.aether.stream.segment.SegmentSealer.segmentSealer;
 import static org.pragmatica.aether.stream.segment.StorageSegmentSink.storageSegmentSink;
 
 /// #1873 (KIP-320), the v1862 r2 probe over the REAL stack except the cluster: a no-WAL owner publishes 0..4 (sealing 0..2 into
@@ -218,5 +220,11 @@ class NoWalRestartConsumerRedeliveryTest {
                                          1,
                                          StreamCompression.NONE,
                                          Option.none());
+    }
+
+    /// One sealed segment per eviction, sealed at once (the sealer before runs, #2201 C-02): this fixture waits for each
+    /// evicted offset to be sealed, which the run-forming defaults would hold for up to `seal_run_age`.
+    private static SegmentSealer segmentSealer(SegmentSink sink) {
+        return SegmentSealer.segmentSealer(sink, SegmentSealer.DEFAULT_PENDING_CAP_BYTES, SealerThresholds.immediate());
     }
 }

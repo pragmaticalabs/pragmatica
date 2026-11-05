@@ -27,6 +27,8 @@ import org.pragmatica.statemachine.Fsm;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.consensus.net.WriteOutcome;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -363,7 +365,7 @@ class ClusterSyncFsmTest {
         private final CopyOnWriteArrayList<ProtocolMessage> broadcasts = new CopyOnWriteArrayList<>();
 
         @Override
-        public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
             sent.add(nodeId);
 
             return super.send(nodeId, message);
@@ -419,7 +421,7 @@ class ClusterSyncFsmTest {
         }
 
         @Override
-        public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
             sent.add(message);
 
             return super.send(nodeId, message);

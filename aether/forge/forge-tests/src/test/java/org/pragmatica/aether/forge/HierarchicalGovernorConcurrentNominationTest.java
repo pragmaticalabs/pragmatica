@@ -104,11 +104,12 @@ class HierarchicalGovernorConcurrentNominationTest {
                                                                            COMMUNITY,
                                                                            REQUEST_BASE + attempt * 10L + index,
                                                                            0,
-                                                                           "");
+                                                                           "",
+                                                                           false);
 
                         sends.add(HierarchyAuthorityAcceptanceTest.runtime(worker)
                                                                   .network()
-                                                                  .sendOutcome(leader().self(),
+                                                                  .send(leader().self(),
                                                                                request));
                     }
 

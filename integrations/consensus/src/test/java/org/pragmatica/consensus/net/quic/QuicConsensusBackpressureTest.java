@@ -21,11 +21,18 @@ import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.regex.Pattern;
 
 import io.netty.channel.ChannelFuture;
+import io.netty.channel.DefaultChannelPromise;
+import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicStreamChannel;
+import io.netty.util.concurrent.ImmediateEventExecutor;
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -49,6 +56,7 @@ import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -58,6 +66,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.withSettings;
 import static org.pragmatica.lang.Unit.unit;
 
 /// Regression coverage for the consensus-send backpressure fix.
@@ -256,6 +265,26 @@ class QuicConsensusBackpressureTest {
                 .isInstanceOf(WriteOutcome.BackpressureRefused.class);
             verify(ch, never()).writeAndFlush(any());
         }
+
+        /// #2574 lane pin: the FORWARD lane -- the stream forward reads' lane (`StreamForwardMessage.streamType()`), on which
+        /// `send` dispatches -- refuses at its watermark with BackpressureRefused, even
+        /// to a live peer, and writes nothing. That outcome is what lets a refused catch-up read fail at once instead of
+        /// waiting out its timeout; a FORWARD lane that retried and reported Sent (as CONSENSUS does) would hide it again.
+        @Test
+        void writeIfWritable_forwardBackpressured_refusesImmediately_evenWhenActive() {
+            var ch = mock(QuicStreamChannel.class);
+            when(ch.isActive()).thenReturn(true);
+            when(ch.isWritable()).thenReturn(false);
+
+            var network = network();
+
+            var outcome = network.writeIfWritableForTest(ch, payload(), PEER, StreamType.FORWARD);
+
+            assertThat(outcome)
+                .as("a backpressured FORWARD lane reports the refusal")
+                .isEqualTo(new WriteOutcome.BackpressureRefused(PEER));
+            verify(ch, never()).writeAndFlush(any());
+        }
     }
 
     @Nested
@@ -416,6 +445,355 @@ class QuicConsensusBackpressureTest {
             assertThat(network.broadcastTargetsForTests())
                 .as("null supplier restores the topology-backed mandatory default, not an unfiltered path")
                 .containsExactly(IN_VIEW);
+        }
+    }
+
+    /// #2580: the backpressure WARN fires once per (peer, lane) episode, not once per write. CI run 41243342645 logged
+    /// it 785,923 times in 4.5 minutes, one line per backpressured write. METRICS is used so no retry is scheduled:
+    /// the lane only decides what happens to the write, the logging is lane-independent.
+    @Nested
+    class BackpressureLogEpisodes {
+        private static final String LOGGER = "org.pragmatica.consensus.net.quic.QuicClusterNetwork";
+        private static final int WRITES = 50;
+
+        @Test
+        void manyBackpressuredWrites_logOneEntryWarn_andTheFirstWritableWriteOneSummary() {
+            var blocked = mock(QuicStreamChannel.class);
+            when(blocked.isWritable()).thenReturn(false);
+            var network = network();
+
+            try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+                for (int i = 0; i < WRITES; i++) {
+                    network.writeIfWritableForTest(blocked, payload(), PEER, StreamType.METRICS);
+                }
+
+                assertThat(entryWarns(capture)).as("%d backpressured writes on one lane: exactly one entry WARN", WRITES)
+                                               .hasSize(1);
+
+                network.writeIfWritableForTest(writable(), payload(), PEER, StreamType.METRICS);
+
+                assertThat(capture.messages(Level.INFO)).as("the first writable write closes the episode with one summary")
+                                                        .filteredOn(message -> message.contains("cleared"))
+                                                        .singleElement()
+                                                        .satisfies(message -> assertThat(message).contains(WRITES + " write(s)"));
+
+                network.writeIfWritableForTest(blocked, payload(), PEER, StreamType.METRICS);
+
+                assertThat(entryWarns(capture)).as("a backpressure after the summary is a new episode").hasSize(2);
+            }
+        }
+
+        @Test
+        void episodes_areKeptPerPeerAndLane() {
+            var blocked = mock(QuicStreamChannel.class);
+            when(blocked.isWritable()).thenReturn(false);
+            var network = network();
+            var otherPeer = new NodeId("peer-2");
+
+            try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+                for (int i = 0; i < WRITES; i++) {
+                    network.writeIfWritableForTest(blocked, payload(), PEER, StreamType.METRICS);
+                    network.writeIfWritableForTest(blocked, payload(), PEER, StreamType.FORWARD);
+                    network.writeIfWritableForTest(blocked, payload(), otherPeer, StreamType.METRICS);
+                }
+
+                assertThat(entryWarns(capture)).as("three (peer, lane) pairs: three entry WARNs").hasSize(3);
+            }
+        }
+
+        /// A departed peer's open episode is closed with its summary and its entry dropped: worker NodeIds are new per
+        /// incarnation, so a kept entry would grow the map without bound under churn. The proof the entry is gone is
+        /// that the next backpressured write opens a NEW episode.
+        @Test
+        void departedPeer_closesItsEpisode_andDropsTheEntry() {
+            var blocked = blockedChannel();
+            var network = network();
+
+            try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+                blockWrites(network, blocked, WRITES);
+
+                network.departurePermanent(PEER);
+
+                assertSummaryOf(capture, WRITES);
+                network.writeIfWritableForTest(blocked, payload(), PEER, StreamType.METRICS);
+                assertThat(entryWarns(capture)).as("the departed peer's entry was dropped: a later write opens a new episode")
+                                               .hasSize(2);
+            }
+        }
+
+        /// The same through the event-driven close path: the peer's bound QUIC channel closes.
+        @Test
+        void closedChannel_closesThePeersEpisode_andDropsTheEntry() {
+            var blocked = blockedChannel();
+            var network = network();
+            var chan = mock(QuicChannel.class);
+            var closeFuture = new DefaultChannelPromise(chan, ImmediateEventExecutor.INSTANCE);
+            when(chan.isActive()).thenReturn(true);
+            when(chan.closeFuture()).thenReturn(closeFuture);
+            var connection = QuicPeerConnection.quicPeerConnection(PEER, chan);
+            var attachedAt = System.nanoTime();
+            var state = PeerState.peerState(PEER, attachedAt);
+            state.beginConnecting(attachedAt);
+            state.attach(connection, attachedAt);
+            network.seedPeerForTests(PEER, state);
+            network.registerCloseListenerForTests(PEER, connection);
+
+            try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+                blockWrites(network, blocked, WRITES);
+
+                closeFuture.setSuccess();
+
+                assertSummaryOf(capture, WRITES);
+                network.writeIfWritableForTest(blocked, payload(), PEER, StreamType.METRICS);
+                assertThat(entryWarns(capture)).as("the closed channel's entry was dropped: a later write opens a new episode")
+                                               .hasSize(2);
+            }
+        }
+
+        /// A channel closing for a peer the transport holds no state for still closes that peer's episode.
+        @Test
+        void closedChannel_ofAPeerWithNoState_closesItsEpisode() {
+            var blocked = blockedChannel();
+            var network = network();
+            var chan = mock(QuicChannel.class);
+            var closeFuture = new DefaultChannelPromise(chan, ImmediateEventExecutor.INSTANCE);
+            when(chan.closeFuture()).thenReturn(closeFuture);
+            network.registerCloseListenerForTests(PEER, QuicPeerConnection.quicPeerConnection(PEER, chan));
+
+            try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+                blockWrites(network, blocked, WRITES);
+
+                closeFuture.setSuccess();
+
+                assertSummaryOf(capture, WRITES);
+            }
+        }
+
+        /// The summary reports how long the lane stayed unwritable, measured from the write that opened the episode.
+        @Test
+        void summary_reportsTheEpisodeDuration() {
+            var network = network();
+
+            try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+                blockWrites(network, blockedChannel(), 1);
+                parkMillis(60);
+                network.writeIfWritableForTest(writable(), payload(), PEER, StreamType.METRICS);
+
+                assertThat(capture.messages(Level.INFO)).filteredOn(message -> message.contains("cleared"))
+                                                        .singleElement()
+                                                        .satisfies(message -> assertThat(durationMillis(message))
+                                                            .as("the episode lasted at least the 60 ms parked, and not since the epoch")
+                                                            .isBetween(50L, 10_000L));
+            }
+        }
+
+        /// The usual departure: a peer the transport holds state for is driven to REMOVED, and its episode closes.
+        @Test
+        void departedPeerWithState_closesItsEpisode() {
+            var blocked = blockedChannel();
+            var network = network();
+            network.seedPeerForTests(PEER, PeerState.peerState(PEER, System.nanoTime()));
+
+            try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+                blockWrites(network, blocked, WRITES);
+
+                network.departurePermanent(PEER);
+
+                assertSummaryOf(capture, WRITES);
+                assertThat(network.openBackpressureEpisodesForTests()).isZero();
+            }
+        }
+
+        /// A write that captured its stream before its peer departed can run after `departurePermanent` closed the
+        /// peer's episodes. The episode it opens must not stay: a REMOVED peer gets no later departure or close.
+        @Test
+        void aWriteAfterDeparture_leavesNoEpisodeOpen() {
+            var network = network();
+            network.seedPeerForTests(PEER, PeerState.peerState(PEER, System.nanoTime()));
+
+            network.departurePermanent(PEER);
+            network.writeIfWritableForTest(blockedChannel(), payload(), PEER, StreamType.METRICS);
+
+            assertThat(network.openBackpressureEpisodesForTests()).as("no episode is kept for a REMOVED peer").isZero();
+        }
+
+        /// The same with the write and the departure racing: whichever runs second must drop the episode.
+        @Test
+        void writesRacingDeparture_leaveNoEpisodeOpen() {
+            var network = network();
+            var blocked = stubOnlyBlockedChannel();
+
+            try (var _ = LogCapture.capture(LOGGER, Level.ERROR, false)) {
+                for (int round = 0; round < RACE_ROUNDS; round++) {
+                    var peer = new NodeId("racer-" + round);
+                    network.seedPeerForTests(peer, PeerState.peerState(peer, System.nanoTime()));
+                    race(RACE_WRITERS,
+                         departed -> {
+                             while (!departed.get()) {
+                                 network.writeIfWritableForTest(blocked, payload(), peer, StreamType.METRICS);
+                             }
+                         },
+                         departed -> {
+                             network.departurePermanent(peer);
+                             departed.set(true);
+                         });
+                }
+            }
+
+            assertThat(network.openBackpressureEpisodesForTests()).as("episodes left open for REMOVED peers").isZero();
+        }
+
+        /// Writes counted while another thread closes the episode are reported by exactly one summary each.
+        @Test
+        void concurrentCloses_neverLoseACountedWrite() {
+            var network = network();
+            var blocked = stubOnlyBlockedChannel();
+            var writable = stubOnlyWritable();
+            var blockedWrites = new AtomicLong();
+            var reported = new AtomicLong();
+
+            try (var _ = LogCapture.capture(LOGGER,
+                                            Level.INFO,
+                                            false,
+                                            event -> reported.addAndGet(clearedWrites(event.getMessage().getFormattedMessage())))) {
+                race(RACE_WRITERS,
+                     _ -> {
+                         for (int i = 0; i < COUNT_WRITES; i++) {
+                             network.writeIfWritableForTest(blocked, payload(), PEER, StreamType.METRICS);
+                             blockedWrites.incrementAndGet();
+                         }
+                     },
+                     done -> {
+                         while (!done.get()) {
+                             network.writeIfWritableForTest(writable, payload(), PEER, StreamType.METRICS);
+                         }
+                     });
+                network.writeIfWritableForTest(writable, payload(), PEER, StreamType.METRICS);
+            }
+
+            assertThat(reported.get()).as("writes reported by summaries, of %d backpressured", blockedWrites.get())
+                                      .isEqualTo(blockedWrites.get());
+        }
+
+        private static final int RACE_ROUNDS = 300;
+        private static final int RACE_WRITERS = 4;
+        private static final int COUNT_WRITES = 20_000;
+        private static final Pattern CLEARED = Pattern.compile("cleared: (\\d+) write\\(s\\) found it unwritable over (\\d+) ms");
+
+        /// Runs `writers` threads and one `other` thread from a spin barrier. `other` gets a flag it may set to stop
+        /// the writers; when the writers finish first the flag is set for `other`. Both sides are bounded by a deadline.
+        private static void race(int writers,
+                                 java.util.function.Consumer<AtomicBoolean> writer,
+                                 java.util.function.Consumer<AtomicBoolean> other) {
+            var flag = new AtomicBoolean();
+            var ready = new AtomicInteger();
+            var deadline = System.nanoTime() + TimeSpan.timeSpan(20).seconds().nanos();
+            var threads = new ArrayList<Thread>();
+
+            for (int i = 0; i < writers; i++) {
+                threads.add(Thread.ofPlatform().start(() -> {
+                    spinUntilReady(ready, writers + 1, deadline);
+                    writer.accept(flag);
+                }));
+            }
+
+            var otherThread = Thread.ofPlatform().start(() -> {
+                spinUntilReady(ready, writers + 1, deadline);
+                other.accept(flag);
+            });
+
+            threads.forEach(QuicConsensusBackpressureTest.BackpressureLogEpisodes::joinQuietly);
+            flag.set(true);
+            joinQuietly(otherThread);
+        }
+
+        private static void spinUntilReady(AtomicInteger ready, int parties, long deadline) {
+            ready.incrementAndGet();
+            while (ready.get() < parties && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+        }
+
+        private static void joinQuietly(Thread thread) {
+            try {
+                thread.join(java.time.Duration.ofSeconds(20));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        private static long clearedWrites(String message) {
+            var matcher = CLEARED.matcher(message);
+
+            return matcher.find() ? Long.parseLong(matcher.group(1)) : 0L;
+        }
+
+        private static long durationMillis(String message) {
+            var matcher = CLEARED.matcher(message);
+
+            return matcher.find() ? Long.parseLong(matcher.group(2)) : -1L;
+        }
+
+        private static void parkMillis(long millis) {
+            var until = System.nanoTime() + TimeSpan.timeSpan(millis).millis().nanos();
+            while (System.nanoTime() < until) {
+                java.util.concurrent.locks.LockSupport.parkNanos(until - System.nanoTime());
+            }
+        }
+
+        private static QuicStreamChannel stubOnlyWritable() {
+            var ch = mock(QuicStreamChannel.class, withSettings().stubOnly());
+            var future = mock(ChannelFuture.class, withSettings().stubOnly());
+            when(future.addListener(any())).thenReturn(future);
+            when(ch.writeAndFlush(any())).thenReturn(future);
+            when(ch.isWritable()).thenReturn(true);
+
+            return ch;
+        }
+
+        /// Records no invocations: millions of calls from racing threads would otherwise be kept by the mock.
+        private static QuicStreamChannel stubOnlyBlockedChannel() {
+            var blocked = mock(QuicStreamChannel.class, withSettings().stubOnly());
+            when(blocked.isWritable()).thenReturn(false);
+
+            return blocked;
+        }
+
+        private static QuicStreamChannel blockedChannel() {
+            var blocked = mock(QuicStreamChannel.class);
+            when(blocked.isWritable()).thenReturn(false);
+
+            return blocked;
+        }
+
+        private static void blockWrites(QuicClusterNetwork network, QuicStreamChannel blocked, int writes) {
+            for (int i = 0; i < writes; i++) {
+                network.writeIfWritableForTest(blocked, payload(), PEER, StreamType.METRICS);
+            }
+        }
+
+        private static void assertSummaryOf(LogCapture capture, int writes) {
+            assertThat(capture.messages(Level.INFO)).as("the episode is closed with one summary")
+                                                    .filteredOn(message -> message.contains("cleared"))
+                                                    .singleElement()
+                                                    .satisfies(message -> assertThat(message).contains(writes + " write(s)"));
+        }
+
+        private static List<String> entryWarns(LogCapture capture) {
+            return capture.messages(Level.WARN)
+                          .stream()
+                          .filter(message -> message.startsWith("Backpressure on peer"))
+                          .toList();
+        }
+
+        private static QuicStreamChannel writable() {
+            var ch = mock(QuicStreamChannel.class);
+            var future = mock(ChannelFuture.class);
+            when(future.addListener(any())).thenReturn(future);
+            when(ch.writeAndFlush(any())).thenReturn(future);
+            when(ch.isWritable()).thenReturn(true);
+
+            return ch;
         }
     }
 

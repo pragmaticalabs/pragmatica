@@ -21,6 +21,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.Server;
+import org.pragmatica.consensus.net.WriteOutcome;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -56,20 +57,39 @@ class ForwardingClusterNodeOfflineTtlTest {
         assertThat(pending.isResolved()).as("the caller is still waiting: the lifetime is its wait, not an early failure").isFalse();
     }
 
+    /// Red when: `forwardApplyTimeout()` reports a value other than the wait `apply` actually uses, so a worker's write
+    /// timers sized from it (deployment spec R-3.4.4, G-6) would not outlast the forwarder's own timeout.
+    @Test
+    void forwardApplyTimeout_isTheWaitApplyHandsOver() {
+        var bounded = new CopyOnWriteArrayList<Sent>();
+        var underlying = mock(ClusterNode.class);
+        when(underlying.self()).thenReturn(SELF);
+        @SuppressWarnings("unchecked")
+        var node = ForwardingClusterNode.<Cmd>forwardingClusterNode(underlying, recording(bounded, new CopyOnWriteArrayList<>()), Set.of(CORE));
+
+        node.apply(List.of(new Cmd("put")));
+
+        assertThat(bounded).hasSize(1);
+        assertThat(ForwardingClusterNode.forwardApplyTimeout()
+                                        .millis()).isEqualTo(bounded.getFirst()
+                                                                    .lifetime()
+                                                                    .millis());
+    }
+
     private static ClusterNetwork recording(List<Sent> bounded, List<ProtocolMessage> plain) {
         return new ClusterNetwork() {
             @Override
-            public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+            public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
                 plain.add(message);
 
-                return Unit.unit();
+                return Promise.success(new WriteOutcome.Sent(nodeId));
             }
 
             @Override
-            public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+            public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
                 bounded.add(new Sent(message, offlineTtl));
 
-                return Unit.unit();
+                return Promise.success(new WriteOutcome.Sent(nodeId));
             }
 
             @Override public <M extends ProtocolMessage> Unit broadcast(M message) {return Unit.unit();}

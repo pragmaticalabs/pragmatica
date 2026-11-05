@@ -279,7 +279,8 @@ public sealed interface ClusterBootstrapAssembly {
         kvBackupService.onPresent(service -> routeKvBackup(allEntries, service));
         // #1533: the restore decision precedes every cluster-state seeder — on EVERY node, so a leader
         // without [backup] still commits DISABLED and opens the gate its backup-enabled peers hold closed.
-        var backupRestoreCoordinator = BackupRestoreCoordinator.backupRestoreCoordinator(kvStore,
+        var backupRestoreCoordinator = BackupRestoreCoordinator.backupRestoreCoordinator(config.self(),
+                                                                                         kvStore,
                                                                                          clusterCommandApplier,
                                                                                          restoreSource(config,
                                                                                                        kvBackupService),

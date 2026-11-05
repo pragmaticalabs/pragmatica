@@ -56,6 +56,9 @@ import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 /// Sites reached here: the `WaveExecutor` sites (scale-down, `drainOldNodes`), `ClusterDestroyCommand`, `ClusterDrainCommand --wait`.
 @Timeout(value = 40, unit = TimeUnit.SECONDS)
 class DrainWaitCallSitesTest {
+    @org.junit.jupiter.api.extension.RegisterExtension
+    final LedgerDirExtension ledger = new LedgerDirExtension();
+
     private static final String UNRESOLVABLE_HOST = "drain-test.invalid";
     private static final String NODE = "core-2";
 
@@ -106,7 +109,7 @@ class DrainWaitCallSitesTest {
                                          List.of(),
                                          List.of());
 
-            var result = WaveExecutor.execute(plan, config, config);
+            var result = WaveExecutor.execute(plan, config, config, ledger.recorder(config.cluster().name(), List.of("RuntimeChange|dc|core|a->b")));
 
             assertThat(failureText(result)).as("%s", type)
                                            .contains("dc.core (a -> b)")
@@ -129,7 +132,7 @@ class DrainWaitCallSitesTest {
                                      List.of(),
                                      List.of());
 
-        var result = WaveExecutor.execute(plan, config, config);
+        var result = WaveExecutor.execute(plan, config, config, ledger.recorder(config.cluster().name(), List.of("RuntimeChange|dc|core|a->b")));
 
         assertThat(failureText(result)).contains("Runtime profile 'app' changed (image)");
         assertThat(http.drainPosts()).as("no drain requested").isZero();
@@ -170,7 +173,7 @@ class DrainWaitCallSitesTest {
                                      List.of(new DiffAction.ScaleDown(sourceNameOrDefault("dc"), NodeRole.CORE, 2, 1)),
                                      List.of());
 
-        var result = WaveExecutor.execute(plan, config, config);
+        var result = WaveExecutor.execute(plan, config, config, ledger.recorder(config.cluster().name(), List.of("RuntimeChange|dc|core|a->b")));
 
         assertThat(http.drainPosts()).as("the drain was requested").isEqualTo(1);
         assertThat(http.lifecycleGets()).as("and the wait ran past the relayed 404 to the refusal").isEqualTo(3);

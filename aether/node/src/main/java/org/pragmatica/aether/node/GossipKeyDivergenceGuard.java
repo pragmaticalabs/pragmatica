@@ -19,15 +19,19 @@ import org.slf4j.LoggerFactory;
 
 
 /// #683 — boot gate for gossip-key divergence: refuse loudly instead of sitting in a silent
-/// unjoinable state.
+/// unjoined state.
 ///
 /// **The state this guards.** A KV gossip-key rotation replaces the live encryptor's accept set with
 /// the record's `{currentKeyId, previousKeyId}` ([GossipKeyRotationHandler]), so the
 /// `cluster_secret`-derived keyId leaves it. A node booting afterwards derives its key from
-/// `cluster_secret` and can neither be understood by the cluster nor understand it. SWIM therefore
-/// discovers nothing, the QUIC dial set stays self-only (SWIM is its sole writer besides self), no
-/// quorum forms, and the consensus replay that carries the rotation record — the only way to obtain
-/// the cluster key — never runs. The node cannot join, and without this gate it never says so.
+/// `cluster_secret` and can neither be understood by the cluster nor understand it, until the
+/// consensus replay of the rotation record hands it the cluster key. That replay normally arrives
+/// within seconds: the node dials the cores it was configured with itself, after a 2 s isolation grace
+/// (`MembershipAssembly.bootstrapInitiator`), without any datagram decrypting, so it forms quorum and
+/// syncs (#1200 corrected an earlier claim here that this was a deadlock). This gate covers the node for which it
+/// does not arrive: one that keeps receiving gossip it cannot decrypt, for longer than the arming
+/// delay, without ever decrypting one datagram. It is not getting through to the cluster, and without
+/// this gate it never says so.
 ///
 /// **What the signal is.** `UnknownKeyId` means a peer encrypted under a key epoch this node does not
 /// hold. It is raised by `AesGcmGossipEncryptor.resolveKey` and, before this class, was consumed
@@ -50,10 +54,12 @@ import org.slf4j.LoggerFactory;
 /// **Coverage — this gate is a determination for some boots and blind for others, by construction.**
 /// It fires only if the cluster SENDS to this node. Peers probe their configured seed set, so a
 /// RESTARTED member is probed and the divergence is detected precisely. A node the cluster has never
-/// heard of — a CTM auto-heal replacement or a scale-up node — is probed by nobody: its own datagrams
-/// are dropped undecrypted by the seeds, which therefore never reply, so it receives NOTHING and this
-/// guard cannot fire. In that case the only signal is the `Failed to decrypt gossip from ...` WARN on
-/// the healthy seeds, not on the stranded node. SECURITY.md states this.
+/// heard of — a CTM auto-heal replacement or a scale-up node — is probed by nobody until they
+/// discover it, and its own ANNOUNCE is dropped undecrypted by the seeds. It normally dials
+/// its configured cores itself and replays the rotation record within seconds (#1200), so this gate rarely matters for it;
+/// if it does not catch up, this gate cannot fire, and the signal is on the healthy seeds: the
+/// `Failed to decrypt gossip from ...` WARN and the operator event `gossip-key-unknown-from-peer`
+/// (with `gossip-key-peer-decrypted` as its recovery). SECURITY.md states this.
 /// **The exit path is MEASURED, not assumed** (#683 round 2). `refuse` runs on a Netty event-loop
 /// thread, and #838 proved by probe that `System.exit` from inside a shutdown HOOK parks the JVM
 /// forever — so the same call from an IO thread could not be taken on trust. Probed with a real
@@ -208,11 +214,11 @@ public final class GossipKeyDivergenceGuard implements GossipEncryptor {
                  + " gossip datagram(s) arrived under key id " + observedKeyId
                  + " which this node does not hold, and none has ever decrypted. The cluster has almost"
                  + " certainly had its gossip key rotated (POST /api/v1/cluster/gossip-key/rotate) since"
-                 + " this node's cluster_secret-derived key was issued. This node CANNOT join: without"
-                 + " SWIM there is no quorum, and without quorum the rotation record that carries the"
-                 + " cluster key is never replayed to it. Refusing to boot rather than sit unjoinable."
-                 + " Remedy: re-provision this node with the rotated cluster's key material, or restore"
-                 + " the cluster to the derived key scheme. See #683.";
+                 + " this node's cluster_secret-derived key was issued. A node normally receives the rotation"
+                 + " record by consensus replay shortly after it starts, which gives it the cluster key;"
+                 + " this one has not, so it is not getting through to the cluster. Refusing to boot rather"
+                 + " than sit unjoined. Remedy: check that this node's peer list names reachable cores and"
+                 + " that its cluster_secret matches the cluster's. See #683, #1200.";
         }
     }
 }

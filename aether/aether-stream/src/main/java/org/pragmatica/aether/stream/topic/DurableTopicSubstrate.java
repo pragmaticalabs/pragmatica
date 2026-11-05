@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream.topic;
 import org.pragmatica.aether.resource.DurableTopicSpec;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.Publisher;
+import org.pragmatica.aether.slice.RetentionDimensions;
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
@@ -134,12 +135,15 @@ public interface DurableTopicSubstrate {
                                          none());
     }
 
+    /// A topic's retention is a max age: it declares the age only (#2201 Q6 = B). The count and bytes are the ring's
+    /// sizing defaults, never a declaration, so they do not cut the topic's sealed history (review R32-04).
     private static RetentionPolicy timeBoundedRetention(TimeSpan retention) {
         var sizingDefaults = RetentionPolicy.retentionPolicy();
 
         return RetentionPolicy.retentionPolicy(sizingDefaults.maxCount(),
                                                sizingDefaults.maxBytes(),
                                                retention.toMillis(),
-                                               RetentionMode.ANY);
+                                               RetentionMode.ANY)
+                              .withDeclared(RetentionDimensions.AGE);
     }
 }

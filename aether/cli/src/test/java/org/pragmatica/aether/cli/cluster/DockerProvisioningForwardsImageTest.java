@@ -106,7 +106,7 @@ class DockerProvisioningForwardsImageTest {
     void scaleWaveProvisioning_handsTheProviderTheRolesOwnPin() {
         var config = ClusterBootstrapConfigParser.parse(PINNED).unwrap();
 
-        WaveExecutor.provisionBySourceType(sourceNameOrDefault("local"), config.sources().get("local"), NodeRole.WORKER, 1, config);
+        WaveExecutor.provisionBySourceType(sourceNameOrDefault("local"), config.sources().get("local"), NodeRole.WORKER, 1, config, ApplyRecorder.applyRecorder(ApplyStateFixtures.state(config.cluster().name())));
 
         assertThat(seen).as("CONTROL: the call site reached the provider factory exactly once").hasSize(1);
         assertThat(seen.getFirst().compute()).containsEntry("image_name", "registry/aether-worker:1.1.0");

@@ -14,28 +14,39 @@ public record RetentionPolicy(long maxCount,
                               long maxBytes,
                               long maxAgeMs,
                               RetentionMode mode,
-                              Option<TierAwareRetention> tierAwareRetention) {
+                              Option<TierAwareRetention> tierAwareRetention,
+                              RetentionDimensions declared) {
     private static final long DEFAULT_MAX_COUNT = 100_000;
     private static final long DEFAULT_MAX_BYTES = 256 * 1024 * 1024L;
     private static final long DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000L;
 
     public static RetentionPolicy retentionPolicy() {
-        return new RetentionPolicy(DEFAULT_MAX_COUNT, DEFAULT_MAX_BYTES, DEFAULT_MAX_AGE_MS, RetentionMode.ANY, none());
+        return new RetentionPolicy(DEFAULT_MAX_COUNT,
+                                   DEFAULT_MAX_BYTES,
+                                   DEFAULT_MAX_AGE_MS,
+                                   RetentionMode.ANY,
+                                   none(),
+                                   RetentionDimensions.NONE);
     }
 
     public static RetentionPolicy retentionPolicy(long maxCount, long maxBytes, long maxAgeMs) {
-        return new RetentionPolicy(maxCount, maxBytes, maxAgeMs, RetentionMode.ANY, none());
+        return new RetentionPolicy(maxCount, maxBytes, maxAgeMs, RetentionMode.ANY, none(), RetentionDimensions.NONE);
     }
 
     public static RetentionPolicy retentionPolicy(long maxCount, long maxBytes, long maxAgeMs, RetentionMode mode) {
-        return new RetentionPolicy(maxCount, maxBytes, maxAgeMs, mode, none());
+        return new RetentionPolicy(maxCount, maxBytes, maxAgeMs, mode, none(), RetentionDimensions.NONE);
     }
 
     public static RetentionPolicy retentionPolicy(long maxCount,
                                                   long maxBytes,
                                                   long maxAgeMs,
                                                   TierAwareRetention tierAware) {
-        return new RetentionPolicy(maxCount, maxBytes, maxAgeMs, RetentionMode.ANY, Option.some(tierAware));
+        return new RetentionPolicy(maxCount,
+                                   maxBytes,
+                                   maxAgeMs,
+                                   RetentionMode.ANY,
+                                   Option.some(tierAware),
+                                   RetentionDimensions.NONE);
     }
 
     public static RetentionPolicy retentionPolicy(long maxCount,
@@ -43,7 +54,14 @@ public record RetentionPolicy(long maxCount,
                                                   long maxAgeMs,
                                                   RetentionMode mode,
                                                   TierAwareRetention tierAware) {
-        return new RetentionPolicy(maxCount, maxBytes, maxAgeMs, mode, Option.some(tierAware));
+        return new RetentionPolicy(maxCount, maxBytes, maxAgeMs, mode, Option.some(tierAware), RetentionDimensions.NONE);
+    }
+
+    /// The same values, declaring `dimensions` (#2201 Q6 = B). Every factory above declares NOTHING, including those that take
+    /// values: their callers pass ring sizing and filled-in defaults, not declarations (review R32-04), so a declaration is
+    /// only ever made here or through the canonical constructor.
+    public RetentionPolicy withDeclared(RetentionDimensions dimensions) {
+        return new RetentionPolicy(maxCount, maxBytes, maxAgeMs, mode, tierAwareRetention, dimensions);
     }
 
     public boolean shouldEvict(long count, long bytes, long ageMs) {

@@ -15,6 +15,8 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.net.tcp.Server;
 
 import java.util.Set;
+import org.pragmatica.consensus.net.WriteOutcome;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.Unit.unit;
 
@@ -42,8 +44,13 @@ class StubClusterNetwork implements ClusterNetwork {
     public void handleBroadcast(NetworkServiceMessage.Broadcast broadcast) {}
 
     @Override
-    public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
-        return unit();
+    public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
+        return Promise.success(new WriteOutcome.Sent(nodeId));
+    }
+
+    @Override
+    public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+        return send(nodeId, message);
     }
 
     @Override

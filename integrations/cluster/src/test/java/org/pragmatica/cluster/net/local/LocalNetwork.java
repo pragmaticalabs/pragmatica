@@ -21,6 +21,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
+import org.pragmatica.consensus.net.WriteOutcome;
 
 /// Local network implementation suitable for testing purposes
 public class LocalNetwork implements ClusterNetwork {
@@ -96,18 +97,23 @@ public class LocalNetwork implements ClusterNetwork {
     }
 
     @Override
-    public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+    public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
         // For Byzantine behavior - only check if it's a Byzantine node if we can get the sender
         var sender = message.sender();
         if (sender != null && faultInjector.isFaultyNode(sender, FaultType.NODE_BYZANTINE)) {
             // Handle Byzantine behavior - for now, just drop the message
-            return Unit.unit();
+            return Promise.success(new WriteOutcome.Sent(nodeId));
         }
 
         if (nodes.containsKey(nodeId)) {
             processWithFaultInjection(nodeId, (RabiaProtocolMessage) message);
         }
-        return Unit.unit();
+        return Promise.success(new WriteOutcome.Sent(nodeId));
+    }
+
+    @Override
+    public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+        return send(nodeId, message);
     }
 
     public void disconnectNode(NodeId nodeId) {

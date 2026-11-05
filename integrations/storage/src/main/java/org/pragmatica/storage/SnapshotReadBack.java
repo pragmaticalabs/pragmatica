@@ -73,7 +73,8 @@ sealed interface SnapshotReadBack {
     }
 
     /// `<64 hex>|<tiers>|<refCount>|<lastAccessedAt>|<createdAt>|<accessCount>|<orphanedAt>`, plus
-    /// `|CACHE_ONLY` when -- and only when -- the record is a cache-only marker. Nothing else follows.
+    /// `|<flags>` when -- and only when -- the record carries a flag (a cache-only marker, a shared-delete authority).
+    /// Nothing else follows.
     private static boolean lifecycleReadsBack(String line, BlockLifecycle expected) {
         var bar1 = line.indexOf('|');
         var bar2 = line.indexOf('|', bar1 + 1);
@@ -104,12 +105,15 @@ sealed interface SnapshotReadBack {
                && Long.parseLong(line, bar6 + 1, orphanedEnd, 10) == expected.orphanedAt();
     }
 
-    /// No 8th field for an ordinary record; exactly the `CACHE_ONLY` flag, and nothing after it, for a marker.
+    /// No 8th field for a record without flags; exactly its flags ([MetadataSnapshot#lineFlags]: the cache-only marker and
+    /// the shared-delete authority, #2258), and nothing after them, for one with any.
     private static boolean flagReadsBack(String line, int bar7, BlockLifecycle expected) {
-        return expected.cacheOnly()
-               ? bar7 > 0 && line.substring(bar7 + 1)
-                                 .equals(MetadataSnapshot.LineFlag.CACHE_ONLY.name())
-               : bar7 < 0;
+        var flags = MetadataSnapshot.lineFlags(expected);
+
+        return flags.isEmpty()
+               ? bar7 < 0
+               : bar7 > 0 && line.substring(bar7 + 1)
+                                 .equals(String.join(",", flags));
     }
 
     /// `<percent-encoded name>|<64 hex>`.

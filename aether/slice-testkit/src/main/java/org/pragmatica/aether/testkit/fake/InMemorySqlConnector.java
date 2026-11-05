@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.testkit.fake;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
@@ -80,6 +81,17 @@ public final class InMemorySqlConnector implements SqlConnector {
     @Override
     public <T> Promise<T> transactional(TransactionCallback<T> callback) {
         return callback.execute(this);
+    }
+
+    /// The fake has one logical session: `body` runs on this connector, then `release` does. No physical connection
+    /// exists to abort, so a failed `release` does not change the result, which is `body`'s.
+    @Override
+    public <T> Promise<T> pinned(Duration statementTimeout,
+                                 TransactionCallback<T> body,
+                                 TransactionCallback<Unit> release) {
+        return body.execute(this)
+                   .fold(bodyResult -> release.execute(this)
+                                              .fold(_ -> Promise.resolved(bodyResult)));
     }
 
     @Override

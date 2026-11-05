@@ -66,6 +66,20 @@ final class TransportTripwireFixtures {
         return NodeInfo.nodeInfo(id, addressOf("127.0.0.1", port));
     }
 
+    /// As [#awaitTrue(BooleanSupplier, TimeSpan, String)], with the description read when the bound expires, so a timeout
+    /// reports the state the condition was waiting on instead of a fixed sentence.
+    static void awaitTrue(BooleanSupplier condition, TimeSpan bound, java.util.function.Supplier<String> what) {
+        var deadline = System.nanoTime() + bound.nanos();
+
+        while (System.nanoTime() < deadline) {
+            if (condition.getAsBoolean()) {
+                return;
+            }
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(20));
+        }
+        fail("Timed out waiting for: " + what.get());
+    }
+
     static void awaitTrue(BooleanSupplier condition, TimeSpan bound, String what) {
         var deadline = System.nanoTime() + bound.nanos();
 

@@ -45,6 +45,8 @@ import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.net.tcp.Server;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.consensus.net.WriteOutcome;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.Unit.unit;
@@ -362,9 +364,14 @@ class AppHttpServerForwardBudgetTest {
         @Override public void handleSend(NetworkServiceMessage.Send send) {}
         @Override public void handleBroadcast(NetworkServiceMessage.Broadcast broadcast) {}
 
-        @Override public synchronized <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+        @Override public synchronized <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
             sentMessages.add(message);
-            return unit();
+            return Promise.success(new WriteOutcome.Sent(nodeId));
+        }
+
+        @Override
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+            return send(nodeId, message);
         }
 
         @Override public Promise<Unit> start() {return Promise.unitPromise();}

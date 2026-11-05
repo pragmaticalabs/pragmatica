@@ -182,6 +182,19 @@ public sealed interface SliceLoadingFailure extends Cause permits SliceLoadingFa
             }
         }
 
+        /// `Slice.codec(parent)` of a created, registered slice threw while the loader bound the slice's codec.
+        record CodecBindFailed(String artifact, Cause causeSource) implements Fatal {
+            @Override
+            public String message() {
+                return "Failed to bind the codec of slice " + artifact + ": " + causeSource.message();
+            }
+
+            @Override
+            public Option<Cause> source() {
+                return some(causeSource);
+            }
+        }
+
         record UnexpectedError(Cause causeSource) implements Fatal {
             @Override
             public String message() {

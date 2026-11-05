@@ -5,21 +5,23 @@
 package org.pragmatica.aether.ember;
 
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// #2429 — the limits of the identity ledger, asserted as the behaviour they are today (enabled tripwires).
+/// #2429 — the limits of the identity ledger, asserted as the behaviour they are (enabled tripwires), and the merge at join
+/// (ID-1c) that ends the isolation of a wiped holder.
 ///
 /// - **Every holder's ledger directory is lost** with its memory: nothing is left to remember the retirement, so the
 ///   restarted cores admit a process for the retired NodeId. The cluster that forms is new; there are no identities left to
 ///   protect, which is also how a cluster behaved before the ledger existed.
 /// - **One holder's ledger FILE is lost while its directory stays**: the node is not new and its facts are gone, so it is
-///   WIPED. It admits no peer (after a restart every peer is new to it, so it is isolated until the merge at join exists), and it does so quietly: the process that arrives
-///   is not told its identity is retired (that would make it exit), its connection is closed and it keeps redialing.
-///   Recovering the fact from a peer is the merge at join, which is not part of this change: that arm is disabled below.
+///   WIPED. After a restart every peer is new to it, so it admits no peer until a MAJORITY of the configured core seats has
+///   offered its ledger in the Hello exchange, counting no offer toward admitting the peer that made it, and it does so quietly: the
+///   process that arrives is not told its identity is retired (that would make it exit), its connection is closed and it keeps
+///   redialing. A lone stray is never a majority (the "Alone" arm), one legitimate peer of three seats is not either, and a
+///   legitimate peer plus the stray is: the union is written, durably, before anyone is admitted (the regain arm).
 @PortBudget
 class EmberLedgerLostTest {
     private final IdentityRestartHarness harness = new IdentityRestartHarness("ell");
@@ -69,19 +71,56 @@ class EmberLedgerLostTest {
         assertThat(verdict.refusalsAdded()).as("an unavailable registry is not a refusal").isZero();
     }
 
-    @Disabled("enable with the merge of ledgers at join (follow-up of #2429): a wiped holder regains the retirement from a peer's ledger, then refuses the retired NodeId")
+    /// The stray-first hazard of #2429 with a legitimate peer in the room. Both holders restart (a core that stays up holds the
+    /// other's boot token and retires its restarted process on contact, which is not what is under test), B without its ledger FILE,
+    /// and the retired NodeId's process keeps coming. Three configured seats: B leaves WIPED only on a majority that holds without
+    /// the offer of the peer being admitted, so A alone cannot release B for itself, and the stray alone never releases it. When both
+    /// have been heard, B takes the union (A's offer names the stray), writes it, and refuses the stray; A is admitted on its redial.
     @Test
     @Timeout(1200)
-    void oneHoldersLedgerFileLost_regainsTheRetirementFromAPeer_thenRefuses() {
+    void oneHoldersLedgerFileLost_withAStrayAndALegitPeer_regainsFromTheMajority_thenRefusesTheStray() {
         harness.start();
         harness.retireXAtBothHolders();
-        harness.killObserver();
+        harness.killBothHolders();
         harness.deleteLedgerFile(harness.observer);
 
+        harness.relaunch(harness.coreA);
         var restartedB = harness.relaunch(harness.observer);
-        var verdict = harness.launchRetiredNodeId(restartedB);
 
-        assertThat(verdict.processExited()).as("after the merge the wiped holder refuses the retired NodeId").isTrue();
+        for (var attempt = 0; attempt < 6 && !harness.ledgerRetires(harness.observer, harness.retired); attempt++) {
+            harness.launchRetiredNodeId(restartedB);
+        }
+
+        IdentityRestartHarness.awaitCondition("the wiped holder's ledger holds the retirement again, durably",
+                                              () -> harness.ledgerRetires(harness.observer, harness.retired),
+                                              60_000L);
+
+        // The other holder goes away, so the only memory of the retirement left in the cluster is the one B regained.
+        harness.killCoreA();
+
+        var verdict = harness.launchRetiredNodeIdAlone(restartedB);
+
+        assertThat(verdict.processExited()).as("after the merge the wiped holder refuses the retired NodeId on its own").isTrue();
+        assertThat(verdict.refusalsAdded()).as("and it is B that refused it").isPositive();
         assertThat(verdict.linked()).isFalse();
+    }
+
+    /// With the stray dead, one legitimate peer is not a majority of three seats once its own offer is set aside: B stays wiped and
+    /// links to nobody. Fails closed; the safe remedy is a new node id (known-limitations).
+    @Test
+    @Timeout(1200)
+    void oneHoldersLedgerFileLost_withOnlyOneLegitPeerOfThreeSeats_staysWiped() {
+        harness.start();
+        harness.retireXAtBothHolders();
+        harness.killBothHolders();
+        harness.deleteLedgerFile(harness.observer);
+
+        harness.relaunch(harness.coreA);
+        var restartedB = harness.relaunch(harness.observer);
+
+        IdentityRestartHarness.sleep(20_000L);
+
+        assertThat(restartedB.connectedNodeCount()).as("one peer is no majority without its own offer: B links to nobody").isZero();
+        assertThat(harness.ledgerRetires(harness.observer, harness.retired)).as("and its ledger file stays missing").isFalse();
     }
 }

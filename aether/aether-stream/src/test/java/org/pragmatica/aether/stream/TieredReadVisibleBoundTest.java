@@ -43,7 +43,7 @@ import static org.pragmatica.aether.stream.segment.TieredStreamReader.tieredStre
 /// #1352: DROP_OLDEST seals EVERY evictee, acknowledged or not — the WAL and the replicas hold it, and its
 /// publisher was told at most that the outcome is unknown, so it may be in the log. The durable tier can
 /// therefore hold offsets above the partition's VISIBLE position, and the cold read a consumer falls through to
-/// (`PartitionedStreamAccess.readWithSegmentFallback`) must be bounded by visible exactly as the ring read is.
+/// (`SealedTierFallback`, which `PartitionedStreamAccess` delegates to) must be bounded by visible exactly as the ring read is.
 /// Before the fix the ring refused an offset above visible while the tier served the same offset.
 ///
 /// The N3 shape: min-sync 2, one peer that never acknowledges, ring capacity 2 (retention `maxCount`), three

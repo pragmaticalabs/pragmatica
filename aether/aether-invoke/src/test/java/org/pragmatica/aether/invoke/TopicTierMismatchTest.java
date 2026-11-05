@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
@@ -49,20 +50,27 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// all-instances-failed detector reads as a broken slice version) and the publish still returned `Success`, in silence.
 /// Now the delivery is refused with a typed non-defect `TopicTierMismatch`; the publish keeps its documented at-most-once
 /// result, and the loss is counted per topic and named once per subscriber in an operator event.
+///
+/// The `SLICE-INVOKE-FAIL` log capture is class-wide (the logger belongs to `SliceInvokerImpl`), and a publish logs on the
+/// thread that settles it, which can be after `await()` returned. So each harness subscribes its own slice
+/// (`order-sub-<n>`) and a test reads only the lines naming it: a straggling line from an earlier test's publish carries
+/// another slice and cannot land in this test's count.
 class TopicTierMismatchTest {
     private static final NodeId SELF = new NodeId("self");
-    private static final Artifact SUBSCRIBER = Artifact.artifact("org.example:order-sub:1.0.0").unwrap();
+    private static final AtomicInteger SUBSCRIBER_SEQUENCE = new AtomicInteger();
     private static final MethodName METHOD = MethodName.methodName("onOrderPlaced").unwrap();
     private static final String PUBLISHER_SLICE = "org.example:order-pub:1.0.0";
 
     /// One wired node: the subscriber's bridge behind a real invoker, a registry holding its subscription row, and a
     /// publisher over them whose operator events and meters are captured.
-    private record Harness(SliceInvoker invoker,
+    private record Harness(Artifact subscriber,
+                           SliceInvoker invoker,
                            TopicPublisher<String> publisher,
                            SimpleMeterRegistry meters,
                            List<OperatorWarning> events,
                            AtomicInteger handlerCalls) {
         static <P> Harness wired(TypeToken<P> parameterType) {
+            var subscriber = Artifact.artifact("org.example:order-sub-" + SUBSCRIBER_SEQUENCE.incrementAndGet() + ":1.0.0").unwrap();
             var handlerCalls = new AtomicInteger();
             var method = new SliceMethod<Unit, P>(METHOD,
                                                   _ -> {
@@ -74,15 +82,15 @@ class TopicTierMismatchTest {
             var network = new StubClusterNetwork();
             var handler = InvocationHandler.invocationHandler(SELF, network);
             var codec = FrameworkCodecs.frameworkCodecs();
-            var bridge = DefaultSliceBridge.defaultSliceBridge(SUBSCRIBER, () -> List.of(method), codec);
+            var bridge = DefaultSliceBridge.defaultSliceBridge(subscriber, () -> List.of(method), codec);
             var endpoints = EndpointRegistry.endpointRegistry();
             var invoker = SliceInvoker.sliceInvoker(SELF, network, endpoints, handler, codec, codec, new StubDeploymentManager());
             var registry = TopicSubscriptionRegistry.topicSubscriptionRegistry();
             var address = ResourceAddress.resourceAddress(ResourceAddress.DEFAULT_NAMESPACE, "orders", ResourceVersion.defaultVersion()).unwrap();
 
-            handler.registerSlice(SUBSCRIBER, bridge);
-            endpoints.registerEndpoint(new EndpointKey(SUBSCRIBER, METHOD, 0), EndpointValue.endpointValue(SELF));
-            registry.onSubscriptionPut(new ValuePut<>(new KVCommand.Put<>(TopicSubscriptionKey.topicSubscriptionKey(address, SUBSCRIBER, METHOD, SELF),
+            handler.registerSlice(subscriber, bridge);
+            endpoints.registerEndpoint(new EndpointKey(subscriber, METHOD, 0), EndpointValue.endpointValue(SELF));
+            registry.onSubscriptionPut(new ValuePut<>(new KVCommand.Put<>(TopicSubscriptionKey.topicSubscriptionKey(address, subscriber, METHOD, SELF),
                                                                           TopicSubscriptionValue.topicSubscriptionValue(SELF)),
                                                       Option.none()));
             var meters = new SimpleMeterRegistry();
@@ -95,7 +103,7 @@ class TopicTierMismatchTest {
                                                                   Option.some(meters),
                                                                   OperatorWarningSink.handingOffTo(events::add));
 
-            return new Harness(invoker, publisher, meters, events, handlerCalls);
+            return new Harness(subscriber, invoker, publisher, meters, events, handlerCalls);
         }
 
         double refusals() {
@@ -114,6 +122,13 @@ class TopicTierMismatchTest {
                          .or(0.0);
         }
 
+        /// The captured `SLICE-INVOKE-FAIL` lines that name this harness's subscriber slice, in arrival order.
+        List<String> ownLines(List<String> captured) {
+            var marker = "slice=" + subscriber.base().asString() + ":";
+
+            return captured.stream().filter(line -> line.contains(marker)).toList();
+        }
+
         List<OperatorWarning> eventsAfter(int expected) {
             var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
 
@@ -129,7 +144,7 @@ class TopicTierMismatchTest {
     void invoke_toContextSubscriber_failsWithTierMismatch_notADefect() {
         var harness = Harness.wired(new TypeToken<ContextualEvent>() {});
 
-        var cause = harness.invoker().invoke(SUBSCRIBER, METHOD, "order-1", new TypeToken<Unit>() {})
+        var cause = harness.invoker().invoke(harness.subscriber(), METHOD, "order-1", new TypeToken<Unit>() {})
                            .await()
                            .fold(c -> c, _ -> org.junit.jupiter.api.Assertions.fail("a bare event must not reach a context handler"));
 
@@ -152,8 +167,8 @@ class TopicTierMismatchTest {
         assertThat(harness.failures()).isZero();
         assertThat(events).hasSize(1);
         assertThat(events.getFirst().code()).isEqualTo(OperatorWarningCode.TOPIC_TIER_MISMATCH);
-        assertThat(events.getFirst().subject()).isEqualTo("default:orders:1.0.0/org.example:order-sub:onOrderPlaced");
-        assertThat(events.getFirst().message()).contains("'orders'", PUBLISHER_SLICE, "org.example:order-sub:1.0.0", "onOrderPlaced");
+        assertThat(events.getFirst().subject()).isEqualTo("default:orders:1.0.0/" + harness.subscriber().base().asString() + ":onOrderPlaced");
+        assertThat(events.getFirst().message()).contains("'orders'", PUBLISHER_SLICE, harness.subscriber().asString(), "onOrderPlaced");
     }
 
     @Test
@@ -174,7 +189,7 @@ class TopicTierMismatchTest {
     @Test
     void burstOfRefusals_countsEveryOne_butLogsTheInvokeFailureOnce() {
         var harness = Harness.wired(new TypeToken<ContextualEvent>() {});
-        var warnings = new java.util.ArrayList<String>();
+        var warnings = new CopyOnWriteArrayList<String>();
         var detach = LogCapture.warningsOf(SliceInvokerImpl.class, warnings);
 
         try {
@@ -186,19 +201,21 @@ class TopicTierMismatchTest {
         }
 
         assertThat(harness.refusals()).isEqualTo(25.0);
-        assertThat(warnings.stream().filter(line -> line.contains("SLICE-INVOKE-FAIL")).count()).as("WARN lines: %s", warnings).isEqualTo(1);
+        assertThat(harness.ownLines(warnings).stream().filter(line -> line.contains("SLICE-INVOKE-FAIL")).count()).as("WARN lines: %s", warnings)
+                                                                                                                  .isEqualTo(1);
     }
 
     /// v-2339 F3: after the period the next WARN is written and carries how many refusals were held back; the budget is per subscriber
     /// SLICE and method, so two versions of one slice share it.
     @Test
     void invokeFailureLog_afterThePeriod_carriesTheSuppressedCount_andTwoVersionsShareOneBudget() {
-        var invoker = (SliceInvokerImpl) Harness.wired(new TypeToken<ContextualEvent>() {}).invoker();
-        var clock = new java.util.concurrent.atomic.AtomicLong(1_000_000_000_000L);
-        var v1 = Artifact.artifact("org.example:order-sub:1.0.0").unwrap();
-        var v2 = Artifact.artifact("org.example:order-sub:2.0.0").unwrap();
+        var harness = Harness.wired(new TypeToken<ContextualEvent>() {});
+        var invoker = (SliceInvokerImpl) harness.invoker();
+        var clock = new AtomicLong(1_000_000_000_000L);
+        var v1 = harness.subscriber();
+        var v2 = Artifact.artifact(v1.base().asString() + ":2.0.0").unwrap();
         var cause = TopicTierMismatch.FACTORY.apply("onOrderPlaced");
-        var warnings = new java.util.ArrayList<String>();
+        var warnings = new CopyOnWriteArrayList<String>();
         var detach = LogCapture.warningsOf(SliceInvokerImpl.class, warnings);
 
         invoker.tierMismatchNanos = clock::get;
@@ -206,7 +223,7 @@ class TopicTierMismatchTest {
             invoker.logInvokeFailure(v1, METHOD, cause);
             invoker.logInvokeFailure(v2, METHOD, cause);
             invoker.logInvokeFailure(v1, METHOD, cause);
-            assertThat(warnings).as("one budget for both versions: %s", warnings).hasSize(1);
+            assertThat(harness.ownLines(warnings)).as("one budget for both versions: %s", warnings).hasSize(1);
 
             clock.addAndGet(java.util.concurrent.TimeUnit.SECONDS.toNanos(61));
             invoker.logInvokeFailure(v2, METHOD, cause);
@@ -216,27 +233,30 @@ class TopicTierMismatchTest {
             detach.run();
         }
 
-        assertThat(warnings).hasSize(3);
-        assertThat(warnings.get(1)).contains("(2 more tier-mismatch refusals since the previous line)");
-        assertThat(warnings.get(2)).as("the count restarts after each line").contains("(0 more");
-        assertThat(warnings.getFirst()).contains("(0 more");
+        var own = harness.ownLines(warnings);
+
+        assertThat(own).hasSize(3);
+        assertThat(own.get(1)).contains("(2 more tier-mismatch refusals since the previous line)");
+        assertThat(own.get(2)).as("the count restarts after each line").contains("(0 more");
+        assertThat(own.getFirst()).contains("(0 more");
     }
 
     /// Another subscriber method is another budget.
     @Test
     void invokeFailureLog_anotherMethod_hasItsOwnBudget() {
-        var invoker = (SliceInvokerImpl) Harness.wired(new TypeToken<ContextualEvent>() {}).invoker();
-        var warnings = new java.util.ArrayList<String>();
+        var harness = Harness.wired(new TypeToken<ContextualEvent>() {});
+        var invoker = (SliceInvokerImpl) harness.invoker();
+        var warnings = new CopyOnWriteArrayList<String>();
         var detach = LogCapture.warningsOf(SliceInvokerImpl.class, warnings);
 
         try {
-            invoker.logInvokeFailure(SUBSCRIBER, METHOD, TopicTierMismatch.FACTORY.apply("a"));
-            invoker.logInvokeFailure(SUBSCRIBER, MethodName.methodName("onOther").unwrap(), TopicTierMismatch.FACTORY.apply("b"));
+            invoker.logInvokeFailure(harness.subscriber(), METHOD, TopicTierMismatch.FACTORY.apply("a"));
+            invoker.logInvokeFailure(harness.subscriber(), MethodName.methodName("onOther").unwrap(), TopicTierMismatch.FACTORY.apply("b"));
         } finally {
             detach.run();
         }
 
-        assertThat(warnings).hasSize(2);
+        assertThat(harness.ownLines(warnings)).hasSize(2);
     }
 
     /// Control, same harness: a bare-typed handler is delivered, counts nothing and raises nothing, so the red above comes

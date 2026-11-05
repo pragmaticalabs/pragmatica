@@ -129,7 +129,7 @@ class DHTDeposedWriterTimeoutRollbackTest {
                                 ? OLD_EPOCH
                                 : NEW_EPOCH);
             var node = dhtNode(id, memoryStorageEngine(gate), ring, CONFIG);
-            DHTNetwork network = this::deliver;
+            DHTNetwork network = AcceptingNetwork.accepting(this::deliver);
 
             return new Member(id,
                               node,

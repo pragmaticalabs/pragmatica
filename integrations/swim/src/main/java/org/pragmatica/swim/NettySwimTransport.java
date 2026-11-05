@@ -24,6 +24,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -100,6 +101,8 @@ public final class NettySwimTransport implements SwimTransport {
     /// probes — simulating genuine silent death across BOTH transport planes. Default false
     /// (zero effect in normal operation).
     private volatile boolean blackholed = false;
+    /// #1200: per-sender decrypt outcomes, so a node the cluster cannot understand shows up as an operator event on the seeds.
+    private volatile GossipDecryptObserver decryptObserver = GossipDecryptObserver.NONE;
 
     /// Test-only per-peer partition (#1730): datagrams to or from an address it accepts are dropped.
     private volatile java.util.function.Predicate<InetSocketAddress> droppedPeers = _ -> false;
@@ -164,6 +167,12 @@ public final class NettySwimTransport implements SwimTransport {
     @Override
     public Promise<Unit> start(int port, SwimMessageHandler handler) {
         return Promise.resolved(doBind(port, handler));
+    }
+
+    @Contract
+    @Override
+    public void decryptObserver(GossipDecryptObserver observer) {
+        decryptObserver = observer;
     }
 
     @Override
@@ -301,12 +310,12 @@ public final class NettySwimTransport implements SwimTransport {
                                        .option(ChannelOption.RCVBUF_ALLOCATOR,
                                                new FixedRecvByteBufAllocator(RECEIVE_BUFFER_BYTES))
                                        .handler(new ChannelInitializer<DatagramChannel>() {
-            @Override
-            @Contract
-            protected void initChannel(DatagramChannel ch) {
-                                                    ch.pipeline().addLast(inboundHandler(handler));
-                                                }
-        });
+                                                    @Override
+                                                    @Contract
+                                                    protected void initChannel(DatagramChannel ch) {
+                                                        ch.pipeline().addLast(inboundHandler(handler));
+                                                    }
+                                                });
 
         channel.set(option(bootstrap.bind(port).sync().channel()));
         LOG.info("SWIM transport started on port {}", port);
@@ -425,12 +434,19 @@ public final class NettySwimTransport implements SwimTransport {
                  .onSuccess(decrypted -> dispatchDecrypted(handler,
                                                            packet.sender(),
                                                            decrypted))
-                 .onFailure(cause -> LOG.warn("Failed to decrypt gossip from {}: {}",
-                                              packet.sender(),
-                                              cause.message()));
+                 .onFailure(cause -> reportDecryptFailure(packet.sender(),
+                                                          cause));
+    }
+
+    private void reportDecryptFailure(InetSocketAddress sender, Cause cause) {
+        LOG.warn("Failed to decrypt gossip from {}: {}", sender, cause.message());
+        if (cause instanceof GossipEncryptionError.UnknownKeyId unknown) {
+            decryptObserver.unknownKey(sender, unknown.keyId());
+        }
     }
 
     private void dispatchDecrypted(SwimMessageHandler handler, InetSocketAddress sender, byte[] decrypted) {
+        decryptObserver.decrypted(sender);
         SwimMessage message = deserializer.decode(decrypted);
 
         if (message instanceof SwimMessage.Announce && !isAnnounceAllowed(sender.getAddress())) {

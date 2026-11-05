@@ -291,13 +291,26 @@ public interface Cause {
 
     /// A cause wrapping an underlying cause. The `origin` component of the implementing
     /// record supplies `source()` — the component cannot be named `source`, because the
-    /// record accessor's return type would clash with `Cause.source()`.
+    /// record accessor's return type would clash with `Cause.source()`. The wrapper also
+    /// reports its origin's classification: `isTerminal()` and `isTransient()` answer what
+    /// the origin answers (`false` with no origin), and a wrapper that needs another answer
+    /// overrides explicitly.
     interface Wrapped extends Cause {
         Cause origin();
 
         @Override
         default Option<Cause> source() {
             return Option.option(origin());
+        }
+
+        @Override
+        default boolean isTerminal() {
+            return source().map(Cause::isTerminal).or(false);
+        }
+
+        @Override
+        default boolean isTransient() {
+            return source().map(Cause::isTransient).or(false);
         }
     }
 }
@@ -348,7 +361,13 @@ and the mixin turns the workaround into the idiom.
 - **Anonymous causes.** `Causes.cause(String)`, `Causes.terminal(String)`, `fromThrowable`, the
   single-argument template overloads, and `CompositeCause` are untouched. They remain the
   sanctioned form for ad-hoc causes where no caller acts on the distinction.
-- **`isTerminal()` default.** Still `false` on `Cause`; `Cause.Terminal` is opt-in per type.
+- **`isTerminal()` / `isTransient()` defaults.** Still `false` on `Cause`; `Cause.Terminal` and
+  `Cause.Transient` are opt-in per type. A `Cause.Wrapped` follows its origin (JBCT M7-c, #2103),
+  and so does the bare `Causes.cause(message, source)` with its source. A wrapper that must not
+  follow overrides: an unknown-outcome write is neither transient nor terminal whatever its
+  origin says (a timeout origin is transient, and a transient-only retry policy would re-drive
+  the write), and a wrapper that also implements `Terminal` or `Transient` must resolve the
+  two defaults, which the compiler requires.
 
 ---
 

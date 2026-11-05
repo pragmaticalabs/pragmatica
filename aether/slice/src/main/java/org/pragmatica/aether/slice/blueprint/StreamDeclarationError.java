@@ -134,4 +134,14 @@ public sealed interface StreamDeclarationError extends Cause {
             return "Stream resource '" + alias + "': " + cause.message();
         }
     }
+
+    /// Keys of the section, or of its consumer sections, that have no runtime effect ([InertKeyRules]), refused at activation
+    /// as the deploy validator refuses them (#2201 E-02): a declaration that reaches a node without passing the validator
+    /// does not bind with a key that silently does nothing.
+    record InertKeysRefused(String alias, List<String> reasons) implements StreamDeclarationError {
+        @Override
+        public String message() {
+            return "Stream resource '" + alias + "' declares keys with no runtime effect: " + String.join("; ", reasons);
+        }
+    }
 }

@@ -39,6 +39,8 @@
     <properties>
         <testcontainers.version>1.21.4</testcontainers.version>
         <postgres-async.skipTests>true</postgres-async.skipTests>
+        <!-- A property, not a literal, so ci.yml's quarantine job can clear it (a literal wins over -DexcludedGroups). -->
+        <postgres-async.excludedGroups>Infinite, quarantine</postgres-async.excludedGroups>
     </properties>
 
     <dependencies>
@@ -102,7 +104,7 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
                     <skipTests>${postgres-async.skipTests}</skipTests>
-                    <excludedGroups>Infinite</excludedGroups>
+                    <excludedGroups>${postgres-async.excludedGroups}</excludedGroups>
                     <excludes>
                         <exclude>**/PerformanceTest.java</exclude>
                     </excludes>

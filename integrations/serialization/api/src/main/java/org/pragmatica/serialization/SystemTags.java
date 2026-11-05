@@ -335,6 +335,7 @@ public interface SystemTags {
         pin(table, 709, "org.pragmatica.aether.slice.StreamCompression");
         pin(table, 710, "org.pragmatica.aether.slice.StreamConfig");
         pin(table, 711, "org.pragmatica.aether.slice.TierAwareRetention");
+        pin(table, 712, "org.pragmatica.aether.slice.RetentionDimensions");
         // generation and community topology  [base 832]
         pin(table, 832, "org.pragmatica.aether.slice.generation.ClusterMode");
         pin(table, 833, "org.pragmatica.aether.slice.generation.ClusterQuiescence");
@@ -647,6 +648,27 @@ public interface SystemTags {
         // #2087: the owner's visible position, announced to its replicas. 2140 and 2141 went to #2118, so this takes the
         // next free slot (scanned across every open PR head and every origin branch on 2026-10-11).
         pin(table, 2142, "org.pragmatica.aether.stream.replication.ReplicationMessage.CommitAdvance");
+        // deployment state machine rewrite, phase 1 (spec R-1.5.1): the five KV records, the two value records nested in them and
+        // the types their components need -- scanned free across every origin branch on 2026-10-12, so 2143..2158 are taken
+        pin(table, 2143, "org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey");
+        pin(table, 2144, "org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey");
+        pin(table, 2145, "org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentApplyKey");
+        pin(table, 2146, "org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey");
+        pin(table, 2147, "org.pragmatica.aether.slice.kvstore.AetherKey.NodeDepartureKey");
+        pin(table, 2148, "org.pragmatica.aether.slice.kvstore.AetherValue.SliceDesiredValue");
+        pin(table, 2149, "org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue");
+        pin(table, 2150, "org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentApplyValue");
+        pin(table, 2151, "org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue");
+        pin(table, 2152, "org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue");
+        pin(table, 2153, "org.pragmatica.aether.slice.kvstore.AetherValue.Generation");
+        pin(table, 2154, "org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation");
+        pin(table, 2155, "org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal");
+        pin(table, 2156, "org.pragmatica.aether.slice.kvstore.AetherValue.UnresponsiveEntry");
+        pin(table, 2157, "org.pragmatica.aether.slice.kvstore.AetherValue.DepartureState");
+        pin(table, 2158, "org.pragmatica.aether.slice.kvstore.AetherValue.DepartureCause");
+        // the observed slice state of the deployment rewrite, with the tombstone the live SliceState lacks (spec 1.6.2) -- scanned free on 2026-10-12
+        pin(table, 2159, "org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState");
+        // 2160..2162 are taken by the later phases of the same rewrite (tracer wiring), which are not part of this cut
         // A6, the DHT repair plane: stamp digests and paged migration. 2143..2162 are taken on open branches
         // (scanned across every origin branch on 2026-10-18), so these take the next free slots.
         pin(table, 2163, "org.pragmatica.dht.DHTMessage.StampDigestRequest");
@@ -676,7 +698,7 @@ public interface SystemTags {
         // takes 2176 (scanned against the rc5 tip and every open PR head on 2026-10-20).
         pin(table, 2176, "org.pragmatica.dht.DHTMessage.VerifiedReadRequest");
         // W-OBS W2: the replica feed messages and the directory carried on the ClusterSync ping and pong. 2177..2190 were free on every
-        // origin branch (203 refs) and every open PR head (3), scanned 2026-10-25; the next free slot is 2191.
+        // origin branch (203 refs) and every open PR head (3), scanned 2026-10-25; the next free slot is 2191 (before O3-1).
         pin(table, 2177, "org.pragmatica.cluster.metrics.DirectoryVersion");
         pin(table, 2178, "org.pragmatica.cluster.metrics.ClusterDirectory");
         pin(table, 2179, "org.pragmatica.cluster.metrics.ClusterDirectory.DhtReplication");
@@ -691,7 +713,30 @@ public interface SystemTags {
         pin(table, 2188, "org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaSnapshotRequest");
         pin(table, 2189, "org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaSnapshotChunk");
         pin(table, 2190, "org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaHeartbeat");
-        // ---- 2191..16383 RESERVED ----
+        // O3-1 (membership overhaul, owner ruling c37a7c11e2): the per-node lifecycle record, its two facets and their enums. 2191 and 2192 are
+        // taken by an open PR (#2505, StreamRegistryHolder*), found by the 2026-10-31 scan of every origin branch and every open PR head, so
+        // these take 2193..2200.
+        pin(table, 2193, "org.pragmatica.aether.slice.kvstore.AetherKey.NodeIdentityKey");
+        pin(table, 2194, "org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue");
+        pin(table, 2195, "org.pragmatica.aether.slice.kvstore.AetherValue.IdentityState");
+        pin(table, 2196, "org.pragmatica.aether.slice.kvstore.AetherValue.IdentityCause");
+        pin(table, 2197, "org.pragmatica.aether.slice.kvstore.AetherValue.IdentityFacet");
+        pin(table, 2198, "org.pragmatica.aether.slice.kvstore.AetherValue.CapacityFacet");
+        pin(table, 2199, "org.pragmatica.aether.slice.kvstore.AetherValue.CapacityPhase");
+        pin(table, 2200, "org.pragmatica.aether.slice.kvstore.AetherValue.FreedCause");
+        // #2045: the answer to a proposal of an already-committed batch. Consensus-prefixed but exempt from the one-byte window
+        // like SyncRejected: it is sent only when a voter's ledger refuses a proposal, which is failure-bounded traffic.
+        // 2201 was free on every origin branch and every PR head (1,291 refs), scanned 2026-11-02.
+        pin(table, 2201, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.BatchCommitted");
+        // #2590 P1: the forwarded control-log batch-append, its record and its per-record outcome. 2201 is taken by
+        // origin/fix/2045-ledger-livelock (scanned across every origin branch, 306 refs including every open PR head, on
+        // 2026-11-02), so these take 2202..2206.
+        pin(table, 2202, "org.pragmatica.aether.stream.forward.ControlRecordDto");
+        pin(table, 2203, "org.pragmatica.aether.stream.forward.ControlOutcomeDto");
+        pin(table, 2204, "org.pragmatica.aether.stream.forward.ControlOutcomeDto.Kind");
+        pin(table, 2205, "org.pragmatica.aether.stream.forward.StreamForwardMessage.ControlAppendForward");
+        pin(table, 2206, "org.pragmatica.aether.stream.forward.StreamForwardMessage.ControlAppendForwardResponse");
+        // ---- 2207..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);

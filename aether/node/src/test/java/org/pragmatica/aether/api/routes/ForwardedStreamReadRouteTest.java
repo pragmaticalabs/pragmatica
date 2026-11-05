@@ -8,6 +8,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
+import org.pragmatica.lang.Promise;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.RetentionPolicy;
@@ -79,12 +81,20 @@ class ForwardedStreamReadRouteTest {
                   .register(StreamRegistryEntry.operator(address, RETENTION, java.time.Instant.now()))
                   .onFailure(cause -> fail(cause.message()));
         StreamForwardClient client = streamForwardClient(CALLER_ID,
-                                                         (_, message) -> handler.onReadForward((ReadForward) overTheWire(message)),
+                                                         (target, message) -> {
+                                                             handler.onReadForward((ReadForward) overTheWire(message));
+
+                                                             return Promise.success(new WriteOutcome.Sent(target));
+                                                         },
                                                          TimeSpan.timeSpan(5).seconds());
 
         handler = streamForwardHandler(OWNER_ID,
                                        owner,
-                                       (_, message) -> client.onReadForwardResponse((ReadForwardResponse) overTheWire(message)),
+                                       (target, message) -> {
+                                           client.onReadForwardResponse((ReadForwardResponse) overTheWire(message));
+
+                                           return Promise.success(new WriteOutcome.Sent(target));
+                                       },
                                        Long.MAX_VALUE,
                                        StreamReadForwardMetrics.NOOP,
                                        Option.none());

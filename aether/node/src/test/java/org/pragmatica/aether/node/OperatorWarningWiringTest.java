@@ -46,6 +46,13 @@ class OperatorWarningWiringTest {
         assertThat(assemblyCode()).containsOnlyOnce("signalReadyActivatingStorage(()->signalReadyAndWakePrefetch(nodeLifecycle::signalReady,storageSetups,nodeDraining),storageSetups,nodeDraining)");
     }
 
+    /// Know 73fd8d9759: a graceful stop that cannot seal what the sealer holds is reported to this node's sink, naming this node.
+    /// The sealer's tests hand it their own sink, so un-binding it here left them green.
+    @Test
+    void assembly_givesTheSinkToTheStreamSegmentSealer() {
+        assertThat(assemblyCode()).containsOnlyOnce("streamSegmentSealer.operatorWarnings(operatorWarningSink,config.self().id());");
+    }
+
     @Test
     void assembly_givesTheSinkToTheStreamConsumerManager() {
         assertThat(assemblyCode()).containsOnlyOnce("streamConsumerManager.setOperatorWarningSink(operatorWarningSink);");
