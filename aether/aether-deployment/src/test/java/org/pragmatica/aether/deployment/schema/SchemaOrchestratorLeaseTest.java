@@ -887,6 +887,7 @@ class SchemaOrchestratorLeaseTest {
         try (var zip = new ZipOutputStream(bytes)) {
             writeEntry(zip, "META-INF/blueprint.toml", BLUEPRINT_TOML);
             writeEntry(zip, "schema/orders/V003__add_index.sql", "CREATE INDEX idx_orders ON orders(id);");
+            writeEntry(zip, "schema/billing/V003__add_index.sql", "CREATE INDEX idx_billing ON billing(id);");
         } catch (IOException e) {
             throw new IllegalStateException("Failed to build test blueprint jar", e);
         }
