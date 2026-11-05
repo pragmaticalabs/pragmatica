@@ -1,0 +1,2 @@
+### Fixed (2026-11-05 — #1539: four lint rules printed `See:` links that returned 404)
+- **`JBCT-RET-01`, `JBCT-RET-02`, `JBCT-RET-03` and `JBCT-SEAL-01` now link to their anchor on the published rule catalogue** (`https://pragmatica.dev/java/jbct/rules/#<rule-id>`). Their `DOC_LINK` constants pointed at `series/` and `skills/` paths in `siy/coding-technology` that no longer exist. [verified: `DocLinkTargetTest`, red on the old links] `jbct lint --list-rules` is not part of this change.

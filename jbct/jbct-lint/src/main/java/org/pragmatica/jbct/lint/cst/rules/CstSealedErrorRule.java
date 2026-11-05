@@ -19,7 +19,7 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 public class CstSealedErrorRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-SEAL-01";
 
-    private static final String DOC_LINK = "https://github.com/siy/coding-technology/blob/main/series/part-04-error-handling.md";
+    private static final String DOC_LINK = "https://pragmatica.dev/java/jbct/rules/#jbct-seal-01";
 
     // Match "interface Name" possibly preceded by modifier tokens. Captures the name.
     private static final Pattern INTERFACE_NAME_PATTERN = Pattern.compile("\\binterface\\s+([A-Za-z_$][A-Za-z0-9_$]*)");
