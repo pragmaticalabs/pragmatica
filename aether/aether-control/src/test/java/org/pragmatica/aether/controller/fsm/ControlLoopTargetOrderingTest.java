@@ -107,7 +107,8 @@ class ControlLoopTargetOrderingTest {
         assertThat(committedTarget()).as("no target is re-created for a deleted blueprint").isEqualTo(Option.none());
     }
 
-    /// A republish moves the target to v2 after the decision; the scaling write commits last. The v1 value it was derived from must not win.
+    /// A republish moves the target to v2 after the decision; the scaling write commits last. The v1 value it was derived from must not win,
+    /// and the decision is dropped, not carried onto the moved target (#2662, CTO ruling): the next evaluation re-decides.
     @Test
     void applyScaling_republishCommitsFirst_doesNotRevertTheVersion() {
         ctx.runEvaluationCycle();
@@ -120,7 +121,34 @@ class ControlLoopTargetOrderingTest {
         var committed = committedTarget().unwrap();
 
         assertThat(committed.currentVersion()).as("the republished version is not reverted").isEqualTo(V2.version());
-        assertThat(committed.targetInstances()).as("the rebuilt write carries the decision onto the moved target").isEqualTo(4);
+        assertThat(committed.targetInstances()).as("the stale decision is dropped, not carried onto the moved target").isEqualTo(2);
+        assertThat(cluster.submitted()).as("one refused submission, no rebuild").isEqualTo(1);
+    }
+
+    /// An operator scale of the same version to 6 commits first; the decision made against 2 must not revert it.
+    @Test
+    void applyScaling_operatorScaleCommitsFirst_staleDecisionDoesNotWin() {
+        ctx.runEvaluationCycle();
+        cluster.awaitHeld(1);
+
+        commit(new KVCommand.Put<>(TARGET_KEY, targetOf(V1, 6)));
+        cluster.commitAllAsTheyArrive();
+
+        assertThat(committedTarget().map(SliceTargetValue::targetInstances)).as("the operator's scale stands").isEqualTo(Option.some(6));
+        assertThat(cluster.submitted()).as("one refused submission, no rebuild").isEqualTo(1);
+    }
+
+    /// A republish lowers the cap to 3 and commits first; the decision (4) was capped against the old cap and must never be written.
+    @Test
+    void applyScaling_republishLowersMax_decisionAboveTheNewCapIsNeverWritten() {
+        ctx.runEvaluationCycle();
+        cluster.awaitHeld(1);
+
+        commit(new KVCommand.Put<>(TARGET_KEY, targetWithMax(2, 3)));
+        cluster.commitAllAsTheyArrive();
+
+        assertThat(committedTarget().map(SliceTargetValue::targetInstances)).as("the new cap of 3 is never exceeded").isEqualTo(Option.some(2));
+        assertThat(cluster.submitted()).as("one refused submission, no rebuild").isEqualTo(1);
     }
 
     /// The owner's blueprint is deleted while its target is still committed (the removal has not committed yet): the write is refused,
@@ -199,6 +227,10 @@ class ControlLoopTargetOrderingTest {
 
     private static SliceTargetValue targetOf(Artifact slice, int instances) {
         return SliceTargetValue.sliceTargetValue(slice.version(), instances, 1, Option.some(OWNER), Option.some(8), Option.none(), Option.none());
+    }
+
+    private static SliceTargetValue targetWithMax(int instances, int max) {
+        return SliceTargetValue.sliceTargetValue(V1.version(), instances, 1, Option.some(OWNER), Option.some(max), Option.none(), Option.none());
     }
 
     private static AppBlueprintValue blueprintOf(Artifact slice) {

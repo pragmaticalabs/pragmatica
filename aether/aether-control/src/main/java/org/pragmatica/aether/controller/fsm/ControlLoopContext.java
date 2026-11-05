@@ -629,9 +629,11 @@ public final class ControlLoopContext {
 
     /// #2662: the scaling write is fenced. It is ONE leader transaction whose mutation expects the target the decision was made from (the
     /// observed value) and whose witness holds the target's owning blueprint at its committed value, so a write racing a blueprint delete
-    /// (the target removed) or a republish (the target moved) is refused instead of re-creating or reverting the target. A refused write is
-    /// rebuilt from the committed target with the same instance count, at most [SliceTargetFence#MAX_REBUILDS] times; a target that is
-    /// gone, or whose blueprint is gone, is not written.
+    /// (the target removed) or a republish (the target moved) is refused instead of re-creating or reverting the target. The instance count
+    /// is derived from the observed target (its count, cap and floor), so it is never carried onto a moved target: a refused write is
+    /// resubmitted only while the committed target still equals the observed one (only the blueprint witness moved); otherwise it is
+    /// dropped ([SliceTargetFence.SliceTargetFenceError.TargetMoved]) and the next evaluation decides from the committed target. A target
+    /// that is gone, or whose blueprint is gone, is not written.
     @Contract
     private void submitScaling(Scaling scaling) {
         SliceTargetFence.submit("autoscale " + scaling.artifact(),
@@ -646,10 +648,14 @@ public final class ControlLoopContext {
     private Result<LeaderTransaction<AetherKey, AetherValue>> committedScalingTransaction(Scaling scaling) {
         return SliceTargetFence.presentTarget(kvStore,
                                               SliceTargetKey.sliceTargetKey(scaling.artifact().base()))
-                               .flatMap(read -> scalingTransaction(new Scaling(scaling.artifact(),
-                                                                               read,
-                                                                               scaling.newInstances()),
-                                                                   Option.some(read)));
+                               .flatMap(read -> sameDecisionInput(scaling, read));
+    }
+
+    private Result<LeaderTransaction<AetherKey, AetherValue>> sameDecisionInput(Scaling scaling,
+                                                                                SliceTargetValue read) {
+        return read.equals(scaling.observed())
+               ? scalingTransaction(scaling, Option.some(read))
+               : new SliceTargetFence.SliceTargetFenceError.TargetMoved(scaling.artifact().base()).result();
     }
 
     private Result<LeaderTransaction<AetherKey, AetherValue>> scalingTransaction(Scaling scaling,
@@ -670,13 +676,21 @@ public final class ControlLoopContext {
     /// state. Mechanism: the registration is replaced by the committed target of this version, or dropped when none is committed.
     @Contract
     private void scalingNotWritten(Artifact artifact, Cause cause) {
-        log.warn("Scaling decision for {} not written: {}", artifact, cause.message());
+        logNotWritten(artifact, cause);
         SliceTargetFence.committedTarget(kvStore,
                                          SliceTargetKey.sliceTargetKey(artifact.base()))
                         .filter(committed -> committed.currentVersion()
                                                       .equals(artifact.version()))
                         .onPresent(committed -> putBlueprint(artifact, committed))
                         .onEmpty(() -> removeBlueprint(artifact));
+    }
+
+    private void logNotWritten(Artifact artifact, Cause cause) {
+        if (cause instanceof SliceTargetFence.SliceTargetFenceError.TargetMoved) {
+            log.info("Scaling decision for {} dropped: {}", artifact, cause.message());
+        } else {
+            log.warn("Scaling decision for {} not written: {}", artifact, cause.message());
+        }
     }
 
     private Option<Scaling> prepareGuardedChange(BlueprintChange change) {

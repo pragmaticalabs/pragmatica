@@ -38,6 +38,8 @@ import org.pragmatica.lang.Unit;
 /// commit order.
 ///
 /// A refused transaction is rebuilt from a fresh read ([#submit]), at most [#MAX_REBUILDS] times, as the blueprint writers of #2634 are.
+/// A writer whose value is derived from an observed target (the autoscaler) rebuilds only while that target is unchanged, else it drops the
+/// write ([SliceTargetFenceError.TargetMoved]).
 /// A rebuild that finds the target gone, or its owner gone, fails with a [SliceTargetFenceError] instead of writing: the write is never
 /// dropped silently, and never re-creates what a delete removed.
 public sealed interface SliceTargetFence {
@@ -89,6 +91,17 @@ public sealed interface SliceTargetFence {
                 return "Slice target of " + base.asString()
                      + " is not committed and blueprint " + blueprint.asString()
                      + " is not committed either; the target was not created";
+            }
+        }
+
+        /// The target moved under a write whose value was derived from the target it observed (the autoscaler's). Rebuilding that value
+        /// against the moved target would let a decision made against a stale input win, so the write is dropped; the next evaluation
+        /// decides from the committed target.
+        record TargetMoved(ArtifactBase base) implements SliceTargetFenceError {
+            @Override
+            public String message() {
+                return "Slice target of " + base.asString()
+                     + " moved after the write was decided; the decision was dropped and the next evaluation re-decides from the committed target";
             }
         }
 
