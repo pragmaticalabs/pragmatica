@@ -5,9 +5,14 @@
 package org.pragmatica.aether.controller.fsm;
 
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.ArtifactBase;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceRequirementKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.RequirementKind;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceRequirementValue;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
@@ -73,6 +78,23 @@ final class FencedTargetWrites {
                                                                                        .flatMap(mutation -> mutation.replacement().stream())
                                                                                        .filter(SliceTargetValue.class::isInstance)
                                                                                        .map(SliceTargetValue.class::cast);
+            default -> Stream.empty();
+        };
+    }
+
+    /// rc6 §3.1: the REACTIVE requirements a transaction writes, keyed by the slice base they belong to.
+    static Stream<Map.Entry<ArtifactBase, SliceRequirementValue>> reactiveRequirements(KVCommand<AetherKey> command) {
+        return switch (command) {
+            case KVCommand.LeaderTransaction<AetherKey, ?> transaction -> transaction.mutations()
+                                                                                       .stream()
+                                                                                       .filter(mutation -> mutation.key() instanceof SliceRequirementKey key
+                                                                                                           && key.kind() == RequirementKind.REACTIVE)
+                                                                                       .flatMap(mutation -> mutation.replacement()
+                                                                                                                    .filter(SliceRequirementValue.class::isInstance)
+                                                                                                                    .map(SliceRequirementValue.class::cast)
+                                                                                                                    .map(value -> Map.entry(((SliceRequirementKey) mutation.key()).artifactBase(),
+                                                                                                                                            value))
+                                                                                                                    .stream());
             default -> Stream.empty();
         };
     }

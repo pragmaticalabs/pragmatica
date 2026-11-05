@@ -100,6 +100,7 @@ class ControlLoopPlacementPreservationTest {
         cluster = new ControlLoopOwnerPreservationTest.CapturingClusterNode();
         controlLoop = buildControlLoop();
         ctx = ((ControlLoop.ControlLoopAdapter) controlLoop).ctx();
+        cluster.combineOver(_ -> ctx.observedTarget(SLICE));
         ctx.setTopology(List.of(SELF,
                                 WORKER,
                                 NodeId.nodeId("n3").unwrap(),
