@@ -74,6 +74,9 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -170,6 +173,10 @@ public class RabiaEngine<C extends Command> {
     /// Executor-confined after [#start]. Genesis view agreement while genesis is pending.
     private volatile Option<GenesisViewAgreement> genesisAgreement = Option.none();
     private final AtomicReference<ScheduledFuture<?>> genesisTimer = new AtomicReference<>();
+    /// Seats this node raised [OperatorWarningCode#GENESIS_SEAT_UNREACHABLE] for and has not closed yet (#1654).
+    private final Set<NodeId> unreachableGenesisSeats = ConcurrentHashMap.newKeySet();
+
+    private final AtomicReference<OperatorWarningSink> operatorWarningSink = new AtomicReference<>(OperatorWarningSink.logOnly());
 
     /// Genesis round interval: starts here and doubles while the view is unchanged, up to the sync retry
     /// interval, so a waiting cluster does not flood the network and a changing one reacts quickly.
@@ -463,7 +470,99 @@ public class RabiaEngine<C extends Command> {
         log.info("Node {} installs genesis roster {}: every member reported the identical view in two consecutive rounds",
                  self,
                  configuration.members());
+        signalUnreachableSeats(configuration);
         installGenesis(configuration);
+    }
+
+    /// #1654: the view agreement counts each member's last two reports with no freshness, so a member that reported
+    /// twice and then died can be agreed. Formation goes ahead; every agreed seat that is not a connected, authenticated
+    /// peer now is named once, loudly, for auto-heal to replace.
+    private void signalUnreachableSeats(VoterConfiguration configuration) {
+        var reachable = connectedSeats();
+
+        configuration.members().stream().filter(seat -> !reachable.contains(seat)).forEach(this::signalUnreachableSeat);
+    }
+
+    /// Connectivity only, not discovery: with `cluster.genesis_voters` a seat can be connected before membership counts it,
+    /// and that must not raise the warning. Same source as the close path ([#resolveUnreachableGenesisSeats]), plus self.
+    private Set<NodeId> connectedSeats() {
+        var connected = new HashSet<>(network.connectedPeers());
+
+        connected.add(self);
+
+        return Set.copyOf(connected);
+    }
+
+    private Unit signalUnreachableSeat(NodeId seat) {
+        unreachableGenesisSeats.add(seat);
+
+        return OperatorWarnings.raise(log,
+                                      operatorWarningSink.get(),
+                                      OperatorWarningCode.GENESIS_SEAT_UNREACHABLE,
+                                      seat.id(),
+                                      "Node {} installs genesis with seat {} not connected: the seat reported the agreed view earlier and is "
+                                     + "unreachable now. Formation is not blocked; auto-heal is expected to replace the seat. Operator "
+                                     + "action: if the seat neither returns nor is replaced, check that node (#1654).",
+                                      self,
+                                      seat);
+    }
+
+    /// Closes [OperatorWarningCode#GENESIS_SEAT_UNREACHABLE] for every seat this node raised it for that is a connected peer again
+    /// or has left the voter roster (replaced). Runs on the phase-stall tick (InPhase) and on the idle slot probe tick (Idle), so a seat
+    /// closes within one tick interval whether or not a phase is in progress.
+    private void resolveUnreachableGenesisSeats() {
+        if (unreachableGenesisSeats.isEmpty()) {
+            return;
+        }
+
+        var connected = network.connectedPeers();
+
+        List.copyOf(unreachableGenesisSeats).forEach(seat -> resolveUnreachableGenesisSeat(seat, connected));
+    }
+
+    private void resolveUnreachableGenesisSeat(NodeId seat, Set<NodeId> connected) {
+        if (connected.contains(seat)) {
+            closeUnreachableGenesisSeat(seat, "is a connected peer again");
+
+            return;
+        }
+
+        if (voters.filter(configuration -> !configuration.contains(seat)).isPresent()) {
+            closeUnreachableGenesisSeat(seat, "left the voter roster (replaced)");
+        }
+    }
+
+    private Unit closeUnreachableGenesisSeat(NodeId seat, String how) {
+        unreachableGenesisSeats.remove(seat);
+
+        return OperatorWarnings.raise(log,
+                                      operatorWarningSink.get(),
+                                      OperatorWarningCode.GENESIS_SEAT_REACHABLE,
+                                      seat.id(),
+                                      "Node {}: genesis seat {} {}",
+                                      self,
+                                      seat,
+                                      how);
+    }
+
+    /// Binds this engine's operator warnings to its node's event log (#1654). Until called, they are logged only.
+    @Contract
+    public void useOperatorWarningSink(OperatorWarningSink sink) {
+        operatorWarningSink.set(sink);
+    }
+
+    /// Test hook: one idle slot probe tick on the apply executor, which also runs the unreachable-genesis-seat check.
+    Unit runQuietSlotProbeForTesting() {
+        safeExecute(this::probeQuietSlot);
+
+        return Unit.unit();
+    }
+
+    /// Test hook: one phase-stall tick on the apply executor, which also runs the unreachable-genesis-seat check.
+    Unit runPhaseStallCheckForTesting() {
+        safeExecute(this::checkPhaseStall);
+
+        return Unit.unit();
     }
 
     @Contract
@@ -689,6 +788,86 @@ public class RabiaEngine<C extends Command> {
     private boolean isVoter(NodeId node) {
         return voterConfiguration().map(v -> v.contains(node))
                                  .or(false);
+    }
+
+    /// Voter or observer, answered in one place (L-1). Three independent bits decide it: `declared` is `observerMode`
+    /// (an authorization or a roster that left this node out set it), `rosterPresent` is `voters.isPresent()` (false only
+    /// while genesis is pending), `member` is `isVoter(self)`. `declared` and `member` are independent BY DESIGN:
+    /// `ROSTER_OBSERVER` (an installed voter that was authorized to observe) is a real, pinned state
+    /// (`RabiaEnginePauseResumeTest.observerModeInRoster_staysObservingAfterResume`,
+    /// `ReplicaFeedEngineTripwireTest.anObserversCompletedSlot_reachesTheStateMachineAsAFrontier`).
+    /// The two inputs are read in sequence, not as one snapshot, and the writers still write them separately, so this
+    /// closes no torn read; it only gives the 13 readers one vocabulary. `LifecycleRoleTruthTableTest` pins every
+    /// predicate against the expression it replaced, on all six values.
+    enum Role {
+        /// Genesis pending, nothing declared: the role is decided later ([#installGenesis]).
+        PRE_GENESIS(false, false, false),
+        /// Genesis pending and observation authorized.
+        PRE_GENESIS_OBSERVER(true, false, false),
+        /// Installed voter, not observing.
+        VOTER(false, true, true),
+        /// Installed voter that was authorized to observe (pinned state).
+        ROSTER_OBSERVER(true, true, true),
+        /// Roster installed without this node, observing.
+        REMOVED(true, true, false),
+        /// Roster installed without this node, observation never declared (transient: activation is refused).
+        REMOVED_UNDECLARED(false, true, false);
+        private final boolean declared;
+        private final boolean rosterPresent;
+        private final boolean member;
+        Role(boolean declared, boolean rosterPresent, boolean member) {
+            this.declared = declared;
+            this.rosterPresent = rosterPresent;
+            this.member = member;
+        }
+        static Role of(boolean declared, boolean rosterPresent, boolean member) {
+            if (!rosterPresent) {
+                return declared
+                       ? PRE_GENESIS_OBSERVER
+                       : PRE_GENESIS;
+            }
+
+            if (member) {
+                return declared
+                       ? ROSTER_OBSERVER
+                       : VOTER;
+            }
+
+            return declared
+                   ? REMOVED
+                   : REMOVED_UNDECLARED;
+        }
+        /// `observerMode` alone (variant A): activation as an observer, promotion, completed-slot routing.
+        boolean isDeclaredObserver() {
+            return declared;
+        }
+        /// `isVoter(self)` (variant C): may propose, request and relay as a voter.
+        boolean votes() {
+            return member;
+        }
+        /// `observerMode || !isVoter(self)` (variant B): does not take part as a voter. True for every role but `VOTER`.
+        boolean observes() {
+            return declared || !member;
+        }
+        /// `voters.isPresent() && !isVoter(self)` (variant D): a roster exists and leaves this node out.
+        boolean isRemoved() {
+            return rosterPresent && !member;
+        }
+        /// `!observerMode && !isVoter(self)` (variant D): neither declared nor installed, so activation is refused.
+        boolean isUndeclaredNonMember() {
+            return ! declared && !member;
+        }
+        boolean rosterPresent() {
+            return rosterPresent;
+        }
+    }
+
+    Role role() {
+        var roster = voters;
+
+        return Role.of(observerMode,
+                       roster.isPresent(),
+                       roster.map(v -> v.contains(self)).or(false));
     }
 
     /// Ballots count only from installed voters at the current epoch. An old-epoch ballot for a slot at
@@ -1158,14 +1337,14 @@ public class RabiaEngine<C extends Command> {
             return;
         }
         // A pending genesis decides the role later ([#installGenesis]); until then authorize as a voter.
-        if (voters.isPresent() && !isVoter(self)) {
+        if (role().isRemoved()) {
             authorizeObservation();
 
             return;
         }
 
         log.info("Node {}: consensus activation authorized", self);
-        if (observerMode) {
+        if (role().isDeclaredObserver()) {
             log.info("Node {}: promoting from observer to full consensus", self);
             observerMode = false;
         }
@@ -1302,7 +1481,7 @@ public class RabiaEngine<C extends Command> {
     /// A node removed from the electorate before or during the pause (#1799) has no vote to resume:
     /// it returns to Observing, the state it left ([#startPhase] refuses to run there).
     private boolean resumesAsObserver() {
-        return observerMode || !isVoter(self);
+        return role().observes();
     }
 
     private void doResumeFromPause() {
@@ -1388,7 +1567,7 @@ public class RabiaEngine<C extends Command> {
     /// agreed slot as well ([ReconfigurationCommand#successorOf]); refusing early only spares the log a
     /// slot and gives the caller a precise cause.
     private Result<ReconfigurationCommand> admissibleCommand(ClusterConfig target) {
-        if (!engineState.get().isActive() || !isVoter(self)) {
+        if (!engineState.get().isActive() || !role().votes()) {
             return ReconfigurationError.NOT_ACTIVE.result();
         }
 
@@ -1450,7 +1629,7 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        if (!acceptsBallot(request.sender(), request.epoch()) || !isVoter(self)) {
+        if (!acceptsBallot(request.sender(), request.epoch()) || !role().votes()) {
             return;
         }
 
@@ -1558,7 +1737,7 @@ public class RabiaEngine<C extends Command> {
     private void openSlotAfterChange() {
         var current = engineState.get();
 
-        if (current instanceof EngineState.Idle && isVoter(self) && pendingBatches.isEmpty() && requestedConfiguration.isEmpty()) {
+        if (current instanceof EngineState.Idle && role().votes() && pendingBatches.isEmpty() && requestedConfiguration.isEmpty()) {
             startPhaseWithBatch(current, Batch.emptyBatch());
         }
     }
@@ -1571,7 +1750,7 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        var joins = configuration.contains(self) && !isVoter(self);
+        var joins = configuration.contains(self) && !role().votes();
 
         installVoters(configuration);
         observerMode = !configuration.contains(self);
@@ -2278,7 +2457,7 @@ public class RabiaEngine<C extends Command> {
     private void startPhase() {
         var current = engineState.get();
 
-        if (!current.isActive() || !isVoter(self) || authorityFailure.isPresent()) {
+        if (!current.isActive() || !role().votes() || authorityFailure.isPresent()) {
             return;
         }
 
@@ -2988,7 +3167,7 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        if (!observerMode && !isVoter(self)) {
+        if (role().isUndeclaredNonMember()) {
             warnOutsideElectorate();
 
             return;
@@ -2998,7 +3177,7 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        if (observerMode) {
+        if (role().isDeclaredObserver()) {
             activateAsObserver();
 
             return;
@@ -3145,6 +3324,7 @@ public class RabiaEngine<C extends Command> {
     /// (under the original sender's id; `registerProposal` is idempotent and keyed on sender), so
     /// a fresh voter synced to the stalled phase can reach quorum proposals and make progress.
     private void checkPhaseStall() {
+        resolveUnreachableGenesisSeats();
         if (! (engineState.get() instanceof EngineState.InPhase)) {
             return;
         }
@@ -3214,7 +3394,7 @@ public class RabiaEngine<C extends Command> {
             return;
         }
         // Observer snapshots are not evidence from the consensus electorate.
-        if (observerMode || !isVoter(self)) {
+        if (role().observes()) {
             return;
         }
 
@@ -3335,7 +3515,7 @@ public class RabiaEngine<C extends Command> {
         }
         // An observer is outside the electorate: its own state cannot supply the missing
         // member of a response majority, even on a cold start or with durable history.
-        if (observerMode || !isVoter(self)) {
+        if (role().observes()) {
             return responses.size() >= clusterSize / 2 + 1
                    ? Option.some(responses)
                    : Option.none();
@@ -3551,6 +3731,7 @@ public class RabiaEngine<C extends Command> {
     /// answered this replica still cannot know it is behind. Cost in a quiet cluster: one `RoundRequest`
     /// per voter pair per `syncRetryInterval`. InPhase replicas are covered by the stall detector instead.
     private void probeQuietSlot() {
+        resolveUnreachableGenesisSeats();
         if (! (engineState.get() instanceof EngineState.Idle)) {
             return;
         }
@@ -4257,7 +4438,7 @@ public class RabiaEngine<C extends Command> {
             safeExecute(this::releaseBufferedDecision);
         }
 
-        if (observerMode) {
+        if (role().isDeclaredObserver()) {
             advancePhaseAsObserver(nextPhase);
 
             return;

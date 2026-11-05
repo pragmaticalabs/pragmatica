@@ -50,6 +50,16 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
         }
     }
 
+    /// #1750: the single-publish endpoint takes no message ID, so the slice-api advice to "retry only with the same message
+    /// ID" cannot be followed here. Keeps the 500 and the origin's own reason, and says that a retry may write a duplicate.
+    record KeylessPublishOutcomeUnknown(Cause origin) implements ManagementServerError {
+        @Override
+        public String message() {
+            return "Publish outcome unknown: the event may already be in the log, and this endpoint takes no message ID, so a retry may write a duplicate (" + origin.message()
+                 + ")";
+        }
+    }
+
     /// #833/#954: a management request whose body or fields the caller got wrong. Carries the route's own
     /// diagnosis unchanged and answers 400, so a caller's mistake is not reported as a server fault.
     record InvalidRequest(String detail) implements ManagementServerError {
