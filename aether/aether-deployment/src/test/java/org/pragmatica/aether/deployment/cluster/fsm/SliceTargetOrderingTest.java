@@ -274,6 +274,27 @@ class SliceTargetOrderingTest {
         assertThat(targetWriteErrors()).as("and nothing is reported as given up").isEmpty();
     }
 
+    /// The last allowed attempt is refused because the target now belongs to another blueprint: that target is not this
+    /// delete's to remove, so it is neither left "unremoved" nor reported as given up.
+    @Test
+    void removalRefusedOnTheLastAttemptByATargetOfAnotherBlueprint_reportsNoFailure() {
+        publish(blueprintOf(V1, "attempt-1"));
+        cluster.commitAllInSubmissionOrder();
+
+        delete();
+        for (var refusal = 0; refusal < 5; refusal++) {
+            refuseHeldTargetWrite(10 + refusal);
+        }
+        var last = cluster.awaitHeldTargetWrite().unwrap();
+
+        store.process(store.createBatch(List.<KVCommand<AetherKey>> of(new KVCommand.Put<>(TARGET_KEY, targetOf(V2, Option.some(NEW_ID))))));
+        cluster.commit(last);
+
+        assertThat(committedTarget().flatMap(SliceTargetValue::owningBlueprint)).as("the other blueprint keeps its target")
+                                                                              .isEqualTo(Option.some(NEW_ID));
+        assertThat(awaitErrors()).as("and the refusal is not reported as a removal given up").isEmpty();
+    }
+
     /// A removal refused because the blueprint was published again is not rebuilt: the publish owns the target now.
     @Test
     void removalRefusedByARepublish_isNotRebuilt() {
