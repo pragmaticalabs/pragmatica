@@ -469,6 +469,14 @@ public enum OperatorWarningCode {
     /// says which). INFO, published only after a published lagging event for the node (#752 mechanism); an observer that never lagged
     /// publishes nothing.
     OBSERVER_CONSENSUS_RESUMED("observer-consensus-resumed", "consensus", WarningLevel.INFO, OBSERVER_CONSENSUS_LAGGING),
+    /// Genesis formed with a seat of the agreed roster that was not a connected, authenticated peer when the roster was installed
+    /// (#1654): the view agreement counts each member's last two reports with no freshness, so a member that reported the view and
+    /// then died is still agreed. Formation is not blocked; auto-heal is expected to replace the seat. Raised once per seat by the node
+    /// that installed the roster; the subject is the seat's node id. Closed by [#GENESIS_SEAT_REACHABLE].
+    GENESIS_SEAT_UNREACHABLE("genesis-seat-unreachable", "consensus", WarningLevel.WARNING),
+    /// The recovery of [#GENESIS_SEAT_UNREACHABLE], same subject (#1654): the seat is a connected peer again, or it left the voter
+    /// roster (replaced); the message says which. INFO, published only after a published unreachable event for the seat (#752 mechanism).
+    GENESIS_SEAT_REACHABLE("genesis-seat-reachable", "consensus", WarningLevel.INFO, GENESIS_SEAT_UNREACHABLE),
     /// Background promotion of a storage instance has copied nothing for several consecutive cycles while copies kept
     /// failing: a copy attempt fails when its faster tier rejects the write or its source tier cannot be read. It detects
     /// FAILING COPIES only: a tier sitting above its promotion watermark is skipped without an attempt and raises nothing.

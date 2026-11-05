@@ -92,6 +92,13 @@ class OperatorWarningWiringTest {
         assertThat(assemblyCode()).containsOnlyOnce("nodeDeploymentManager.setOperatorWarningSink(operatorWarningSink);");
     }
 
+    /// #1654: genesis seat warnings raised by the consensus engine reach this node's sink. Only a genesis with a dead seat
+    /// observes the bind, so un-binding it left every other test green.
+    @Test
+    void assembly_givesTheSinkToTheConsensusEngine() {
+        assertThat(assemblyCode()).containsOnlyOnce("clusterNode.useOperatorWarningSink(operatorWarningSink);");
+    }
+
     /// #1996: request frames the transport drops at an offline-buffer flush reach the event stream only if the assembly routes
     /// the transport's notification to this node's aggregator, and the transport honours the operator's cap only if the assembly
     /// hands it over. The aggregator and transport tests call their halves directly, so un-binding either left them green.
