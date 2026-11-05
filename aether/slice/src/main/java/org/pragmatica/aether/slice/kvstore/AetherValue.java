@@ -407,18 +407,30 @@ public sealed interface AetherValue {
     /// rc6 §3.1: the source of a slice capacity requirement. Each source writes only its own [AetherKey.SliceRequirementKey].
     /// `REACTIVE` (the autoscaler) and `OPERATOR` (`aether scale`) have writers; `SCHEDULED`, `CAMPAIGN`, `PREDICTIVE` and `RECOVERY`
     /// are defined for the sources that follow and have no writer yet. The declaration order is the combiner's tie-break order.
+    @Codec
     enum RequirementKind {
         REACTIVE,
         OPERATOR,
         SCHEDULED,
         CAMPAIGN,
         PREDICTIVE,
-        RECOVERY;
+        RECOVERY,
+        /// Wire sentinel (#964): an ordinal this node cannot name decodes here. It names no requirement source: it is never written,
+        /// never parsed from a key string, and never read by the combiner, which iterates [#sources()].
+        /// Must stay LAST.
+        UNKNOWN;
 
         private static final Fn1<Cause, String> UNKNOWN_KIND = Causes.forOneValue("Unknown slice requirement kind: %s");
 
-        public static Result<RequirementKind> requirementKind(String name) {
+        /// The kinds that name a requirement source, in tie-break order: every constant but the wire sentinel.
+        public static List<RequirementKind> sources() {
             return Stream.of(values())
+                         .filter(kind -> kind != UNKNOWN)
+                         .toList();
+        }
+
+        public static Result<RequirementKind> requirementKind(String name) {
+            return sources().stream()
                          .filter(kind -> kind.name()
                                              .equals(name))
                          .findFirst()

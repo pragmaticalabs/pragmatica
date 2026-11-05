@@ -6,7 +6,6 @@ package org.pragmatica.aether.slice.kvstore;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.slice.blueprint.SliceSpec;
@@ -94,7 +93,7 @@ public sealed interface SliceRequirements {
 
     /// The committed requirements of `base`, in [RequirementKind] order.
     static List<Requirement> committedRequirements(KVStore<AetherKey, AetherValue> store, ArtifactBase base) {
-        return Stream.of(RequirementKind.values())
+        return RequirementKind.sources().stream()
                      .flatMap(kind -> committedRequirement(store, base, kind).stream())
                      .sorted(Comparator.comparing(Requirement::kind))
                      .toList();
@@ -171,7 +170,7 @@ public sealed interface SliceRequirements {
     /// A witness per requirement kind of `base` at its committed value, absent included: a requirement put after the read refuses
     /// the write as surely as one changed or removed.
     static List<ReadWitness<AetherKey>> requirementWitnesses(KVStore<AetherKey, AetherValue> store, ArtifactBase base) {
-        return Stream.of(RequirementKind.values())
+        return RequirementKind.sources().stream()
                      .map(kind -> requirementWitness(store,
                                                      SliceRequirementKey.sliceRequirementKey(base, kind)))
                      .toList();
