@@ -15,6 +15,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.pragmatica.lang.FatalEscape;
 import org.pragmatica.lang.FatalEscapeHandler;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -147,5 +148,51 @@ class KVStoreFatalEscapeTest {
     private static void raise(CountDownLatch handlerRan) {
         handlerRan.countDown();
         throw new IllegalStateException("contained");
+    }
+
+    /// The escaping thread parks until the sink returns: while the sink is held `onFatalEscape` must not return (kills
+    /// fe03, a zero park bound, and fe04, no park), and once the sink returns it must return soon, far inside
+    /// [FatalEscapeRelay#PARK_BOUND_MILLIS] (kills fe02, a latch never counted down, which waits out the bound).
+    @Test
+    @Timeout(value = 30, unit = SECONDS)
+    void escapingThreadParksUntilTheSinkReturnsAndIsThenReleasedPromptly() throws Exception {
+        var sinkEntered = new CountDownLatch(1);
+        var releaseSink = new CountDownLatch(1);
+        var returned = new CountDownLatch(1);
+        var relay = FatalEscapeRelay.fatalEscapeRelay(blockingSink(sinkEntered, releaseSink));
+        var escaping = Thread.ofPlatform()
+                             .daemon()
+                             .start(() -> escape(relay, returned));
+
+        assertThat(sinkEntered.await(10, TimeUnit.SECONDS)).as("the relay thread is inside the sink").isTrue();
+        assertThat(returned.await(500, TimeUnit.MILLISECONDS)).as("parked while the sink is held").isFalse();
+        releaseSink.countDown();
+        assertThat(returned.await(FatalEscapeRelay.PARK_BOUND_MILLIS / 3, TimeUnit.MILLISECONDS))
+            .as("released soon after the sink returned, well under the park bound").isTrue();
+        escaping.join(10_000);
+    }
+
+    private static DispatcherFailureSink blockingSink(CountDownLatch entered, CountDownLatch release) {
+        return (reason, cause) -> block(entered, release);
+    }
+
+    private static Unit block(CountDownLatch entered, CountDownLatch release) {
+        entered.countDown();
+        await(release);
+
+        return Unit.unit();
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            latch.await(20, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private static void escape(FatalEscapeHandler relay, CountDownLatch returned) {
+        relay.onFatalEscape(new FatalEscape("continuation", new AssertionError("parked"), "origin", "thread"));
+        returned.countDown();
     }
 }

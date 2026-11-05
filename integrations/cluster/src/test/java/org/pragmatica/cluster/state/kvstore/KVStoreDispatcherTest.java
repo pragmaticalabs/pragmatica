@@ -443,6 +443,42 @@ class KVStoreDispatcherTest {
             assertThat(eventsOf("kv-dispatch-read-ahead")).isEmpty();
         }
 
+        /// (kv20) a whole-store read by a handler on the delivering thread counts one snapshot read-ahead when a later
+        /// batch is already enqueued, and nothing when none is. Mutation: the store's `snapshot()` skips the fence call.
+        @Test
+        void snapshotReadWhileALaterBatchIsEnqueuedCountsOneSnapshotReadAhead() throws Exception {
+            assertThat(snapshotReadAheadsWithLaterBatch(true)).isEqualTo(1);
+        }
+
+        @Test
+        void control_snapshotReadWithNoLaterBatchCountsNothing() throws Exception {
+            assertThat(snapshotReadAheadsWithLaterBatch(false)).isZero();
+        }
+
+        private long snapshotReadAheadsWithLaterBatch(boolean laterBatch) throws Exception {
+            var store = store();
+            var done = new CountDownLatch(1);
+            router.addRoute(KVStoreNotification.ValuePut.class, (KVStoreNotification.ValuePut<StructuredKey, Object> p) -> {
+                if (p.cause().key().equals(A)) {
+                    store.snapshot();
+                    done.countDown();
+                }
+            });
+            hold.holdFrom(1);
+
+            put(store, A, "one");
+            assertThat(hold.awaitHeld(10)).isTrue();
+            if (laterBatch) {
+                put(store, L, "later");
+            }
+            hold.release();
+
+            assertThat(done.await(10, TimeUnit.SECONDS)).isTrue();
+            store.awaitDelivered(store.enqueuedSeq()).await();
+            assertThat(store.deliveryMetrics().snapshotReadAheadsReplay()).isZero();
+            return store.deliveryMetrics().snapshotReadAheadsLive();
+        }
+
         private long readAheadsWhenBatchTwoWrites(Key written) throws Exception {
             var store = store();
             put(store, K, "k0");
@@ -573,6 +609,51 @@ class KVStoreDispatcherTest {
         @Test
         void control_flatRankEmitsAllRemovalsFirst() {
             assertThat(replayOrder(NotificationDelivery.ReplayRank.flat())).containsExactly("remove:r2", "put:p1");
+        }
+
+        /// (kv13) put order across ranks: three fresh keys replay rank-ascending, whichever way the ranks run against the
+        /// storage's iteration order (one arm ascending by name, one descending, so a flat rank matches at most one).
+        /// Mutation: puts bucketed under rank 0 (replay puts flat), red in one arm.
+        @Test
+        void rankedReplayEmitsPutsInRankOrder() {
+            assertThat(putOrder(key -> ((Key) key).value().charAt(1) - '0')).containsExactly("put:p1", "put:p2", "put:p3");
+            assertThat(putOrder(key -> 4 - (((Key) key).value().charAt(1) - '0'))).containsExactly("put:p3", "put:p2", "put:p1");
+        }
+
+        private List<String> putOrder(NotificationDelivery.ReplayRank rank) {
+            var store = store(rank);
+            var order = new CopyOnWriteArrayList<String>();
+            router.addRoute(KVStoreNotification.ValuePut.class, (KVStoreNotification.ValuePut<StructuredKey, Object> p) -> order.add("put:" + ((Key) p.cause().key()).value()));
+            deserializer.next = Map.of(new Key("p1"), "1", new Key("p2"), "2", new Key("p3"), "3");
+            store.restoreSnapshot(new byte[0]);
+            store.replayNotifications();
+            return List.copyOf(order);
+        }
+
+        /// (kv17) a delivered removal leaves the delivered view: put k, remove k, deliver; a replay with k absent from
+        /// storage emits no `remove:k`, and a replay that installs k again with its old value emits `put:k`.
+        /// Mutation: the view ignores a delivered `ValueRemove`: the first replay emits `remove:k`, red.
+        @Test
+        void removedKeyLeavesTheDeliveredView() {
+            var store = store();
+            var order = new CopyOnWriteArrayList<String>();
+            router.addRoute(KVStoreNotification.ValuePut.class, (KVStoreNotification.ValuePut<StructuredKey, Object> p) -> order.add("put:" + ((Key) p.cause().key()).value()));
+            router.addRoute(KVStoreNotification.ValueRemove.class, (KVStoreNotification.ValueRemove<StructuredKey, Object> r) -> order.add("remove:" + ((Key) r.cause().key()).value()));
+            put(store, K, "v");
+            store.process(store.createBatch(List.of(new KVCommand.Remove<>(K))));
+            store.awaitDelivered(store.enqueuedSeq()).await();
+            assertThat(order).as("the put and the remove were delivered").containsExactly("put:k", "remove:k");
+            order.clear();
+
+            deserializer.next = Map.of();
+            store.restoreSnapshot(new byte[0]);
+            store.replayNotifications();
+            assertThat(order).as("k left the delivered view, so no remove burst").isEmpty();
+
+            deserializer.next = Map.of(K, "v");
+            store.restoreSnapshot(new byte[0]);
+            store.replayNotifications();
+            assertThat(order).as("k is new to the delivered view, so a put is emitted").containsExactly("put:k");
         }
 
         private List<String> replayOrder(NotificationDelivery.ReplayRank rank) {
