@@ -96,7 +96,7 @@ public interface WorkflowAdmission {
                                                                                     now,
                                                                                     now + found.budget()
                                                                                                .elapsed()
-                                                                                               .toMillis())));
+                                                                                               .millis())));
             }
 
             private Result<WorkflowKind<?>> admissible(String kind, List<String> conflictKeys) {

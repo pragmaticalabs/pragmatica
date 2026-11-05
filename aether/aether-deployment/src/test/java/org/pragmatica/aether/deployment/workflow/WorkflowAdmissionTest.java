@@ -208,7 +208,7 @@ class WorkflowAdmissionTest {
                                  run.in(WorkflowState.DONE, "stale")).await().unwrap()).as("compare-and-set on the exact run read")
                   .isFalse();
         assertThat(cluster.run(run.id())).isEqualTo(Option.some(waiting));
-        assertThat(cluster.claim("node:n1")).as("a refused terminal commit releases nothing").isPresent();
+        assertThat(cluster.claim("node:n1").isPresent()).as("a refused terminal commit releases nothing").isTrue();
     }
 
     @Test

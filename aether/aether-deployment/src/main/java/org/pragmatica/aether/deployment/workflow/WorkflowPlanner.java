@@ -109,7 +109,7 @@ public interface WorkflowPlanner<O> {
     /// An issued effect is still inside its settle window: re-check, never re-issue.
     private static <O> boolean settling(WorkflowRunValue run, WorkflowStep<O> step, long now) {
         return run.issuedAt() > 0 && now - run.issuedAt() < step.settle()
-                                                                .toMillis();
+                                                                .millis();
     }
 
     private static <O> Plan escalate(WorkflowRunValue run, WorkflowStep<O> step, String budget) {

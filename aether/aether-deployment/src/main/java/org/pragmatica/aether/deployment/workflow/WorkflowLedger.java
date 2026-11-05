@@ -7,7 +7,9 @@ package org.pragmatica.aether.deployment.workflow;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.WorkflowClaimKey;
@@ -85,13 +87,16 @@ public interface WorkflowLedger {
                       Fn1<Promise<List<Object>>, List<KVCommand<AetherKey>>> apply) implements WorkflowLedger {
             @Override
             public List<WorkflowRunValue> runs() {
-                return store.snapshot()
-                            .values()
-                            .stream()
-                            .filter(WorkflowRunValue.class::isInstance)
-                            .map(WorkflowRunValue.class::cast)
-                            .sorted(Comparator.comparingLong(WorkflowRunValue::startedAt).thenComparing(WorkflowRunValue::id))
-                            .toList();
+                return untypedValues(store.snapshot()).filter(WorkflowRunValue.class::isInstance)
+                                    .map(WorkflowRunValue.class::cast)
+                                    .sorted(Comparator.comparingLong(WorkflowRunValue::startedAt).thenComparing(WorkflowRunValue::id))
+                                    .toList();
+            }
+
+            /// The store also holds the leader record, which is not an `AetherValue`: the typed view must not be streamed.
+            private static Stream<?> untypedValues(Map<?, ?> snapshot) {
+                return snapshot.values()
+                               .stream();
             }
 
             @Override
