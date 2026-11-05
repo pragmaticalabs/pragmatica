@@ -45,12 +45,16 @@ import org.pragmatica.aether.http.handler.security.Role;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.aether.http.handler.security.SecurityContextHolder;
 import org.pragmatica.aether.management.route.ManagementRoute;
+import org.pragmatica.aether.deployment.generation.BootstrapModule;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.node.lifecycle.NodeState;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DhtPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DhtPartitionOwnershipValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyManager;
@@ -524,11 +528,49 @@ public final class StatusRoutes implements RouteSource {
         components.add(buildRoutesHealth());
         components.add(buildQuorumHealth(node));
         components.add(buildDhtAdmissionHealth(StorageFactory.pendingDhtAdmissions(node.storageSetups())));
-        var status = state.isReady()
+        var ownerEpoch = buildOwnerEpochHealth(node);
+
+        components.add(ownerEpoch);
+        var ready = state.isReady() && "UP".equals(ownerEpoch.status());
+        var status = ready
                      ? "UP"
                      : "DOWN";
 
-        return new ReadinessResponse(status, nodeId, state.name(), state.isReady(), List.copyOf(components));
+        return new ReadinessResponse(status, nodeId, state.name(), ready, List.copyOf(components));
+    }
+
+    /// #2535: a DHT put is stamped with this node's applied owner epoch, which is ZERO until the committed ownership
+    /// record has been applied here. Replicas that already applied it refuse a ZERO-stamped put ("1 refused by owner-epoch
+    /// fences"), so a node answering ready before it applied the record took traffic whose DHT writes (stream publishes,
+    /// checkpoint saves) failed. The node is ready for traffic only once the record is applied; a node without a DHT has
+    /// nothing to fence.
+    private static ComponentHealth buildOwnerEpochHealth(ManageableNode node) {
+        return ownerEpochHealth(node.dhtNode().isPresent(),
+                                () -> appliedOwnerEpoch(node));
+    }
+
+    private static Option<Epoch> appliedOwnerEpoch(ManageableNode node) {
+        return node.kvStore()
+                   .getTyped(DhtPartitionOwnershipKey.dhtPartitionOwnershipKey(BootstrapModule.CORE_PARTITION_ID),
+                             DhtPartitionOwnershipValue.class)
+                   .map(DhtPartitionOwnershipValue::ownerEpoch);
+    }
+
+    /// `appliedEpoch` is the owner epoch applied here, empty until the ownership record is; read only when the node runs a DHT.
+    static ComponentHealth ownerEpochHealth(boolean hasDht, Supplier<Option<Epoch>> appliedEpoch) {
+        var applied = !hasDht || appliedEpoch.get().filter(StatusRoutes::isNotZero).isPresent();
+
+        return new ComponentHealth("owner-epoch",
+                                   applied
+                                   ? "UP"
+                                   : "DOWN",
+                                   applied
+                                   ? "DHT owner epoch applied, or no DHT on this node"
+                                   : "Awaiting the committed DHT ownership record: puts stamped with epoch ZERO are refused by replicas that applied it");
+    }
+
+    private static boolean isNotZero(Epoch epoch) {
+        return ! Epoch.ZERO.equals(epoch);
     }
 
     private static ComponentHealth buildLifecycleHealth(NodeState state) {
