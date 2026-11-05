@@ -1452,7 +1452,9 @@ class OwnerActivationTest {
         assertThat(heldProbes).as("the earlier trigger first").extracting(HeldProbe::partition).containsExactly(0, 1);
     }
 
-    /// #2682: raising the cap with gates queued starts one per newly free slot at once, with no slot freed by a gate.
+    /// #2682: raising the cap with gates queued starts one per newly free slot at once, with no slot freed by a gate. A cap of
+    /// 0 (below what the configuration admits) queues every trigger without starting one, so nothing but the raise can start
+    /// them: a gate already running would drain the queue itself once started, and hide a setter that does not.
     @Test
     void eagerConcurrency_raisedWithGatesQueued_fillsEveryFreeSlot() throws InterruptedException {
         var owned = ownedBy(SELF, 1);
@@ -1460,10 +1462,11 @@ class OwnerActivationTest {
         record.set(Option.some(owned));
         members.set(List.of(SELF, PEER_A));
         holdProbes.set(true);
+        activation.eagerConcurrency(0);
 
         List.of(0, 1, 2).forEach(partition -> activation.onCommittedOwnership(STREAM, partition, Option.none(), owned));
 
-        assertThat(activation.eagerWaiting()).containsExactly(key(1), key(2));
+        assertThat(activation.eagerWaiting()).containsExactly(key(0), key(1), key(2));
 
         activation.eagerConcurrency(3);
 
