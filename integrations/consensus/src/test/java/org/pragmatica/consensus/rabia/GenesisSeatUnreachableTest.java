@@ -95,7 +95,7 @@ class GenesisSeatUnreachableTest {
         settle();
         announceStably(X);
         settle();
-        engine.checkUnreachableGenesisSeatsForTesting();
+        engine.runPhaseStallCheckForTesting();
         settle();
 
         assertThat(engine.voterConfiguration()).isEqualTo(Option.some(new VoterConfiguration(0, VIEW)));
@@ -105,13 +105,13 @@ class GenesisSeatUnreachableTest {
     @Test
     void unreachableSeat_reconnects_isClosedOnceBySeatReachable() {
         formWithYGone();
-        engine.checkUnreachableGenesisSeatsForTesting();
+        engine.runPhaseStallCheckForTesting();
         settle();
         assertThat(seatWarnings()).as("still unreachable: nothing closes").containsExactly(code(GENESIS_SEAT_UNREACHABLE, Y));
 
         connected.add(Y);
-        engine.checkUnreachableGenesisSeatsForTesting();
-        engine.checkUnreachableGenesisSeatsForTesting();
+        engine.runPhaseStallCheckForTesting();
+        engine.runPhaseStallCheckForTesting();
         settle();
 
         assertThat(seatWarnings()).containsExactly(code(GENESIS_SEAT_UNREACHABLE, Y), code(GENESIS_SEAT_REACHABLE, Y));
@@ -125,7 +125,7 @@ class GenesisSeatUnreachableTest {
         var replaced = new VoterConfiguration(1, new ClusterConfig(List.of(B, X, new NodeId("node-6"))));
 
         assertThat(engine.initializeVoters(replaced).isSuccess()).isTrue();
-        engine.checkUnreachableGenesisSeatsForTesting();
+        engine.runPhaseStallCheckForTesting();
         settle();
 
         assertThat(seatWarnings()).containsExactly(code(GENESIS_SEAT_UNREACHABLE, Y), code(GENESIS_SEAT_REACHABLE, Y));

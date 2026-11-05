@@ -540,9 +540,9 @@ public class RabiaEngine<C extends Command> {
         operatorWarningSink.set(sink);
     }
 
-    /// Test hook: one unreachable-genesis-seat check on the apply executor, as the phase-stall tick runs it.
-    Unit checkUnreachableGenesisSeatsForTesting() {
-        safeExecute(this::resolveUnreachableGenesisSeats);
+    /// Test hook: one phase-stall tick on the apply executor, which also runs the unreachable-genesis-seat check.
+    Unit runPhaseStallCheckForTesting() {
+        safeExecute(this::checkPhaseStall);
 
         return Unit.unit();
     }
