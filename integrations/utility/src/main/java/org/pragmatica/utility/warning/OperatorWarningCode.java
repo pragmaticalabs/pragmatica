@@ -847,8 +847,11 @@ public enum OperatorWarningCode {
     /// A workflow exhausted its attempt, elapsed-time or effect budget and stopped as ESCALATED (rc6 §4.4). The subject is the
     /// workflow id; the message names the budget, the postcondition that was not observed and the recovery verbs (resume or
     /// abandon). The workflow keeps its conflict-key claims until an operator resolves it, because the effect it issued last may
-    /// still be in flight. Raised once, by the leader that committed the escalation; no recovery code closes it.
+    /// still be in flight. Raised once, by the leader that committed the escalation; [#WORKFLOW_RESOLVED] closes it.
     WORKFLOW_ESCALATED("workflow-escalated", "workflow", WarningLevel.CRITICAL),
+    /// The recovery of [#WORKFLOW_ESCALATED], same subject (rc6 §4.4): an operator resumed or abandoned the escalated workflow.
+    /// INFO; declared here with its pair (the owner rule), raised by the operator surface that resolves a run (f2b), not by the engine core.
+    WORKFLOW_RESOLVED("workflow-resolved", "workflow", WarningLevel.INFO, WORKFLOW_ESCALATED),
     /// The recovery of [#CONFIG_WATCH_CALLBACK_FAILED], same subject (#774): the next delivery bound and (when it called back) succeeded.
     /// INFO, published only after a published failure for the subject (#752 mechanism).
     CONFIG_WATCH_CALLBACK_RECOVERED("config-watch-callback-recovered",
