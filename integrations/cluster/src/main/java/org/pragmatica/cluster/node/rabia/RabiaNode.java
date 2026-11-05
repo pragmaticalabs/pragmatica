@@ -162,7 +162,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     @Contract
     default void onStateRestored(Runnable listener) {}
 
-    /// Operator-warning pass-through (#2316): binds the wrapped [RabiaEngine]'s operator warnings
+    /// Operator-warning pass-through (#1654): binds the wrapped [RabiaEngine]'s operator warnings
     /// (`RabiaEngine#useOperatorWarningSink`) to the node's event log. Default no-op for implementations
     /// without a Rabia engine.
     @Contract

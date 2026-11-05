@@ -442,6 +442,14 @@ public enum OperatorWarningCode {
     /// says which). INFO, published only after a published lagging event for the node (#752 mechanism); an observer that never lagged
     /// publishes nothing.
     OBSERVER_CONSENSUS_RESUMED("observer-consensus-resumed", "consensus", WarningLevel.INFO, OBSERVER_CONSENSUS_LAGGING),
+    /// Genesis formed with a seat of the agreed roster that was not a connected, authenticated peer when the roster was installed
+    /// (#1654): the view agreement counts each member's last two reports with no freshness, so a member that reported the view and
+    /// then died is still agreed. Formation is not blocked; auto-heal is expected to replace the seat. Raised once per seat by the node
+    /// that installed the roster; the subject is the seat's node id. Closed by [#GENESIS_SEAT_REACHABLE].
+    GENESIS_SEAT_UNREACHABLE("genesis-seat-unreachable", "consensus", WarningLevel.WARNING),
+    /// The recovery of [#GENESIS_SEAT_UNREACHABLE], same subject (#1654): the seat is a connected peer again, or it left the voter
+    /// roster (replaced); the message says which. INFO, published only after a published unreachable event for the seat (#752 mechanism).
+    GENESIS_SEAT_REACHABLE("genesis-seat-reachable", "consensus", WarningLevel.INFO, GENESIS_SEAT_UNREACHABLE),
     /// Background promotion of a storage instance has copied nothing for several consecutive cycles while copies kept
     /// failing: a copy attempt fails when its faster tier rejects the write or its source tier cannot be read. It detects
     /// FAILING COPIES only: a tier sitting above its promotion watermark is skipped without an attempt and raises nothing.
@@ -774,6 +782,24 @@ public enum OperatorWarningCode {
                                "rollback",
                                WarningLevel.INFO,
                                ROLLBACK_RECORD_RECONCILE_EXHAUSTED),
+    /// A schema migration has been fenced in the database several consecutive times (FDB-2a, #2591): another database
+    /// session holds the migration fence (`pg_try_advisory_lock` / `GET_LOCK`), so each attempt ran and read nothing. The
+    /// attempt is not consumed; the schema stays PENDING and is retried every 45 s at most. Raised from the 3rd consecutive
+    /// fenced attempt on, naming the holder. Subject is the datasource.
+    SCHEMA_MIGRATION_FENCE_HELD("schema-migration-fence-held", "schema-migration", WarningLevel.WARNING),
+    /// A schema operation runs WITHOUT a database fence (FDB-2a, #2591): the datasource is configured as PostgreSQL but
+    /// the server is CockroachDB, whose advisory locks acquire nothing; FDB-2b adds its lock. Raised on every such
+    /// operation. Subject is the datasource.
+    SCHEMA_MIGRATION_UNFENCED("schema-migration-unfenced", "schema-migration", WarningLevel.WARNING),
+    /// The recovery of [#SCHEMA_MIGRATION_FENCE_HELD], same subject (FDB-2a, #2591): a later attempt on the datasource acquired the
+    /// fence and ran. INFO, published only after a published fence-held warning for the subject (#752 mechanism).
+    SCHEMA_MIGRATION_FENCE_RELEASED("schema-migration-fence-released",
+                                    "schema-migration",
+                                    WarningLevel.INFO,
+                                    SCHEMA_MIGRATION_FENCE_HELD),
+    /// The recovery of [#SCHEMA_MIGRATION_UNFENCED], same subject (FDB-2a, #2591): a later schema operation on the datasource ran
+    /// fenced. INFO, published only after a published unfenced warning for the subject (#752 mechanism).
+    SCHEMA_MIGRATION_FENCED("schema-migration-fenced", "schema-migration", WarningLevel.INFO, SCHEMA_MIGRATION_UNFENCED),
     /// The node's KV store delivers its notifications more slowly than it commits them (KVStore dispatcher design §3.6): the named
     /// lag series (`kv.dispatch.lag.batches` or `kv.dispatch.queue.bytes`, the subject) rose over a whole sampling window without
     /// falling once. A sustained slope, never a threshold: a high but steady lag raises nothing. The undelivered queue is the heap

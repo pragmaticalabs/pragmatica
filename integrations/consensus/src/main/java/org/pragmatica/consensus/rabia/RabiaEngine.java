@@ -177,6 +177,10 @@ public class RabiaEngine<C extends Command> {
     /// Executor-confined after [#start]. Genesis view agreement while genesis is pending.
     private volatile Option<GenesisViewAgreement> genesisAgreement = Option.none();
     private final AtomicReference<ScheduledFuture<?>> genesisTimer = new AtomicReference<>();
+    /// Seats this node raised [OperatorWarningCode#GENESIS_SEAT_UNREACHABLE] for and has not closed yet (#1654).
+    private final Set<NodeId> unreachableGenesisSeats = ConcurrentHashMap.newKeySet();
+
+    private final AtomicReference<OperatorWarningSink> operatorWarningSink = new AtomicReference<>(OperatorWarningSink.logOnly());
 
     /// Genesis round interval: starts here and doubles while the view is unchanged, up to the sync retry
     /// interval, so a waiting cluster does not flood the network and a changing one reacts quickly.
@@ -201,8 +205,6 @@ public class RabiaEngine<C extends Command> {
     /// refused as a whole and never decoded row by row). Cleared by any successful restore. It is not a fence: only candidate
     /// selection ([#adoptableCandidate]) and the status read it.
     private volatile Option<RestoreFailures> restoreFailures = Option.none();
-
-    private final AtomicReference<OperatorWarningSink> operatorWarningSink = new AtomicReference<>(OperatorWarningSink.logOnly());
 
     /// Why the re-persist of a restored or adopted state failed (#1516): the second permanent fence the watchdog
     /// bounds. Set only by [#recordRestoredStateSaveFailure], and like `ownRestoreFailure` never cleared in-process:
@@ -558,7 +560,99 @@ public class RabiaEngine<C extends Command> {
         log.info("Node {} installs genesis roster {}: every member reported the identical view in two consecutive rounds",
                  self,
                  configuration.members());
+        signalUnreachableSeats(configuration);
         installGenesis(configuration);
+    }
+
+    /// #1654: the view agreement counts each member's last two reports with no freshness, so a member that reported
+    /// twice and then died can be agreed. Formation goes ahead; every agreed seat that is not a connected, authenticated
+    /// peer now is named once, loudly, for auto-heal to replace.
+    private void signalUnreachableSeats(VoterConfiguration configuration) {
+        var reachable = connectedSeats();
+
+        configuration.members().stream().filter(seat -> !reachable.contains(seat)).forEach(this::signalUnreachableSeat);
+    }
+
+    /// Connectivity only, not discovery: with `cluster.genesis_voters` a seat can be connected before membership counts it,
+    /// and that must not raise the warning. Same source as the close path ([#resolveUnreachableGenesisSeats]), plus self.
+    private Set<NodeId> connectedSeats() {
+        var connected = new HashSet<>(network.connectedPeers());
+
+        connected.add(self);
+
+        return Set.copyOf(connected);
+    }
+
+    private Unit signalUnreachableSeat(NodeId seat) {
+        unreachableGenesisSeats.add(seat);
+
+        return OperatorWarnings.raise(log,
+                                      operatorWarningSink.get(),
+                                      OperatorWarningCode.GENESIS_SEAT_UNREACHABLE,
+                                      seat.id(),
+                                      "Node {} installs genesis with seat {} not connected: the seat reported the agreed view earlier and is "
+                                     + "unreachable now. Formation is not blocked; auto-heal is expected to replace the seat. Operator "
+                                     + "action: if the seat neither returns nor is replaced, check that node (#1654).",
+                                      self,
+                                      seat);
+    }
+
+    /// Closes [OperatorWarningCode#GENESIS_SEAT_UNREACHABLE] for every seat this node raised it for that is a connected peer again
+    /// or has left the voter roster (replaced). Runs on the phase-stall tick (InPhase) and on the idle slot probe tick (Idle), so a seat
+    /// closes within one tick interval whether or not a phase is in progress.
+    private void resolveUnreachableGenesisSeats() {
+        if (unreachableGenesisSeats.isEmpty()) {
+            return;
+        }
+
+        var connected = network.connectedPeers();
+
+        List.copyOf(unreachableGenesisSeats).forEach(seat -> resolveUnreachableGenesisSeat(seat, connected));
+    }
+
+    private void resolveUnreachableGenesisSeat(NodeId seat, Set<NodeId> connected) {
+        if (connected.contains(seat)) {
+            closeUnreachableGenesisSeat(seat, "is a connected peer again");
+
+            return;
+        }
+
+        if (voters.filter(configuration -> !configuration.contains(seat)).isPresent()) {
+            closeUnreachableGenesisSeat(seat, "left the voter roster (replaced)");
+        }
+    }
+
+    private Unit closeUnreachableGenesisSeat(NodeId seat, String how) {
+        unreachableGenesisSeats.remove(seat);
+
+        return OperatorWarnings.raise(log,
+                                      operatorWarningSink.get(),
+                                      OperatorWarningCode.GENESIS_SEAT_REACHABLE,
+                                      seat.id(),
+                                      "Node {}: genesis seat {} {}",
+                                      self,
+                                      seat,
+                                      how);
+    }
+
+    /// Binds this engine's operator warnings to its node's event log (#1654). Until called, they are logged only.
+    @Contract
+    public void useOperatorWarningSink(OperatorWarningSink sink) {
+        operatorWarningSink.set(sink);
+    }
+
+    /// Test hook: one idle slot probe tick on the apply executor, which also runs the unreachable-genesis-seat check.
+    Unit runQuietSlotProbeForTesting() {
+        safeExecute(this::probeQuietSlot);
+
+        return Unit.unit();
+    }
+
+    /// Test hook: one phase-stall tick on the apply executor, which also runs the unreachable-genesis-seat check.
+    Unit runPhaseStallCheckForTesting() {
+        safeExecute(this::checkPhaseStall);
+
+        return Unit.unit();
     }
 
     @Contract
@@ -2693,12 +2787,6 @@ public class RabiaEngine<C extends Command> {
                      .or(() -> snapshot.length + "-" + Arrays.hashCode(snapshot));
     }
 
-    /// Binds this engine's operator warnings to its node's event log (#2316). Until called, they are logged only.
-    @Contract
-    public void useOperatorWarningSink(OperatorWarningSink sink) {
-        operatorWarningSink.set(sink);
-    }
-
     /// Activates on this node's OWN state, installing no RESPONSE.
     ///
     /// Reached when the response threshold is met but no response carries a state more advanced than
@@ -3349,6 +3437,7 @@ public class RabiaEngine<C extends Command> {
     /// (under the original sender's id; `registerProposal` is idempotent and keyed on sender), so
     /// a fresh voter synced to the stalled phase can reach quorum proposals and make progress.
     private void checkPhaseStall() {
+        resolveUnreachableGenesisSeats();
         if (! (engineState.get() instanceof EngineState.InPhase)) {
             return;
         }
@@ -3755,6 +3844,7 @@ public class RabiaEngine<C extends Command> {
     /// answered this replica still cannot know it is behind. Cost in a quiet cluster: one `RoundRequest`
     /// per voter pair per `syncRetryInterval`. InPhase replicas are covered by the stall detector instead.
     private void probeQuietSlot() {
+        resolveUnreachableGenesisSeats();
         if (! (engineState.get() instanceof EngineState.Idle)) {
             return;
         }
