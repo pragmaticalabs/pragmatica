@@ -12,6 +12,9 @@ import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.utility.react.ReactExecutor;
+
+import java.util.concurrent.CountDownLatch;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -38,6 +41,7 @@ import static org.awaitility.Awaitility.await;
 @Execution(ExecutionMode.SAME_THREAD)
 class LeaderTermFailoverTest {
     private static final TimeSpan BUDGET = TimeSpan.timeSpan(120).seconds();
+    private static final String LEADER_MANAGER = "LeaderManager";
 
     private final EmberCluster cluster = EmberCluster.emberCluster(5, 24000, 24100, 24200, "leader-term");
 
@@ -102,14 +106,15 @@ class LeaderTermFailoverTest {
     /// therefore read inside that window, and the window is asserted rather than assumed: a snapshot taken after
     /// the first pass could not tell the pre-latch from the pass.
     ///
-    /// D1-react (#2648): the reconciler's activation runs on the LeaderManager react executor, after the
-    /// committed `LeaderKey` and the minted term are visible, so a settled leader is not yet an activated one.
-    /// The snapshot is polled until the activation latched the flag or the first pass ran, whichever comes
-    /// first; a missing pre-latch then shows as a snapshot taken after the pass (red).
+    /// D1 / D1-react (#2648): the committed `LeaderKey` and the minted term are visible before the store delivers the
+    /// `LeaderKey` notification, and the `LeaderChange` that notification raises is routed (and the reconciler activated)
+    /// on the LeaderManager react executor. So the snapshot is read only after both have run: the store has delivered
+    /// everything it enqueued, then the LeaderManager executor has run everything queued before a probe.
     private static ProvisioningDecisionSnapshot activationSnapshot(AetherNode leader) {
-        await().atMost(BUDGET.duration())
-               .until(() -> activatedOrEvaluated(decisionOf(leader)));
-        var snapshot = decisionOf(leader);
+        awaitLeaderChangeRouted(leader);
+        var snapshot = leader.provisioningDiagnostics()
+                             .map(ProvisioningDiagnostics::decision)
+                             .unwrap();
 
         assertThat(snapshot.reason()).as("leader %s must be observed before its first reconcile pass",
                                          leader.self().id())
@@ -118,14 +123,25 @@ class LeaderTermFailoverTest {
         return snapshot;
     }
 
-    private static boolean activatedOrEvaluated(ProvisioningDecisionSnapshot snapshot) {
-        return snapshot.reachedFullMembership() || !"NOT_EVALUATED".equals(snapshot.reason());
+    private static void awaitLeaderChangeRouted(AetherNode leader) {
+        var store = leader.kvStore();
+
+        assertThat(store.awaitDelivered(store.enqueuedSeq())
+                        .await(BUDGET)
+                        .isSuccess()).as("leader %s store delivered its notifications", leader.self().id())
+                                     .isTrue();
+        leader.reactExecutors()
+              .stream()
+              .filter(executor -> LEADER_MANAGER.equals(executor.component()))
+              .forEach(LeaderTermFailoverTest::drain);
     }
 
-    private static ProvisioningDecisionSnapshot decisionOf(AetherNode leader) {
-        return leader.provisioningDiagnostics()
-                     .map(ProvisioningDiagnostics::decision)
-                     .unwrap();
+    private static void drain(ReactExecutor executor) {
+        var drained = new CountDownLatch(1);
+
+        executor.undo("leader-term-test-drain", drained::countDown);
+        await().atMost(BUDGET.duration())
+               .until(() -> drained.getCount() == 0);
     }
 
     private Option<AetherNode> settledLeader(Option<String> excluded) {
