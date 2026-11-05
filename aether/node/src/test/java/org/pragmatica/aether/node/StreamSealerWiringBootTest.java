@@ -113,7 +113,7 @@ class StreamSealerWiringBootTest {
         assertThat(source).containsOnlyOnce("streamSegmentSealer.stopSealed(SEALER_STOP_FLUSH_BOUND) .map(this::closeStreamPartitions);")
                           .containsOnlyOnce("private Unit closeStreamPartitions(Unit sealed) { streamPartitionManager.close(); streamReplicationShutdown.run();")
                           .containsOnlyOnce("streamPartitionManager.close();")
-                          .containsOnlyOnce("backupFlushed.flatMap(() -> streamsStopped) .flatMap(() -> NodeStopSequence.run(");
+                          .containsOnlyOnce(".flatMap(() -> backupFlushed) .flatMap(() -> streamsStopped) .flatMap(() -> NodeStopSequence.run(");
     }
 
     @Test
