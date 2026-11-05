@@ -301,6 +301,28 @@ class ClusterFsmInterpreterTest {
             }
         }
 
+        /// F1 survivor wiring-FsmRuntime-00 (`item instanceof Input && superseded.test(..)`, the second conjunct made `true`): the coalescing drops
+        /// only the queued items the predicate matches. A queued input that is not a sample is stepped exactly once, not swallowed by the newer sample.
+        @Test
+        void refreshSeams_dropsOnlyTheOlderSample_aQueuedInputOfAnotherKindIsStillStepped() {
+            try (var rig = new ClusterRig()) {
+                rig.activate();
+                var flushes = rig.countOf("Flush");
+
+                rig.holdConsumerAt("Flush");
+                rig.interpreter.deliver(new ClusterInput.Flush());
+                rig.awaitThat(() -> rig.countOf("Flush") == flushes + 1);
+                var removed = rig.countOf("NodeRemoved");
+
+                rig.interpreter.deliver(new ClusterInput.NodeRemoved(ClusterRig.CORE_2));
+                rig.interpreter.refreshSeams(withCoreView(Set.of(SELF)));
+                rig.release();
+                rig.settle();
+
+                assertThat(rig.countOf("NodeRemoved") - removed).as("the queued NodeRemoved was not coalesced away by the sample behind it").isEqualTo(1);
+            }
+        }
+
         @Test
         void refreshSeams_afterClose_isRefusedAndCountedClosed() {
             var rig = new ClusterRig();
