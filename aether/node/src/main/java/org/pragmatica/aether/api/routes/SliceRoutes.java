@@ -766,7 +766,7 @@ public final class SliceRoutes implements RouteSource {
         }
     }
 
-    private static Result<LeaderTransaction<AetherKey, AetherValue>> operatorTransaction(KVStore<AetherKey, AetherValue> store,
+    static Result<LeaderTransaction<AetherKey, AetherValue>> operatorTransaction(KVStore<AetherKey, AetherValue> store,
                                                                                          Artifact artifact,
                                                                                          Option<Integer> instances,
                                                                                          Option<String> placement) {
