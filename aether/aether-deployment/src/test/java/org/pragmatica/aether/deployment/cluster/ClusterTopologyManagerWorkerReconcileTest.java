@@ -273,7 +273,8 @@ class ClusterTopologyManagerWorkerReconcileTest {
 
         ctm.reconcileWorkerTopology();
 
-        assertThat(requested).hasSize(1);
+        assertThat(requested).as("activate() already runs one pass, so the request may repeat")
+                             .containsOnly("primary-worker-1");
     }
 
     /// Re-enabling resumes the path and tells the operator; disabling again re-arms the hold and its event.
