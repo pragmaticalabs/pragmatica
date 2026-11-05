@@ -4,9 +4,12 @@
 package org.pragmatica.aether.slice.stream;
 
 import java.util.List;
+import java.util.Map;
 
+import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.resource.ResourceVersion;
+import org.pragmatica.lang.Option;
 
 
 /// Catalog of framework-internal stream addresses registered by the cluster at bootstrap.
@@ -21,8 +24,44 @@ public final class SystemStreams {
                                                                                                                         0).unwrap())
                                                                         .unwrap();
 
+    /// Per-minute capacity samples, one per (community, artifact) (rc6 spec 7.2). Written by each governor.
+    public static final ResourceAddress CAPACITY_MINUTE = capacityStream("capacity-minute");
+
+    /// The hourly roll-up of [#CAPACITY_MINUTE], written by the core leader's roll-up job.
+    public static final ResourceAddress CAPACITY_HOUR = capacityStream("capacity-hour");
+
     /// All system stream addresses that must exist at cluster bootstrap.
-    public static final List<ResourceAddress> ALL = List.of(CLUSTER_EVENTS);
+    public static final List<ResourceAddress> ALL = List.of(CLUSTER_EVENTS, CAPACITY_MINUTE, CAPACITY_HOUR);
+
+    private static final long DAY_MS = 24 * 60 * 60 * 1000L;
+
+    /// 35 days. Count and byte caps are sized for ~50k records per artifact over the window (spec 7.2) with
+    /// headroom for ~100 artifacts x communities; mode ANY, so an undersized cap would shorten the window.
+    static final RetentionPolicy CAPACITY_MINUTE_RETENTION = RetentionPolicy.retentionPolicy(10_000_000L,
+                                                                                            2L * 1024 * 1024 * 1024,
+                                                                                            35 * DAY_MS);
+
+    /// 3 years (1095 days), ~26k records per artifact over the window (spec 7.2).
+    static final RetentionPolicy CAPACITY_HOUR_RETENTION = RetentionPolicy.retentionPolicy(5_000_000L,
+                                                                                          1024L * 1024 * 1024,
+                                                                                          1095 * DAY_MS);
+
+    private static final Map<ResourceAddress, RetentionPolicy> RETENTION = Map.of(CAPACITY_MINUTE,
+                                                                                  CAPACITY_MINUTE_RETENTION,
+                                                                                  CAPACITY_HOUR,
+                                                                                  CAPACITY_HOUR_RETENTION);
+
+    /// The retention this system stream declares for itself, or none when it takes the bootstrap default
+    /// (`cluster-events` keeps that default).
+    public static Option<RetentionPolicy> retentionFor(ResourceAddress address) {
+        return Option.option(RETENTION.get(address));
+    }
+
+    private static ResourceAddress capacityStream(String name) {
+        return ResourceAddress.systemResource(name,
+                                              ResourceVersion.resourceVersion(1, 0, 0).unwrap())
+                              .unwrap();
+    }
 
     /// Whether `engineKey` names one of [#ALL] — what the management-api write-gate (`ManagementServer`)
     /// checks a resolved stream identity against.

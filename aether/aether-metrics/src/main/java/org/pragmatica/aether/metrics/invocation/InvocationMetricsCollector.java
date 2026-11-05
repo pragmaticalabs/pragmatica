@@ -12,6 +12,7 @@ import java.util.concurrent.locks.ReentrantLock;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.aether.worker.metrics.ArrivalCounts;
 import org.pragmatica.aether.worker.metrics.PerMethodMetrics;
 import org.pragmatica.aether.worker.metrics.PerSliceMetrics;
 import org.pragmatica.lang.Contract;
@@ -35,6 +36,10 @@ public final class InvocationMetricsCollector {
     /// leader's all-instances-failed detector can take per-window deltas. Never reset: a restart starts a
     /// new producer incarnation, which the detector treats as a fresh baseline.
     private final Map<Artifact, Map<String, ExecutionCounters>> executions = new ConcurrentHashMap<>();
+    /// Rc6 f3a: cumulative offered-load counts per (artifact, method), counted at the two ingresses BEFORE any
+    /// admission or throttle check: the HTTP route entry (EXTERNAL) and the slice invocation entry (INTERNAL).
+    /// Never reset; the capacity writer takes per-minute deltas.
+    private final Map<Artifact, Map<String, ArrivalTally>> arrivals = new ConcurrentHashMap<>();
     private final AtomicLong totalSerializationNs = new AtomicLong();
     private final AtomicLong serializationCount = new AtomicLong();
 
@@ -99,6 +104,35 @@ public final class InvocationMetricsCollector {
                          .toList();
     }
 
+    /// One call OFFERED to `method`, counted before any admission or throttle check.
+    public Result<Unit> recordArrival(Artifact artifact, String method, Origin origin) {
+        tally(artifact, method).arrival(origin);
+
+        return unitResult();
+    }
+
+    /// How an arrival ended: refused, or admitted and then finished. Exactly one per arrival.
+    public Result<Unit> recordSettled(Artifact artifact, String method, Origin origin, Settlement settlement) {
+        tally(artifact, method).settle(origin, settlement);
+
+        return unitResult();
+    }
+
+    /// Cumulative arrival counts of one (artifact, method) for one origin since this collector was created.
+    public ArrivalCounts arrivalCounts(Artifact artifact, String method, Origin origin) {
+        return Option.option(arrivals.get(artifact))
+                     .flatMap(methods -> Option.option(methods.get(method)))
+                     .map(tally -> tally.counts(origin))
+                     .or(ArrivalCounts.ZERO);
+    }
+
+    private ArrivalTally tally(Artifact artifact, String method) {
+        return arrivals.computeIfAbsent(artifact,
+                                        _ -> new ConcurrentHashMap<>())
+                       .computeIfAbsent(method,
+                                        _ -> new ArrivalTally());
+    }
+
     public Result<Unit> recordStart(Artifact artifact, MethodName method) {
         getOrCreateMetrics(artifact, method).metrics.recordStart();
 
@@ -140,32 +174,67 @@ public final class InvocationMetricsCollector {
     /// active invocations, worst-method p95 and error rate) plus the per-method breakdown the
     /// decision path uses to let the worst-sustained method drive the artifact.
     public List<PerSliceMetrics> collectPerSliceMetrics() {
-        return metricsMap.entrySet()
-                         .stream()
-                         .map(InvocationMetricsCollector::buildPerSliceMetrics)
-                         .toList();
+        var artifacts = new java.util.LinkedHashSet<Artifact>(metricsMap.keySet());
+
+        artifacts.addAll(arrivals.keySet());
+
+        return artifacts.stream()
+                        .map(this::buildPerSliceMetrics)
+                        .toList();
     }
 
-    private static PerSliceMetrics buildPerSliceMetrics(Map.Entry<Artifact, Map<MethodName, MethodMetricsWithSlowCalls>> entry) {
-        var methods = entry.getValue()
-                           .values()
-                           .stream()
-                           .map(InvocationMetricsCollector::buildPerMethodMetrics)
-                           .toList();
+    private PerSliceMetrics buildPerSliceMetrics(Artifact artifact) {
+        var gauges = Option.option(metricsMap.get(artifact))
+                           .map(Map::values)
+                           .or(List.<MethodMetricsWithSlowCalls> of());
+        var tallies = Option.option(arrivals.get(artifact)).or(Map.<String, ArrivalTally> of());
+        var gaugeMethods = gauges.stream()
+                                 .map(collector -> buildPerMethodMetrics(collector,
+                                                                         Option.option(tallies.get(collector.metrics.methodName()
+                                                                                                                    .name()))))
+                                 .toList();
+        var tallyOnly = tallies.entrySet()
+                               .stream()
+                               .filter(entry -> gauges.stream()
+                                                      .noneMatch(g -> g.metrics.methodName()
+                                                                               .name()
+                                                                               .equals(entry.getKey())))
+                               .map(entry -> arrivalOnlyMethod(entry.getKey(), entry.getValue()))
+                               .toList();
+        var methods = java.util.stream.Stream.concat(gaugeMethods.stream(), tallyOnly.stream()).toList();
+
+        return summarize(artifact, methods);
+    }
+
+    private static PerMethodMetrics arrivalOnlyMethod(String method, ArrivalTally tally) {
+        return PerMethodMetrics.perMethodMetrics(method,
+                                                 0,
+                                                 0.0,
+                                                 0.0,
+                                                 0,
+                                                 tally.counts(Origin.EXTERNAL),
+                                                 tally.counts(Origin.INTERNAL));
+    }
+
+    private static PerSliceMetrics summarize(Artifact artifact, List<PerMethodMetrics> methods) {
         var activeInvocations = methods.stream().mapToLong(PerMethodMetrics::activeInvocations).sum();
         var totalCalls = methods.stream().mapToLong(PerMethodMetrics::totalCalls).sum();
         var worstP95 = methods.stream().mapToDouble(PerMethodMetrics::p95LatencyMs).max().orElse(0.0);
         var worstErrorRate = methods.stream().mapToDouble(PerMethodMetrics::errorRate).max().orElse(0.0);
+        var external = methods.stream().map(PerMethodMetrics::external).reduce(ArrivalCounts.ZERO, ArrivalCounts::plus);
+        var internal = methods.stream().map(PerMethodMetrics::internal).reduce(ArrivalCounts.ZERO, ArrivalCounts::plus);
 
-        return PerSliceMetrics.perSliceMetrics(entry.getKey(),
+        return PerSliceMetrics.perSliceMetrics(artifact,
                                                activeInvocations,
                                                worstP95,
                                                worstErrorRate,
                                                totalCalls,
-                                               methods);
+                                               methods,
+                                               external,
+                                               internal);
     }
 
-    private static PerMethodMetrics buildPerMethodMetrics(MethodMetricsWithSlowCalls collector) {
+    private static PerMethodMetrics buildPerMethodMetrics(MethodMetricsWithSlowCalls collector, Option<ArrivalTally> tally) {
         var snapshot = collector.metrics.snapshot();
         var p95Ms = snapshot.estimatePercentileNs(95) / 1_000_000.0;
         var errorRate = 1.0 - snapshot.successRate();
@@ -174,7 +243,9 @@ public final class InvocationMetricsCollector {
                                                  collector.metrics.activeInvocations(),
                                                  p95Ms,
                                                  errorRate,
-                                                 snapshot.count());
+                                                 snapshot.count(),
+                                                 tally.map(t -> t.counts(Origin.EXTERNAL)).or(ArrivalCounts.ZERO),
+                                                 tally.map(t -> t.counts(Origin.INTERNAL)).or(ArrivalCounts.ZERO));
     }
 
     public Result<Unit> recordFailure(Artifact artifact,
@@ -365,6 +436,71 @@ public final class InvocationMetricsCollector {
     public enum ExecutionOutcome {
         SUCCESS,
         DEFECT
+    }
+
+    /// Where an offered call came from: an HTTP ingress request, or a slice-to-slice invocation.
+    public enum Origin {
+        EXTERNAL,
+        INTERNAL
+    }
+
+    /// How an arrival ended. REJECTED: refused before execution (draining, rate limit, slice absent).
+    /// COMPLETED and FAILED: admitted, then finished with a value or with any failure.
+    public enum Settlement {
+        COMPLETED,
+        FAILED,
+        REJECTED
+    }
+
+    private static final class ArrivalTally {
+        private final OriginTally external = new OriginTally();
+        private final OriginTally internal = new OriginTally();
+
+        @Contract
+        void arrival(Origin origin) {
+            of(origin).arrivals.incrementAndGet();
+        }
+
+        @Contract
+        void settle(Origin origin, Settlement settlement) {
+            of(origin).settle(settlement);
+        }
+
+        ArrivalCounts counts(Origin origin) {
+            return of(origin).counts();
+        }
+
+        private OriginTally of(Origin origin) {
+            return origin == Origin.EXTERNAL
+                   ? external
+                   : internal;
+        }
+    }
+
+    private static final class OriginTally {
+        final AtomicLong arrivals = new AtomicLong();
+        final AtomicLong rejected = new AtomicLong();
+        final AtomicLong completed = new AtomicLong();
+        final AtomicLong failed = new AtomicLong();
+
+        @Contract
+        void settle(Settlement settlement) {
+            switch (settlement) {
+                case COMPLETED -> completed.incrementAndGet();
+                case FAILED -> failed.incrementAndGet();
+                case REJECTED -> rejected.incrementAndGet();
+            }
+        }
+
+        ArrivalCounts counts() {
+            // Settlements are read BEFORE arrivals: an arrival is always counted before it settles, so a concurrent
+            // read can never show more settled than offered.
+            var done = completed.get();
+            var broken = failed.get();
+            var refused = rejected.get();
+
+            return ArrivalCounts.arrivalCounts(arrivals.get(), done + broken, refused, done, broken);
+        }
     }
 
     /// #1573: cumulative execution outcomes for one (artifact, method) on this node.

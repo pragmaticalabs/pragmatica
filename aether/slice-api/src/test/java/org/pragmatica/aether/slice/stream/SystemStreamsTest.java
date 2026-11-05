@@ -28,7 +28,15 @@ class SystemStreamsTest {
                                       .map(address -> address.name().value())
                                       .collect(Collectors.toSet());
 
-        assertThat(actual).isEqualTo(Set.of("cluster-events"));
+        assertThat(actual).isEqualTo(Set.of("cluster-events", "capacity-minute", "capacity-hour"));
+    }
+
+    /// The write gate covers the capacity streams: blueprints cannot write them (the owner's append path
+    /// refuses any `system:` stream, and the management gate refuses these engine keys).
+    @Test
+    void isForbiddenEngineKey_capacityStreams_isTrue() {
+        assertThat(SystemStreams.isForbiddenEngineKey("system:capacity-minute:1.0.0")).isTrue();
+        assertThat(SystemStreams.isForbiddenEngineKey("system:capacity-hour:1.0.0")).isTrue();
     }
 
     @Test

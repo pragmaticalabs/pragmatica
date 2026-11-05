@@ -33,12 +33,33 @@ class SystemStreamBootstrapTest {
 
         assertThat(result.isSuccess()).isTrue();
         var entries = result.unwrap();
-        assertThat(entries).hasSize(1);
+        assertThat(entries).hasSize(SystemStreams.ALL.size());
         var entry = entries.getFirst();
         assertThat(entry.address()).isEqualTo(SystemStreams.CLUSTER_EVENTS);
         assertThat(entry.registeredBy()).isEqualTo(RegisteredByKind.FRAMEWORK);
         assertThat(entry.refCount()).isEqualTo(1);
         assertThat(entry.registeredAt()).isEqualTo(Instant.EPOCH);
+    }
+
+    private static final long DAY_MS = 24 * 60 * 60 * 1000L;
+
+    /// Retention is per stream: the capacity streams declare their own, `cluster-events` keeps the default.
+    @Test
+    void capacityStreamsAreRegisteredWithTheirOwnRetention_clusterEventsKeepsTheDefault() {
+        var defaults = RetentionPolicy.retentionPolicy();
+
+        new SystemStreamBootstrap(registry, defaults, Clock.fixed(Instant.EPOCH, ZoneOffset.UTC)).bootstrap();
+
+        var minute = registry.lookup(SystemStreams.CAPACITY_MINUTE).unwrap();
+        var hour = registry.lookup(SystemStreams.CAPACITY_HOUR).unwrap();
+
+        assertThat(minute.retention().maxAgeMs()).isEqualTo(35 * DAY_MS);
+        assertThat(hour.retention().maxAgeMs()).isEqualTo(1095 * DAY_MS);
+        assertThat(minute.retention().maxCount()).isGreaterThan(defaults.maxCount());
+        assertThat(hour.retention().maxCount()).isGreaterThan(defaults.maxCount());
+        assertThat(registry.lookup(SystemStreams.CLUSTER_EVENTS).unwrap().retention()).isEqualTo(defaults);
+        assertThat(minute.registeredBy()).isEqualTo(RegisteredByKind.FRAMEWORK);
+        assertThat(hour.registeredBy()).isEqualTo(RegisteredByKind.FRAMEWORK);
     }
 
     @Test
@@ -49,7 +70,7 @@ class SystemStreamBootstrapTest {
         var second = bootstrap.bootstrap();
 
         assertThat(second.isSuccess()).isTrue();
-        assertThat(registry.snapshot()).hasSize(1);
+        assertThat(registry.snapshot()).hasSize(SystemStreams.ALL.size());
     }
 
     @Test

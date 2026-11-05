@@ -58,4 +58,33 @@ class CommunityMetricsSnapshotCodecTest {
 
         assertThat(decoded).isEqualTo(original);
     }
+
+    @Test
+    void arrivalCounts_roundTripThroughPerSliceAndPerMethodMetrics() {
+        var artifact = Artifact.artifact("org.test:slice:1.0.0").unwrap();
+        var external = new ArrivalCounts(10, 8, 2, 7, 1);
+        var internal = new ArrivalCounts(5, 5, 0, 5, 0);
+        var methods = List.of(perMethodMetrics("handle", 3L, 12.5, 0.01, 400L, external, internal));
+        var slices = List.of(perSliceMetrics(artifact, 5L, 20.0, 0.02, 1000L, methods, external, internal));
+        var original = communityMetricsSnapshot("community-1", new NodeId("gov-1"), 4, slices, 1_753_000_000_000L, 1, 1);
+
+        var decoded = (CommunityMetricsSnapshot) CODEC.decode(CODEC.encode(original));
+
+        assertThat(decoded).isEqualTo(original);
+        assertThat(decoded.sliceMetrics().getFirst().external()).isEqualTo(external);
+        assertThat(decoded.sliceMetrics().getFirst().methods().getFirst().internal()).isEqualTo(internal);
+    }
+
+    @Test
+    void capacitySample_roundTripsThroughNodeCodecs_forBothQualities() {
+        var artifact = Artifact.artifact("org.test:slice:1.0.0").unwrap();
+
+        for (var quality : CapacityQuality.values()) {
+            var original = CapacitySample.capacitySample(29_000_000L, "community-1", artifact, 100, 90, 85, 5, 10, 12.5, 3, quality);
+
+            var decoded = (CapacitySample) CODEC.decode(CODEC.encode(original));
+
+            assertThat(decoded).isEqualTo(original);
+        }
+    }
 }
