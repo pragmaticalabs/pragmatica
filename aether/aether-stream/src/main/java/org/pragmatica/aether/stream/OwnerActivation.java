@@ -813,9 +813,11 @@ public final class OwnerActivation {
     /// (`NOT_OWNER`); a demand starts a fresh loop, and one loop runs per partition.
     ///
     /// #2682: a quorum loss does not stop the loop. While consensus is inactive the loop runs no gate, so an ex-owner
-    /// re-runs the whole gate only after it heals back; it waits one more backoff (bounded by [#REDRIVE_MAX_BACKOFF]) and
-    /// looks again. Before, a run that failed while quorum was lost ended the loop, and a partition nothing demanded (one
-    /// the eager hook started) stayed un-activated after quorum returned, because nothing ran its gate again.
+    /// re-runs the whole gate only after it heals back; it waits one more backoff (bounded by [#REDRIVE_MAX_BACKOFF])
+    /// and looks again. An ownership that moved away during the loss is seen by the gate's fresh view once quorum
+    /// returns, which ends the loop (`NOT_OWNER`); until then this node cannot learn of it. Before, a run that failed
+    /// while quorum was lost ended the loop, and a partition nothing demanded (one the eager hook started) stayed
+    /// un-activated after quorum returned, because nothing ran its gate again.
     ///
     /// #2574: an attempt that falls inside a refusal's wait ([#refusedUntilNanos]) runs no gate; it is re-driven at the
     /// wait's end instead. After a refused probe the redrive therefore takes the ruled shape (know 89e17399a9): the
