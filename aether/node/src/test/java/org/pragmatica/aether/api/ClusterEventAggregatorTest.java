@@ -2629,7 +2629,7 @@ class ClusterEventAggregatorTest {
 
     /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the three consumer pairs of #2201
     /// C-16 (behind the ring, the hole, and the cursor expiry), the oversized-event refusal and the
-    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450); every other code keeps the plain 60 s throttle.
+    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the refused consensus restore of #2316); every other code keeps the plain 60 s throttle.
     @Test
     void onOperatorWarning_onlyTheDeclaredPairsArePaired_otherCodesUnchanged() {
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).toList())
@@ -2697,6 +2697,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.JSON_CONFIG_APPLIED,
                 OperatorWarningCode.CONFIG_WATCH_CALLBACK_RECOVERED,
                 OperatorWarningCode.ROLLBACK_RECORD_RECONCILED,
+                OperatorWarningCode.CONSENSUS_RESTORE_RECOVERED,
             });
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactlyInAnyOrder(new OperatorWarningCode[]{
@@ -2757,6 +2758,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.UPLOAD_BYTE_BUDGET_EXHAUSTED,
                 OperatorWarningCode.CONFIG_WATCH_CALLBACK_FAILED,
                 OperatorWarningCode.ROLLBACK_RECORD_RECONCILE_EXHAUSTED,
+                OperatorWarningCode.CONSENSUS_RESTORE_REFUSED,
             });
         var recoveries = java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).count();
         var t = new AtomicLong(1_000_000L);
