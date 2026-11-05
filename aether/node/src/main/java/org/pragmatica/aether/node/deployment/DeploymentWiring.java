@@ -123,7 +123,6 @@ public final class DeploymentWiring {
                                                         _ -> Thread.ofVirtual()
                                                                    .name("engine-mismatch-exit")
                                                                    .start(exit));
-
         // The stamp is read only by the Fsm2Routes handlers, inside the dispatch, where it is present. Empty (a read off the dispatching
         // thread, a wiring bug) maps to 0, which FsmRuntime drops and counts as dropped_revision (watermark >= 0): the fail-safe Fsm2Routes
         // documents and Fsm2RoutesTest pins.
@@ -131,7 +130,11 @@ public final class DeploymentWiring {
                                 worker,
                                 registry,
                                 guard,
-                                new Node(config.self(), () -> store.notificationRevision().or(0L), store::isReplaying, admissions));
+                                new Node(config.self(),
+                                         () -> store.notificationRevision()
+                                                    .or(0L),
+                                         store::isReplaying,
+                                         admissions));
     }
 
     /// The routes resolve the interpreters when an input arrives, not when the routes are built: the system is assembled after the route table
