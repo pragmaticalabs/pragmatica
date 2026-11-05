@@ -160,7 +160,8 @@ class OrderedSectionRollbackTest {
                     .onFailure(cause -> fail("a run of exactly the capacity was refused: " + cause.message()));
 
                 assertThat(ring.headOffset()).isEqualTo(4L);
-                assertThat(texts(ring.read(1, 4).unwrap())).as("the run is whole; only the earlier event was evicted")
+                assertThat(ring.tailOffset()).as("only the earlier event was evicted").isEqualTo(1L);
+                assertThat(texts(ring.readAppended(1, 4).unwrap())).as("the run is whole")
                                                           .containsExactly("e0", "e1", "e2", "e3");
             }
         }
