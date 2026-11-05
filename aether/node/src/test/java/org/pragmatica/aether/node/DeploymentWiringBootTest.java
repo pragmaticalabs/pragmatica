@@ -118,6 +118,22 @@ class DeploymentWiringBootTest {
         assertThat(seam.unboundReads()).as("bound by now: a read is not counted").isZero();
     }
 
+    /// F1 survivor u18: the process identity `AetherNode` hands the FSM2 system carries the SWIM boot incarnation the detector was seeded with
+    /// (`SwimAssembly` reads the wall clock once, at assembly). A zero there leaves every correlation id and the admission evidence of the node
+    /// qualified by no boot at all.
+    @Test
+    @Timeout(value = 180, unit = SECONDS)
+    void fsm2Node_handsTheSystemItsSwimBootIncarnation_notZero() {
+        var before = System.currentTimeMillis();
+
+        boot(DeploymentEngine.FSM2);
+        var after = System.currentTimeMillis();
+        var process = node.deploymentWiring().system().unwrap().collaborators().process();
+
+        assertThat(process.bootIncarnation()).as("the SWIM boot incarnation is non-zero").isNotZero();
+        assertThat(process.bootIncarnation()).as("and is the wall clock read while the node was assembled").isBetween(before, after);
+    }
+
     /// v-2204 F4: the collaborators `AetherNode` hands the FSM2 system are the node's real ones. An absent route publisher or invoker makes
     /// PUBLISH_ROUTES report done and publish nothing, and a swallowed router makes every event the FSMs raise vanish: none of these showed in a cluster
     /// run, because the scenario slices have no routes.
