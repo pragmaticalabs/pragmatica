@@ -25,6 +25,7 @@ import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.CloudProviderSupport;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.InstanceInfo;
+import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.NodeGroupConfig;
 import org.pragmatica.aether.environment.ProvisionedNode;
 import org.pragmatica.aether.environment.SourceName;
@@ -666,7 +667,7 @@ public final class WaveExecutor {
                                                                                                             count,
                                                                                                             clusterName,
                                                                                                             replacements));
-            case SSH -> sshOldNodes(sourceName, oldSource, role, count);
+            case SSH -> sshOldNodes(sourceName, oldSource, role, count, replacements);
             case FORGE -> success(forgeOldNodes(sourceName, role, count));
         };
     }
@@ -734,10 +735,17 @@ public final class WaveExecutor {
                                          .collect(Collectors.toSet());
 
         return instances.stream()
+                        .filter(info -> !isGoing(info))
                         .filter(info -> carries(info, keys, sourceName, role, clusterName))
                         .filter(info -> !replacementIds.contains(nodeIdOf(info)) && !replacementIds.contains(info.id()
                                                                                                                  .value()))
                         .toList();
+    }
+
+    /// A stopped, exited or terminated instance (`docker ps -a` and some cloud listings still return them) serves nothing: it would take a
+    /// slot among the "oldest" nodes and leave the live one undrained. Unknown and provisioning are not read as going (#1049).
+    private static boolean isGoing(InstanceInfo info) {
+        return info.status().equals(InstanceStatus.STOPPING) || info.status().equals(InstanceStatus.TERMINATED);
     }
 
     private static boolean carries(InstanceInfo info,
@@ -782,25 +790,33 @@ public final class WaveExecutor {
     }
 
     /// An SSH source's nodes are its configured hosts; the node id convention of the SSH path is `<source>-<role>-<host index>`
-    /// (see [#drainAndStopSshNodes]), and the address is the host itself.
+    /// (see [#drainAndStopSshNodes]), and the address is the host itself. SSH creates nothing: its "replacements" are the new source's
+    /// configured hosts, so a host that is also a replacement is the live node itself and is never retired. When every old host is a
+    /// replacement host (a field change leaves the hosts as they were), nothing is replaced and the run is refused before any drain.
     private static Result<List<OldNode>> sshOldNodes(SourceName sourceName,
                                                      SourceProfile oldSource,
                                                      NodeRole role,
-                                                     int count) {
+                                                     int count,
+                                                     List<ProvisionedNode> replacements) {
         var hosts = option(oldSource.roles().get(role)).flatMap(RoleSubTable::hosts).or(List.of());
+        var replacementHosts = replacements.stream().map(ProvisionedNode::publicIp).collect(Collectors.toSet());
         var nodes = new ArrayList<OldNode>();
 
-        for (int i = 0; i < Math.min(count, hosts.size()); i++) {
-            nodes.add(OldNode.oldNode(sourceName.value() + "-" + role.value() + "-" + i,
-                                      hosts.get(i)));
+        for (int i = 0; i < hosts.size() && nodes.size() < count; i++) {
+            if (!replacementHosts.contains(hosts.get(i))) {
+                nodes.add(OldNode.oldNode(sourceName.value() + "-" + role.value() + "-" + i,
+                                          hosts.get(i)));
+            }
         }
 
-        return nodes.size() < count
-               ? new ApplyError.OldNodesShort(sourceName,
-                                              role,
-                                              count,
-                                              nodes.stream().map(OldNode::nodeId).toList()).<List<OldNode>> result()
-               : success(List.copyOf(nodes));
+        return nodes.isEmpty() && !hosts.isEmpty()
+               ? new ApplyError.NothingReplaced(sourceName, role).<List<OldNode>> result()
+               : nodes.size() < count
+                 ? new ApplyError.OldNodesShort(sourceName,
+                                                role,
+                                                count,
+                                                nodes.stream().map(OldNode::nodeId).toList()).<List<OldNode>> result()
+                 : success(List.copyOf(nodes));
     }
 
     /// Forge nodes are in-process placeholders that Forge stops itself; there is no management endpoint of theirs to drain.
@@ -1182,6 +1198,15 @@ public final class WaveExecutor {
                      + "': only " + found.size()
                      + " existing node(s) carry its labels (" + found
                      + "). The replacements were created; nothing was drained.";
+            }
+        }
+
+        record NothingReplaced(SourceName sourceName, NodeRole role) implements ApplyError {
+            @Override
+            public String message() {
+                return "cannot replace the " + role.value()
+                     + " node(s) of ssh source '" + sourceName
+                     + "': the replacement hosts are the existing hosts, so nothing is replaced and draining would take the live node out. Nothing was drained.";
             }
         }
 

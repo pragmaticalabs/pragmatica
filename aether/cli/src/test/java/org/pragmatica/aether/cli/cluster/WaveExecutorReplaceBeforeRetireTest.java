@@ -34,6 +34,8 @@ import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.aether.environment.ProvisionedNode;
+import org.pragmatica.aether.environment.docker.DockerComputeProvider;
+import org.pragmatica.aether.environment.docker.DockerConfig;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -143,10 +145,29 @@ class WaveExecutorReplaceBeforeRetireTest {
     }
 
     private Result<?> replace(ClusterBootstrapConfig config) {
-        var action = new DiffAction.SourceFieldChange(sourceNameOrDefault("local"), "zone");
+        return replace("local", config, config);
+    }
+
+    private Result<?> replace(String source, ClusterBootstrapConfig stored, ClusterBootstrapConfig desired) {
+        var action = new DiffAction.SourceFieldChange(sourceNameOrDefault(source), "zone");
         var plan = DiffPlan.diffPlan(List.of(), List.of(action), List.of(), List.of());
 
-        return WaveExecutor.execute(plan, config, config, ledger.recorder(CLUSTER, List.of(ApplyAction.actionKey(action))));
+        return WaveExecutor.execute(plan, stored, desired, ledger.recorder(CLUSTER, List.of(ApplyAction.actionKey(action))));
+    }
+
+    /// The compute provider the named provider resolves to for this test, so a cloud source needs no cloud credentials.
+    private static void resolve(String providerName, ComputeProvider compute) {
+        ProviderResolver.dockerFactoryOverride = new EnvironmentIntegrationFactory() {
+            @Override
+            public String providerName() {
+                return providerName;
+            }
+
+            @Override
+            public Result<EnvironmentIntegration> create(CloudConfig config) {
+                return Result.success(EnvironmentIntegration.withLocalCompute(compute));
+            }
+        };
     }
 
     /// The old node's drain script: the readiness probe of the replacement answers first, then the old node's own drain wait (draining, a 404
@@ -193,8 +214,12 @@ class WaveExecutorReplaceBeforeRetireTest {
     }
 
     private static InstanceInfo cloudNode(String nodeId, String cluster, String source, String role, String address) {
+        return cloudNode(nodeId, cluster, source, role, address, InstanceStatus.RUNNING);
+    }
+
+    private static InstanceInfo cloudNode(String nodeId, String cluster, String source, String role, String address, InstanceStatus status) {
         return new InstanceInfo(InstanceId.instanceId("srv-" + nodeId).unwrap(),
-                                InstanceStatus.RUNNING,
+                                status,
                                 address.isEmpty() ? List.of() : List.of(address),
                                 InstanceType.ON_DEMAND,
                                 Map.of("aether-cluster", cluster, "aether-source", source, "aether-role", role),
@@ -373,5 +398,147 @@ class WaveExecutorReplaceBeforeRetireTest {
 
         assertThat(result.isFailure()).isTrue();
         assertThat(http.drainOrder()).containsExactly("first");
+    }
+
+    private static final String CLOUD = """
+            config_version = "1.0.0"
+
+            [cluster]
+            name = "prod-cluster"
+            version = "1.0.0"
+
+            [source.eu-1]
+            type = "cloud"
+            provider = "hetzner"
+
+            [source.eu-1.core]
+            count = 1
+            """;
+
+    /// The cloud arm of `findOldNodes` must filter by the hyphenated cloud label keys: a listing whose nodes carry only those is empty to the
+    /// docker keys. (The other cloud tests call `listedOldNodes` with the keys handed in, so they cannot see which keys the arm picks.)
+    @Test
+    void cloudSource_enteredThroughFindOldNodes_isFilteredByTheCloudLabelKeys() {
+        resolve("hetzner", new Listing(List.of(cloudNode("aether-node-01", "prod-cluster", "eu-1", "core", "10.0.0.1"))));
+        var source = ClusterBootstrapConfigParser.parse(CLOUD).unwrap().sources().get("eu-1");
+
+        var result = WaveExecutor.findOldNodes(sourceNameOrDefault("eu-1"), source, NodeRole.CORE, 1, CLUSTER, List.of());
+
+        assertThat(source.type()).isEqualTo(SourceType.CLOUD);
+        assertThat(result.unwrap()).containsExactly(WaveExecutor.OldNode.oldNode("aether-node-01", "10.0.0.1"));
+    }
+
+    /// A provider that reports no node-id for a node: the node is still drainable, by the id of the instance itself.
+    @Test
+    void aListedNodeWithNoNodeId_isNamedByItsInstanceId() {
+        var bare = new InstanceInfo(InstanceId.instanceId("srv-bare").unwrap(),
+                                    InstanceStatus.RUNNING,
+                                    List.of("10.0.0.7"),
+                                    InstanceType.ON_DEMAND,
+                                    Map.of("aether-cluster", "prod-cluster", "aether-source", "eu-1", "aether-role", "core"),
+                                    Option.none(),
+                                    Option.none());
+
+        var result = cloudOldNodes(List.of(bare), 1);
+
+        assertThat(result.unwrap()).containsExactly(WaveExecutor.OldNode.oldNode("srv-bare", "10.0.0.7"));
+    }
+
+    /// `docker ps -a` and some cloud listings return instances that are gone: one is not a node to retire, however old its id sorts.
+    @Test
+    void stoppedAndTerminatedInstances_areNeverRetiringCandidates() {
+        var instances = List.of(cloudNode("aether-node-01", "prod-cluster", "eu-1", "core", "10.0.0.1", InstanceStatus.STOPPING),
+                                cloudNode("aether-node-02", "prod-cluster", "eu-1", "core", "10.0.0.2", InstanceStatus.TERMINATED),
+                                cloudNode("aether-node-03", "prod-cluster", "eu-1", "core", "10.0.0.3"));
+
+        assertThat(cloudOldNodes(instances, 1).unwrap()).containsExactly(WaveExecutor.OldNode.oldNode("aether-node-03", "10.0.0.3"));
+        assertThat(cloudOldNodes(instances, 2).isFailure()).as("only one live node exists, two were named").isTrue();
+    }
+
+    private static String dockerRow(String id, String name, String state) {
+        return String.join("\t", id, name, state, "prod-cluster", "core", name);
+    }
+
+    /// #2132: the rows the REAL docker listing parser produces must carry a drainable address. The management call completes it as
+    /// `<scheme>://<address>:<port>/...` (ClusterHttpClient.awaitDrainComplete / drainNode), so the address is the bare container name.
+    @Test
+    void aRealDockerListing_yieldsAnAddressTheDrainCallCompletes() {
+        var rows = dockerRow("id-1", OLD_NODE, "running") + "\n" + dockerRow("id-2", "aether-prod-cluster-node-zz1new", "running");
+        var docker = DockerComputeProvider.dockerComputeProvider(command -> Promise.success(rows),
+                                                                 DockerConfig.dockerConfig().unwrap(),
+                                                                 name -> "AETHER_CLUSTER_NAME".equals(name) ? "prod-cluster" : null)
+                                          .unwrap();
+        var http = scriptedFor(OLD_NODE);
+
+        ClusterHttpClient.HTTP_OPS_REF.set(http);
+
+        var listed = WaveExecutor.listedOldNodes(docker, WaveExecutor.LabelKeys.DOCKER, sourceNameOrDefault("local"), NodeRole.CORE, 1, CLUSTER, List.of());
+        var drained = listed.flatMap(nodes -> WaveExecutor.drainOldNodes(nodes, 8080));
+
+        assertThat(listed.unwrap()).containsExactly(WaveExecutor.OldNode.oldNode(OLD_NODE, OLD_NODE));
+        assertThat(drained.isSuccess()).as("drain outcome: %s", drained).isTrue();
+        assertThat(http.requestUris()).anyMatch(uri -> uri.equals("POST http://" + OLD_NODE + ":8080/api/v1/nodes/drain/" + OLD_NODE));
+    }
+
+    private static ClusterBootstrapConfig sshWithHosts(String... hosts) {
+        var quoted = java.util.Arrays.stream(hosts).map(host -> "\"" + host + "\"").collect(java.util.stream.Collectors.joining(", "));
+
+        return ClusterBootstrapConfigParser.parse("""
+            config_version = "1.0.0"
+
+            [cluster]
+            name = "prod-cluster"
+            version = "1.0.0"
+
+            [source.dc-1]
+            type = "ssh"
+
+            [source.dc-1.core]
+            count = %d
+            hosts = [%s]
+            """.formatted(hosts.length, quoted)).unwrap();
+    }
+
+    /// Every source field change leaves an ssh source's hosts as they were, so the "replacement" is the live node itself: draining it would
+    /// halt the only node and report a replacement that never happened. Refused, and nothing is drained.
+    @Test
+    void sshFieldChangeWithTheHostsUnchanged_isRefused_andNothingIsDrained() {
+        var config = sshWithHosts("10.1.0.1");
+        var http = scriptedFor("dc-1-core-0");
+
+        ClusterHttpClient.HTTP_OPS_REF.set(http);
+
+        var result = replace("dc-1", config, config);
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).contains("nothing is replaced").contains("Nothing was drained"));
+        assertThat(http.drainPosts()).isZero();
+    }
+
+    /// The hosts differ: the old host is replaced by the new one, and it is the OLD host that is drained, never the replacement.
+    @Test
+    void sshHostsReplaced_theOldHostIsDrained_theNewHostIsNot() {
+        var http = scriptedFor("dc-1-core-0");
+
+        ClusterHttpClient.HTTP_OPS_REF.set(http);
+
+        var result = replace("dc-1", sshWithHosts("10.1.0.1"), sshWithHosts("10.1.0.9"));
+
+        assertThat(result.isSuccess()).as("outcome: %s", result).isTrue();
+        assertThat(http.drainOrder()).containsExactly("dc-1-core-0");
+        assertThat(http.requestUris()).anyMatch(uri -> uri.equals("GET http://10.1.0.9:8080/health/ready"))
+                                      .anyMatch(uri -> uri.startsWith("POST http://10.1.0.1:8080/api/v1/nodes/drain/dc-1-core-0"))
+                                      .noneMatch(uri -> uri.startsWith("POST http://10.1.0.9:"));
+    }
+
+    /// A replacement host that is also an old host is never retired; the old hosts that are not replaced still are.
+    @Test
+    void sshOldNodes_excludeTheReplacementHosts() {
+        var source = sshWithHosts("10.1.0.1", "10.1.0.2").sources().get("dc-1");
+        var replacement = ProvisionedNode.provisionedNode("dc-1-core-1", "ssh", "10.1.0.2");
+
+        var result = WaveExecutor.findOldNodes(sourceNameOrDefault("dc-1"), source, NodeRole.CORE, 1, CLUSTER, List.of(replacement));
+
+        assertThat(result.unwrap()).containsExactly(WaveExecutor.OldNode.oldNode("dc-1-core-0", "10.1.0.1"));
     }
 }
