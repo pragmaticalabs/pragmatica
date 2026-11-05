@@ -59,6 +59,7 @@ import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusActive;
 import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusDemoted;
 import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusObserving;
 import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusPassive;
+import org.pragmatica.consensus.rabia.ConsensusEvent.GenesisSeatUnreachable;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Contract;
@@ -463,7 +464,26 @@ public class RabiaEngine<C extends Command> {
         log.info("Node {} installs genesis roster {}: every member reported the identical view in two consecutive rounds",
                  self,
                  configuration.members());
+        signalUnreachableSeats(configuration);
         installGenesis(configuration);
+    }
+
+    /// #1654: the view agreement counts each member's last two reports with no freshness, so a member that reported
+    /// twice and then died can be agreed. Formation goes ahead; every agreed seat that is not a connected, authenticated
+    /// peer now is named once, loudly, for auto-heal to replace.
+    private void signalUnreachableSeats(VoterConfiguration configuration) {
+        var reachable = authenticatedDiscovery();
+
+        configuration.members().stream().filter(seat -> !reachable.contains(seat)).forEach(this::signalUnreachableSeat);
+    }
+
+    private void signalUnreachableSeat(NodeId seat) {
+        log.warn("Node {} installs genesis with seat {} not connected: the seat reported the agreed view earlier and is "
+                + "unreachable now. Formation is not blocked; auto-heal is expected to replace the seat. Operator action: "
+                + "if the seat does not return or get replaced, check that node (#1654).",
+                 self,
+                 seat);
+        consensusEventListener.accept(new GenesisSeatUnreachable(self, seat));
     }
 
     @Contract
