@@ -19,7 +19,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 
-import static org.pragmatica.lang.utils.Causes.cause;
+import static org.pragmatica.lang.utils.Causes.validation;
 
 
 /// RFC 5321 compliant email address with validated local part and domain.
@@ -34,14 +34,14 @@ import static org.pragmatica.lang.utils.Causes.cause;
 public record Email(String localPart, String domain) {
     private static final int MAX_EMAIL_LENGTH = 254;
     private static final int MAX_LABEL_LENGTH = 63;
-    private static final Cause NULL_OR_EMPTY = cause("Email must not be null or empty");
-    private static final Cause TOO_LONG = cause("Email exceeds maximum length of 254 characters");
+    private static final Cause NULL_OR_EMPTY = validation("Email must not be null or empty");
+    private static final Cause TOO_LONG = validation("Email exceeds maximum length of 254 characters");
 
-    private static final Cause MISSING_AT = cause("Email must contain exactly one '@' separator");
+    private static final Cause MISSING_AT = validation("Email must contain exactly one '@' separator");
 
-    private static final Cause INVALID_LOCAL_PART = cause("Email local part contains invalid characters or structure");
+    private static final Cause INVALID_LOCAL_PART = validation("Email local part contains invalid characters or structure");
 
-    private static final Cause INVALID_DOMAIN = cause("Email domain is invalid");
+    private static final Cause INVALID_DOMAIN = validation("Email domain is invalid");
 
     /// Parse and validate an email address string.
     ///

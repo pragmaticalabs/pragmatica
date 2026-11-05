@@ -10,6 +10,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.http.adapter.impl.SliceRequestContext;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
@@ -18,6 +19,7 @@ import org.pragmatica.http.ContentType;
 import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.http.JsonCodec;
 import org.pragmatica.http.ProblemDetailJson;
 import org.pragmatica.http.ProblemDetail;
@@ -375,19 +377,34 @@ public interface SliceRouter {
             /// mapper so a transient cause answers 503 (#1737) — the generated mapper's `default` is a
             /// hard-coded 500 that cannot see [Cause#isTransient].
             ///
+            /// A cause declaring its own status ([HttpStatusAware]) wins anywhere in the cause chain. A [Cause.Validation]
+            /// anywhere in the chain, left at 500 by the mapper, answers 422 ([#markedValidation]); nothing else is inferred.
+            ///
             /// A composite is resolved member by member ([#mapComposite]): it keeps a status only when EVERY member agrees,
             /// so a parameter error next to a server fault answers 500, never the client error that would conceal it.
             private HttpError resolveHttpError(Cause cause) {
                 return cause instanceof Causes.CompositeCause
                        ? mapWithTransientFallback(cause)
-                       : Option.from(cause.stream().flatMap(this::boundaryError).findFirst()).or(() -> mapWithTransientFallback(cause));
+                       : Option.from(chain(cause).flatMap(this::boundaryError).findFirst()).or(() -> mapWithTransientFallback(cause));
             }
 
-            private java.util.stream.Stream<HttpError> boundaryError(Cause cause) {
+            /// The cause, its composite members, and every member's `source()` chain.
+            private Stream<Cause> chain(Cause cause) {
+                return cause.stream()
+                            .flatMap(this::withSources);
+            }
+
+            private Stream<Cause> withSources(Cause member) {
+                return Stream.concat(Stream.of(member),
+                                     member.source().stream().flatMap(this::chain));
+            }
+
+            private Stream<HttpError> boundaryError(Cause cause) {
                 return switch (cause) {
-                    case HttpError error -> java.util.stream.Stream.of(error);
-                    case ParameterError _ -> java.util.stream.Stream.of(HttpStatus.BAD_REQUEST.with(cause));
-                    default -> java.util.stream.Stream.empty();
+                    case HttpError error -> Stream.of(error);
+                    case HttpStatusAware aware -> Stream.of(aware.httpStatus().with(cause));
+                    case ParameterError _ -> Stream.of(HttpStatus.BAD_REQUEST.with(cause));
+                    default -> Stream.empty();
                 };
             }
 
@@ -396,6 +413,14 @@ public interface SliceRouter {
 
                 return cause instanceof Causes.CompositeCause composite && mapped.status() == HttpStatus.INTERNAL_SERVER_ERROR
                        ? mapComposite(composite, mapped)
+                       : markedValidation(cause, mapped);
+            }
+
+            /// A [Cause.Validation] anywhere in the cause chain answers 422, but only where the mapper left the cause at 500:
+            /// a status the slice mapper chose explicitly (and a transient 503) still wins.
+            private HttpError markedValidation(Cause cause, HttpError mapped) {
+                return mapped.status() == HttpStatus.INTERNAL_SERVER_ERROR && chain(cause).anyMatch(Cause.Validation.class::isInstance)
+                       ? HttpStatus.UNPROCESSABLE_ENTITY.with(cause)
                        : mapped;
             }
 
