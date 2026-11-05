@@ -421,6 +421,16 @@ public enum OperatorWarningCode {
     /// and was refused. A genuinely new process under the same identity is not this: it answers with the new token
     /// and is refused by the identity rule.
     SWIM_MEMBER_IDENTITY_CONFLICT("swim-member-identity-conflict", "membership", WarningLevel.WARNING),
+    /// A consensus engine refused a responder's snapshot after it failed to restore with the same cause in three consecutive
+    /// attempts (#2316, owner ruling Q-3: fail closed, the snapshot is refused as a whole and never decoded row by row). The
+    /// node adopts another responder's snapshot only at the same or a higher phase (Q-16); with none it stays in `Syncing`
+    /// and serves no requests, with no automatic exit. CRITICAL: the node is out of service until an operator repairs the
+    /// responder's state or replaces the node. Subject is the refusing node; the message names the responder, phase, digest
+    /// and cause. Closed by [#CONSENSUS_RESTORE_RECOVERED].
+    CONSENSUS_RESTORE_REFUSED("consensus-restore-refused", "consensus", WarningLevel.CRITICAL),
+    /// The recovery of [#CONSENSUS_RESTORE_REFUSED], same subject (#2316): the node restored a readable snapshot. INFO,
+    /// published only after a published refusal for the node (#752 mechanism).
+    CONSENSUS_RESTORE_RECOVERED("consensus-restore-recovered", "consensus", WarningLevel.INFO, CONSENSUS_RESTORE_REFUSED),
     /// An observer (a node outside the voter roster, such as an auto-heal replacement still joining) stopped applying
     /// consensus decisions while it catches up or after it lost sight of the quorum. It is not a voter, so this is NOT a
     /// quorum loss and raises no `QUORUM_LOST`; routing on the node is quiesced until it observes again. Throttled per node like every operator
