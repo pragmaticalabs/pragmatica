@@ -13,6 +13,13 @@ import org.pragmatica.lang.Unit;
 public interface DeliveryHook {
     Unit beforeDelivery(long deliverySeq);
 
+    /// Called at most once, on the appending thread, after the first append has decided to start the delivery thread and
+    /// before it creates the watchdog and the thread: the window a racing `close()` can fall into (v-2648 A3-2). The
+    /// production hook does nothing; a test runs `close()` here to make that interleaving deterministic.
+    default Unit beforeThreadStart() {
+        return Unit.unit();
+    }
+
     static DeliveryHook none() {
         return _ -> Unit.unit();
     }

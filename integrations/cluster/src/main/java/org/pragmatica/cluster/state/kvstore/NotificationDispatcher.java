@@ -249,6 +249,7 @@ final class NotificationDispatcher {
 
     private Unit ensureStarted() {
         if (thread.isEmpty() && !stopRequested) {
+            hook.beforeThreadStart();
             var created = Thread.ofPlatform().name(threadName()).daemon(true).unstarted(this::runLoop);
 
             watchdog = Option.some(startWatchdog());
