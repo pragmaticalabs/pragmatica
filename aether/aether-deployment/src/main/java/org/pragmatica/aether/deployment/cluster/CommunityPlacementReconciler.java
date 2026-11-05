@@ -1280,7 +1280,8 @@ record PlacementReconciler(NodeId self,
                                             CommunityPlacement policy,
                                             LeaderValue leader,
                                             Map<AetherKey, AetherValue> snapshot) {
-        return autonomyHold.get().test("community " + policy.id())
+        return autonomyHold.get()
+                           .test("community " + policy.id())
                ? Promise.unitPromise()
                : reserve(config, policy, leader, snapshot);
     }

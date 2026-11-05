@@ -113,8 +113,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
         var state = ctm.circuitBreakerState();
         var sources = new TreeMap<String, SourceBreakerInfo>();
 
-        ctm.circuitBreakerStates()
-           .forEach((source, breaker) -> sources.put(source, toSourceBreaker(breaker)));
+        ctm.circuitBreakerStates().forEach((source, breaker) -> sources.put(source, toSourceBreaker(breaker)));
 
         return new CircuitBreakerStatusResponse(state.consecutiveFailures(),
                                                 state.trippedAt(),
@@ -134,7 +133,8 @@ public final class ClusterTopologyRoutes implements RouteSource {
                      .flatMap(ctm -> resetRequested(ctm, request));
     }
 
-    private static Promise<CircuitBreakerResetResponse> resetRequested(ClusterTopologyManager ctm, CircuitBreakerResetRequest request) {
+    private static Promise<CircuitBreakerResetResponse> resetRequested(ClusterTopologyManager ctm,
+                                                                       CircuitBreakerResetRequest request) {
         return requestedSource(request).async()
                               .map(source -> resetSource(ctm, source));
     }
@@ -142,7 +142,9 @@ public final class ClusterTopologyRoutes implements RouteSource {
     private static CircuitBreakerResetResponse resetSource(ClusterTopologyManager ctm, Option<SourceName> source) {
         var prior = ctm.resetCircuitBreaker("/api/cluster/topology/circuit-breaker/reset", source);
 
-        return new CircuitBreakerResetResponse("reset", prior, source.map(SourceName::value).or("all"));
+        return new CircuitBreakerResetResponse("reset",
+                                               prior,
+                                               source.map(SourceName::value).or("all"));
     }
 
     private static Result<Option<SourceName>> requestedSource(CircuitBreakerResetRequest request) {

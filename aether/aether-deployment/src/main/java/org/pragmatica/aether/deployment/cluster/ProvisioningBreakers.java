@@ -4,12 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
-import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Option;
-
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
+
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+
 
 /// The provisioning circuit breakers, one per source binding (spec §8.3, P-SRC2). A source whose provisions keep failing opens only its
 /// own breaker: another source's replacements are not deferred by it. A breaker is a consecutive-failure count and the instant before
@@ -29,9 +30,10 @@ final class ProvisioningBreakers {
         Breaker failed(int cap, long nowMs, long backoffMs) {
             var count = failures + 1;
 
-            return new Breaker(count, count >= cap
-                                      ? nowMs + backoffMs
-                                      : nextAllowedMs);
+            return new Breaker(count,
+                               count >= cap
+                               ? nowMs + backoffMs
+                               : nextAllowedMs);
         }
 
         boolean isOpen(int cap, long nowMs) {
@@ -48,7 +50,8 @@ final class ProvisioningBreakers {
     /// Count a failure of `source`; once `cap` is reached the backoff window is armed. Returns the new consecutive count.
     @Contract
     int recordFailure(String source, int cap, long nowMs, long backoffMs) {
-        return breakers.compute(source, (_, current) -> failedFrom(current, cap, nowMs, backoffMs))
+        return breakers.compute(source,
+                                (_, current) -> failedFrom(current, cap, nowMs, backoffMs))
                        .failures();
     }
 

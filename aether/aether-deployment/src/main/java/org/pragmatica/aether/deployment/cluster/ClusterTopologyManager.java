@@ -115,6 +115,7 @@ public interface ClusterTopologyManager extends TopologyManager {
     default int resetCircuitBreaker(String reason, Option<SourceName> source) {
         return resetCircuitBreaker(reason);
     }
+
     /// #685 — the operator's auto-heal disable/enable is a durable cluster fact stored in consensus
     /// KV (`AetherKey.AutoHealStateKey`), never a leader's in-memory mood: a read reflects the log
     /// applied LOCALLY, so the flag becomes visible on a node when that node applies the committed

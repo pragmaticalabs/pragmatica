@@ -121,8 +121,7 @@ class ClusterTopologyCommand implements Callable<Integer> {
             @Mixin
             ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
 
-            @CommandLine.Option(names = "--source",
-                                description = "Reset only this source's breaker (default: every source's)")
+            @CommandLine.Option(names = "--source", description = "Reset only this source's breaker (default: every source's)")
             private String source = "";
 
             private String requestBody() {
@@ -134,7 +133,8 @@ class ClusterTopologyCommand implements Callable<Integer> {
             @Override
             public Integer call() {
                 return clusterTarget.applyOverrides()
-                                    .flatMap(_ -> ClusterHttpClient.post(CLUSTER_CIRCUIT_BREAKER_RESET, requestBody()))
+                                    .flatMap(_ -> ClusterHttpClient.post(CLUSTER_CIRCUIT_BREAKER_RESET,
+                                                                         requestBody()))
                                     .fold(ResetCommand::onFailure, this::onSuccess);
             }
 
