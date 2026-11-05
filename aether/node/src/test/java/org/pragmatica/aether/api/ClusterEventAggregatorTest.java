@@ -2737,6 +2737,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE,
                 OperatorWarningCode.BACKUP_CONFIG_MISSING,
                 OperatorWarningCode.BACKUP_RESTORE_BLOCKED,
+                OperatorWarningCode.GENESIS_SEAT_UNREACHABLE,
                 OperatorWarningCode.SLICE_START_AWAITING_TARGET,
                 OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING,
                 OperatorWarningCode.COMMUNITY_GROWTH_BLOCKED,
