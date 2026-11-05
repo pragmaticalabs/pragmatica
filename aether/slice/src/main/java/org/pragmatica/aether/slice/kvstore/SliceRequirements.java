@@ -6,6 +6,7 @@ package org.pragmatica.aether.slice.kvstore;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.slice.blueprint.SliceSpec;
@@ -71,6 +72,17 @@ public sealed interface SliceRequirements {
                                                    demand),
                                           target.maxInstances(),
                                           placeableCapacity));
+    }
+
+    /// The instance counts of the requirements still in force at `nowMs`: an absent expiry never expires, a present one expires at its instant.
+    private static Stream<Integer> unexpired(List<Requirement> requirements, long nowMs) {
+        return requirements.stream()
+                           .filter(requirement -> requirement.value()
+                                                             .expiresAt()
+                                                             .map(expiry -> expiry > nowMs)
+                                                             .or(true))
+                           .map(requirement -> requirement.value()
+                                                          .instances());
     }
 
     /// `demand` bounded above by `maxInstances` and `placeableCapacity`, then below by [SliceSpec#MIN_INSTANCES], which wins.
