@@ -527,6 +527,15 @@ public enum OperatorWarningCode {
     /// was deleted by a directed retirement after the reap was held, or the node joined the cluster again and has nothing to reap. INFO, published only after a published held event for the node (#752 mechanism). It
     /// is raised by the leader that held the reap: a leader change in between leaves the held event open.
     INSTANCE_REAP_RELEASED("instance-reap-released", "deployment", WarningLevel.INFO, INSTANCE_REAP_HELD),
+    /// Auto-heal is disabled, so the cluster did NOT provision or terminate workers (a worker or spot source/role) or community members on its own
+    /// initiative (spec §8.4). A desired count or community `target_size` that an operator committed WHILE auto-heal was disabled is explicit
+    /// intent and is acted on; one that was already committed when auto-heal was disabled is held, and so is the autonomous
+    /// correction of a loss. An operator-directed retirement is not held. Subject is the source/role or the community. Raised once per subject
+    /// for the run of holds. Closed by [#AUTO_HEAL_SCALING_RESUMED].
+    AUTO_HEAL_SCALING_HELD("auto-heal-scaling-held", "deployment", WarningLevel.WARNING),
+    /// The recovery of [#AUTO_HEAL_SCALING_HELD], same subject: auto-heal is enabled again and the worker or community path acts on its own
+    /// again. INFO, published only after a published held event for the subject (#752 mechanism). Raised by the leader that held it.
+    AUTO_HEAL_SCALING_RESUMED("auto-heal-scaling-resumed", "deployment", WarningLevel.INFO, AUTO_HEAL_SCALING_HELD),
     /// An upload was refused 429 because this node's `[app-http.upload] max_concurrent` was reached (#2410): the node is holding
     /// as many upload bodies as it allows. Subject is the node. Raised once, on the transition into saturation, per node, not
     /// per refused request; a refusal for one principal's own cap is a client error and raises nothing. Closed by

@@ -52,6 +52,14 @@ public interface CommunityPlacementReconciler {
     Promise<Unit> requestRetirement(NodeId node, AetherValue.TopologyEntry expectedTopology);
     Promise<Boolean> onDrainCompleted(NodeId sender, String operationId);
 
+    /// Spec §8.4: where the reconciler asks whether auto-heal holds it back. `held` answers for a subject (the community) and says whether it may
+    /// NOT begin a new operation on its own now; it also tells the operator, once per run of holds. Late-wired, like [#protectReplacements]; until
+    /// it is wired nothing is held. An operation already begun, and an operator-directed retirement, are never held: a half-run
+    /// replace-drain-terminate would strand capacity, and a retirement is operator intent.
+    default Unit holdAutonomy(Predicate<String> held) {
+        return Unit.unit();
+    }
+
     /// #1543 E2: a worker replacement pairing brings a surge worker into a community on purpose. `protectedNodes` (a live
     /// pairing's original before it retires, and its replacement throughout) are never chosen as the node a reduction removes.
     /// Without it the surge reads as an excess and the placement removes whichever member sorts first, which can be the
@@ -211,7 +219,8 @@ public interface CommunityPlacementReconciler {
                                        new java.util.concurrent.atomic.AtomicReference<>(java.util.Set::of),
                                        clock,
                                        new java.util.concurrent.ConcurrentHashMap<>(),
-                                       new java.util.concurrent.atomic.AtomicReference<>(OperatorWarningSink.logOnly()));
+                                       new java.util.concurrent.atomic.AtomicReference<>(OperatorWarningSink.logOnly()),
+                                       new java.util.concurrent.atomic.AtomicReference<>(_ -> false));
     }
 }
 
@@ -232,7 +241,8 @@ record PlacementReconciler(NodeId self,
                            java.util.concurrent.atomic.AtomicReference<Supplier<java.util.Set<NodeId>>> surgeNodes,
                            java.util.function.LongSupplier clock,
                            java.util.concurrent.ConcurrentHashMap<String, Long> emptySince,
-                           java.util.concurrent.atomic.AtomicReference<OperatorWarningSink> warnings) implements CommunityPlacementReconciler {
+                           java.util.concurrent.atomic.AtomicReference<OperatorWarningSink> warnings,
+                           java.util.concurrent.atomic.AtomicReference<Predicate<String>> autonomyHold) implements CommunityPlacementReconciler {
     private static final Logger LOG = LoggerFactory.getLogger(CommunityPlacementReconciler.class);
 
     @Override
@@ -257,6 +267,13 @@ record PlacementReconciler(NodeId self,
     @Override
     public OperatorWarningSink operatorWarningSink() {
         return warnings.get();
+    }
+
+    @Override
+    public Unit holdAutonomy(Predicate<String> held) {
+        autonomyHold.set(held);
+
+        return Unit.unit();
     }
 
     @Override
@@ -574,7 +591,7 @@ record PlacementReconciler(NodeId self,
                                         }
 
                                         return operation(policy.id()).filter(CommunityPlacementOperationValue::active)
-                                                        .fold(() -> reserve(config, policy, leader, snapshot),
+                                                        .fold(() -> reserveUnlessHeld(config, policy, leader, snapshot),
                                                               value -> advance(config, value, leader));
                                     }));
     }
@@ -1256,6 +1273,16 @@ record PlacementReconciler(NodeId self,
              .onPresent(value -> mutations.add(new KVCommand.Mutation<>(key,
                                                                         Option.some(value),
                                                                         Option.none())));
+    }
+
+    /// Beginning an operation is the autonomous act: the target size or a loss starts it. While auto-heal holds the community, none begins.
+    private Promise<Unit> reserveUnlessHeld(ClusterBootstrapConfig config,
+                                            CommunityPlacement policy,
+                                            LeaderValue leader,
+                                            Map<AetherKey, AetherValue> snapshot) {
+        return autonomyHold.get().test("community " + policy.id())
+               ? Promise.unitPromise()
+               : reserve(config, policy, leader, snapshot);
     }
 
     private Promise<Unit> reserve(ClusterBootstrapConfig config,

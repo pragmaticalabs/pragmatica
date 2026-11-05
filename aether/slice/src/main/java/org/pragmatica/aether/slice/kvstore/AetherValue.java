@@ -1917,7 +1917,12 @@ public sealed interface AetherValue {
     /// zero; a node behind on apply answers the previous value until then. Absence of a record for the
     /// singleton key means auto-heal is enabled (the pre-#685 default) — never persisted as an explicit
     /// "enabled" record.
-    record AutoHealStateValue(boolean enabled, String reason, long updatedAt) implements AetherValue {
+    ///
+    /// `disabledAtConfigVersion` is the committed cluster-configuration version at the moment auto-heal was disabled (`0` for an enable and
+    /// for a disable written with no configuration). It tells an operator's scaling change made WHILE disabled from one that was already
+    /// committed: a desired count or community `target_size` committed after it (a higher `configVersion`) is explicit operator intent and
+    /// is acted on while auto-heal stays disabled.
+    record AutoHealStateValue(boolean enabled, String reason, long updatedAt, long disabledAtConfigVersion) implements AetherValue {
         public AutoHealStateValue {
             if (reason == null) {
                 reason = "";
@@ -1925,11 +1930,16 @@ public sealed interface AetherValue {
         }
 
         public static AutoHealStateValue autoHealStateValue(boolean enabled, String reason) {
-            return new AutoHealStateValue(enabled, reason, System.currentTimeMillis());
+            return new AutoHealStateValue(enabled, reason, System.currentTimeMillis(), 0L);
         }
 
         public static AutoHealStateValue autoHealStateValue(boolean enabled, String reason, long updatedAt) {
-            return new AutoHealStateValue(enabled, reason, updatedAt);
+            return new AutoHealStateValue(enabled, reason, updatedAt, 0L);
+        }
+
+        /// A disable that records the configuration version it was written against.
+        public static AutoHealStateValue disabledAt(String reason, long configVersion) {
+            return new AutoHealStateValue(false, reason, System.currentTimeMillis(), configVersion);
         }
     }
 

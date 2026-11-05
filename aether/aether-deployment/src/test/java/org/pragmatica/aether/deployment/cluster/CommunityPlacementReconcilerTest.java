@@ -364,6 +364,42 @@ class CommunityPlacementReconcilerTest {
         assertThat(effects).containsExactly("create");
     }
 
+    /// Spec §8.4 — while auto-heal holds the community, no operation begins and no provider effect follows; the subject asked about is the
+    /// community. Releasing the hold lets the very same pass begin the operation.
+    @Test
+    void heldAutonomy_beginsNoOperation_andReleaseBeginsIt() {
+        var asked = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        var held = new java.util.concurrent.atomic.AtomicBoolean(true);
+
+        reconciler.holdAutonomy(subject -> asked.add(subject) && held.get());
+        seed(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(CORE, 1)));
+        seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT,
+            new AetherValue.ClusterConfigValue(Option.some(CONFIG), "test", "1.0.0", List.of(), 3, 3, "forge", 1, 0)));
+
+        reconciler.reconcile().await().unwrap();
+
+        assertThat(asked).contains("community stable");
+        assertThat(store.getTyped(new AetherKey.CommunityPlacementOperationKey("stable"), CommunityPlacementOperationValue.class).isEmpty()).isTrue();
+        assertThat(effects).isEmpty();
+        held.set(false);
+        reconciler.reconcile().await().unwrap();
+        assertThat(current().phase()).isNotNull();
+    }
+
+    /// Exception (a) of §8.4: an operator-directed retirement is not held, even while auto-heal holds everything else.
+    @Test
+    void heldAutonomy_doesNotHoldAnOperatorDirectedRetirement() {
+        reconciler.holdAutonomy(_ -> true);
+        initialize();
+        var entry = new AetherValue.TopologyEntry("pool", "worker", 0);
+        seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT,
+            new AetherValue.ClusterConfigValue(Option.some(CONFIG.substring(0, CONFIG.indexOf("[community.stable]"))),
+                "test", "1.0.0", List.of(entry), 3, 3, "forge", 2, 0)));
+
+        assertThat(reconciler.requestRetirement(OLD, entry).await().isSuccess()).isTrue();
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.AWAITING_READY);
+    }
+
     /// A create the capacity ledger cannot admit (no definitive refusal) returns the operation to RESERVED with the
     /// reason and escalates once; no provider effect follows.
     @Test

@@ -147,7 +147,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     ConcurrentHashMap<NodeId, SourceName> replacementSources,
                                     AtomicLong replayRunning,
                                     AtomicLong lastSweepMs,
-                                    AtomicBoolean sourceUnresolved) implements ClusterTopologyManager {
+                                    AtomicBoolean sourceUnresolved,
+                                    Set<String> heldScaling) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
     private static final int MINIMUM_CLUSTER_SIZE = 3;
     private static final int MAX_CONSECUTIVE_PROVISIONING_FAILURES = 3;
@@ -304,7 +305,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new ConcurrentHashMap<>(),
                                                 new AtomicLong(NOT_RUN),
                                                 new AtomicLong(0L),
-                                                new AtomicBoolean(false));
+                                                new AtomicBoolean(false),
+                                                ConcurrentHashMap.newKeySet());
     }
 
     @Override
@@ -877,9 +879,71 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return hierarchyWriter.get()
                               .put(AetherKey.AutoHealStateKey.SINGLETON,
                                    previous.map(value -> (AetherValue) value),
-                                   AutoHealStateValue.autoHealStateValue(enabled, reason))
+                                   autoHealRecord(enabled, reason))
                               .map(_ -> previous.map(AutoHealStateValue::enabled)
                                                 .or(true));
+    }
+
+    /// A disable records the committed configuration version it was written against, so a scaling change committed after it can be told
+    /// from one that was already there ([#scalingHeld]); an enable records none.
+    private AutoHealStateValue autoHealRecord(boolean enabled, String reason) {
+        return enabled
+               ? AutoHealStateValue.autoHealStateValue(true, reason)
+               : AutoHealStateValue.disabledAt(reason, committedConfigVersion());
+    }
+
+    private long committedConfigVersion() {
+        return clusterConfigReader.get()
+                                  .map(ClusterConfigValue::configVersion)
+                                  .or(0L);
+    }
+
+    /// Spec §8.4 — whether the worker and community paths may NOT act on their own now. Auto-heal enabled: they may (and a hold raised earlier
+    /// is announced as resumed). Disabled: they may not, unless an operator committed the desired count or community `target_size` after the
+    /// disable (the committed configuration version is ahead of the one recorded at disable time): that is explicit intent, and is acted on.
+    /// An operator-directed retirement never asks here. The hold is raised once per `subject` for the run of holds (the set is the flood
+    /// guard; the resume clears it). Granularity, marked: the revision is the whole configuration's, so any configuration commit made while
+    /// disabled releases the hold for every source and community, not only the one it changed.
+    boolean scalingHeld(String subject) {
+        var state = autoHealStateReader.get();
+
+        if (state.filter(value -> !value.enabled())
+                 .filter(value -> committedConfigVersion() <= value.disabledAtConfigVersion())
+                 .isPresent()) {
+            holdScaling(subject);
+
+            return true;
+        }
+
+        if (state.map(AutoHealStateValue::enabled)
+                 .or(true)) {
+            resumeScaling();
+        }
+
+        return false;
+    }
+
+    @Contract
+    private void holdScaling(String subject) {
+        if (heldScaling.add(subject)) {
+            OperatorWarnings.raise(log,
+                                   warningSink.get(),
+                                   OperatorWarningCode.AUTO_HEAL_SCALING_HELD,
+                                   subject,
+                                   "Auto-heal is disabled: {} is not provisioned or terminated on the cluster's own initiative; commit a new count, or enable auto-heal",
+                                   subject);
+        }
+    }
+
+    @Contract
+    private void resumeScaling() {
+        heldScaling.forEach(subject -> OperatorWarnings.raise(log,
+                                                              warningSink.get(),
+                                                              OperatorWarningCode.AUTO_HEAL_SCALING_RESUMED,
+                                                              subject,
+                                                              "Auto-heal is enabled again: {} is no longer held",
+                                                              subject));
+        heldScaling.clear();
     }
 
     /// Membership v2 / E2 — provision a replacement, PURE ACTUATOR.
@@ -1468,6 +1532,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract
     public synchronized void installCommunityPlacement(CommunityPlacementReconciler reconciler) {
         communityPlacement.set(Option.some(reconciler));
+        reconciler.holdAutonomy(this::scalingHeld);
         startWorkerTopologyPolling(TimeSpan.timeSpan(10).seconds());
     }
 
@@ -1696,7 +1761,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
         var delta = entry.count() - actual.size();
 
-        if (delta == 0) {
+        if (delta == 0 || scalingHeld("worker " + entry.sourceName() + "/" + entry.role())) {
             return Promise.unitPromise();
         }
 
@@ -3851,6 +3916,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         abandonedReaps.clear();
         // The held mark is this leader's: the next leader's sweep finds the instance again and holds it under its own mark.
         heldReaps.clear();
+        heldScaling.clear();
         inventoryWaitRef.set(null);
         workerTopologyPolling.cancel();
         unconfirmedRecheck.cancel();

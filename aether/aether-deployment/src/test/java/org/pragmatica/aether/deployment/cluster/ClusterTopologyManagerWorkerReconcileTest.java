@@ -136,6 +136,8 @@ class ClusterTopologyManagerWorkerReconcileTest {
     private WorkerRecordingLifecycleManager lifecycleManager;
     private AtomicReference<Option<ClusterConfigValue>> configRef;
     private ClusterTopologyManager ctm;
+    private final AtomicReference<Option<AetherValue.AutoHealStateValue>> autoHealRef = new AtomicReference<>(Option.none());
+    private final java.util.List<String> warnings = new java.util.concurrent.CopyOnWriteArrayList<>();
     private TopologyObserver observer;
     private StubSnapshotSource snapshotSource;
 
@@ -165,8 +167,9 @@ class ClusterTopologyManagerWorkerReconcileTest {
                                                             () -> AetherValue.ClusterPhase.NORMAL,
                                                             _ -> {},
                                                             _ -> {},
-                                                            Option::none,
+                                                            autoHealRef::get,
                                                             liveness);
+        built.setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(warning -> warnings.add(warning.code().code())));
         var placements = new java.util.concurrent.ConcurrentHashMap<AetherKey, AetherValue>();
         built.setHierarchyStateWriter(HierarchyStateWriter.hierarchyStateWriter(
             () -> Option.some(new org.pragmatica.cluster.state.kvstore.LeaderValue(SELF, 1)),
@@ -204,8 +207,95 @@ class ClusterTopologyManagerWorkerReconcileTest {
                                                          System.currentTimeMillis())));
     }
 
+    private void commitConfigVersion(long version, AetherValue.TopologyEntry... entries) {
+        configRef.set(Option.some(new ClusterConfigValue(Option.none(), CLUSTER, "1.0.0", List.of(entries), 3, 9, "test", version,
+                                                         System.currentTimeMillis())));
+    }
+
+    private void disableAutoHealAtConfigVersion(long version) {
+        autoHealRef.set(Option.some(AetherValue.AutoHealStateValue.disabledAt("test", version)));
+    }
+
     private static AetherValue.TopologyEntry entry(String source, String role, int count) {
         return new AetherValue.TopologyEntry(source, role, count);
+    }
+
+    /// Spec §8.4 — auto-heal disabled: the worker path provisions nothing for a deficit that was already committed, and tells the operator once.
+    @Test
+    void reconcile_workerDeficit_autoHealDisabled_provisionsNothing_andWarnsOncePerHold() {
+        seedTopology(entry("primary", "core", 3), entry("primary", "worker", 2));
+        disableAutoHealAtConfigVersion(1L);
+        ctm.activate();
+
+        ctm.reconcileWorkerTopology();
+        ctm.reconcileWorkerTopology();
+
+        assertThat(lifecycleManager.provisionedNodeIds()).isEmpty();
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> !warnings.isEmpty());
+        assertThat(warnings).as("one event for the run of holds").containsExactly("auto-heal-scaling-held");
+    }
+
+    @Test
+    void reconcile_workerSurplus_autoHealDisabled_requestsNoRetirement() {
+        var requested = captureRetirementRequests();
+        seedTopology(entry("primary", "core", 3), entry("primary", "worker", 1));
+        lifecycleManager.preExisting(workerInstance("primary", "primary-worker-0"), workerInstance("primary", "primary-worker-1"));
+        disableAutoHealAtConfigVersion(1L);
+        ctm.activate();
+
+        ctm.reconcileWorkerTopology();
+
+        assertThat(requested).isEmpty();
+        assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+    }
+
+    /// Exception (b): a desired count committed AFTER the disable is explicit operator intent and is acted on while auto-heal stays disabled.
+    @Test
+    void reconcile_workerDeficit_countCommittedWhileDisabled_isProvisioned() {
+        seedTopology(entry("primary", "core", 3), entry("primary", "worker", 2));
+        disableAutoHealAtConfigVersion(1L);
+        commitConfigVersion(2L, entry("primary", "core", 3), entry("primary", "worker", 2));
+        ctm.activate();
+
+        ctm.reconcileWorkerTopology();
+
+        assertThat(lifecycleManager.provisionedNodeIds()).hasSize(2);
+    }
+
+    @Test
+    void reconcile_workerSurplus_countCommittedWhileDisabled_isRetired() {
+        var requested = captureRetirementRequests();
+        seedTopology(entry("primary", "core", 3), entry("primary", "worker", 1));
+        lifecycleManager.preExisting(workerInstance("primary", "primary-worker-0"), workerInstance("primary", "primary-worker-1"));
+        disableAutoHealAtConfigVersion(1L);
+        commitConfigVersion(2L, entry("primary", "core", 3), entry("primary", "worker", 1));
+        ctm.activate();
+
+        ctm.reconcileWorkerTopology();
+
+        assertThat(requested).hasSize(1);
+    }
+
+    /// Re-enabling resumes the path and tells the operator; disabling again re-arms the hold and its event.
+    @Test
+    void reconcile_autoHealReenabled_resumes_andADisableAfterwardsHoldsAndWarnsAgain() {
+        seedTopology(entry("primary", "core", 3), entry("primary", "worker", 1));
+        disableAutoHealAtConfigVersion(1L);
+        ctm.activate();
+        ctm.reconcileWorkerTopology();
+        autoHealRef.set(Option.some(AetherValue.AutoHealStateValue.autoHealStateValue(true, "test")));
+
+        ctm.reconcileWorkerTopology();
+
+        assertThat(lifecycleManager.provisionedNodeIds()).as("resumed: the deficit is filled").hasSize(1);
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 2);
+        assertThat(warnings).containsExactly("auto-heal-scaling-held", "auto-heal-scaling-resumed");
+        seedTopology(entry("primary", "core", 3), entry("primary", "worker", 3));
+        disableAutoHealAtConfigVersion(1L);
+        ctm.reconcileWorkerTopology();
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 3);
+        assertThat(warnings.getLast()).isEqualTo("auto-heal-scaling-held");
+        assertThat(lifecycleManager.provisionedNodeIds()).as("held again: nothing more is provisioned").hasSize(1);
     }
 
     /// #1601: a new worker is seeded with the LIVE installed voters. PEER_B is a configured voter the observer
