@@ -54,8 +54,7 @@ import static org.pragmatica.lang.Result.success;
 /// where these types live, and the deployment layer converts at its boundary.
 public record SourceName(String value) {
     /// The source name used when no source profile can be resolved — non-cloud providers, tests, and the
-    /// `ClusterTopologyManagerRecord.replacementSourceName` fallback when the persisted cluster config is
-    /// unparseable or names no cloud source for the role.
+    /// `ClusterTopologyManagerRecord.sourceOfSourcelessNode` answer when there is no committed cluster config.
     public static final SourceName DEFAULT = new SourceName("default");
     /// RFC-1035 label: lowercase letter, then lowercase alphanumerics and hyphens, ending alphanumeric,
     /// 1..63 characters. This is the GCP network-tag grammar, which is the strictest of the supported
