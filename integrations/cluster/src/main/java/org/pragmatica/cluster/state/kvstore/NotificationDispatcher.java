@@ -34,6 +34,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -114,9 +115,17 @@ final class NotificationDispatcher {
     private final ThreadLocal<Option<DeliveryBatch>> delivering = ThreadLocal.withInitial(Option::none);
     /// Mutation guard holder only (inline mode): true while this thread's drain is running, so a reentrant write appends.
     private boolean draining;
-    /// Mutation guard holder only: the thread is started at the first append.
-    private Option<Thread> thread = Option.none();
-    private Option<ScheduledExecutorService> watchdog = Option.none();
+    /// Written under the mutation guard at the first append, BEFORE the thread starts: `Thread.start()` publishes it to the
+    /// delivery thread, so the replay refusal it reads there holds from the first batch on. Volatile for [#close] and the
+    /// watchdog, which read it on other threads.
+    private volatile Option<Thread> thread = Option.none();
+    /// Written before [#thread], so a [#close] that sees the thread also sees its watchdog.
+    private volatile Option<ScheduledExecutorService> watchdog = Option.none();
+    /// Orders the watchdog's slow-handler report against the end of that handler, so a raised
+    /// `kv-dispatch-slow-handler` is always followed by its `kv-dispatch-slow-handler-returned`.
+    private final Object slowReport = new Object();
+    /// Guarded by [#slowReport]: the subject of the slow-handler event raised for the handler now running, if one was.
+    private Option<String> slowRaised = Option.none();
     private volatile boolean stopRequested;
     private volatile Option<DeliveryBatch> inFlight = Option.none();
     private volatile Option<Message> currentMessage = Option.none();
@@ -232,10 +241,11 @@ final class NotificationDispatcher {
 
     private Unit ensureStarted() {
         if (thread.isEmpty() && !stopRequested) {
-            var started = Thread.ofPlatform().name(threadName()).daemon(true).start(this::runLoop);
+            var created = Thread.ofPlatform().name(threadName()).daemon(true).unstarted(this::runLoop);
 
-            thread = Option.some(started);
             watchdog = Option.some(startWatchdog());
+            thread = Option.some(created);
+            created.start();
         }
 
         return unit();
@@ -275,7 +285,27 @@ final class NotificationDispatcher {
         while (!stopRequested) {
             Result.lift(Causes::fromThrowable, queue::take)
                   .onSuccess(this::deliverGuarded)
-                  .onFailure(_ -> stopRequested = true);
+                  .onFailure(this::takeFailed);
+        }
+    }
+
+    /// Only [#close] ends the loop (design §3.2): its interrupt arrives with `stopRequested` already set. Any other
+    /// interrupt of an idle loop is a loop failure and takes the failure path, never a silent exit.
+    @Contract
+    private void takeFailed(Cause cause) {
+        if (!stopRequested) {
+            stopRequested = true;
+            fail("loop body (take)",
+                 new IllegalStateException("delivery loop interrupted outside close(): " + cause.message()));
+        }
+    }
+
+    /// A handler that leaves its thread's interrupt flag set (catches an `InterruptedException` and re-asserts it) would
+    /// make the next `take()` throw. The flag is cleared and reported here, so delivery continues; a close's interrupt
+    /// (`stopRequested` set) is left for the loop to see.
+    private void clearHandlerInterrupt() {
+        if (!stopRequested && Thread.interrupted()) {
+            log.warn("KV dispatcher {}: a handler left the thread's interrupt flag set; cleared, delivery continues", name);
         }
     }
 
@@ -285,6 +315,7 @@ final class NotificationDispatcher {
     private void deliverGuarded(DeliveryBatch batch) {
         try {
             deliver(batch);
+            clearHandlerInterrupt();
         } catch (Throwable t) {
             stopRequested = true;
             fail(currentMessage.map(message -> "handler " + describe(message)).or("loop body"),
@@ -324,7 +355,7 @@ final class NotificationDispatcher {
             routeIsolated(message);
         } finally {
             noteHandlerDuration(System.nanoTime() - handlerStartedNanos);
-            handlerStartedNanos = 0;
+            handlerEnded();
         }
 
         store.trackDelivered(message);
@@ -545,7 +576,7 @@ final class NotificationDispatcher {
                        + "; written by seq " + written;
 
             log.warn("KV dispatcher {}: first read-ahead for {}", name, detail);
-            events.emit("kv-dispatch-read-ahead", detail);
+            events.emit(OperatorWarningCode.KV_DISPATCH_READ_AHEAD, tag, detail);
         }
     }
 
@@ -613,14 +644,34 @@ final class NotificationDispatcher {
 
     @Contract
     private void watch() {
-        var started = handlerStartedNanos;
+        synchronized (slowReport) {
+            var started = handlerStartedNanos;
 
-        if (started != 0 && !handlerReported && System.nanoTime() - started >= slowHandlerNanos) {
-            handlerReported = true;
-            currentMessage.onPresent(this::reportSlow);
+            if (started != 0 && !handlerReported && System.nanoTime() - started >= slowHandlerNanos) {
+                handlerReported = true;
+                currentMessage.onPresent(this::reportSlow);
+            }
         }
     }
 
+    /// The end of one handler invocation, ordered against [#watch]: a slow-handler event raised for it is closed here.
+    private void handlerEnded() {
+        synchronized (slowReport) {
+            handlerStartedNanos = 0;
+            slowRaised.onPresent(this::reportReturned);
+            slowRaised = Option.none();
+        }
+    }
+
+    // slowReport
+    private void reportReturned(String tag) {
+        log.info("KV dispatcher {}: the slow handler of {} returned", name, tag);
+        events.emit(OperatorWarningCode.KV_DISPATCH_SLOW_HANDLER_RETURNED,
+                    tag,
+                    "KV store " + name + ": the handler of " + tag + " returned");
+    }
+
+    // slowReport
     private void reportSlow(Message message) {
         var tag = describe(message);
         var now = System.nanoTime();
@@ -635,7 +686,11 @@ final class NotificationDispatcher {
                      tag,
                      TimeUnit.NANOSECONDS.toMillis(slowHandlerNanos),
                      stack);
-            events.emit("kv-dispatch-slow-handler", tag);
+            events.emit(OperatorWarningCode.KV_DISPATCH_SLOW_HANDLER,
+                        tag,
+                        "KV store " + name + ": a handler of " + tag + " has run longer than "
+                        + TimeUnit.NANOSECONDS.toMillis(slowHandlerNanos) + " ms, holding notification delivery");
+            slowRaised = Option.some(tag);
         }
     }
 
@@ -844,7 +899,10 @@ final class NotificationDispatcher {
                                    queueDepth.get()));
         bestEffort(() -> log.error("KV dispatcher {}: failure", name, cause));
         bestEffort(() -> log.error("KV dispatcher {}: thread dump:{}", name, threadDump()));
-        bestEffort(() -> events.emit("kv-dispatcher-failed", name + " at " + step + ": " + cause));
+        bestEffort(() -> events.emit(OperatorWarningCode.KV_DISPATCHER_FAILED,
+                                     name,
+                                     "KV store " + name + ": notification dispatcher failed at " + step + ": " + cause
+                                     + "; the store is closed and the node is stopping"));
     }
 
     private long enqueuedSeqUnlocked() {

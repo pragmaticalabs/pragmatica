@@ -34,6 +34,18 @@ class OperatorWarningWiringTest {
         assertThat(code).containsOnlyOnce("defer.accept(()->SharedScheduler.scheduleAtFixedRate(kvDispatchLagWatch::tick,KvDispatchLagWatch.TICK));");
     }
 
+    /// v-2648 F5 (KVStore dispatcher design §3.6): the node store's dispatcher events (slow handler, read-ahead, failure) go to
+    /// the events object the store was built with, and that object is bound to THIS node's sink. Behaviour:
+    /// `AetherNodeKvDispatcherWiringBootTest.slowHandler_raisesKvDispatchSlowHandler_throughTheNodesSink`.
+    @Test
+    void assembly_bindsTheNodeStoresDispatcherEventsToThisNodesSink() {
+        var code = assemblyCode();
+
+        assertThat(code).containsOnlyOnce("varkvDispatchEvents=KvDispatchOperatorEvents.kvDispatchOperatorEvents();");
+        assertThat(code).containsOnlyOnce("kvDelivery(config,dispatcherSink,kvDispatchEvents)");
+        assertThat(code).containsOnlyOnce("kvDispatchEvents.operatorWarnings(operatorWarningSink);");
+    }
+
     @Test
     void assembly_givesTheSinkToSwimCoreAbsenceAndReplication() {
         var code = assemblyCode();

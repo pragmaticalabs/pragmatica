@@ -75,7 +75,9 @@ class AetherNodeReplayRankTest {
                                                                        Option.none(),
                                                                        ConfigurationProvider.builder().build(),
                                                                        tempDir);
-        var delivery = AetherNode.kvDelivery(config, DispatcherFailureSink.loggingOnly());
+        var delivery = AetherNode.kvDelivery(config,
+                                                 DispatcherFailureSink.loggingOnly(),
+                                                 KvDispatchOperatorEvents.kvDispatchOperatorEvents());
 
         assertThat(delivery).isInstanceOf(NotificationDelivery.Dispatched.class);
         assertThat(delivery.replayRank().rank(ROUTING)).isEqualTo(1);

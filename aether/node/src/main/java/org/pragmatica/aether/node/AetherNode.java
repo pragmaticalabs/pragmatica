@@ -633,11 +633,15 @@ public interface AetherNode extends ManageableNode {
     }
 
     /// The node store's delivery: dispatched, named after the node, replaying in [#replayRank] order, stopping the node
-    /// through `dispatcherSink` once (R4.4: the core fatal-escape hook and the store may both report the same failure).
-    static NotificationDelivery kvDelivery(AetherNodeConfig config, DispatcherFailureSink dispatcherSink) {
+    /// through `dispatcherSink` once (R4.4: the core fatal-escape hook and the store may both report the same failure), and
+    /// raising its operator events through `events`, which the assembly binds to this node's operator-warning sink.
+    static NotificationDelivery kvDelivery(AetherNodeConfig config,
+                                           DispatcherFailureSink dispatcherSink,
+                                           KvDispatchOperatorEvents events) {
         return NotificationDelivery.dispatched(config.self().id(),
                                                AetherNode::replayRank,
-                                               DispatcherFailureSink.once(dispatcherSink));
+                                               DispatcherFailureSink.once(dispatcherSink),
+                                               events);
     }
 
     /// The replay-burst rank (KVStore dispatcher design §3.7, exit (z), D0 PAIR-1 and PAIR-2): ascending, rank-major, so a
@@ -703,14 +707,16 @@ public interface AetherNode extends ManageableNode {
         // W-OBS W2: the commit ring records and serves under the committed cluster incarnation (the production reader), filtered by the
         // exhaustive replica filter, at the default byte budget. D1: the node's store delivers its notifications on its own
         // dispatcher thread (KVStore dispatcher design §3.1); the KVStore constructors default to inline delivery, so this
-        // opt-in is pinned by AetherNodeKvDispatcherWiringBootTest.
+        // opt-in is pinned by AetherNodeKvDispatcherWiringBootTest. Its operator events reach this node's sink once the
+        // assembly has built it (kvDispatchEvents.operatorWarnings below).
+        var kvDispatchEvents = KvDispatchOperatorEvents.kvDispatchOperatorEvents();
         var kvStore = new KVStore<AetherKey, AetherValue>(delegateRouter,
                                                           serializer,
                                                           deserializer,
                                                           ReplicaFilter.replicaFilter(),
                                                           ReplicaIncarnationSource.replicaIncarnationSource(),
                                                           CommitRing.DEFAULT_BUDGET_BYTES,
-                                                          kvDelivery(config, dispatcherSink));
+                                                          kvDelivery(config, dispatcherSink, kvDispatchEvents));
         // #345 1c: the per-ownership-domain epoch high-water (data-plane half of the ownership
         // fence) must exist BEFORE the DHT storage engine, because the engine's owner-epoch gate is
         // backed by it. The SAME instance is threaded into assembleNode for its KV-router
@@ -904,7 +910,8 @@ public interface AetherNode extends ManageableNode {
                                                              bootToken,
                                                              clusterEventsLimits,
                                                              streamMemoryBudget,
-                                                             NodeReactors.nodeReactors(dispatcherSink)));
+                                                             NodeReactors.nodeReactors(dispatcherSink),
+                                                             kvDispatchEvents));
     }
 
     /// #253 — resolves the boot-time storage-encryption keyring before any storage tier exists. No
@@ -1558,7 +1565,8 @@ public interface AetherNode extends ManageableNode {
                                                    long bootToken,
                                                    ClusterEventsLimits clusterEventsLimits,
                                                    StreamMemoryBudget streamMemoryBudget,
-                                                   NodeReactors reactors) {
+                                                   NodeReactors reactors,
+                                                   KvDispatchOperatorEvents kvDispatchEvents) {
         // D1-react (KVStore dispatcher design §3.5 R5): the react gate reads this node's engine from here on.
         reactors.bindEngine(clusterNode::isEngineStopRequested);
         clusterNode.leaderManager().installReactExecutor(reactors.executor("LeaderManager"));
@@ -1985,14 +1993,11 @@ public interface AetherNode extends ManageableNode {
                                                                                                      this::closeSharedResources,
                                                                                                      this::shutdownStorage,
                                                                                                      clusterNode::stop)))
-                                    .onResultRun(this::closeKvStore)
+                                    .withResult(_ -> closeKvStore())
                                     .onSuccess(_ -> log.info("Aether node {} stopped",
                                                              self()));
             }
 
-            /// KVStore dispatcher design §3.2 Lifecycle: after the engine stop (the last step above), whatever the stop's
-            /// outcome, the store closes: its undelivered queue is dropped (the router is quiesced), every waiter fails
-            /// with outcome-unknown, and the dispatcher thread is joined with a bound.
             @Override
             public List<ReactExecutor> reactExecutors() {
                 return reactors.all();
@@ -2004,6 +2009,11 @@ public interface AetherNode extends ManageableNode {
                                   .replaying();
             }
 
+            /// KVStore dispatcher design §3.2 Lifecycle: after the engine stop (the last step above), whatever the stop's
+            /// outcome, the store closes: its undelivered queue is dropped (the router is quiesced), every waiter fails
+            /// with outcome-unknown, and the dispatcher thread is joined with a bound. A dependent step (`withResult`), so the
+            /// promise `stop()` returns resolves only after the close (v-2648 F2: an independent `onResultRun` let it
+            /// resolve first).
             @Contract
             private void closeKvStore() {
                 kvStore.close();
@@ -2730,6 +2740,8 @@ public interface AetherNode extends ManageableNode {
         var operatorWarningSink = eventAggregatorOut.operatorWarningSink();
         // A0b: the storage instances were built before this sink existed; hand it to them now.
         StorageFactory.bindOperatorWarnings(storageSetups, operatorWarningSink);
+        // D1 (KVStore dispatcher design §3.6): so was the node's store; its dispatcher events reach this node's sink from here on.
+        kvDispatchEvents.operatorWarnings(operatorWarningSink);
         // #2258: the DHT engine's capacity transitions of this node become operator warnings (the engine knows no warning type)
         var dhtCapacityWarnings = DhtCapacityWarnings.dhtCapacityWarnings(config.self().id());
 

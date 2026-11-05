@@ -7,20 +7,30 @@ package org.pragmatica.aether.node;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.resource.ResourceProvider;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.state.kvstore.DispatcherFailureSink;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.messaging.Message;
+import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.serialization.FrameworkCodecs;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -101,6 +111,97 @@ class AetherNodeKvDispatcherWiringBootTest {
 
         assertThat(store.deliveryMetrics().closed()).as("the stop sequence closes the store").isTrue();
         assertThat(liveThreadNamed(store.dispatcherThreadName())).as("no dispatcher thread outlives the stop").isFalse();
+    }
+
+    /// v-2648 F5: the node's store raises its dispatcher operator events through THIS node's operator-warning sink. A handler
+    /// held past the slow-handler threshold raises `kv-dispatch-slow-handler`, read at the node's event aggregator, its
+    /// subject the notification type. The node's router is wrapped so one marker put is held instead of routed (no node
+    /// handler sees it). Mutation: build the node's store with `OperatorEvents.none()`, or drop the sink binding (red).
+    @Test
+    @Timeout(value = 60, unit = SECONDS)
+    void slowHandler_raisesKvDispatchSlowHandler_throughTheNodesSink() throws Exception {
+        var delegateRouter = MessageRouter.DelegateRouter.delegate();
+        var node = booted(AetherNode.aetherNode(config(),
+                                                delegateRouter,
+                                                NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs()),
+                                                DispatcherFailureSink.loggingOnly()));
+        var marker = AetherKey.LogLevelKey.forLogger("d1-slow-handler-wiring");
+        var observed = new CountDownLatch(1);
+
+        delegateRouter.replaceDelegate(holdingMarker(currentDelegate(delegateRouter), marker, observed));
+        var store = node.kvStore();
+
+        store.process(store.createBatch(List.of(new KVCommand.Put<AetherKey, AetherValue>(marker,
+                                                                                           AetherValue.LogLevelValue.logLevelValue("d1-slow-handler-wiring",
+                                                                                                                                   "INFO")))));
+        try {
+            assertThat(eventually(() -> slowHandlerRaised(node, "ValuePut LogLevelKey"))).as("kv-dispatch-slow-handler reached the node's sink")
+                                                                                        .isTrue();
+        } finally {
+            observed.countDown();
+        }
+    }
+
+    private static boolean slowHandlerRaised(AetherNode node, String subject) {
+        return node.eventAggregator()
+                   .lastRaisedOperatorWarning()
+                   .filter(ClusterEvent.OperatorWarning.class::isInstance)
+                   .map(ClusterEvent.OperatorWarning.class::cast)
+                   .filter(event -> "kv-dispatch-slow-handler".equals(event.details().get("code")))
+                   .filter(event -> subject.equals(event.details().get("subject")))
+                   .isPresent();
+    }
+
+    private static boolean eventually(java.util.function.BooleanSupplier condition) throws InterruptedException {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+
+        while (System.nanoTime() < deadline) {
+            if (condition.getAsBoolean()) {
+                return true;
+            }
+            Thread.sleep(20);
+        }
+
+        return condition.getAsBoolean();
+    }
+
+    /// The router the node installed behind its delegate (RabiaNode builds it at construction).
+    private static MessageRouter currentDelegate(MessageRouter.DelegateRouter delegateRouter) throws ReflectiveOperationException {
+        var field = delegateRouter.getClass()
+                                  .getDeclaredField("delegate");
+
+        field.setAccessible(true);
+
+        return (MessageRouter) field.get(delegateRouter);
+    }
+
+    /// Routes everything to `original`, except the put of `marker`, which it holds (bounded) until `observed`.
+    private static MessageRouter holdingMarker(MessageRouter original, AetherKey marker, CountDownLatch observed) {
+        return new MessageRouter.ImmutableRouter<Message>() {
+            @Override
+            public Map<Class<Message>, List<Consumer<Message>>> routingTable() {
+                return Map.of();
+            }
+
+            @Override
+            public <R extends Message> void route(R message) {
+                if (message instanceof KVStoreNotification.ValuePut<?, ?> put && marker.equals(put.cause().key())) {
+                    awaitQuietly(observed);
+
+                    return;
+                }
+
+                original.route(message);
+            }
+        };
+    }
+
+    private static void awaitQuietly(CountDownLatch latch) {
+        try {
+            latch.await(20, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     /// The in-JVM sink is called on the failing dispatcher thread, and the node stop it triggers closes the store,

@@ -78,6 +78,8 @@ class KVStoreDispatcherTest {
     final RecordingSink sink = new RecordingSink();
     final InstallingDeserializer deserializer = new InstallingDeserializer();
     final List<KVStore<StructuredKey, Object>> opened = new ArrayList<>();
+    /// Every operator event the fixture's stores raise, as `code|subject`.
+    final List<String> operatorEvents = new CopyOnWriteArrayList<>();
 
     KVStore<StructuredKey, Object> store() {
         return store(NotificationDelivery.ReplayRank.flat());
@@ -85,13 +87,26 @@ class KVStoreDispatcherTest {
 
     KVStore<StructuredKey, Object> store(NotificationDelivery.ReplayRank rank) {
         var delivery = new NotificationDelivery.Dispatched("t" + System.nanoTime(), rank, sink, hold,
-                                                           NotificationDelivery.OperatorEvents.none(),
+                                                           (code, subject, _) -> recordOperatorEvent(code.code() + "|" + subject),
                                                            NotificationDelivery.DEFAULT_SLOW_HANDLER_NANOS);
         var store = new KVStore<StructuredKey, Object>(router, new Serializer() {
             @Override public <T> void write(ByteBuf buffer, T value) {}
         }, deserializer, delivery);
         opened.add(store);
         return store;
+    }
+
+    /// The recorded operator events of one code; a slow-handler event (5 ms) can join any test on a loaded host.
+    List<String> eventsOf(String code) {
+        return operatorEvents.stream()
+                             .filter(event -> event.startsWith(code + "|"))
+                             .toList();
+    }
+
+    Unit recordOperatorEvent(String event) {
+        operatorEvents.add(event);
+
+        return Unit.unit();
     }
 
     @AfterEach
@@ -363,14 +378,17 @@ class KVStoreDispatcherTest {
         /// (c) fence, both directions: hold at batch 1 whose handler reads K; batch 2 changes K: one read-ahead for that
         /// handler and K, phase=live. Control: batch 2 changes L: zero. Mutations: skip the check (first arm red) /
         /// compare against enqueuedSeq instead of K's seq (control red).
+        /// The first read-ahead of a notification type also raises `kv-dispatch-read-ahead` with the type as its subject (v-2648 F5).
         @Test
         void readOfAKeyALaterBatchWroteCountsOneReadAhead() throws Exception {
             assertThat(readAheadsWhenBatchTwoWrites(K)).isEqualTo(1);
+            assertThat(eventsOf("kv-dispatch-read-ahead")).containsExactly("kv-dispatch-read-ahead|ValuePut Key");
         }
 
         @Test
         void control_readOfAKeyNoLaterBatchWroteCountsNothing() throws Exception {
             assertThat(readAheadsWhenBatchTwoWrites(L)).isZero();
+            assertThat(eventsOf("kv-dispatch-read-ahead")).isEmpty();
         }
 
         private long readAheadsWhenBatchTwoWrites(Key written) throws Exception {
@@ -739,6 +757,8 @@ class KVStoreDispatcherTest {
             assertThat(sink.awaitStopped()).isTrue();
             assertThat(sink.reasons).containsExactly("kv-dispatcher-failed");
             assertThat(store.deliveryMetrics().closed()).isTrue();
+            assertThat(eventsOf("kv-dispatcher-failed")).as("the failure is an operator event, its subject the store (v-2648 F5)")
+                                      .containsExactly("kv-dispatcher-failed|" + store.dispatcherThreadName().substring("kv-dispatcher-".length()));
         }
 
         /// A RuntimeException in one handler is isolated (P6): the next notification is still delivered.
@@ -841,6 +861,7 @@ class KVStoreDispatcherTest {
         /// (n) both lags stay 0 across empty slots: the engine's phase hook moves the revision, not the seq.
         /// (m) the watchdog fires on a held handler: while a handler is still running past the threshold, the slow-handler
         /// event is raised, and the crossing is counted when the handler ends. Mutation: disable the watchdog (red).
+        /// v-2648 F5: the handler's return raises the recovery, same subject, exactly once. Mutation: drop the recovery (red).
         @Test
         void watchdogFiresOnAHeldHandler() throws Exception {
             var events = new CopyOnWriteArrayList<String>();
@@ -848,7 +869,7 @@ class KVStoreDispatcherTest {
                                                                NotificationDelivery.ReplayRank.flat(),
                                                                sink,
                                                                DeliveryHook.none(),
-                                                               (event, detail) -> recordEvent(events, event),
+                                                               (code, subject, _) -> recordEvent(events, code.code() + "|" + subject),
                                                                TimeUnit.MILLISECONDS.toNanos(20));
             var store = new KVStore<StructuredKey, Object>(router, new Serializer() {
                 @Override public <T> void write(ByteBuf buffer, T value) {}
@@ -859,11 +880,13 @@ class KVStoreDispatcherTest {
 
             put(store, A, "one");
 
-            assertThat(eventuallyContains(events, "kv-dispatch-slow-handler")).as("raised while the handler runs").isTrue();
+            assertThat(eventuallyContains(events, "kv-dispatch-slow-handler|ValuePut Key")).as("raised while the handler runs").isTrue();
+            assertThat(events).as("no recovery while the handler is held").containsExactly("kv-dispatch-slow-handler|ValuePut Key");
             assertThat(store.hasPendingNotifications()).as("the handler is still held").isTrue();
             handlerHeld.countDown();
             store.awaitDelivered(store.enqueuedSeq()).await();
             assertThat(store.deliveryMetrics().slowHandlers()).isEqualTo(1);
+            assertThat(events).containsExactly("kv-dispatch-slow-handler|ValuePut Key", "kv-dispatch-slow-handler-returned|ValuePut Key");
         }
 
         private static Unit recordEvent(List<String> events, String event) {
