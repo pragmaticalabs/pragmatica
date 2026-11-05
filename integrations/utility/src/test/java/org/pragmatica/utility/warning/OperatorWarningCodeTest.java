@@ -482,4 +482,16 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_SENDERS_SUPPRESSED.subsystem()).isEqualTo("membership");
         assertThat(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_SENDERS_SUPPRESSED.recoveryOf().isEmpty()).as("a point event").isTrue();
     }
+
+    /// #2034 (#2684 round B): the sole-copy departure warning is CRITICAL (data is lost with the node unless restored); its recovery,
+    /// raised by the draining node itself, is an INFO that names it as the recovery of that warning.
+    @Test
+    void dhtDepartureSoleCopy_isCriticalWithAnInfoRecovery() {
+        assertThat(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_AT_RISK.code()).isEqualTo("dht-departure-sole-copy-at-risk");
+        assertThat(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_AT_RISK.level()).isEqualTo(WarningLevel.CRITICAL);
+        assertThat(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED.code()).isEqualTo("dht-departure-sole-copy-delivered");
+        assertThat(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED.recoveryOf().or(OperatorWarningCode.JSON_CONFIG_APPLIED))
+            .isEqualTo(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_AT_RISK);
+    }
 }
