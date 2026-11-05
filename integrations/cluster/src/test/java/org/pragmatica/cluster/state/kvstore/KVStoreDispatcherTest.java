@@ -398,6 +398,58 @@ class KVStoreDispatcherTest {
             }
         }
 
+        /// (nd23) read-your-write with an earlier batch still undelivered: a second writer's apply promise waits for ITS OWN
+        /// batch, not just the previous one. Batch 1 (writer A) is held; batch 2 (writer B) has a handler blocked on a latch.
+        /// Releasing only batch 1 resolves A and must leave B's promise pending while B's notification is in flight; B
+        /// resolves only after that notification ran. Mutation: park at `enqueuedSeq - 1`: B resolves with batch 1, red.
+        @Test
+        void secondWritersPromiseWaitsForItsOwnBatch() throws Exception {
+            var store = store();
+            var bEntered = new CountDownLatch(1);
+            var releaseB = new CountDownLatch(1);
+            var bNotificationRan = new java.util.concurrent.atomic.AtomicBoolean(false);
+            router.addRoute(KVStoreNotification.ValuePut.class,
+                            (KVStoreNotification.ValuePut<StructuredKey, Object> p) -> awaitIfB(p, bEntered, releaseB, bNotificationRan));
+            hold.holdFrom(1);
+
+            var promiseA = Promise.<Unit>promise();
+            put(store, A, "one");
+            store.completeAfterDelivery(promiseA, Unit.unit());
+            var promiseB = Promise.<Unit>promise();
+            put(store, B, "two");
+            store.completeAfterDelivery(promiseB, Unit.unit());
+            assertThat(hold.awaitHeld(10)).as("batch 1 is held").isTrue();
+
+            hold.release();
+
+            assertThat(resolvedWithin(promiseA, 10_000)).as("A resolves with its own batch").isTrue();
+            assertThat(bEntered.await(10, TimeUnit.SECONDS)).as("batch 2's notification is in flight").isTrue();
+            assertThat(resolvedWithin(promiseB, 300)).as("B waits for its own batch, not the previous one").isFalse();
+            assertThat(bNotificationRan.get()).isFalse();
+            releaseB.countDown();
+            assertThat(resolvedWithin(promiseB, 10_000)).isTrue();
+            assertThat(bNotificationRan.get()).as("B resolved after its notification ran").isTrue();
+        }
+
+        private static Unit awaitIfB(KVStoreNotification.ValuePut<StructuredKey, Object> put, CountDownLatch entered,
+                                     CountDownLatch release, java.util.concurrent.atomic.AtomicBoolean ran) {
+            if (put.cause().key().equals(B)) {
+                entered.countDown();
+                await(release);
+                ran.set(true);
+            }
+
+            return Unit.unit();
+        }
+
+        private static void await(CountDownLatch latch) {
+            try {
+                latch.await(BOUND.toSeconds(), TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
         /// Lane-1 decision review: a parked apply promise waits for the newest `enqueuedSeq` AT PARK TIME, a target fixed
         /// when it parks, so a continuous writer stream can delay it only by the batches enqueued between its own batch
         /// and its park, never starve it. A writer keeps the queue about 50 batches deep for up to 3 s while each
@@ -522,6 +574,42 @@ class KVStoreDispatcherTest {
             assertThat(done.await(10, TimeUnit.SECONDS)).isTrue();
             delivered(store);
             assertThat(store.deliveryMetrics().snapshotReadAheadsLive()).isZero();
+        }
+
+        /// (kv20) a whole-store read by a handler on the delivering thread counts one snapshot read-ahead when a later
+        /// batch is already enqueued, and nothing when none is. Mutation: the store's `snapshot()` skips the fence call.
+        @Test
+        void snapshotReadWhileALaterBatchIsEnqueuedCountsOneSnapshotReadAhead() throws Exception {
+            assertThat(snapshotReadAheadsWithLaterBatch(true)).isEqualTo(1);
+        }
+
+        @Test
+        void control_snapshotReadWithNoLaterBatchCountsNothing() throws Exception {
+            assertThat(snapshotReadAheadsWithLaterBatch(false)).isZero();
+        }
+
+        private long snapshotReadAheadsWithLaterBatch(boolean laterBatch) throws Exception {
+            var store = store();
+            var done = new CountDownLatch(1);
+            router.addRoute(KVStoreNotification.ValuePut.class, (KVStoreNotification.ValuePut<StructuredKey, Object> p) -> {
+                if (p.cause().key().equals(A)) {
+                    store.snapshot();
+                    done.countDown();
+                }
+            });
+            hold.holdFrom(1);
+
+            put(store, A, "one");
+            assertThat(hold.awaitHeld(10)).isTrue();
+            if (laterBatch) {
+                put(store, L, "later");
+            }
+            hold.release();
+
+            assertThat(done.await(10, TimeUnit.SECONDS)).isTrue();
+            store.awaitDelivered(store.enqueuedSeq()).await();
+            assertThat(store.deliveryMetrics().snapshotReadAheadsReplay()).isZero();
+            return store.deliveryMetrics().snapshotReadAheadsLive();
         }
 
         private long readAheadsWhenBatchTwoWrites(Key written) throws Exception {
@@ -654,6 +742,51 @@ class KVStoreDispatcherTest {
         @Test
         void control_flatRankEmitsAllRemovalsFirst() {
             assertThat(replayOrder(NotificationDelivery.ReplayRank.flat())).containsExactly("remove:r2", "put:p1");
+        }
+
+        /// (kv13) put order across ranks: three fresh keys replay rank-ascending, whichever way the ranks run against the
+        /// storage's iteration order (one arm ascending by name, one descending, so a flat rank matches at most one).
+        /// Mutation: puts bucketed under rank 0 (replay puts flat), red in one arm.
+        @Test
+        void rankedReplayEmitsPutsInRankOrder() {
+            assertThat(putOrder(key -> ((Key) key).value().charAt(1) - '0')).containsExactly("put:p1", "put:p2", "put:p3");
+            assertThat(putOrder(key -> 4 - (((Key) key).value().charAt(1) - '0'))).containsExactly("put:p3", "put:p2", "put:p1");
+        }
+
+        private List<String> putOrder(NotificationDelivery.ReplayRank rank) {
+            var store = store(rank);
+            var order = new CopyOnWriteArrayList<String>();
+            router.addRoute(KVStoreNotification.ValuePut.class, (KVStoreNotification.ValuePut<StructuredKey, Object> p) -> order.add("put:" + ((Key) p.cause().key()).value()));
+            deserializer.next = Map.of(new Key("p1"), "1", new Key("p2"), "2", new Key("p3"), "3");
+            store.restoreSnapshot(new byte[0]);
+            store.replayNotifications();
+            return List.copyOf(order);
+        }
+
+        /// (kv17) a delivered removal leaves the delivered view: put k, remove k, deliver; a replay with k absent from
+        /// storage emits no `remove:k`, and a replay that installs k again with its old value emits `put:k`.
+        /// Mutation: the view ignores a delivered `ValueRemove`: the first replay emits `remove:k`, red.
+        @Test
+        void removedKeyLeavesTheDeliveredView() {
+            var store = store();
+            var order = new CopyOnWriteArrayList<String>();
+            router.addRoute(KVStoreNotification.ValuePut.class, (KVStoreNotification.ValuePut<StructuredKey, Object> p) -> order.add("put:" + ((Key) p.cause().key()).value()));
+            router.addRoute(KVStoreNotification.ValueRemove.class, (KVStoreNotification.ValueRemove<StructuredKey, Object> r) -> order.add("remove:" + ((Key) r.cause().key()).value()));
+            put(store, K, "v");
+            store.process(store.createBatch(List.of(new KVCommand.Remove<>(K))));
+            store.awaitDelivered(store.enqueuedSeq()).await();
+            assertThat(order).as("the put and the remove were delivered").containsExactly("put:k", "remove:k");
+            order.clear();
+
+            deserializer.next = Map.of();
+            store.restoreSnapshot(new byte[0]);
+            store.replayNotifications();
+            assertThat(order).as("k left the delivered view, so no remove burst").isEmpty();
+
+            deserializer.next = Map.of(K, "v");
+            store.restoreSnapshot(new byte[0]);
+            store.replayNotifications();
+            assertThat(order).as("k is new to the delivered view, so a put is emitted").containsExactly("put:k");
         }
 
         private List<String> replayOrder(NotificationDelivery.ReplayRank rank) {
