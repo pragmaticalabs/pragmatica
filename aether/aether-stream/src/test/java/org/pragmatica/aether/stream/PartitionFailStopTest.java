@@ -195,7 +195,7 @@ class PartitionFailStopTest {
                          .isInstanceOf(Cause.Terminal.class);
         var walCause = ((StreamError.PartitionFailStopped) cause).cause();
 
-        assertThat(cause.source()).as("the source is the log's cause").contains(walCause);
+        assertThat(cause.source()).as("the source is the log's cause").isEqualTo(Option.some(walCause));
         assertThat(cause.message()).as("the message carries the log's cause").contains(walCause.message());
     }
 
