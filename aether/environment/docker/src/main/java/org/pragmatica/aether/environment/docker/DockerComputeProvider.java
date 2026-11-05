@@ -750,21 +750,13 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
 
         return new InstanceInfo(new InstanceId(id),
                                 mapDockerState(state),
-                                hostOf(name),
+                                List.of(),
                                 InstanceType.ON_DEMAND,
                                 tags,
                                 nodeId.isEmpty()
                                 ? Option.none()
                                 : Option.some(nodeId),
                                 org.pragmatica.lang.Option.none());
-    }
-
-    /// #2132: a listed container is addressed by its name alone, the host form `parseInspectOutput` reports and the one a management call
-    /// completes with `://<host>:<port>` (the container name is resolvable on the cluster network). An unnamed row stays unaddressed.
-    private static List<String> hostOf(String name) {
-        return name.isEmpty()
-               ? List.of()
-               : List.of(name);
     }
 
     private static String safePart(String[] parts, int index) {

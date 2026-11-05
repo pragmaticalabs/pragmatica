@@ -93,6 +93,7 @@ class WaveExecutorReplaceBeforeRetireTest {
         System.setOut(originalOut);
         ClusterHttpClient.HTTP_OPS_REF.set(originalHttp);
         ProviderResolver.dockerFactoryOverride = null;
+        DockerHostPorts.override = null;
     }
 
     /// The docker provider as the apply sees it: a create stamps the `aether.*` labels a daemon listing filters by.
@@ -186,6 +187,7 @@ class WaveExecutorReplaceBeforeRetireTest {
         var old = harness.provider.create(OLD_NODE, DOCKER_LABELS);
         var http = scriptedFor(OLD_NODE);
 
+        DockerHostPorts.override = id -> id.equals(old.id().value()) ? Result.success(55123) : Result.success(55999);
         ClusterHttpClient.HTTP_OPS_REF.set(http);
 
         var result = replace(config);
@@ -193,7 +195,7 @@ class WaveExecutorReplaceBeforeRetireTest {
         assertThat(result.isSuccess()).as("replace-before-retire outcome: %s", result).isTrue();
         assertThat(http.drainOrder()).as("exactly the old node was drained, by the id it registered under").containsExactly(OLD_NODE);
         assertThat(http.requestUris()).as("the drain is sent to the address the provider reports for the old node")
-                                      .anyMatch(uri -> uri.startsWith("POST http://" + old.addresses().getFirst() + ":8080/api/v1/nodes/drain/" + OLD_NODE));
+                                      .anyMatch(uri -> uri.startsWith("POST http://127.0.0.1:55123/api/v1/nodes/drain/" + OLD_NODE));
         assertThat(harness.provider.totalCreates()).as("one replacement was created before the drain").isEqualTo(2);
     }
 
@@ -455,29 +457,75 @@ class WaveExecutorReplaceBeforeRetireTest {
         assertThat(cloudOldNodes(instances, 2).isFailure()).as("only one live node exists, two were named").isTrue();
     }
 
+    /// #1049: a provider's "unknown" and "provisioning" are neither going nor gone, so they stay candidates (only stopping and terminated leave).
+    @Test
+    void unknownAndProvisioningInstances_stayRetiringCandidates() {
+        var instances = List.of(cloudNode("aether-node-01", "prod-cluster", "eu-1", "core", "10.0.0.1", InstanceStatus.UNKNOWN),
+                                cloudNode("aether-node-02", "prod-cluster", "eu-1", "core", "10.0.0.2", InstanceStatus.PROVISIONING));
+
+        assertThat(cloudOldNodes(instances, 2).unwrap()).extracting(WaveExecutor.OldNode::nodeId).containsExactly("aether-node-01", "aether-node-02");
+    }
+
+    /// The factory override serves only the provider it names: a docker override must never answer a cloud lookup.
+    @Test
+    void aDockerFactoryOverride_isNotServedToACloudLookup() {
+        var listing = new Listing(List.of());
+
+        resolve("docker", listing);
+        var source = ClusterBootstrapConfigParser.parse(CLOUD).unwrap().sources().get("eu-1");
+        var resolved = ProviderResolver.resolveCloudCompute(source);
+
+        boolean notTheOverride = resolved.fold(_ -> true, compute -> compute != listing);
+
+        assertThat(notTheOverride).isTrue();
+    }
+
     private static String dockerRow(String id, String name, String state) {
         return String.join("\t", id, name, state, "prod-cluster", "core", name);
     }
 
-    /// #2132: the rows the REAL docker listing parser produces must carry a drainable address. The management call completes it as
-    /// `<scheme>://<address>:<port>/...` (ClusterHttpClient.awaitDrainComplete / drainNode), so the address is the bare container name.
+    /// #2132: the CLI runs on the operator's host, outside the docker network, where a container name does not resolve; a docker node is
+    /// reached on `127.0.0.1` plus ITS OWN published management port (#2089, `docker port`), the way bootstrap reaches a new one
+    /// ([BootstrapPhaseProvision#withPublishedManagementPort]). The rows are what the REAL docker listing parser produces.
     @Test
-    void aRealDockerListing_yieldsAnAddressTheDrainCallCompletes() {
-        var rows = dockerRow("id-1", OLD_NODE, "running") + "\n" + dockerRow("id-2", "aether-prod-cluster-node-zz1new", "running");
+    void aRealDockerListing_isDrainedOnLoopback_atEachNodesOwnPublishedPort() {
+        var other = "aether-prod-cluster-node-zz1other";
+        var rows = dockerRow("id-1", OLD_NODE, "running") + "\n" + dockerRow("id-2", other, "running");
         var docker = DockerComputeProvider.dockerComputeProvider(command -> Promise.success(rows),
                                                                  DockerConfig.dockerConfig().unwrap(),
                                                                  name -> "AETHER_CLUSTER_NAME".equals(name) ? "prod-cluster" : null)
                                           .unwrap();
-        var http = scriptedFor(OLD_NODE);
+        var http = new ScriptedDrainHttp(drainAccepted(OLD_NODE),
+                                         lifecycle(OLD_NODE, "DRAINING"),
+                                         notFound(OLD_NODE),
+                                         connectionRefused());
 
+        DockerHostPorts.override = id -> Result.success(id.equals("id-1") ? 55001 : 55002);
         ClusterHttpClient.HTTP_OPS_REF.set(http);
 
-        var listed = WaveExecutor.listedOldNodes(docker, WaveExecutor.LabelKeys.DOCKER, sourceNameOrDefault("local"), NodeRole.CORE, 1, CLUSTER, List.of());
+        var listed = WaveExecutor.listedOldNodes(docker, WaveExecutor.LabelKeys.DOCKER, sourceNameOrDefault("local"), NodeRole.CORE, 2, CLUSTER, List.of());
         var drained = listed.flatMap(nodes -> WaveExecutor.drainOldNodes(nodes, 8080));
 
-        assertThat(listed.unwrap()).containsExactly(WaveExecutor.OldNode.oldNode(OLD_NODE, OLD_NODE));
+        assertThat(listed.unwrap()).containsExactly(WaveExecutor.OldNode.oldNode(OLD_NODE, "127.0.0.1", 55001),
+                                                    WaveExecutor.OldNode.oldNode(other, "127.0.0.1", 55002));
         assertThat(drained.isSuccess()).as("drain outcome: %s", drained).isTrue();
-        assertThat(http.requestUris()).anyMatch(uri -> uri.equals("POST http://" + OLD_NODE + ":8080/api/v1/nodes/drain/" + OLD_NODE));
+        assertThat(http.requestUris()).anyMatch(uri -> uri.equals("POST http://127.0.0.1:55001/api/v1/nodes/drain/" + OLD_NODE))
+                                      .anyMatch(uri -> uri.equals("POST http://127.0.0.1:55002/api/v1/nodes/drain/" + other))
+                                      .noneMatch(uri -> uri.contains(":8080"));
+    }
+
+    @Test
+    void aDockerNodeWhoseManagementPortIsNotPublished_isRefused_andNothingIsDrained() {
+        var docker = DockerComputeProvider.dockerComputeProvider(command -> Promise.success(dockerRow("id-1", OLD_NODE, "running")),
+                                                                 DockerConfig.dockerConfig().unwrap(),
+                                                                 name -> "AETHER_CLUSTER_NAME".equals(name) ? "prod-cluster" : null)
+                                          .unwrap();
+
+        DockerHostPorts.override = _ -> Causes.cause("no published management port").result();
+
+        var listed = WaveExecutor.listedOldNodes(docker, WaveExecutor.LabelKeys.DOCKER, sourceNameOrDefault("local"), NodeRole.CORE, 1, CLUSTER, List.of());
+
+        assertThat(listed.isFailure()).isTrue();
     }
 
     private static ClusterBootstrapConfig sshWithHosts(String... hosts) {

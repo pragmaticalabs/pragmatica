@@ -1165,21 +1165,6 @@ class DockerComputeProviderTest {
             assertThat(result.getFirst().status()).isEqualTo(InstanceStatus.RUNNING);
         }
 
-        /// #2132: a listed container is addressed by its name alone (the bare-host form `parseInspectOutput` reports), never left unaddressed.
-        @Test
-        void parseContainerLine_addressesTheContainerByItsName() {
-            var result = DockerComputeProvider.parseContainerLine("abc\taether-c-node-01\trunning\tc\tcore\taether-c-node-01");
-
-            assertThat(result.addresses()).containsExactly("aether-c-node-01");
-        }
-
-        @Test
-        void parseContainerLine_anUnnamedRow_staysUnaddressed() {
-            var result = DockerComputeProvider.parseContainerLine("abc\t\trunning\tc\tcore\t");
-
-            assertThat(result.addresses()).isEmpty();
-        }
-
         @Test
         void parseInspectOutput_validOutput_returnsInstanceInfo() {
             var result = DockerComputeProvider.parseInspectOutput("running\t/aether-node-0\taether-node-0\tabc123\tobserved-cluster\tworker\taether-node-0",

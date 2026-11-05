@@ -636,9 +636,15 @@ public final class WaveExecutor {
 
     /// #2132: a node about to be retired, as the cluster knows it: the node id it registered under and the address its management API
     /// answers on, both read from the provider's own record of the node (SSH: from the configured host), never built from the source name.
-    record OldNode(String nodeId, String address) {
+    /// `managementPort` is the node's own port when it is not the cluster-wide configured one: a docker node is reached from the operator's
+    /// host on `127.0.0.1` plus its own published port (#2089), as [BootstrapPhaseProvision#withPublishedManagementPort] reaches a new one.
+    record OldNode(String nodeId, String address, Option<Integer> managementPort) {
         static OldNode oldNode(String nodeId, String address) {
-            return new OldNode(nodeId, address);
+            return new OldNode(nodeId, address, Option.none());
+        }
+
+        static OldNode oldNode(String nodeId, String address, int managementPort) {
+            return new OldNode(nodeId, address, Option.some(managementPort));
         }
     }
 
@@ -718,7 +724,7 @@ public final class WaveExecutor {
                              .await();
 
         return listing.map(instances -> retiringCandidates(instances, keys, sourceName, role, clusterName, replacements))
-                      .flatMap(candidates -> oldestOf(candidates, sourceName, role, count));
+                      .flatMap(candidates -> oldestOf(candidates, keys, sourceName, role, count));
     }
 
     /// A listing the provider's selector got wrong (or ignored) must never make a node "ours": each instance has to carry the labels itself.
@@ -770,6 +776,7 @@ public final class WaveExecutor {
     }
 
     private static Result<List<OldNode>> oldestOf(List<InstanceInfo> candidates,
+                                                  LabelKeys keys,
                                                   SourceName sourceName,
                                                   NodeRole role,
                                                   int count) {
@@ -780,7 +787,21 @@ public final class WaveExecutor {
                                               role,
                                               count,
                                               ordered.stream().map(WaveExecutor::nodeIdOf).toList()).<List<OldNode>> result()
-               : Result.allOf(ordered.subList(0, count).stream().map(WaveExecutor::addressed).toList());
+               : Result.allOf(ordered.subList(0, count).stream().map(info -> reachable(info, keys)).toList());
+    }
+
+    /// A docker node is reached through its published port, every other provider's node at the address it reports.
+    private static Result<OldNode> reachable(InstanceInfo info, LabelKeys keys) {
+        return keys == LabelKeys.DOCKER
+               ? publishedOnHost(info)
+               : addressed(info);
+    }
+
+    /// The operator's CLI is outside the docker network, where a container name does not resolve (see [DockerHostPorts]): `docker port`
+    /// reports the host port this container's management API is published on, and the node is `127.0.0.1:<that port>`.
+    private static Result<OldNode> publishedOnHost(InstanceInfo info) {
+        return DockerHostPorts.managementPort(info.id().value())
+                              .map(port -> OldNode.oldNode(nodeIdOf(info), BootstrapPhaseProvision.DOCKER_HOST_ADDRESS, port));
     }
 
     private static Result<OldNode> addressed(InstanceInfo info) {
@@ -841,7 +862,7 @@ public final class WaveExecutor {
     static Result<Unit> drainOldNodes(List<OldNode> oldNodes, int managementPort) {
         for (var node : oldNodes) {
             Result<Unit> result = ClusterHttpClient.drainNodeAndAwait(node.address(),
-                                                                      managementPort,
+                                                                      node.managementPort().or(managementPort),
                                                                       node.nodeId(),
                                                                       DRAIN_TIMEOUT_MS);
 
