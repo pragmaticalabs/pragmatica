@@ -366,7 +366,6 @@ public final class LeaderReconciler {
     private static final int SUBSTITUTE_GENERATION = 1;
 
     private final ConcurrentHashMap<NodeId, InFlightEntry> inFlightProvisioning = new ConcurrentHashMap<>();
-
     /// #2115 — departed voters whose replacement has joined but that are still installed voters (the voter reconciler swaps them out serially, once the
     /// replacement is synced). They stay "already paired" until they leave the electorate or rejoin, so a later failure is not healed in their source.
     private final Set<NodeId> pairedDeparted = ConcurrentHashMap.newKeySet();
@@ -1872,6 +1871,7 @@ public final class LeaderReconciler {
 
     private List<NodeId> pairedAndUnswapped(Set<NodeId> voters, Set<NodeId> currentMembers, Set<NodeId> replaced) {
         pairedDeparted.removeIf(id -> !voters.contains(id) || currentMembers.contains(id));
+
         return voters.stream()
                      .filter(voter -> !currentMembers.contains(voter))
                      .filter(voter -> !replaced.contains(voter))
@@ -1883,9 +1883,8 @@ public final class LeaderReconciler {
     /// A joined placeholder leaves the in-flight map; the departed node it replaced stays "already paired" while it is an installed voter.
     @Contract
     private void settleJoinedPlaceholder(NodeId member) {
-        Option.option(inFlightProvisioning.remove(member))
-              .onPresent(entry -> entry.departed()
-                                       .onPresent(pairedDeparted::add));
+        Option.option(inFlightProvisioning.remove(member)).onPresent(entry -> entry.departed()
+                                                                                   .onPresent(pairedDeparted::add));
     }
 
     /// A departed node whose replacement is already in flight is still an installed voter until the voter reconciler swaps it out; it must not be
