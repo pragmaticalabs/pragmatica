@@ -1854,16 +1854,28 @@ public final class LeaderReconciler {
     /// #2115 — the voters of the verified installed electorate that are not members now: the nodes whose departure opened the deficit. A
     /// replacement is made in the source of the node it replaces, so each placeholder is paired with one of them in a stable order (a placeholder
     /// that has not joined is not a voter yet, so it is never one of them). The pairing is a best reading: a departed node the voter reconciler has not yet swapped
-    /// out of the electorate can precede a newer one, and the unwired electorate (legacy fixtures) pairs nothing, so the manager then
+    /// out of the electorate can precede a newer one (a departed node whose replacement is in flight is excluded), and the unwired electorate (legacy fixtures) pairs nothing, so the manager then
     /// resolves the source as it does for a node that carries none.
     private List<NodeId> departedVoters(Set<NodeId> currentMembers) {
+        var replaced = departedWithReplacementInFlight();
+
         return installedVotersSupplier.get()
                                       .map(supplier -> supplier.get()
                                                                .stream()
                                                                .filter(voter -> !currentMembers.contains(voter))
+                                                               .filter(voter -> !replaced.contains(voter))
                                                                .sorted(Comparator.comparing(NodeId::id))
                                                                .toList())
                                       .or(List.of());
+    }
+
+    /// A departed node whose replacement is already in flight is still an installed voter until the voter reconciler swaps it out; it must not be
+    /// paired again, or a later failure would be healed in its source.
+    private Set<NodeId> departedWithReplacementInFlight() {
+        return inFlightProvisioning.values()
+                                   .stream()
+                                   .flatMap(entry -> entry.departed().stream())
+                                   .collect(Collectors.toSet());
     }
 
     private static Option<NodeId> nextDeparted(Iterator<NodeId> departed) {
@@ -1894,7 +1906,8 @@ public final class LeaderReconciler {
                                                              ctm.replacementCeiling(NodeRole.CORE),
                                                              InFlightState.DISPATCHING,
                                                              nowNanos,
-                                                             generation));
+                                                             generation,
+                                                             departed));
         armInFlightSweep();
         // Pass the SAME minted placeholder as the new node's intended identity: the provisioned
         // node boots under exactly this id (CTM threads it into ProvisionContext.nodeId()), so the
@@ -2435,7 +2448,8 @@ public final class LeaderReconciler {
                                  InFlightState state,
                                  long pollableSinceNanos,
                                  int absentListings,
-                                 int generation) {
+                                 int generation,
+                                 Option<NodeId> departed) {
         static InFlightEntry inFlightEntry(long sinceNanos,
                                            TimeSpan ceiling,
                                            InFlightState state,
@@ -2448,19 +2462,29 @@ public final class LeaderReconciler {
                                            InFlightState state,
                                            long pollableSinceNanos,
                                            int generation) {
-            return new InFlightEntry(sinceNanos, ceiling, state, pollableSinceNanos, 0, generation);
+            return inFlightEntry(sinceNanos, ceiling, state, pollableSinceNanos, generation, none());
+        }
+
+        /// #2115 — `departed` is the node this placeholder replaces, kept so a later pass does not pair it with a second placeholder.
+        static InFlightEntry inFlightEntry(long sinceNanos,
+                                           TimeSpan ceiling,
+                                           InFlightState state,
+                                           long pollableSinceNanos,
+                                           int generation,
+                                           Option<NodeId> departed) {
+            return new InFlightEntry(sinceNanos, ceiling, state, pollableSinceNanos, 0, generation, departed);
         }
 
         InFlightEntry withState(InFlightState next) {
-            return new InFlightEntry(sinceNanos, ceiling, next, pollableSinceNanos, absentListings, generation);
+            return new InFlightEntry(sinceNanos, ceiling, next, pollableSinceNanos, absentListings, generation, departed);
         }
 
         InFlightEntry pollableFrom(long nowNanos) {
-            return new InFlightEntry(sinceNanos, ceiling, InFlightState.UNCONFIRMED, nowNanos, 0, generation);
+            return new InFlightEntry(sinceNanos, ceiling, InFlightState.UNCONFIRMED, nowNanos, 0, generation, departed);
         }
 
         InFlightEntry withAbsentListing() {
-            return new InFlightEntry(sinceNanos, ceiling, state, pollableSinceNanos, absentListings + 1, generation);
+            return new InFlightEntry(sinceNanos, ceiling, state, pollableSinceNanos, absentListings + 1, generation, departed);
         }
 
         boolean isDispatching() {

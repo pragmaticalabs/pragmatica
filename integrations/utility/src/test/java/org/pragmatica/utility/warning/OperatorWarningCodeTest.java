@@ -206,6 +206,15 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.COMMUNITY_ASSIGNMENT_UNPLACED.code()).isEqualTo("community-assignment-unplaced");
     }
 
+    /// #2115: a refused core replacement is a WARNING (the cluster stays under-replaced), closed by an INFO recovery of the same subject. INFO
+    /// would exempt the code from the recovery-pairing rule, so the level is pinned.
+    @Test
+    void coreReplacementSourceUnresolved_isAWarning_andIsClosedByAnInfoRecovery() {
+        assertThat(OperatorWarningCode.CORE_REPLACEMENT_SOURCE_UNRESOLVED.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.CORE_REPLACEMENT_SOURCE_RESOLVED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.CORE_REPLACEMENT_SOURCE_RESOLVED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.CORE_REPLACEMENT_SOURCE_UNRESOLVED);
+    }
+
     /// #2378 (know 14b6b16b8): a refused live `[json]` change is CRITICAL and closed by an INFO recovery of its own
     /// subsystem.
     @Test

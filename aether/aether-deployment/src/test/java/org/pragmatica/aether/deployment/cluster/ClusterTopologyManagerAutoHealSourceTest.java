@@ -84,6 +84,18 @@ class ClusterTopologyManagerAutoHealSourceTest {
             name = "prod-cluster"
             version = "1.0.0"
 
+            [source.eu-0]
+            type = "cloud"
+            provider = "hetzner"
+            credentials = "hcloud-token"
+            region = "eu-north"
+            zones = ["hel1"]
+
+            [source.eu-0.core]
+            count = 1
+            instance_type = "small"
+            image = "test-image"
+
             [source.eu-1]
             type = "cloud"
             provider = "hetzner"
@@ -166,6 +178,8 @@ class ClusterTopologyManagerAutoHealSourceTest {
         manager.activate();
     }
 
+    /// Three sources declare the role and `eu-0` is declared first: the removed first-cloud preference would pick `eu-0` for every heal, so
+    /// each of the two tests below names a source that pick would get wrong.
     @Test
     void nodeOfTheSecondSourceDeparts_theHealGoesToTheSecondSource() {
         placeNode(FROM_SECOND, SECOND);
@@ -198,7 +212,7 @@ class ClusterTopologyManagerAutoHealSourceTest {
         assertThat(manager.circuitBreakerState().consecutiveFailures()).as("a refusal is counted like every refused provision").isEqualTo(2);
         assertThat(manager.lastProvisionFailure().map(ClusterTopologyManager.LastProvisionFailure::cause).or(""))
             .as("the cause names the role and the candidate sources")
-            .contains("core", "eu-1", "eu-2");
+            .contains("core", "eu-0", "eu-1", "eu-2");
         Awaitility.await().atMost(Duration.ofSeconds(5)).until(() -> !events.isEmpty());
         assertThat(events).as("one event for the run, not one per refusal").containsExactly("core-replacement-source-unresolved");
     }
@@ -225,6 +239,30 @@ class ClusterTopologyManagerAutoHealSourceTest {
         Awaitility.await().atMost(Duration.ofSeconds(5)).until(() -> events.size() == 2);
         assertThat(events).containsExactly("core-replacement-source-unresolved", "core-replacement-source-resolved");
         assertThat(requestedSources()).containsExactly("eu-2");
+    }
+
+    /// The event pair is one open/close per run: a refusal run closed by two successful heals raises exactly one RESOLVED, and a heal that
+    /// never followed a refusal raises none.
+    @Test
+    void healOkTwiceAfterOneRefusal_raisesExactlyOneResolved() {
+        heal(Option.some(FROM_SECOND));
+        Awaitility.await().atMost(Duration.ofSeconds(5)).until(() -> events.size() == 1);
+
+        placeNode(FROM_SECOND, SECOND);
+        heal(Option.some(FROM_SECOND));
+        heal(Option.some(FROM_SECOND));
+
+        Awaitility.await().atMost(Duration.ofSeconds(5)).during(Duration.ofMillis(500)).until(() -> events.size() == 2);
+        assertThat(events).containsExactly("core-replacement-source-unresolved", "core-replacement-source-resolved");
+    }
+
+    @Test
+    void healOkWithNoPriorRefusal_raisesNoEvent() {
+        placeNode(FROM_SECOND, SECOND);
+
+        heal(Option.some(FROM_SECOND));
+
+        Awaitility.await().atMost(Duration.ofSeconds(5)).during(Duration.ofMillis(500)).until(events::isEmpty);
     }
 
     /// A node a heal made earlier is committed to the source it was made in (its capacity reservation), so when it departs in turn its own

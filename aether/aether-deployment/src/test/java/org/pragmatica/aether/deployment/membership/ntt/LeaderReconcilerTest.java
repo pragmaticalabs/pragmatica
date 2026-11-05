@@ -593,6 +593,30 @@ class LeaderReconcilerTest {
         assertThat(ctm.provisionReplacementFailedPeers()).containsExactly(Option.some(firstDeparted));
     }
 
+    /// #2115 (two failures): C departs and its replacement is in flight; C is still an installed voter. When D then departs, D's placeholder must
+    /// be paired with D, never with C again, or D is healed in C's source (the wrong provider is billed).
+    @Test
+    void aSecondFailureWhileTheFirstReplacementIsInFlight_isPairedWithItsOwnDepartedNode() {
+        var departedC = new NodeId("heal-c");
+        var departedD = new NodeId("heal-d");
+
+        configuredCoreCount.set(5);
+        leaderTerm.set(2L);
+        seedClusterWithPeers(PEER_A, PEER_B, departedD);
+        reconciler.setInstalledVotersSupplier(() -> Set.of(SELF, PEER_A, PEER_B, departedC, departedD));
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(ctm.provisionReplacementFailedPeers()).containsExactly(Option.some(departedC));
+
+        removePeers(departedD);
+        triggerAndFireReconcile();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(ctm.provisionReplacementFailedPeers()).containsExactly(Option.some(departedC), Option.some(departedD));
+    }
+
     /// #2115: with no verified electorate wired there is no departed node to name; the manager resolves the source as for a node that
     /// carries none.
     @Test
