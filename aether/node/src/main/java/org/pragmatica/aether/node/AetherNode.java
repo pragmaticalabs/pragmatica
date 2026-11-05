@@ -2891,6 +2891,10 @@ public interface AetherNode extends ManageableNode {
         // #1935: a declared stream consumer that cannot be registered reaches THIS node's event log.
         nodeDeploymentManager.setOperatorWarningSink(operatorWarningSink);
         configChangeFeed.setOperatorWarningSink(operatorWarningSink);
+        // #1654: genesis seat warnings raised by the consensus engine reach THIS node's event log.
+        clusterNode.useOperatorWarningSink(operatorWarningSink);
+        // FDB-2a: a migration fenced in the database for long, and an unfenced CockroachDB run, reach the event log.
+        schemaOrchestrator.setOperatorWarningSink(operatorWarningSink);
         var appHttpServerOut = SliceRuntimeAssembly.appHttpServer(new SliceRuntimeAssembly.AppHttpServerInputs(config,
                                                                                                                clusterNode,
                                                                                                                serializer,

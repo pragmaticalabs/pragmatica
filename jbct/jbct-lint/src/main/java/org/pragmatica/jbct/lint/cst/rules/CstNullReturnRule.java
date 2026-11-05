@@ -20,7 +20,7 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 public class CstNullReturnRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-RET-03";
 
-    private static final String DOC_LINK = "https://github.com/siy/coding-technology/blob/main/skills/jbct/fundamentals/four-return-kinds.md";
+    private static final String DOC_LINK = "https://pragmatica.dev/java/jbct/rules/#jbct-ret-03";
 
     private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
 

@@ -439,6 +439,16 @@ column. That owner also determines whose slices wait: while a datasource's migra
 
 Migration scripts use Flyway-style naming: versioned (`V`), repeatable (`R`), undo (`U`), and baseline (`B`). They are applied automatically when a blueprint is deployed. Schema history is tracked per datasource in the `aether_schema_history` table.
 
+#### Database Fence (PostgreSQL, MySQL/MariaDB)
+
+A migration on PostgreSQL or MySQL/MariaDB runs on **one dedicated database session that holds a database lock for the whole run** (`pg_try_advisory_lock(0x41455448, 1)` per database on PostgreSQL; `GET_LOCK('aether_mig:<hash of the schema>', 0)` on MySQL/MariaDB). The lock lives exactly as long as that session, so a second runner, from this cluster or from any other client running Aether's migrations against the same database, is refused before it reads or writes anything.
+
+- **Another session holds the lock:** the attempt fails with `MigrationFencedInDatabase` naming the holder (PostgreSQL `pid` and `application_name aether-mig:<node>`, MySQL connection `id`). It does not consume a migration attempt: the schema stays `PENDING` and is retried with a backoff of at most 45 s. From the third consecutive fenced attempt on, each one raises the operator warning `schema-migration-fence-held`.
+- **Connection poolers: transaction-mode pooling is unsupported.** Point a migrating datasource at the database directly, or at a pooler in session mode. A pooler that shares one server session between clients (PgBouncer `pool_mode = transaction` or `statement`) breaks the "one session holds the lock" premise, and both locks are re-entrant. The runner refuses such a session with `FenceUnavailable`, the schema goes `FAILED` (`aether schema status`), and the leader logs the reason at ERROR (`Schema migration failed (permanent)`, also in the audit log as a failed migration): "this server session already held the fence before taking it: a connection pooler shares server sessions…" when it is handed a session that already holds the lock, or "this session does not hold the fence it took: a connection pooler swapped the session…" when it is moved to another session mid-run. The refusal is a backstop, not support: a pooler that does neither during a run is not detected. A refused runner never releases the lock, so it cannot drop the holder's lock on a shared session.
+- **Refused topologies:** Galera (`wsrep_on=ON`) and multi-primary group replication, where `GET_LOCK` is node-local, fail with `FenceUnavailable`.
+- **CockroachDB configured as `POSTGRESQL`** has no working advisory lock, so its migrations run **without** the database fence (the cluster's own migration lease still applies). Every such operation logs a warning and raises the operator warning `schema-migration-unfenced`.
+- **Bounds (PostgreSQL):** the session sets `statement_timeout` and `lock_timeout` to the migration timeout before the first statement, overriding any role or database default; a zero bound is set explicitly as `0` (unbounded).
+
 #### Local Development
 
 Forge no longer provides an embedded H2 database. For local development, start an external PostgreSQL instance using the `start-postgres.sh` script provided in example projects:

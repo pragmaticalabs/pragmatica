@@ -18,6 +18,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.StreamReplicasResponse;
 import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
@@ -913,10 +914,15 @@ public final class StreamApiRoutes implements RouteSource {
     /// A publish is not idempotent, so only a refusal on the pre-append list may answer a status that invites a retry
     /// (503, 429). Any other raw [StreamError] would take its class status from the management funnel (often 503), so it
     /// is pinned to the 500 a raw stream error answered on this route before the funnel classified stream errors.
+    ///
+    /// #1750: an unknown outcome ([PublishOutcomeUnknown]) is advised against a retry with the same message ID, which this
+    /// route cannot give — its request carries no ID — so the advice is rewritten for the keyless publish.
     private static Cause withoutRetryInvitation(Cause cause) {
-        return cause instanceof StreamError
-               ? new ManagementServerError.StreamRefused(HttpStatus.INTERNAL_SERVER_ERROR, cause)
-               : cause;
+        return switch (cause) {
+            case StreamError _ -> new ManagementServerError.StreamRefused(HttpStatus.INTERNAL_SERVER_ERROR, cause);
+            case PublishOutcomeUnknown unknown -> new ManagementServerError.KeylessPublishOutcomeUnknown(unknown.origin());
+            default -> cause;
+        };
     }
 
     private static boolean isPreAppendRefusal(Cause cause) {

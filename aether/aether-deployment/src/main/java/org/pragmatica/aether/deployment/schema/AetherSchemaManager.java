@@ -45,7 +45,8 @@ public interface AetherSchemaManager {
                                    BlueprintId owner);
 
     static AetherSchemaManager aetherSchemaManager(SchemaPolicy policy) {
-        return new SharedSchemaAdapter(policy, SchemaMigrations.schemaMigrations());
+        return new SharedSchemaAdapter(policy,
+                                       SchemaMigrations.schemaMigrations(policy.migrationTimeout()));
     }
 
     /// Exposes the [SchemaPolicy] this manager was built with, so a caller that must bound its OWN

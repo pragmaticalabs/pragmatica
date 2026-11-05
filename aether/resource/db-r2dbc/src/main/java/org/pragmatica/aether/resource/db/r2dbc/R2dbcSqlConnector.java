@@ -10,6 +10,7 @@ import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
 import org.pragmatica.aether.resource.db.DatabaseType;
 import org.pragmatica.aether.resource.db.DatabaseConnectorError;
 import org.pragmatica.aether.resource.db.RowMapper;
+import org.pragmatica.aether.resource.db.PinnedSessionBound;
 import org.pragmatica.aether.resource.db.SqlConnector;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -113,7 +114,8 @@ public final class R2dbcSqlConnector implements SqlConnector {
         return ReactiveOperations.<Connection> fromPublisher(unpooled.create()).flatMap(conn -> runPinned(conn,
                                                                                                           new PinnedR2dbcConnector(config,
                                                                                                                                    conn),
-                                                                                                          body,
+                                                                                                          PinnedSessionBound.serverBounded(statementTimeout,
+                                                                                                                                           body),
                                                                                                           release));
     }
 
@@ -249,6 +251,8 @@ public final class R2dbcSqlConnector implements SqlConnector {
         }
     }
 
+    // Unlike a session's `update` (see TransactionalR2dbcConnector#rowsOrZero), a batch keeps requiring a row count per element: `batch` takes
+    // parameterised DML, which always reports one, so an empty count here is a real anomaly worth failing on.
     private static Promise<int[]> collectUpdateCounts(List<io.r2dbc.spi.Result> results, int[] counts, int index) {
         if (index >= results.size()) {
             return Promise.success(counts);
@@ -379,10 +383,19 @@ public final class R2dbcSqlConnector implements SqlConnector {
 
             return ReactiveOperations.<io.r2dbc.spi.Result> fromPublisher(stmt.execute(),
                                                                           e -> R2dbcError.fromException(e, sql))
-                                     .flatMap(result -> ReactiveOperations.fromPublisher(result.getRowsUpdated(),
-                                                                                         e -> R2dbcError.fromException(e,
-                                                                                                                       sql)))
+                                     .flatMap(result -> ReactiveOperations.firstFromPublisher(result.getRowsUpdated(),
+                                                                                              e -> R2dbcError.fromException(e,
+                                                                                                                            sql)))
+                                     .map(TransactionalR2dbcConnector::rowsOrZero)
                                      .map(Long::intValue);
+        }
+
+        /// A statement with no row count (DDL, `SET`) completes `getRowsUpdated()` empty: it updated zero rows, it did
+        /// not fail. Without this, the pinned session's first `SET` (FDB-2a, [PinnedSessionBound]) failed with
+        /// `NoResult`. The pooled `update` (through `R2dbcOperations`) is not changed here: it fails earlier on such
+        /// statements for a different reason [unverified: the cause of its "Expected single result but got 2"].
+        private static long rowsOrZero(Option<Long> rowsUpdated) {
+            return rowsUpdated.or(0L);
         }
 
         @Override
