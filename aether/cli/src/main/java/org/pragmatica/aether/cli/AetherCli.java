@@ -1362,9 +1362,7 @@ public class AetherCli implements Runnable {
 
             var body = buildScaleBody();
             var response = parent.post(SLICE_SCALE, body);
-            var result = OutputFormatter.printAction(response,
-                                                     parent.outputOptions(),
-                                                     actionMessage());
+            var result = OutputFormatter.printAction(response, parent.outputOptions(), actionMessage());
 
             if (result != ExitCode.SUCCESS || !waitForCompletion || release) {
                 return result;
@@ -1376,8 +1374,9 @@ public class AetherCli implements Runnable {
         private String actionMessage() {
             return release
                    ? "Released the operator instance requirement of " + artifact
-                   : "Set the operator instance requirement of " + artifact + " to " + instances
-                     + " (the resulting target is in the response)";
+                   : "Set the operator instance requirement of " + artifact
+                    + " to " + instances
+                    + " (the resulting target is in the response)";
         }
 
         @SuppressWarnings("JBCT-EX-01")
@@ -1425,8 +1424,7 @@ public class AetherCli implements Runnable {
         }
 
         private String buildScaleBody() {
-            var sb = new StringBuilder("{\"artifact\":\"").append(escapeJsonValue(artifact))
-                                                          .append("\"");
+            var sb = new StringBuilder("{\"artifact\":\"").append(escapeJsonValue(artifact)).append("\"");
 
             if (release) {
                 sb.append(",\"release\":true");

@@ -97,6 +97,7 @@ public interface AbTestManager {
                              Map<String, AbTestDeployment> tests,
                              AtomicBoolean active) implements AbTestManager {
             private static final Logger log = LoggerFactory.getLogger(AbTestManager.class);
+
             @Override
             public Promise<Unit> activate() {
                 log.info("A/B test manager active (STRATEGIES task group assigned)");

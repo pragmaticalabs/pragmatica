@@ -419,24 +419,20 @@ public sealed interface AetherValue {
         /// never parsed from a key string, and never read by the combiner, which iterates [#sources()].
         /// Must stay LAST.
         UNKNOWN;
-
         private static final Fn1<Cause, String> UNKNOWN_KIND = Causes.forOneValue("Unknown slice requirement kind: %s");
-
         /// The kinds that name a requirement source, in tie-break order: every constant but the wire sentinel.
         public static List<RequirementKind> sources() {
             return Stream.of(values())
                          .filter(kind -> kind != UNKNOWN)
                          .toList();
         }
-
         public static Result<RequirementKind> requirementKind(String name) {
             return sources().stream()
-                         .filter(kind -> kind.name()
-                                             .equals(name))
-                         .findFirst()
-                         .map(Result::success)
-                         .orElseGet(() -> UNKNOWN_KIND.apply(name)
-                                                      .result());
+                          .filter(kind -> kind.name()
+                                              .equals(name))
+                          .findFirst()
+                          .map(Result::success)
+                          .orElseGet(() -> UNKNOWN_KIND.apply(name).result());
         }
     }
 

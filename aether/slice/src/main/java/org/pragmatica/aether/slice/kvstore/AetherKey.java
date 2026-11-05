@@ -97,7 +97,8 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
             return asString();
         }
 
-        public static SliceRequirementKey sliceRequirementKey(ArtifactBase artifactBase, AetherValue.RequirementKind kind) {
+        public static SliceRequirementKey sliceRequirementKey(ArtifactBase artifactBase,
+                                                              AetherValue.RequirementKind kind) {
             return new SliceRequirementKey(artifactBase, kind);
         }
 
@@ -113,9 +114,8 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
                 return SLICE_REQUIREMENT_KEY_FORMAT_ERROR.apply(key).result();
             }
 
-            return AetherValue.RequirementKind.requirementKind(rest.substring(0, separator))
-                              .flatMap(kind -> ArtifactBase.artifactBase(rest.substring(separator + 1))
-                                                           .map(base -> new SliceRequirementKey(base, kind)));
+            return AetherValue.RequirementKind.requirementKind(rest.substring(0, separator)).flatMap(kind -> ArtifactBase.artifactBase(rest.substring(separator + 1)).map(base -> new SliceRequirementKey(base,
+                                                                                                                                                                                                          kind)));
         }
     }
 

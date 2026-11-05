@@ -32,6 +32,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -51,19 +52,14 @@ import org.slf4j.LoggerFactory;
 public interface RequirementCombiner {
     /// Starts combining: this node became the leader. Sweeps every slice holding a requirement.
     Unit activate();
-
     /// Stops combining: this node is no longer the leader. Cancels every expiry timer.
     Unit deactivate();
-
     /// A requirement of `key`'s slice was put.
     Unit onRequirementPut(SliceRequirementKey key);
-
     /// A requirement of `key`'s slice was removed.
     Unit onRequirementRemove(SliceRequirementKey key);
-
     /// The target of `key`'s slice was put (a creation, a republish, a version change or the combiner's own write).
     Unit onSliceTargetPut(SliceTargetKey key);
-
     /// The target of `key`'s slice was removed: its requirements are removed with it.
     Unit onSliceTargetRemove(SliceTargetKey key);
 
@@ -99,8 +95,7 @@ public interface RequirementCombiner {
         @Override
         public Unit deactivate() {
             active.set(false);
-            expiryTimers.values()
-                        .forEach(timer -> timer.cancel(false));
+            expiryTimers.values().forEach(timer -> timer.cancel(false));
             expiryTimers.clear();
 
             return Unit.unit();
@@ -180,21 +175,18 @@ public interface RequirementCombiner {
                                              now)
                              .onPresent(expiry -> arm(base,
                                                       SharedScheduler.schedule(() -> evaluate(base),
-                                                                               TimeSpan.timeSpan(expiry - now)
-                                                                                       .millis())))
+                                                                               TimeSpan.timeSpan(expiry - now).millis())))
                              .onEmpty(() -> disarm(base));
         }
 
         @Contract
         private void arm(ArtifactBase base, ScheduledFuture<?> timer) {
-            Option.option(expiryTimers.put(base, timer))
-                  .onPresent(previous -> previous.cancel(false));
+            Option.option(expiryTimers.put(base, timer)).onPresent(previous -> previous.cancel(false));
         }
 
         @Contract
         private void disarm(ArtifactBase base) {
-            Option.option(expiryTimers.remove(base))
-                  .onPresent(previous -> previous.cancel(false));
+            Option.option(expiryTimers.remove(base)).onPresent(previous -> previous.cancel(false));
         }
 
         @Contract

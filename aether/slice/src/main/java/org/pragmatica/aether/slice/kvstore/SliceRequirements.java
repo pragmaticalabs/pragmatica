@@ -67,11 +67,10 @@ public sealed interface SliceRequirements {
                                    List<Requirement> requirements,
                                    long nowMs,
                                    int placeableCapacity) {
-        return Option.from(unexpired(requirements, nowMs).max(Integer::compare))
-                     .map(demand -> clamp(Math.max(target.effectiveMinInstances(),
-                                                   demand),
-                                          target.maxInstances(),
-                                          placeableCapacity));
+        return Option.from(unexpired(requirements, nowMs).max(Integer::compare)).map(demand -> clamp(Math.max(target.effectiveMinInstances(),
+                                                                                                              demand),
+                                                                                                     target.maxInstances(),
+                                                                                                     placeableCapacity));
     }
 
     /// The instance counts of the requirements still in force at `nowMs`: an absent expiry never expires, a present one expires at its instant.
@@ -87,8 +86,7 @@ public sealed interface SliceRequirements {
 
     /// `demand` bounded above by `maxInstances` and `placeableCapacity`, then below by [SliceSpec#MIN_INSTANCES], which wins.
     static int clamp(int demand, Option<Integer> maxInstances, int placeableCapacity) {
-        var upper = maxInstances.map(max -> Math.min(max, placeableCapacity))
-                                .or(placeableCapacity);
+        var upper = maxInstances.map(max -> Math.min(max, placeableCapacity)).or(placeableCapacity);
 
         return Math.max(SliceSpec.MIN_INSTANCES, Math.min(demand, upper));
     }
@@ -105,15 +103,16 @@ public sealed interface SliceRequirements {
 
     /// The committed requirements of `base`, in [RequirementKind] order.
     static List<Requirement> committedRequirements(KVStore<AetherKey, AetherValue> store, ArtifactBase base) {
-        return RequirementKind.sources().stream()
-                     .flatMap(kind -> committedRequirement(store, base, kind).stream())
-                     .sorted(Comparator.comparing(Requirement::kind))
-                     .toList();
+        return RequirementKind.sources()
+                              .stream()
+                              .flatMap(kind -> committedRequirement(store, base, kind).stream())
+                              .sorted(Comparator.comparing(Requirement::kind))
+                              .toList();
     }
 
     private static Option<Requirement> committedRequirement(KVStore<AetherKey, AetherValue> store,
-                                                           ArtifactBase base,
-                                                           RequirementKind kind) {
+                                                            ArtifactBase base,
+                                                            RequirementKind kind) {
         return store.getTyped(SliceRequirementKey.sliceRequirementKey(base, kind),
                               SliceRequirementValue.class)
                     .map(value -> new Requirement(kind, value));
@@ -139,9 +138,9 @@ public sealed interface SliceRequirements {
     /// state. Fails with [CombinerOutcome.Settled] when the committed target needs no write, and with a
     /// [SliceTargetFence.SliceTargetFenceError] when no target, owner or leader is committed.
     static Result<LeaderTransaction<AetherKey, AetherValue>> combinerTransaction(KVStore<AetherKey, AetherValue> store,
-                                                                                ArtifactBase base,
-                                                                                long nowMs,
-                                                                                int placeableCapacity) {
+                                                                                 ArtifactBase base,
+                                                                                 long nowMs,
+                                                                                 int placeableCapacity) {
         var key = SliceTargetKey.sliceTargetKey(base);
 
         return SliceTargetFence.presentTarget(store, key)
@@ -158,15 +157,19 @@ public sealed interface SliceRequirements {
                                                      int placeableCapacity) {
         var base = key.artifactBase();
 
-        return combine(target, committedRequirements(store, base), nowMs, placeableCapacity)
-                      .filter(combined -> combined != target.targetInstances())
+        return combine(target,
+                       committedRequirements(store, base),
+                       nowMs,
+                       placeableCapacity).filter(combined -> combined != target.targetInstances())
                       .toResult(new CombinerOutcome.Settled(base))
                       .flatMap(combined -> SliceTargetFence.targetWrite(store,
                                                                         key,
                                                                         Option.some(target),
                                                                         target.withInstances(combined)))
                       .map(write -> new TargetWrite(write.mutation(),
-                                                    withRequirementWitnesses(store, base, write.guards())));
+                                                    withRequirementWitnesses(store,
+                                                                             base,
+                                                                             write.guards())));
     }
 
     private static List<ReadWitness<AetherKey>> withRequirementWitnesses(KVStore<AetherKey, AetherValue> store,
@@ -182,16 +185,17 @@ public sealed interface SliceRequirements {
     /// A witness per requirement kind of `base` at its committed value, absent included: a requirement put after the read refuses
     /// the write as surely as one changed or removed.
     static List<ReadWitness<AetherKey>> requirementWitnesses(KVStore<AetherKey, AetherValue> store, ArtifactBase base) {
-        return RequirementKind.sources().stream()
-                     .map(kind -> requirementWitness(store,
-                                                     SliceRequirementKey.sliceRequirementKey(base, kind)))
-                     .toList();
+        return RequirementKind.sources()
+                              .stream()
+                              .map(kind -> requirementWitness(store,
+                                                              SliceRequirementKey.sliceRequirementKey(base, kind)))
+                              .toList();
     }
 
-    private static ReadWitness<AetherKey> requirementWitness(KVStore<AetherKey, AetherValue> store, SliceRequirementKey key) {
+    private static ReadWitness<AetherKey> requirementWitness(KVStore<AetherKey, AetherValue> store,
+                                                             SliceRequirementKey key) {
         return new ReadWitness<>(key,
-                                 store.get(key)
-                                      .map(Object.class::cast));
+                                 store.get(key).map(Object.class::cast));
     }
 
     /// The put (`replacement` present) or removal (absent) of the requirement at `key`, expecting the value committed now.
@@ -208,12 +212,14 @@ public sealed interface SliceRequirements {
     /// (#2662's discipline). Fails with [SliceTargetFence.SliceTargetFenceError.OrphanTarget] when the owner is not committed now, and
     /// with [SliceTargetFence.SliceTargetFenceError.NoCommittedLeader] when no leader is.
     static Result<LeaderTransaction<AetherKey, AetherValue>> requirementTransaction(KVStore<AetherKey, AetherValue> store,
-                                                                                   SliceTargetValue observed,
-                                                                                   SliceRequirementKey key,
-                                                                                   Option<SliceRequirementValue> replacement) {
+                                                                                    SliceTargetValue observed,
+                                                                                    SliceRequirementKey key,
+                                                                                    Option<SliceRequirementValue> replacement) {
         var targetKey = SliceTargetKey.sliceTargetKey(key.artifactBase());
 
-        return SliceTargetFence.ownerGuards(store, targetKey, observed.owningBlueprint())
+        return SliceTargetFence.ownerGuards(store,
+                                            targetKey,
+                                            observed.owningBlueprint())
                                .flatMap(ownerGuards -> SliceTargetFence.guardedTransaction(store,
                                                                                            withTargetWitness(targetKey,
                                                                                                              observed,
@@ -238,26 +244,25 @@ public sealed interface SliceRequirements {
     /// and the witness holds the target absent, so a target re-created after the read refuses the removal. Fails with
     /// [CombinerOutcome.NoOrphans] when `base` holds no requirement, or its target is committed.
     static Result<LeaderTransaction<AetherKey, AetherValue>> orphanRemovalTransaction(KVStore<AetherKey, AetherValue> store,
-                                                                                     ArtifactBase base) {
+                                                                                      ArtifactBase base) {
         var targetKey = SliceTargetKey.sliceTargetKey(base);
         var removals = orphanRemovals(store, base);
 
-        return SliceTargetFence.committedTarget(store, targetKey)
-                               .isEmpty() && !removals.isEmpty()
+        return SliceTargetFence.committedTarget(store, targetKey).isEmpty() && !removals.isEmpty()
                ? SliceTargetFence.guardedTransaction(store,
-                                                     List.of(new ReadWitness<AetherKey>(targetKey,
-                                                                                        Option.none())),
+                                                     List.of(new ReadWitness<AetherKey>(targetKey, Option.none())),
                                                      removals)
                : new CombinerOutcome.NoOrphans(base).result();
     }
 
-    private static List<Mutation<AetherKey, AetherValue>> orphanRemovals(KVStore<AetherKey, AetherValue> store, ArtifactBase base) {
+    private static List<Mutation<AetherKey, AetherValue>> orphanRemovals(KVStore<AetherKey, AetherValue> store,
+                                                                         ArtifactBase base) {
         return committedRequirements(store, base).stream()
-                                                 .map(requirement -> new Mutation<AetherKey, AetherValue>(SliceRequirementKey.sliceRequirementKey(base,
-                                                                                                                                                  requirement.kind()),
-                                                                                                         Option.some(requirement.value()),
-                                                                                                         Option.none()))
-                                                 .toList();
+                                    .map(requirement -> new Mutation<AetherKey, AetherValue>(SliceRequirementKey.sliceRequirementKey(base,
+                                                                                                                                     requirement.kind()),
+                                                                                             Option.some(requirement.value()),
+                                                                                             Option.none()))
+                                    .toList();
     }
 
     record unused() implements SliceRequirements {}

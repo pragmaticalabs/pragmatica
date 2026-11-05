@@ -72,7 +72,6 @@ public interface ControlLoop {
 
     /// rc6 §3.1: a slice capacity requirement was put; the leader's [RequirementCombiner] re-combines the slice's target.
     void onSliceRequirementPut(ValuePut<SliceRequirementKey, SliceRequirementValue> valuePut);
-
     /// rc6 §3.1: a slice capacity requirement was removed; the leader's [RequirementCombiner] re-combines the slice's target.
     void onSliceRequirementRemove(ValueRemove<SliceRequirementKey, SliceRequirementValue> valueRemove);
 

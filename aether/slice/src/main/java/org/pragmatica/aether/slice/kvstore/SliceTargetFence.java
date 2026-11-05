@@ -163,8 +163,8 @@ public sealed interface SliceTargetFence {
     /// The witness on `owner`'s blueprint at its committed value (none when `owner` is absent), or
     /// [SliceTargetFenceError.OrphanTarget] when the owner is not committed: a write must not keep an orphan alive.
     static Result<List<ReadWitness<AetherKey>>> ownerGuards(KVStore<AetherKey, AetherValue> store,
-                                                                    SliceTargetKey key,
-                                                                    Option<BlueprintId> owner) {
+                                                            SliceTargetKey key,
+                                                            Option<BlueprintId> owner) {
         return owner.fold(() -> Result.success(List.of()),
                           id -> ownerGuard(store, key, id));
     }

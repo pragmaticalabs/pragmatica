@@ -625,8 +625,9 @@ public final class ControlLoopContext {
             return;
         }
 
-        decisions.changes().forEach(change -> prepareGuardedChange(change).filter(this::changesRequirement)
-                                                                          .onPresent(this::submitScaling));
+        decisions.changes()
+                 .forEach(change -> prepareGuardedChange(change).filter(this::changesRequirement)
+                                                        .onPresent(this::submitScaling));
     }
 
     /// Whether the decision differs from the committed `REACTIVE` requirement: while an operator floor holds the target above the
@@ -675,7 +676,8 @@ public final class ControlLoopContext {
                : new SliceTargetFence.SliceTargetFenceError.TargetMoved(scaling.artifact().base()).result();
     }
 
-    private Result<LeaderTransaction<AetherKey, AetherValue>> scalingTransaction(Scaling scaling, SliceTargetValue read) {
+    private Result<LeaderTransaction<AetherKey, AetherValue>> scalingTransaction(Scaling scaling,
+                                                                                 SliceTargetValue read) {
         var key = SliceRequirementKey.sliceRequirementKey(scaling.artifact().base(),
                                                           RequirementKind.REACTIVE);
         var requirement = SliceRequirementValue.sliceRequirementValue(scaling.newInstances(),
@@ -829,7 +831,10 @@ public final class ControlLoopContext {
         publishScalingEvent(change, artifact, currentBlueprint.instances(), newInstances);
         recordScaled(change, artifact, currentBlueprint, requestedInstances, newInstances, capped);
 
-        return Option.some(new Scaling(artifact, observed, newInstances, reactiveReason(change, currentBlueprint.instances())));
+        return Option.some(new Scaling(artifact,
+                                       observed,
+                                       newInstances,
+                                       reactiveReason(change, currentBlueprint.instances())));
     }
 
     private static String reactiveReason(BlueprintChange change, int fromInstances) {

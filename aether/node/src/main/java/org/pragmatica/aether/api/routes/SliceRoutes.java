@@ -76,7 +76,9 @@ public final class SliceRoutes implements RouteSource {
     private static final Logger log = LoggerFactory.getLogger(SliceRoutes.class);
     private static final Cause MISSING_ARTIFACT = new ManagementServerError.MissingField("artifact");
     private static final Cause MISSING_INSTANCES = new ManagementServerError.MissingField("instances");
+
     private static final Cause RELEASE_WITH_VALUES = new ManagementServerError.InvalidRequest("'release' removes the operator requirement and takes neither 'instances' nor 'placement'");
+
     private static final Cause BLUEPRINT_NOT_FOUND = new ManagementServerError.NotFound("Blueprint not found");
 
     private static final Cause SLICE_NOT_LOADED = new ManagementServerError.NotFound("Slice not loaded or no per-slice config available");
@@ -210,7 +212,8 @@ public final class SliceRoutes implements RouteSource {
         return vs.params()
                  .instances()
                  .fold(() -> guardBlueprintMembership(vs.artifact()),
-                       instances -> guardCount(vs.artifact(), instances))
+                       instances -> guardCount(vs.artifact(),
+                                               instances))
                  .map(_ -> vs);
     }
 
@@ -241,7 +244,9 @@ public final class SliceRoutes implements RouteSource {
                                                                                             ? "scaled"
                                                                                             : "released",
                                                                                             vs.artifact().asString(),
-                                                                                            vs.params().instances().or(0),
+                                                                                            vs.params()
+                                                                                              .instances()
+                                                                                              .or(0),
                                                                                             resultingTarget(base)));
     }
 
@@ -729,7 +734,9 @@ public final class SliceRoutes implements RouteSource {
     ///   slice a committed blueprint declares without writing its target (a register-only publish). The creation expects the target
     ///   absent and witnesses every committed blueprint declaring the slice, and the requirement commits with it.
     /// - A release with nothing to release writes nothing and succeeds.
-    private Promise<Unit> applyOperatorRequirement(Artifact artifact, Option<Integer> instances, Option<String> placement) {
+    private Promise<Unit> applyOperatorRequirement(Artifact artifact,
+                                                   Option<Integer> instances,
+                                                   Option<String> placement) {
         var node = nodeSupplier.get();
 
         return SliceTargetFence.submit("scale " + artifact.base().asString(),
@@ -770,27 +777,32 @@ public final class SliceRoutes implements RouteSource {
                                                                                              Option.none(),
                                                                                              store.committedRevision()));
 
-        if (requirement.isEmpty() && store.get(requirementKey)
-                                          .isEmpty()) {
+        if (requirement.isEmpty() && store.get(requirementKey).isEmpty()) {
             return new NothingToRelease(artifact.base()).result();
         }
 
-        return SliceTargetFence.committedTarget(store, key)
-                               .fold(() -> instances.toResult(new SliceTargetFenceError.TargetAbsent(artifact.base()))
-                                                    .flatMap(count -> createWrite(store, key, artifact, count, placement))
-                                                    .flatMap(write -> withRequirement(store, write, requirementKey, requirement)),
-                                     read -> placement.fold(() -> SliceRequirements.requirementTransaction(store,
-                                                                                                           read,
-                                                                                                           requirementKey,
-                                                                                                           requirement),
-                                                            newPlacement -> SliceTargetFence.targetWrite(store,
-                                                                                                         key,
-                                                                                                         Option.some(read),
-                                                                                                         read.withPlacement(newPlacement))
-                                                                                            .flatMap(write -> withRequirement(store,
-                                                                                                                              write,
-                                                                                                                              requirementKey,
-                                                                                                                              requirement))));
+        return SliceTargetFence.committedTarget(store, key).fold(() -> instances.toResult(new SliceTargetFenceError.TargetAbsent(artifact.base()))
+                                                                                .flatMap(count -> createWrite(store,
+                                                                                                              key,
+                                                                                                              artifact,
+                                                                                                              count,
+                                                                                                              placement))
+                                                                                .flatMap(write -> withRequirement(store,
+                                                                                                                  write,
+                                                                                                                  requirementKey,
+                                                                                                                  requirement)),
+                                                                 read -> placement.fold(() -> SliceRequirements.requirementTransaction(store,
+                                                                                                                                       read,
+                                                                                                                                       requirementKey,
+                                                                                                                                       requirement),
+                                                                                        newPlacement -> SliceTargetFence.targetWrite(store,
+                                                                                                                                     key,
+                                                                                                                                     Option.some(read),
+                                                                                                                                     read.withPlacement(newPlacement))
+                                                                                                                        .flatMap(write -> withRequirement(store,
+                                                                                                                                                          write,
+                                                                                                                                                          requirementKey,
+                                                                                                                                                          requirement))));
     }
 
     private static Result<LeaderTransaction<AetherKey, AetherValue>> withRequirement(KVStore<AetherKey, AetherValue> store,
@@ -799,7 +811,9 @@ public final class SliceRoutes implements RouteSource {
                                                                                      Option<SliceRequirementValue> requirement) {
         return SliceTargetFence.transaction(store,
                                             List.of(write),
-                                            List.of(SliceRequirements.requirementMutation(store, requirementKey, requirement)));
+                                            List.of(SliceRequirements.requirementMutation(store,
+                                                                                          requirementKey,
+                                                                                          requirement)));
     }
 
     /// The first write of a slice's target: expects it absent, witnessed by every committed blueprint declaring the slice.
