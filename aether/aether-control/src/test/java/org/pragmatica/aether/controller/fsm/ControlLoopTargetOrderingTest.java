@@ -67,7 +67,11 @@ class ControlLoopTargetOrderingTest {
     void leaderWithAnOwnedTarget() {
         store = FencedTargetWrites.fencedStore(SELF, OWNER);
         cluster = new HoldingClusterNode(store);
-        commit(new KVCommand.Put<>(TARGET_KEY, targetOf(V1, 2)));
+        // ONE value for the commit and the registration: `updatedAt` is stamped at construction, so two `targetOf` calls in different
+        // milliseconds are unequal and the fenced write (which expects the registered value) would be refused for that alone.
+        var initial = targetOf(V1, 2);
+
+        commit(new KVCommand.Put<>(TARGET_KEY, initial));
 
         var controlLoop = buildControlLoop();
 
@@ -77,7 +81,7 @@ class ControlLoopTargetOrderingTest {
                                 NodeId.nodeId("n3").unwrap(),
                                 NodeId.nodeId("n4").unwrap(),
                                 NodeId.nodeId("n5").unwrap()));
-        controlLoop.onSliceTargetPut(new ValuePut<>(new KVCommand.Put<>(TARGET_KEY, targetOf(V1, 2)), Option.none()));
+        controlLoop.onSliceTargetPut(new ValuePut<>(new KVCommand.Put<>(TARGET_KEY, initial), Option.none()));
     }
 
     /// Control of the instrument: with nothing racing, the scaling write commits.
