@@ -8,6 +8,8 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.ClusterConfigError;
@@ -23,6 +25,7 @@ import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.CloudProviderSupport;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.InstanceInfo;
+import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.NodeGroupConfig;
 import org.pragmatica.aether.environment.ProvisionedNode;
 import org.pragmatica.aether.environment.SourceName;
@@ -585,7 +588,14 @@ public final class WaveExecutor {
                 continue;
             }
 
-            var result = replaceBeforeRetireRole(sourceName, role, count, newSource, desired, managementPort, created);
+            var result = replaceBeforeRetireRole(sourceName,
+                                                 role,
+                                                 count,
+                                                 oldSource,
+                                                 newSource,
+                                                 desired,
+                                                 managementPort,
+                                                 created);
 
             if (result.isFailure()) {
                 return result;
@@ -600,6 +610,7 @@ public final class WaveExecutor {
     private static Result<Integer> replaceBeforeRetireRole(SourceName sourceName,
                                                            NodeRole role,
                                                            int count,
+                                                           SourceProfile oldSource,
                                                            SourceProfile newSource,
                                                            ClusterBootstrapConfig desired,
                                                            int managementPort,
@@ -608,7 +619,13 @@ public final class WaveExecutor {
 
         return dispatchProvision(sourceName, newSource, role, count, desired, created).flatMap(nodes -> waitForNewNodes(nodes,
                                                                                                                         managementPort))
-                                .flatMap(_ -> drainOldNodes(sourceName, role, count, desired))
+                                .flatMap(replacements -> findOldNodes(sourceName,
+                                                                      oldSource,
+                                                                      role,
+                                                                      count,
+                                                                      desired.cluster().name(),
+                                                                      replacements))
+                                .flatMap(oldNodes -> drainOldNodes(oldNodes, managementPort))
                                 .map(count2 -> logAndCount("~",
                                                            "  " + sourceName
                                                           + "." + role.value()
@@ -617,13 +634,238 @@ public final class WaveExecutor {
                                                            count));
     }
 
-    static Result<Unit> drainOldNodes(SourceName sourceName, NodeRole role, int count, ClusterBootstrapConfig desired) {
-        var managementPort = desired.operations().ports().management();
+    /// #2132: a node about to be retired, as the cluster knows it: the node id it registered under and the address its management API
+    /// answers on, both read from the provider's own record of the node (SSH: from the configured host), never built from the source name.
+    /// `managementPort` is the node's own port when it is not the cluster-wide configured one: a docker node is reached from the operator's
+    /// host on `127.0.0.1` plus its own published port (#2089), as [BootstrapPhaseProvision#withPublishedManagementPort] reaches a new one.
+    record OldNode(String nodeId, String address, Option<Integer> managementPort) {
+        static OldNode oldNode(String nodeId, String address) {
+            return new OldNode(nodeId, address, Option.none());
+        }
 
-        for (int i = 0; i < count; i++) {
-            var nodeId = sourceName.value() + "-" + role.value() + "-old-" + i;
-            var address = resolveNodeAddress(nodeId);
-            Result<Unit> result = ClusterHttpClient.drainNodeAndAwait(address, managementPort, nodeId, DRAIN_TIMEOUT_MS);
+        static OldNode oldNode(String nodeId, String address, int managementPort) {
+            return new OldNode(nodeId, address, Option.some(managementPort));
+        }
+    }
+
+    /// The `count` oldest nodes of `sourceName`/`role` that exist now and are not the replacements this run just created (a replacement
+    /// carries the same source and role labels as the node it replaces). Discovered, not named: a node's id is minted by whoever created it
+    /// (`aether-<cluster>-node-<ulid>` for docker, `aether-node-<ulid>` for cloud), so no `<source>-<role>-<n>` label ever addresses a real node.
+    /// Fewer than `count` is a refusal before anything is drained, because draining whatever matches could drain a node the plan did not name.
+    static Result<List<OldNode>> findOldNodes(SourceName sourceName,
+                                              SourceProfile oldSource,
+                                              NodeRole role,
+                                              int count,
+                                              ClusterName clusterName,
+                                              List<ProvisionedNode> replacements) {
+        return switch (oldSource.type()) {
+            case DOCKER -> ProviderResolver.resolveDockerComputeWithoutBackup(clusterName).flatMap(compute -> listedOldNodes(compute,
+                                                                                                                             labelKeys(SourceType.DOCKER),
+                                                                                                                             sourceName,
+                                                                                                                             role,
+                                                                                                                             count,
+                                                                                                                             clusterName,
+                                                                                                                             replacements));
+            case CLOUD -> ProviderResolver.resolveCloudCompute(oldSource).flatMap(compute -> listedOldNodes(compute,
+                                                                                                            labelKeys(SourceType.CLOUD),
+                                                                                                            sourceName,
+                                                                                                            role,
+                                                                                                            count,
+                                                                                                            clusterName,
+                                                                                                            replacements));
+            case SSH -> sshOldNodes(sourceName, oldSource, role, count, replacements);
+            case FORGE -> success(forgeOldNodes(sourceName, role, count));
+        };
+    }
+
+    /// The label keys a provider stamps and filters by: docker names them `aether.<x>`, every cloud `aether-<x>`.
+    enum LabelKeys {
+        DOCKER("aether.cluster", "aether.source", "aether.role"),
+        CLOUD("aether-cluster", "aether-source", "aether-role");
+        private final String cluster;
+        private final String source;
+        private final String role;
+        LabelKeys(String cluster, String source, String role) {
+            this.cluster = cluster;
+            this.source = source;
+            this.role = role;
+        }
+        String cluster() {
+            return cluster;
+        }
+        String source() {
+            return source;
+        }
+        String role() {
+            return role;
+        }
+    }
+
+    static LabelKeys labelKeys(SourceType type) {
+        return type == SourceType.DOCKER
+               ? LabelKeys.DOCKER
+               : LabelKeys.CLOUD;
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    static Result<List<OldNode>> listedOldNodes(ComputeProvider compute,
+                                                LabelKeys keys,
+                                                SourceName sourceName,
+                                                NodeRole role,
+                                                int count,
+                                                ClusterName clusterName,
+                                                List<ProvisionedNode> replacements) {
+        var listing = compute.listInstances(Map.of(keys.cluster(),
+                                                   clusterName.value(),
+                                                   keys.source(),
+                                                   sourceName.value(),
+                                                   keys.role(),
+                                                   role.value()))
+                             .await();
+
+        return listing.map(instances -> retiringCandidates(instances, keys, sourceName, role, clusterName, replacements))
+                      .flatMap(candidates -> oldestOf(candidates, keys, sourceName, role, count));
+    }
+
+    /// A listing the provider's selector got wrong (or ignored) must never make a node "ours": each instance has to carry the labels itself.
+    /// Docker reports only its cluster label, so for docker the selector the daemon applied is what proves source and role.
+    private static List<InstanceInfo> retiringCandidates(List<InstanceInfo> instances,
+                                                         LabelKeys keys,
+                                                         SourceName sourceName,
+                                                         NodeRole role,
+                                                         ClusterName clusterName,
+                                                         List<ProvisionedNode> replacements) {
+        var replacementIds = replacements.stream()
+                                         .flatMap(node -> Stream.of(node.nodeId(),
+                                                                    node.serverId()))
+                                         .collect(Collectors.toSet());
+
+        return instances.stream()
+                        .filter(info -> !isGoing(info))
+                        .filter(info -> carries(info, keys, sourceName, role, clusterName))
+                        .filter(info -> !replacementIds.contains(nodeIdOf(info)) && !replacementIds.contains(info.id()
+                                                                                                                 .value()))
+                        .toList();
+    }
+
+    /// A stopped, exited or terminated instance (`docker ps -a` and some cloud listings still return them) serves nothing: it would take a
+    /// slot among the "oldest" nodes and leave the live one undrained. Unknown and provisioning are not read as going (#1049).
+    private static boolean isGoing(InstanceInfo info) {
+        return info.status()
+                   .equals(InstanceStatus.STOPPING) || info.status()
+                                                           .equals(InstanceStatus.TERMINATED);
+    }
+
+    private static boolean carries(InstanceInfo info,
+                                   LabelKeys keys,
+                                   SourceName sourceName,
+                                   NodeRole role,
+                                   ClusterName clusterName) {
+        var tags = info.tags();
+
+        return clusterName.value()
+                          .equals(tags.get(keys.cluster()))
+               && (keys == LabelKeys.DOCKER || sourceName.value()
+                                                         .equals(tags.get(keys.source())) && role.value()
+                                                                                                 .equals(tags.get(keys.role())));
+    }
+
+    private static String nodeIdOf(InstanceInfo info) {
+        return info.nodeId()
+                   .or(info.id().value());
+    }
+
+    private static Result<List<OldNode>> oldestOf(List<InstanceInfo> candidates,
+                                                  LabelKeys keys,
+                                                  SourceName sourceName,
+                                                  NodeRole role,
+                                                  int count) {
+        var ordered = candidates.stream().sorted(Comparator.comparing(WaveExecutor::nodeIdOf)).toList();
+
+        return ordered.size() < count
+               ? new ApplyError.OldNodesShort(sourceName,
+                                              role,
+                                              count,
+                                              ordered.stream().map(WaveExecutor::nodeIdOf).toList()).<List<OldNode>> result()
+               : Result.allOf(ordered.subList(0, count).stream().map(info -> reachable(info, keys)).toList());
+    }
+
+    /// A docker node is reached through its published port, every other provider's node at the address it reports.
+    private static Result<OldNode> reachable(InstanceInfo info, LabelKeys keys) {
+        return keys == LabelKeys.DOCKER
+               ? publishedOnHost(info)
+               : addressed(info);
+    }
+
+    /// The operator's CLI is outside the docker network, where a container name does not resolve (see [DockerHostPorts]): `docker port`
+    /// reports the host port this container's management API is published on, and the node is `127.0.0.1:<that port>`.
+    private static Result<OldNode> publishedOnHost(InstanceInfo info) {
+        return DockerHostPorts.managementPort(info.id().value()).map(port -> OldNode.oldNode(nodeIdOf(info),
+                                                                                             BootstrapPhaseProvision.DOCKER_HOST_ADDRESS,
+                                                                                             port));
+    }
+
+    private static Result<OldNode> addressed(InstanceInfo info) {
+        var address = CloudProviderSupport.firstAddress(info);
+
+        return address.isBlank()
+               ? new ApplyError.OldNodeUnaddressable(nodeIdOf(info)).<OldNode> result()
+               : success(OldNode.oldNode(nodeIdOf(info), address));
+    }
+
+    /// An SSH source's nodes are its configured hosts; the node id convention of the SSH path is `<source>-<role>-<host index>`
+    /// (see [#drainAndStopSshNodes]), and the address is the host itself. SSH creates nothing: its "replacements" are the new source's
+    /// configured hosts, so a host that is also a replacement is the live node itself and is never retired. When every old host is a
+    /// replacement host (a field change leaves the hosts as they were), nothing is replaced and the run is refused before any drain.
+    private static Result<List<OldNode>> sshOldNodes(SourceName sourceName,
+                                                     SourceProfile oldSource,
+                                                     NodeRole role,
+                                                     int count,
+                                                     List<ProvisionedNode> replacements) {
+        var hosts = option(oldSource.roles().get(role)).flatMap(RoleSubTable::hosts).or(List.of());
+        var replacementHosts = replacements.stream().map(ProvisionedNode::publicIp).collect(Collectors.toSet());
+        var nodes = new ArrayList<OldNode>();
+
+        for (int i = 0; i < hosts.size() && nodes.size() < count; i++) {
+            if (!replacementHosts.contains(hosts.get(i))) {
+                nodes.add(OldNode.oldNode(sourceName.value() + "-" + role.value() + "-" + i,
+                                          hosts.get(i)));
+            }
+        }
+
+        return nodes.isEmpty() && !hosts.isEmpty()
+               ? new ApplyError.NothingReplaced(sourceName, role).<List<OldNode>> result()
+               : enough(nodes, sourceName, role, count);
+    }
+
+    private static Result<List<OldNode>> enough(List<OldNode> nodes, SourceName sourceName, NodeRole role, int count) {
+        return nodes.size() < count
+               ? new ApplyError.OldNodesShort(sourceName,
+                                              role,
+                                              count,
+                                              nodes.stream().map(OldNode::nodeId).toList()).<List<OldNode>> result()
+               : success(List.copyOf(nodes));
+    }
+
+    /// Forge nodes are in-process placeholders that Forge stops itself; there is no management endpoint of theirs to drain.
+    private static List<OldNode> forgeOldNodes(SourceName sourceName, NodeRole role, int count) {
+        logAction("~",
+                  sourceName
+                 + "." + role.value()
+                 + "/forge: " + count
+                 + " in-process node(s) are stopped by Forge, nothing to drain");
+
+        return List.of();
+    }
+
+    /// Drains each node by its real id at its real address and waits for the drain to complete, so the slices and stream partitions it
+    /// holds are moved off before the node goes. The first refused drain stops the run: nothing after it is drained either.
+    static Result<Unit> drainOldNodes(List<OldNode> oldNodes, int managementPort) {
+        for (var node : oldNodes) {
+            Result<Unit> result = ClusterHttpClient.drainNodeAndAwait(node.address(),
+                                                                      node.managementPort().or(managementPort),
+                                                                      node.nodeId(),
+                                                                      DRAIN_TIMEOUT_MS);
 
             if (result.isFailure()) {
                 return result;
@@ -644,10 +886,6 @@ public final class WaveExecutor {
         logAction("~", action.description());
 
         return success(0);
-    }
-
-    private static String resolveNodeAddress(String nodeId) {
-        return nodeId;
     }
 
     private static SshConfig buildSshConfig(SourceProfile source) {
@@ -976,6 +1214,35 @@ public final class WaveExecutor {
             public String message() {
                 return "docker source '" + sourceName
                      + "' reached the label-index removal path; docker nodes are removed by discovering their real containers. Nothing was removed.";
+            }
+        }
+
+        record OldNodesShort(SourceName sourceName, NodeRole role, int wanted, List<String> found) implements ApplyError {
+            @Override
+            public String message() {
+                return "cannot replace " + wanted
+                     + " " + role.value()
+                     + " node(s) of source '" + sourceName
+                     + "': only " + found.size()
+                     + " existing node(s) carry its labels (" + found
+                     + "). The replacements were created; nothing was drained.";
+            }
+        }
+
+        record NothingReplaced(SourceName sourceName, NodeRole role) implements ApplyError {
+            @Override
+            public String message() {
+                return "cannot replace the " + role.value()
+                     + " node(s) of ssh source '" + sourceName
+                     + "': the replacement hosts are the existing hosts, so nothing is replaced and draining would take the live node out. Nothing was drained.";
+            }
+        }
+
+        record OldNodeUnaddressable(String nodeId) implements ApplyError {
+            @Override
+            public String message() {
+                return "node " + nodeId
+                     + " has no address to drain it at. The replacements were created; nothing was drained.";
             }
         }
 

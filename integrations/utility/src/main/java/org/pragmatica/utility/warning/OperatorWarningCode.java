@@ -882,6 +882,17 @@ public enum OperatorWarningCode {
     /// dispatcher calls `stopNode`; the sink hands it off asynchronously, so its delivery to the cluster event stream is
     /// best-effort once the node halts.
     KV_DISPATCHER_FAILED("kv-dispatcher-failed", "kv-store", WarningLevel.CRITICAL),
+    /// A core auto-heal replacement was refused because the source of the departed node could not be resolved (#2115): the node has no
+    /// committed placement, and the committed configuration does not name exactly one source declaring the role (or does not parse), so
+    /// any pick would be a guess at which provider to bill. Nothing was provisioned; the reconciler retries on its next pass. Raised on the
+    /// first refusal of a run, not on every tick; the subject is `core-replacement`. Closed by [#CORE_REPLACEMENT_SOURCE_RESOLVED]. A
+    /// permanent refusal never closes, which is what makes it visible. The operator names the source by declaring the role in one source only.
+    CORE_REPLACEMENT_SOURCE_UNRESOLVED("core-replacement-source-unresolved", "deployment", WarningLevel.WARNING),
+    /// The recovery of [#CORE_REPLACEMENT_SOURCE_UNRESOLVED], same subject (#2115): a core replacement resolved its source.
+    CORE_REPLACEMENT_SOURCE_RESOLVED("core-replacement-source-resolved",
+                                     "deployment",
+                                     WarningLevel.INFO,
+                                     CORE_REPLACEMENT_SOURCE_UNRESOLVED),
     /// The recovery of [#CONFIG_WATCH_CALLBACK_FAILED], same subject (#774): the next delivery bound and (when it called back) succeeded.
     /// INFO, published only after a published failure for the subject (#752 mechanism).
     CONFIG_WATCH_CALLBACK_RECOVERED("config-watch-callback-recovered",

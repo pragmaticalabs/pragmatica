@@ -290,10 +290,7 @@ class DrainWaitCallSitesTest {
         var http = drainsThenHalts();
         ClusterHttpClient.HTTP_OPS_REF.set(http);
 
-        var result = WaveExecutor.drainOldNodes(sourceNameOrDefault("dc"),
-                                                NodeRole.CORE,
-                                                1,
-                                                config(SourceType.SSH, UNRESOLVABLE_HOST));
+        var result = WaveExecutor.drainOldNodes(List.of(WaveExecutor.OldNode.oldNode(NODE, UNRESOLVABLE_HOST)), 8080);
 
         assertThat(failureText(result)).isEmpty();
         assertThat(http.drainPosts()).isEqualTo(1);
