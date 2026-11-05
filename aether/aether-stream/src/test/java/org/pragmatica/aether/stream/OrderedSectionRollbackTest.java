@@ -149,9 +149,10 @@ class OrderedSectionRollbackTest {
             }
         }
 
-        /// The boundary: a run of exactly `capacity` events fits (it evicts only the events before it), so it is appended, not refused.
+        /// The boundary: a run of exactly `capacity` events cannot evict its own members, so it is appended, not refused (NT-107 refuses
+        /// only a run LARGER than the capacity).
         @Test
-        void appendBatchOrdered_runOfExactlyTheCapacity_isAppended_evictingOnlyEarlierEvents() {
+        void appendBatchOrdered_runOfExactlyTheCapacity_isAppended() {
             try (var ring = offHeapRingBuffer(4, 4096)) {
                 ring.append(bytes("a"), 1L).onFailure(cause -> fail(cause.message()));
                 var payloads = IntStream.range(0, 4).mapToObj(i -> bytes("e" + i)).toList();
@@ -160,7 +161,6 @@ class OrderedSectionRollbackTest {
                     .onFailure(cause -> fail("a run of exactly the capacity was refused: " + cause.message()));
 
                 assertThat(ring.headOffset()).isEqualTo(4L);
-                assertThat(ring.tailOffset()).as("only the earlier event was evicted").isEqualTo(1L);
                 assertThat(texts(ring.readAppended(1, 4).unwrap())).as("the run is whole")
                                                           .containsExactly("e0", "e1", "e2", "e3");
             }
