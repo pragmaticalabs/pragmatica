@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.schema;
 
+import org.pragmatica.lang.Unit;
+import java.time.Duration;
 import org.pragmatica.db.migration.MigrationDialects;
 
 import org.junit.jupiter.api.Nested;
@@ -57,6 +59,9 @@ class AetherSchemaManagerTest {
             assertThat(connector.usedTransaction).isTrue();
         }
 
+        /// A concurrent index forces the file onto the autocommit, checkpointed path. Since FDB-2a (H3, #2591) a
+        /// statement the dialect can run in a transaction commits there TOGETHER with its checkpoint (one transaction
+        /// per statement, never the whole file), and the concurrent build itself runs in autocommit.
         @Test
         void migrate_usesAutocommit_forConcurrentIndex() {
             var connector = new RecordingConnector(DatabaseType.POSTGRESQL);
@@ -68,7 +73,9 @@ class AetherSchemaManagerTest {
             migrate(connector, "V2__idx.sql", sql);
 
             assertThat(connector.migrationStatements).hasSize(2);
-            assertThat(connector.usedTransaction).isFalse();
+            assertThat(connector.transactions).hasSize(1);
+            assertThat(connector.transactions.getFirst().migrationStatements).singleElement().asString().contains("CREATE TABLE t (id INT)");
+            assertThat(connector.baseExecutionOrder).containsExactly("HISTORY", "MIGRATION");
         }
 
         @Test
@@ -159,7 +166,8 @@ class AetherSchemaManagerTest {
             assertThat(connector.migrationStatements).hasSize(2);
             assertThat(connector.migrationStatements.get(0)).contains("CREATE PROCEDURE p()").contains("SELECT 1;").contains("SELECT 2;").contains("END").doesNotContain("DELIMITER");
             assertThat(connector.migrationStatements.get(1)).contains("CREATE TABLE t (id INT)");
-            assertThat(connector.usedTransaction).isFalse();
+            // FDB-2a (H3): one transaction per statement, each carrying its checkpoint; never the whole file
+            assertThat(connector.transactions).hasSize(2);
         }
     }
 
@@ -237,7 +245,8 @@ class AetherSchemaManagerTest {
             assertThat(connector.migrationStatements).hasSize(2);
             assertThat(connector.migrationStatements.get(0)).contains("CREATE OR REPLACE PROCEDURE p").contains("x := 1;").contains("y := 2;").contains("END;").doesNotContain("CREATE TABLE");
             assertThat(connector.migrationStatements.get(1)).contains("CREATE TABLE t (id NUMBER)");
-            assertThat(connector.usedTransaction).isFalse();
+            // FDB-2a (H3): one transaction per statement, each carrying its checkpoint; never the whole file
+            assertThat(connector.transactions).hasSize(2);
         }
     }
 
@@ -286,7 +295,7 @@ class AetherSchemaManagerTest {
         /// `IN_PROGRESS` history row (the single base-connector INSERT) BEFORE the loop, runs the
         /// migration statements, and finalizes the row to `SUCCESS` with an UPDATE — so the base
         /// execution order is HISTORY (the in-progress INSERT) first, then the migration statements.
-        /// No transaction is opened. (The per-statement and finalize UPDATEs are bookkeeping, not
+        /// Since FDB-2a (H3) each statement runs in its own transaction with its checkpoint. (The per-statement and finalize UPDATEs are bookkeeping, not
         /// counted by `baseHistoryInserts`, which tracks only the single INSERT.)
         @Test
         void migrate_writesInProgressHistoryBeforeStatements_forMysql() {
@@ -298,10 +307,11 @@ class AetherSchemaManagerTest {
 
             migrate(connector, "V1__ddl.sql", sql);
 
-            assertThat(connector.usedTransaction).isFalse();
-            assertThat(connector.transactions).isEmpty();
+            // FDB-2a (H3): each statement runs in its OWN transaction with its checkpoint, after the IN_PROGRESS row
+            assertThat(connector.transactions).hasSize(2);
             assertThat(connector.baseHistoryInserts).isEqualTo(1);
-            assertThat(connector.baseExecutionOrder).containsExactly("HISTORY", "MIGRATION", "MIGRATION");
+            assertThat(connector.baseExecutionOrder).containsExactly("HISTORY");
+            assertThat(connector.migrationStatements).hasSize(2);
         }
     }
 
@@ -322,6 +332,12 @@ class AetherSchemaManagerTest {
     /// so the pre-existing splitter tests keep observing the full statement list regardless of
     /// whether the dialect runs in a transaction or in autocommit.
     private static final class RecordingConnector implements SqlConnector {
+        /// FDB-2a (#2591): one logical session that answers the real runner's fence statements ([FakeMigrationFence]).
+        @Override
+        public <T> Promise<T> pinned(Duration statementTimeout, TransactionCallback<T> body, TransactionCallback<Unit> release) {
+            return FakeMigrationFence.pinnedOn(this, body, release);
+        }
+
         private static final String HISTORY_TABLE = "aether_schema_history";
         private static final String META_TABLE = "aether_schema_history_meta";
         private static final String OWNER_TABLE = "aether_schema_owner";
@@ -367,7 +383,7 @@ class AetherSchemaManagerTest {
 
         @Override
         public <T> Promise<T> queryOne(String sql, RowMapper<T> mapper, Object... params) {
-            return Promise.success(null);
+            return FakeMigrationFence.answer(sql, mapper).or(() -> Promise.success(null));
         }
 
         @Override

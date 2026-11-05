@@ -350,4 +350,45 @@ class PgAsyncSqlConnectorPinnedTest {
         assertThat(result.isSuccess()).as("the wrapper forwards pinned() to the connector instead of the refusing default").isTrue();
         result.onFailure(cause -> assertThat(cause).isNotInstanceOf(DatabaseConnectorError.PinnedSessionUnsupported.class));
     }
+
+    /// FDB-2a (v2639 addendum): this transport has no client-side statement bound, so `pinned` sets the server-side
+    /// `statement_timeout` and `lock_timeout` to the statement bound as its FIRST statements. Without them a hung
+    /// statement holds the dedicated connection, and with it a session lock, until it ends.
+    @Test
+    void pinned_setsServerSideStatementAndLockTimeouts_toTheStatementBound() {
+        var base = connector(1);
+        var shown = base.pinned(Duration.ofMillis(2500), PinnedTimeoutProbe::shownTimeouts, RELEASE_OK).await().unwrap();
+
+        assertThat(shown).isEqualTo("2500ms|2500ms");
+    }
+
+    @Test
+    void pinned_zeroBound_leavesTheServerDefaults() {
+        var base = connector(1);
+        var shown = base.pinned(NO_BOUND, PinnedTimeoutProbe::shownTimeouts, RELEASE_OK).await().unwrap();
+
+        assertThat(shown).isEqualTo("0|0");
+    }
+
+    @Test
+    void pinned_hungStatement_isCancelledByTheServerAtTheBound() {
+        var base = connector(1);
+        var started = System.nanoTime();
+        var result = base.pinned(Duration.ofSeconds(1), PinnedTimeoutProbe::sleepThirtySeconds, RELEASE_OK).await();
+        var elapsedMs = (System.nanoTime() - started) / 1_000_000;
+
+        assertThat(result.isFailure()).as("the hung statement is cancelled").isTrue();
+        assertThat(elapsedMs).as("cancelled near the 1 s bound, not after the 30 s sleep").isLessThan(15_000);
+    }
+
+    private interface PinnedTimeoutProbe {
+        static Promise<String> shownTimeouts(SqlConnector session) {
+            return session.queryOne("SELECT current_setting('statement_timeout') AS st, current_setting('lock_timeout') AS lt",
+                                    row -> row.getString("st").flatMap(st -> row.getString("lt").map(lt -> st + "|" + lt)));
+        }
+
+        static Promise<Unit> sleepThirtySeconds(SqlConnector session) {
+            return session.queryOne("SELECT pg_sleep(30)::text AS slept", row -> row.getString("slept")).mapToUnit();
+        }
+    }
 }

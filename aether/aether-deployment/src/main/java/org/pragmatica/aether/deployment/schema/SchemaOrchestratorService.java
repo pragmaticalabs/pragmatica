@@ -5,8 +5,9 @@
 package org.pragmatica.aether.deployment.schema;
 
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -39,6 +40,8 @@ import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.WitnessedRemoval;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.db.migration.MigrationError;
+import org.pragmatica.db.migration.MigrationFence;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn3;
@@ -51,6 +54,9 @@ import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -78,6 +84,17 @@ public interface SchemaOrchestratorService {
     long LOCK_TTL_MS = 5 * 60 * 1000L;
     int MAX_RETRIES = 3;
     long BACKOFF_BASE_MS = 5000;
+    /// FDB-2a ruling: a migration fenced in the database (another session holds the fence) does not consume an attempt;
+    /// it is re-dispatched with the retry backoff capped at this, and stays PENDING until FDB-3 adds FENCED.
+    long HELD_BACKOFF_CAP_MS = 45_000;
+    /// The consecutive fenced-in-the-database outcomes after which the operator is warned on each further one.
+    int HELD_WARNING_THRESHOLD = 3;
+
+    /// Binds the node's operator-warning sink (the sink exists only after the orchestrator is assembled). Until bound,
+    /// a warning is a log line only. Implementations that raise no warnings ignore it.
+    default Unit setOperatorWarningSink(OperatorWarningSink sink) {
+        return unit();
+    }
 
     static SchemaOrchestratorService schemaOrchestratorService(ClusterNode<KVCommand<AetherKey>> cluster,
                                                                KVStore<AetherKey, AetherValue> kvStore,
@@ -131,6 +148,17 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     private final Option<MessageRouter> router;
     private final LeaseTiming timing;
 
+    private final AtomicReference<OperatorWarningSink> warningSink = new AtomicReference<>(OperatorWarningSink.logOnly());
+
+    /// Consecutive fenced-in-the-database outcomes per datasource ON THIS NODE; any other outcome clears it. A new
+    /// leader starts from zero, so the warning threshold counts what this node observed.
+    private final ConcurrentHashMap<String, Integer> consecutiveHelds = new ConcurrentHashMap<>();
+    /// Datasources with a raised [OperatorWarningCode#SCHEMA_MIGRATION_FENCE_HELD] not yet closed by its recovery: a recovery
+    /// is raised only for a datasource in here, so an ordinary success announces nothing.
+    private final Set<String> fenceHeldRaised = ConcurrentHashMap.newKeySet();
+    /// The same for [OperatorWarningCode#SCHEMA_MIGRATION_UNFENCED].
+    private final Set<String> unfencedRaised = ConcurrentHashMap.newKeySet();
+
     SchemaOrchestratorServiceInstance(ClusterNode<KVCommand<AetherKey>> cluster,
                                       KVStore<AetherKey, AetherValue> kvStore,
                                       ArtifactStore artifactStore,
@@ -179,6 +207,13 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         this.connectionProvider = connectionProvider;
         this.self = self;
         this.router = router;
+    }
+
+    @Override
+    public Unit setOperatorWarningSink(OperatorWarningSink sink) {
+        warningSink.set(sink);
+
+        return unit();
     }
 
     @Override
@@ -549,6 +584,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                                                                                                   value).timeout(schemaManager.policy()
                                                                                                                                               .migrationTimeout()))
                            .flatMap(_ -> markCompleted(datasourceName, value, startTime))
+                           .map(_ -> releaseHeld(datasourceName))
                            .mapError(cause -> handleMigrationFailure(datasourceName, value, cause));
     }
 
@@ -576,6 +612,84 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     }
 
     private Cause handleMigrationFailure(String datasourceName, SchemaVersionValue value, Cause cause) {
+        return cause instanceof MigrationError.MigrationFencedInDatabase
+               ? rescheduleWhileHeld(datasourceName, value, cause)
+               : handleCountedFailure(datasourceName, value, cause);
+    }
+
+    /// FDB-2a ruling (A6): another database session holds the fence, so this attempt ran and read nothing. It does NOT
+    /// consume an attempt (the record's attempt count is written back unchanged, status PENDING), and it is
+    /// re-dispatched after the retry backoff for the consecutive-Held count, capped at [#HELD_BACKOFF_CAP_MS]: a
+    /// holder's lifetime (minutes to hours, design §2.5) must never exhaust [#MAX_RETRIES] into FAILED. From the
+    /// [#HELD_WARNING_THRESHOLD]th consecutive Held on, each one raises [OperatorWarningCode#SCHEMA_MIGRATION_FENCE_HELD]
+    /// naming the holder, until FDB-3 adds the FENCED state.
+    private Cause rescheduleWhileHeld(String datasourceName, SchemaVersionValue value, Cause cause) {
+        var held = consecutiveHelds.merge(datasourceName, 1, Integer::sum);
+        var nextRetryMs = heldBackoff(held);
+
+        log.info("Schema migration for '{}' is fenced in the database ({}), attempt not consumed — retrying in {}s (consecutive {})",
+                 datasourceName,
+                 cause.message(),
+                 nextRetryMs / 1000,
+                 held);
+        warnIfLongHeld(datasourceName, cause, held);
+        updateStatusWithAttempt(datasourceName, value, SchemaStatus.PENDING, value.attemptCount()).onFailure(c -> log.error("Failed to update fenced-retry status for '{}': {}",
+                                                                                                                            datasourceName,
+                                                                                                                            c.message()));
+        scheduleDispatch(datasourceName, nextRetryMs);
+
+        return cause;
+    }
+
+    /// The retry backoff for the `held`th consecutive Held, never above [#HELD_BACKOFF_CAP_MS] (the exponent is
+    /// clamped first, so hours of Helds cannot overflow it).
+    static long heldBackoff(int held) {
+        return Math.min(calculateBackoff(Math.min(held, MAX_RETRIES)), HELD_BACKOFF_CAP_MS);
+    }
+
+    private Unit warnIfLongHeld(String datasourceName, Cause cause, int held) {
+        return held >= HELD_WARNING_THRESHOLD
+               ? raiseFenceHeld(datasourceName, cause, held)
+               : unit();
+    }
+
+    private Unit raiseFenceHeld(String datasourceName, Cause cause, int held) {
+        fenceHeldRaised.add(datasourceName);
+
+        return OperatorWarnings.raise(log,
+                                      warningSink.get(),
+                                      OperatorWarningCode.SCHEMA_MIGRATION_FENCE_HELD,
+                                      datasourceName,
+                                      "Schema migration for '{}' has been fenced in the database {} consecutive times; it stays PENDING and retries every {}s: {}",
+                                      datasourceName,
+                                      held,
+                                      HELD_BACKOFF_CAP_MS / 1000,
+                                      cause.message());
+    }
+
+    /// An attempt acquired the fence and completed: the consecutive-Held count restarts, and a raised
+    /// [OperatorWarningCode#SCHEMA_MIGRATION_FENCE_HELD] for the datasource is closed by its recovery.
+    private Unit releaseHeld(String datasourceName) {
+        clearHelds(datasourceName);
+
+        return fenceHeldRaised.remove(datasourceName)
+               ? OperatorWarnings.raise(log,
+                                        warningSink.get(),
+                                        OperatorWarningCode.SCHEMA_MIGRATION_FENCE_RELEASED,
+                                        datasourceName,
+                                        "Schema migration for '{}' acquired the database fence and completed",
+                                        datasourceName)
+               : unit();
+    }
+
+    private Unit clearHelds(String datasourceName) {
+        consecutiveHelds.remove(datasourceName);
+
+        return unit();
+    }
+
+    private Cause handleCountedFailure(String datasourceName, SchemaVersionValue value, Cause cause) {
+        clearHelds(datasourceName);
         var classification = classifyFailure(cause);
         var attemptNumber = value.attemptCount() + 1;
         var artifactCoords = Option.option(value.artifactCoords()).or("");
@@ -625,9 +739,15 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         updateStatusWithAttempt(datasourceName, value, SchemaStatus.PENDING, attemptNumber).onFailure(c -> log.error("Failed to update retry status for '{}': {}",
                                                                                                                      datasourceName,
                                                                                                                      c.message()));
-        var future = SharedScheduler.schedule(() -> migrateIfNeeded(datasourceName), timeSpan(nextRetryMs).millis());
+        scheduleDispatch(datasourceName, nextRetryMs);
+    }
 
-        scheduledRetries.put(datasourceName, future);
+    /// Re-dispatches the datasource after `delayMs`, on the injected scheduler; a manual re-dispatch cancels it.
+    private Unit scheduleDispatch(String datasourceName, long delayMs) {
+        scheduledRetries.put(datasourceName,
+                             timing.scheduler().schedule(() -> migrateIfNeeded(datasourceName), delayMs));
+
+        return unit();
     }
 
     private void emitPermanentFailure(String datasourceName,
@@ -674,6 +794,22 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         if (cause instanceof SliceLoadingFailure.Intermittent.ArtifactUnavailable) {
             return FailureClassification.TRANSIENT;
         }
+        // FDB-2a (#2591, F5): another database session holds the migration fence, so this attempt ran and read nothing.
+        // A migration failure never reaches here with it: handleMigrationFailure re-dispatches it first without consuming
+        // an attempt (fix-round-1 ruling, rescheduleWhileHeld). Classified TRANSIENT for every other reader, until FDB-3
+        // classifies it FENCED.
+        if (cause instanceof MigrationError.MigrationFencedInDatabase) {
+            return FailureClassification.TRANSIENT;
+        }
+        // FDB-2a: a fence that cannot be held here (no grant, refused topology, a pooler that swapped the session) and an
+        // INVALID index left by a concurrent build (F8) both need the operator; a retry changes neither.
+        if (cause instanceof MigrationError.FenceUnavailable) {
+            return FailureClassification.PERMANENT;
+        }
+
+        if (cause instanceof MigrationError.InvalidIndexLeftBehind) {
+            return FailureClassification.PERMANENT;
+        }
 
         if (cause instanceof SchemaError.MigrationFailed) {
             return FailureClassification.PERMANENT;
@@ -719,7 +855,8 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     }
 
     private final ConcurrentHashMap<String, Object> inFlightMigrations = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, ScheduledFuture<?>> scheduledRetries = new ConcurrentHashMap<>();
+    /// The cancel handle of each datasource's scheduled re-dispatch ([LeaseScheduler]).
+    private final ConcurrentHashMap<String, Runnable> scheduledRetries = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Object, Lease> leases = new ConcurrentHashMap<>();
 
     /// Single-flight fence across BOTH dispatch paths (the backoff timer in [#scheduleRetry] and any
@@ -803,11 +940,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     }
 
     private void cancelScheduledRetry(String datasourceName) {
-        Option.option(scheduledRetries.remove(datasourceName)).onPresent(SchemaOrchestratorServiceInstance::cancelFuture);
-    }
-
-    private static void cancelFuture(ScheduledFuture<?> future) {
-        future.cancel(false);
+        Option.option(scheduledRetries.remove(datasourceName)).onPresent(Runnable::run);
     }
 
     private Option<SchemaMigrationLockValue> committedLock(SchemaMigrationLockKey lockKey) {
@@ -1109,7 +1242,54 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         return connectionProvider.connector(datasourceName)
                                  .onFailure(cause -> log.info("No database config for '{}': {} — skipping migration",
                                                               datasourceName,
-                                                              cause.message()));
+                                                              cause.message()))
+                                 .flatMap(connector -> warnIfUnfenced(datasourceName, connector));
+    }
+
+    /// FDB-2a ruling: a PostgreSQL-configured CockroachDB has no tier-1 fence ([MigrationFence#runsUnfenced]) and runs
+    /// its schema operations unfenced until FDB-2b; it never does so silently: every operation raises
+    /// [OperatorWarningCode#SCHEMA_MIGRATION_UNFENCED] (and the runner logs its own warning).
+    ///
+    /// FER (degrade forward) on the probe's own failure: the operation proceeds and its fence acquire probes the engine
+    /// again, failing typed if the database is unreachable; only this warning is lost for that operation, and the probe
+    /// failure is logged.
+    private Promise<SqlConnector> warnIfUnfenced(String datasourceName, SqlConnector connector) {
+        return MigrationFence.runsUnfenced(connector)
+                             .map(unfenced -> raiseIfUnfenced(datasourceName, unfenced))
+                             .onFailure(cause -> log.info("Fence-tier probe for '{}' failed, proceeding: {}",
+                                                          datasourceName,
+                                                          cause.message()))
+                             .recover(_ -> unit())
+                             .map(_ -> connector);
+    }
+
+    private Unit raiseIfUnfenced(String datasourceName, boolean unfenced) {
+        return unfenced
+               ? raiseUnfenced(datasourceName)
+               : raiseFencedIfRecovering(datasourceName);
+    }
+
+    private Unit raiseUnfenced(String datasourceName) {
+        unfencedRaised.add(datasourceName);
+
+        return OperatorWarnings.raise(log,
+                                      warningSink.get(),
+                                      OperatorWarningCode.SCHEMA_MIGRATION_UNFENCED,
+                                      datasourceName,
+                                      "Schema operation on '{}' runs WITHOUT a database fence: a PostgreSQL-configured CockroachDB has no tier-1 lock (FDB-2b adds one); only the cluster's KV lease keeps two runners apart",
+                                      datasourceName);
+    }
+
+    /// A schema operation that runs fenced closes a raised [OperatorWarningCode#SCHEMA_MIGRATION_UNFENCED] for its datasource.
+    private Unit raiseFencedIfRecovering(String datasourceName) {
+        return unfencedRaised.remove(datasourceName)
+               ? OperatorWarnings.raise(log,
+                                        warningSink.get(),
+                                        OperatorWarningCode.SCHEMA_MIGRATION_FENCED,
+                                        datasourceName,
+                                        "Schema operation on '{}' runs fenced again",
+                                        datasourceName)
+               : unit();
     }
 
     private static void logMigrationSuccess(String datasourceName, AetherSchemaManager.SchemaResult result) {
