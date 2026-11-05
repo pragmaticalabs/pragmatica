@@ -54,6 +54,7 @@ class ControlLoopEngineStopGateTest {
                                                                                                                new ControlLoopFsmTest.StubMetricsCollector(),
                                                                                                                Option.none(),
                                                                                                                new ControlLoopFsmTest.StubClusterNode(),
+                                                                                                               FencedTargetWrites.fencedStore(SELF),
                                                                                                                TimeSpan.timeSpan(60_000)
                                                                                                                        .millis(),
                                                                                                                ControllerConfig.DEFAULT,
