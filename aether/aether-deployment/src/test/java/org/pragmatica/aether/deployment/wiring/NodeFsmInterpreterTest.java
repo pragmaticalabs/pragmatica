@@ -253,6 +253,23 @@ class NodeFsmInterpreterTest {
             }
         }
 
+        /// The outside-dispatch fail-safe (`DeploymentWiring`'s `.or(0L)`): a stamp of 0 is at or below every watermark, the fresh one included, so
+        /// the input is dropped as `dropped_revision` and never stepped. The control, revision 1 above the same watermark, is stepped.
+        @Test
+        void aRevisionZeroKvInput_againstAFreshWatermark_isDropped_notStepped() {
+            try (var rig = new NodeRig()) {
+                rig.interpreter.deliverKv(new NodeFsmInput.DesiredPut(BILLING, desired(SliceGoal.LOADED)), 0L, false);
+                rig.settle();
+
+                assertThat(rig.metric("DesiredPut", "dropped_revision")).isEqualTo(1);
+
+                rig.interpreter.deliverKv(new NodeFsmInput.DesiredPut(BILLING, desired(SliceGoal.LOADED)), 1L, false);
+                rig.settle();
+
+                assertThat(rig.metric("DesiredPut", "dropped_revision")).as("revision 1 is above the watermark: stepped, not dropped").isEqualTo(1);
+            }
+        }
+
         @Test
         void aNonKvInput_isNeverFilteredByRevision() {
             try (var rig = new NodeRig()) {

@@ -305,6 +305,14 @@ final class Fsm2Harness implements AutoCloseable {
         commitAll(List.of(new KVCommand.Put(key, value)));
     }
 
+    /// A mutation applied without a slot (`KVStore.process`): it carries the unchanged committed revision.
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void putWithoutSlot(AetherKey key, AetherValue value) {
+        var raw = (KVStore) store;
+
+        raw.process(raw.createBatch((List) List.of(new KVCommand.Put(key, value))));
+    }
+
     /// A leader-authorized write: one `LeaderTransaction` under the committed leader, as the cluster FSM writes.
     @SuppressWarnings({"unchecked", "rawtypes"})
     void leaderPut(AetherKey key, AetherValue value) {

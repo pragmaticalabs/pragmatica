@@ -125,7 +125,8 @@ public final class DeploymentWiring {
                                                                    .start(exit));
         // The stamp is read only by the Fsm2Routes handlers, inside the dispatch, where it is present. Empty (a read off the dispatching
         // thread, a wiring bug) maps to 0, which FsmRuntime drops and counts as dropped_revision (watermark >= 0): the fail-safe Fsm2Routes
-        // documents and Fsm2RoutesTest pins.
+        // documents. NodeFsmInterpreterTest (aRevisionZeroKvInput_againstAFreshWatermark_isDropped_notStepped) pins the drop; the binding itself is
+        // pinned by DeploymentWiringProductionBindingTest; Fsm2RoutesTest pins only that the stamp reads 0 outside the dispatch.
         return deploymentWiring(config.deploymentEngine(),
                                 worker,
                                 registry,

@@ -15,6 +15,8 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Option;
 
@@ -60,6 +62,44 @@ class DeploymentWiringProductionBindingTest {
             harness.awaitThat(() -> harness.count("ObservedPut", "applied", "node") >= before + 2);
 
             assertThat(harness.count("ObservedPut", "dropped_revision", "node")).as("none mistaken for a fact inside the snapshot").isZero();
+        }
+    }
+
+    /// The revision stamp, both sides of the cut: the node's snapshot was cut at the committed revision N. A slotless mutation stamps the unchanged
+    /// committed revision N (at the watermark: dropped as `dropped_revision`), a slotted put stamps N + 1 (stepped). No constant satisfies both
+    /// (a constant above N steps the first, one at or below N drops the second), so a binding to any constant is red here.
+    @Test
+    void theFactoryBindsTheStoresRevision_soTheCutSeparatesSlotlessFromSlotted() {
+        try (var harness = Fsm2Harness.production(DeploymentEngine.FSM2).assembled()) {
+            openAndEnter(harness);
+            var key = SliceObservedKey.sliceObservedKey(Fsm2Harness.PEER, ORDERS);
+            var applied = harness.count("ObservedPut", "applied", "node");
+
+            harness.putWithoutSlot(key, observed(1L));
+            harness.awaitThat(() -> harness.count("ObservedPut", "dropped_revision", "node") >= 1);
+            assertThat(harness.count("ObservedPut", "applied", "node")).as("stamped at the cut: inside the snapshot").isEqualTo(applied);
+
+            harness.put(key, observed(2L));
+            harness.awaitThat(() -> harness.count("ObservedPut", "applied", "node") >= applied + 1);
+            assertThat(harness.count("ObservedPut", "dropped_revision", "node")).as("only the slotless one was dropped").isEqualTo(1);
+        }
+    }
+
+    /// The outside-dispatch fallback: a notification routed from this thread, not the store's dispatcher, finds no stamp; the factory maps that to 0,
+    /// which FsmRuntime drops as `dropped_revision`. A fallback of any positive value would step it.
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void aNotificationOutsideTheDispatch_isStampedZero_andDropped() {
+        try (var harness = Fsm2Harness.production(DeploymentEngine.FSM2).assembled()) {
+            openAndEnter(harness);
+            var key = SliceObservedKey.sliceObservedKey(Fsm2Harness.PEER, ORDERS);
+            var dropped = harness.count("ObservedPut", "dropped_revision", "node");
+            var applied = harness.count("ObservedPut", "applied", "node");
+
+            harness.router.route(new KVStoreNotification.ValuePut(new KVCommand.Put(key, observed(1L)), Option.none()));
+
+            harness.awaitThat(() -> harness.count("ObservedPut", "dropped_revision", "node") >= dropped + 1);
+            assertThat(harness.count("ObservedPut", "applied", "node")).isEqualTo(applied);
         }
     }
 
