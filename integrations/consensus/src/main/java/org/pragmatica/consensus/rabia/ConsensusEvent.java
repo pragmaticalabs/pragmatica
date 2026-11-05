@@ -45,10 +45,4 @@ public sealed interface ConsensusEvent extends Message.Local {
     /// applies committed decisions once more (#2306). Fires on `Passive -> Observing`, the edge `ConsensusDemoted` leaves
     /// alone because it was not preceded by `Active`.
     record ConsensusObserving(NodeId self) implements ConsensusEvent {}
-
-    /// Genesis formed with `seat` in the agreed roster while `seat` was not a connected, authenticated peer (#1654): the
-    /// view agreement counts a member's last two reports with no freshness, so a member that reported and then died can
-    /// still be agreed. Formation is not blocked; the event names the seat auto-heal is expected to replace. Fires once
-    /// per unreachable seat, at the installation of the agreed genesis roster; not a phase transition.
-    record GenesisSeatUnreachable(NodeId self, NodeId seat) implements ConsensusEvent {}
 }

@@ -18,7 +18,6 @@ package org.pragmatica.consensus.rabia;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.rabia.ConsensusEvent.GenesisSeatUnreachable;
 import org.pragmatica.consensus.rabia.RabiaEngineTest.TestClusterNetwork;
 import org.pragmatica.consensus.rabia.RabiaEngineTest.TestCommand;
 import org.pragmatica.consensus.rabia.RabiaEngineTest.TestStateMachine;
@@ -26,28 +25,40 @@ import org.pragmatica.consensus.rabia.RabiaEngineTest.TestTopologyManager;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.GenesisAnnouncement;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Option;
+import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.locks.LockSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+import static org.pragmatica.utility.warning.OperatorWarningCode.GENESIS_SEAT_REACHABLE;
+import static org.pragmatica.utility.warning.OperatorWarningCode.GENESIS_SEAT_UNREACHABLE;
 
 /// #1654 engine half: the genesis view agreement counts a member's last two reports with no freshness, so a member that
-/// reported the view twice and then died is still agreed. Formation goes ahead (ruling: keep forming) and the engine names
-/// the dead seat with a WARN and a `GenesisSeatUnreachable` event.
+/// reported the view twice and then died is still agreed. Formation goes ahead (ruling: keep forming) and the engine raises
+/// the operator warning `genesis-seat-unreachable` for the dead seat, closed by `genesis-seat-reachable` when the seat is a
+/// connected peer again or leaves the voter roster.
 ///
-/// B is genesis-pending (configured count 3) with candidates X and Y, as in `GenesisJoinRuleTest`.
+/// B is genesis-pending (configured count 3) with candidates X and Y, as in `GenesisJoinRuleTest`. The sink is the real
+/// hand-off sink; a sentinel pushed through it after the engine settles proves every earlier warning was published.
 class GenesisSeatUnreachableTest {
     private static final NodeId B = new NodeId("node-2");
     private static final NodeId X = new NodeId("node-4");
     private static final NodeId Y = new NodeId("node-5");
     private static final ClusterConfig VIEW = new ClusterConfig(List.of(B, X, Y));
+    private static final OperatorWarning SENTINEL = OperatorWarning.operatorWarning(OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED,
+                                                                                    "sentinel",
+                                                                                    "sentinel");
 
     private final Set<NodeId> connected = ConcurrentHashMap.newKeySet();
-    private final List<ConsensusEvent> events = new CopyOnWriteArrayList<>();
+    private final List<OperatorWarning> published = new CopyOnWriteArrayList<>();
+    private final OperatorWarningSink sink = OperatorWarningSink.handingOffTo(published::add);
     private final TestClusterNetwork network = new TestClusterNetwork() {
         @Override
         public Set<NodeId> connectedPeers() {
@@ -64,7 +75,63 @@ class GenesisSeatUnreachableTest {
     }
 
     @Test
-    void genesisFormedWithAMemberThatStoppedReporting_emitsSeatUnreachable() {
+    void genesisFormedWithAMemberThatStoppedReporting_raisesSeatUnreachable() {
+        formWithYGone();
+
+        assertThat(engine.voterConfiguration()).as("formation is not blocked by the dead seat")
+                                               .isEqualTo(Option.some(new VoterConfiguration(0, VIEW)));
+        assertThat(seatWarnings()).containsExactly(code(GENESIS_SEAT_UNREACHABLE, Y));
+    }
+
+    /// Control: the same schedule with every seat still connected forms the same roster and raises nothing, so the warning
+    /// above comes from the lost connection, not from forming genesis.
+    @Test
+    void genesisFormedWithEverySeatConnected_raisesNothing() {
+        engine = pendingB();
+        engine.runGenesisRoundForTesting();
+        engine.runGenesisRoundForTesting();
+        settle();
+        announceStably(Y);
+        settle();
+        announceStably(X);
+        settle();
+        engine.checkUnreachableGenesisSeatsForTesting();
+        settle();
+
+        assertThat(engine.voterConfiguration()).isEqualTo(Option.some(new VoterConfiguration(0, VIEW)));
+        assertThat(seatWarnings()).isEmpty();
+    }
+
+    @Test
+    void unreachableSeat_reconnects_isClosedOnceBySeatReachable() {
+        formWithYGone();
+        engine.checkUnreachableGenesisSeatsForTesting();
+        settle();
+        assertThat(seatWarnings()).as("still unreachable: nothing closes").containsExactly(code(GENESIS_SEAT_UNREACHABLE, Y));
+
+        connected.add(Y);
+        engine.checkUnreachableGenesisSeatsForTesting();
+        engine.checkUnreachableGenesisSeatsForTesting();
+        settle();
+
+        assertThat(seatWarnings()).containsExactly(code(GENESIS_SEAT_UNREACHABLE, Y), code(GENESIS_SEAT_REACHABLE, Y));
+    }
+
+    /// The replacement arm. `initializeVoters` (allowed here: the engine never started participating) stands in for the
+    /// committed reconfiguration that removes the seat; the check reads only the installed roster.
+    @Test
+    void unreachableSeat_leavesTheVoterRoster_isClosedBySeatReachable() {
+        formWithYGone();
+        var replaced = new VoterConfiguration(1, new ClusterConfig(List.of(B, X, new NodeId("node-6"))));
+
+        assertThat(engine.initializeVoters(replaced).isSuccess()).isTrue();
+        engine.checkUnreachableGenesisSeatsForTesting();
+        settle();
+
+        assertThat(seatWarnings()).containsExactly(code(GENESIS_SEAT_UNREACHABLE, Y), code(GENESIS_SEAT_REACHABLE, Y));
+    }
+
+    private void formWithYGone() {
         engine = pendingB();
         engine.runGenesisRoundForTesting();
         engine.runGenesisRoundForTesting();
@@ -74,33 +141,28 @@ class GenesisSeatUnreachableTest {
         connected.remove(Y);
         announceStably(X);
         settle();
-
-        assertThat(engine.voterConfiguration()).as("formation is not blocked by the dead seat")
-                                               .isEqualTo(Option.some(new VoterConfiguration(0, VIEW)));
-        assertThat(seatEvents()).containsExactly(new GenesisSeatUnreachable(B, Y));
     }
 
-    /// Control: the same schedule with every seat still connected forms the same roster and names no seat, so the event
-    /// above comes from the lost connection, not from forming genesis.
-    @Test
-    void genesisFormedWithEverySeatConnected_emitsNoSeatUnreachable() {
-        engine = pendingB();
-        engine.runGenesisRoundForTesting();
-        engine.runGenesisRoundForTesting();
-        settle();
-        announceStably(Y);
-        settle();
-        announceStably(X);
-        settle();
-
-        assertThat(engine.voterConfiguration()).isEqualTo(Option.some(new VoterConfiguration(0, VIEW)));
-        assertThat(seatEvents()).isEmpty();
+    private static String code(OperatorWarningCode code, NodeId subject) {
+        return code.code() + " " + subject.id();
     }
 
-    private List<ConsensusEvent> seatEvents() {
-        return events.stream()
-                     .filter(GenesisSeatUnreachable.class::isInstance)
-                     .toList();
+    /// Pushes a sentinel through the same in-order hand-off and waits for it, so every warning raised before it is published.
+    private List<String> seatWarnings() {
+        sink.accept(SENTINEL);
+
+        var deadline = System.nanoTime() + 5_000_000_000L;
+
+        while (!published.contains(SENTINEL) && System.nanoTime() < deadline) {
+            LockSupport.parkNanos(10_000_000L);
+        }
+
+        assertThat(published).as("the hand-off drained up to the sentinel").contains(SENTINEL);
+
+        return published.stream()
+                        .filter(warning -> warning != SENTINEL)
+                        .map(warning -> warning.code().code() + " " + warning.subject())
+                        .toList();
     }
 
     private void announceStably(NodeId sender) {
@@ -118,10 +180,9 @@ class GenesisSeatUnreachableTest {
                                         ProtocolConfig.consensusConfig(timeSpan(60).seconds(), timeSpan(60).seconds()),
                                         ConsensusMetrics.noop(),
                                         false,
-                                        RabiaPersistence.<TestCommand>inMemory(),
-                                        timeSpan(60).seconds(),
-                                        events::add);
+                                        RabiaPersistence.<TestCommand>inMemory());
 
+        created.useOperatorWarningSink(sink);
         assertThat(created.deferGenesis(() -> Set.of(B, X, Y), 3, Option.none(), Set.of(B, X, Y)).isSuccess()).isTrue();
         created.clusterState(ClusterStateNotification.active());
 

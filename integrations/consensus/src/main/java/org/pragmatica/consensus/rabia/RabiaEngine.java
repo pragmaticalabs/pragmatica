@@ -59,7 +59,6 @@ import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusActive;
 import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusDemoted;
 import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusObserving;
 import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusPassive;
-import org.pragmatica.consensus.rabia.ConsensusEvent.GenesisSeatUnreachable;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Contract;
@@ -75,6 +74,9 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -171,6 +173,10 @@ public class RabiaEngine<C extends Command> {
     /// Executor-confined after [#start]. Genesis view agreement while genesis is pending.
     private volatile Option<GenesisViewAgreement> genesisAgreement = Option.none();
     private final AtomicReference<ScheduledFuture<?>> genesisTimer = new AtomicReference<>();
+    /// Seats this node raised [OperatorWarningCode#GENESIS_SEAT_UNREACHABLE] for and has not closed yet (#1654).
+    private final Set<NodeId> unreachableGenesisSeats = ConcurrentHashMap.newKeySet();
+
+    private final AtomicReference<OperatorWarningSink> operatorWarningSink = new AtomicReference<>(OperatorWarningSink.logOnly());
 
     /// Genesis round interval: starts here and doubles while the view is unchanged, up to the sync retry
     /// interval, so a waiting cluster does not flood the network and a changing one reacts quickly.
@@ -477,13 +483,68 @@ public class RabiaEngine<C extends Command> {
         configuration.members().stream().filter(seat -> !reachable.contains(seat)).forEach(this::signalUnreachableSeat);
     }
 
-    private void signalUnreachableSeat(NodeId seat) {
-        log.warn("Node {} installs genesis with seat {} not connected: the seat reported the agreed view earlier and is "
-                + "unreachable now. Formation is not blocked; auto-heal is expected to replace the seat. Operator action: "
-                + "if the seat does not return or get replaced, check that node (#1654).",
-                 self,
-                 seat);
-        consensusEventListener.accept(new GenesisSeatUnreachable(self, seat));
+    private Unit signalUnreachableSeat(NodeId seat) {
+        unreachableGenesisSeats.add(seat);
+
+        return OperatorWarnings.raise(log,
+                                      operatorWarningSink.get(),
+                                      OperatorWarningCode.GENESIS_SEAT_UNREACHABLE,
+                                      seat.id(),
+                                      "Node {} installs genesis with seat {} not connected: the seat reported the agreed view earlier and is "
+                                     + "unreachable now. Formation is not blocked; auto-heal is expected to replace the seat. Operator "
+                                     + "action: if the seat neither returns nor is replaced, check that node (#1654).",
+                                      self,
+                                      seat);
+    }
+
+    /// Closes [OperatorWarningCode#GENESIS_SEAT_UNREACHABLE] for every seat this node raised it for that is a connected peer again
+    /// or has left the voter roster (replaced). Runs on the phase-stall tick, so a seat closes within one stall-check interval.
+    private void resolveUnreachableGenesisSeats() {
+        if (unreachableGenesisSeats.isEmpty()) {
+            return;
+        }
+
+        var connected = network.connectedPeers();
+
+        List.copyOf(unreachableGenesisSeats).forEach(seat -> resolveUnreachableGenesisSeat(seat, connected));
+    }
+
+    private void resolveUnreachableGenesisSeat(NodeId seat, Set<NodeId> connected) {
+        if (connected.contains(seat)) {
+            closeUnreachableGenesisSeat(seat, "is a connected peer again");
+
+            return;
+        }
+
+        if (voters.filter(configuration -> !configuration.contains(seat)).isPresent()) {
+            closeUnreachableGenesisSeat(seat, "left the voter roster (replaced)");
+        }
+    }
+
+    private Unit closeUnreachableGenesisSeat(NodeId seat, String how) {
+        unreachableGenesisSeats.remove(seat);
+
+        return OperatorWarnings.raise(log,
+                                      operatorWarningSink.get(),
+                                      OperatorWarningCode.GENESIS_SEAT_REACHABLE,
+                                      seat.id(),
+                                      "Node {}: genesis seat {} {}",
+                                      self,
+                                      seat,
+                                      how);
+    }
+
+    /// Binds this engine's operator warnings to its node's event log (#1654). Until called, they are logged only.
+    @Contract
+    public void useOperatorWarningSink(OperatorWarningSink sink) {
+        operatorWarningSink.set(sink);
+    }
+
+    /// Test hook: one unreachable-genesis-seat check on the apply executor, as the phase-stall tick runs it.
+    Unit checkUnreachableGenesisSeatsForTesting() {
+        safeExecute(this::resolveUnreachableGenesisSeats);
+
+        return Unit.unit();
     }
 
     @Contract
@@ -3158,6 +3219,7 @@ public class RabiaEngine<C extends Command> {
     /// (under the original sender's id; `registerProposal` is idempotent and keyed on sender), so
     /// a fresh voter synced to the stalled phase can reach quorum proposals and make progress.
     private void checkPhaseStall() {
+        resolveUnreachableGenesisSeats();
         if (! (engineState.get() instanceof EngineState.InPhase)) {
             return;
         }

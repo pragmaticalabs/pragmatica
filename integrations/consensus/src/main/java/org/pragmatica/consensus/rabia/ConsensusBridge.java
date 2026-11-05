@@ -19,7 +19,6 @@ import java.util.function.Consumer;
 
 import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusActive;
 import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusDemoted;
-import org.pragmatica.consensus.rabia.ConsensusEvent.GenesisSeatUnreachable;
 import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusObserving;
 import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusPassive;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
@@ -62,7 +61,6 @@ public final class ConsensusBridge {
             case ConsensusPassive passive -> publishPassive(passive);
             case ConsensusDemoted demoted -> publishDemoted(demoted);
             case ConsensusObserving observing -> publishObserving(observing);
-            case GenesisSeatUnreachable unreachable -> logSeatUnreachable(unreachable);
         }
     }
 
@@ -88,12 +86,5 @@ public final class ConsensusBridge {
     private void publishObserving(ConsensusObserving event) {
         log.info("ConsensusBridge: OBSERVING (observer applies decisions again) for {}", event.self());
         router.route(ObserverResumedNotification.observerResumed(event.self()));
-    }
-
-    /// #1654: the engine has already logged the WARN naming the seat. No cluster message carries this yet because nothing
-    /// subscribes to one: routing a type with no route only adds a "No route" warning. The operator surface is wired later.
-    @Contract
-    private void logSeatUnreachable(GenesisSeatUnreachable event) {
-        log.info("ConsensusBridge: GENESIS SEAT UNREACHABLE {} at {}", event.seat(), event.self());
     }
 }
