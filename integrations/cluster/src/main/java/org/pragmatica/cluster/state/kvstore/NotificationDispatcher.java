@@ -73,7 +73,12 @@ final class NotificationDispatcher {
                          List<Message> notifications,
                          boolean replay,
                          long enqueuedNanos,
-                         long bytes) {}
+                         long bytes) {
+        /// The same batch, carrying the revision it is delivered under ([#revisionFor]).
+        DeliveryBatch revisedTo(long deliveredRevision) {
+            return new DeliveryBatch(seq, deliveredRevision, notifications, replay, enqueuedNanos, bytes);
+        }
+    }
 
     private record Waiter(Fn0<Unit> succeed, Fn1<Unit, Cause> fail) {}
 
@@ -132,6 +137,9 @@ final class NotificationDispatcher {
     private volatile long handlerStartedNanos;
     private volatile boolean handlerReported;
     private volatile Thread deliveringThread;
+    /// The revision of the last batch that delivered at least one notification, -1 before the first. Read and written by
+    /// the delivering thread only (inline mode: under the mutation guard), never reset: [#revisionFor].
+    private long lastDeliveredRevision = -1;
     private final Option<ExecutorService> completions;
 
     NotificationDispatcher(KVStore<?, ?> store, MessageRouter router, NotificationDelivery delivery) {
@@ -246,9 +254,21 @@ final class NotificationDispatcher {
             watchdog = Option.some(startWatchdog());
             thread = Option.some(created);
             created.start();
+            stopIfClosedMeanwhile();
         }
 
         return unit();
+    }
+
+    /// v-2648 A3-2: [#close] does not take the mutation guard, so it can run whole between the check above and the
+    /// watchdog's creation, see neither the thread nor the watchdog, and leave the watchdog running. `stopRequested` is
+    /// written by close before it reads [#watchdog], and read here after the watchdog is published (both volatile), so at
+    /// least one side shuts it down; a second `shutdownNow` is a no-op. The thread itself ends on its own: its loop reads
+    /// `stopRequested` before its first `take()`.
+    private void stopIfClosedMeanwhile() {
+        if (stopRequested) {
+            watchdog.onPresent(ScheduledExecutorService::shutdownNow);
+        }
     }
 
     String threadName() {
@@ -328,13 +348,16 @@ final class NotificationDispatcher {
         queueDepth.decrementAndGet();
         hook.beforeDelivery(batch.seq());
         deliveringThread = Thread.currentThread();
-        delivering.set(Option.some(batch));
+        var revised = batch.revisedTo(revisionFor(batch));
+
+        delivering.set(Option.some(revised));
         replaying.set(batch.replay());
         try {
             var messages = batch.replay()
                            ? store.replayBurst()
                            : batch.notifications();
 
+            consumeRevision(revised, messages);
             messages.forEach(this::deliverOne);
         } finally {
             replaying.set(Boolean.FALSE);
@@ -343,6 +366,22 @@ final class NotificationDispatcher {
         }
 
         publishDelivered(batch);
+    }
+
+    /// The revision a batch is delivered under (CTO ruling 2026-11-05, FSM spec R-3.1.7): MONOTONE per dispatcher for the
+    /// life of the process, because FSM2 orders its inputs by it and defines no epoch boundary. A batch carries the store's
+    /// committed revision at apply unless that is not above the last delivered one; then it carries the last delivered +1.
+    /// So the remove burst of a `reset()` (applied at committed revision 0) carries last+1, and later batches continue from
+    /// `max(last delivered + 1, committed)`. A batch that delivers nothing (a silent install, an empty replay diff)
+    /// consumes no revision.
+    private long revisionFor(DeliveryBatch batch) {
+        return Math.max(lastDeliveredRevision + 1, batch.revision());
+    }
+
+    private void consumeRevision(DeliveryBatch revised, List<Message> messages) {
+        if (!messages.isEmpty()) {
+            lastDeliveredRevision = revised.revision();
+        }
     }
 
     @Contract
@@ -564,6 +603,10 @@ final class NotificationDispatcher {
               .onPresent(written -> readAhead(batch, key, written));
     }
 
+    /// The first read-ahead per key type raises KV_DISPATCH_READ_AHEAD once per process. Known limit (v-2648 A3-1, accepted
+    /// as documented): when a type's first read-ahead happens while a replay burst is delivered, the node sink marks the event
+    /// replayed and the aggregator suppresses it, while the mark below is already set, so that type's INFO event is lost for
+    /// the rest of the process. The `kv.dispatch.readahead.reads` counter still counts every read.
     private void readAhead(DeliveryBatch batch, Object key, long written) {
         var tag = tagNow();
 

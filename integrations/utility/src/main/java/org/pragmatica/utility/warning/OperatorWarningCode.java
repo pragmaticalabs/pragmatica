@@ -785,12 +785,16 @@ public enum OperatorWarningCode {
     /// A KV notification handler read a key that a LATER batch than the one it is handling had already written (KVStore
     /// dispatcher design §3.4): it saw state ahead of its notification. The first such read per key type per process;
     /// the `kv.dispatch.readahead.reads` counter carries every one. The subject is the key type of the notification being handled
-    /// (`SliceTargetKey`). A point event that opens nothing, so INFO. [guess: level]
+    /// (`SliceTargetKey`). A point event that opens nothing, so INFO. Known limit: when a type's first read-ahead happens
+    /// during a replay burst, the event is suppressed as replayed and that type raises no further one in this process (the
+    /// counter still counts every read). [guess: level]
     KV_DISPATCH_READ_AHEAD("kv-dispatch-read-ahead", "kv-store", WarningLevel.INFO),
     /// The node's KV notification dispatcher failed (KVStore dispatcher design §3.2, owner ruling 1): the store is closed, every
     /// waiting write fails as outcome-unknown, and the node stops (the production node halts). The subject is the store; the
-    /// node log carries the failure, the batch and a thread dump. A fact about one process: the only end is a restart, so no
-    /// recovery code. [guess: no recovery, on the frozen list in `OperatorWarningCodeTest`]
+    /// node log carries the failure, the batch and a thread dump. No recovery code: a restart is the recovery, as for
+    /// [#STORAGE_WAL_FAIL_STOPPED]. The node's operator-warning sink accepts this event (the publish call returns) before the
+    /// dispatcher calls `stopNode`; the sink hands it off asynchronously, so its delivery to the cluster event stream is
+    /// best-effort once the node halts.
     KV_DISPATCHER_FAILED("kv-dispatcher-failed", "kv-store", WarningLevel.CRITICAL),
     /// The recovery of [#CONFIG_WATCH_CALLBACK_FAILED], same subject (#774): the next delivery bound and (when it called back) succeeded.
     /// INFO, published only after a published failure for the subject (#752 mechanism).

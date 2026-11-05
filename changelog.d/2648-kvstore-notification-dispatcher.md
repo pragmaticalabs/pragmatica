@@ -4,7 +4,7 @@
   completes only after its batch is delivered (`StateMachine.completeAfterDelivery`), so a caller that reads after the
   promise resolves sees its own write in every subscriber view. `[verified: KVStoreDispatcherTest]`
 - New store surface: `awaitDelivered(seq)`, `close()` (teardown, bounded join), `notificationRevision()` per delivered
-  batch, delivery metrics (seq lag, oldest undelivered age, queue depth and bytes estimate, read-ahead counts) and a
+  batch (monotone for the life of the process, across `reset()`; `[verified: DispatcherRevisionMonotoneTest]`), delivery metrics (seq lag, oldest undelivered age, queue depth and bytes estimate, read-ahead counts) and a
   held-dispatcher test hook (`HeldDelivery`). A failure the dispatcher cannot contain closes the store, fails every
   pending wait with `DeliveryOutcomeUnknown` and stops the node through an injected `DispatcherFailureSink`.
 - `replayNotifications()` waits for its burst outside every store lock and refuses a caller that would wait for itself.

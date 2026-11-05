@@ -27,7 +27,9 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.FrameworkCodecs;
@@ -128,7 +130,7 @@ class AetherNodeKvDispatcherWiringBootTest {
         var marker = AetherKey.LogLevelKey.forLogger("d1-slow-handler-wiring");
         var observed = new CountDownLatch(1);
 
-        delegateRouter.replaceDelegate(holdingMarker(currentDelegate(delegateRouter), marker, observed));
+        delegateRouter.replaceDelegate(holdingMarker(currentDelegate(delegateRouter), marker, () -> awaitQuietly(observed)));
         var store = node.kvStore();
 
         store.process(store.createBatch(List.of(new KVCommand.Put<AetherKey, AetherValue>(marker,
@@ -175,8 +177,8 @@ class AetherNodeKvDispatcherWiringBootTest {
         return (MessageRouter) field.get(delegateRouter);
     }
 
-    /// Routes everything to `original`, except the put of `marker`, which it holds (bounded) until `observed`.
-    private static MessageRouter holdingMarker(MessageRouter original, AetherKey marker, CountDownLatch observed) {
+    /// Routes everything to `original`, except the put of `marker`, which it hands to `hold` instead (on the delivering thread).
+    private static MessageRouter holdingMarker(MessageRouter original, AetherKey marker, Runnable hold) {
         return new MessageRouter.ImmutableRouter<Message>() {
             @Override
             public Map<Class<Message>, List<Consumer<Message>>> routingTable() {
@@ -186,7 +188,7 @@ class AetherNodeKvDispatcherWiringBootTest {
             @Override
             public <R extends Message> void route(R message) {
                 if (message instanceof KVStoreNotification.ValuePut<?, ?> put && marker.equals(put.cause().key())) {
-                    awaitQuietly(observed);
+                    hold.run();
 
                     return;
                 }
@@ -194,6 +196,67 @@ class AetherNodeKvDispatcherWiringBootTest {
                 original.route(message);
             }
         };
+    }
+
+    /// v-2648 F2, deterministic (vd1A4: the stop arm above went red only 1 in 14 with the fix reverted). The store's close is
+    /// held: a handler holds the dispatcher thread through the close's interrupt, so the close's bounded join (5 s) waits
+    /// for it. While the close is held (the store already reads closed), the promise `stop()` returned must not be resolved;
+    /// once the handler is released, it resolves. Mutation: the F2 revert, `closeKvStore` as an independent
+    /// `onResultRun` (red: the promise is resolved before the close runs).
+    @Test
+    @Timeout(value = 90, unit = SECONDS)
+    void stop_resolvesOnlyAfterTheStoreCloseReturns() throws Exception {
+        var delegateRouter = MessageRouter.DelegateRouter.delegate();
+        var node = booted(AetherNode.aetherNode(config(),
+                                                delegateRouter,
+                                                NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs()),
+                                                DispatcherFailureSink.loggingOnly()));
+        var marker = AetherKey.LogLevelKey.forLogger("d1-stop-holds-close");
+        var held = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+
+        delegateRouter.replaceDelegate(holdingMarker(currentDelegate(delegateRouter),
+                                                     marker,
+                                                     () -> holdThroughInterrupts(held, release)));
+        var store = node.kvStore();
+
+        store.process(store.createBatch(List.of(new KVCommand.Put<AetherKey, AetherValue>(marker,
+                                                                                           AetherValue.LogLevelValue.logLevelValue("d1-stop-holds-close",
+                                                                                                                                   "INFO")))));
+        assertThat(held.await(20, TimeUnit.SECONDS)).as("the dispatcher is held in the marker's handler").isTrue();
+        nodes.remove(node);
+        Promise<Unit> stopped = node.stop();
+
+        try {
+            assertThat(eventually(() -> store.deliveryMetrics().closed())).as("the stop reached the store's close").isTrue();
+            assertThat(stopped.isResolved()).as("stop() resolved while the store's close is still held").isFalse();
+            Thread.sleep(300);
+            assertThat(stopped.isResolved()).as("stop() resolved while the store's close is still held (300 ms later)")
+                                            .isFalse();
+        } finally {
+            release.countDown();
+        }
+        assertThat(stopped.await(timeSpan(30).seconds())
+                          .isSuccess()).as("stop() resolves once the close returns").isTrue();
+        assertThat(liveThreadNamed(store.dispatcherThreadName())).as("no dispatcher thread outlives the stop").isFalse();
+    }
+
+    /// Holds the delivering thread until `release`, through the close's interrupt (re-asserted on return), bounded at 30 s.
+    private static void holdThroughInterrupts(CountDownLatch held, CountDownLatch release) {
+        held.countDown();
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+        var interrupted = false;
+
+        while (release.getCount() > 0 && System.nanoTime() < deadline) {
+            try {
+                release.await(50, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                interrupted = true;
+            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private static void awaitQuietly(CountDownLatch latch) {

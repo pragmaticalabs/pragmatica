@@ -1031,8 +1031,10 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     /// The revision of the batch being delivered on this thread, for subscribers that order their inputs by it (FSM2,
-    /// R-3.1.7): increasing across live batches; a replay burst carries the revision of the state it replays. Empty
-    /// outside a delivery.
+    /// R-3.1.7): monotone per store for the life of the process, `reset()` included (CTO ruling 2026-11-05). A batch
+    /// carries the committed revision it was applied at, raised to the last delivered revision +1 when it is not above it;
+    /// a replay burst carries the revision of the state it replays, under the same floor. The reset's remove burst
+    /// therefore carries the last delivered +1. Empty outside a delivery.
     public Option<Long> notificationRevision() {
         return dispatcher.deliveringBatch()
                          .map(DeliveryBatch::revision);
@@ -1110,7 +1112,9 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     /// The reset's remove burst, once delivered, empties the delivered view; this applying thread never writes the
-    /// view (R3 N5). `deliverySeq` is not reset (design §3.1).
+    /// view (R3 N5). `deliverySeq` is not reset (design §3.1), and neither is the notification revision: the committed
+    /// revision returns to 0, and the dispatcher delivers the burst at the last delivered revision +1
+    /// ([#notificationRevision()]).
     private Unit resetStorage() {
         committedRevision = 0;
         notifyRemoveAll();
