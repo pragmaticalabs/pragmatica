@@ -17,7 +17,7 @@
 
 ```bash
 # Quick health check from any node
-curl http://node1:8080/health
+curl http://node1:8080/api/v1/health
 
 # Expected healthy response:
 # {"status":"healthy","quorum":true,"nodeCount":3,"sliceCount":5}
@@ -35,7 +35,7 @@ curl http://node1:8080/health
 # Check each node
 for node in node1 node2 node3; do
   echo "=== $node ==="
-  curl -s http://$node:8080/health || echo "UNREACHABLE"
+  curl -s http://$node:8080/api/v1/health || echo "UNREACHABLE"
 done
 ```
 
@@ -63,7 +63,7 @@ grep -i "quorum\|leader\|rabia" /var/log/aether/aether.log | tail -50
 ```bash
 # Count reachable nodes
 for node in node1 node2 node3; do
-  curl -s http://$node:8080/health && echo " - $node OK"
+  curl -s http://$node:8080/api/v1/health && echo " - $node OK"
 done | grep OK | wc -l
 ```
 
@@ -193,7 +193,7 @@ ssh node1 "free -m"
 **Diagnosis:**
 ```bash
 # Check slice state
-curl http://node1:8080/slices | jq '.[] | select(.state != "ACTIVE")'
+curl http://node1:8080/api/v1/slices | jq '.[] | select(.state != "ACTIVE")'
 
 # Check deployment logs
 grep -i "slice\|artifact" /var/log/aether/aether.log | tail -100
@@ -358,10 +358,10 @@ grep -i "slice\|artifact" /var/log/aether/aether.log | tail -100
 **Diagnosis:**
 ```bash
 # Check CPU and memory
-curl http://node1:8080/metrics | jq '.["cpu.usage"], .["heap.usage"]'
+curl http://node1:8080/api/v1/metrics | jq '.["cpu.usage"], .["heap.usage"]'
 
 # Check method-level latency
-curl http://node1:8080/metrics | jq 'to_entries | .[] | select(.key | contains("duration.avg"))'
+curl http://node1:8080/api/v1/metrics | jq 'to_entries | .[] | select(.key | contains("duration.avg"))'
 ```
 
 **Resolution:**
