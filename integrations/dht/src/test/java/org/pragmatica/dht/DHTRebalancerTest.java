@@ -47,6 +47,10 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.BooleanSupplier;
 import java.time.Duration;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.testlogging.LogCapture;
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.core.LogEvent;
+import java.util.stream.Stream;
 import org.pragmatica.consensus.net.WriteOutcome;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -895,6 +899,126 @@ class DHTRebalancerTest {
             assertThat(recorder.atRisk()).containsExactly(1);
             assertThat(recorder.delivered()).containsExactly(1);
             assertThat(report.soleCopyAtRisk()).isZero();
+        }
+
+        /// #2684 P1: the winner of the re-evaluation is held in the log line of its AT_RISK raise, an effect that runs BEFORE the
+        /// observer call, outside the transition lock. The event was decided under the lock, so it is already in `events` (and
+        /// so is the DELIVERED event the last ack decides next): the push must not resolve while the winner is still draining. A
+        /// registration done by the effect itself would leave `events` empty here and the push would resolve at once.
+        @Test
+        @Timeout(30)
+        void pushOnDeparture_winnerHeldBeforeItsObserverCall_pushWaitsForTheRegisteredEvents() throws InterruptedException {
+            var ring = fiveNodeRing();
+            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+            node.putLocal(soleKey(ring, "p1"), value("payload")).await();
+            var network = ScriptedNetwork.scripted((_, _) -> Reply.DROP);
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var recorder = new EventRecorder(() -> {});
+            var rebalancer = dhtRebalancer(node, network, RF1);
+
+            try (var _ = LogCapture.capture(DeparturePushRun.class.getName(), Level.WARN, true, holdAtRiskLog(entered, release, _ -> {}))) {
+                var push = rebalancer.pushOnDeparture(DepartureWindow.departureWindow(System.nanoTime() + ms(60_000).nanos()),
+                                                      new DeparturePushTuning(ms(300), ms(10_000), ms(10_000), ms(10_000), ms(200)),
+                                                      Set.of(),
+                                                      recorder);
+
+                assertThat(entered.await(10, TimeUnit.SECONDS)).as("control: the winner is held in its AT_RISK log line").isTrue();
+                var sent = network.sends().getFirst();
+                var acker = Thread.ofPlatform()
+                                  .start(() -> rebalancer.onMigrationDataAck(new DHTMessage.MigrationDataAck(sent.response().requestId(),
+                                                                                                             sent.target(),
+                                                                                                             true)));
+                var ackReturned = acker.join(Duration.ofSeconds(2));
+                var resolvedWhileHeld = push.await(ms(1_000)).isSuccess();
+                var atRiskWhileHeld = recorder.atRisk();
+
+                release.countDown();
+                var report = push.await().unwrap();
+
+                assertThat(ackReturned).as("the acking thread never waits for the draining winner").isTrue();
+                assertThat(atRiskWhileHeld).as("control: the observer call is still behind the held log line").isEmpty();
+                assertThat(resolvedWhileHeld).as("the push does not resolve while the winner's registered events are pending").isFalse();
+                assertThat(recorder.atRisk()).containsExactly(1);
+                assertThat(recorder.delivered()).containsExactly(1);
+                assertThat(report.soleCopyAtRisk()).isZero();
+            }
+        }
+
+        /// #2684 P1: effects run in the order their transitions queued them, across transitions. The re-evaluation's promotion
+        /// (log, AT_RISK log, AT_RISK call) is held in its second effect; the last ack's transition queues its DELIVERED effects
+        /// meanwhile. Whatever the winner already ran stays before them, and whatever it has left runs before them too: the
+        /// promotion line and the AT_RISK call precede the DELIVERED line and call.
+        @Test
+        @Timeout(30)
+        void pushOnDeparture_effectsOfTwoTransitionsQueuedBeforeOneDrain_runInTransitionOrder() throws InterruptedException {
+            var ring = fiveNodeRing();
+            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF2);
+            var probe = keyHeldBy(ring, 2, Set.of(LOCAL, PEER_A), "p1order");
+            node.putLocal(probe, value("payload")).await();
+            var firstSend = new CountDownLatch(1);
+            var network = ScriptedNetwork.scripted((_, _) -> countDownThenDrop(firstSend));
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var trace = new CopyOnWriteArrayList<String>();
+            var recorderRef = new AtomicReference<EventRecorder>();
+            var recorder = new EventRecorder(() -> trace.add("AT_RISK call, delivered calls seen: " + recorderRef.get().delivered().size()));
+            recorderRef.set(recorder);
+            var rebalancer = dhtRebalancer(node, network, node.config());
+
+            try (var _ = LogCapture.capture(DeparturePushRun.class.getName(),
+                                            Level.INFO,
+                                            true,
+                                            holdAtRiskLog(entered, release, line -> trace.add(line + ", delivered calls seen: " + recorder.delivered().size())))) {
+                var push = rebalancer.pushOnDeparture(DepartureWindow.departureWindow(System.nanoTime() + ms(60_000).nanos()),
+                                                      T(300, 10_000, 10_000),
+                                                      Set.of(),
+                                                      recorder);
+
+                assertThat(firstSend.await(10, TimeUnit.SECONDS)).as("control: the replicated page was sent").isTrue();
+                ring.removeNode(PEER_A);
+                assertThat(entered.await(10, TimeUnit.SECONDS)).as("control: the winner is held in its AT_RISK log line").isTrue();
+                var sent = network.sends().getFirst();
+                var acker = Thread.ofPlatform()
+                                  .start(() -> rebalancer.onMigrationDataAck(new DHTMessage.MigrationDataAck(sent.response().requestId(),
+                                                                                                             sent.target(),
+                                                                                                             true)));
+                var ackReturned = acker.join(Duration.ofSeconds(2));
+
+                release.countDown();
+                push.await();
+
+                assertThat(ackReturned).as("control: the last ack was decided while the winner was held").isTrue();
+                assertThat(recorder.delivered()).as("control: the delivered event was raised").containsExactly(1);
+                assertThat(trace).containsExactly("lost every plan-time survivor, delivered calls seen: 0",
+                                                  "not yet acknowledged, delivered calls seen: 0",
+                                                  "AT_RISK call, delivered calls seen: 0",
+                                                  "every sole-copy chunk was acknowledged, delivered calls seen: 0");
+            }
+        }
+
+        /// Logs of the push run are observed on the logging thread: the AT_RISK line holds its thread until `release`; every
+        /// line is tagged by its start text for `tagger`.
+        private static Consumer<LogEvent> holdAtRiskLog(CountDownLatch entered, CountDownLatch release, Consumer<String> tagger) {
+            return event -> {
+                var message = event.getMessage().getFormattedMessage();
+
+                var tag = tagOf(message);
+
+                if (!tag.equals("other")) {
+                    tagger.accept(tag);
+                }
+                if (message.contains("not yet acknowledged")) {
+                    holdOpen(entered, release);
+                }
+            };
+        }
+
+        private static String tagOf(String message) {
+            return Stream.of("lost every plan-time survivor", "not yet acknowledged", "every sole-copy chunk was acknowledged")
+                         .filter(message::contains)
+                         .findFirst()
+                         .orElse("other");
         }
 
         /// #2684 F2: replicated key {LOCAL, A}; A leaves the ring before `baseDeadline`, so the re-evaluation must promote the key to
