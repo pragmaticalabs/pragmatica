@@ -3164,6 +3164,46 @@ class ClusterEventAggregatorTest {
             assertThat(published).containsExactly("dht-departure-sole-copy-at-risk", "dht-departure-sole-copy-delivered");
         }
 
+        /// #2684 N1: a second recovery for the subject while the warning is still in flight replaces the held one; the replaced
+        /// recovery is never published, and its wait ends at the replacement instead of never.
+        @Test
+        @Timeout(10)
+        void replacedHeldRecovery_completes() {
+            var h = Harness.create();
+            Promise<Unit> gate = Promise.promise();
+            var published = new java.util.concurrent.CopyOnWriteArrayList<String>();
+            h.aggregator().interceptPublish(event -> recordThen(published, event, gate));
+
+            h.aggregator().raiseAwaited(atRisk("n1@1"));
+            var first = h.aggregator().raiseAwaited(delivered("n1@1"));
+            var second = h.aggregator().raiseAwaited(delivered("n1@1"));
+
+            assertThat(first.await(SETTLE).isSuccess()).as("the replaced recovery's wait ends").isTrue();
+            assertThat(second.isResolved()).as("control: the replacing recovery is still held").isFalse();
+            gate.succeed(Unit.unit());
+            assertThat(second.await(SETTLE).isSuccess()).isTrue();
+            assertThat(published).containsExactly("dht-departure-sole-copy-at-risk", "dht-departure-sole-copy-delivered");
+        }
+
+        /// #2684 N1: a held recovery dropped because the warning it closes is raised again before the first delivery landed is never
+        /// published, and its wait ends at the drop instead of never.
+        @Test
+        @Timeout(10)
+        void heldRecoveryDroppedByARepeatedWarning_completes() {
+            var h = Harness.create();
+            Promise<Unit> gate = Promise.promise();
+            var published = new java.util.concurrent.CopyOnWriteArrayList<String>();
+            h.aggregator().interceptPublish(event -> recordThen(published, event, gate));
+
+            h.aggregator().raiseAwaited(atRisk("n1@1"));
+            var recovery = h.aggregator().raiseAwaited(delivered("n1@1"));
+            h.aggregator().raiseAwaited(atRisk("n1@1"));
+
+            assertThat(published).as("control: the repeated warning was delivered, not throttled")
+                                 .containsExactly("dht-departure-sole-copy-at-risk", "dht-departure-sole-copy-at-risk");
+            assertThat(recovery.await(SETTLE).isSuccess()).as("the dropped recovery's wait ends").isTrue();
+        }
+
         /// E5: the awaited departure report (3-arg deliver) completes when it lands, not at the call.
         @Test
         @Timeout(10)

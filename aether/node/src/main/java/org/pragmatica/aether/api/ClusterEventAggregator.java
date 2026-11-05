@@ -1154,9 +1154,13 @@ public final class ClusterEventAggregator {
 
     /// #752: a warning that has a recovery is "shown" only once it is in the log. Until then a recovery that arrives is
     /// held in `awaitingDelivery` and released when the warning lands, or dropped with it if redelivery gives up, so a
-    /// recovery never reaches the log without the warning it closes.
+    /// recovery never reaches the log without the warning it closes. A recovery still held for an earlier delivery of the same
+    /// warning is dropped, and its settle runs, so whoever awaits it is released (#2684 N1).
     private void deliverRecoverable(ClusterEvent event, String key, ThrottleWindow window, Runnable settle) {
-        awaitingDelivery.put(key, Option.none());
+        Option.option(awaitingDelivery.put(key,
+                                           Option.none()))
+              .flatMap(held -> held)
+              .onPresent(ClusterEventAggregator::settleReplaced);
         redelivery.deliver(stampedOrAsIs(event),
                            outcome -> warningLostThenSettle(key, window, outcome, settle),
                            () -> warningLandedThenSettle(key, settle));
@@ -1211,6 +1215,11 @@ public final class ClusterEventAggregator {
               .onPresent(recovery -> releaseHeldRecovery(key, recovery));
     }
 
+    /// A held recovery superseded before its warning landed is never published; its settle runs outside the map update.
+    private static void settleReplaced(HeldRecovery recovery) {
+        recovery.settle().run();
+    }
+
     private void releaseHeldRecovery(String key, HeldRecovery recovery) {
         openRecoverable.remove(key);
         redelivery.deliver(stampedOrAsIs(recovery.event()),
@@ -1229,10 +1238,10 @@ public final class ClusterEventAggregator {
                             Runnable settle) {
         var closedKey = throttleKey(closes, warning.subject());
         var event = warningEvent(warning, 0);
-        var held = Option.option(awaitingDelivery.computeIfPresent(closedKey,
-                                                                   (_, _) -> Option.some(new HeldRecovery(event, settle))));
+        var replaced = Option.option(awaitingDelivery.replace(closedKey, Option.some(new HeldRecovery(event, settle))));
 
-        if (held.isPresent()) {
+        if (replaced.isPresent()) {
+            replaced.flatMap(held -> held).onPresent(ClusterEventAggregator::settleReplaced);
             operatorWarningThrottle.remove(closedKey);
             LOG.debug("ClusterEventAggregator: holding OperatorWarning {} for {} until the warning it closes is delivered",
                       warning.code().code(),

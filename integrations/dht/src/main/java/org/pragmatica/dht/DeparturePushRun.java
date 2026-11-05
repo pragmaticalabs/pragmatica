@@ -20,8 +20,10 @@ import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -73,6 +75,15 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// re-evaluation, or an inventory not enumerated in time. `onSoleCopyDelivered` at the end iff it was raised and no sole key is left
 /// unacknowledged. `onIncompleteReport` at the end iff any key is unacknowledged. Each event's promise is awaited until the window's
 /// event deadline. After a halt nothing more is sent or raised.
+///
+/// **Concurrency.** The re-evaluation (scheduler or chain thread), the at-risk raise and `finish` (often the thread that delivered
+/// the last ack) mutate shared run state. Each such transition runs under one per-run lock, `transitions`, which guards ONLY in-memory
+/// state: the transition records its log lines and observer calls as effects, and they run after the lock is released, in the
+/// order their transitions queued them, one thread at a time ([#runEffects]). The lock is never held across a network send, a
+/// promise await or an observer callback, so a thread that waits for it (the ack thread included) waits only for another thread's
+/// short in-memory transition, never for I/O. This is what makes `finish` and every losing re-evaluation see the winner's promotion
+/// and its raise: an event decided before `finish` is always in `events` when `finish` collects them, and a page is never stopped at
+/// `baseDeadline` while a promotion that would extend it is in flight (#2684 F1, F2).
 ///
 /// A late nack of an earlier attempt can settle the current one, since a page keeps its correlation id across resends; it costs
 /// one backoff step.
@@ -213,6 +224,9 @@ final class DeparturePushRun {
     private final AtomicBoolean atRiskRaised = new AtomicBoolean(false);
     private final AtomicInteger atRiskCount = new AtomicInteger();
     private final AtomicBoolean reevaluated = new AtomicBoolean(false);
+    private final Object transitions = new Object();
+    private final ConcurrentLinkedQueue<Runnable> effects = new ConcurrentLinkedQueue<>();
+    private final AtomicBoolean drainingEffects = new AtomicBoolean(false);
 
     private DeparturePushRun(DHTNode node,
                              DHTNetwork network,
@@ -269,7 +283,9 @@ final class DeparturePushRun {
     private Promise<DeparturePushReport> notEnumerated(Cause cause) {
         log.warn("Departure push: inventory not enumerated before the drain deadline ({}): at-risk set unknown",
                  cause.message());
-        raiseAtRisk(List.of());
+        if (!window.halted().getAsBoolean()) {
+            transition(() -> raiseAtRisk(List.of()));
+        }
 
         return awaitEvents(DeparturePushReport.NOT_ENUMERATED);
     }
@@ -350,12 +366,14 @@ final class DeparturePushRun {
     /// replica is harmless, and this guarantees no loss regardless of the prune-vs-drain ordering. The same fallback applies when
     /// the exclusion exhausts the ring (`newSet` shorter than the replication factor): no node lies beyond the vacated slots to
     /// absorb the push, so a node wrongly in `leaving` would otherwise remove the only newcomer and leave the copy resting on
-    /// survivors that may not hold it.
+    /// survivors that may not hold it. The fallback applies too when any excluded node has already left the ring: the node now in
+    /// its slot may never have held the key, the same rule by which classification counts the key sole (#2684 F3).
     private List<NodeId> departureTargets(byte[] key, Set<NodeId> excluded) {
         var newSet = node.ring().nodesFor(key, replicationFactor, candidate -> !excluded.contains(candidate));
         var currentSet = node.ring().nodesFor(key, replicationFactor);
+        var ringNodes = Set.copyOf(node.ring().nodes());
 
-        return currentSet.contains(node.nodeId()) && newSet.size() >= replicationFactor
+        return currentSet.contains(node.nodeId()) && newSet.size() >= replicationFactor && ringNodes.containsAll(excluded)
                ? excludeExistingReplicas(newSet, currentSet, excluded)
                : newSet;
     }
@@ -598,81 +616,133 @@ final class DeparturePushRun {
     private void raiseAtPlan() {
         var unpushable = keys.stream().anyMatch(key -> key.isSole() && key.plannedTargets.isEmpty());
 
-        if (unpushable || System.nanoTime() >= attemptsDeadline) {
-            raiseIfSoleAtRisk();
+        if (!window.halted().getAsBoolean() && (unpushable || System.nanoTime() >= attemptsDeadline)) {
+            transition(this::raiseIfSoleAtRisk);
         }
     }
 
     /// F7 re-evaluation, once, at `baseDeadline` (or at the end, whichever comes first): promote, then raise if sole keys remain.
+    /// A caller that loses the race waits on `transitions` until the winner's promotion and raise are complete (#2684 F2).
     @Contract
     private void reevaluate() {
-        if (window.halted().getAsBoolean() || !reevaluated.compareAndSet(false, true)) {
-            return;
+        if (!window.halted().getAsBoolean()) {
+            transition(this::reevaluateOnce);
         }
+    }
 
+    /// Under `transitions`.
+    private Unit reevaluateOnce() {
+        return reevaluated.compareAndSet(false, true)
+               ? promoteThenRaise()
+               : Unit.unit();
+    }
+
+    /// Under `transitions`. The ring read takes only the ring's own in-memory lock.
+    private Unit promoteThenRaise() {
         var ringNodes = Set.copyOf(node.ring().nodes());
         var promoted = keys.stream().filter(key -> key.promoteIfSurvivorsGone(ringNodes)).count();
 
         if (promoted > 0) {
-            log.warn("Departure push: {} replicated chunk(s) lost every plan-time survivor; treated as sole copies",
-                     promoted);
+            effects.add(() -> log.warn("Departure push: {} replicated chunk(s) lost every plan-time survivor; treated as sole copies",
+                                       promoted));
         }
 
-        raiseIfSoleAtRisk();
+        return raiseIfSoleAtRisk();
     }
 
-    private void raiseIfSoleAtRisk() {
+    /// Under `transitions`.
+    private Unit raiseIfSoleAtRisk() {
         var atRisk = soleAtRisk();
 
-        if (!atRisk.isEmpty()) {
-            raiseAtRisk(atRisk);
-        }
+        return atRisk.isEmpty()
+               ? Unit.unit()
+               : raiseAtRisk(atRisk);
     }
 
-    /// Once per push. An empty list means the inventory is unknown (count 0).
-    private void raiseAtRisk(List<DepartureKey> atRisk) {
-        if (window.halted().getAsBoolean() || !atRiskRaised.compareAndSet(false, true)) {
-            return;
+    /// Once per push, under `transitions`; the caller has checked `halted`. An empty list means the inventory is unknown (count 0).
+    private Unit raiseAtRisk(List<DepartureKey> atRisk) {
+        if (atRiskRaised.compareAndSet(false, true)) {
+            atRiskCount.set(atRisk.size());
+            effects.add(() -> log.warn("Departure push: {} sole-copy chunk(s) not yet acknowledged by any target: {}",
+                                       atRisk.size(),
+                                       hexOf(atRisk)));
+            observe(() -> observer.onSoleCopyAtRisk(atRisk.size(), sample(atRisk)));
         }
 
-        atRiskCount.set(atRisk.size());
-        log.warn("Departure push: {} sole-copy chunk(s) not yet acknowledged by any target: {}",
-                 atRisk.size(),
-                 hexOf(atRisk));
-        observe(() -> observer.onSoleCopyAtRisk(atRisk.size(), sample(atRisk)));
+        return Unit.unit();
     }
 
+    /// The closing transition waits for any re-evaluation in flight, so an at-risk raise decided by another thread is always
+    /// followed by its delivered event and is in `events` before they are awaited (#2684 F1).
     private Promise<DeparturePushReport> finish() {
-        if (!window.halted().getAsBoolean()) {
-            reevaluate();
+        var halted = window.halted().getAsBoolean();
+        var report = transition(() -> close(halted));
+
+        pages.forEach(page -> registry.remove(page.correlationId()));
+
+        return awaitEvents(report);
+    }
+
+    /// Under `transitions`.
+    private DeparturePushReport close(boolean halted) {
+        if (!halted) {
+            reevaluateOnce();
         }
 
         var sole = soleAtRisk();
         var replicated = keys.stream().filter(key -> !key.isSole() && key.isAtRisk()).toList();
 
-        if (!window.halted().getAsBoolean()) {
+        if (!halted) {
             reportOutcome(sole, replicated);
         }
 
-        pages.forEach(page -> registry.remove(page.correlationId()));
-
-        return awaitEvents(new DeparturePushReport(sole.size(), replicated.size(), true));
+        return new DeparturePushReport(sole.size(), replicated.size(), true);
     }
 
+    /// Under `transitions`.
     private void reportOutcome(List<DepartureKey> sole, List<DepartureKey> replicated) {
         if (atRiskRaised.get() && sole.isEmpty()) {
-            log.info("Departure push: every sole-copy chunk was acknowledged");
+            effects.add(() -> log.info("Departure push: every sole-copy chunk was acknowledged"));
             observe(() -> observer.onSoleCopyDelivered(atRiskCount.get()));
         }
 
         if (!sole.isEmpty() || !replicated.isEmpty()) {
             var atRisk = Stream.concat(sole.stream(), replicated.stream()).toList();
 
-            log.warn("Departure push incomplete: {} chunk(s) unacknowledged ({} sole-copy): {}",
-                     atRisk.size(),
-                     sole.size(),
-                     hexOf(atRisk));
+            effects.add(() -> log.warn("Departure push incomplete: {} chunk(s) unacknowledged ({} sole-copy): {}",
+                                       atRisk.size(),
+                                       sole.size(),
+                                       hexOf(atRisk)));
             observe(() -> observer.onIncompleteReport(atRisk.size(), sole.size(), sample(atRisk)));
+        }
+    }
+
+    /// One state transition: `change` runs under `transitions` and touches in-memory state only; the effects it queued run after
+    /// the lock is released.
+    private <T> T transition(Supplier<T> change) {
+        var result = underTransitions(change);
+
+        runEffects();
+
+        return result;
+    }
+
+    private <T> T underTransitions(Supplier<T> change) {
+        synchronized (transitions) {
+            return change.get();
+        }
+    }
+
+    /// Runs the queued effects in queue order on one thread at a time, never under `transitions`. A thread that finds another
+    /// draining leaves its effects to it; the drainer re-checks the queue after clearing its flag, so no effect is stranded.
+    @Contract
+    private void runEffects() {
+        if (drainingEffects.compareAndSet(false, true)) {
+            Stream.generate(effects::poll).takeWhile(Objects::nonNull).forEach(Runnable::run);
+            drainingEffects.set(false);
+            if (!effects.isEmpty()) {
+                runEffects();
+            }
         }
     }
 
@@ -692,10 +762,19 @@ final class DeparturePushRun {
                         .fold(_ -> Promise.success(report));
     }
 
-    /// An observer that throws is isolated: its event is lost, never the push.
+    /// Under `transitions`: the event's promise joins `events` now, so a later `finish` awaits it; the observer is called later, as
+    /// an effect. An observer that throws is isolated: its event is lost, never the push.
     private void observe(Supplier<Promise<Unit>> raise) {
-        events.add(Result.lift(Causes::fromThrowable, raise::get).fold(DeparturePushRun::observerFailed,
-                                                                       promise -> promise));
+        Promise<Unit> event = Promise.promise();
+
+        events.add(event);
+        effects.add(() -> callObserver(raise, event));
+    }
+
+    private static void callObserver(Supplier<Promise<Unit>> raise, Promise<Unit> event) {
+        Result.lift(Causes::fromThrowable, raise::get)
+              .fold(DeparturePushRun::observerFailed, promise -> promise)
+              .onResult(event::resolve);
     }
 
     private static Promise<Unit> observerFailed(Cause cause) {
