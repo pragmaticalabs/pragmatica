@@ -490,6 +490,7 @@ class EmberNodeReplacementTest {
                             .map(org.pragmatica.aether.api.ClusterEvent.OperatorWarning.class::cast)
                             .filter(event -> subject.id().equals(event.details().get("subject")))
                             .map(event -> event.details().get("code"))
+                            .filter(code -> code.startsWith("node-replacement-"))
                             .toList();
     }
 
