@@ -238,19 +238,26 @@ public class RabiaEngine<C extends Command> {
     /// never selected again, so alternating undecodable snapshots cannot be retried forever; no candidate below the highest
     /// refused phase is adopted (owner ruling Q-16). `recent` keeps only the failures at or above the latest failed phase,
     /// so a phase that advances every round holds one entry, not one per round.
-    private record RestoreFailures(int rounds, FailedRestore latest, List<FailedRestore> recent, Set<FailedRestore> refused) {
+    private record RestoreFailures(int rounds,
+                                   FailedRestore latest,
+                                   List<FailedRestore> recent,
+                                   Set<FailedRestore> refused) {
         static RestoreFailures first(FailedRestore failure) {
             return new RestoreFailures(0, failure, List.of(), Set.of()).next(failure);
         }
 
         RestoreFailures next(FailedRestore failure) {
-            var nextRecent = Stream.concat(recent.stream().filter(prior -> prior.phase()
-                                                                                 .compareTo(failure.phase()) >= 0),
+            var nextRecent = Stream.concat(recent.stream()
+                                                 .filter(prior -> prior.phase()
+                                                                       .compareTo(failure.phase()) >= 0),
                                            Stream.of(failure))
                                    .toList();
-            var digestRounds = nextRecent.stream().filter(prior -> prior.digest().equals(failure.digest())).count();
+            var digestRounds = nextRecent.stream().filter(prior -> prior.digest()
+                                                                        .equals(failure.digest())).count();
             var nextRefused = digestRounds >= RESTORE_REFUSAL_ROUNDS
-                              ? Stream.concat(refused.stream(), Stream.of(failure)).collect(Collectors.toUnmodifiableSet())
+                              ? Stream.concat(refused.stream(),
+                                              Stream.of(failure))
+                                      .collect(Collectors.toUnmodifiableSet())
                               : refused;
 
             return new RestoreFailures(rounds + 1, failure, nextRecent, nextRefused);
@@ -261,10 +268,15 @@ public class RabiaEngine<C extends Command> {
         }
 
         boolean admits(SyncResponse<?> response) {
-            var digest = snapshotDigest(response.state().snapshot());
+            return !excludes(snapshotDigest(response.state().snapshot())) && atOrAboveFloor(response);
+        }
 
-            return refused.stream().noneMatch(prior -> prior.digest().equals(digest))
-                   && floor().map(phase -> atOrAbove(response, phase)).or(true);
+        private boolean excludes(String digest) {
+            return refused.stream().anyMatch(prior -> prior.digest().equals(digest));
+        }
+
+        private boolean atOrAboveFloor(SyncResponse<?> response) {
+            return floor().map(phase -> atOrAbove(response, phase)).or(true);
         }
 
         Option<Phase> floor() {
@@ -2647,9 +2659,7 @@ public class RabiaEngine<C extends Command> {
         var failures = restoreFailures;
 
         restoreFailures = Option.none();
-        failures.filter(RestoreFailures::raised)
-                .map(RestoreFailures::latest)
-                .onPresent(this::closeRestoreRefusal);
+        failures.filter(RestoreFailures::raised).map(RestoreFailures::latest).onPresent(this::closeRestoreRefusal);
     }
 
     private Unit closeRestoreRefusal(FailedRestore latest) {
