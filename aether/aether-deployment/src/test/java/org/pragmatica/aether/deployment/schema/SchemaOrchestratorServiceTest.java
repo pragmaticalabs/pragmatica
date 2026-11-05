@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.schema;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.db.migration.MigrationError;
 import org.pragmatica.lang.utils.Causes;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -26,6 +27,31 @@ class SchemaOrchestratorServiceTest {
                 "org.example:app:1.0.0", java.util.List.of("repository #0 unavailable: connect timed out"));
 
             assertThat(SchemaOrchestratorServiceInstance.classifyFailure(cause)).isEqualTo(TRANSIENT);
+        }
+
+        /// FDB-2a (#2591, F5): a migration fenced in the database ran nothing; until FDB-3's FENCED classification it
+        /// must take the bounded TRANSIENT backoff (back to PENDING), never a permanent FAILED.
+        @Test
+        void classifyFailure_transient_forMigrationFencedInDatabase() {
+            var cause = MigrationError.MigrationFencedInDatabase.migrationFencedInDatabase("mydb", "pid=42");
+
+            assertThat(SchemaOrchestratorServiceInstance.classifyFailure(cause)).isEqualTo(TRANSIENT);
+        }
+
+        /// FDB-2a: a fence that cannot be held is a configuration or topology fact no retry changes.
+        @Test
+        void classifyFailure_permanent_forFenceUnavailable() {
+            var cause = MigrationError.FenceUnavailable.fenceUnavailable("mydb", "Galera");
+
+            assertThat(SchemaOrchestratorServiceInstance.classifyFailure(cause)).isEqualTo(PERMANENT);
+        }
+
+        /// FDB-2a (F8): an INVALID index needs the operator's DROP INDEX CONCURRENTLY; a retry would pass over it again.
+        @Test
+        void classifyFailure_permanent_forInvalidIndexLeftBehind() {
+            var cause = MigrationError.InvalidIndexLeftBehind.invalidIndexLeftBehind("mydb", "idx");
+
+            assertThat(SchemaOrchestratorServiceInstance.classifyFailure(cause)).isEqualTo(PERMANENT);
         }
 
         @Test

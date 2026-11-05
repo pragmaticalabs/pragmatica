@@ -2620,6 +2620,28 @@ class ClusterEventAggregatorTest {
         assertThat(codes(h)).containsExactly("topic-tier-mismatch", "topic-tier-mismatch-resolved");
     }
 
+    /// FDB-2a (#2591): each schema-migration fence warning is followed by its recovery once, on the same datasource only; a recovery for a
+    /// datasource that never raised the warning, or a second one, publishes nothing.
+    @Test
+    void onOperatorWarning_schemaMigrationFenceWarnings_areFollowedByTheirRecoveriesOnce_forTheSameDatasourceOnly() {
+        var t = new AtomicLong(1_000_000L);
+        var h = clocked(t);
+
+        for (var pair : List.of(List.of(OperatorWarningCode.SCHEMA_MIGRATION_FENCE_HELD, OperatorWarningCode.SCHEMA_MIGRATION_FENCE_RELEASED),
+                                List.of(OperatorWarningCode.SCHEMA_MIGRATION_UNFENCED, OperatorWarningCode.SCHEMA_MIGRATION_FENCED))) {
+            h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(pair.get(1), "database.billing", "stray"));
+            h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(pair.get(0), "database.orders", "raised"));
+            h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(pair.get(1), "database.billing", "other datasource"));
+            h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(pair.get(1), "database.orders", "closed"));
+            h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(pair.get(1), "database.orders", "closed twice"));
+        }
+
+        assertThat(codes(h)).containsExactly("schema-migration-fence-held",
+                                             "schema-migration-fence-released",
+                                             "schema-migration-unfenced",
+                                             "schema-migration-fenced");
+    }
+
     /// PA4: the recovery arrives after the warning's throttle window was evicted as idle: still published.
     @Test
     void onOperatorWarning_repairAfterTheThrottleKeyWasEvicted_isPublished() {
@@ -2743,6 +2765,8 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.JSON_CONFIG_APPLIED,
                 OperatorWarningCode.CONFIG_WATCH_CALLBACK_RECOVERED,
                 OperatorWarningCode.ROLLBACK_RECORD_RECONCILED,
+                OperatorWarningCode.SCHEMA_MIGRATION_FENCE_RELEASED,
+                OperatorWarningCode.SCHEMA_MIGRATION_FENCED,
                 OperatorWarningCode.KV_DISPATCH_CAUGHT_UP,
                 OperatorWarningCode.KV_DISPATCH_SLOW_HANDLER_RETURNED,
             });
@@ -2806,6 +2830,8 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.UPLOAD_BYTE_BUDGET_EXHAUSTED,
                 OperatorWarningCode.CONFIG_WATCH_CALLBACK_FAILED,
                 OperatorWarningCode.ROLLBACK_RECORD_RECONCILE_EXHAUSTED,
+                OperatorWarningCode.SCHEMA_MIGRATION_FENCE_HELD,
+                OperatorWarningCode.SCHEMA_MIGRATION_UNFENCED,
                 OperatorWarningCode.KV_DISPATCH_LAGGING,
                 OperatorWarningCode.KV_DISPATCH_SLOW_HANDLER,
             });
