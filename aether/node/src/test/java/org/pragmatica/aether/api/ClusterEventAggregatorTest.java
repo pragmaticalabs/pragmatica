@@ -2667,6 +2667,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.CLUSTER_TLS_RENEWAL_RESTORED,
                 OperatorWarningCode.IDENTITY_LEDGER_DURABLE,
                 OperatorWarningCode.BACKUP_CONFIG_RESTORED,
+                OperatorWarningCode.GENESIS_SEAT_REACHABLE,
                 OperatorWarningCode.BACKUP_RESTORE_UNBLOCKED,
                 OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED,
                 OperatorWarningCode.INSTANCE_TERMINATION_REJOINED,
