@@ -800,8 +800,9 @@ public final class WaveExecutor {
     /// The operator's CLI is outside the docker network, where a container name does not resolve (see [DockerHostPorts]): `docker port`
     /// reports the host port this container's management API is published on, and the node is `127.0.0.1:<that port>`.
     private static Result<OldNode> publishedOnHost(InstanceInfo info) {
-        return DockerHostPorts.managementPort(info.id().value())
-                              .map(port -> OldNode.oldNode(nodeIdOf(info), BootstrapPhaseProvision.DOCKER_HOST_ADDRESS, port));
+        return DockerHostPorts.managementPort(info.id().value()).map(port -> OldNode.oldNode(nodeIdOf(info),
+                                                                                             BootstrapPhaseProvision.DOCKER_HOST_ADDRESS,
+                                                                                             port));
     }
 
     private static Result<OldNode> addressed(InstanceInfo info) {
