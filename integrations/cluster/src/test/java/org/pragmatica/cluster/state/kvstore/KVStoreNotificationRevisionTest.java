@@ -37,14 +37,14 @@ class KVStoreNotificationRevisionTest {
     private void recordPuts() {
         router.addRoute(KVStoreNotification.ValuePut.class,
                         (KVStoreNotification.ValuePut<Key, String> put) -> stamps.add(new Stamp(put.cause().key(),
-                                                                                                store.notificationRevision().or(0L),
+                                                                                                store.notificationRevision().or(-1L),
                                                                                                 store.isReplaying())));
     }
 
     private void recordRemoves() {
         router.addRoute(KVStoreNotification.ValueRemove.class,
                         (KVStoreNotification.ValueRemove<Key, String> remove) -> stamps.add(new Stamp(remove.cause().key(),
-                                                                                                      store.notificationRevision().or(0L),
+                                                                                                      store.notificationRevision().or(-1L),
                                                                                                       store.isReplaying())));
     }
 
@@ -189,7 +189,7 @@ class KVStoreNotificationRevisionTest {
 
         source.process(source.createBatch(List.of(new KVCommand.Put<>(new CodecKey("k"), "v"))));
         targetRouter.addRoute(KVStoreNotification.ValuePut.class,
-                              (KVStoreNotification.ValuePut<CodecKey, String> put) -> seen.add(target.notificationRevision().or(0L)));
+                              (KVStoreNotification.ValuePut<CodecKey, String> put) -> seen.add(target.notificationRevision().or(-1L)));
         target.restoreCommittedSnapshot(source.makeSnapshot().unwrap(), 10);
 
         target.replayNotifications();
