@@ -15,11 +15,14 @@
  */
 package org.pragmatica.consensus.rabia;
 
+import java.security.MessageDigest;
 import java.util.ArrayDeque;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -41,6 +44,7 @@ import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.ConsensusError;
@@ -192,6 +196,16 @@ public class RabiaEngine<C extends Command> {
     /// re-persist failure, so a supervisor that bounds the stop (`OwnRestoreWatchdog`) acts only on the arms
     /// it was given.
     private volatile Option<Cause> ownRestoreFailure = Option.none();
+
+    /// #2316: consecutive failed responder restores, in total, that raise the refusal, and failed restores of one snapshot
+    /// digest that exclude that digest from candidate selection.
+    private static final int RESTORE_REFUSAL_ROUNDS = 3;
+
+    /// The failed responder restores since the last successful restore (#2316, owner ruling Q-3: fail closed, a snapshot is
+    /// refused as a whole and never decoded row by row). Cleared by any successful restore. It is not a fence: only candidate
+    /// selection ([#adoptableCandidate]) and the status read it.
+    private volatile Option<RestoreFailures> restoreFailures = Option.none();
+
     /// Why the re-persist of a restored or adopted state failed (#1516): the second permanent fence the watchdog
     /// bounds. Set only by [#recordRestoredStateSaveFailure], and like `ownRestoreFailure` never cleared in-process:
     /// that arm too runs only after a genesis has resolved. It is deliberately NOT `authorityFailure` itself, which
@@ -212,6 +226,78 @@ public class RabiaEngine<C extends Command> {
     private record AppliedChange(Phase slot, VoterConfiguration installed, Set<NodeId> added) {}
 
     private volatile Option<AppliedChange> lastChange = Option.none();
+
+    /// One failed restore of a responder snapshot: who sent it, the phase it claims, the SHA-256 of its bytes and the
+    /// cause (#2316).
+    private record FailedRestore(NodeId responder, Phase phase, String digest, String cause) {}
+
+    /// The failed responder restores since the last successful restore (#2316).
+    ///
+    /// `rounds` counts consecutive failed restore rounds IN TOTAL, whatever the responder, phase or digest (CTO ruling on
+    /// #2675): a responder whose snapshots never decode while its phase advances must still raise the refusal, or the node
+    /// stays in `Syncing` with no warning. The refusal is raised when `rounds` reaches [#RESTORE_REFUSAL_ROUNDS], once,
+    /// naming `latest`. Exclusion is per digest: a digest that failed [#RESTORE_REFUSAL_ROUNDS] times joins `refused` and is
+    /// never selected again, so alternating undecodable snapshots cannot be retried forever; no candidate below the highest
+    /// refused phase is adopted (owner ruling Q-16). `recent` keeps only the failures at or above the latest failed phase,
+    /// so a phase that advances every round holds one entry, not one per round.
+    private record RestoreFailures(int rounds,
+                                   FailedRestore latest,
+                                   List<FailedRestore> recent,
+                                   Set<FailedRestore> refused) {
+        static RestoreFailures first(FailedRestore failure) {
+            return new RestoreFailures(0, failure, List.of(), Set.of()).next(failure);
+        }
+
+        RestoreFailures next(FailedRestore failure) {
+            var nextRecent = Stream.concat(recent.stream()
+                                                 .filter(prior -> prior.phase()
+                                                                       .compareTo(failure.phase()) >= 0),
+                                           Stream.of(failure))
+                                   .toList();
+            var digestRounds = nextRecent.stream().filter(prior -> prior.digest()
+                                                                        .equals(failure.digest())).count();
+            var nextRefused = digestRounds >= RESTORE_REFUSAL_ROUNDS
+                              ? Stream.concat(refused.stream(),
+                                              Stream.of(failure))
+                                      .collect(Collectors.toUnmodifiableSet())
+                              : refused;
+
+            return new RestoreFailures(rounds + 1, failure, nextRecent, nextRefused);
+        }
+
+        boolean raised() {
+            return rounds >= RESTORE_REFUSAL_ROUNDS;
+        }
+
+        boolean admits(SyncResponse<?> response) {
+            return ! excludes(snapshotDigest(response.state().snapshot())) && atOrAboveFloor(response);
+        }
+
+        private boolean excludes(String digest) {
+            return refused.stream()
+                          .anyMatch(prior -> prior.digest()
+                                                  .equals(digest));
+        }
+
+        private boolean atOrAboveFloor(SyncResponse<?> response) {
+            return floor().map(phase -> atOrAbove(response, phase))
+                        .or(true);
+        }
+
+        Option<Phase> floor() {
+            return Option.from(refused.stream().map(FailedRestore::phase).max(Comparator.naturalOrder()));
+        }
+
+        String describe() {
+            return "Responder snapshots refused after " + rounds
+                 + " consecutive failed restores (latest: responder " + latest.responder()
+                 + ", phase " + latest.phase()
+                 + ", digest " + latest.digest()
+                 + "): " + latest.cause()
+                 + ". This node stays in Syncing until a responder snapshot restores";
+        }
+    }
+
     /// Members added by [#lastChange] from which a ballot past R has been accepted.
     private final Set<NodeId> caughtUp = ConcurrentHashMap.newKeySet();
 
@@ -241,7 +327,11 @@ public class RabiaEngine<C extends Command> {
 
     /// Read immutable values only; never inspect executor-confined maps.
     public VoterReconfigurationStatus voterReconfigurationStatus() {
-        var failure = authorityFailure.map(Cause::message).or(stateTransferFailure.map(Cause::message).or(""));
+        var failure = authorityFailure.map(Cause::message)
+                                      .or(stateTransferFailure.map(Cause::message)
+                                                              .or(restoreFailures.filter(RestoreFailures::raised)
+                                                                                 .map(RestoreFailures::describe)
+                                                                                 .or("")));
 
         return voters.map(configuration -> describeReconfiguration(configuration, failure))
                      .or(() -> unresolvedStatus(failure));
@@ -2647,8 +2737,8 @@ public class RabiaEngine<C extends Command> {
     private void adoptCollectedState(List<SyncResponse<C>> candidates) {
         var persisted = persistence.load();
         var responses = candidates.stream()
-                                  .map(SyncResponse::state)
-                                  .sorted(Comparator.comparing(SavedState::lastCommittedPhase))
+                                  .sorted(Comparator.comparing(response -> response.state()
+                                                                                   .lastCommittedPhase()))
                                   .toList();
 
         if (responses.isEmpty()) {
@@ -2659,17 +2749,122 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        var candidate = responses.getLast();
+        var highest = responses.getLast().state();
 
-        detectBootFutureHistory(persisted, candidate);
-        if (candidate.lastCommittedPhase().compareTo(ownStateFloor(persisted)) < 0) {
+        detectBootFutureHistory(persisted, highest);
+        if (highest.lastCommittedPhase().compareTo(ownStateFloor(persisted)) < 0) {
             activateWithoutAdoption(persisted, "every response is behind this node's own state");
 
             return;
         }
 
-        log.trace("Node {} uses {} as synchronization candidate out of {} responses", self, candidate, responses.size());
-        restoreState(candidate);
+        adoptableCandidate(responses).onPresent(candidate -> restoreResponse(candidate,
+                                                                             responses.size()))
+                          .onEmpty(this::holdForReadableSnapshot);
+    }
+
+    /// #2316 candidate selection. With no failed restore it is the most advanced response, as before. After failures, every
+    /// refused digest is excluded and the most advanced remaining response is adopted only at the SAME OR A HIGHER phase
+    /// than the highest refused one (owner ruling Q-16): the responders intersect every commit quorum, and a lower candidate
+    /// can lack a commit only the refused responder saw. `responses` is sorted by phase, ascending.
+    private Option<SyncResponse<C>> adoptableCandidate(List<SyncResponse<C>> responses) {
+        return restoreFailures.fold(() -> highest(responses), failures -> highestAdmitted(responses, failures));
+    }
+
+    private Option<SyncResponse<C>> highestAdmitted(List<SyncResponse<C>> responses, RestoreFailures failures) {
+        return highest(responses.stream().filter(failures::admits).toList());
+    }
+
+    private Option<SyncResponse<C>> highest(List<SyncResponse<C>> responses) {
+        return Option.from(responses.stream().reduce((lower, higher) -> higher));
+    }
+
+    private static boolean atOrAbove(SyncResponse<?> response, Phase phase) {
+        return response.state()
+                       .lastCommittedPhase()
+                       .compareTo(phase) >= 0;
+    }
+
+    /// #2316, owner ruling Q-16: no usable candidate at or above the refused snapshot's phase. Nothing is adopted; the
+    /// engine stays `Syncing` with the refusal raised, and the next round collects fresh responses.
+    private void holdForReadableSnapshot() {
+        syncResponses.clear();
+        log.debug("Node {} adopts nothing: no readable response at or above the refused snapshot's phase ({})",
+                  self,
+                  restoreFailures.flatMap(RestoreFailures::floor));
+    }
+
+    private void restoreResponse(SyncResponse<C> candidate, int responseCount) {
+        log.trace("Node {} uses {} as synchronization candidate out of {} responses", self, candidate, responseCount);
+        restoreState(candidate.state(), cause -> recordResponderRestoreFailure(candidate, cause));
+    }
+
+    /// #2316: every failed responder restore is counted ([RestoreFailures]). The refusal is raised once, as
+    /// [OperatorWarningCode#CONSENSUS_RESTORE_REFUSED], when [#RESTORE_REFUSAL_ROUNDS] consecutive rounds have failed in
+    /// total, whatever the responder, phase or digest, and is shown by [#voterReconfigurationStatus]. A snapshot is refused
+    /// as a whole, never decoded row by row (owner ruling Q-3). Every attempt still logs [#logRestoreFailure]. This is not
+    /// the own-restore failure ([#recordOwnRestoreFailure]): another responder may hold a readable snapshot.
+    private void recordResponderRestoreFailure(SyncResponse<C> response, Cause cause) {
+        logRestoreFailure(cause);
+        var failure = new FailedRestore(response.sender(),
+                                        response.state().lastCommittedPhase(),
+                                        snapshotDigest(response.state().snapshot()),
+                                        cause.message());
+        var failures = restoreFailures.fold(() -> RestoreFailures.first(failure), prior -> prior.next(failure));
+
+        restoreFailures = Option.some(failures);
+        if (failures.rounds() == RESTORE_REFUSAL_ROUNDS) {
+            raiseRestoreRefusal(failures.latest());
+        }
+    }
+
+    private Unit raiseRestoreRefusal(FailedRestore latest) {
+        return OperatorWarnings.raise(log,
+                                      operatorWarningSink.get(),
+                                      OperatorWarningCode.CONSENSUS_RESTORE_REFUSED,
+                                      self.id(),
+                                      "Node {} REFUSES responder snapshots after {} consecutive failed restores; latest: responder {} "
+                                     + "at phase {} (digest {}): {}. No snapshot is ever partially decoded. This node stays in Syncing "
+                                     + "and serves no requests until a responder snapshot restores; a snapshot that failed {} times is "
+                                     + "no longer selected, nor is any snapshot below its phase. Operator action: repair or replace "
+                                     + "the responders' state, or replace this node (#2316).",
+                                      self,
+                                      RESTORE_REFUSAL_ROUNDS,
+                                      latest.responder(),
+                                      latest.phase(),
+                                      latest.digest(),
+                                      latest.cause(),
+                                      RESTORE_REFUSAL_ROUNDS);
+    }
+
+    /// #2316: any successful restore clears the failure count and every refused digest, and closes a raised refusal with
+    /// [OperatorWarningCode#CONSENSUS_RESTORE_RECOVERED], once.
+    private void clearRestoreRefusal() {
+        var failures = restoreFailures;
+
+        restoreFailures = Option.none();
+        failures.filter(RestoreFailures::raised).map(RestoreFailures::latest).onPresent(this::closeRestoreRefusal);
+    }
+
+    private Unit closeRestoreRefusal(FailedRestore latest) {
+        return OperatorWarnings.raise(log,
+                                      operatorWarningSink.get(),
+                                      OperatorWarningCode.CONSENSUS_RESTORE_RECOVERED,
+                                      self.id(),
+                                      "Node {} restored a readable snapshot; the refusal of responder snapshots (latest: responder {} at "
+                                     + "phase {}) is closed",
+                                      self,
+                                      latest.responder(),
+                                      latest.phase());
+    }
+
+    /// SHA-256 of a snapshot, lowercase hex: the identity of a refused snapshot (#2316). Design-out: SHA-256 is an algorithm
+    /// every JVM must provide, so the lift cannot fail in practice; the length-and-hash fallback only keeps the function total.
+    private static String snapshotDigest(byte[] snapshot) {
+        return Result.lift(Causes::fromThrowable,
+                           () -> MessageDigest.getInstance("SHA-256").digest(snapshot))
+                     .map(HexFormat.of()::formatHex)
+                     .or(() -> snapshot.length + "-" + Arrays.hashCode(snapshot));
     }
 
     /// Activates on this node's OWN state, installing no RESPONSE.
@@ -2850,10 +3045,6 @@ public class RabiaEngine<C extends Command> {
         }
     }
 
-    private void restoreState(SavedState<C> state) {
-        restoreState(state, this::logRestoreFailure);
-    }
-
     private void restoreState(SavedState<C> state, Consumer<Cause> onRestoreFailure) {
         observeClusterPhase(state.lastCommittedPhase());
         syncResponses.clear();
@@ -2862,6 +3053,7 @@ public class RabiaEngine<C extends Command> {
         // the state machine, so a syncing node that ignores the empty-snapshot phase ends
         // up perpetually `MAX_PHASE_AHEAD` behind and burns its retry budget on resyncs.
         if (state.snapshot().length == 0) {
+            clearRestoreRefusal();
             applyRestoredState(state);
             restoreAnnouncePending.set(true);
             activate();
@@ -2874,6 +3066,7 @@ public class RabiaEngine<C extends Command> {
         // as the FIRST work after activation, so a KV notification structurally implies ACTIVE.
         stateMachine.restoreCommittedSnapshot(state.snapshot(),
                                               state.lastCommittedPhase().value())
+                    .onSuccessRun(this::clearRestoreRefusal)
                     .onSuccess(_ -> applyRestoredState(state))
                     .onSuccessRun(() -> restoreAnnouncePending.set(true))
                     .onSuccessRun(this::activate)
