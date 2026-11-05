@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.schema;
 
+import org.pragmatica.lang.Unit;
+import java.time.Duration;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Nested;
@@ -20,7 +22,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
-import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.PostgreSQLContainer;
 
 import java.sql.Connection;
@@ -62,7 +63,7 @@ class AetherSchemaManagerPgAtomicityTest {
 
     @BeforeAll
     static void startContainer() {
-        assumeTrue(isDockerAvailable(), "Docker is not available - skipping real-PostgreSQL atomicity test");
+        assumeTrue(DockerRequirement.dockerAvailable(), "Docker is not available - skipping real-PostgreSQL atomicity test");
         postgres = new PostgreSQLContainer<>("postgres:16-alpine");
         postgres.start();
     }
@@ -135,14 +136,6 @@ class AetherSchemaManagerPgAtomicityTest {
         return connector.scalarCount("SELECT count(*) AS c FROM aether_schema_history WHERE version = ?", version);
     }
 
-    private static boolean isDockerAvailable() {
-        try {
-            return DockerClientFactory.instance().isDockerAvailable();
-        } catch (Throwable t) {
-            return false;
-        }
-    }
-
     /// Minimal real-PostgreSQL [SqlConnector] for the atomicity test. Each operation runs against a
     /// freshly borrowed JDBC connection in autocommit, EXCEPT when the connector is bound to a
     /// transaction connection (`bound` is present), in which case it reuses that connection.
@@ -156,8 +149,14 @@ class AetherSchemaManagerPgAtomicityTest {
         private final String user;
         private final String password;
         private final Option<Connection> bound;
+        private final boolean pinnedSession;
 
         JdbcPgConnector(String url, String user, String password, Option<Connection> bound) {
+            this(url, user, password, bound, false);
+        }
+
+        private JdbcPgConnector(String url, String user, String password, Option<Connection> bound, boolean pinnedSession) {
+            this.pinnedSession = pinnedSession;
             this.url = url;
             this.user = user;
             this.password = password;
@@ -200,6 +199,11 @@ class AetherSchemaManagerPgAtomicityTest {
         }
 
         @Override
+        public <T> Promise<T> pinned(Duration statementTimeout, TransactionCallback<T> body, TransactionCallback<Unit> release) {
+            return runPinned(body, release).async();
+        }
+
+        @Override
         public <T> Promise<T> transactional(TransactionCallback<T> callback) {
             return runTransaction(callback).async();
         }
@@ -231,7 +235,43 @@ class AetherSchemaManagerPgAtomicityTest {
         /// callback on a bound connector, then commit on success or rollback on failure. The
         /// callback's [Promise] resolves synchronously here (the connector is non-blocking), so
         /// awaiting it to learn commit-vs-rollback is safe.
+        /// FDB-2a (#2591): a `pinned` scope's transaction begins and commits on the scope's own connection; any other
+        /// transaction borrows a fresh one, as before.
         private <T> Result<T> runTransaction(TransactionCallback<T> callback) {
+            return bound.filter(_ -> pinnedSession)
+                        .fold(() -> runTransactionOnNewConnection(callback),
+                              connection -> runTransactionOnPinned(connection, callback));
+        }
+
+        private <T> Result<T> runTransactionOnPinned(Connection connection, TransactionCallback<T> callback) {
+            try {
+                connection.setAutoCommit(false);
+                var txConnector = new JdbcPgConnector(url, user, password, some(connection));
+                Result<T> result = callback.execute(txConnector).await().fold(cause -> rollback(connection, cause),
+                                                                        value -> commit(connection, value));
+
+                connection.setAutoCommit(true);
+                return result;
+            } catch (Exception e) {
+                return Causes.fromThrowable(e).result();
+            }
+        }
+
+        /// FDB-2a (#2591): `pinned` holds ONE dedicated physical connection, in autocommit, for the whole scope; every
+        /// call and every `transactional(...)` the body makes runs on it, then `release`, then the connection closes.
+        private <T> Result<T> runPinned(TransactionCallback<T> body, TransactionCallback<Unit> release) {
+            try (var connection = openConnection()) {
+                var session = new JdbcPgConnector(url, user, password, some(connection), true);
+                var result = body.execute(session).await();
+
+                release.execute(session).await();
+                return result;
+            } catch (Exception e) {
+                return Causes.fromThrowable(e).result();
+            }
+        }
+
+        private <T> Result<T> runTransactionOnNewConnection(TransactionCallback<T> callback) {
             try (var connection = openConnection()) {
                 connection.setAutoCommit(false);
                 var txConnector = new JdbcPgConnector(url, user, password, some(connection));

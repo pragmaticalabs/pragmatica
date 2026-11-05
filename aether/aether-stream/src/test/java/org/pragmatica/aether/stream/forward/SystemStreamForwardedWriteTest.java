@@ -38,7 +38,7 @@ class SystemStreamForwardedWriteTest {
     void setUp() {
         manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
         sent = new ArrayList<>();
-        handler = streamForwardHandler(OWNER, manager, (_, message) -> sent.add(message));
+        handler = streamForwardHandler(OWNER, manager, AcceptingStreamForwardTransport.accepting((_, message) -> sent.add(message)));
         manager.createStream(StreamConfig.streamConfig(SYSTEM));
         manager.createStream(StreamConfig.streamConfig("com.acme:orders:1.0.0"));
     }

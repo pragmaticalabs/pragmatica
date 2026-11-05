@@ -124,6 +124,15 @@
             <groupId>org.assertj</groupId>
             <artifactId>assertj-core</artifactId>
         </dependency>
+
+        <!-- M-1 S6 harness (#2512): the slice it deploys. Declared, not left to reactor luck, so `-pl aether/ember -am` builds it first.
+             `package-slices`/`install-slices` run at package/install, so a test-phase run still depends on M1EchoPreflight's content check. -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether.test</groupId>
+            <artifactId>echo-slice</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
@@ -133,6 +142,9 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
                     <skipTests>${ember.skipTests}</skipTests>
+                    <systemPropertyVariables>
+                        <project.version>${project.version}</project.version>
+                    </systemPropertyVariables>
                 </configuration>
             </plugin>
         </plugins>

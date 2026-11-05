@@ -303,7 +303,6 @@ class MetricsRoutesTest {
             assertEquals(1, response.consensus().proposalsCount());
             assertEquals(2, response.consensus().voteRound1Count());
             assertEquals(1, response.consensus().voteRound2Count());
-            assertEquals(0, response.consensus().fastPathCount());
         }
 
         /// #1117: the two new fields ride the consensus block of the comprehensive response.
@@ -330,6 +329,30 @@ class MetricsRoutesTest {
 
             assertEquals(4_321L, response.consensus().oldestPendingBatchAgeMs());
             assertEquals(2L, response.consensus().applyTimeoutCount());
+        }
+
+        /// #2045: the proposal-convergence probes ride the consensus block of the comprehensive response.
+        @Test
+        void comprehensive_carriesTheEmptySlotCounterAndTheFirstChoiceBatchId() {
+            var rabia = RabiaMetricsCollector.rabiaMetricsCollector();
+
+            rabia.registerProposalConvergenceProbes(LOCAL_NODE, () -> 1_867L, () -> Option.some("batch-0a1b"));
+
+            var snapshotCollector = ComprehensiveSnapshotCollector.comprehensiveSnapshotCollector(
+                GCMetricsCollector.gcMetricsCollector(),
+                EventLoopMetricsCollector.eventLoopMetricsCollector(),
+                rabia,
+                InvocationMetricsCollector.invocationMetricsCollector(),
+                MinuteAggregator.minuteAggregator());
+            var routes = MetricsRoutes.metricsRoutes(() -> nodeWithSnapshotCollector(snapshotCollector),
+                                                     ObservabilityRegistry.prometheus(),
+                                                     timeouts,
+                                                     () -> false);
+
+            var response = routes.buildComprehensiveMetricsResponseForTest();
+
+            assertEquals(1_867L, response.consensus().consecutiveEmptySlotsWithPending());
+            assertEquals(Option.some("batch-0a1b"), response.consensus().firstChoiceBatchId());
         }
 
         private ManageableNode nodeWithSnapshotCollector(ComprehensiveSnapshotCollector snapshotCollector) {

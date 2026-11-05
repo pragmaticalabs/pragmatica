@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerGroupKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerGroupValue;
@@ -40,7 +41,9 @@ class ConsumerGroupCoordinatorTest {
 
     @BeforeEach
     void setUp() {
-        coordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(stubClusterNode());
+        coordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(stubClusterNode(),
+                                                                  ConsumerGroupRegistry.consumerGroupRegistry(),
+                                                                  () -> Epoch.epoch(1L, 1L, 0L));
     }
 
     private ClusterNode<KVCommand<AetherKey>> stubClusterNode() {

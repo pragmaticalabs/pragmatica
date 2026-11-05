@@ -1,0 +1,2 @@
+### Changed (2026-10-28 — #2460: consensus engine-lifecycle overhaul, L-1)
+- Consensus: the engine answers "voter or observer" in one place (`RabiaEngine.Role`, six values) instead of 13 hand-written expressions over `observerMode` and the installed roster; behaviour is unchanged and pinned by the L-0 golden transcript `[verified: integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/LifecycleRoleTruthTableTest.java]`.

@@ -5,6 +5,7 @@ package org.pragmatica.aether.metrics.consensus;
 
 import org.pragmatica.aether.metrics.observability.ObservabilityRegistry;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.Test;
 
@@ -38,5 +39,26 @@ class ConsensusGaugeRegistrationTest {
         assertThat(registry.registry().find("consensus_oldest_pending_batch_age_ms").gauge().value())
             .as("a level: read at scrape time")
             .isEqualTo(9_999.0);
+    }
+
+    @Test
+    void consecutiveEmptySlots_isRegisteredAsAGauge_readingTheLiveLevel() {
+        var collector = RabiaMetricsCollector.rabiaMetricsCollector();
+        var emptySlots = new java.util.concurrent.atomic.AtomicLong(7L);
+        var registry = ObservabilityRegistry.prometheus();
+
+        collector.registerProposalConvergenceProbes(NODE, emptySlots::get, Option::none);
+        registry.registerConsensusMetrics(() -> collector.snapshot().counterMap());
+
+        assertThat(registry.registry().find("consensus_consecutive_empty_slots_with_pending").gauge())
+            .as("registered under the documented name")
+            .isNotNull();
+        assertThat(registry.registry().find("consensus_consecutive_empty_slots_with_pending").gauge().value()).isEqualTo(7.0);
+
+        emptySlots.set(1_867L);
+
+        assertThat(registry.registry().find("consensus_consecutive_empty_slots_with_pending").gauge().value())
+            .as("a level: read at scrape time")
+            .isEqualTo(1_867.0);
     }
 }

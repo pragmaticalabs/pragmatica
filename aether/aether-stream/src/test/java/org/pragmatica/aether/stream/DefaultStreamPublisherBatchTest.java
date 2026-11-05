@@ -33,6 +33,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
+import org.pragmatica.aether.stream.replication.AcceptingReplicationTransport;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -108,7 +109,7 @@ class DefaultStreamPublisherBatchTest {
         registry.registerReplica(STREAM, 0, replica);
         replication.set(ReplicationManager.replicationManager(self,
                                                               registry,
-                                                              (_, message) -> ackLater(message, replica, replication, sends)));
+                                                              AcceptingReplicationTransport.accepting((_, message) -> ackLater(message, replica, replication, sends))));
 
         var manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication.get());
 
@@ -150,7 +151,7 @@ class DefaultStreamPublisherBatchTest {
         var registry = replicaRegistry();
         registry.registerReplica(STREAM, 0, self);
         registry.registerReplica(STREAM, 0, NodeId.nodeId("replica").unwrap());
-        var replication = ReplicationManager.replicationManager(self, registry, (_, _) -> sends.incrementAndGet());
+        var replication = ReplicationManager.replicationManager(self, registry, AcceptingReplicationTransport.accepting((_, _) -> sends.incrementAndGet()));
         EvictionListener blockedSealer = (_, _, _) -> {
             refusals.incrementAndGet();
             return StreamError.General.SEALING_BEHIND.result();
@@ -241,11 +242,11 @@ class DefaultStreamPublisherBatchTest {
         registry.registerReplica(STREAM, 0, replica);
         replication.set(ReplicationManager.replicationManager(self,
                                                               registry,
-                                                              (_, message) -> ackLaterMeasuring(message,
+                                                              AcceptingReplicationTransport.accepting((_, message) -> ackLaterMeasuring(message,
                                                                                                 replica,
                                                                                                 replication,
                                                                                                 sends,
-                                                                                                largestMessage)));
+                                                                                                largestMessage))));
         var manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication.get());
 
         manager.createStream(replicatedConfig()).onFailure(cause -> fail(cause.message()));

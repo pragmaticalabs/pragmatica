@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.control;
 
+import org.pragmatica.aether.stream.forward.AcceptingStreamForwardTransport;
 import java.nio.file.Files;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -34,11 +35,11 @@ import static org.pragmatica.aether.stream.replication.ReplicationManager.replic
 class ControlLogVerifierGapsTest {
     private static StreamForwardClient clientDropping(CopyOnWriteArrayList<ControlAppendForward> sent) {
         return StreamForwardClient.streamForwardClient(PEER,
-                                                       (_, message) -> {
+                                                       AcceptingStreamForwardTransport.accepting((_, message) -> {
                                                            if (message instanceof ControlAppendForward batch) {
                                                                sent.add(batch);
                                                            }
-                                                       },
+                                                       }),
                                                        TimeSpan.timeSpan(300).millis());
     }
 

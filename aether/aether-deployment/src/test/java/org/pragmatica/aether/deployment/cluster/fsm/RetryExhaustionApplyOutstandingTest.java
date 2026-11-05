@@ -30,6 +30,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
@@ -149,7 +151,7 @@ class RetryExhaustionApplyOutstandingTest {
                 .isEqualTo(DeploymentOutcomeStatus.IN_PROGRESS.name());
 
         // The production path: every slice ACTIVE retires the blueprint via trackBlueprintSliceActive,
-        // whose terminal is recordSucceededOutcome -> submitBatch -> ctx.cluster().apply(...).
+        // whose terminal is recordSucceededOutcome -> termWriter.write(SUCCEEDED_OUTCOME, ...) -> the stub cluster's apply.
         leaderHarness.dispatch(new NodeArtifactPutReceived(replayOn(NODE_A, SLICE, activeInstance())));
         leaderHarness.dispatch(new NodeArtifactPutReceived(replayOn(SELF, SLICE, activeInstance())));
 
@@ -790,7 +792,7 @@ class RetryExhaustionApplyOutstandingTest {
     }
 
     private static KVStore<AetherKey, AetherValue> freshStore() {
-        return new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+        return withSelfLeader(new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer()));
     }
 
     @SafeVarargs
@@ -964,5 +966,13 @@ class RetryExhaustionApplyOutstandingTest {
         return new Deserializer() {
             @Override public <T> T read(ByteBuf byteBuf) {return null;}
         };
+    }
+    /// #2584 P0: the leader FSM writes only under a committed leader record naming this node, as in production,
+    /// where `Active` is entered on that record's commit.
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static KVStore<AetherKey, AetherValue> withSelfLeader(KVStore<AetherKey, AetherValue> store) {
+        store.process(store.createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(SELF, 1)))));
+
+        return store;
     }
 }

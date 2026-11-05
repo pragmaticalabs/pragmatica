@@ -297,7 +297,7 @@ This is the same licensing model used by MariaDB, CockroachDB, and other product
 
 ### Consensus: Rabia Protocol
 
-Aether uses the **Rabia** crash-fault-tolerant consensus algorithm. Unlike Raft, Rabia has no designated leader for consensus — any node can propose, and agreement is reached through a two-round voting protocol with a fast path (super-majority in round 1 skips round 2).
+Aether uses the **Rabia** crash-fault-tolerant consensus algorithm. Unlike Raft, Rabia has no designated leader for consensus — any node can propose, and agreement is reached through a two-round voting protocol in which every decision needs round-2 evidence (there is no round-1 shortcut; see `architecture/01-consensus.md`).
 
 Aether still has a leader — for **coordination** (deploy, scale, auto-heal are leader-pinned; see `reference/guarantees.md`), not for consensus — and the combination is the point, not a contradiction: because Rabia elects nothing, the ordered store stays available through the loss of the coordination leader, so the leader lease is just a value *in* that store and re-election is a **write rather than a protocol**. That is where the ~2ms leader-replacement figure in the table above comes from. Raft cannot do this by construction — its log *is* leader-ordered, so leader failure halts commits until an election completes.
 

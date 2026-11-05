@@ -62,6 +62,14 @@ public sealed interface Causes {
         return cause(message, none());
     }
 
+    /// A cause marked as a domain-validation failure (see [Cause.Validation]). Use for a rule violation on
+    /// well-formed input; the HTTP boundary answers it with 422 instead of 500.
+    static Cause validation(String message) {
+        record validationCause(String message) implements SimpleCause, Cause.Validation {}
+
+        return new validationCause(message);
+    }
+
     /// A cause marked TERMINAL: retry facilities stop on it immediately (see [Cause#isTerminal]).
     /// Use for conditions a retry cannot change; prefer it over spelling "(terminal)" into message text
     /// that no policy reads.

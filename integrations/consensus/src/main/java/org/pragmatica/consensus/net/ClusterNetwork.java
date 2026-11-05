@@ -42,8 +42,8 @@ import static org.pragmatica.consensus.net.NetworkServiceMessage.*;
 /// **Implementation contract:** All methods must be exception-safe.
 /// Network failures should be logged internally, not thrown to callers.
 ///
-/// Delivery is best-effort and unacknowledged: a send reported as [WriteOutcome.Sent] was only
-/// accepted locally. Rabia tolerates loss, reordering and duplicates through its own timeouts and
+/// Delivery is best-effort and unacknowledged: every unicast `send` reports a local [WriteOutcome], and one
+/// reported as [WriteOutcome.Sent] was not refused locally, which says nothing about delivery. Rabia tolerates loss, reordering and duplicates through its own timeouts and
 /// retransmission; every other consumer earns end-to-end delivery itself (quorum collection,
 /// anti-entropy, caller deadlines).
 public interface ClusterNetwork {
@@ -165,70 +165,33 @@ public interface ClusterNetwork {
     @MessageReceiver
     void handleBroadcast(Broadcast broadcast);
 
-    /// Send a message to a specific node.
+    /// Send a message to a specific node and report the synchronous local-transport outcome.
     ///
-    /// Implementations must not throw exceptions. Failed sends should be
-    /// logged and silently ignored - the protocol handles message loss.
-    <M extends ProtocolMessage> Unit send(NodeId nodeId, M message);
-
-    /// Send a REQUEST frame whose caller stops waiting after `offlineTtl` (#1996).
+    /// The outcome is local only (see [WriteOutcome]): [WriteOutcome.Sent] means the transport did not refuse the frame
+    /// (it was written, queued, or silently discarded, as a test blackhole does), not that the peer received it. Only a refusal ([WriteOutcome.BackpressureRefused], [WriteOutcome.NoPeerState],
+    /// [WriteOutcome.EncodeFailed]) proves the frame never left; [WriteOutcome.ConnectionDead] proves it only for a
+    /// [NoOfflineBuffering] frame, because an ordinary one may sit in the offline buffer and be delivered later. A
+    /// caller that ignores the returned outcome relies on its own end-to-end mechanism (retransmission, a deadline,
+    /// re-derivation) to cover a frame that never arrives.
+    ///
+    /// Implementations must not throw exceptions, and the returned promise always resolves successfully: a transport
+    /// failure is an outcome, never a failed promise.
+    <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message);
+    /// Send a REQUEST frame whose caller stops waiting after `offlineTtl` (#1996), reporting the outcome as
+    /// [#send(NodeId, ProtocolMessage)] does.
     ///
     /// Identical to [#send(NodeId, ProtocolMessage)] while the peer is connected. While it is not, the frame may sit
     /// in the offline buffer, and the buffer drops it at the flush once `offlineTtl` (capped by
     /// [#setOfflineBufferCap]) has passed instead of delivering work whose caller has given up. Use it for every
     /// request that has a caller deadline. Plain `send` and `broadcast` carry no caller deadline and are bounded by the
-    /// cap alone: nothing the transport buffers is held for ever.
-    ///
-    /// Default falls back to plain `send`, for transports with no offline buffer.
-    default <M extends ProtocolMessage> Unit send(NodeId nodeId, M message, TimeSpan offlineTtl) {
-        return send(nodeId, message);
-    }
+    /// cap alone: nothing the transport buffers is held for ever. A transport with no offline buffer implements it as
+    /// plain `send`.
+    <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl);
 
     /// Longest any offline-buffered frame may be held. Default no-op for transports with no offline buffer.
     @Contract
     default Unit setOfflineBufferCap(TimeSpan cap) {
         return Unit.unit();
-    }
-
-    /// Send a message to a specific node and return the synchronous local-transport
-    /// outcome.
-    ///
-    /// Where [#send(NodeId, ProtocolMessage)] is fire-and-forget (failures handled
-    /// upstream via protocol retransmits / timeouts), this overload reports back
-    /// immediately whether the message was enqueued ([WriteOutcome.Sent]) or refused
-    /// (backpressure / dead connection / unknown peer). Callers that need to react
-    /// faster than per-operation timeouts — currently only the DHT quorum path — use
-    /// this to short-circuit waiting on a clearly-unreachable replica.
-    ///
-    /// Default implementation falls back to `send` and returns [WriteOutcome.Sent] —
-    /// transports without per-write outcome tracking remain backward-compatible. That
-    /// unconditional `Sent` means an inheritor (e.g. the worker-side DHT network) reports
-    /// success for EVERY refusal class, [WriteOutcome.EncodeFailed] included — a caller's
-    /// fast-fail is blind there until the transport overrides this (recorded #634 review,
-    /// pre-existing).
-    ///
-    /// See `aether/docs/specs/dht-resilience-spec.md` Layer 1.
-    default <M extends ProtocolMessage> Promise<WriteOutcome> sendOutcome(NodeId nodeId, M message) {
-        send(nodeId, message);
-
-        return Promise.success(new WriteOutcome.Sent(nodeId));
-    }
-
-    /// [#send(NodeId, ProtocolMessage, TimeSpan)] with the synchronous local-transport outcome of
-    /// [#sendOutcome(NodeId, ProtocolMessage)]: a request frame with a caller deadline whose caller must also
-    /// know whether the frame provably never left. Only a refusal ([WriteOutcome.BackpressureRefused],
-    /// [WriteOutcome.NoPeerState], [WriteOutcome.EncodeFailed]) proves that; `Sent` and `ConnectionDead` do not,
-    /// because a frame reported under either may still sit in the offline buffer and be delivered within
-    /// `offlineTtl`.
-    ///
-    /// Default falls back to the TTL-bounded `send` and reports [WriteOutcome.Sent] — the conservative answer
-    /// for a transport without per-write outcome tracking: it never claims a frame was not sent.
-    default <M extends ProtocolMessage> Promise<WriteOutcome> sendOutcome(NodeId nodeId,
-                                                                          M message,
-                                                                          TimeSpan offlineTtl) {
-        send(nodeId, message, offlineTtl);
-
-        return Promise.success(new WriteOutcome.Sent(nodeId));
     }
 
     /// Start the network.

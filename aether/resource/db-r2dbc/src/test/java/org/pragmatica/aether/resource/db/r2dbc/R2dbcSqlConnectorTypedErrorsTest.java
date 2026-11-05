@@ -66,8 +66,16 @@ class R2dbcSqlConnectorTypedErrorsTest {
                                                        .password(postgres.getPassword())
                                                        .maxConnections(2)
                                                        .pool();
+        var unpooled = new NettyConnectibleBuilder().hostname(postgres.getHost())
+                                                    .port(postgres.getMappedPort(5432))
+                                                    .database(postgres.getDatabaseName())
+                                                    .username(postgres.getUsername())
+                                                    .password(postgres.getPassword())
+                                                    .plain();
 
-        connector = R2dbcSqlConnector.r2dbcSqlConnector(config, PgAsyncConnectionFactory.pgAsyncConnectionFactory(connectible));
+        connector = R2dbcSqlConnector.r2dbcSqlConnector(config,
+                                                        PgAsyncConnectionFactory.pgAsyncConnectionFactory(connectible),
+                                                        PgAsyncConnectionFactory.pgAsyncConnectionFactory(unpooled));
     }
 
     @AfterAll

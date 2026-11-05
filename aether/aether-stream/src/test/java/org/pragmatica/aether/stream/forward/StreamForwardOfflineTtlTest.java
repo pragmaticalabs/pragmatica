@@ -10,6 +10,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.WriteOutcome;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Deadline;
 
@@ -34,13 +36,17 @@ class StreamForwardOfflineTtlTest {
 
     private final StreamForwardClient client = streamForwardClient(SELF, new StreamForwardTransport() {
         @Override
-        public void send(NodeId target, StreamForwardMessage message) {
+        public Promise<WriteOutcome> send(NodeId target, StreamForwardMessage message) {
             plain.add(message);
+
+            return Promise.success(new WriteOutcome.Sent(target));
         }
 
         @Override
-        public void send(NodeId target, StreamForwardMessage message, TimeSpan callerWait) {
+        public Promise<WriteOutcome> send(NodeId target, StreamForwardMessage message, TimeSpan callerWait) {
             sent.add(new Sent(message, callerWait));
+
+            return Promise.success(new WriteOutcome.Sent(target));
         }
     }, PUBLISH_TIMEOUT, READ_TIMEOUT);
 

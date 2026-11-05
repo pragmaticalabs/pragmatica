@@ -3,6 +3,8 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.metrics.consensus;
 
+import java.util.Map;
+
 import org.pragmatica.lang.Option;
 
 
@@ -13,12 +15,13 @@ public record RabiaMetrics(String role,
                            long proposalsCount,
                            long voteRound1Count,
                            long voteRound2Count,
-                           long fastPathCount,
                            long syncSuccessCount,
                            long syncFailureCount,
                            long totalDecisionLatencyNs,
                            long oldestPendingBatchAgeMs,
-                           long applyTimeoutCount) {
+                           long applyTimeoutCount,
+                           long consecutiveEmptySlotsWithPending,
+                           Option<String> firstChoiceBatchId) {
     public static final RabiaMetrics EMPTY = new RabiaMetrics("FOLLOWER",
                                                               Option.empty(),
                                                               0,
@@ -31,7 +34,8 @@ public record RabiaMetrics(String role,
                                                               0,
                                                               0,
                                                               0,
-                                                              0);
+                                                              0,
+                                                              Option.empty());
 
     /// The record as it was before #1117 added the pending-age and apply-timeout signals; both read zero.
     public RabiaMetrics(String role,
@@ -41,7 +45,6 @@ public record RabiaMetrics(String role,
                         long proposalsCount,
                         long voteRound1Count,
                         long voteRound2Count,
-                        long fastPathCount,
                         long syncSuccessCount,
                         long syncFailureCount,
                         long totalDecisionLatencyNs) {
@@ -52,39 +55,32 @@ public record RabiaMetrics(String role,
              proposalsCount,
              voteRound1Count,
              voteRound2Count,
-             fastPathCount,
              syncSuccessCount,
              syncFailureCount,
              totalDecisionLatencyNs,
              0L,
-             0L);
+             0L,
+             0L,
+             Option.empty());
     }
 
     /// The wire-facing counter view (#674): key names double as the Prometheus gauge names, so the
     /// HTTP block, the Prometheus surface and any differencing instrument read the SAME vocabulary.
-    /// Monotonic totals except `consensus_pending_batches` and `consensus_oldest_pending_batch_age_ms` (levels) — consumers difference the
-    /// totals over their own window, exactly as with the transport counter map.
-    public java.util.Map<String, Number> counterMap() {
-        return java.util.Map.of("consensus_decisions_total",
-                                decisionsCount,
-                                "consensus_proposals_total",
-                                proposalsCount,
-                                "consensus_vote_round1_total",
-                                voteRound1Count,
-                                "consensus_vote_round2_total",
-                                voteRound2Count,
-                                "consensus_fast_path_total",
-                                fastPathCount,
-                                "consensus_sync_success_total",
-                                syncSuccessCount,
-                                "consensus_sync_failure_total",
-                                syncFailureCount,
-                                "consensus_pending_batches",
-                                pendingBatches,
-                                "consensus_oldest_pending_batch_age_ms",
-                                oldestPendingBatchAgeMs,
-                                "consensus_apply_timeouts_total",
-                                applyTimeoutCount);
+    /// Monotonic totals except `consensus_pending_batches`, `consensus_oldest_pending_batch_age_ms` and
+    /// `consensus_consecutive_empty_slots_with_pending` (levels) — consumers difference the totals over their own window,
+    /// exactly as with the transport counter map. `firstChoiceBatchId` is text, so it is served by the HTTP block only.
+    public Map<String, Number> counterMap() {
+        return Map.ofEntries(Map.entry("consensus_decisions_total", decisionsCount),
+                             Map.entry("consensus_proposals_total", proposalsCount),
+                             Map.entry("consensus_vote_round1_total", voteRound1Count),
+                             Map.entry("consensus_vote_round2_total", voteRound2Count),
+                             Map.entry("consensus_sync_success_total", syncSuccessCount),
+                             Map.entry("consensus_sync_failure_total", syncFailureCount),
+                             Map.entry("consensus_pending_batches", pendingBatches),
+                             Map.entry("consensus_oldest_pending_batch_age_ms", oldestPendingBatchAgeMs),
+                             Map.entry("consensus_apply_timeouts_total", applyTimeoutCount),
+                             Map.entry("consensus_consecutive_empty_slots_with_pending",
+                                       consecutiveEmptySlotsWithPending));
     }
 
     public double avgDecisionLatencyMs() {

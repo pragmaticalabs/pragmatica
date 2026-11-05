@@ -76,7 +76,7 @@ class DHTCapacityBoundTest {
             ring.addNode(id);
             var storage = memoryStorageEngine(OwnerEpochGate.noOp(), DhtPrefixAccounting.dhtPrefixAccounting(capOf.applyAsLong(id)));
             var node = dhtNode(id, storage, ring, CONFIG);
-            DHTNetwork network = this::deliver;
+            DHTNetwork network = AcceptingNetwork.accepting(this::deliver);
 
             members.put(id, new Member(id, node, storage, distributedDHTClient(node, network, CONFIG), ring));
         }

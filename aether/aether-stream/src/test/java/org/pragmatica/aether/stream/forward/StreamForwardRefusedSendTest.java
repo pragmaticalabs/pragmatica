@@ -54,12 +54,7 @@ class StreamForwardRefusedSendTest {
         }
 
         @Override
-        public void send(NodeId target, StreamForwardMessage message) {
-            frames.add(message);
-        }
-
-        @Override
-        public Promise<WriteOutcome> sendOutcome(NodeId target, StreamForwardMessage message, TimeSpan callerWait) {
+        public Promise<WriteOutcome> send(NodeId target, StreamForwardMessage message) {
             frames.add(message);
 
             return Promise.success(outcome);
@@ -189,7 +184,7 @@ class StreamForwardRefusedSendTest {
 
     /// #2574 lane pin, the message side: the forward read rides the FORWARD lane -- the lane `QuicClusterNetwork` refuses at
     /// its watermark with BackpressureRefused (pinned on the transport side in `QuicConsensusBackpressureTest`), and the one
-    /// `sendOutcome` dispatches on exactly as `send` does.
+    /// `send` dispatches on.
     @Nested
     class Lane {
         @Test
@@ -217,20 +212,24 @@ class StreamForwardRefusedSendTest {
         }
     }
 
-    /// The default `sendOutcome` (a transport that does not track writes) sends through `send` with the caller's wait and
-    /// reports `Sent`: it never claims a frame was not sent, so the read waits for its answer.
+    /// A transport that does not track its writes reports `Sent` after sending with the caller's wait: it never claims a
+    /// frame was not sent, so the read waits for its answer.
     @Nested
-    class DefaultTransportOutcome {
+    class UntrackedTransportOutcome {
         @Test
-        void sendOutcome_default_sendsWithTheCallerWait_andReportsSent() {
+        void send_untracked_sendsWithTheCallerWait_andReportsSent() {
             var waits = new CopyOnWriteArrayList<TimeSpan>();
             StreamForwardTransport untracked = new StreamForwardTransport() {
                 @Override
-                public void send(NodeId target, StreamForwardMessage message) {}
+                public Promise<WriteOutcome> send(NodeId target, StreamForwardMessage message) {
+                    return Promise.success(new WriteOutcome.Sent(target));
+                }
 
                 @Override
-                public void send(NodeId target, StreamForwardMessage message, TimeSpan callerWait) {
+                public Promise<WriteOutcome> send(NodeId target, StreamForwardMessage message, TimeSpan callerWait) {
                     waits.add(callerWait);
+
+                    return Promise.success(new WriteOutcome.Sent(target));
                 }
             };
             var read = Deadline.runWith(Deadline.fromWireMillis(400),

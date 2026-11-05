@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import org.pragmatica.aether.stream.forward.AcceptingStreamForwardTransport;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -48,6 +49,7 @@ import org.assertj.core.api.SoftAssertions;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.stream.replication.AcceptingReplicationTransport;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -133,7 +135,7 @@ class HonestPublishOutcomeTest {
                 createStream(manager);
                 var handler = StreamForwardHandler.streamForwardHandler(SELF,
                                                                         manager,
-                                                                        (_, message) -> responses.add(message));
+                                                                        AcceptingStreamForwardTransport.accepting((_, message) -> responses.add(message)));
 
                 handler.onPublishForward(publishForward(SENDER, "c-1", STREAM, PARTITION, payload(), 1000L));
 
@@ -298,7 +300,7 @@ class HonestPublishOutcomeTest {
                 createStream(manager);
                 var handler = StreamForwardHandler.streamForwardHandler(SELF,
                                                                         manager,
-                                                                        (_, message) -> responses.add(message));
+                                                                        AcceptingStreamForwardTransport.accepting((_, message) -> responses.add(message)));
 
                 handler.onPublishForward(publishForward(SENDER, "c-1", STREAM, PARTITION, payload(), 1000L));
 
@@ -426,7 +428,7 @@ class HonestPublishOutcomeTest {
 
         registry.registerReplica(STREAM, PARTITION, SELF);
 
-        return replicationManager(SELF, registry, (_, _) -> {});
+        return replicationManager(SELF, registry, AcceptingReplicationTransport.accepting((_, _) -> {}));
     }
 
     /// The real replication manager over a registry holding the owner and ONE peer whose confirmed
@@ -438,7 +440,7 @@ class HonestPublishOutcomeTest {
         registry.registerReplica(STREAM, PARTITION, PEER);
         registry.updateWatermark(STREAM, PARTITION, PEER, 0L);
 
-        return replicationManager(SELF, registry, (_, _) -> {});
+        return replicationManager(SELF, registry, AcceptingReplicationTransport.accepting((_, _) -> {}));
     }
 
     private static StreamPartitionManager ringOnlyManager(ReplicationManager replication) {

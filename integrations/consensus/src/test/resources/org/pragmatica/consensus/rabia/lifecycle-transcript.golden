@@ -18,7 +18,7 @@ matrix/GATED/SYNC_ANSWERS mode=Idle events=[ConsensusActive] msgs=[] completions
 matrix/GATED/DECISION_CURRENT mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
 matrix/GATED/DECISION_FAR_FUTURE mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
 matrix/GATED/PROPOSE_CURRENT mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
-matrix/GATED/PROPOSE_FAR_FUTURE mode=Syncing events=[] msgs=[SyncRequest] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/GATED/PROPOSE_FAR_FUTURE mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
 matrix/GATED/STOP mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
 matrix/GATED_HELD/ACTIVE mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
 matrix/GATED_HELD/PASSIVE mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
@@ -29,7 +29,7 @@ matrix/GATED_HELD/SYNC_ANSWERS mode=Idle events=[ConsensusActive] msgs=[] comple
 matrix/GATED_HELD/DECISION_CURRENT mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
 matrix/GATED_HELD/DECISION_FAR_FUTURE mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
 matrix/GATED_HELD/PROPOSE_CURRENT mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
-matrix/GATED_HELD/PROPOSE_FAR_FUTURE mode=Syncing events=[] msgs=[SyncRequest] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/GATED_HELD/PROPOSE_FAR_FUTURE mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
 matrix/GATED_HELD/STOP mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
 matrix/SYNCING/ACTIVE mode=Syncing events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
 matrix/SYNCING/PASSIVE mode=Paused events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
@@ -123,7 +123,7 @@ named/restore-ok-nonempty-snapshot mode=Idle events=[ConsensusActive] msgs=[Sync
 named/restore-ok-empty-snapshot mode=Idle events=[ConsensusActive] msgs=[SyncRequest] completions=[0] start=resolved marker=1 replays=1 hooks=1 restores=0
 named/restore-persist-fails-fences mode=Syncing events=[] msgs=[SyncRequest] completions=[10, 10, 10, 10] start=pending marker=0 replays=0 hooks=0 restores=4
 named/restore-refused-participation-then-pause-resume mode=Idle events=[ConsensusActive] msgs=[SyncRequest] completions=[10, 10] start=pending marker=2 replays=1 hooks=1 restores=2
-named/restore-undecodable-snapshot-three-rounds mode=Syncing events=[] msgs=[SyncRequest, SyncRequest, SyncRequest, SyncRequest] completions=[] start=pending marker=0 replays=0 hooks=0 restores=6
+named/restore-undecodable-snapshot-three-rounds mode=Syncing events=[] msgs=[SyncRequest, SyncRequest, SyncRequest, SyncRequest] completions=[] start=pending marker=0 replays=0 hooks=0 restores=3
 named/observer-restore-then-promotion mode=Idle events=[ConsensusObserving, ConsensusActive] msgs=[SyncRequest] completions=[10] start=resolved marker=1 replays=1 hooks=1 restores=1
 named/voter-demoted-by-roster-removal mode=Observing events=[ConsensusActive, ConsensusDemoted] msgs=[SyncRequest] completions=[0, 1] start=resolved marker=1 replays=1 hooks=1 restores=0
 named/demoted-observer-pause-resume mode=Observing events=[ConsensusActive, ConsensusDemoted, ConsensusPassive, ConsensusObserving] msgs=[SyncRequest] completions=[0, 1] start=resolved marker=1 replays=1 hooks=1 restores=0

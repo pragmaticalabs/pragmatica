@@ -47,13 +47,9 @@ class DHTAntiEntropySendOutcomeTest {
         var node = dhtNode(self, memoryStorageEngine(), ring, CONFIG);
         var sends = new AtomicInteger();
         var network = new DHTNetwork() {
-            @Override
-            public void send(NodeId target, ProtocolMessage message) {
-                sends.incrementAndGet();
-            }
 
             @Override
-            public Promise<WriteOutcome> sendOutcome(NodeId target, ProtocolMessage message) {
+            public Promise<WriteOutcome> send(NodeId target, ProtocolMessage message) {
                 sends.incrementAndGet();
                 return Promise.success(new WriteOutcome.BackpressureRefused(target));
             }
@@ -75,7 +71,7 @@ class DHTAntiEntropySendOutcomeTest {
         ring.addNode(self);
         ring.addNode(peer);
         var node = dhtNode(self, memoryStorageEngine(), ring, CONFIG);
-        DHTNetwork network = (target, message) -> {};
+        DHTNetwork network = AcceptingNetwork.accepting((target, message) -> {});
 
         dhtAntiEntropy(node, network, CONFIG).synchronizeNow();
 
@@ -100,7 +96,7 @@ class DHTAntiEntropySendOutcomeTest {
     @Test
     void unansweredDigests_areExpiredByTheFollowingRound() {
         var interval = TimeSpan.timeSpan(1).millis();
-        var antiEntropy = dhtAntiEntropy(twoNodeNode(), (target, message) -> {}, CONFIG, interval);
+        var antiEntropy = dhtAntiEntropy(twoNodeNode(), AcceptingNetwork.accepting((target, message) -> {}), CONFIG, interval);
 
         antiEntropy.synchronizeNow();
 
@@ -131,13 +127,9 @@ class DHTAntiEntropySendOutcomeTest {
 
     private static DHTNetwork refusingNetwork(AtomicInteger sends) {
         return new DHTNetwork() {
-            @Override
-            public void send(NodeId target, ProtocolMessage message) {
-                sends.incrementAndGet();
-            }
 
             @Override
-            public Promise<WriteOutcome> sendOutcome(NodeId target, ProtocolMessage message) {
+            public Promise<WriteOutcome> send(NodeId target, ProtocolMessage message) {
                 sends.incrementAndGet();
 
                 return Promise.success(new WriteOutcome.BackpressureRefused(target));

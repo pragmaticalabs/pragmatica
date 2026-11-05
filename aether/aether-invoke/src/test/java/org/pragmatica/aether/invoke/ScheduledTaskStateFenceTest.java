@@ -41,6 +41,8 @@ import org.pragmatica.serialization.FrameworkCodecs;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.consensus.net.WriteOutcome;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.Unit.unit;
@@ -209,12 +211,17 @@ class ScheduledTaskStateFenceTest {
             this.leaderManager = new ScheduledTaskManagerTest.TestLeaderManager(self);
             var network = new StubClusterNetwork() {
                 @Override
-                public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+                public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
                     if (message instanceof InvokeRequest request) {
                         sent.add(request);
                     }
 
-                    return unit();
+                    return Promise.success(new WriteOutcome.Sent(nodeId));
+                }
+
+                @Override
+                public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+                    return send(nodeId, message);
                 }
             };
             var endpoints = EndpointRegistry.endpointRegistry();

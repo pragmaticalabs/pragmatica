@@ -81,6 +81,7 @@ class AbTestOperatorFloorTest {
                                 SliceTargetOverridePreservationTest.stubSerializer(),
                                 SliceTargetOverridePreservationTest.stubDeserializer());
 
+        SliceTargetOverridePreservationTest.seedLeaderAndOwner(kvStore);
         seedSliceTarget(operatorTarget(SliceTargetOverridePreservationTest.V1, OPERATOR_FLOOR));
 
         manager = AbTestManager.abTestManager(rabiaNode,

@@ -36,6 +36,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
@@ -384,6 +386,12 @@ class ClusterDeploymentStateTransactionalTest {
                                                                                              failing,
                                                                                              Option.some(prior));
 
+            // #2628: the removal of a deleted blueprint's targets is fenced on the targets it read, so it names only
+            // targets that are committed. Both slices are committed under the failed blueprint, as after its deploy.
+            kvStore.put(SliceTargetKey.sliceTargetKey(sharedArtifact.base()),
+                        SliceTargetValue.sliceTargetValue(V1, 3, 1, Option.some(failing.id()), Option.none(), Option.none(), Option.none()));
+            kvStore.put(SliceTargetKey.sliceTargetKey(netNewArtifact.base()),
+                        SliceTargetValue.sliceTargetValue(V2, 3, 1, Option.some(failing.id()), Option.none(), Option.none(), Option.none()));
             // Seed the FSM's own ownership map as it would be right after the failed deploy
             // activated both slices: shared AND net-new, both currently owned by the failed id.
             activeState().blueprints().put(sharedArtifact,
@@ -414,12 +422,8 @@ class ClusterDeploymentStateTransactionalTest {
             var sharedSliceTargetKey = SliceTargetKey.sliceTargetKey(sharedArtifact.base());
             var netNewSliceTargetKey = SliceTargetKey.sliceTargetKey(netNewArtifact.base());
 
-            var sharedSliceRemoved = cluster.commands
-                    .stream()
-                    .anyMatch(c -> c instanceof KVCommand.Remove<AetherKey> && c.key().equals(sharedSliceTargetKey));
-            var netNewSliceRemoved = cluster.commands
-                    .stream()
-                    .anyMatch(c -> c instanceof KVCommand.Remove<AetherKey> && c.key().equals(netNewSliceTargetKey));
+            var sharedSliceRemoved = TargetWrites.removes(List.copyOf(cluster.commands), sharedSliceTargetKey);
+            var netNewSliceRemoved = TargetWrites.removes(List.copyOf(cluster.commands), netNewSliceTargetKey);
 
             assertThat(sharedSliceRemoved).as("a slice shared with the restored blueprint must NOT be deallocated")
                                           .isFalse();
@@ -898,8 +902,11 @@ class ClusterDeploymentStateTransactionalTest {
         @Override public Promise<Unit> stop() {return Promise.unitPromise();}
 
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
-            commands.addAll(batch);
-            batches.add(List.copyOf(batch));
+            // #2584 P0: a rollback is one LeaderTransaction; record its mutations as the batch (see TransactionEffects).
+            var effective = TransactionEffects.effective(batch);
+
+            commands.addAll(effective);
+            batches.add(List.copyOf(effective));
 
             var failure = forcedApplyFailure;
             if (failure != null) {
@@ -932,8 +939,10 @@ class ClusterDeploymentStateTransactionalTest {
     }
 
     private static final class InMemoryKvStore extends KVStore<AetherKey, AetherValue> {
+        @SuppressWarnings({"unchecked", "rawtypes"})
         InMemoryKvStore(MessageRouter router) {
             super(router, stubSerializer(), stubDeserializer());
+            process(createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(SELF, 1)))));
         }
 
         void put(AetherKey key, AetherValue value) {

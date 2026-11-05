@@ -36,6 +36,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.pragmatica.consensus.net.WriteOutcome;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.dht.DHTAntiEntropy.dhtAntiEntropy;
@@ -258,8 +259,10 @@ class DHTCatchUpSilentHolderTest {
         private DHTNetwork network() {
             return new DHTNetwork() {
                 @Override
-                public void send(NodeId target, ProtocolMessage message) {
+                public Promise<WriteOutcome> send(NodeId target, ProtocolMessage message) {
                     deliver(target, message);
+
+                    return Promise.success(new WriteOutcome.Sent(target));
                 }
 
                 @Override

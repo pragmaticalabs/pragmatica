@@ -403,7 +403,7 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
         // #2574: a read the transport did not send fails at once; its scheduled timeout then finds no pending entry.
         // detached: nothing chains on the outcome; the failure resolves the caller's promise through the pending-entry
         // removal, which races the response and the timeout safely (whichever removes the entry resolves it).
-        transport.sendOutcome(target, message, readWait)
+        transport.send(target, message, readWait)
                  .onSuccess(outcome -> failReadIfNotSent(outcome,
                                                          message.correlationId()));
         log.trace("Sent ReadForward to {} for {}[{}] fromOffset={} maxEvents={} correlationId={} preference={}",

@@ -22,13 +22,19 @@ import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
+
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 /// Startup migrations for an exploded blueprint: schema/*.sql or schema/<datasource>/*.sql.
 /// The process-wide queue serializes aliases too. It is released only after SQL and connector
 /// cleanup settle; there is no timeout-driven retry or claim of cross-process exclusion.
 public interface TerraMigrations {
+    /// Zero means no statement bound on the pinned migration session (FDB-2a, #2591): Terra had no bound before the fence.
+    /// On PostgreSQL it is set explicitly (`statement_timeout = 0`, `lock_timeout = 0`), overriding role defaults.
+    TimeSpan STATEMENT_TIMEOUT = timeSpan(0).nanos();
     Promise<List<Report>> apply();
 
     record Report(String datasource, SchemaMigrations.SchemaResult result) {}
@@ -98,7 +104,7 @@ public interface TerraMigrations {
                                  .toList()).map(_ -> new MigrationRun(ownerBase,
                                                                       tasks,
                                                                       provider,
-                                                                      SchemaMigrations.schemaMigrations()));
+                                                                      SchemaMigrations.schemaMigrations(STATEMENT_TIMEOUT)));
     }
 
     // Filesystem API boundary; callers lift all failures before provisioning any database.

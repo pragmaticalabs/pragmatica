@@ -27,6 +27,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.net.tcp.Server;
+import org.pragmatica.consensus.net.WriteOutcome;
+import org.pragmatica.lang.io.TimeSpan;
 
 /// Shared fixtures of the cluster-directory tests: directories, a network that records what each node sends, and the ping/pong builders.
 final class DirectoryFixtures {
@@ -115,11 +117,16 @@ final class DirectoryFixtures {
         }
 
         @Override
-        public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
             sent.add(new Sent(nodeId, message));
             tap.accept(nodeId, message);
 
-            return Unit.unit();
+            return Promise.success(new WriteOutcome.Sent(nodeId));
+        }
+
+        @Override
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+            return send(nodeId, message);
         }
 
         @Override

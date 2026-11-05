@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.control;
 
+import org.pragmatica.aether.stream.forward.AcceptingStreamForwardTransport;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -196,9 +197,9 @@ class ControlLogOwnershipTest {
         var clientRef = new AtomicReference<StreamForwardClient>();
         var handler = StreamForwardHandler.streamForwardHandler(newOwnerId,
                                                                 newOwner.manager(),
-                                                                (_, message) -> respond(clientRef, message),
+                                                                AcceptingStreamForwardTransport.accepting((_, message) -> respond(clientRef, message)),
                                                                 newOwner.controlLog());
-        var client = StreamForwardClient.streamForwardClient(SELF, (_, message) -> deliver(handler, forwarded, message));
+        var client = StreamForwardClient.streamForwardClient(SELF, AcceptingStreamForwardTransport.accepting((_, message) -> deliver(handler, forwarded, message)));
 
         clientRef.set(client);
         var replication = replicationManager(SELF, ControlLogFixture.registry(1));

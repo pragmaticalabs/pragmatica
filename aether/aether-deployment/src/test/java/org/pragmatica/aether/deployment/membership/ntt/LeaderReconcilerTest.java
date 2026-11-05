@@ -1402,23 +1402,43 @@ class LeaderReconcilerTest {
         }
 
         @Test
-        void surplusDrain_partialMaturePool_drainsMatureAndDefersShortfall() {
+        void surplusDrain_partialMaturePool_leaderNotDrained_shortfallDeferred() {
             configuredCoreCount.set(1);
-            // SELF (tracked in setUp at clock 0) matures and is ephemeral → an eligible victim;
-            // the two CONFIGURED seeds seeded afterwards stay young → deferred. Surplus = 2, only
-            // the one mature (SELF) is drainable now.
+            // SELF (the leader) matures but is never a victim; the two CONFIGURED seeds seeded
+            // afterwards stay young -> deferred. Surplus = 2, nothing is drainable now.
             agePastDrainSafetyGrace();
             seedYoungPeers(youngSeed1, youngSeed2);
 
             reconciler.activate();
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
 
-            // Surplus = 2; eligible pool = {SELF} → one mature victim drained, the shortfall deferred.
             assertThat(ctm.drainNodeCalls())
-                .as("the mature part of the surplus is drained immediately")
-                .containsExactly(SELF);
+                .as("the mature leader is never drained; the young seeds are held by the grace")
+                .isEmpty();
             assertThat(scheduler.tasksByDelay(FULL_GRACE_FOLLOW_UP_DELAY))
                 .as("the young configured shortfall arms one re-evaluation follow-up")
+                .hasSize(1);
+        }
+
+        /// #1089 — the leader is never a victim, even as the ONLY eligible candidate (the other member
+        /// is a young configured seed held back by the grace): its DRAIN would never be delivered
+        /// (ClusterSyncState skips self). The scale-down stops short and arms the deferral follow-up.
+        @Test
+        void surplusDrain_leaderSoleCandidate_leaderNeverChosen_scaleDownStopsShort() {
+            configuredCoreCount.set(1);
+            // Members = SELF + young youngSeed1 = 2; surplus 1. seed1 is inside the drain-safety grace.
+            health.markHealthy(youngSeed1);
+            observeCoreHealthy(youngSeed1);
+            sampler.sample();
+
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertThat(ctm.drainNodeCalls())
+                .as("the leader is never drained, even when it is the sole eligible candidate")
+                .isEmpty();
+            assertThat(scheduler.tasksByDelay(FULL_GRACE_FOLLOW_UP_DELAY))
+                .as("the shortfall is deferred with a follow-up, not silently dropped")
                 .hasSize(1);
         }
 
@@ -1767,8 +1787,8 @@ class LeaderReconcilerTest {
             membershipFsm.onDrainRequested(victim);
         }
 
-        /// #1089 option B (d) — the leader is ordered LAST: with another eligible candidate present it
-        /// is not chosen, even though its id sorts first and it is an ephemeral non-owner.
+        /// #1089 (d) — with another eligible candidate present the leader is not chosen, even though
+        /// its id sorts first and it is an ephemeral non-owner.
         @Test
         void surplusDrain_leaderAndAnotherCandidate_leaderNotChosen() {
             configuredCoreCount.set(2);
@@ -1778,25 +1798,8 @@ class LeaderReconcilerTest {
             runActivationPass();
 
             assertThat(ctm.drainNodeCalls())
-                .as("the leader is a victim only when nothing else can cover the surplus")
+                .as("the leader is never a victim")
                 .containsExactly(ctm1);
-        }
-
-        /// #1089 option B (d) — a tie-break, never an exclusion: when the leader is the ONLY eligible
-        /// candidate (the other member is a young configured seed held back by the grace), it is chosen.
-        @Test
-        void surplusDrain_leaderSoleCandidate_leaderChosen() {
-            configuredCoreCount.set(1);
-            // Members = SELF + young seed1 = 2; surplus 1. seed1 is inside the drain-safety grace.
-            health.markHealthy(seed1);
-            observeCoreHealthy(seed1);
-            sampler.sample();
-
-            runActivationPass();
-
-            assertThat(ctm.drainNodeCalls())
-                .as("the leader is drained when it is the sole eligible candidate")
-                .containsExactly(SELF);
         }
 
         /// The owner tier keeps the drain-safety grace for EPHEMERAL owners too: the "owns nothing"

@@ -32,6 +32,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
@@ -902,14 +904,11 @@ class ClusterDeploymentStateActiveTest {
             var blueprintValue = AetherValue.AppBlueprintValue.appBlueprintValue(
                     org.pragmatica.aether.slice.blueprint.ExpandedBlueprint.expandedBlueprint(OWNER, List.of(slice), Option.none()));
 
+            cluster.neverResolves = true;
+            kvStore.put(blueprintKey, blueprintValue);
             harness.dispatch(new ClusterDeploymentEvents.AppBlueprintPutReceived(
                     new ValuePut<>(new KVCommand.Put<>(blueprintKey, blueprintValue), Option.none())));
-            var queuedTarget = cluster.commands.stream()
-                                               .filter(KVCommand.Put.class::isInstance)
-                                               .map(KVCommand.Put.class::cast)
-                                               .filter(put -> TARGET_KEY.equals(put.key()))
-                                               .map(put -> (SliceTargetValue) put.value())
-                                               .toList();
+            var queuedTarget = TargetWrites.proposed(List.copyOf(cluster.commands), TARGET_KEY);
 
             assertThat(queuedTarget).as("control: the target put is queued but not applied").hasSize(1);
             assertThat(kvStore.get(TARGET_KEY).isPresent()).as("control: target absent from the applied store").isFalse();
@@ -947,6 +946,8 @@ class ClusterDeploymentStateActiveTest {
             var blueprintValue = AetherValue.AppBlueprintValue.appBlueprintValue(
                     org.pragmatica.aether.slice.blueprint.ExpandedBlueprint.expandedBlueprint(OWNER, List.of(slice), Option.none()));
 
+            cluster.neverResolves = true;
+            kvStore.put(AetherKey.AppBlueprintKey.appBlueprintKey(OWNER), blueprintValue);
             harness.dispatch(new ClusterDeploymentEvents.AppBlueprintPutReceived(
                     new ValuePut<>(new KVCommand.Put<>(AetherKey.AppBlueprintKey.appBlueprintKey(OWNER), blueprintValue), Option.none())));
             assertThat(targetPuts()).as("control: the target put is queued once and lost (the double never applies it)").hasSize(1);
@@ -957,12 +958,7 @@ class ClusterDeploymentStateActiveTest {
         }
 
         private List<SliceTargetValue> targetPuts() {
-            return cluster.commands.stream()
-                                   .filter(KVCommand.Put.class::isInstance)
-                                   .map(KVCommand.Put.class::cast)
-                                   .filter(put -> TARGET_KEY.equals(put.key()))
-                                   .map(put -> (SliceTargetValue) put.value())
-                                   .toList();
+            return TargetWrites.proposed(List.copyOf(cluster.commands), TARGET_KEY);
         }
 
         private List<String> codes() {
@@ -1262,8 +1258,15 @@ class ClusterDeploymentStateActiveTest {
         /// When set, every apply fails without touching anything — consensus that cannot commit.
         volatile boolean failApplies;
 
+        /// When set, every apply is recorded and never resolves: a write in flight (or lost) that nothing continues from.
+        volatile boolean neverResolves;
+
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
             commands.addAll(batch);
+
+            if (neverResolves) {
+                return Promise.promise();
+            }
 
             return failApplies
                    ? org.pragmatica.lang.utils.Causes.cause("no quorum").promise()
@@ -1272,8 +1275,10 @@ class ClusterDeploymentStateActiveTest {
     }
 
     private static final class InMemoryKvStore extends KVStore<AetherKey, AetherValue> {
+        @SuppressWarnings({"unchecked", "rawtypes"})
         InMemoryKvStore(MessageRouter router) {
             super(router, stubSerializer(), stubDeserializer());
+            process(createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(SELF, 1)))));
         }
 
         void put(AetherKey key, AetherValue value) {

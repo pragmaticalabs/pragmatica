@@ -70,6 +70,8 @@ public final class ReplicaFeedServer<K extends StructuredKey, V> {
     private static final Logger log = LoggerFactory.getLogger(ReplicaFeedServer.class);
     private static final long NANOS_PER_MILLI = 1_000_000L;
     private static final int GRANT_ACK_SEQUENCE = 0;
+    /// How often a serving node calls [#heartbeat()]; the wiring schedules it, and a client's carry grace budgets one such interval.
+    public static final long HEARTBEAT_INTERVAL_MILLIS = 1_000L;
 
     private record TransferKey(NodeId peer, long requestId) {}
 

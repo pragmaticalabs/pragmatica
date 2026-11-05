@@ -29,6 +29,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
@@ -131,12 +133,7 @@ class BlueprintRepublishPlacementTest {
                                                                                               Option.none()));
         harness.dispatch(new AppBlueprintPutReceived(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none())));
 
-        var proposed = cluster.commands.stream()
-                                       .filter(KVCommand.Put.class::isInstance)
-                                       .map(KVCommand.Put.class::cast)
-                                       .filter(put -> TARGET_KEY.equals(put.key()))
-                                       .map(put -> (SliceTargetValue) put.value())
-                                       .toList();
+        var proposed = TargetWrites.proposed(List.copyOf(cluster.commands), TARGET_KEY);
 
         assertThat(proposed).as("the republish must propose exactly one SliceTargetValue Put for the slice")
                             .hasSize(1);
@@ -423,8 +420,10 @@ class BlueprintRepublishPlacementTest {
     private static final class InMemoryKvStore extends KVStore<AetherKey, AetherValue> {
         private final RestoreOrder order;
 
+        @SuppressWarnings({"unchecked", "rawtypes"})
         InMemoryKvStore(MessageRouter router, RestoreOrder order) {
             super(router, stubSerializer(), stubDeserializer());
+            process(createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(SELF, 1)))));
             this.order = order;
         }
 
@@ -432,17 +431,20 @@ class BlueprintRepublishPlacementTest {
             process(createBatch(List.of(new KVCommand.Put<>(key, value))));
         }
 
+        /// The seeded LeaderKey is a consensus key, not an AetherKey, so the snapshot's keys are read as Objects: reading
+        /// them as AetherKey is a ClassCastException the seeded leader record would otherwise raise in every restore.
         @Override
+        @SuppressWarnings("unchecked")
         public synchronized java.util.Map<AetherKey, AetherValue> snapshot() {
-            var ordered = new java.util.LinkedHashMap<AetherKey, AetherValue>();
-            var all = super.snapshot();
-            java.util.function.Predicate<AetherKey> isBlueprint = AppBlueprintKey.class::isInstance;
+            var ordered = new java.util.LinkedHashMap<Object, Object>();
+            java.util.Map<Object, Object> all = (java.util.Map<Object, Object>) (java.util.Map<?, ?>) super.snapshot();
+            java.util.function.Predicate<Object> isBlueprint = AppBlueprintKey.class::isInstance;
             var firstGroup = order == RestoreOrder.BLUEPRINT_FIRST ? isBlueprint : isBlueprint.negate();
 
             all.forEach((k, v) -> {if (firstGroup.test(k)) ordered.put(k, v);});
             all.forEach((k, v) -> {if (!firstGroup.test(k)) ordered.put(k, v);});
 
-            return ordered;
+            return (java.util.Map<AetherKey, AetherValue>) (java.util.Map<?, ?>) ordered;
         }
     }
 

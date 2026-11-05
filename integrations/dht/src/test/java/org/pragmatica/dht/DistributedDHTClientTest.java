@@ -28,6 +28,8 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.consensus.net.WriteOutcome;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -524,14 +526,16 @@ class DistributedDHTClientTest {
         final CopyOnWriteArrayList<CapturedMessage> captured = new CopyOnWriteArrayList<>();
 
         @Override
-        public void send(NodeId nodeId, ProtocolMessage message) {
+        public Promise<WriteOutcome> send(NodeId nodeId, ProtocolMessage message) {
             captured.add(new CapturedMessage(nodeId, message));
+
+            return Promise.success(new WriteOutcome.Sent(nodeId));
         }
     }
 
     /// Minimal no-op network for single-node tests (no remote messaging needed).
     private static final class NoOpNetwork implements DHTNetwork {
         @Override
-        public void send(NodeId nodeId, ProtocolMessage message) {}
+        public Promise<WriteOutcome> send(NodeId nodeId, ProtocolMessage message) {return Promise.success(new WriteOutcome.Sent(nodeId));}
     }
 }

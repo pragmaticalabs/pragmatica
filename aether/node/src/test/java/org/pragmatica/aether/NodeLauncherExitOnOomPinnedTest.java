@@ -32,8 +32,10 @@ import static org.assertj.core.api.Assertions.fail;
 /// would be dropped by the first override.
 ///
 /// Each test carries its own control — the same launcher line must also name the node jar — so a pin
-/// cannot pass on a file whose launcher line it never found. Forge launchers must NOT carry the flag:
-/// Forge runs a whole simulated cluster in one JVM, and one OOM would kill every simulated node.
+/// cannot pass on a file whose launcher line it never found. Forge launchers carry the flag too (D1 design
+/// 6.1, ruling 5, which REVERSES #966's earlier "Forge never carries it"): the dispatcher's failure sink stops a
+/// node, not the JVM, so an allocation OOM on any thread must end the whole Forge JVM, every simulated node and the
+/// run at once, with exit code 3, as in production.
 class NodeLauncherExitOnOomPinnedTest {
     private static final String FLAG = "-XX:+ExitOnOutOfMemoryError";
     private static final String NODE_DOCKERFILE = "aether/docker/aether-node/Dockerfile";
@@ -42,6 +44,8 @@ class NodeLauncherExitOnOomPinnedTest {
     private static final String UPGRADE_SH = "aether/upgrade.sh";
     private static final String AETHER_NODE_SH = "aether/script/aether-node.sh";
     private static final String DEMO_CLUSTER_SH = "aether/script/demo-cluster.sh";
+    private static final String FORGE_DOCKERFILE = "aether/forge/Dockerfile";
+    private static final String DOCKER_FORGE_DOCKERFILE = "aether/docker/aether-forge/Dockerfile";
     private static final String BUILD_DIST_SH = "aether/dist/build-dist.sh";
 
     private static final String CLOUD_NODE_JAVA = "aether/cloud-tests/src/test/java/org/pragmatica/aether/cloud/CloudNode.java";
@@ -100,10 +104,9 @@ class NodeLauncherExitOnOomPinnedTest {
         }
 
         /// `create_launcher` is shared by the node, CLI and forge distributions, so the flag lives in
-        /// the NODE component's baked-in option literal (a build-time constant, not an env variable)
-        /// and the forge component's literal must stay without it.
+        /// the NODE and FORGE components' baked-in option literals (build-time constants, not env variables).
         @Test
-        void buildDistSh_nodeComponentOptions_carryTheFlag_andForgeDoesNot() {
+        void buildDistSh_nodeAndForgeComponentOptions_carryTheFlag() {
             var script = read(BUILD_DIST_SH);
             var nodeJar = script.indexOf("\"$AETHER_DIR/node/target/aether-node.jar\"");
             var nodeOpts = script.indexOf("\"" + FLAG + " -XX:+UseZGC -Xmx512m\"");
@@ -113,9 +116,30 @@ class NodeLauncherExitOnOomPinnedTest {
             assertThat(nodeOpts).as("#966: %s node component java_opts must start with %s", BUILD_DIST_SH, FLAG)
                       .isGreaterThan(nodeJar)
                       .isLessThan(cliBuild);
-            assertThat(script).as("forge must never carry the flag: one OOM would kill an in-JVM simulated cluster")
-                      .contains("\"-XX:+UseZGC -Xmx1g\"")
-                      .doesNotContain(FLAG + " -XX:+UseZGC -Xmx1g");
+            var forgeJar = script.indexOf("\"$AETHER_DIR/forge/forge-core/target/aether-forge.jar\"");
+            var forgeOpts = script.indexOf("\"" + FLAG + " -XX:+UseZGC -Xmx1g\"");
+
+            assertThat(forgeJar).as("control: %s builds the forge component", BUILD_DIST_SH).isNotNegative();
+            assertThat(forgeOpts).as("D1 6.1: %s forge component java_opts must start with %s", BUILD_DIST_SH, FLAG)
+                      .isGreaterThan(forgeJar);
+        }
+
+        /// Forge Dockerfiles: `java` and `-jar` share the ENTRYPOINT line, the flag sits before `$JAVA_OPTS`.
+        @Test
+        void forgeDockerfile_entrypointJavaToken_carriesTheFlag() {
+            assertForgeDockerfile(FORGE_DOCKERFILE);
+        }
+
+        @Test
+        void dockerForgeDockerfile_entrypointJavaToken_carriesTheFlag() {
+            assertForgeDockerfile(DOCKER_FORGE_DOCKERFILE);
+        }
+
+        private void assertForgeDockerfile(String path) {
+            var line = launcherLine(read(path), "-jar /app/aether-forge.jar");
+
+            assertThat(line).as("D1 6.1: %s ENTRYPOINT must put %s on the java token, BEFORE $JAVA_OPTS", path, FLAG)
+                      .contains("java " + FLAG + " $JAVA_OPTS -jar");
         }
 
         /// The cloud test harness launches a real node on a real VM; it is a launcher like the others.
@@ -137,7 +161,8 @@ class NodeLauncherExitOnOomPinnedTest {
                                     script,
                                     FLAG)
                       .startsWith("exec java " + FLAG + " ");
-            assertThat(forgeLine).as("forge wrapper in %s must never carry the flag", script).doesNotContain(FLAG);
+            assertThat(forgeLine).as("D1 6.1: forge wrapper in %s must exec java with %s on the java token", script, FLAG)
+                      .startsWith("exec java " + FLAG + " ");
         }
     }
 

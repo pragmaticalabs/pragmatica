@@ -87,7 +87,7 @@ final class RepairCluster {
     private void add(NodeId id) {
         var ring = ConsistentHashRing.<NodeId>consistentHashRing();
         var engine = new CountingEngine();
-        DHTNetwork network = (target, message) -> deliver(id, target, message);
+        DHTNetwork network = AcceptingNetwork.accepting((target, message) -> deliver(id, target, message));
 
         allIds(id).forEach(ring::addNode);
 

@@ -85,6 +85,13 @@
             <artifactId>resource-interceptors</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- The production R2DBC shape: r2dbc-pool over the real PostgreSQL driver (FDB-1 pinned-session pins). -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>r2dbc-postgresql</artifactId>
+            <version>1.0.7.RELEASE</version>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>postgres-r2dbc-adapter</artifactId>

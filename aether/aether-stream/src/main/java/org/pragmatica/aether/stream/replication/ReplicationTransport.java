@@ -5,21 +5,22 @@
 package org.pragmatica.aether.stream.replication;
 
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Contract;
+import org.pragmatica.consensus.net.WriteOutcome;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 
 
+/// Unicast transport for replication messages. Every send reports the local [WriteOutcome] of the underlying cluster
+/// network: [WriteOutcome.Sent] means not refused locally, not that it was delivered.
 @FunctionalInterface
 public interface ReplicationTransport {
-    @Contract
-    void send(NodeId target, ReplicationMessage message);
+    Promise<WriteOutcome> send(NodeId target, ReplicationMessage message);
 
     /// As [#send(NodeId, ReplicationMessage)] for a request whose caller stops waiting after `callerWait` (#1996): a
     /// transport with an offline buffer drops the frame at the flush once that wait has passed. Default ignores it.
-    @Contract
-    default void send(NodeId target, ReplicationMessage message, TimeSpan callerWait) {
-        send(target, message);
+    default Promise<WriteOutcome> send(NodeId target, ReplicationMessage message, TimeSpan callerWait) {
+        return send(target, message);
     }
 
-    ReplicationTransport NOOP = (_, _) -> {};
+    ReplicationTransport NOOP = (target, _) -> Promise.success(new WriteOutcome.Sent(target));
 }

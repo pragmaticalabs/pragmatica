@@ -30,6 +30,8 @@ import org.pragmatica.lang.type.TypeToken;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.consensus.net.WriteOutcome;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.Unit.unit;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -269,12 +271,12 @@ class SliceInvokerRoutingLivenessFilterTest {
         private final List<NodeId> targets = new CopyOnWriteArrayList<>();
 
         @Override
-        public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
             if (message instanceof InvokeRequest) {
                 targets.add(nodeId);
             }
 
-            return unit();
+            return Promise.success(new WriteOutcome.Sent(nodeId));
         }
 
         List<NodeId> targets() {

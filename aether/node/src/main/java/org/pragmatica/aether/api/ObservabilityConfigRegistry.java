@@ -265,7 +265,7 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
         var snapshot = AspectObservabilityConfig.aspectObservabilityConfig(logging, metrics, spans, tracing, depth);
 
         return clusterNode.<Unit> apply(List.of(command))
-                          .map(_ -> applyConfig(artifactBase, methodName, snapshot))
+                          .map(_ -> reportConfigSet(artifactBase, methodName, snapshot))
                           .onFailure(cause -> log.error("Failed to persist observability config for {}/{}: {}",
                                                         artifactBase,
                                                         methodName,
@@ -278,7 +278,7 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(key);
 
         return clusterNode.<Unit> apply(List.of(command))
-                          .map(_ -> removeFromRegistry(artifactBase, methodName))
+                          .map(_ -> reportConfigRemoved(artifactBase, methodName))
                           .onFailure(cause -> log.error("Failed to persist observability config removal for {}/{}: {}",
                                                         artifactBase,
                                                         methodName,
@@ -402,9 +402,10 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
                      .or(0L);
     }
 
-    private Unit applyConfig(String artifactBase, String methodName, AspectObservabilityConfig snapshot) {
-        configs.put(artifactBase + "/" + methodName, snapshot);
-        reresolveAffected(artifactBase, methodName);
+    // The configs map and the live cells are written only by the commit's own onObservabilityConfigPut/Remove. These
+    // continuations used to write them a second time, after the fact, which could resurrect a value a later commit had
+    // already replaced (#2616; the DynamicConfigManager F4/W-9 hazard).
+    private Unit reportConfigSet(String artifactBase, String methodName, AspectObservabilityConfig snapshot) {
         log.info("Observability config set for {}/{}: logging={} metrics={} spans={} tracing={} depth={}",
                  artifactBase,
                  methodName,
@@ -417,9 +418,7 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
         return Unit.unit();
     }
 
-    private Unit removeFromRegistry(String artifactBase, String methodName) {
-        configs.remove(artifactBase + "/" + methodName);
-        reresolveAffected(artifactBase, methodName);
+    private Unit reportConfigRemoved(String artifactBase, String methodName) {
         log.info("Observability config removed for {}/{}", artifactBase, methodName);
 
         return Unit.unit();

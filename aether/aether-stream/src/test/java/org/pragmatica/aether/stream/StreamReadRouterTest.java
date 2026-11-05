@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import org.pragmatica.aether.stream.forward.AcceptingStreamForwardTransport;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -133,9 +134,9 @@ class StreamReadRouterTest {
 
     private StreamReadRouter forwardingRouter() {
         var clientRef = new StreamForwardClient[1];
-        StreamForwardTransport ownerToAssignee = (_, message) -> clientRef[0].onReadForwardResponse(boundsOf((ReadForwardResponse) message));
+        StreamForwardTransport ownerToAssignee = AcceptingStreamForwardTransport.accepting((_, message) -> clientRef[0].onReadForwardResponse(boundsOf((ReadForwardResponse) message)));
         var ownerHandler = StreamForwardHandler.streamForwardHandler(OWNER, owner, ownerToAssignee);
-        StreamForwardTransport assigneeToOwner = (_, message) -> ownerHandler.onReadForward((ReadForward) message);
+        StreamForwardTransport assigneeToOwner = AcceptingStreamForwardTransport.accepting((_, message) -> ownerHandler.onReadForward((ReadForward) message));
 
         clientRef[0] = StreamForwardClient.streamForwardClient(ASSIGNEE, assigneeToOwner, TimeSpan.timeSpan(5).seconds());
 

@@ -38,7 +38,7 @@ import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.starte
 /// #2574: the outbound counterpart, the test-only refusal filter ([OutboundRefusalFilter]), lives here too: it refuses a
 /// matching unicast send before it is written, as a backpressured fast-fail lane does -- not delivered, and
 /// `BackpressureRefused` to a caller asking for the outcome -- on every unicast entry (`send`, `send` with a TTL,
-/// `sendOutcome`, `sendOutcome` with a TTL), and leaves an unmatched send untouched. (A nested class rather than a class of
+/// and the outcome read back from each), and leaves an unmatched send untouched. (A nested class rather than a class of
 /// its own: a new consensus test class needs a CI-generated shard weight, which no pre-push run can produce.)
 @Timeout(120)
 class QuicInboundRefusalCounterTest {
@@ -151,14 +151,14 @@ class QuicInboundRefusalCounterTest {
         }
 
         @Test
-        void sendOutcome_matched_isBackpressureRefused_andNotDelivered_unmatchedIsSentAndDelivered() {
+        void send_matched_reportsBackpressureRefused_andNotDelivered_unmatchedIsSentAndDelivered() {
             var a = connectedSenderRefusingMarked();
 
-            assertThat(a.sendOutcome(B, probe(REFUSED + "-outcome")).await(AWAIT).unwrap())
+            assertThat(a.send(B, probe(REFUSED + "-outcome")).await(AWAIT).unwrap())
                 .isEqualTo(new WriteOutcome.BackpressureRefused(B));
-            assertThat(a.sendOutcome(B, probe(REFUSED + "-outcome-ttl"), TTL).await(AWAIT).unwrap())
+            assertThat(a.send(B, probe(REFUSED + "-outcome-ttl"), TTL).await(AWAIT).unwrap())
                 .isEqualTo(new WriteOutcome.BackpressureRefused(B));
-            assertThat(a.sendOutcome(B, probe("passed-outcome"), TTL).await(AWAIT).unwrap())
+            assertThat(a.send(B, probe("passed-outcome"), TTL).await(AWAIT).unwrap())
                 .isEqualTo(new WriteOutcome.Sent(B));
             awaitTrue(() -> delivered.contains("passed-outcome"), AWAIT, "control: an unmatched send is delivered");
 

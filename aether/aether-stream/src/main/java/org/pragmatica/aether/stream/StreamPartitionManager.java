@@ -218,6 +218,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// #2201 A-14 (spec 5.1 target, bullet 4): the late-bound seams this manager's wiring has bound. Each setter registers its
     /// seam; the owner-epoch source registers when it is handed to the constructor by a caller rather than defaulted.
     private final Set<StreamSeam> boundSeams = ConcurrentHashMap.newKeySet();
+    /// #2627: tail of each stream name's in-flight config submission chain, see [#inLane].
+    private final ConcurrentHashMap<String, Promise<Unit>> commitLanes = new ConcurrentHashMap<>();
     private final AtomicLong totalAllocatedBytes = new AtomicLong(0);
     /// #2201 C-03 (spec 4.4 item 4): moved by every return of bytes to the pool ([#release]: a stream destroyed, a ring closed
     /// or released, a reservation handed back), so a ring frozen by a refused growth knows budget may have been freed since.
@@ -1526,9 +1528,37 @@ public final class StreamPartitionManager implements AutoCloseable {
                      .onSuccess(_ -> publishStreamConfigRemoval(streamName));
     }
 
+    /// #2627: the Remove joins the name's commit lane ([#inLane]), so it is submitted only after an in-flight
+    /// config `Put` of the same name (a publish-path auto-create whose wait elapsed) has settled — the Remove can no
+    /// longer commit first and leave that `Put` to re-hydrate a ghost stream. A `createStream` that follows queues
+    /// behind this Remove the same way.
     @Contract
     private void publishStreamConfigRemoval(String streamName) {
-        clusterNode.onPresent(node -> applyRemoveCommand(node, streamName));
+        clusterNode.onPresent(node -> inLane(streamName, () -> applyRemoveCommand(node, streamName)));
+    }
+
+    /// #2627: per-name commit lane. Every `StreamConfigKey` submission for one name (create `Put`, publish-path
+    /// auto-create `Put`, destroy `Remove`) starts only after the previous submission for that name has SETTLED
+    /// (committed, or failed/timed out), so the order the callers issued is the order the engine receives. Rabia
+    /// commits pending batches in content-hash order, so two batches in flight at once commit in an order unrelated
+    /// to submission; the lane never has two of one name in flight. A settle is a promise resolution: a submission
+    /// the engine still holds after its apply timeout is not covered (that is the engine-side withdrawal, #2629).
+    private <T> Promise<T> inLane(String streamName, Supplier<Promise<T>> submit) {
+        var settled = Promise.<Unit> promise();
+
+        return option(commitLanes.put(streamName, settled)).map(prior -> prior.flatMap(_ -> submit.get()))
+                     .or(submit)
+                     .onResultRun(() -> settleLane(streamName, settled));
+    }
+
+    /// Names with a config submission still in flight; zero when every lane has settled (test seam, #2627).
+    int commitLaneCount() {
+        return commitLanes.size();
+    }
+
+    private void settleLane(String streamName, Promise<Unit> settled) {
+        commitLanes.remove(streamName, settled);
+        settled.succeed(unit());
     }
 
     /// Publish the stream config to cluster KV, latching `entry` committed when the commit succeeds.
@@ -1560,25 +1590,57 @@ public final class StreamPartitionManager implements AutoCloseable {
     private Result<Unit> applyPutCommand(ClusterNode<KVCommand<AetherKey>> node,
                                          StreamConfig config,
                                          StreamEntry entry) {
-        return node.apply(putCommand(config))
-                   .await(COMMIT_TIMEOUT)
-                   .mapToUnit()
-                   .onFailure(cause -> log.debug("Failed to publish stream config for {}: {}",
-                                                 config.name(),
-                                                 cause.message()))
-                   .mapError(_ -> StreamError.General.STREAM_CONFIG_COMMIT_FAILED)
-                   .flatMap(_ -> proposalOutcome(config, entry));
+        return inLane(config.name(),
+                      () -> node.<Object> apply(putCommand(config))).await(COMMIT_TIMEOUT)
+                     .onFailure(cause -> log.debug("Failed to publish stream config for {}: {}",
+                                                   config.name(),
+                                                   cause.message()))
+                     .mapError(_ -> StreamError.General.STREAM_CONFIG_COMMIT_FAILED)
+                     .flatMap(results -> proposalOutcome(config, entry, results));
     }
 
-    /// #1278 (ruling B): the consensus round resolving does not mean THIS proposal's life committed — the KV applier
-    /// refuses a second life over a committed one ([org.pragmatica.cluster.state.kvstore.IncarnationFenced]) without
-    /// a notification. The entry is latched committed only when its committed config applies here
+    /// #1278 (ruling B) and #2627: the consensus round resolving does not mean THIS proposal's life committed — the KV
+    /// applier refuses a second life over a committed one ([org.pragmatica.cluster.state.kvstore.IncarnationFenced])
+    /// without a notification. The applier DOES answer: a `Put` returns the value it replaced, and a refused one
+    /// returns the committed value that refused it. A different non-zero committed life in that answer is a refusal and
+    /// is reported as a duplicate create, never as success — and it does not depend on the notification having
+    /// reached this node. Otherwise the entry is latched committed only when its committed config applies here
     /// ([#commitOwnLife]); a different applied life means another create won, which is a duplicate create.
-    private Result<Unit> proposalOutcome(StreamConfig config, StreamEntry entry) {
+    private Result<Unit> proposalOutcome(StreamConfig config, StreamEntry entry, List<Object> results) {
+        return refusedByFence(config, results)
+               ? StreamError.General.STREAM_ALREADY_EXISTS.result()
+               : appliedLifeOutcome(config, entry);
+    }
+
+    private Result<Unit> appliedLifeOutcome(StreamConfig config, StreamEntry entry) {
         return option(entries.appliedConfigs().get(config.name())).filter(applied -> applied.incarnation() != entry.config()
                                                                                                                    .incarnation())
                      .fold(() -> success(unit()),
                            _ -> StreamError.General.STREAM_ALREADY_EXISTS.result());
+    }
+
+    /// Mirrors the applier's fence: a committed life of non-zero incarnation different from the proposed one refuses.
+    static boolean refusedByFence(StreamConfig proposed, List<Object> results) {
+        return displacedLife(results).filter(committed -> committed.incarnation() != 0 && committed.incarnation() != proposed.incarnation())
+                            .isPresent();
+    }
+
+    private static Option<StreamConfig> displacedLife(List<Object> results) {
+        return results.isEmpty()
+               ? none()
+               : replacedConfig(results.getFirst());
+    }
+
+    private static Option<StreamConfig> replacedConfig(Object result) {
+        return result instanceof Option<?> replaced
+               ? replaced.flatMap(StreamPartitionManager::configOf)
+               : none();
+    }
+
+    private static Option<StreamConfig> configOf(Object value) {
+        return value instanceof StreamConfigValue stored
+               ? some(stored.config())
+               : none();
     }
 
     /// Async sibling of {@link #applyPutCommand}: fire the idempotent config `Put` (the publish-path decoupling — Fix
@@ -1601,13 +1663,16 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Publish-path commit (#1278 ruling F): fire the config `Put` and wait at most [#PUBLISH_COMMIT_WAIT] for it to
     /// commit and apply here, so the first publish to a new stream normally lands in its committed life. The outcome
     /// is not read: the accept gate ([#committedLife]) decides from the applied life, and a commit slower than the
-    /// wait — a still-catching-up leader — leaves the publish refused retriably instead of stalling it.
+    /// wait — a still-catching-up leader — leaves the publish refused retriably instead of stalling it. The `Put` is
+    /// submitted through the name's commit lane ([#inLane], #2627): a wait that elapses leaves the `Put` in flight, and a
+    /// destroy of the name is then queued behind it instead of racing it.
     private Result<Unit> fireAsyncCommit(ClusterNode<KVCommand<AetherKey>> node,
                                          StreamConfig config,
                                          StreamEntry entry) {
-        return applyPutCommandAsync(node, config).await(PUBLISH_COMMIT_WAIT)
-                                   .fold(_ -> success(unit()),
-                                         _ -> success(unit()));
+        return inLane(config.name(),
+                      () -> applyPutCommandAsync(node, config)).await(PUBLISH_COMMIT_WAIT)
+                     .fold(_ -> success(unit()),
+                           _ -> success(unit()));
     }
 
     /// Commit strategy threaded through the shared create/materialize chain so `createStream` (explicit
@@ -1667,14 +1732,15 @@ public final class StreamPartitionManager implements AutoCloseable {
         abstract Result<Unit> republished();
     }
 
-    private void applyRemoveCommand(ClusterNode<KVCommand<AetherKey>> node, String streamName) {
+    private Promise<Unit> applyRemoveCommand(ClusterNode<KVCommand<AetherKey>> node, String streamName) {
         var key = StreamConfigKey.streamConfigKey(streamName);
         var remove = new KVCommand.Remove<AetherKey>(key);
 
-        node.apply(List.of(remove))
-            .onFailure(cause -> log.warn("Failed to publish stream config removal for {}: {}",
-                                         streamName,
-                                         cause.message()));
+        return node.apply(List.of(remove))
+                   .onFailure(cause -> log.warn("Failed to publish stream config removal for {}: {}",
+                                                streamName,
+                                                cause.message()))
+                   .mapToUnit();
     }
 
     @Contract

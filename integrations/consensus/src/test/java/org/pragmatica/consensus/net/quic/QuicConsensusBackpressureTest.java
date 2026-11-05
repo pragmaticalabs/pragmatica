@@ -267,7 +267,7 @@ class QuicConsensusBackpressureTest {
         }
 
         /// #2574 lane pin: the FORWARD lane -- the stream forward reads' lane (`StreamForwardMessage.streamType()`), on which
-        /// `sendOutcome` dispatches exactly as the plain `send` does -- refuses at its watermark with BackpressureRefused, even
+        /// `send` dispatches -- refuses at its watermark with BackpressureRefused, even
         /// to a live peer, and writes nothing. That outcome is what lets a refused catch-up read fail at once instead of
         /// waiting out its timeout; a FORWARD lane that retried and reported Sent (as CONSENSUS does) would hide it again.
         @Test

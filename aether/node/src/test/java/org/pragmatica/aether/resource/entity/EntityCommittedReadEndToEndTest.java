@@ -29,6 +29,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.aether.node.AcceptingTransports;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.node.StreamEntityLogSubstrate.streamEntityLogSubstrate;
@@ -74,7 +75,7 @@ class EntityCommittedReadEndToEndTest {
         replicaManager.placementRoleSupplier((_, _) -> org.pragmatica.aether.stream.replication.ReplicaSetController.Role.REPLICA);
         ownerReplicationRef = new ReplicationManager[1];
         var ownerReplication = ownerReplicationRef;
-        ReplicationTransport ackTransport = (target, message) -> {
+        ReplicationTransport ackTransport = AcceptingTransports.acceptingReplication((target, message) -> {
             if (message instanceof ReplicationMessage.ReplicateAck ack) {
                 if (acksReachOwner.get()) {
                     ownerReplication[0].handleAck(ack);
@@ -82,7 +83,7 @@ class EntityCommittedReadEndToEndTest {
                     heldAcks.add(ack);
                 }
             }
-        };
+        });
         var receive = ReplicationReceiveHandler.replicationReceiveHandler(REPLICA,
                                                                           replicaManager::appendRecovered,
                                                                           replicaManager::nextExpectedOffset,
@@ -91,13 +92,13 @@ class EntityCommittedReadEndToEndTest {
                                                                           replicaManager::syncReplicated);
 
         receive.commitSink(replicaManager::commitAdvanced);
-        ReplicationTransport toReplica = (target, message) -> {
+        ReplicationTransport toReplica = AcceptingTransports.acceptingReplication((target, message) -> {
             switch (message) {
                 case ReplicationMessage.ReplicateEvents events -> receive.onReplicateEvents(events);
                 case ReplicationMessage.CommitAdvance advance when announcementsReachReplica.get() -> receive.onCommitAdvance(advance);
                 default -> {}
             }
-        };
+        });
 
         ownerReplication[0] = replicationManager(OWNER, registry, toReplica);
         ownerManager = StreamPartitionManager.streamPartitionManager(64L * 1024 * 1024, EvictionListener.NOOP, ownerReplication[0]);

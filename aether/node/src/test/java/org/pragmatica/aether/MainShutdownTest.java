@@ -106,6 +106,47 @@ class MainShutdownTest {
         }
     }
 
+    /// Exit (s), KVStore dispatcher design §3.2 step 3: the production dispatcher failure sink flushes the log before
+    /// it halts, with its own exit code. Mutation: drop the flush (the halt seam's own assertion goes red).
+    @Nested
+    class KvDispatcherSink {
+
+        @Test
+        void kvDispatcherSink_flushesLogsThenHalts_withTheDispatcherExitCode() {
+            var flushed = new AtomicBoolean(false);
+            var haltedWith = new AtomicInteger(-1);
+            IntConsumer haltFn = code -> {
+                assertTrue(flushed.get(), "halt must fire strictly after the flush completes");
+                haltedWith.set(code);
+            };
+
+            Main.kvDispatcherSink(() -> flushed.set(true), haltFn)
+                .stopNode("kv-dispatcher-failed", new StackOverflowError("handler"));
+
+            assertTrue(flushed.get(), "log flush must run BEFORE halt -- halt() runs no appender flush of its own");
+            assertEquals(AetherNode.EXIT_KV_DISPATCHER_FAILED, haltedWith.get(),
+                         "a dispatcher failure halts with its own exit code");
+        }
+
+        @Test
+        void kvDispatcherSink_haltsEvenWhenTheFlushThrows() {
+            var haltedWith = new AtomicInteger(-1);
+
+            try {
+                Main.kvDispatcherSink(() -> {
+                                          throw new IllegalStateException("appender");
+                                      },
+                                      haltedWith::set)
+                    .stopNode("kv-dispatcher-failed", new StackOverflowError("handler"));
+            } catch (IllegalStateException expected) {
+                // the flush failure propagates after the halt seam ran in the finally
+            }
+
+            assertEquals(AetherNode.EXIT_KV_DISPATCHER_FAILED, haltedWith.get(),
+                         "the halt is in a finally, so a throwing flush cannot keep the process alive");
+        }
+    }
+
     @Nested
     class ThreadDumpGate {
 

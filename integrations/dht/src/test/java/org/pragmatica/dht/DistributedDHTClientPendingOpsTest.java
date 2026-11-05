@@ -40,15 +40,14 @@ class DistributedDHTClientPendingOpsTest {
             ring.addNode(new NodeId("replica-" + i));
         }
         DHTNetwork network = new DHTNetwork() {
-            @Override
-            public void send(NodeId nodeId, ProtocolMessage message) {
+            private void capture(NodeId nodeId, ProtocolMessage message) {
                 sentTo.add(nodeId);
                 sent.add(message);
             }
 
             @Override
-            public Promise<WriteOutcome> sendOutcome(NodeId target, ProtocolMessage message) {
-                send(target, message);
+            public Promise<WriteOutcome> send(NodeId target, ProtocolMessage message) {
+                capture(target, message);
                 return Promise.success(new WriteOutcome.Sent(target));
             }
         };
@@ -186,15 +185,14 @@ class DistributedDHTClientPendingOpsTest {
         var node = dhtNode(LOCAL, memoryStorageEngine(), ring, config);
 
         return distributedDHTClient(node, new DHTNetwork() {
-            @Override
-            public void send(NodeId nodeId, ProtocolMessage message) {
+            private void capture(NodeId nodeId, ProtocolMessage message) {
                 sentTo.add(nodeId);
                 sent.add(message);
             }
 
             @Override
-            public Promise<WriteOutcome> sendOutcome(NodeId target, ProtocolMessage message) {
-                send(target, message);
+            public Promise<WriteOutcome> send(NodeId target, ProtocolMessage message) {
+                capture(target, message);
                 return Promise.success(new WriteOutcome.Sent(target));
             }
         }, config);

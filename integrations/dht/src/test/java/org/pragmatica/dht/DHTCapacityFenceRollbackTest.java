@@ -223,7 +223,7 @@ class DHTCapacityFenceRollbackTest {
                          ? memoryStorageEngine(OwnerEpochGate.noOp(), accounting)
                          : memoryStorageEngine(gate, accounting);
             var node = dhtNode(id, engine, ring, CONFIG);
-            DHTNetwork network = this::deliver;
+            DHTNetwork network = AcceptingNetwork.accepting(this::deliver);
 
             return new Member(id, node, distributedDHTClient(node, network, CONFIG, new StaleOwnerEpoch()));
         }

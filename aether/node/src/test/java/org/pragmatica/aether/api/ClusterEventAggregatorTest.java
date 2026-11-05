@@ -5,6 +5,7 @@
 package org.pragmatica.aether.api;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.controller.RollbackEvent;
@@ -51,6 +52,7 @@ import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import java.time.Instant;
+import java.util.concurrent.TimeUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
@@ -66,6 +68,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// generated `ApiCodecsNode.CODECS`, B5a), and wired via {@link SystemStreamFactories}. This drives
 /// the full create -> publish -> codec -> store -> fetch path, plus the owner-gated emit (folds B3)
 /// and the production count/byte/age retention.
+@Timeout(value = 60, unit = TimeUnit.SECONDS)
 class ClusterEventAggregatorTest {
 
     private static final NodeId SELF = new NodeId("self-node");
@@ -661,6 +664,48 @@ class ClusterEventAggregatorTest {
         var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, NOT_LEADER);
         h.aggregator().onLeaderChange(LeaderNotification.leaderChange(Option.some(new NodeId("other")), false));
         assertThat(h.events()).isEmpty();
+    }
+
+    /// R5.8 (D1-react G2b): the LEADER_ELECTED verdict is the notification's `localNodeIsLeader`, not a re-read of the
+    /// leader check. The check is stale (says not leader); the fresh payload says this node leads: the event is emitted.
+    /// Reverting `emitAsLeader(event, localNodeIsLeader)` to the `leaderCheck` form turns this red.
+    @Test
+    void onLeaderChange_emitsLeaderElected_whenPayloadSaysLocalLeaderButCheckIsStale() {
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, NOT_LEADER);
+        h.aggregator().onLeaderChange(LeaderNotification.leaderChange(Option.some(SELF), true));
+
+        assertThat(h.events()).hasSize(1);
+        assertThat(h.events().getFirst()).isInstanceOf(ClusterEvent.LeaderElected.class);
+    }
+
+    /// The mirror: the check is stale the other way (still says leader) while the payload says another node leads.
+    @Test
+    void onLeaderChange_suppressesLeaderElected_whenPayloadSaysNotLeaderButCheckIsStale() {
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, LEADER);
+        h.aggregator().onLeaderChange(LeaderNotification.leaderChange(Option.some(new NodeId("other")), false));
+
+        assertThat(h.events()).isEmpty();
+    }
+
+    /// R3 (v-2653 F3): a LeaderChange raised inside a replay burst reaches this receiver on the react executor, where
+    /// `replayingCheck` reads false; the change's own `replayed` bit suppresses the historical LEADER_ELECTED. The live
+    /// control is [#onLeaderChange_emitsLeaderElected_whenPayloadSaysLocalLeaderButCheckIsStale].
+    @Test
+    void onLeaderChange_replayedSelfElection_announcesNothing() {
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, LEADER);
+        h.aggregator().onLeaderChange(LeaderNotification.leaderChange(Option.some(SELF), true, true));
+
+        assertThat(h.events()).as("a replayed election is history: no LEADER_ELECTED").isEmpty();
+    }
+
+    /// R3 (v-2653 F3): the same for LEADER_LOST, which is not leader-gated, so only the replay bit can suppress it. The
+    /// live control is [#noLeader_stillEmitsLeaderLost].
+    @Test
+    void onLeaderChange_replayedLeaderLoss_announcesNothing() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().onLeaderChange(LeaderNotification.leaderChange(Option.none(), false, true));
+
+        assertThat(h.events()).as("a replayed leader loss is history: no LEADER_LOST").isEmpty();
     }
 
     /// #926 — `QUORUM_LOST` is the most severe event this class emits and was the least emittable: a
@@ -2575,6 +2620,28 @@ class ClusterEventAggregatorTest {
         assertThat(codes(h)).containsExactly("topic-tier-mismatch", "topic-tier-mismatch-resolved");
     }
 
+    /// FDB-2a (#2591): each schema-migration fence warning is followed by its recovery once, on the same datasource only; a recovery for a
+    /// datasource that never raised the warning, or a second one, publishes nothing.
+    @Test
+    void onOperatorWarning_schemaMigrationFenceWarnings_areFollowedByTheirRecoveriesOnce_forTheSameDatasourceOnly() {
+        var t = new AtomicLong(1_000_000L);
+        var h = clocked(t);
+
+        for (var pair : List.of(List.of(OperatorWarningCode.SCHEMA_MIGRATION_FENCE_HELD, OperatorWarningCode.SCHEMA_MIGRATION_FENCE_RELEASED),
+                                List.of(OperatorWarningCode.SCHEMA_MIGRATION_UNFENCED, OperatorWarningCode.SCHEMA_MIGRATION_FENCED))) {
+            h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(pair.get(1), "database.billing", "stray"));
+            h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(pair.get(0), "database.orders", "raised"));
+            h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(pair.get(1), "database.billing", "other datasource"));
+            h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(pair.get(1), "database.orders", "closed"));
+            h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(pair.get(1), "database.orders", "closed twice"));
+        }
+
+        assertThat(codes(h)).containsExactly("schema-migration-fence-held",
+                                             "schema-migration-fence-released",
+                                             "schema-migration-unfenced",
+                                             "schema-migration-fenced");
+    }
+
     /// PA4: the recovery arrives after the warning's throttle window was evicted as idle: still published.
     @Test
     void onOperatorWarning_repairAfterTheThrottleKeyWasEvicted_isPublished() {
@@ -2629,7 +2696,7 @@ class ClusterEventAggregatorTest {
 
     /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the three consumer pairs of #2201
     /// C-16 (behind the ring, the hole, and the cursor expiry), the oversized-event refusal and the
-    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450); every other code keeps the plain 60 s throttle.
+    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the refused consensus restore of #2316); every other code keeps the plain 60 s throttle.
     @Test
     void onOperatorWarning_onlyTheDeclaredPairsArePaired_otherCodesUnchanged() {
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).toList())
@@ -2667,6 +2734,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.CLUSTER_TLS_RENEWAL_RESTORED,
                 OperatorWarningCode.IDENTITY_LEDGER_DURABLE,
                 OperatorWarningCode.BACKUP_CONFIG_RESTORED,
+                OperatorWarningCode.GENESIS_SEAT_REACHABLE,
                 OperatorWarningCode.BACKUP_RESTORE_UNBLOCKED,
                 OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED,
                 OperatorWarningCode.INSTANCE_TERMINATION_REJOINED,
@@ -2696,6 +2764,12 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.UPLOAD_BYTE_BUDGET_RESTORED,
                 OperatorWarningCode.JSON_CONFIG_APPLIED,
                 OperatorWarningCode.CONFIG_WATCH_CALLBACK_RECOVERED,
+                OperatorWarningCode.ROLLBACK_RECORD_RECONCILED,
+                OperatorWarningCode.CONSENSUS_RESTORE_RECOVERED,
+                OperatorWarningCode.SCHEMA_MIGRATION_FENCE_RELEASED,
+                OperatorWarningCode.SCHEMA_MIGRATION_FENCED,
+                OperatorWarningCode.KV_DISPATCH_CAUGHT_UP,
+                OperatorWarningCode.KV_DISPATCH_SLOW_HANDLER_RETURNED,
             });
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactlyInAnyOrder(new OperatorWarningCode[]{
@@ -2735,6 +2809,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE,
                 OperatorWarningCode.BACKUP_CONFIG_MISSING,
                 OperatorWarningCode.BACKUP_RESTORE_BLOCKED,
+                OperatorWarningCode.GENESIS_SEAT_UNREACHABLE,
                 OperatorWarningCode.SLICE_START_AWAITING_TARGET,
                 OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING,
                 OperatorWarningCode.COMMUNITY_GROWTH_BLOCKED,
@@ -2755,6 +2830,12 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.UPLOAD_NODE_CAP_SATURATED,
                 OperatorWarningCode.UPLOAD_BYTE_BUDGET_EXHAUSTED,
                 OperatorWarningCode.CONFIG_WATCH_CALLBACK_FAILED,
+                OperatorWarningCode.ROLLBACK_RECORD_RECONCILE_EXHAUSTED,
+                OperatorWarningCode.CONSENSUS_RESTORE_REFUSED,
+                OperatorWarningCode.SCHEMA_MIGRATION_FENCE_HELD,
+                OperatorWarningCode.SCHEMA_MIGRATION_UNFENCED,
+                OperatorWarningCode.KV_DISPATCH_LAGGING,
+                OperatorWarningCode.KV_DISPATCH_SLOW_HANDLER,
             });
         var recoveries = java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).count();
         var t = new AtomicLong(1_000_000L);

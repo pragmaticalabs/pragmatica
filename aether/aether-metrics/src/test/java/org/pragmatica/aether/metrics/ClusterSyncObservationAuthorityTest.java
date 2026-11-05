@@ -17,6 +17,9 @@ import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.lang.Unit;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.consensus.net.WriteOutcome;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -300,10 +303,10 @@ class ClusterSyncObservationAuthorityTest {
         final List<ProtocolMessage> messages = new ArrayList<>();
 
         @Override
-        public <M extends ProtocolMessage> Unit send(NodeId peer, M message) {
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId peer, M message) {
             messages.add(message);
 
-            return Unit.unit();
+            return Promise.success(new WriteOutcome.Sent(peer));
         }
     }
 }

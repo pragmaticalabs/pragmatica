@@ -29,6 +29,7 @@ import java.util.Map;
 import java.util.Set;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.consensus.net.WriteOutcome;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
@@ -217,9 +218,10 @@ class HttpForwarderDeadlineTest {
 
         int plainSends() {return plainSends.get();}
 
-        @Override public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+        @Override public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
             lifetimes.add(offlineTtl);
-            return recordSend(message);
+            recordSend(message);
+            return Promise.success(new WriteOutcome.Sent(nodeId));
         }
 
         @Override public <M extends ProtocolMessage> Unit broadcast(M message) {return unit();}
@@ -230,9 +232,10 @@ class HttpForwarderDeadlineTest {
         @Override public void handleSend(NetworkServiceMessage.Send send) {}
         @Override public void handleBroadcast(NetworkServiceMessage.Broadcast broadcast) {}
 
-        @Override public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+        @Override public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
             plainSends.incrementAndGet();
-            return recordSend(message);
+            recordSend(message);
+            return Promise.success(new WriteOutcome.Sent(nodeId));
         }
 
         private synchronized Unit recordSend(ProtocolMessage message) {

@@ -20,28 +20,44 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 
-/// #2574 wiring: the node's stream forward transport reports the network's tracked-write outcome, with the caller's wait as
-/// the offline TTL. Without it the transport reports `Sent` for every frame, the forward client never sees a FORWARD-lane
-/// refusal, and a refused read waits out its timeout again (the #2574 mechanism). Red when `sendOutcome` is not overridden
-/// or does not pass the wait.
+/// #2574 / #2583 P1 wiring: the node's stream forward transport returns the network's tracked-write outcome, with the
+/// caller's wait as the offline TTL (3-arg form) or the plain dispatch (2-arg form). Without it the transport reports `Sent`
+/// for every frame, the forward client never sees a FORWARD-lane refusal, and a refused read waits out its timeout again
+/// (the #2574 mechanism). Red when `send` returns a constant or does not pass the wait.
 @Timeout(value = 30, unit = TimeUnit.SECONDS)
 class StreamAssemblyForwardTransportTest {
     private static final NodeId TARGET = new NodeId("target");
     private static final TimeSpan WAIT = TimeSpan.timeSpan(1500).millis();
 
     @Test
-    void sendOutcome_reportsTheNetworksTrackedWriteOutcome_withTheCallersWait() {
+    void send_withCallerWait_returnsTheNetworksOutcome_andPassesTheWait() {
         var network = Mockito.mock(ClusterNetwork.class);
         var message = StreamForwardMessage.ReadForward.readForward(TARGET, "c-1", "s", 0, 0L, 1, false, true);
 
-        Mockito.when(network.sendOutcome(eq(TARGET), any(StreamForwardMessage.class), eq(WAIT)))
+        Mockito.when(network.send(eq(TARGET), any(StreamForwardMessage.class), eq(WAIT)))
                .thenReturn(Promise.success(new WriteOutcome.BackpressureRefused(TARGET)));
 
         var outcome = StreamAssembly.createStreamForwardTransport(network)
-                                    .sendOutcome(TARGET, message, WAIT)
+                                    .send(TARGET, message, WAIT)
                                     .await(TimeSpan.timeSpan(5).seconds());
 
         assertThat(outcome.unwrap()).isEqualTo(new WriteOutcome.BackpressureRefused(TARGET));
-        Mockito.verify(network).sendOutcome(TARGET, message, WAIT);
+        Mockito.verify(network).send(TARGET, message, WAIT);
+    }
+
+    @Test
+    void send_withoutCallerWait_returnsTheNetworksOutcome() {
+        var network = Mockito.mock(ClusterNetwork.class);
+        var message = StreamForwardMessage.ReadForward.readForward(TARGET, "c-1", "s", 0, 0L, 1, false, true);
+
+        Mockito.when(network.send(eq(TARGET), any(StreamForwardMessage.class)))
+               .thenReturn(Promise.success(new WriteOutcome.ConnectionDead(TARGET)));
+
+        var outcome = StreamAssembly.createStreamForwardTransport(network)
+                                    .send(TARGET, message)
+                                    .await(TimeSpan.timeSpan(5).seconds());
+
+        assertThat(outcome.unwrap()).isEqualTo(new WriteOutcome.ConnectionDead(TARGET));
+        Mockito.verify(network).send(TARGET, message);
     }
 }

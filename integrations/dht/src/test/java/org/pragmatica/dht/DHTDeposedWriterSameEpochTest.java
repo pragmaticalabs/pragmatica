@@ -146,7 +146,7 @@ class DHTDeposedWriterSameEpochTest {
                 ALL.forEach(ring::addNode);
                 var gate = new Gate(id.equals(N) ? NEW_EPOCH : OLD_EPOCH);
                 var node = dhtNode(id, memoryStorageEngine(gate), ring, CONFIG);
-                DHTNetwork network = this::deliver;
+                DHTNetwork network = AcceptingNetwork.accepting(this::deliver);
 
                 gates.put(id, gate);
                 nodes.put(id, node);

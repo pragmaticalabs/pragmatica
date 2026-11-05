@@ -31,6 +31,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.consensus.net.WriteOutcome;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.dht.ConsistentHashRing.consistentHashRing;
@@ -452,8 +454,10 @@ class DHTRebalancerTest {
         final CopyOnWriteArrayList<CapturedMessage> captured = new CopyOnWriteArrayList<>();
 
         @Override
-        public void send(NodeId nodeId, ProtocolMessage message) {
+        public Promise<WriteOutcome> send(NodeId nodeId, ProtocolMessage message) {
             captured.add(new CapturedMessage(nodeId, message));
+
+            return Promise.success(new WriteOutcome.Sent(nodeId));
         }
     }
 
@@ -469,11 +473,13 @@ class DHTRebalancerTest {
         }
 
         @Override
-        public void send(NodeId target, ProtocolMessage message) {
+        public Promise<WriteOutcome> send(NodeId target, ProtocolMessage message) {
             captured.add(new CapturedMessage(target, message));
             if (message instanceof DHTMessage.MigrationDataResponse response && response.ackRequested()) {
                 ackSink.get().accept(new DHTMessage.MigrationDataAck(response.requestId(), target, true));
             }
+
+            return Promise.success(new WriteOutcome.Sent(target));
         }
 
         List<DHTMessage.MigrationDataResponse> migrationResponses() {

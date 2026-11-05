@@ -79,7 +79,7 @@ public class LogLevelRegistry {
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
 
         return clusterNode.<Unit> apply(List.of(command))
-                          .map(_ -> applyAndStore(loggerName, level))
+                          .map(_ -> reportLevelSet(loggerName, level))
                           .onFailure(cause -> log.error("Failed to persist log level for {}: {}",
                                                         loggerName,
                                                         cause.message()));
@@ -91,7 +91,7 @@ public class LogLevelRegistry {
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(key);
 
         return clusterNode.<Unit> apply(List.of(command))
-                          .map(_ -> removeAndReset(loggerName))
+                          .map(_ -> reportLevelReset(loggerName))
                           .onFailure(cause -> log.error("Failed to persist log level removal for {}: {}",
                                                         loggerName,
                                                         cause.message()));
@@ -124,17 +124,16 @@ public class LogLevelRegistry {
         log.debug("Log level reset from cluster: {}", logLevelKey.loggerName());
     }
 
-    private Unit applyAndStore(String loggerName, String level) {
-        registry.put(loggerName, level);
-        applyLevel(loggerName, level);
+    // The registry and the logger configuration are written only by the commit's own onLogLevelPut/onLogLevelRemove.
+    // These continuations used to write them a second time, after the fact, which could resurrect a level a later
+    // commit had already replaced (#2616; the DynamicConfigManager F4/W-9 hazard).
+    private Unit reportLevelSet(String loggerName, String level) {
         log.info("Log level set for {}: {}", loggerName, level);
 
         return Unit.unit();
     }
 
-    private Unit removeAndReset(String loggerName) {
-        registry.remove(loggerName);
-        resetLogLevel(loggerName);
+    private Unit reportLevelReset(String loggerName) {
         log.info("Log level reset for {}", loggerName);
 
         return Unit.unit();

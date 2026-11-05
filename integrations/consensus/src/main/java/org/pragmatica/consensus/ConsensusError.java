@@ -52,6 +52,17 @@ public sealed interface ConsensusError extends Cause {
         }
     }
 
+    /// #2045: a peer reported the request committed in a slot this node skipped through a snapshot restore, so its
+    /// result was never computed here. It has applied once; callers must reconcile its outcome before retrying.
+    record CommittedOutcomeUnknown(NodeId nodeId, String batchId) implements ConsensusError {
+        @Override
+        public String message() {
+            return "Node " + nodeId.id()
+                 + " learned that batch " + batchId
+                 + " was committed in a slot it did not apply; request outcome is unknown, reconcile before retrying";
+        }
+    }
+
     record SnapshotFailed(String reason) implements ConsensusError {
         @Override
         public String message() {
