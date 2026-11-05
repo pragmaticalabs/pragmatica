@@ -80,13 +80,17 @@ class RabiaEngineCleanupArmingTest {
 
     /// Drives the engine to Active by waiting on the real state signals, never on elapsed time (#2122):
     /// `isPendingCatchUp` is true exactly while the engine is `Syncing`, which is when it accepts sync
-    /// responses; `isActive` is the activation itself.
+    /// responses; `isActive` is the activation itself. The state flips to active INSIDE the activation task
+    /// and the sweep is armed a few statements later in the same task, so `isActive` alone is not enough: the
+    /// settle then queues behind that task on the single apply executor, which returns only once it has run
+    /// to its end (observed: `isActive()` true with the sweep not yet armed, 1 run in 25 under load).
     private void activateEngine() throws InterruptedException {
         engine.clusterState(ClusterStateNotification.active());
         awaitCondition(engine::isPendingCatchUp, "engine entered Syncing");
         engine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
         engine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
         awaitCondition(engine::isActive, "engine activated");
+        engine.settleForTesting().await();
     }
 
     private static void awaitCondition(BooleanSupplier condition, String what) throws InterruptedException {
