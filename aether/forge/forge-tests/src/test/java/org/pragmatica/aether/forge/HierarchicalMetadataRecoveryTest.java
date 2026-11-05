@@ -49,7 +49,7 @@ class HierarchicalMetadataRecoveryTest {
         });
     }
 
-    @Test void twoCommunitiesRepairTheirScopedMetadataAfterSimultaneousResponseBlackout() {
+    @Test void twoCommunitiesRepairTheirFullReplicaMetadataAfterSimultaneousResponseBlackout() {
         var workers = new ArrayList<NodeId>();
         for (var source : java.util.List.of("east", "west")) {
             for (int index = 0; index < 2; index++) {
@@ -83,9 +83,12 @@ class HierarchicalMetadataRecoveryTest {
             assertThat(node.kvStore().getTyped(new AetherKey.ActivationDirectiveKey(node.self()),
                 AetherValue.ActivationDirectiveValue.class).map(AetherValue.ActivationDirectiveValue::communityId).unwrap())
                 .isEqualTo(assignments.get(node.self()));
+            // Since W4 (#2494, 7301880a2b) workers are Rabia observers holding the full KV replica (owner ruling QJ-7, know 844600a608 + e79b0ea8e4);
+            // the scoped metadata projection is gone, so the OTHER community's directive must be present too (ReplicaFilter INCLUDEs ActivationDirectiveKey).
             workers.stream().filter(worker -> !assignments.get(worker).equals(assignments.get(node.self())))
                 .forEach(foreign -> assertThat(node.kvStore().getTyped(new AetherKey.ActivationDirectiveKey(foreign),
-                    AetherValue.ActivationDirectiveValue.class).isEmpty()).as("foreign assignment absent on %s", node.self()).isTrue());
+                    AetherValue.ActivationDirectiveValue.class).map(AetherValue.ActivationDirectiveValue::communityId).unwrap())
+                    .as("foreign assignment present in full replica on %s", node.self()).isEqualTo(assignments.get(foreign)));
         });
         assertThat(leader().membershipFsm().coreCountedMembers()).hasSize(5).doesNotContainAnyElementsOf(workers);
     }
