@@ -586,7 +586,7 @@ Response:
 ### Health Check
 
 ```bash
-curl http://localhost:5150/health
+curl http://localhost:5150/api/v1/health
 ```
 
 ### Test Slice Endpoint

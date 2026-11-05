@@ -215,6 +215,7 @@ class DHTMigrationEpochFenceTest {
               .await();
 
         assertThat(reported.get()).as("the chunk the newcomer failed to store is reported at risk").isEqualTo(1);
+        assertThat(cluster.departurePushesSent()).as("a nacked page is resent (#2034)").isGreaterThanOrEqualTo(2);
     }
 
     /// Receiver side of the honest ack: the ack names whether the batch was stored. The healthy receiver
@@ -427,6 +428,14 @@ class DHTMigrationEpochFenceTest {
         private void deliver(NodeId target, ProtocolMessage message) {
             delivered.add(message);
             Option.option(members.get(target)).onPresent(member -> route(member, message));
+        }
+
+        long departurePushesSent() {
+            return delivered.stream()
+                            .filter(DHTMessage.MigrationDataResponse.class::isInstance)
+                            .map(DHTMessage.MigrationDataResponse.class::cast)
+                            .filter(DHTMessage.MigrationDataResponse::ackRequested)
+                            .count();
         }
 
         boolean ackFor(String requestId) {

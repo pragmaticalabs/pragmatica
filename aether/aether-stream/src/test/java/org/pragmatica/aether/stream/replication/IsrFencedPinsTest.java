@@ -42,8 +42,8 @@ class IsrFencedPinsTest {
     @Test
     void asymmetricMemberOutsideTheIsr_expandThenFence_thenSettled() {
         List.of(OWNER, B, X).forEach(node -> registry.registerReplica(STREAM, 0, node));
-        registry.updateWatermark(STREAM, 0, B, 10L);
-        registry.updateWatermark(STREAM, 0, X, 10L);
+        confirm(B);
+        confirm(X);
         var record = new AtomicReference<>(value(List.of(OWNER, B), List.of(), 1L));
 
         var commits = rounds(record, 6);
@@ -61,8 +61,8 @@ class IsrFencedPinsTest {
     @Test
     void pendingAddition_thenLeaderFencesAnotherMember_pendingStopsCounting_andIsNeverFenced() {
         List.of(OWNER, B, X).forEach(node -> registry.registerReplica(STREAM, 0, node));
-        registry.updateWatermark(STREAM, 0, B, 10L);
-        registry.updateWatermark(STREAM, 0, X, 10L);
+        confirm(B);
+        confirm(X);
         var base = value(List.of(OWNER, B), List.of(), 1L);
         var proposed = monitor.nextIsr(new IsrMonitor.Owned(STREAM, 0, base, 10L), 0L).unwrap();
 
@@ -96,6 +96,11 @@ class IsrFencedPinsTest {
         assertThat(resolved.fenced()).containsExactlyInAnyOrder(X, B);
     }
 
+
+    /// A row confirmed through 10 under the records' owner epoch, as the owner's live ack path writes it (#2694).
+    private void confirm(NodeId replica) {
+        registry.updateWatermark(STREAM, 0, replica, 10L, ReplicationState.CAUGHT_UP, GENERATION.withCounter(1L));
+    }
 
     private int rounds(AtomicReference<StreamPartitionOwnershipValue> record, int count) {
         var commits = 0;

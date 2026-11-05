@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.config.BackupConfig.RestoreMode;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
@@ -23,6 +24,7 @@ import org.pragmatica.aether.node.backup.BackupWarning.Code;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.BackupRestoreKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterIncarnationKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentEngineKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreOutcome;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreValue;
@@ -88,8 +90,8 @@ import static org.pragmatica.lang.Result.success;
 /// equal are skipped (a version-fenced equal write would refuse the whole transaction). The incarnation is
 /// excluded from the chunks. The finish writes [ClusterIncarnation#restoring] — fed the DECODED backup value and
 /// the highest incarnation the backup history records for its lineage — through
-/// [ClusterIncarnation#replaceCommands], together with the `RESTORED` marker replacing the `IN_PROGRESS` one, so it
-/// applies at most once.
+/// [ClusterIncarnation#replaceCommands], together with the deployment engine marker as the backup has it (phase-3
+/// design 8.2, W-34) and the `RESTORED` marker replacing the `IN_PROGRESS` one, so it applies at most once.
 public final class BackupRestoreCoordinator {
     private static final Logger LOG = LoggerFactory.getLogger(BackupRestoreCoordinator.class);
     static final TimeSpan INITIAL_BACKOFF = TimeSpan.timeSpan(500L).millis();
@@ -572,17 +574,17 @@ public final class BackupRestoreCoordinator {
                                                                           .toList())));
     }
 
-    /// The restored incarnation ([ClusterIncarnation#restoring]) and the `RESTORED` marker, written by
-    /// [ClusterIncarnation#replaceCommands]: one batch whose transactions are all guarded on the `IN_PROGRESS` marker,
-    /// so it applies at most once. It replaces an incarnation this cluster committed meanwhile, which a single
-    /// transaction cannot (#1533: the remove and the put of one key would fold into one mutation, refused by the
+    /// The restored incarnation ([ClusterIncarnation#restoring]), the deployment engine marker as the backup has it, and the
+    /// `RESTORED` marker, written by [ClusterIncarnation#replaceCommands]: one batch whose transactions are all guarded on the
+    /// `IN_PROGRESS` marker, so it applies at most once. It replaces an incarnation this cluster committed meanwhile, which a
+    /// single transaction cannot (#1533: the remove and the put of one key would fold into one mutation, refused by the
     /// successor fence on every retry).
     private Promise<Unit> finish(Loaded loaded, BackupRestoreValue marker) {
         return restoredIncarnation(loaded).async()
                                   .flatMap(incarnation -> leaderValue().async()
                                                                      .flatMap(leaderValue -> submitAll(finalCommands(leaderValue,
                                                                                                                      incarnation,
-                                                                                                                     loaded.highestRecorded(),
+                                                                                                                     loaded,
                                                                                                                      marker))));
     }
 
@@ -596,18 +598,52 @@ public final class BackupRestoreCoordinator {
 
     private List<KVCommand<AetherKey>> finalCommands(LeaderValue leaderValue,
                                                      ClusterIncarnationValue restored,
-                                                     long highestRecorded,
+                                                     Loaded loaded,
                                                      BackupRestoreValue marker) {
+        var engineMarker = engineMarker(Option.option(loaded.document()
+                                                            .entries()
+                                                            .get(DeploymentEngineKey.deploymentEngineKey())));
+
         return ClusterIncarnation.replaceCommands(leaderValue,
                                                   RestoreGate.RESTORE_TRANSACTION_PREFIX + "finish:" + UUID.randomUUID(),
                                                   ClusterIncarnation.committed(kvStore),
                                                   ClusterIncarnation.restoring(restored,
-                                                                               highestRecorded,
+                                                                               loaded.highestRecorded(),
                                                                                ULID.ulid().encoded()),
-                                                  List.of(markerWitness(marker)),
-                                                  List.of(new KVCommand.Mutation<>(BackupRestoreKey.backupRestoreKey(),
-                                                                                   Option.<AetherValue> some(marker),
-                                                                                   Option.<AetherValue> some(marker.restored()))));
+                                                  Stream.concat(Stream.of(markerWitness(marker)),
+                                                                engineMarker.map(BackupRestoreCoordinator::witnessOf)
+                                                                            .stream())
+                                                        .toList(),
+                                                  Stream.concat(engineMarker.stream(),
+                                                                Stream.of(restoredMarker(marker)))
+                                                        .toList());
+    }
+
+    /// The `RESTORED` marker replacing the `IN_PROGRESS` one.
+    private static KVCommand.Mutation<AetherKey, AetherValue> restoredMarker(BackupRestoreValue marker) {
+        return new KVCommand.Mutation<>(BackupRestoreKey.backupRestoreKey(),
+                                        Option.<AetherValue> some(marker),
+                                        Option.<AetherValue> some(marker.restored()));
+    }
+
+    /// Phase-3 design 8.2 (W-34): the deployment engine marker ends as the backup has it. A leader without `[backup]` has no restore gate,
+    /// so it can mint the incarnation and the marker while this restore is `IN_PROGRESS` (the incarnation is excluded from the chunks).
+    /// A pre-phase-3 backup carries no marker: the locally minted one is removed here, in the same batch, so the restored cluster reads
+    /// "incarnation present, marker absent", i.e. LEGACY. A phase-3 backup's marker replaces any other. No mutation when they already agree,
+    /// so a finish whose marker already matches is the finish without the marker arm.
+    private Option<KVCommand.Mutation<AetherKey, AetherValue>> engineMarker(Option<AetherValue> backedUp) {
+        return kvStore.get(DeploymentEngineKey.deploymentEngineKey())
+                      .equals(backedUp)
+               ? Option.none()
+               : Option.some(mutation(DeploymentEngineKey.deploymentEngineKey(), backedUp));
+    }
+
+    /// The marker mutation rides on [ClusterIncarnation#replaceCommands]' put transaction, which carries no guard of its own
+    /// when a remove precedes it: so the remove transaction witnesses the value the mutation expects, and its acceptance
+    /// establishes the put's precondition (the replace write's all-or-none rule).
+    private static KVCommand.ReadWitness<AetherKey> witnessOf(KVCommand.Mutation<AetherKey, AetherValue> mutation) {
+        return new KVCommand.ReadWitness<>(mutation.key(),
+                                           mutation.expected().map(Object.class::cast));
     }
 
     // --- decisions and transactions ---

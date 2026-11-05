@@ -127,6 +127,25 @@ class NodeDeploymentStateEndpointsBeforeActiveTest {
                                                       .containsExactly("execute");
     }
 
+    /// The tracer's LEGACY fault (T on LEGACY, #1117) sits where this chain's ACTIVE write becomes a consensus `apply`: armed for this node and
+    /// artifact, the chain's first ACTIVE write is never submitted and never answered. The chain is the real one, so a hook not consulted there is red.
+    @Test
+    void anArmedFault_leavesTheChainsFirstActiveWriteUnsubmitted() {
+        ActivationWriteFault.arm(SELF, ARTIFACT);
+        try {
+            harness.dispatch(new QuorumEstablished());
+            harness.dispatch(new NodeArtifactPutReceived(activePutFor(SELF)));
+
+            await().atMost(5, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(ActivationWriteFault.unansweredSubmissions()).isEqualTo(1));
+            await().during(300, TimeUnit.MILLISECONDS)
+                   .atMost(2, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(activePuts()).as("the armed write never reached the cluster").isEmpty());
+        } finally {
+            ActivationWriteFault.disarm();
+        }
+    }
+
     /// The other ACTIVE writer. An HTTP-routed slice reaches ACTIVE first through the ROUTING-ack
     /// fast path, and both stuck remediations force it the same way — all three are
     /// `transitionTo(ACTIVE)` → `updateSliceStateWithRetry`, never the chain's writer above. The

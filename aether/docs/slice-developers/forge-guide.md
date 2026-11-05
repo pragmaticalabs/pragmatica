@@ -138,7 +138,7 @@ Each Forge node exposes multiple APIs:
 
 Access any node's management API directly:
 ```bash
-curl http://localhost:5150/health
+curl http://localhost:5150/api/v1/health
 curl http://localhost:5151/metrics
 curl http://localhost:5152/status
 ```

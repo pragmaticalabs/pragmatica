@@ -1638,7 +1638,7 @@ class HetznerComputeProviderTest {
 
         @Test
         void createFrom_whenClusterHasFirewallsButNoneForSource_refusesToCreate() {
-            // The `replacementSourceName` -> "default" degradation: a firewall for this cluster
+            // The source name -> "default" degradation: a firewall for this cluster
             // exists, this provision just failed to select it. Its peers ARE firewalled, so
             // creating the server would produce exactly the publicly-reachable node #444 is about.
             testClient.firewallsBySelector.put("aether-cluster=prod-eu,aether-source=default",

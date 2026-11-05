@@ -277,6 +277,7 @@ the windows above, not when it shows some successes.
 
 Planned endpoint (rc5), on any node's management port; the request is routed to the leader:
 
+<!-- route-check: skip (planned route) -->
 ```bash
 curl -s http://<node>:8080/api/v1/ingress/floating-ips | jq .
 ```
