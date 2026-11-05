@@ -20,7 +20,8 @@ public record ClusterBootstrapConfig(ClusterIdentity cluster,
                                      InfrastructureConfig infrastructure,
                                      OperationsConfig operations,
                                      Map<String, CommunityPlacement> communities,
-                                     Option<CommunityPolicy> communityPolicy) {
+                                     Option<CommunityPolicy> communityPolicy,
+                                     Option<Integer> maxNodes) {
     public ClusterBootstrapConfig {
         communities = Map.copyOf(communities);
         sources = Map.copyOf(sources);
@@ -52,6 +53,29 @@ public record ClusterBootstrapConfig(ClusterIdentity cluster,
                                                                 OperationsConfig operations,
                                                                 Map<String, CommunityPlacement> communities,
                                                                 Option<CommunityPolicy> communityPolicy) {
+        return clusterBootstrapConfig(cluster,
+                                      coreTopology,
+                                      sources,
+                                      runtimes,
+                                      infrastructure,
+                                      operations,
+                                      communities,
+                                      communityPolicy,
+                                      Option.none());
+    }
+
+    /// `maxNodes` is the fleet-wide node cap (`[cluster] max_nodes`, rc6 spec §8.1): a first-class cluster
+    /// field, rendered into every node's `[cluster] max_nodes` where `Main.resolveAutoHeal` carries it to
+    /// `NodeLifecycleManager.provisionNode`. Absent → unbounded.
+    public static ClusterBootstrapConfig clusterBootstrapConfig(ClusterIdentity cluster,
+                                                                CoreTopology coreTopology,
+                                                                Map<String, SourceProfile> sources,
+                                                                Map<String, RuntimeProfile> runtimes,
+                                                                InfrastructureConfig infrastructure,
+                                                                OperationsConfig operations,
+                                                                Map<String, CommunityPlacement> communities,
+                                                                Option<CommunityPolicy> communityPolicy,
+                                                                Option<Integer> maxNodes) {
         return new ClusterBootstrapConfig(cluster,
                                           coreTopology,
                                           sources,
@@ -59,7 +83,8 @@ public record ClusterBootstrapConfig(ClusterIdentity cluster,
                                           infrastructure,
                                           operations,
                                           communities,
-                                          communityPolicy);
+                                          communityPolicy,
+                                          maxNodes);
     }
 
     public Result<ClusterBootstrapConfig> withClusterName(String newName) {
@@ -71,7 +96,8 @@ public record ClusterBootstrapConfig(ClusterIdentity cluster,
                                                                  infrastructure,
                                                                  operations,
                                                                  communities,
-                                                                 communityPolicy));
+                                                                 communityPolicy,
+                                                                 maxNodes));
     }
 
     public int derivedCoreCount() {
