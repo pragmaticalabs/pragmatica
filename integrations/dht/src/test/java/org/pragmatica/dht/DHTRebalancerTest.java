@@ -738,10 +738,10 @@ class DHTRebalancerTest {
             node.putLocal(probe, value("payload")).await();
             var network = ScriptedNetwork.scripted((index, _) -> index == 0 ? removeAndDrop(ring, PEER_A) : Reply.DROP);
             var t0 = System.nanoTime();
-            var run = push(node, network, T(300, 1_000, 50), Set.of());
+            var run = push(node, network, T(1_500, 3_000, 50), Set.of());
 
             assertThat(run.recorder().atRisk()).containsExactly(1);
-            assertThat(network.sends()).anyMatch(sent -> sent.atNanos() - t0 > ms(300).nanos());
+            assertThat(network.sends()).anyMatch(sent -> sent.atNanos() - t0 > ms(1_500).nanos());
             assertThat(run.report().soleCopyAtRisk()).isEqualTo(1);
         }
 
