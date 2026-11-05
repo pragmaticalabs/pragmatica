@@ -775,9 +775,9 @@ public final class SliceRoutes implements RouteSource {
     }
 
     static Result<LeaderTransaction<AetherKey, AetherValue>> operatorTransaction(KVStore<AetherKey, AetherValue> store,
-                                                                                         Artifact artifact,
-                                                                                         Option<Integer> instances,
-                                                                                         Option<String> placement) {
+                                                                                 Artifact artifact,
+                                                                                 Option<Integer> instances,
+                                                                                 Option<String> placement) {
         var key = SliceTargetKey.sliceTargetKey(artifact.base());
         var requirementKey = SliceRequirementKey.sliceRequirementKey(artifact.base(), RequirementKind.OPERATOR);
         var requirement = instances.map(count -> SliceRequirementValue.sliceRequirementValue(count,
