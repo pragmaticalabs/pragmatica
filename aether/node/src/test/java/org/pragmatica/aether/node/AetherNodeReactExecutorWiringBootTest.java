@@ -39,6 +39,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.dht.DHTConfig;
@@ -254,6 +255,51 @@ class AetherNodeReactExecutorWiringBootTest {
                              .noneMatch(thread -> thread == hookThread.get());
         assertThat(stopped.await(timeSpan(60).seconds()).isSuccess()).as("the stop completed").isTrue();
         node = null;
+    }
+
+    /// The engine half of the gate in isolation (an01). The engine is asked to stop while the node is NOT stopping
+    /// (`markStopping()` never ran): a reaction on an installed executor must then be dropped and counted. Control first:
+    /// with the engine alive the same reaction runs, so the probe reaches the executor. Red with
+    /// `reactors.bindEngine(clusterNode::isEngineStopRequested)` removed from `assembleNode`: the gate keeps its default
+    /// "engine alive" and the reaction runs.
+    @Test
+    @Timeout(value = 120, unit = SECONDS)
+    void engineStopRequested_dropsReactionsWhileTheNodeIsNotStopping() throws Exception {
+        node = boot();
+        var engine = engineOf(node);
+        var executor = node.reactExecutors()
+                           .stream()
+                           .filter(candidate -> "LeaderManager".equals(candidate.component()))
+                           .findFirst()
+                           .orElseThrow();
+        var ran = new AtomicInteger();
+
+        assertThat(engine.isEngineStopRequested()).as("precondition: the engine was not asked to stop").isFalse();
+        executor.react("an01-control", ran::incrementAndGet);
+        drainQuietly(executor);
+        assertThat(ran.get()).as("control: with the engine alive the reaction runs").isEqualTo(1);
+
+        var droppedBefore = executor.droppedEngineStopped();
+
+        assertThat(engine.stop().await(timeSpan(60).seconds()).isSuccess()).as("the engine stopped").isTrue();
+        assertThat(engine.isEngineStopRequested()).isTrue();
+        executor.react("an01-probe", ran::incrementAndGet);
+        drainQuietly(executor);
+
+        assertThat(ran.get()).as("the engine-stopped gate drops the reaction").isEqualTo(1);
+        assertThat(executor.droppedEngineStopped()).isEqualTo(droppedBefore + 1);
+    }
+
+    /// The node's cluster node, read from the field its anonymous implementation captured (the test seam the node
+    /// interface does not offer; the same reflection the other wiring tests use).
+    private static RabiaNode<?> engineOf(AetherNode node) throws IllegalAccessException {
+        for (var field : node.getClass().getDeclaredFields()) {
+            if (RabiaNode.class.isAssignableFrom(field.getType())) {
+                field.setAccessible(true);
+                return (RabiaNode<?>) field.get(node);
+            }
+        }
+        throw new AssertionError("no captured RabiaNode field on " + node.getClass());
     }
 
     private static void drainQuietly(ReactExecutor executor) {

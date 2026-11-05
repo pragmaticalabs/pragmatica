@@ -3,10 +3,12 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.utility.react;
 
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.testlogging.LogCapture;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -162,6 +164,37 @@ class ReactExecutorTest {
         assertThat(started.await(10, TimeUnit.SECONDS)).isTrue();
 
         return release;
+    }
+
+    /// The drop WARN is once per closed run: two drops in one closed run log once; after the gate opens and a reaction
+    /// runs, the next closed run logs again. Mutations: the flag is never reset (second run logs nothing, rx04) /
+    /// every drop logs (first run logs twice, rx05).
+    @Test
+    void dropWarning_isLoggedOncePerClosedRun() throws InterruptedException {
+        try (var capture = LogCapture.capture(ReactExecutor.class, Level.TRACE, false)) {
+            engineAlive.set(false);
+            executor.react("first", () -> {});
+            executor.react("second", () -> {});
+            drain();
+            assertThat(dropWarnings(capture)).as("two drops in one closed run").hasSize(1);
+
+            engineAlive.set(true);
+            executor.react("runs", () -> {});
+            drain();
+            engineAlive.set(false);
+            executor.react("third", () -> {});
+            drain();
+
+            assertThat(dropWarnings(capture)).as("a new closed run logs again").hasSize(2);
+            assertThat(executor.droppedEngineStopped()).isEqualTo(3);
+        }
+    }
+
+    private static List<LogCapture.Entry> dropWarnings(LogCapture capture) {
+        return capture.entries()
+                      .stream()
+                      .filter(entry -> entry.level() == Level.WARN && entry.message().contains("drops side-effect reactions"))
+                      .toList();
     }
 
     private void drain() throws InterruptedException {
