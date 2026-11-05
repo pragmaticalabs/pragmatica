@@ -13,6 +13,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 import java.util.stream.LongStream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -112,6 +114,7 @@ class SchemaOrchestratorLeaseTest {
             artifact = "org.example:order-service:1.0.0"
             """;
 
+    private static final String OTHER_DATASOURCE = "database.billing";
     private static final String SENTINEL = "test-sentinel";
     private static final String POSTGRES_VERSION = "PostgreSQL 16.4 (stub)";
     private static final String COCKROACH_VERSION = "CockroachDB CCL v23.1.11 (x86_64-pc-linux-gnu)";
@@ -302,6 +305,7 @@ class SchemaOrchestratorLeaseTest {
                                                                                                          "pid=7, application_name=aether-mig:node-2");
         private final List<OperatorWarning> warnings = Collections.synchronizedList(new ArrayList<>());
         private final OperatorWarningSink sink = OperatorWarningSink.handingOffTo(warnings::add);
+        private SchemaOrchestratorService orchestrator;
 
         @Test
         void consecutiveHelds_neverFail_keepTheAttemptCount_backOffCappedAt45s_warnFromTheThird() {
@@ -346,19 +350,101 @@ class SchemaOrchestratorLeaseTest {
             assertThat(stats.getMin()).as("no overflow to zero or below").isEqualTo(15_000L);
         }
 
-        private void start() {
-            var orchestrator = orchestrator(NODE_1);
+        /// A success resets the consecutive count: two Helds, a success, then two more Helds are never three in a row, so
+        /// nothing warns and the backoff restarts at 15 s. Without the reset the second run's first Held would be the 3rd.
+        @Test
+        void aSuccessBetweenHelds_restartsTheConsecutiveCount() {
+            start();
+            fail(1, held, true);
+            fail(2, held, true);
+            succeed(3);
+            fail(4, held, true);
+            fail(5, held, false);
 
+            assertThat(redispatchDelays()).containsExactly(15_000L, 45_000L, 15_000L, 45_000L);
+            assertThat(deliveredWarnings()).as("never three consecutive Helds, and no warning was open to recover").isEmpty();
+        }
+
+        /// The recovery follows a published fence-held warning, once, for the same datasource.
+        @Test
+        void aSuccessAfterAPublishedFenceHeld_raisesTheRecoveryOnce() {
+            start();
+            fail(1, held, true);
+            fail(2, held, true);
+            fail(3, held, true);
+            succeed(4);
+            succeed(5);
+
+            var delivered = deliveredWarnings();
+
+            assertThat(delivered).extracting(OperatorWarning::code)
+                                 .containsExactly(OperatorWarningCode.SCHEMA_MIGRATION_FENCE_HELD,
+                                                  OperatorWarningCode.SCHEMA_MIGRATION_FENCE_RELEASED);
+            assertThat(delivered).extracting(OperatorWarning::subject).containsOnly(DATASOURCE);
+        }
+
+        /// Control: Helds below the threshold publish no warning, so the success that ends them has none to close.
+        @Test
+        void aSuccessAfterHeldsBelowTheThreshold_raisesNoRecovery() {
+            start();
+            fail(1, held, true);
+            fail(2, held, true);
+            succeed(3);
+
+            assertThat(deliveredWarnings()).isEmpty();
+        }
+
+        /// The recovery is per datasource: another datasource completing while this one's warning is open closes nothing,
+        /// and this one's own success then closes it.
+        @Test
+        void anotherDatasourcesSuccess_doesNotCloseThisOnesFenceHeld() {
+            start();
+            fail(1, held, true);
+            fail(2, held, true);
+            fail(3, held, false);
+            seedPendingSchema(OTHER_DATASOURCE);
+            orchestrator.migrateIfNeeded(OTHER_DATASOURCE);
+            awaitEvent("the other datasource reached the schema manager", () -> schemaManager.invocations.size() == 4);
+            schemaManager.completeAll(Result.success(AetherSchemaManager.SchemaResult.schemaResult(1, 4, 1L)));
+            awaitEvent("the other datasource completed and released its lock",
+                       () -> statusOf(OTHER_DATASOURCE) == SchemaStatus.COMPLETED && lockOf(OTHER_DATASOURCE).expiresAt() <= time.now());
+
+            assertThat(deliveredWarnings()).extracting(OperatorWarning::code).containsExactly(OperatorWarningCode.SCHEMA_MIGRATION_FENCE_HELD);
+
+            time.advance(redispatchDelays().getLast());
+            awaitEvent("this datasource's next attempt dispatched", () -> schemaManager.invocations.size() == 5);
+            schemaManager.completeAll(Result.success(AetherSchemaManager.SchemaResult.schemaResult(1, 4, 1L)));
+            awaitEvent("this datasource completed and released its lock", () -> statusOf(DATASOURCE) == SchemaStatus.COMPLETED && committedLock().expiresAt() <= time.now());
+
+            assertThat(deliveredWarnings()).extracting(OperatorWarning::code)
+                                           .containsExactly(OperatorWarningCode.SCHEMA_MIGRATION_FENCE_HELD,
+                                                            OperatorWarningCode.SCHEMA_MIGRATION_FENCE_RELEASED);
+            assertThat(deliveredWarnings().getLast().subject()).isEqualTo(DATASOURCE);
+        }
+
+        private void start() {
+            orchestrator = orchestrator(NODE_1);
             orchestrator.setOperatorWarningSink(sink);
             orchestrator.migrateIfNeeded(DATASOURCE);
+        }
+
+        /// Completes attempt `attempt` successfully, waits until its schema record is COMPLETED, then re-arms the schema
+        /// as PENDING and dispatches the next run (a later migration on the same datasource).
+        private void succeed(int attempt) {
+            awaitEvent("attempt " + attempt + " dispatched", () -> schemaManager.invocations.size() == attempt);
+            schemaManager.completeAll(Result.success(AetherSchemaManager.SchemaResult.schemaResult(1, 4, 1L)));
+            awaitEvent("attempt " + attempt + " completed", () -> current().status() == SchemaStatus.COMPLETED && committedLock().expiresAt() <= time.now());
+            dispatchWhenFinalized(orchestrator, DATASOURCE, () -> seedPendingSchema(DATASOURCE));
         }
 
         /// Fails attempt `attempt` with `cause`, waits until its re-dispatch is scheduled and the attempt has let go of
         /// its lock, then (when `redispatch`) steps time to fire it. Returns the status read while the backoff was pending.
         private SchemaStatus fail(int attempt, Cause cause, boolean redispatch) {
+            var scheduledBefore = redispatchDelays().size();
+
             awaitEvent("attempt " + attempt + " dispatched", () -> schemaManager.invocations.size() == attempt);
             schemaManager.completeAll(cause.result());
-            awaitEvent("attempt " + attempt + "'s re-dispatch scheduled", () -> redispatchDelays().size() == attempt);
+            awaitEvent("attempt " + attempt + "'s re-dispatch scheduled", () -> redispatchDelays().size() == scheduledBefore + 1);
             awaitEvent("attempt " + attempt + " released its lock", () -> committedLock().expiresAt() <= time.now() && time.pending() == 1);
 
             var waiting = current().status();
@@ -397,6 +483,57 @@ class SchemaOrchestratorLeaseTest {
             migrateOn(POSTGRES_VERSION);
 
             assertThat(delivered(sink, warnings)).isEmpty();
+        }
+
+        /// The recovery follows a published unfenced warning, once, for the same datasource.
+        @Test
+        void migrate_onceTheEngineRunsFenced_raisesTheFencedRecoveryOnce() {
+            var engines = new ConcurrentHashMap<String, String>();
+            var orchestrator = orchestrator(NODE_1, RENEWAL_TIMEOUT_MS, engines::get);
+
+            engines.put(DATASOURCE, COCKROACH_VERSION);
+            orchestrator.setOperatorWarningSink(sink);
+            migrateAgain(orchestrator, DATASOURCE, 1);
+            engines.put(DATASOURCE, POSTGRES_VERSION);
+            migrateAgain(orchestrator, DATASOURCE, 2);
+            migrateAgain(orchestrator, DATASOURCE, 3);
+
+            var delivered = delivered(sink, warnings);
+
+            assertThat(delivered).extracting(OperatorWarning::code)
+                                 .containsExactly(OperatorWarningCode.SCHEMA_MIGRATION_UNFENCED, OperatorWarningCode.SCHEMA_MIGRATION_FENCED);
+            assertThat(delivered).extracting(OperatorWarning::subject).containsOnly(DATASOURCE);
+        }
+
+        /// The recovery is per datasource: another datasource running fenced closes nothing, and this one's own fenced run
+        /// then closes it.
+        @Test
+        void migrate_onAnotherDatasourceRunningFenced_doesNotCloseThisOnesUnfenced() {
+            var engines = new ConcurrentHashMap<String, String>();
+            var orchestrator = orchestrator(NODE_1, RENEWAL_TIMEOUT_MS, engines::get);
+
+            engines.put(DATASOURCE, COCKROACH_VERSION);
+            engines.put(OTHER_DATASOURCE, POSTGRES_VERSION);
+            orchestrator.setOperatorWarningSink(sink);
+            migrateAgain(orchestrator, DATASOURCE, 1);
+            migrateAgain(orchestrator, OTHER_DATASOURCE, 2);
+
+            assertThat(delivered(sink, warnings)).extracting(OperatorWarning::code).containsExactly(OperatorWarningCode.SCHEMA_MIGRATION_UNFENCED);
+
+            engines.put(DATASOURCE, POSTGRES_VERSION);
+            migrateAgain(orchestrator, DATASOURCE, 3);
+
+            assertThat(delivered(sink, warnings)).extracting(OperatorWarning::code)
+                                                 .containsExactly(OperatorWarningCode.SCHEMA_MIGRATION_UNFENCED, OperatorWarningCode.SCHEMA_MIGRATION_FENCED);
+            assertThat(delivered(sink, warnings).getLast().subject()).isEqualTo(DATASOURCE);
+        }
+
+        /// Dispatches the `run`th migration of `datasource` and completes it. The seed puts the schema back to PENDING.
+        private void migrateAgain(SchemaOrchestratorService orchestrator, String datasource, int run) {
+            dispatchWhenFinalized(orchestrator, datasource, () -> seedPendingSchema(datasource));
+            awaitEvent("run " + run + " reached the schema manager", () -> schemaManager.invocations.size() == run);
+            schemaManager.completeAll(Result.success(AetherSchemaManager.SchemaResult.schemaResult(1, 4, 1L)));
+            awaitEvent("run " + run + " completed and released its lock", () -> statusOf(datasource) == SchemaStatus.COMPLETED && lockOf(datasource).expiresAt() <= time.now());
         }
 
         private void migrateOn(String serverVersion) {
@@ -443,7 +580,28 @@ class SchemaOrchestratorLeaseTest {
     }
 
     private SchemaMigrationLockValue committedLock() {
-        return (SchemaMigrationLockValue) kvStore.get(LOCK_KEY).or((AetherValue) null);
+        return lockOf(DATASOURCE);
+    }
+
+    private SchemaStatus statusOf(String datasource) {
+        return ((SchemaVersionValue) kvStore.get(SchemaVersionKey.schemaVersionKey(datasource)).or((AetherValue) null)).status();
+    }
+
+    /// Re-arms `datasource` as PENDING and dispatches a migration, retrying while the previous attempt has not yet let go
+    /// of its single-flight fence (the dispatch is then refused at once, with no side effect beyond the re-arm).
+    private static void dispatchWhenFinalized(SchemaOrchestratorService orchestrator, String datasource, Runnable rearm) {
+        awaitEvent("the dispatch of " + datasource + " was accepted", () -> accepted(orchestrator, datasource, rearm));
+    }
+
+    private static boolean accepted(SchemaOrchestratorService orchestrator, String datasource, Runnable rearm) {
+        rearm.run();
+        var run = orchestrator.migrateIfNeeded(datasource);
+
+        return !(run.isResolved() && run.await().isFailure());
+    }
+
+    private SchemaMigrationLockValue lockOf(String datasource) {
+        return (SchemaMigrationLockValue) kvStore.get(SchemaMigrationLockKey.schemaMigrationLockKey(datasource)).or((AetherValue) null);
     }
 
     /// Waits for an EVENT the test cannot step (a real timeout elapsing), never for a duration.
@@ -465,8 +623,12 @@ class SchemaOrchestratorLeaseTest {
     }
 
     private void seedPendingSchema() {
-        kvStore.put(SchemaVersionKey.schemaVersionKey(DATASOURCE),
-                    SchemaVersionValue.schemaVersionValue(DATASOURCE,
+        seedPendingSchema(DATASOURCE);
+    }
+
+    private void seedPendingSchema(String datasource) {
+        kvStore.put(SchemaVersionKey.schemaVersionKey(datasource),
+                    SchemaVersionValue.schemaVersionValue(datasource,
                                                           3,
                                                           "V003__add_index.sql",
                                                           SchemaStatus.PENDING,
@@ -485,6 +647,12 @@ class SchemaOrchestratorLeaseTest {
     }
 
     private SchemaOrchestratorService orchestrator(NodeId self, long renewalTimeoutMs, String serverVersion) {
+        return orchestrator(self, renewalTimeoutMs, _ -> serverVersion);
+    }
+
+    /// `engineOf` answers, per datasource and per call, the server version the fence-tier probe reads, so a test can
+    /// change a datasource's engine between two operations of one orchestrator.
+    private SchemaOrchestratorService orchestrator(NodeId self, long renewalTimeoutMs, Function<String, String> engineOf) {
         Repository repository = _ -> NOT_IN_REPOSITORY.promise();
 
         return new SchemaOrchestratorServiceInstance(cluster,
@@ -492,7 +660,7 @@ class SchemaOrchestratorLeaseTest {
                                                      artifactStoreServing(),
                                                      repository,
                                                      schemaManager,
-                                                     stubConnectionProvider(serverVersion),
+                                                     stubConnectionProvider(engineOf),
                                                      self,
                                                      Option.<MessageRouter> none(),
                                                      new LeaseTiming(TTL_MS, renewalTimeoutMs, time::now, time::schedule));
@@ -778,11 +946,11 @@ class SchemaOrchestratorLeaseTest {
         };
     }
 
-    private static DatasourceConnectionProvider stubConnectionProvider(String serverVersion) {
+    private static DatasourceConnectionProvider stubConnectionProvider(Function<String, String> engineOf) {
         return new DatasourceConnectionProvider() {
             @Override
             public Promise<SqlConnector> connector(String datasourceName) {
-                return Promise.success(stubConnector(serverVersion));
+                return Promise.success(stubConnector(engineOf.apply(datasourceName)));
             }
 
             @Override

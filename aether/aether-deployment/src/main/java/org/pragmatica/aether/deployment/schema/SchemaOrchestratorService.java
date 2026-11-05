@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.schema;
 
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
@@ -152,6 +153,11 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     /// Consecutive fenced-in-the-database outcomes per datasource ON THIS NODE; any other outcome clears it. A new
     /// leader starts from zero, so the warning threshold counts what this node observed.
     private final ConcurrentHashMap<String, Integer> consecutiveHelds = new ConcurrentHashMap<>();
+    /// Datasources with a raised [OperatorWarningCode#SCHEMA_MIGRATION_FENCE_HELD] not yet closed by its recovery: a recovery
+    /// is raised only for a datasource in here, so an ordinary success announces nothing.
+    private final Set<String> fenceHeldRaised = ConcurrentHashMap.newKeySet();
+    /// The same for [OperatorWarningCode#SCHEMA_MIGRATION_UNFENCED].
+    private final Set<String> unfencedRaised = ConcurrentHashMap.newKeySet();
 
     SchemaOrchestratorServiceInstance(ClusterNode<KVCommand<AetherKey>> cluster,
                                       KVStore<AetherKey, AetherValue> kvStore,
@@ -578,7 +584,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                                                                                                   value).timeout(schemaManager.policy()
                                                                                                                                               .migrationTimeout()))
                            .flatMap(_ -> markCompleted(datasourceName, value, startTime))
-                           .map(_ -> clearHelds(datasourceName))
+                           .map(_ -> releaseHeld(datasourceName))
                            .mapError(cause -> handleMigrationFailure(datasourceName, value, cause));
     }
 
@@ -643,15 +649,36 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
 
     private Unit warnIfLongHeld(String datasourceName, Cause cause, int held) {
         return held >= HELD_WARNING_THRESHOLD
+               ? raiseFenceHeld(datasourceName, cause, held)
+               : unit();
+    }
+
+    private Unit raiseFenceHeld(String datasourceName, Cause cause, int held) {
+        fenceHeldRaised.add(datasourceName);
+
+        return OperatorWarnings.raise(log,
+                                      warningSink.get(),
+                                      OperatorWarningCode.SCHEMA_MIGRATION_FENCE_HELD,
+                                      datasourceName,
+                                      "Schema migration for '{}' has been fenced in the database {} consecutive times; it stays PENDING and retries every {}s: {}",
+                                      datasourceName,
+                                      held,
+                                      HELD_BACKOFF_CAP_MS / 1000,
+                                      cause.message());
+    }
+
+    /// An attempt acquired the fence and completed: the consecutive-Held count restarts, and a raised
+    /// [OperatorWarningCode#SCHEMA_MIGRATION_FENCE_HELD] for the datasource is closed by its recovery.
+    private Unit releaseHeld(String datasourceName) {
+        clearHelds(datasourceName);
+
+        return fenceHeldRaised.remove(datasourceName)
                ? OperatorWarnings.raise(log,
                                         warningSink.get(),
-                                        OperatorWarningCode.SCHEMA_MIGRATION_FENCE_HELD,
+                                        OperatorWarningCode.SCHEMA_MIGRATION_FENCE_RELEASED,
                                         datasourceName,
-                                        "Schema migration for '{}' has been fenced in the database {} consecutive times; it stays PENDING and retries every {}s: {}",
-                                        datasourceName,
-                                        held,
-                                        HELD_BACKOFF_CAP_MS / 1000,
-                                        cause.message())
+                                        "Schema migration for '{}' acquired the database fence and completed",
+                                        datasourceName)
                : unit();
     }
 
@@ -1238,11 +1265,29 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
 
     private Unit raiseIfUnfenced(String datasourceName, boolean unfenced) {
         return unfenced
+               ? raiseUnfenced(datasourceName)
+               : raiseFencedIfRecovering(datasourceName);
+    }
+
+    private Unit raiseUnfenced(String datasourceName) {
+        unfencedRaised.add(datasourceName);
+
+        return OperatorWarnings.raise(log,
+                                      warningSink.get(),
+                                      OperatorWarningCode.SCHEMA_MIGRATION_UNFENCED,
+                                      datasourceName,
+                                      "Schema operation on '{}' runs WITHOUT a database fence: a PostgreSQL-configured CockroachDB has no tier-1 lock (FDB-2b adds one); only the cluster's KV lease keeps two runners apart",
+                                      datasourceName);
+    }
+
+    /// A schema operation that runs fenced closes a raised [OperatorWarningCode#SCHEMA_MIGRATION_UNFENCED] for its datasource.
+    private Unit raiseFencedIfRecovering(String datasourceName) {
+        return unfencedRaised.remove(datasourceName)
                ? OperatorWarnings.raise(log,
                                         warningSink.get(),
-                                        OperatorWarningCode.SCHEMA_MIGRATION_UNFENCED,
+                                        OperatorWarningCode.SCHEMA_MIGRATION_FENCED,
                                         datasourceName,
-                                        "Schema operation on '{}' runs WITHOUT a database fence: a PostgreSQL-configured CockroachDB has no tier-1 lock (FDB-2b adds one); only the cluster's KV lease keeps two runners apart",
+                                        "Schema operation on '{}' runs fenced again",
                                         datasourceName)
                : unit();
     }

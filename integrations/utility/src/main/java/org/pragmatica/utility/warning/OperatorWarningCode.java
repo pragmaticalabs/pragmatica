@@ -772,6 +772,15 @@ public enum OperatorWarningCode {
     /// the server is CockroachDB, whose advisory locks acquire nothing; FDB-2b adds its lock. Raised on every such
     /// operation. Subject is the datasource.
     SCHEMA_MIGRATION_UNFENCED("schema-migration-unfenced", "schema-migration", WarningLevel.WARNING),
+    /// The recovery of [#SCHEMA_MIGRATION_FENCE_HELD], same subject (FDB-2a, #2591): a later attempt on the datasource acquired the
+    /// fence and ran. INFO, published only after a published fence-held warning for the subject (#752 mechanism).
+    SCHEMA_MIGRATION_FENCE_RELEASED("schema-migration-fence-released",
+                                    "schema-migration",
+                                    WarningLevel.INFO,
+                                    SCHEMA_MIGRATION_FENCE_HELD),
+    /// The recovery of [#SCHEMA_MIGRATION_UNFENCED], same subject (FDB-2a, #2591): a later schema operation on the datasource ran
+    /// fenced. INFO, published only after a published unfenced warning for the subject (#752 mechanism).
+    SCHEMA_MIGRATION_FENCED("schema-migration-fenced", "schema-migration", WarningLevel.INFO, SCHEMA_MIGRATION_UNFENCED),
     /// The recovery of [#CONFIG_WATCH_CALLBACK_FAILED], same subject (#774): the next delivery bound and (when it called back) succeeded.
     /// INFO, published only after a published failure for the subject (#752 mechanism).
     CONFIG_WATCH_CALLBACK_RECOVERED("config-watch-callback-recovered",
