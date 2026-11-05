@@ -290,13 +290,16 @@ class RabiaRestoreRefusalTest {
         private final AtomicInteger badAttempts = new AtomicInteger();
         private final List<byte[]> restored = new CopyOnWriteArrayList<>();
 
+        /// `attempts` rises last, so a reader that saw it rise also sees `badAttempts` and `restored`.
         @Override
         public Result<Unit> restoreSnapshot(byte[] snapshot) {
+            var outcome = Arrays.equals(snapshot, BAD_SNAPSHOT)
+                          ? failBad()
+                          : restoreGood(snapshot);
+
             attempts.incrementAndGet();
 
-            return Arrays.equals(snapshot, BAD_SNAPSHOT)
-                   ? failBad()
-                   : restoreGood(snapshot);
+            return outcome;
         }
 
         private Result<Unit> failBad() {
