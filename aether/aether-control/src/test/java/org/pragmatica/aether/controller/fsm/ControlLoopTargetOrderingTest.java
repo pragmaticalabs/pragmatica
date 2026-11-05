@@ -125,6 +125,20 @@ class ControlLoopTargetOrderingTest {
         assertThat(cluster.submitted()).as("one refused submission, no rebuild").isEqualTo(1);
     }
 
+    /// Only the owning blueprint moves (the witness); the target stays equal to the observed one, so the decision is not stale: the
+    /// refused write is resubmitted over the unchanged target and commits (the one rebuild that is kept).
+    @Test
+    void applyScaling_onlyTheBlueprintWitnessMoved_resubmitsAndCommits() {
+        ctx.runEvaluationCycle();
+        cluster.awaitHeld(1);
+
+        commit(new KVCommand.Put<>(BLUEPRINT_KEY, blueprintOf(V2)));
+        cluster.commitAllAsTheyArrive();
+
+        assertThat(committedTarget().map(SliceTargetValue::targetInstances)).as("the unchanged target is scaled by the resubmission").isEqualTo(Option.some(4));
+        assertThat(cluster.submitted()).as("one refused submission and one resubmission").isEqualTo(2);
+    }
+
     /// An operator scale of the same version to 6 commits first; the decision made against 2 must not revert it.
     @Test
     void applyScaling_operatorScaleCommitsFirst_staleDecisionDoesNotWin() {
