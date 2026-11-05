@@ -19,7 +19,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 
-import static org.pragmatica.lang.utils.Causes.cause;
+import static org.pragmatica.lang.utils.Causes.validation;
 
 
 /// Trimmed, guaranteed non-empty string value.
@@ -30,7 +30,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
 /// **Prefer this over a hand-rolled non-blank wrapper** — see the package doc for the full
 /// catalog of built-in value objects.
 public record NonBlankString(String value) {
-    private static final Cause BLANK_OR_NULL = cause("String must not be null, empty, or blank");
+    private static final Cause BLANK_OR_NULL = validation("String must not be null, empty, or blank");
 
     /// Parse and validate a non-blank string.
     ///

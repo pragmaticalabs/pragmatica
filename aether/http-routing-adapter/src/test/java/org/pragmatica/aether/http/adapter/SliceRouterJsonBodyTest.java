@@ -10,6 +10,7 @@ import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.json.JsonMapper;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.utils.Causes;
 
@@ -26,10 +27,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// wrapping [org.pragmatica.http.routing.RequestContext#fromJson] failures as a typed
 /// [org.pragmatica.http.HttpError], exactly mirroring `PathParameter#mapped` (#397).
 ///
-/// A body that PARSES successfully but fails domain validation performed by the handler itself is
-/// NOT touched by this fix — the handler's own `Cause` is never an `HttpError`, so it still falls
-/// through `ErrorMapper#defaultMapper` to 500 today: pinned by
-/// [#postItem_returns500_whenBodyParsesButHandlerRejectsDomainValidation] `[verified:]`.
+/// A body that PARSES successfully but fails domain validation performed by the handler itself answers 422
+/// (#868) when the failure is a marked [org.pragmatica.lang.Cause.Validation] (as the core validation helpers
+/// produce): [#postItem_returns422_whenBodyParsesButHandlerRejectsDomainValidation]. An unmarked cause is
+/// never inferred to be validation and stays 500: [#postItem_returns500_whenHandlerFailsWithUnmarkedCause].
 class SliceRouterJsonBodyTest {
     record CreateItem(String name) {}
 
@@ -88,19 +89,27 @@ class SliceRouterJsonBodyTest {
     }
 
     @Test
-    void postItem_returns500_whenBodyParsesButHandlerRejectsDomainValidation() {
-        // #772/C4 [verified:]: a body that PARSES but fails domain validation performed by the
-        // handler itself is unaffected by this fix — the handler's plain Cause is never an
-        // HttpError, so it still falls through ErrorMapper#defaultMapper to 500 today.
+    void postItem_returns422_whenBodyParsesButHandlerRejectsDomainValidation() {
+        var response = sendFailing(Causes.validation("name must not be blank"));
+
+        assertThat(response.statusCode()).isEqualTo(422);
+    }
+
+    @Test
+    void postItem_returns500_whenHandlerFailsWithUnmarkedCause() {
+        var response = sendFailing(Causes.cause("name must not be blank"));
+
+        assertThat(response.statusCode()).isEqualTo(500);
+    }
+
+    private HttpResponseData sendFailing(Cause failure) {
         var route = Route.<ItemCreated>post("/items")
                          .withBody(CreateItem.class)
-                         .to(item -> Promise.<ItemCreated>failure(Causes.cause("name must not be blank")))
+                         .to(item -> failure.<ItemCreated>promise())
                          .as(CommonContentType.APPLICATION_JSON);
         RouteSource source = () -> Stream.of(route);
         var router = SliceRouter.sliceRouter(source, ErrorMapper.defaultMapper(), JsonMapper.defaultJsonMapper());
 
-        var response = send(router, "{\"name\":\"\"}".getBytes(StandardCharsets.UTF_8));
-
-        assertThat(response.statusCode()).isEqualTo(500);
+        return send(router, "{\"name\":\"\"}".getBytes(StandardCharsets.UTF_8));
     }
 }

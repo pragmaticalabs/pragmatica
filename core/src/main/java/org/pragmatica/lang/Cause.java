@@ -123,6 +123,12 @@ public interface Cause {
     /// operation whose outcome is unknown must: that classification is the store's to get right, and a wrapper that
     /// inherits "transient" from a timeout would be retried by a transient-only policy. A wrapper that also implements
     /// [Terminal] or [Transient] must say which answer wins, by overriding (the compiler requires it).
+    /// Marker for a domain-validation failure: the input was well-formed but violates a domain rule.
+    /// Produced by the validation helpers core owns ([Verify], the built-in value objects, and
+    /// [org.pragmatica.lang.utils.Causes#validation]). Carries no behaviour; an HTTP boundary may map it
+    /// to 422. A cause without the marker is never inferred to be a validation failure.
+    interface Validation extends Cause {}
+
     interface Wrapped extends Cause {
         Cause origin();
 

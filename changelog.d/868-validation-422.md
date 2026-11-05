@@ -1,0 +1,2 @@
+### Changed
+- A domain-validation failure raised inside a slice handler now answers 422 instead of 500 (#868). Core gains the marker `Cause.Validation` (factory `Causes.validation`), produced by `Verify.ensure`'s default cause and the built-in `Email`, `Url` and `NonBlankString` value objects; `SliceRouter` honours an `HttpStatusAware` cause anywhere in the cause chain and maps a `Cause.Validation` left unmapped to 422. A cause without the marker still answers 500: nothing is inferred from message text or class names. A request-body parse failure stays 400.
