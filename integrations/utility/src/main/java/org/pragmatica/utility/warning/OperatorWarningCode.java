@@ -621,9 +621,16 @@ public enum OperatorWarningCode {
     /// (`-Daether.state.dir` / `AETHER_STATE_DIR`) off the volume and restart.
     STORAGE_VOLUME_GUARD_INACTIVE("storage-volume-guard-inactive", "storage", WarningLevel.WARNING),
     /// An append log fail-stopped after a failed fsync, frame write or reopen: every later append is refused until the node restarts and
-    /// recovers the valid prefix. The subject is the storage instance; the message names the log and the cause. Raised once per
-    /// instance (a second log failing in the same boot is in the node log only). No recovery code: a restart is the recovery.
+    /// recovers the valid prefix. A stream partition's log raises it with the subject `stream[partition]`, once per log (`know:`
+    /// `4ddd1ddfda`), and every publish to that partition on the node is refused from then on; a log with no owner of its own raises it
+    /// with the storage instance as the subject, once per instance (a second such log failing in the same boot is in the node log only).
+    /// The message names the log and the cause. Closed by [#STORAGE_WAL_WRITABLE] for a stream partition; the instance subject has no
+    /// recovery, because the instance raise names no log a later boot could report on.
     STORAGE_WAL_FAIL_STOPPED("storage-wal-fail-stopped", "storage", WarningLevel.CRITICAL),
+    /// The recovery of [#STORAGE_WAL_FAIL_STOPPED], same subject `stream[partition]`: after a restart, the partition's reopened log
+    /// accepted its first durable write. INFO. The fail-stop leaves a mark beside the log (written best-effort: a volume that refused
+    /// the fsync may refuse the mark, and then no recovery is raised); a reopen that finds it raises this once and deletes the mark.
+    STORAGE_WAL_WRITABLE("storage-wal-writable", "storage", WarningLevel.INFO, STORAGE_WAL_FAIL_STOPPED),
     /// Block prefetching could not be started when the node reported ready, so the instance serves reads without the hints it would
     /// have acted on. The subject is the instance. Closed by [#STORAGE_PREFETCH_STARTED].
     STORAGE_PREFETCH_NOT_STARTED("storage-prefetch-not-started", "storage", WarningLevel.WARNING),
@@ -828,8 +835,7 @@ public enum OperatorWarningCode {
     KV_DISPATCH_READ_AHEAD("kv-dispatch-read-ahead", "kv-store", WarningLevel.INFO),
     /// The node's KV notification dispatcher failed (KVStore dispatcher design §3.2, owner ruling 1): the store is closed, every
     /// waiting write fails as outcome-unknown, and the node stops (the production node halts). The subject is the store; the
-    /// node log carries the failure, the batch and a thread dump. No recovery code: a restart is the recovery, as for
-    /// [#STORAGE_WAL_FAIL_STOPPED]. The node's operator-warning sink accepts this event (the publish call returns) before the
+    /// node log carries the failure, the batch and a thread dump. No recovery code: a restart is the recovery. The node's operator-warning sink accepts this event (the publish call returns) before the
     /// dispatcher calls `stopNode`; the sink hands it off asynchronously, so its delivery to the cluster event stream is
     /// best-effort once the node halts.
     KV_DISPATCHER_FAILED("kv-dispatcher-failed", "kv-store", WarningLevel.CRITICAL),

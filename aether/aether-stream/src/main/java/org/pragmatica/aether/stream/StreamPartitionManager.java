@@ -80,6 +80,8 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Functions.Fn2;
+import org.pragmatica.lang.Functions.Fn3;
 import org.pragmatica.lang.Lazy;
 import org.pragmatica.lang.NullReturn;
 import org.pragmatica.lang.Option;
@@ -302,6 +304,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final java.util.concurrent.atomic.AtomicLong repairGeneration = new java.util.concurrent.atomic.AtomicLong();
 
     private volatile boolean operatorWarningsBound = false;
+
+    /// The manager's own [WalFailStop]: both reports raise operator warnings under the subject `stream[partition]`.
+    private final WalFailStop walAlarms = WalFailStop.walFailStop(this::walFailStopped, this::walWritable);
 
     /// Know 3b01e624f1: the WAL directories (`<stream>@<incarnation>`) under the log root as they were when the first stream life was adopted,
     /// i.e. at startup, before this process created any. Read once: the directories of this process's own lives are not in it.
@@ -1455,7 +1460,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                       logs,
                                       lastSealedOffset,
                                       hydrateTrimFailure(config),
-                                      this::walFailStopped)
+                                      walAlarms)
                           .onFailure(_ -> release(floorBytes))
                           .onSuccess(entry -> restoreVisible(config, entry))
                           .flatMap(entry -> publishFreshEntry(config, entry, commitMode));
@@ -1958,7 +1963,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                       logs,
                                       lastSealedOffset,
                                       hydrateTrimFailure(config),
-                                      this::walFailStopped)
+                                      walAlarms)
                           .onSuccess(entry -> restoreVisible(config, entry))
                           .onSuccess(StreamEntry::markCommitted)
                           .onFailure(cause -> hydrationFailed(config, floorBytes, cause))
@@ -3648,11 +3653,29 @@ public final class StreamPartitionManager implements AutoCloseable {
         Cause trimFailed(String streamName, int partition, long head, Cause cause);
     }
 
-    /// Where a partition log opened by the static open path reports its fail-stop (#2201 D-01). Runs once per log, under the log's sync
-    /// lock, so it must not block.
-    @FunctionalInterface
+    /// Where a partition log opened by the static open path reports its fail-stop (#2201 D-01), and the recovery from a fail-stop an
+    /// earlier open recorded (its first durable write after the restart). Each runs once per log, under the log's sync lock, so it must
+    /// not block.
     interface WalFailStop {
         Unit walFailStopped(String streamName, int partition, Cause cause);
+
+        Unit walWritable(String streamName, int partition);
+
+        static WalFailStop walFailStop(Fn3<Unit, String, Integer, Cause> failStopped, Fn2<Unit, String, Integer> writable) {
+            record walFailStop(Fn3<Unit, String, Integer, Cause> failStopped, Fn2<Unit, String, Integer> writable) implements WalFailStop {
+                @Override
+                public Unit walFailStopped(String streamName, int partition, Cause cause) {
+                    return failStopped.apply(streamName, partition, cause);
+                }
+
+                @Override
+                public Unit walWritable(String streamName, int partition) {
+                    return writable.apply(streamName, partition);
+                }
+            }
+
+            return new walFailStop(failStopped, writable);
+        }
     }
 
     /// The operator warning of a partition log's fail-stop (#2201 D-01, `know:` `4ddd1ddfda`): `STORAGE_WAL_FAIL_STOPPED` with the
@@ -3669,6 +3692,21 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                   streamName,
                                                   partition,
                                                   cause.message()));
+
+        return unit();
+    }
+
+    /// The recovery of [#walFailStopped] (CTO ruling on #2615): `STORAGE_WAL_WRITABLE`, same subject, raised when the partition's log,
+    /// reopened after a restart over the mark its fail-stop left, accepted its first durable write ([AppendLog#onFailStopRecovered]).
+    private Unit walWritable(String streamName, int partition) {
+        raiseOrDefer(() -> OperatorWarnings.raise(log,
+                                                  operatorWarnings,
+                                                  OperatorWarningCode.STORAGE_WAL_WRITABLE,
+                                                  streamName + "[" + partition + "]",
+                                                  "The WAL of stream {} partition {} accepted a durable write after an earlier fail-stop: "
+                                                 + "publishes to the partition on this node are admitted again.",
+                                                  streamName,
+                                                  partition));
 
         return unit();
     }
@@ -6021,7 +6059,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           logs,
                                           lastSealedOffset,
                                           lifeTrimFailure(config),
-                                          this::walFailStopped)
+                                          walAlarms)
                           .onFailure(_ -> releaseFailedMaterialize(ref, floorBytes, slotHeld))
                           .onSuccess(candidate -> restoreVisible(config,
                                                                  partition,
@@ -7328,7 +7366,9 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                  partition)))
                          .map(wal -> wal.onFailStop(cause -> failStopped.walFailStopped(config.name(),
                                                                                         partition,
-                                                                                        cause)));
+                                                                                        cause)))
+                         .map(wal -> wal.onFailStopRecovered(() -> failStopped.walWritable(config.name(),
+                                                                                           partition)));
         }
 
         /// The log of one partition of one LIFE of a stream (#1278 review), shared by the open and the read-only

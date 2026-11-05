@@ -275,7 +275,6 @@ class OperatorWarningCodeTest {
         // D1, added on purpose: a failed KV dispatcher stops (in production, halts) its node; the only end is a restart.
         OperatorWarningCode.KV_DISPATCHER_FAILED,
         OperatorWarningCode.STORAGE_VOLUME_GUARD_INACTIVE,
-        OperatorWarningCode.STORAGE_WAL_FAIL_STOPPED,
         OperatorWarningCode.STORAGE_STREAM_DISK_CAP_OVER_SPACE,
         OperatorWarningCode.STORAGE_STREAM_DISK_SPACE_UNREADABLE,
         OperatorWarningCode.STORAGE_INTEGRITY_FAILED,

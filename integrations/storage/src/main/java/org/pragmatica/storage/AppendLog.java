@@ -6,6 +6,7 @@ import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -33,6 +34,7 @@ import org.pragmatica.lang.io.FileOps;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Promise.promise;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Result.unitResult;
@@ -125,6 +127,11 @@ import static org.pragmatica.lang.Unit.unit;
 /// `WalStats.failStopped`. Recovery action: reopen (node restart) — the scan trims to the valid
 /// prefix, and nothing acked is lost because refused appends were never acked.
 ///
+/// The transition also leaves a mark beside the log, `<name>.failstopped` ([#failStopMarkOf]), written best-effort (a volume that
+/// refused the fsync may refuse the mark too). A later open that finds the mark reports the recovery ([#onFailStopRecovered]) at its
+/// FIRST successful group commit, so the closing event says the reopened log accepted a durable write, not merely that it opened,
+/// and deletes the mark. A mark that cannot be deleted repeats that report at the next open.
+///
 /// ## Recovery (torn-write + CRC)
 /// `open` scans from byte 0, validating each record by length-frame + CRC, and positions further
 /// appends AFTER the last VALID record; a torn trailing record (fewer bytes than its frame needs)
@@ -189,6 +196,8 @@ public final class AppendLog implements AutoCloseable {
     private volatile boolean closed;
     private volatile LongSupplier sealedFloor = NO_SEALED_FLOOR;  // the live floor of the order rule (I-04); read under writeLock
     private volatile Option<Consumer<Cause>> failStopListener = Option.none();  // replaces sink.failStopped when installed (D-01)
+    private volatile Option<Runnable> failStopRecoveryListener = Option.none();  // the closing report of an earlier fail-stop (D-01)
+    private volatile boolean failStopMarked;  // the mark of an earlier fail-stop was found at open; cleared by the first successful force
     private final EpochHistory epochs;
     private final TornTailSink sink;
 
@@ -205,6 +214,7 @@ public final class AppendLog implements AutoCloseable {
         this.writePosition = writePosition;
         this.lastOffset = lastOffset;
         this.syncedOffset = lastOffset;
+        this.failStopMarked = Files.exists(failStopMarkOf(file));
     }
 
     /// Open-or-create the log at `file`, positioned for further appends AFTER its last VALID
@@ -657,9 +667,32 @@ public final class AppendLog implements AutoCloseable {
     /// the instance-level report would only repeat it under a vaguer one. Invoked once, on the transition to fail-stopped, under the
     /// log's sync lock, so it must not block. Installed once by the opener before the first write; returns this log.
     public AppendLog onFailStop(Consumer<Cause> listener) {
-        failStopListener = Option.some(listener);
+        failStopListener = some(listener);
 
         return this;
+    }
+
+    /// Installs `listener` as the receiver of this log's recovery from a fail-stop recorded by an EARLIER open (#2201 D-01): invoked
+    /// once, at the first successful group commit of this open, when the open found the log's fail-stop mark ([#failStopMarkOf]).
+    /// Never invoked for a log that has no mark. Runs under the log's sync lock, so it must not block. Installed once by the opener
+    /// before the first write; returns this log.
+    public AppendLog onFailStopRecovered(Runnable listener) {
+        failStopRecoveryListener = some(listener);
+
+        return this;
+    }
+
+    /// The fail-stop mark of `logFile`: `<name>.failstopped` beside `<name>.wal` (any other log file name gets `.failstopped`
+    /// appended), as [EpochHistory#sidecarOf] names the epoch sidecar. Not a log file, so [#logNamesUnder] never lists it.
+    static Path failStopMarkOf(Path logFile) {
+        var name = logFile.getFileName()
+                          .toString();
+        var stem = name.endsWith(LOG_SUFFIX)
+                   ? name.substring(0,
+                                    name.length() - LOG_SUFFIX.length())
+                   : name;
+
+        return logFile.resolveSibling(stem + ".failstopped");
     }
 
     /// Last appended offset, or `-1` when the WAL holds no valid record.
@@ -822,7 +855,20 @@ public final class AppendLog implements AutoCloseable {
                      .onSuccess(_ -> publishSync(target,
                                                  covered,
                                                  System.nanoTime() - startedAt))
+                     .onSuccess(_ -> reportRecoveryOnce())
                      .onFailure(this::failStop);
+    }
+
+    /// Runs under `syncLock`, after a successful force: the first one of an open that found the fail-stop mark deletes the mark and
+    /// reports the recovery. One volatile read otherwise.
+    private void reportRecoveryOnce() {
+        if (failStopMarked) {
+            failStopMarked = false;
+            FileOps.deleteIfExists(failStopMarkOf(file))
+                   .onFailure(cause -> log.warn("AppendLog {} could not delete its fail-stop mark: {}", file, cause.message()));
+            log.info("AppendLog {} accepted a durable write after an earlier fail-stop", file);
+            failStopRecoveryListener.onPresent(Runnable::run);
+        }
     }
 
     /// Runs under `syncLock` (the only writer of `syncFailure`). Loud once at the moment of
@@ -831,14 +877,25 @@ public final class AppendLog implements AutoCloseable {
     private void failStop(Cause cause) {
         var first = syncFailure.isEmpty();
 
-        syncFailure = Option.some(new WalError.FailStopped(cause.message()));
+        syncFailure = some(new WalError.FailStopped(cause.message()));
         log.error("AppendLog fail-stopped for {} — appends refused; "
                  + "reopen (node restart) recovers the valid prefix: {}",
                   file,
                   cause.message());
         if (first) {
+            markFailStop(cause);
             reportFailStop(cause);
         }
+    }
+
+    /// Best-effort: the volume that refused the force may refuse the mark too, and then a restart reports no recovery.
+    private void markFailStop(Cause cause) {
+        FileOps.writeBytesDurable(failStopMarkOf(file),
+                                 cause.message()
+                                      .getBytes(StandardCharsets.UTF_8))
+               .onFailure(markFailure -> log.warn("AppendLog {} could not write its fail-stop mark: {}",
+                                                  file,
+                                                  markFailure.message()));
     }
 
     /// Once per log: to the installed [#onFailStop] listener when there is one, to the sink otherwise. Two writers that both passed
