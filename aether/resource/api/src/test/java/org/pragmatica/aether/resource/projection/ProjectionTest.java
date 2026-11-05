@@ -1196,8 +1196,8 @@ class ProjectionTest {
 
         assertThat(store.generation.get()).isEqualTo(1L);
         assertThat(store.data).isEmpty();
-        assertThat(cursor.calls).as("capture before the reset, mint and rewind after it — the token is minted AFTER the reset, from state, never before")
-                                .containsExactly("capture@gen0/resets0", "mint@gen1/resets1", "rewind@gen1/resets1");
+        assertThat(cursor.calls).as("capture, then the #2654 mint probe, before the reset; the token's mint and the rewind after it — the token is minted AFTER the reset, from state, never before")
+                                .containsExactly("capture@gen0/resets0", "mint@gen0/resets0", "mint@gen1/resets1", "rewind@gen1/resets1");
     }
 
     /// #2654 (v2691 F1): the runtime refuses the mint while the life's incarnation is not committed. That refusal must

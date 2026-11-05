@@ -166,8 +166,9 @@ public record NodeReplayCursor(String topicStream,
 
     /// #2654: while the life's incarnation is not committed (`ClusterIncarnation.NONE`) the mint is refused with
     /// [EpochMintError.General#INCARNATION_NOT_COMMITTED], so a new life's rewind is never stamped with the restored
-    /// life's incarnation. The rebuild fails with that cause and nothing is written; a rebuild requested after the
-    /// commit mints the new life's first rewind.
+    /// life's incarnation. The facade probes this mint before it resets the store (`Projection.rebuild`), so the rebuild
+    /// fails with that cause before the read model is cleared, and no rewind is recorded or run; a rebuild requested
+    /// after the commit mints the new life's first rewind.
     private Result<RewindToken> mint(String group, int count, long generation) {
         var newest = IntStream.range(0, count)
                               .mapToObj(partition -> committed(group, partition).map(StreamCursorCheckpointValue::rewindEpoch))
