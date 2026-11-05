@@ -4,6 +4,7 @@
 package org.pragmatica.aether.config.cluster;
 
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -11,6 +12,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 
 /// rc6 spec §8.1 [P-SRC1] — the source capacity profile (`lead_time`, `max_nodes`, `preference`, `cost_class`,
 /// `fallback`) and the first-class `[cluster] max_nodes`: defaults, parse refusals, validator refusals, diff
@@ -295,5 +297,140 @@ class SourceCapacityProfileTest {
         assertThat(sourceFields).containsExactlyInAnyOrder("leadTime", "maxNodes", "preference", "costClass", "fallback");
         assertThat(clusterFields).containsExactly("max_nodes");
         assertThat(ClusterBootstrapConfigDiff.diff(base, base).modifications()).isEmpty();
+    }
+
+    @Test
+    void parse_scalarLeadTime_isRefusedNamingKeyAndAcceptedShape() {
+        assertParseRefused(hetzner("", "lead_time = \"90s\"", ""),
+                           "source.hz.lead_time",
+                           "sub-table",
+                           "not accepted");
+    }
+
+    @Test
+    void parse_inlineTableLeadTime_isRefusedNamingKeyAndAcceptedShape() {
+        assertParseRefused(hetzner("", "lead_time = { core = \"90s\" }", ""),
+                           "source.hz.lead_time",
+                           "sub-table",
+                           "not accepted");
+    }
+
+    @Test
+    void withClusterName_preservesMaxNodesAndSourceCapacityFields() {
+        var toml = hetzner("max_nodes = 12",
+                           """
+                           max_nodes = 5
+                           preference = 7
+                           cost_class = "reserved"
+                           fallback = "forbid"
+                           """,
+                           """
+                           [source.hz.lead_time]
+                           core = "90s"
+                           """);
+
+        ClusterBootstrapConfigParser.parse(toml)
+                                    .flatMap(config -> config.withClusterName("renamed"))
+                                    .onFailure(cause -> Assertions.fail(cause.message()))
+                                    .onSuccess(SourceCapacityProfileTest::assertRenamedKeepsCapacity);
+    }
+
+    private static void assertRenamedKeepsCapacity(ClusterBootstrapConfig renamed) {
+        var hz = renamed.sources().get("hz");
+
+        assertThat(renamed.maxNodes()).isEqualTo(Option.some(12));
+        assertThat(hz.maxNodes()).isEqualTo(Option.some(5));
+        assertThat(hz.preference()).isEqualTo(7);
+        assertThat(hz.costClass()).isEqualTo(CostClass.RESERVED);
+        assertThat(hz.fallback()).isEqualTo(SourceFallback.FORBID);
+        assertThat(hz.effectiveLeadTime(NodeRole.CORE).millis()).isEqualTo(90_000L);
+    }
+
+    @Test
+    void costClass_freeLiteral_parsesToFree() {
+        assertThat(CostClass.costClass("free").unwrap()).isEqualTo(CostClass.FREE);
+        assertThat(parsedHz("cost_class = \"free\"", "").costClass()).isEqualTo(CostClass.FREE);
+    }
+
+    @Test
+    void legacyFactories_withoutCapacityFields_takeDocumentedDefaults() {
+        var eighteenArg = legacyProfile(SourceType.CLOUD, Option.some(CloudProviderName.HETZNER), true);
+        var seventeenArg = legacyProfile(SourceType.CLOUD, Option.some(CloudProviderName.HETZNER), false);
+
+        List.of(eighteenArg, seventeenArg)
+            .forEach(SourceCapacityProfileTest::assertDefaultCapacity);
+    }
+
+    private static void assertDefaultCapacity(SourceProfile profile) {
+        assertThat(profile.preference()).isEqualTo(SourceProfile.DEFAULT_PREFERENCE).isEqualTo(100);
+        assertThat(profile.costClass()).isEqualTo(CostClass.ONDEMAND);
+        assertThat(profile.fallback()).isEqualTo(SourceFallback.ALLOW);
+        assertThat(profile.maxNodes()).isEqualTo(Option.none());
+        assertThat(profile.leadTime()).isEmpty();
+    }
+
+    @Test
+    void effectiveLeadTime_cloudSourceWithoutProvider_takesOtherCloudConstant() {
+        var profile = legacyProfile(SourceType.CLOUD, Option.none(), true);
+
+        assertThat(profile.effectiveLeadTime(NodeRole.CORE).millis()).isEqualTo(120_000L);
+    }
+
+    private static SourceProfile legacyProfile(SourceType type, Option<CloudProviderName> provider, boolean withCeiling) {
+        var name = sourceNameOrDefault("legacy");
+
+        return withCeiling
+               ? SourceProfile.sourceProfile(name,
+                                             type,
+                                             provider,
+                                             Option.none(),
+                                             Option.none(),
+                                             Option.none(),
+                                             List.of(),
+                                             Option.none(),
+                                             Option.none(),
+                                             Option.none(),
+                                             LoadBalancerMode.NONE,
+                                             List.of(),
+                                             Option.none(),
+                                             Map.of(),
+                                             Map.of(),
+                                             List.of(),
+                                             Option.none(),
+                                             Option.none())
+               : SourceProfile.sourceProfile(name,
+                                             type,
+                                             provider,
+                                             Option.none(),
+                                             Option.none(),
+                                             Option.none(),
+                                             List.of(),
+                                             Option.none(),
+                                             Option.none(),
+                                             Option.none(),
+                                             LoadBalancerMode.NONE,
+                                             List.of(),
+                                             Option.none(),
+                                             Map.of(),
+                                             Map.of(),
+                                             List.of(),
+                                             Option.none());
+    }
+
+    @Test
+    void validate_spotCostClassOnNonCloudSourceWithProvider_yieldsExactlyOnePf37() {
+        var toml = CLUSTER_HEAD.formatted("") + """
+            [source.local]
+            type = "docker"
+            provider = "hetzner"
+            cost_class = "spot"
+
+            [source.local.core]
+            count = 3
+            """;
+
+        parseAndValidate(toml)
+            .onSuccess(_ -> Assertions.fail("spot cost_class on a docker source must be refused"))
+            .onFailure(cause -> assertThat(cause.message().split("PF-37", -1)).as("one PF-37 error, not a duplicate").hasSize(2));
     }
 }
