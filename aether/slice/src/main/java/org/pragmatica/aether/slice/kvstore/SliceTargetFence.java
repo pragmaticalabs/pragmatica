@@ -199,11 +199,17 @@ public sealed interface SliceTargetFence {
                                                                                 List<Mutation<AetherKey, AetherValue>> mutations) {
         return store.getTyped(LeaderKey.INSTANCE, LeaderValue.class)
                     .toResult(SliceTargetFenceError.NoCommittedLeader.INSTANCE)
-                    .map(leader -> new LeaderTransaction<>(mutations.getFirst().key(),
-                                                           UUID.randomUUID().toString(),
-                                                           leader,
-                                                           List.copyOf(guards),
-                                                           List.copyOf(mutations)));
+                    .map(leader -> guardedTransaction(leader, guards, mutations));
+    }
+
+    private static LeaderTransaction<AetherKey, AetherValue> guardedTransaction(LeaderValue leader,
+                                                                                List<ReadWitness<AetherKey>> guards,
+                                                                                List<Mutation<AetherKey, AetherValue>> mutations) {
+        return new LeaderTransaction<>(mutations.getFirst().key(),
+                                       UUID.randomUUID().toString(),
+                                       leader,
+                                       List.copyOf(guards),
+                                       List.copyOf(mutations));
     }
 
     private static LeaderTransaction<AetherKey, AetherValue> transaction(LeaderValue leader,
