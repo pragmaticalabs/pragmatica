@@ -1515,7 +1515,7 @@ public final class LeaderReconciler {
         return victims;
     }
 
-    /// Victim selection (Approach 3 — slice-owner demotion + ephemeral preference, leader last).
+    /// Victim selection (Approach 3 — slice-owner demotion + ephemeral preference, leader never).
     /// Orderings applied in turn, then a stable cap at `drainCount`:
     ///
     /// 1. **Slice-owner demotion** ([`#ownsActiveSlices`], #1488): a node currently serving /
@@ -1539,10 +1539,11 @@ public final class LeaderReconciler {
     ///    partition FIRST (the nodes added for scale-up), falling back to configured seeds only when
     ///    ephemeral candidates cannot cover the surplus — so a scale-down drains the ephemeral fleet
     ///    and preserves the originally-configured cluster.
-    /// 4. **Leader last** ([`PresenceSampler#self`], #1089 option B): the local node — the leader,
-    ///    since only the leader reconciles — is held out of every tier above and considered only
-    ///    after all of them, under the same tier rules. It is a tie-break, never an exclusion: the
-    ///    leader is chosen only when no other member can cover the surplus.
+    /// 4. **Leader never** ([`PresenceSampler#self`], #1089): the local node — the leader, since
+    ///    only the leader reconciles — is never a victim. A DRAIN is delivered by the leader's
+    ///    broadcast and `ClusterSyncState` skips self, so a drained leader would never run its own
+    ///    `DrainProcedure` and would oscillate DEPARTING→MEMBER. When the other members cannot cover
+    ///    the surplus the scale-down stops short and the deferral WARN says the leader is excluded.
     ///
     /// Maturity-grace resolution: ephemeral NON-owners are drainable regardless of age — they own
     /// nothing, so there is no role-propagation-into-ownership race to guard against. Every other
@@ -1562,17 +1563,8 @@ public final class LeaderReconciler {
         var victims = new LinkedHashSet<NodeId>();
 
         appendTieredVictims(victims, others, drainCount, refusals);
-        appendTieredVictims(victims, selfIfMember(currentMembers, self), drainCount, refusals);
 
         return Set.copyOf(victims);
-    }
-
-    /// The leader's own id as a one-element candidate list when it is a member, else empty — the
-    /// final, leader-last pass of [`#selectDrainVictims`].
-    private static List<NodeId> selfIfMember(Set<NodeId> currentMembers, NodeId self) {
-        return currentMembers.contains(self)
-               ? List.of(self)
-               : List.of();
     }
 
     /// Append victims from `candidates` in tier order — ephemeral non-owners, mature configured
@@ -1748,7 +1740,7 @@ public final class LeaderReconciler {
     /// so an operator can see which slice to add capacity to or lower `minAvailable` for.
     @Contract
     private void deferYoungSurplusDrain(Set<NodeId> currentMembers, int deferredCount, List<DrainRefusal> refusals) {
-        log.warn("LeaderReconciler deferring surplus drain of {} member(s): remaining candidates are either younger than the drain-safety grace ({} ms — role propagation may still be in flight) or slice owners whose removal would drop a hosted slice below minAvailable; youngAgesMs={}, minAvailableRefusals=[{}]",
+        log.warn("LeaderReconciler deferring surplus drain of {} member(s): remaining candidates are either younger than the drain-safety grace ({} ms — role propagation may still be in flight) or slice owners whose removal would drop a hosted slice below minAvailable, or only the leader remains (the leader is never a drain victim, #1089); youngAgesMs={}, minAvailableRefusals=[{}]",
                  deferredCount,
                  drainSafetyGraceWindow.millis(),
                  youngMemberAgesMs(currentMembers),
