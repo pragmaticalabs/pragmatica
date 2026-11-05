@@ -34,7 +34,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// store was built with `IncarnationSource.none()`, so the production ring recorded nothing, pinned by this class's ENABLED tripwire). W2 adds
 /// `ReplicaIncarnationSource` and wires it into the store `AetherNode` builds; this class now pins THAT wiring and the ring's behavior under it.
 class IncarnationReaderTripwireTest {
-    private static final String PRODUCTION_CONSTRUCTION = "newKVStore<AetherKey,AetherValue>(delegateRouter,serializer,deserializer,ReplicaFilter.replicaFilter(),ReplicaIncarnationSource.replicaIncarnationSource(),CommitRing.DEFAULT_BUDGET_BYTES)";
+    /// The trailing argument is the notification delivery (D1, #2648); `AetherNodeKvDispatcherWiringBootTest` pins that it is dispatched.
+    private static final String PRODUCTION_CONSTRUCTION = "newKVStore<AetherKey,AetherValue>(delegateRouter,serializer,deserializer,ReplicaFilter.replicaFilter(),ReplicaIncarnationSource.replicaIncarnationSource(),CommitRing.DEFAULT_BUDGET_BYTES,kvDelivery(config,dispatcherSink,kvDispatchEvents))";
 
     private static final Serializer NO_BYTES = new Serializer() {
         @Override

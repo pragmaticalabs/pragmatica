@@ -19,8 +19,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// (`isVoter(self)`). For each of the 13 reader sites of section 1.1 and for each row guard of section 4 that names a role
 /// predicate, the OLD expression (kept here verbatim as the oracle) must equal the set of roles the NEW named predicate
 /// accepts. The expected sets are written independently, from the spec's role-to-behaviour mapping, never derived from the
-/// oracle. L-1 binds `Role role()` of the engine to this table; until then the table pins the spec against itself, and the
-/// existing tests named in section 1.1 pin the engine for the three states they reach.
+/// oracle. L-1 binds the table to the engine: `namedPredicates_equalTheExpectedSets` pins every `RabiaEngine.Role`
+/// predicate to those sets, and `engine_inEachOfTheSixStates_reportsThatRole` drives a real engine into each of the six
+/// values through the public API and reads `role()`.
 class LifecycleRoleTruthTableTest {
     enum Role {
         PRE_GENESIS(false, false, false),
@@ -128,6 +129,60 @@ class LifecycleRoleTruthTableTest {
         assertThat(Role.PRE_GENESIS_OBSERVER.declared).isTrue();
         assertThat(Role.ROSTER_OBSERVER.declared && Role.ROSTER_OBSERVER.member).as("the pinned independence of observerMode and isVoter").isTrue();
         assertThat(Role.REMOVED_UNDECLARED.rosterPresent && !Role.REMOVED_UNDECLARED.member && !Role.REMOVED_UNDECLARED.declared).as("transient").isTrue();
+    }
+
+    @Test
+    void namedPredicates_equalTheExpectedSets() {
+        for (var role : Role.values()) {
+            var named = RabiaEngine.Role.valueOf(role.name());
+
+            assertThat(named.votes()).as("votes() on %s", role).isEqualTo(MEMBER.contains(role));
+            assertThat(named.isDeclaredObserver()).as("isDeclaredObserver() on %s", role).isEqualTo(DECLARED.contains(role));
+            assertThat(named.observes()).as("observes() on %s", role).isEqualTo(NOT_VOTER_ROLE.contains(role));
+            assertThat(named.isRemoved()).as("isRemoved() on %s", role).isEqualTo(REMOVED_FROM_ROSTER.contains(role));
+            assertThat(named.isUndeclaredNonMember()).as("isUndeclaredNonMember() on %s", role)
+                                                      .isEqualTo(role == Role.PRE_GENESIS || role == Role.REMOVED_UNDECLARED);
+            assertThat(named.rosterPresent()).as("rosterPresent() on %s", role)
+                                             .isEqualTo(role != Role.PRE_GENESIS && role != Role.PRE_GENESIS_OBSERVER);
+        }
+    }
+
+    @Test
+    void engine_inEachOfTheSixStates_reportsThatRole() {
+        for (var role : Role.values()) {
+            var rig = engineIn(role);
+
+            try {
+                assertThat(rig.engine.role().name()).as("engine built for %s", role).isEqualTo(role.name());
+            } finally {
+                rig.stop();
+            }
+        }
+    }
+
+    private static LifecycleRig engineIn(Role role) {
+        return switch (role) {
+            case PRE_GENESIS -> LifecycleRig.genesisPendingRig();
+            case PRE_GENESIS_OBSERVER -> observing(LifecycleRig.genesisPendingRig());
+            case VOTER -> LifecycleRig.rig(false);
+            case ROSTER_OBSERVER -> observing(LifecycleRig.rig(false));
+            case REMOVED_UNDECLARED -> withoutSelf(LifecycleRig.fiveNodeRig());
+            case REMOVED -> observing(withoutSelf(LifecycleRig.fiveNodeRig()));
+        };
+    }
+
+    private static LifecycleRig observing(LifecycleRig rig) {
+        rig.engine.authorizeObservation();
+
+        return rig;
+    }
+
+    private static LifecycleRig withoutSelf(LifecycleRig rig) {
+        var installed = rig.engine.initializeVoters(new VoterConfiguration(0, new ClusterConfig(java.util.List.of(LifecycleRig.N2, LifecycleRig.N3, LifecycleRig.N4))));
+
+        assertThat(installed.isSuccess()).as("control: the roster without this node installs").isTrue();
+
+        return rig;
     }
 
     private static int count(boolean... flags) {

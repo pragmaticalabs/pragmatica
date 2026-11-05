@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.schema;
 
+import java.time.Duration;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.schema.SchemaError.PhysicalDatasourceOwnershipConflict;
@@ -324,6 +325,12 @@ class AetherSchemaManagerResumeTest {
     /// touched at all" — not merely "no rows were written". Bootstrap's `CREATE`/`ALTER` are excluded
     /// because they precede the claim by construction.
     private static final class FakeHistoryConnector implements SqlConnector {
+        /// FDB-2a (#2591): one logical session that answers the real runner's fence statements ([FakeMigrationFence]).
+        @Override
+        public <T> Promise<T> pinned(Duration statementTimeout, TransactionCallback<T> body, TransactionCallback<Unit> release) {
+            return FakeMigrationFence.pinnedOn(this, body, release);
+        }
+
         private static final String HISTORY_TABLE = "aether_schema_history";
         private static final String META_TABLE = "aether_schema_history_meta";
         private static final String OWNER_TABLE = "aether_schema_owner";
@@ -406,7 +413,8 @@ class AetherSchemaManagerResumeTest {
 
         @Override
         public <T> Promise<T> queryOne(String sql, RowMapper<T> mapper, Object... params) {
-            return queryOptional(sql, mapper, params).flatMap(opt -> opt.async(Causes.cause("no row")));
+            return FakeMigrationFence.answer(sql, mapper)
+                                     .or(() -> queryOptional(sql, mapper, params).flatMap(opt -> opt.async(Causes.cause("no row"))));
         }
 
         @Override
@@ -416,7 +424,9 @@ class AetherSchemaManagerResumeTest {
 
         @Override
         public <T> Promise<List<T>> queryList(String sql, RowMapper<T> mapper, Object... params) {
-            return mapRows(selectRows(sql.strip(), params), mapper).async();
+            return FakeMigrationFence.isFenceListQuery(sql)
+                   ? Promise.success(List.of())
+                   : mapRows(selectRows(sql.strip(), params), mapper).async();
         }
 
         @Override

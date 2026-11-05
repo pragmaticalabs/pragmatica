@@ -88,6 +88,7 @@ import org.pragmatica.lang.Tuple.Tuple2;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.Message;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.messaging.MessageRouter.DelegateRouter;
 import org.pragmatica.messaging.MessageRouter.Entry;
@@ -111,6 +112,12 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     LeaderManager leaderManager();
     /// Check if the consensus engine is active and ready for commands.
     boolean isActive();
+
+    /// True once this node's consensus engine was asked to stop (the D1-react engine-alive gate, KVStore dispatcher
+    /// design §3.5 R5). Default false for implementations without a Rabia engine.
+    default boolean isEngineStopRequested() {
+        return false;
+    }
 
     /// Check if the consensus engine is still draining the consensus log — i.e. its
     /// locally-applied frontier trails the cluster's observed committed frontier. True for a
@@ -154,6 +161,12 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     /// implementations without a Rabia engine.
     @Contract
     default void onStateRestored(Runnable listener) {}
+
+    /// Operator-warning pass-through (#1654): binds the wrapped [RabiaEngine]'s operator warnings
+    /// (`RabiaEngine#useOperatorWarningSink`) to the node's event log. Default no-op for implementations
+    /// without a Rabia engine.
+    @Contract
+    default void useOperatorWarningSink(OperatorWarningSink sink) {}
 
     default Result<Unit> configurePassiveClient() {
         return ReconfigurationError.NOT_PASSIVE_CLIENT.result();
@@ -752,6 +765,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             }
 
             @Override
+            public boolean isEngineStopRequested() {
+                return consensus().isStopRequested();
+            }
+
+            @Override
             public boolean isPendingCatchUp() {
                 return consensus().isPendingCatchUp();
             }
@@ -783,6 +801,12 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             @Contract
             public void onStateRestored(Runnable listener) {
                 consensus().onStateRestored(listener);
+            }
+
+            @Override
+            @Contract
+            public void useOperatorWarningSink(OperatorWarningSink sink) {
+                consensus().useOperatorWarningSink(sink);
             }
 
             @Override

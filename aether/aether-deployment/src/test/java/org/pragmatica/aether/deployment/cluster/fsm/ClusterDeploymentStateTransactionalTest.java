@@ -386,6 +386,12 @@ class ClusterDeploymentStateTransactionalTest {
                                                                                              failing,
                                                                                              Option.some(prior));
 
+            // #2628: the removal of a deleted blueprint's targets is fenced on the targets it read, so it names only
+            // targets that are committed. Both slices are committed under the failed blueprint, as after its deploy.
+            kvStore.put(SliceTargetKey.sliceTargetKey(sharedArtifact.base()),
+                        SliceTargetValue.sliceTargetValue(V1, 3, 1, Option.some(failing.id()), Option.none(), Option.none(), Option.none()));
+            kvStore.put(SliceTargetKey.sliceTargetKey(netNewArtifact.base()),
+                        SliceTargetValue.sliceTargetValue(V2, 3, 1, Option.some(failing.id()), Option.none(), Option.none(), Option.none()));
             // Seed the FSM's own ownership map as it would be right after the failed deploy
             // activated both slices: shared AND net-new, both currently owned by the failed id.
             activeState().blueprints().put(sharedArtifact,
@@ -416,12 +422,8 @@ class ClusterDeploymentStateTransactionalTest {
             var sharedSliceTargetKey = SliceTargetKey.sliceTargetKey(sharedArtifact.base());
             var netNewSliceTargetKey = SliceTargetKey.sliceTargetKey(netNewArtifact.base());
 
-            var sharedSliceRemoved = cluster.commands
-                    .stream()
-                    .anyMatch(c -> c instanceof KVCommand.Remove<AetherKey> && c.key().equals(sharedSliceTargetKey));
-            var netNewSliceRemoved = cluster.commands
-                    .stream()
-                    .anyMatch(c -> c instanceof KVCommand.Remove<AetherKey> && c.key().equals(netNewSliceTargetKey));
+            var sharedSliceRemoved = TargetWrites.removes(List.copyOf(cluster.commands), sharedSliceTargetKey);
+            var netNewSliceRemoved = TargetWrites.removes(List.copyOf(cluster.commands), netNewSliceTargetKey);
 
             assertThat(sharedSliceRemoved).as("a slice shared with the restored blueprint must NOT be deallocated")
                                           .isFalse();

@@ -110,7 +110,8 @@ class IncarnationCommitHookTest {
                                                                    new ArrayList<MessageRouter.Entry<?>>(),
                                                                    null,
                                                                    bootstrapModule,
-                                                                   epochSources);
+                                                                   epochSources,
+                                                                   null);
     }
 
     private static Object recordCurrent(AtomicLong sink, ObservedIncarnation incarnation) {

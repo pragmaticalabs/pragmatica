@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.membership.ntt;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -365,6 +366,9 @@ public final class LeaderReconciler {
     private static final int SUBSTITUTE_GENERATION = 1;
 
     private final ConcurrentHashMap<NodeId, InFlightEntry> inFlightProvisioning = new ConcurrentHashMap<>();
+    /// #2115 — departed voters whose replacement has joined but that are still installed voters (the voter reconciler swaps them out serially, once the
+    /// replacement is synced). They stay "already paired" until they leave the electorate or rejoin, so a later failure is not healed in their source.
+    private final Set<NodeId> pairedDeparted = ConcurrentHashMap.newKeySet();
 
     /// #1404 — the committed capacity allocations a core replacement may still be riding on, supplied by the capacity
     /// ledger rather than by metrics gossip: an acknowledgement lost with the leader that issued the create is not
@@ -629,6 +633,7 @@ public final class LeaderReconciler {
         cancelSurplusFollowUp();
         cancelDrainGraceReEval();
         inFlightProvisioning.clear();
+        pairedDeparted.clear();
         statusQueriesOutstanding.clear();
         recordLeadershipLoss();
         deficitSinceNanos = UNSET_NANOS;
@@ -979,7 +984,7 @@ public final class LeaderReconciler {
         // signal; the provider-state poll and the per-source ceiling eviction above (#1049) remain the
         // backstop for provisions that never arrive (failed boot). This runs BEFORE computing `effective`/effectiveCapacity
         // so a fulfilled id is never double-counted in the union.
-        currentMembers.forEach(inFlightProvisioning::remove);
+        currentMembers.forEach(this::settleJoinedPlaceholder);
         var clusterMembershipCount = currentMembers.size();
         var configuredCoreCount = configuredCoreCountSupplier.getAsInt();
         var authorityEvidence = quorumEvidence(currentMembers, configuredCoreCount);
@@ -1515,7 +1520,7 @@ public final class LeaderReconciler {
         return victims;
     }
 
-    /// Victim selection (Approach 3 — slice-owner demotion + ephemeral preference, leader last).
+    /// Victim selection (Approach 3 — slice-owner demotion + ephemeral preference, leader never).
     /// Orderings applied in turn, then a stable cap at `drainCount`:
     ///
     /// 1. **Slice-owner demotion** ([`#ownsActiveSlices`], #1488): a node currently serving /
@@ -1539,10 +1544,11 @@ public final class LeaderReconciler {
     ///    partition FIRST (the nodes added for scale-up), falling back to configured seeds only when
     ///    ephemeral candidates cannot cover the surplus — so a scale-down drains the ephemeral fleet
     ///    and preserves the originally-configured cluster.
-    /// 4. **Leader last** ([`PresenceSampler#self`], #1089 option B): the local node — the leader,
-    ///    since only the leader reconciles — is held out of every tier above and considered only
-    ///    after all of them, under the same tier rules. It is a tie-break, never an exclusion: the
-    ///    leader is chosen only when no other member can cover the surplus.
+    /// 4. **Leader never** ([`PresenceSampler#self`], #1089): the local node — the leader, since
+    ///    only the leader reconciles — is never a victim. A DRAIN is delivered by the leader's
+    ///    broadcast and `ClusterSyncState` skips self, so a drained leader would never run its own
+    ///    `DrainProcedure` and would oscillate DEPARTING→MEMBER. When the other members cannot cover
+    ///    the surplus the scale-down stops short and the deferral WARN says the leader is excluded.
     ///
     /// Maturity-grace resolution: ephemeral NON-owners are drainable regardless of age — they own
     /// nothing, so there is no role-propagation-into-ownership race to guard against. Every other
@@ -1562,17 +1568,8 @@ public final class LeaderReconciler {
         var victims = new LinkedHashSet<NodeId>();
 
         appendTieredVictims(victims, others, drainCount, refusals);
-        appendTieredVictims(victims, selfIfMember(currentMembers, self), drainCount, refusals);
 
         return Set.copyOf(victims);
-    }
-
-    /// The leader's own id as a one-element candidate list when it is a member, else empty — the
-    /// final, leader-last pass of [`#selectDrainVictims`].
-    private static List<NodeId> selfIfMember(Set<NodeId> currentMembers, NodeId self) {
-        return currentMembers.contains(self)
-               ? List.of(self)
-               : List.of();
     }
 
     /// Append victims from `candidates` in tier order — ephemeral non-owners, mature configured
@@ -1748,7 +1745,7 @@ public final class LeaderReconciler {
     /// so an operator can see which slice to add capacity to or lower `minAvailable` for.
     @Contract
     private void deferYoungSurplusDrain(Set<NodeId> currentMembers, int deferredCount, List<DrainRefusal> refusals) {
-        log.warn("LeaderReconciler deferring surplus drain of {} member(s): remaining candidates are either younger than the drain-safety grace ({} ms — role propagation may still be in flight) or slice owners whose removal would drop a hosted slice below minAvailable; youngAgesMs={}, minAvailableRefusals=[{}]",
+        log.warn("LeaderReconciler deferring surplus drain of {} member(s): remaining candidates are either younger than the drain-safety grace ({} ms — role propagation may still be in flight) or slice owners whose removal would drop a hosted slice below minAvailable, or only the leader remains (the leader is never a drain victim, #1089); youngAgesMs={}, minAvailableRefusals=[{}]",
                  deferredCount,
                  drainSafetyGraceWindow.millis(),
                  youngMemberAgesMs(currentMembers),
@@ -1849,11 +1846,61 @@ public final class LeaderReconciler {
         }
 
         var generation = substituteGeneration(nowNanos);
+        var departed = departedVoters(currentMembers).iterator();
 
         peersToProvision.forEach(placeholder -> dispatchSingleProvision(nowNanos,
                                                                         placeholder,
                                                                         currentMembers,
-                                                                        generation));
+                                                                        generation,
+                                                                        nextDeparted(departed)));
+    }
+
+    /// #2115 — the voters of the verified installed electorate that are not members now: the nodes whose departure opened the deficit. A
+    /// replacement is made in the source of the node it replaces, so each placeholder is paired with one of them in a stable order (a placeholder
+    /// that has not joined is not a voter yet, so it is never one of them). The pairing is a best reading: a departed node the voter reconciler has not yet swapped
+    /// out of the electorate can precede a newer one (a departed node whose replacement is in flight is excluded), and the unwired electorate (legacy fixtures) pairs nothing, so the manager then
+    /// resolves the source as it does for a node that carries none.
+    private List<NodeId> departedVoters(Set<NodeId> currentMembers) {
+        var replaced = departedWithReplacementInFlight();
+
+        return installedVotersSupplier.get()
+                                      .map(supplier -> supplier.get())
+                                      .map(voters -> pairedAndUnswapped(voters, currentMembers, replaced))
+                                      .or(List.of());
+    }
+
+    private List<NodeId> pairedAndUnswapped(Set<NodeId> voters, Set<NodeId> currentMembers, Set<NodeId> replaced) {
+        pairedDeparted.removeIf(id -> !voters.contains(id) || currentMembers.contains(id));
+
+        return voters.stream()
+                     .filter(voter -> !currentMembers.contains(voter))
+                     .filter(voter -> !replaced.contains(voter))
+                     .filter(voter -> !pairedDeparted.contains(voter))
+                     .sorted(Comparator.comparing(NodeId::id))
+                     .toList();
+    }
+
+    /// A joined placeholder leaves the in-flight map; the departed node it replaced stays "already paired" while it is an installed voter.
+    @Contract
+    private void settleJoinedPlaceholder(NodeId member) {
+        Option.option(inFlightProvisioning.remove(member)).onPresent(entry -> entry.departed()
+                                                                                   .onPresent(pairedDeparted::add));
+    }
+
+    /// A departed node whose replacement is already in flight is still an installed voter until the voter reconciler swaps it out; it must not be
+    /// paired again, or a later failure would be healed in its source.
+    private Set<NodeId> departedWithReplacementInFlight() {
+        return inFlightProvisioning.values()
+                                   .stream()
+                                   .flatMap(entry -> entry.departed()
+                                                          .stream())
+                                   .collect(Collectors.toSet());
+    }
+
+    private static Option<NodeId> nextDeparted(Iterator<NodeId> departed) {
+        return departed.hasNext()
+               ? some(departed.next())
+               : none();
     }
 
     /// #1786 — a provision dispatched while a discounted (unjoined past the join grace) entry is still in flight
@@ -1871,13 +1918,15 @@ public final class LeaderReconciler {
     private void dispatchSingleProvision(long nowNanos,
                                          NodeId placeholder,
                                          Set<NodeId> currentMembers,
-                                         int generation) {
+                                         int generation,
+                                         Option<NodeId> departed) {
         inFlightProvisioning.put(placeholder,
                                  InFlightEntry.inFlightEntry(nowNanos,
                                                              ctm.replacementCeiling(NodeRole.CORE),
                                                              InFlightState.DISPATCHING,
                                                              nowNanos,
-                                                             generation));
+                                                             generation,
+                                                             departed));
         armInFlightSweep();
         // Pass the SAME minted placeholder as the new node's intended identity: the provisioned
         // node boots under exactly this id (CTM threads it into ProvisionContext.nodeId()), so the
@@ -1896,10 +1945,7 @@ public final class LeaderReconciler {
         //     placeholder would mask the deficit and permanently wedge auto-heal once the breaker
         //     trips). A deferral is NOT a failure — no provisioning failure is recorded.
         //   - failure (genuine boot failure) → REMOVE it (the CTM already recorded the failure).
-        ctm.provisionReplacement(placeholder,
-                                 none(),
-                                 currentMembers,
-                                 NodeRole.CORE)
+        ctm.provisionReplacement(placeholder, departed, currentMembers, NodeRole.CORE)
            .withSuccess(disposition -> reconcileInFlightForDisposition(placeholder, disposition))
            .withFailure(cause -> reapFailedProvision(placeholder, cause));
     }
@@ -2421,7 +2467,8 @@ public final class LeaderReconciler {
                                  InFlightState state,
                                  long pollableSinceNanos,
                                  int absentListings,
-                                 int generation) {
+                                 int generation,
+                                 Option<NodeId> departed) {
         static InFlightEntry inFlightEntry(long sinceNanos,
                                            TimeSpan ceiling,
                                            InFlightState state,
@@ -2434,19 +2481,35 @@ public final class LeaderReconciler {
                                            InFlightState state,
                                            long pollableSinceNanos,
                                            int generation) {
-            return new InFlightEntry(sinceNanos, ceiling, state, pollableSinceNanos, 0, generation);
+            return inFlightEntry(sinceNanos, ceiling, state, pollableSinceNanos, generation, none());
+        }
+
+        /// #2115 — `departed` is the node this placeholder replaces, kept so a later pass does not pair it with a second placeholder.
+        static InFlightEntry inFlightEntry(long sinceNanos,
+                                           TimeSpan ceiling,
+                                           InFlightState state,
+                                           long pollableSinceNanos,
+                                           int generation,
+                                           Option<NodeId> departed) {
+            return new InFlightEntry(sinceNanos, ceiling, state, pollableSinceNanos, 0, generation, departed);
         }
 
         InFlightEntry withState(InFlightState next) {
-            return new InFlightEntry(sinceNanos, ceiling, next, pollableSinceNanos, absentListings, generation);
+            return new InFlightEntry(sinceNanos, ceiling, next, pollableSinceNanos, absentListings, generation, departed);
         }
 
         InFlightEntry pollableFrom(long nowNanos) {
-            return new InFlightEntry(sinceNanos, ceiling, InFlightState.UNCONFIRMED, nowNanos, 0, generation);
+            return new InFlightEntry(sinceNanos, ceiling, InFlightState.UNCONFIRMED, nowNanos, 0, generation, departed);
         }
 
         InFlightEntry withAbsentListing() {
-            return new InFlightEntry(sinceNanos, ceiling, state, pollableSinceNanos, absentListings + 1, generation);
+            return new InFlightEntry(sinceNanos,
+                                     ceiling,
+                                     state,
+                                     pollableSinceNanos,
+                                     absentListings + 1,
+                                     generation,
+                                     departed);
         }
 
         boolean isDispatching() {

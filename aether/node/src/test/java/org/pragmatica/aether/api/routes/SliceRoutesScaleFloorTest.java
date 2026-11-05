@@ -5,7 +5,13 @@
 package org.pragmatica.aether.api.routes;
 
 import io.netty.buffer.ByteBuf;
+import java.time.Duration;
 import java.util.concurrent.CopyOnWriteArrayList;
+import org.awaitility.Awaitility;
+import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -118,9 +124,9 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// first-write branch) and a stub node that records what `apply` was handed. The slice is listed by an active
 /// blueprint, which the route requires before it will write a target at all.
 class SliceRoutesScaleFloorTest {
-    private static final Artifact SLICE = Artifact.artifact("org.example:svc-a:1.0.0").unwrap();
-    private static final BlueprintId BLUEPRINT_ID = BlueprintId.blueprintId("org.example:orders-app:1.0.0").unwrap();
-    private static final ExpandedBlueprint EXPANDED = ExpandedBlueprint.expandedBlueprint(BLUEPRINT_ID,
+    static final Artifact SLICE = Artifact.artifact("org.example:svc-a:1.0.0").unwrap();
+    static final BlueprintId BLUEPRINT_ID = BlueprintId.blueprintId("org.example:orders-app:1.0.0").unwrap();
+    static final ExpandedBlueprint EXPANDED = ExpandedBlueprint.expandedBlueprint(BLUEPRINT_ID,
                                                                                           List.of(ResolvedSlice.resolvedSlice(SLICE,
                                                                                                                               3,
                                                                                                                               false).unwrap()));
@@ -139,23 +145,19 @@ class SliceRoutesScaleFloorTest {
         assertThat(firstWriteFor(5).minInstances()).isEqualTo(3);
     }
 
+    /// #2662: the first write is a fenced creation, so the store holds the committed leader and the blueprint declaring the slice, and
+    /// the stub applies what it is handed into the store, as consensus would.
     private static SliceTargetValue firstWriteFor(int instances) {
         var applied = new CopyOnWriteArrayList<KVCommand<AetherKey>>();
-        var kvStore = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
-        var node = new ScaleManageableNode(listingBlueprintService(), kvStore, applied);
-        var router = ManagementRouter.managementRouter(SliceRoutes.sliceRoutes(() -> node));
-        var recorder = new RecordingResponseWriter();
-        var request = "{\"artifact\":\"" + SLICE.asString() + "\",\"instances\":" + instances + "}";
+        var kvStore = fencedStore();
+        var node = new ScaleManageableNode(listingBlueprintService(), kvStore, commands -> recordAndApply(kvStore, applied, commands));
+        var recorder = scale(node, instances);
 
-        assertThat(router.handle(postRequest(ManagementRoute.SLICE_SCALE.prefix(), request), recorder)).isTrue();
         assertThat(recorder.status.get()).as(recorder.body())
                                          .isEqualTo(HttpStatus.OK);
 
         var targets = applied.stream()
-                             .filter(KVCommand.Put.class::isInstance)
-                             .map(command -> ((KVCommand.Put<?, ?>) command).value())
-                             .filter(SliceTargetValue.class::isInstance)
-                             .map(SliceTargetValue.class::cast)
+                             .flatMap(SliceRoutesScaleFloorTest::targetValues)
                              .toList();
 
         assertThat(targets).as("the scale route must write exactly one slice target").hasSize(1);
@@ -163,7 +165,52 @@ class SliceRoutesScaleFloorTest {
         return targets.getFirst();
     }
 
-    private static BlueprintService listingBlueprintService() {
+    /// A store holding a committed leader and the blueprint that declares the slice.
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    static KVStore<AetherKey, AetherValue> fencedStore() {
+        var kvStore = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+
+        kvStore.process(kvStore.createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(NodeId.nodeId("leader").unwrap(), 1)))));
+        kvStore.process(kvStore.createBatch(List.<KVCommand<AetherKey>> of(new KVCommand.Put<AetherKey, AetherValue>(AppBlueprintKey.appBlueprintKey(BLUEPRINT_ID),
+                                                                                                                      AppBlueprintValue.appBlueprintValue(EXPANDED)))));
+
+        return kvStore;
+    }
+
+    private static Promise<List<Object>> recordAndApply(KVStore<AetherKey, AetherValue> kvStore,
+                                                        List<KVCommand<AetherKey>> applied,
+                                                        List<KVCommand<AetherKey>> commands) {
+        applied.addAll(commands);
+
+        return Promise.success(kvStore.process(kvStore.createBatch(commands)));
+    }
+
+    /// Posts a scale request and waits for its response: the fenced write answers once its transaction's outcome is known.
+    static RecordingResponseWriter scale(ScaleManageableNode node, int instances) {
+        var router = ManagementRouter.managementRouter(SliceRoutes.sliceRoutes(() -> node));
+        var recorder = new RecordingResponseWriter();
+        var request = "{\"artifact\":\"" + SLICE.asString() + "\",\"instances\":" + instances + "}";
+
+        assertThat(router.handle(postRequest(ManagementRoute.SLICE_SCALE.prefix(), request), recorder)).isTrue();
+        recorder.awaitStatus();
+
+        return recorder;
+    }
+
+    /// The `SliceTargetValue`s a command writes: a plain put's, or the replacements of a transaction's mutations.
+    static java.util.stream.Stream<SliceTargetValue> targetValues(KVCommand<AetherKey> command) {
+        return switch (command) {
+            case KVCommand.Put<AetherKey, ?> put when put.value() instanceof SliceTargetValue value -> java.util.stream.Stream.of(value);
+            case KVCommand.LeaderTransaction<AetherKey, ?> transaction -> transaction.mutations()
+                                                                                       .stream()
+                                                                                       .flatMap(mutation -> mutation.replacement().stream())
+                                                                                       .filter(SliceTargetValue.class::isInstance)
+                                                                                       .map(SliceTargetValue.class::cast);
+            default -> java.util.stream.Stream.empty();
+        };
+    }
+
+    static BlueprintService listingBlueprintService() {
         return new BlueprintService() {
             @Override
             public Promise<PublishedBlueprint> publish(String dsl) {
@@ -228,7 +275,7 @@ class SliceRoutesScaleFloorTest {
         };
     }
 
-    private static HttpRequest postRequest(String path, String body) {
+    static HttpRequest postRequest(String path, String body) {
         return new HttpRequest() {
             @Override
             public String requestId() {
@@ -262,8 +309,8 @@ class SliceRoutesScaleFloorTest {
         };
     }
 
-    private static final class RecordingResponseWriter implements ResponseWriter {
-        private final AtomicReference<HttpStatus> status = new AtomicReference<>();
+    static final class RecordingResponseWriter implements ResponseWriter {
+        final AtomicReference<HttpStatus> status = new AtomicReference<>();
         private final AtomicReference<byte[]> body = new AtomicReference<>(new byte[0]);
 
         @Override
@@ -280,15 +327,19 @@ class SliceRoutesScaleFloorTest {
         String body() {
             return new String(body.get(), StandardCharsets.UTF_8);
         }
+
+        void awaitStatus() {
+            Awaitility.await().atMost(Duration.ofSeconds(5)).until(() -> status.get() != null);
+        }
     }
 
     private static <T> T unsupported(String methodName) {
         return fail("Not touched by the scale route handler: " + methodName);
     }
 
-    private record ScaleManageableNode(BlueprintService blueprintService,
-                                       KVStore<AetherKey, AetherValue> kvStore,
-                                       List<KVCommand<AetherKey>> applied) implements ManageableNode {
+    record ScaleManageableNode(BlueprintService blueprintService,
+                               KVStore<AetherKey, AetherValue> kvStore,
+                               Fn1<Promise<List<Object>>, List<KVCommand<AetherKey>>> applier) implements ManageableNode {
         @Override
         public NodeId self() { return unsupported("self"); }
         @Override
@@ -364,10 +415,9 @@ class SliceRoutesScaleFloorTest {
         @Override
         public Option<NodeId> leader() { return unsupported("leader"); }
         @Override
+        @SuppressWarnings("unchecked")
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
-            applied.addAll(commands);
-
-            return Promise.success(List.of());
+            return (Promise<List<R>>) (Promise<?>) applier.apply(commands);
         }
         @Override
         public SchemaOrchestratorService schemaOrchestrator() { return unsupported("schemaOrchestrator"); }

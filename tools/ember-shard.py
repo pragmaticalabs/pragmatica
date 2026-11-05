@@ -31,7 +31,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 # module -> (test source dir, weights file, shard budget in seconds)
 MODULES = {
-    # job timeout 35 min - ~2.5 min setup, / 1.3 headroom: 1500. Four shards plan about 1180 s each (regenerated weights).
+    # job timeout 35 min - ~2.5 min setup, / 1.3 headroom: 1500. Five shards plan about 950 s each (regenerated weights).
     "ember": (ROOT / "aether/ember/src/test/java", ROOT / "tools/ember-shard-weights.txt", 1500),
     # job timeout 30 min - ~4 min setup (bootstrap + upstream install), / 1.3 headroom, rounded down.
     "consensus": (ROOT / "integrations/consensus/src/test/java", ROOT / "tools/consensus-shard-weights.txt", 1200),

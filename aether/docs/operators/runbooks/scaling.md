@@ -27,20 +27,20 @@
 2. **Verify node joined cluster**
    ```bash
    # On existing node
-   curl http://node1:8080/cluster/status
+   curl http://node1:8080/api/v1/cluster/status
    # Should show node4 in the node list
    ```
 
 3. **Verify quorum maintained**
    ```bash
-   curl http://node1:8080/health
+   curl http://node1:8080/api/v1/health
    # quorum should be true
    ```
 
 4. **Monitor for slice rebalancing**
    ```bash
    # Watch slice distribution
-   watch -n 5 'curl -s http://node1:8080/slices | jq "group_by(.nodeId) | map({node: .[0].nodeId, count: length})"'
+   watch -n 5 'curl -s http://node1:8080/api/v1/slices | jq "group_by(.nodeId) | map({node: .[0].nodeId, count: length})"'
    ```
 
 ## Cloud Auto-Scaling
@@ -111,14 +111,16 @@ ssh aether@<leader-host> 'journalctl -u aether-node --since "10 min ago" | grep 
 1. **Verify quorum will be maintained**
    ```bash
    # Current node count
-   curl http://node1:8080/health | jq '.nodeCount'
+   curl http://node1:8080/api/v1/health | jq '.nodeCount'
    # Must be > 2 after removal for 3-node quorum
    ```
 
 2. **Drain slices from node (if possible)**
    ```bash
-   # Graceful shutdown will attempt to migrate slices
-   curl -X POST http://node4:8080/admin/drain
+   # Graceful shutdown will attempt to migrate slices.
+   # <node-id> is the id of the node being removed (see GET /api/v1/nodes/lifecycle);
+   # a drain that would take a slice below its floor is refused unless you add ?force=true.
+   curl -X POST http://node1:8080/api/v1/nodes/drain/<node-id>
    ```
 
 3. **Stop the node**
@@ -129,7 +131,7 @@ ssh aether@<leader-host> 'journalctl -u aether-node --since "10 min ago" | grep 
 
 4. **Verify remaining cluster health**
    ```bash
-   curl http://node1:8080/health
+   curl http://node1:8080/api/v1/health
    # quorum should still be true
    ```
 

@@ -233,6 +233,7 @@ class ControlLoopPlacementPreservationTest {
                                        new ControlLoopContextAttributionTest.StubMetricsCollector(),
                                        Option.none(),
                                        cluster,
+                                       FencedTargetWrites.fencedStore(SELF),
                                        TimeSpan.timeSpan(5_000).millis(),
                                        ControllerConfig.DEFAULT.withScalingConfig(smallWindowConfig()),
                                        sink);

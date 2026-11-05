@@ -3,10 +3,16 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.consensus.rabia;
 
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRequest;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -27,18 +33,8 @@ class LifecycleTripwireTest {
 
     // ---- L-2: triggerResync on a gated, unauthorized engine ----
 
+    /// A-04: a far-future Propose must not start a sync round on a gated engine that was never authorized.
     @Test
-    void triggerResync_onGatedUnauthorizedStopped_sendsSyncRequest_pinsCurrentBehaviour() {
-        rig = LifecycleRig.rig(true).started();
-
-        rig.proposeAt(LifecycleRig.FAR);
-
-        assertThat(rig.mode()).as("control: the engine is gated and was never authorized, yet the far-future Propose moved it").isEqualTo("Syncing");
-        assertThat(syncRequests()).as("today a gated unauthorized engine broadcasts a SyncRequest (A-04)").isGreaterThanOrEqualTo(1);
-    }
-
-    @Test
-    @Disabled("L-2 enables this and deletes the _pinsCurrentBehaviour tripwire above")
     void triggerResync_onGatedUnauthorizedEngine_sendsNoSyncRequest() {
         rig = LifecycleRig.rig(true).started();
 
@@ -46,6 +42,19 @@ class LifecycleTripwireTest {
 
         assertThat(syncRequests()).isZero();
         assertThat(rig.mode()).isEqualTo("Stopped");
+    }
+
+    /// Control: the guard is the authorization, not the gate. Once authorized (no held notification), the same Propose syncs.
+    @Test
+    void triggerResync_onGatedAuthorizedEngine_stillSyncs() {
+        rig = LifecycleRig.rig(true).started();
+        rig.engine.authorizeActivation();
+        rig.settle();
+
+        rig.proposeAt(LifecycleRig.FAR);
+
+        assertThat(rig.mode()).isEqualTo("Syncing");
+        assertThat(syncRequests()).isGreaterThanOrEqualTo(1);
     }
 
     /// Ruling a20d1dbca5: a far-future Propose resyncs a Paused engine. Stays enabled forever.
@@ -99,27 +108,15 @@ class LifecycleTripwireTest {
 
     // ---- L-4: an undecodable responder snapshot ----
 
+    /// Enabled by L-4 (#2316). The refusal is raised through the operator-warning route, not as an engine event (CTO design
+    /// for L-4), so the original `rig.events` contains "RestoreRefused" is asserted as a published
+    /// `consensus-restore-refused` instead.
     @Test
-    void undecodableResponderSnapshot_repeatedRounds_staysSyncingWithEmptyStatus_pinsCurrentBehaviour() {
-        rig = LifecycleRig.rig(false).started();
-        rig.machine.undecodable = true;
-        rig.active();
-
-        for (var round = 0; round < 3; round++) {
-            rig.snapshotAnswers(10);
-            rig.tick();
-        }
-
-        assertThat(rig.mode()).as("fail-closed: the node never serves a state it could not read").isEqualTo("Syncing");
-        assertThat(rig.machine.restores.get()).as("every round re-enters the same failing restore").isGreaterThanOrEqualTo(3);
-        assertThat(rig.engine.voterReconfigurationStatus().failure()).as("today the status is silent about it").isEmpty();
-        assertThat(rig.events).as("and no engine event names the refusal").doesNotContain("RestoreRefused");
-    }
-
-    @Test
-    @Disabled("L-4 enables this and deletes the _pinsCurrentBehaviour tripwire above")
     void undecodableResponderSnapshot_threeRounds_surfacesTypedFailureInStatus() {
+        var warnings = new CopyOnWriteArrayList<OperatorWarningCode>();
+
         rig = LifecycleRig.rig(false).started();
+        rig.engine.useOperatorWarningSink(OperatorWarningSink.handingOffTo(warning -> warnings.add(warning.code())));
         rig.machine.undecodable = true;
         rig.active();
 
@@ -129,7 +126,18 @@ class LifecycleTripwireTest {
         }
 
         assertThat(rig.engine.voterReconfigurationStatus().failure()).isNotEmpty();
-        assertThat(rig.events).contains("RestoreRefused");
+        assertThat(publishedWithin(warnings, OperatorWarningCode.CONSENSUS_RESTORE_REFUSED)).isTrue();
+    }
+
+    /// The sink hands warnings off to another thread: wait for the code, bounded.
+    private static boolean publishedWithin(List<OperatorWarningCode> warnings, OperatorWarningCode code) {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+
+        while (!warnings.contains(code) && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+
+        return warnings.contains(code);
     }
 
     // ---- L-6: the table rows R21 and R22 of an Observing engine (A3) ----

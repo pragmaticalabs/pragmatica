@@ -41,13 +41,17 @@ public final class NodeReplacementIndex {
     }
 
     /// Told of every committed record as it is applied, with the record it replaced: the one place a transition is seen
-    /// exactly as the cluster committed it, on every node.
+    /// exactly as the cluster committed it, on every node. `replayed` is the replay bit the KV handler captured when it
+    /// absorbed the put (KVStore dispatcher design §3.5 R4): a replayed record is committed history, not a transition.
     @FunctionalInterface
     public interface TransitionListener {
-        Unit onTransition(NodeId original, Option<NodeReplacementValue> before, NodeReplacementValue after);
+        Unit onTransition(NodeId original,
+                          Option<NodeReplacementValue> before,
+                          NodeReplacementValue after,
+                          boolean replayed);
     }
 
-    private final AtomicReference<TransitionListener> listener = new AtomicReference<>((_, _, _) -> Unit.unit());
+    private final AtomicReference<TransitionListener> listener = new AtomicReference<>((_, _, _, _) -> Unit.unit());
 
     /// Replaces the transition listener. It runs outside the index's lock.
     public Unit onTransition(TransitionListener transitionListener) {
@@ -56,13 +60,20 @@ public final class NodeReplacementIndex {
         return Unit.unit();
     }
 
+    /// A record applied live (never in a replay burst).
     public Unit put(NodeReplacementKey key, NodeReplacementValue value) {
+        return put(key, value, false);
+    }
+
+    /// A record as the KV handler absorbed it, with the replay bit it captured on the delivering thread.
+    public Unit put(NodeReplacementKey key, NodeReplacementValue value, boolean replayed) {
         var before = swap(key, value);
 
         return listener.get()
                        .onTransition(key.original(),
                                      before,
-                                     value);
+                                     value,
+                                     replayed);
     }
 
     private synchronized Option<NodeReplacementValue> swap(NodeReplacementKey key, NodeReplacementValue value) {

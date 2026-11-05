@@ -707,6 +707,10 @@ class CapacityLifecycleGoldenTest {
                     r.start(start);
                     r.step("sourceOf(node)", () -> r.lc.sourceOf(X));
                 });
+                run("committedSourceOf/" + start, lead, r -> {
+                    r.start(start);
+                    r.step("committedSourceOf(node)", () -> r.lc.committedSourceOf(X));
+                });
             }
         }
         for (var start : starts) {

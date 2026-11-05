@@ -1,0 +1,2 @@
+### Fixed (2026-11-05 — #1654: genesis dead-seat signal, engine half; part of #2460 L-10)
+- Consensus: genesis that forms with an agreed seat which is no longer a connected peer raises the operator warning `genesis-seat-unreachable` (subject: the seat), closed by `genesis-seat-reachable` when the seat is connected again or leaves the voter roster; formation is not blocked `[verified: integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/GenesisSeatUnreachableTest.java]`.
