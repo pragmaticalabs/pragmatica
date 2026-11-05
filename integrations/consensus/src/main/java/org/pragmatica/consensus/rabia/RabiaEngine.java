@@ -44,6 +44,7 @@ import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.ConsensusError;
@@ -192,16 +193,14 @@ public class RabiaEngine<C extends Command> {
     /// it was given.
     private volatile Option<Cause> ownRestoreFailure = Option.none();
 
-    /// #2316: identical failed restores of one responder snapshot that refuse it ([#RESTORE_REFUSAL_ROUNDS]).
+    /// #2316: consecutive failed responder restores, in total, that raise the refusal, and failed restores of one snapshot
+    /// digest that exclude that digest from candidate selection.
     private static final int RESTORE_REFUSAL_ROUNDS = 3;
 
-    /// The current run of identical failed restores of one responder snapshot (#2316). Reset by a different failure
-    /// and cleared by any successful restore.
-    private volatile Option<RestoreFailureStreak> restoreFailureStreak = Option.none();
-    /// The responder snapshot this node refuses to restore (#2316, owner ruling Q-3: fail closed, the snapshot is refused
-    /// as a whole and never decoded row by row). Set after [#RESTORE_REFUSAL_ROUNDS] identical failures and cleared by any
-    /// successful restore. It is not a fence: only candidate selection ([#adoptableCandidate]) and the status read it.
-    private volatile Option<RefusedSnapshot> refusedSnapshot = Option.none();
+    /// The failed responder restores since the last successful restore (#2316, owner ruling Q-3: fail closed, a snapshot is
+    /// refused as a whole and never decoded row by row). Cleared by any successful restore. It is not a fence: only candidate
+    /// selection ([#adoptableCandidate]) and the status read it.
+    private volatile Option<RestoreFailures> restoreFailures = Option.none();
 
     private final AtomicReference<OperatorWarningSink> operatorWarningSink = new AtomicReference<>(OperatorWarningSink.logOnly());
 
@@ -226,33 +225,59 @@ public class RabiaEngine<C extends Command> {
 
     private volatile Option<AppliedChange> lastChange = Option.none();
 
-    /// One responder snapshot, identified by who sent it, the phase it claims and the SHA-256 of its bytes (#2316).
-    private record RefusedSnapshot(NodeId responder, Phase phase, String digest, String cause) {
-        boolean matches(SavedState<?> state) {
-            return digest.equals(snapshotDigest(state.snapshot()));
+    /// One failed restore of a responder snapshot: who sent it, the phase it claims, the SHA-256 of its bytes and the
+    /// cause (#2316).
+    private record FailedRestore(NodeId responder, Phase phase, String digest, String cause) {}
+
+    /// The failed responder restores since the last successful restore (#2316).
+    ///
+    /// `rounds` counts consecutive failed restore rounds IN TOTAL, whatever the responder, phase or digest (CTO ruling on
+    /// #2675): a responder whose snapshots never decode while its phase advances must still raise the refusal, or the node
+    /// stays in `Syncing` with no warning. The refusal is raised when `rounds` reaches [#RESTORE_REFUSAL_ROUNDS], once,
+    /// naming `latest`. Exclusion is per digest: a digest that failed [#RESTORE_REFUSAL_ROUNDS] times joins `refused` and is
+    /// never selected again, so alternating undecodable snapshots cannot be retried forever; no candidate below the highest
+    /// refused phase is adopted (owner ruling Q-16). `recent` keeps only the failures at or above the latest failed phase,
+    /// so a phase that advances every round holds one entry, not one per round.
+    private record RestoreFailures(int rounds, FailedRestore latest, List<FailedRestore> recent, Set<FailedRestore> refused) {
+        static RestoreFailures first(FailedRestore failure) {
+            return new RestoreFailures(0, failure, List.of(), Set.of()).next(failure);
+        }
+
+        RestoreFailures next(FailedRestore failure) {
+            var nextRecent = Stream.concat(recent.stream().filter(prior -> prior.phase()
+                                                                                 .compareTo(failure.phase()) >= 0),
+                                           Stream.of(failure))
+                                   .toList();
+            var digestRounds = nextRecent.stream().filter(prior -> prior.digest().equals(failure.digest())).count();
+            var nextRefused = digestRounds >= RESTORE_REFUSAL_ROUNDS
+                              ? Stream.concat(refused.stream(), Stream.of(failure)).collect(Collectors.toUnmodifiableSet())
+                              : refused;
+
+            return new RestoreFailures(rounds + 1, failure, nextRecent, nextRefused);
+        }
+
+        boolean raised() {
+            return rounds >= RESTORE_REFUSAL_ROUNDS;
+        }
+
+        boolean admits(SyncResponse<?> response) {
+            var digest = snapshotDigest(response.state().snapshot());
+
+            return refused.stream().noneMatch(prior -> prior.digest().equals(digest))
+                   && floor().map(phase -> atOrAbove(response, phase)).or(true);
+        }
+
+        Option<Phase> floor() {
+            return Option.from(refused.stream().map(FailedRestore::phase).max(Comparator.naturalOrder()));
         }
 
         String describe() {
-            return "Responder snapshot refused after " + RESTORE_REFUSAL_ROUNDS
-                 + " failed restores (responder " + responder
-                 + ", phase " + phase
-                 + ", digest " + digest
-                 + "): " + cause
-                 + ". This node stays in Syncing until a readable snapshot at or above that phase arrives";
-        }
-    }
-
-    /// A run of identical failed restores of one responder snapshot (#2316): same responder, phase, digest and cause.
-    private record RestoreFailureStreak(NodeId responder, Phase phase, String digest, String cause, int rounds) {
-        boolean sameFailure(NodeId otherResponder, Phase otherPhase, String otherDigest, String otherCause) {
-            return responder.equals(otherResponder)
-                   && phase.equals(otherPhase)
-                   && digest.equals(otherDigest)
-                   && cause.equals(otherCause);
-        }
-
-        RefusedSnapshot refused() {
-            return new RefusedSnapshot(responder, phase, digest, cause);
+            return "Responder snapshots refused after " + rounds
+                 + " consecutive failed restores (latest: responder " + latest.responder()
+                 + ", phase " + latest.phase()
+                 + ", digest " + latest.digest()
+                 + "): " + latest.cause()
+                 + ". This node stays in Syncing until a responder snapshot restores";
         }
     }
 
@@ -287,7 +312,9 @@ public class RabiaEngine<C extends Command> {
     public VoterReconfigurationStatus voterReconfigurationStatus() {
         var failure = authorityFailure.map(Cause::message)
                                       .or(stateTransferFailure.map(Cause::message)
-                                                              .or(refusedSnapshot.map(RefusedSnapshot::describe).or("")));
+                                                              .or(restoreFailures.filter(RestoreFailures::raised)
+                                                                                 .map(RestoreFailures::describe)
+                                                                                 .or("")));
 
         return voters.map(configuration -> describeReconfiguration(configuration, failure))
                      .or(() -> unresolvedStatus(failure));
@@ -2540,18 +2567,16 @@ public class RabiaEngine<C extends Command> {
                           .onEmpty(this::holdForReadableSnapshot);
     }
 
-    /// #2316 candidate selection. With no refused snapshot it is the most advanced response, as before. With one, the
+    /// #2316 candidate selection. With no failed restore it is the most advanced response, as before. After failures, every
     /// refused digest is excluded and the most advanced remaining response is adopted only at the SAME OR A HIGHER phase
-    /// than the refused one (owner ruling Q-16): the responders intersect every commit quorum, and a lower candidate can
-    /// lack a commit only the refused responder saw. `responses` is sorted by phase, ascending.
+    /// than the highest refused one (owner ruling Q-16): the responders intersect every commit quorum, and a lower candidate
+    /// can lack a commit only the refused responder saw. `responses` is sorted by phase, ascending.
     private Option<SyncResponse<C>> adoptableCandidate(List<SyncResponse<C>> responses) {
-        return refusedSnapshot.fold(() -> highest(responses), refused -> highestNotRefused(responses, refused));
+        return restoreFailures.fold(() -> highest(responses), failures -> highestAdmitted(responses, failures));
     }
 
-    private Option<SyncResponse<C>> highestNotRefused(List<SyncResponse<C>> responses, RefusedSnapshot refused) {
-        var readable = responses.stream().filter(response -> !refused.matches(response.state())).toList();
-
-        return highest(readable).filter(response -> atOrAbove(response, refused.phase()));
+    private Option<SyncResponse<C>> highestAdmitted(List<SyncResponse<C>> responses, RestoreFailures failures) {
+        return highest(responses.stream().filter(failures::admits).toList());
     }
 
     private Option<SyncResponse<C>> highest(List<SyncResponse<C>> responses) {
@@ -2570,7 +2595,7 @@ public class RabiaEngine<C extends Command> {
         syncResponses.clear();
         log.debug("Node {} adopts nothing: no readable response at or above the refused snapshot's phase ({})",
                   self,
-                  refusedSnapshot.map(RefusedSnapshot::phase));
+                  restoreFailures.flatMap(RestoreFailures::floor));
     }
 
     private void restoreResponse(SyncResponse<C> candidate, int responseCount) {
@@ -2578,73 +2603,65 @@ public class RabiaEngine<C extends Command> {
         restoreState(candidate.state(), cause -> recordResponderRestoreFailure(candidate, cause));
     }
 
-    /// #2316: a responder snapshot that fails to restore with the same cause, from the same responder, phase and digest in
-    /// [#RESTORE_REFUSAL_ROUNDS] consecutive attempts is refused as a whole (owner ruling Q-3: fail closed, never per-row
-    /// tolerant decode). The refusal is raised once, as [OperatorWarningCode#CONSENSUS_RESTORE_REFUSED], and is shown by
-    /// [#voterReconfigurationStatus]. Every attempt still logs [#logRestoreFailure]. This is not the own-restore failure
-    /// ([#recordOwnRestoreFailure]): another responder may hold a readable snapshot.
+    /// #2316: every failed responder restore is counted ([RestoreFailures]). The refusal is raised once, as
+    /// [OperatorWarningCode#CONSENSUS_RESTORE_REFUSED], when [#RESTORE_REFUSAL_ROUNDS] consecutive rounds have failed in
+    /// total, whatever the responder, phase or digest, and is shown by [#voterReconfigurationStatus]. A snapshot is refused
+    /// as a whole, never decoded row by row (owner ruling Q-3). Every attempt still logs [#logRestoreFailure]. This is not
+    /// the own-restore failure ([#recordOwnRestoreFailure]): another responder may hold a readable snapshot.
     private void recordResponderRestoreFailure(SyncResponse<C> response, Cause cause) {
         logRestoreFailure(cause);
-        var streak = nextFailureStreak(response, cause);
+        var failure = new FailedRestore(response.sender(),
+                                        response.state().lastCommittedPhase(),
+                                        snapshotDigest(response.state().snapshot()),
+                                        cause.message());
+        var failures = restoreFailures.fold(() -> RestoreFailures.first(failure), prior -> prior.next(failure));
 
-        restoreFailureStreak = Option.some(streak);
-        if (streak.rounds() == RESTORE_REFUSAL_ROUNDS) {
-            refuseSnapshot(streak.refused());
+        restoreFailures = Option.some(failures);
+        if (failures.rounds() == RESTORE_REFUSAL_ROUNDS) {
+            raiseRestoreRefusal(failures.latest());
         }
     }
 
-    private RestoreFailureStreak nextFailureStreak(SyncResponse<C> response, Cause cause) {
-        var phase = response.state().lastCommittedPhase();
-        var digest = snapshotDigest(response.state().snapshot());
-        var rounds = restoreFailureStreak.filter(streak -> streak.sameFailure(response.sender(),
-                                                                              phase,
-                                                                              digest,
-                                                                              cause.message()))
-                                         .map(RestoreFailureStreak::rounds)
-                                         .or(0);
-
-        return new RestoreFailureStreak(response.sender(), phase, digest, cause.message(), rounds + 1);
-    }
-
-    private Unit refuseSnapshot(RefusedSnapshot refused) {
-        refusedSnapshot = Option.some(refused);
-
+    private Unit raiseRestoreRefusal(FailedRestore latest) {
         return OperatorWarnings.raise(log,
                                       operatorWarningSink.get(),
                                       OperatorWarningCode.CONSENSUS_RESTORE_REFUSED,
                                       self.id(),
-                                      "Node {} REFUSES the snapshot of responder {} at phase {} (digest {}): {} identical restore "
-                                     + "failures: {}. The snapshot is refused as a whole and never partially decoded. This node stays "
-                                     + "in Syncing and serves no requests until a readable snapshot at or above phase {} arrives. "
-                                     + "Operator action: repair or replace the responder's state, or replace this node (#2316).",
+                                      "Node {} REFUSES responder snapshots after {} consecutive failed restores; latest: responder {} "
+                                     + "at phase {} (digest {}): {}. No snapshot is ever partially decoded. This node stays in Syncing "
+                                     + "and serves no requests until a responder snapshot restores; a snapshot that failed {} times is "
+                                     + "no longer selected, nor is any snapshot below its phase. Operator action: repair or replace "
+                                     + "the responders' state, or replace this node (#2316).",
                                       self,
-                                      refused.responder(),
-                                      refused.phase(),
-                                      refused.digest(),
                                       RESTORE_REFUSAL_ROUNDS,
-                                      refused.cause(),
-                                      refused.phase());
+                                      latest.responder(),
+                                      latest.phase(),
+                                      latest.digest(),
+                                      latest.cause(),
+                                      RESTORE_REFUSAL_ROUNDS);
     }
 
-    /// #2316: any successful restore ends the failure streak and closes a raised refusal with
-    /// [OperatorWarningCode#CONSENSUS_RESTORE_RECOVERED].
+    /// #2316: any successful restore clears the failure count and every refused digest, and closes a raised refusal with
+    /// [OperatorWarningCode#CONSENSUS_RESTORE_RECOVERED], once.
     private void clearRestoreRefusal() {
-        restoreFailureStreak = Option.none();
-        var refused = refusedSnapshot;
+        var failures = restoreFailures;
 
-        refusedSnapshot = Option.none();
-        refused.onPresent(this::closeRestoreRefusal);
+        restoreFailures = Option.none();
+        failures.filter(RestoreFailures::raised)
+                .map(RestoreFailures::latest)
+                .onPresent(this::closeRestoreRefusal);
     }
 
-    private Unit closeRestoreRefusal(RefusedSnapshot refused) {
+    private Unit closeRestoreRefusal(FailedRestore latest) {
         return OperatorWarnings.raise(log,
                                       operatorWarningSink.get(),
                                       OperatorWarningCode.CONSENSUS_RESTORE_RECOVERED,
                                       self.id(),
-                                      "Node {} restored a readable snapshot; the refusal of responder {}'s snapshot at phase {} is closed",
+                                      "Node {} restored a readable snapshot; the refusal of responder snapshots (latest: responder {} at "
+                                     + "phase {}) is closed",
                                       self,
-                                      refused.responder(),
-                                      refused.phase());
+                                      latest.responder(),
+                                      latest.phase());
     }
 
     /// SHA-256 of a snapshot, lowercase hex: the identity of a refused snapshot (#2316). Design-out: SHA-256 is an algorithm
@@ -2838,10 +2855,6 @@ public class RabiaEngine<C extends Command> {
                       syncResponses.keySet(),
                       liveResponseCount());
         }
-    }
-
-    private void restoreState(SavedState<C> state) {
-        restoreState(state, this::logRestoreFailure);
     }
 
     private void restoreState(SavedState<C> state, Consumer<Cause> onRestoreFailure) {

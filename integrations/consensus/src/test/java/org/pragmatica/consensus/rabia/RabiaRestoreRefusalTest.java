@@ -16,9 +16,9 @@
 package org.pragmatica.consensus.rabia;
 
 import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -71,7 +71,9 @@ class RabiaRestoreRefusalTest {
     private static final long BUDGET_MILLIS = 2_000;
     private static final long QUIET_MILLIS = 200;
     private static final long SETTLE_MILLIS = 100;
-    private static final byte[] BAD_SNAPSHOT = "undecodable".getBytes(StandardCharsets.UTF_8);
+    private static final String BAD_PREFIX = "undecodable";
+    private static final byte[] BAD_SNAPSHOT = BAD_PREFIX.getBytes(StandardCharsets.UTF_8);
+    private static final byte[] OTHER_BAD_SNAPSHOT = (BAD_PREFIX + " too").getBytes(StandardCharsets.UTF_8);
     private static final byte[] GOOD_SNAPSHOT = "readable".getBytes(StandardCharsets.UTF_8);
     private static final Phase HIGH_PHASE = Phase.phase(10);
     private static final Phase LOW_PHASE = Phase.phase(8);
@@ -92,7 +94,7 @@ class RabiaRestoreRefusalTest {
     }
 
     /// RED at the base: the status carried no trace of a responder-snapshot failure (`failure()` was `""`). After three
-    /// identical failures it names the refusal and the cause; after two it does not yet (N=3 -> 1 goes red here).
+    /// consecutive failed rounds it names the refusal and the cause; after two it does not yet (N=3 -> 1 goes red here).
     @Test
     void undecodableResponderSnapshot_threeRounds_surfacesTypedFailureInStatus() {
         var engine = coldStarted();
@@ -103,7 +105,7 @@ class RabiaRestoreRefusalTest {
 
         failingRounds(engine, 1);
         assertThat(engine.voterReconfigurationStatus().failure()).as("#2316: the refusal is in the status, typed and with its cause")
-                                                                 .contains("Responder snapshot refused")
+                                                                 .contains("Responder snapshots refused")
                                                                  .contains(UNDECODABLE.message())
                                                                  .contains(HIGH_PHASE.toString());
         assertThat(engine.isActive()).as("Q-3: fail closed").isFalse();
@@ -119,7 +121,7 @@ class RabiaRestoreRefusalTest {
         assertThat(published(CONSENSUS_RESTORE_REFUSED)).as("two failures raise nothing").isEmpty();
 
         failingRounds(engine, 1);
-        assertThat(published(CONSENSUS_RESTORE_REFUSED)).as("#2316: the third identical failure raises the refusal once")
+        assertThat(published(CONSENSUS_RESTORE_REFUSED)).as("#2316: the third failed round raises the refusal once")
                                                         .hasSize(1)
                                                         .allMatch(warning -> warning.subject().equals(NODE_1.id())
                                                                              && warning.message().contains(NODE_2.toString())
@@ -219,18 +221,90 @@ class RabiaRestoreRefusalTest {
                                                           .allMatch(warning -> warning.subject().equals(NODE_1.id()));
     }
 
+    /// Two undecodable snapshots at ONE phase, alternated between the two responders so that the attempted digest alternates
+    /// every round, over 12 rounds. The refusal is raised exactly once, and each digest is excluded after its third failure, so
+    /// both are tried three times and then the engine holds. Keeping one refused digest instead of a set (a second refusal
+    /// overwrites the first, which is then retried) turns the attempt counts red.
+    @Test
+    void alternatingUndecodableDigests_atOnePhase_raiseOnceAndAreBothExcluded() {
+        var engine = coldStarted();
+
+        for (int round = 1; round <= 12; round++) {
+            var odd = round % 2 == 1;
+
+            attemptedOrHeldRound(engine,
+                                 response(NODE_2, HIGH_PHASE, odd ? BAD_SNAPSHOT : OTHER_BAD_SNAPSHOT),
+                                 response(NODE_3, HIGH_PHASE, odd ? OTHER_BAD_SNAPSHOT : BAD_SNAPSHOT));
+        }
+
+        assertThat(published(CONSENSUS_RESTORE_REFUSED)).as("#2316: alternating digests raise the refusal exactly once").hasSize(1);
+        assertThat(stateMachine.badAttempts(BAD_SNAPSHOT)).as("the first digest is excluded after its third failure").isEqualTo(3);
+        assertThat(stateMachine.badAttempts(OTHER_BAD_SNAPSHOT)).as("and so is the second: both stay excluded").isEqualTo(3);
+        assertThat(published(CONSENSUS_RESTORE_RECOVERED)).as("nothing was restored, so nothing recovers").isEmpty();
+        assertThat(engine.isActive()).as("Q-3: fail closed").isFalse();
+    }
+
+    /// CTO ruling on #2675: the refusal counts consecutive failed rounds IN TOTAL. Eight undecodable snapshots, each at a
+    /// higher phase than the last and so each with its own digest, raise the CRITICAL exactly once, at the third round, and
+    /// the status names the latest failure. A later successful restore closes it with exactly one recovery. Resetting the
+    /// count on a phase (or digest) change turns this red, and so does not clearing on success.
+    @Test
+    void undecodableSnapshots_phaseAdvancingEveryRound_raiseOnceAtTheThirdRound_thenRecoverOnce() {
+        var engine = coldStarted();
+
+        for (int round = 1; round <= 8; round++) {
+            var phase = Phase.phase(HIGH_PHASE.value() + round);
+
+            failingRound(engine,
+                         response(NODE_2, phase, ("undecodable at " + phase).getBytes(StandardCharsets.UTF_8)),
+                         response(NODE_3, LOW_PHASE, GOOD_SNAPSHOT));
+            assertThat(published(CONSENSUS_RESTORE_REFUSED)).as("after round %s", round)
+                                                            .hasSize(round < 3 ? 0 : 1);
+        }
+
+        assertThat(engine.voterReconfigurationStatus().failure()).as("the status names the latest failure")
+                                                                 .contains("after 8 consecutive failed restores")
+                                                                 .contains(Phase.phase(HIGH_PHASE.value() + 8).toString())
+                                                                 .contains(UNDECODABLE.message());
+        assertThat(stateMachine.restored()).as("Q-16: the lower-phase snapshot is never adopted meanwhile").isEmpty();
+
+        deliver(engine, response(NODE_2, Phase.phase(20), BAD_SNAPSHOT), response(NODE_3, Phase.phase(30), GOOD_SNAPSHOT));
+        assertThat(awaitCondition(() -> !stateMachine.restored().isEmpty())).as("the higher readable snapshot is restored").isTrue();
+        assertThat(awaitCondition(() -> !published(CONSENSUS_RESTORE_RECOVERED).isEmpty())).as("the recovery is published")
+                                                                                           .isTrue();
+        assertThat(published(CONSENSUS_RESTORE_RECOVERED)).as("exactly once").hasSize(1);
+        assertThat(published(CONSENSUS_RESTORE_REFUSED)).as("and the refusal was never raised again").hasSize(1);
+        assertThat(engine.voterReconfigurationStatus().failure()).as("the status is cleared").doesNotContain(UNDECODABLE.message());
+    }
+
     /// One round that restores the bad snapshot and fails, waited for by its attempt count. The count rises inside
     /// `restoreSnapshot`, just BEFORE the engine records the failure on the same executor thread, so each round also
     /// settles for [#SETTLE_MILLIS]: a status or event read right after the count would race the recording.
     private void failingRounds(RabiaEngine<TestCommand> engine, int rounds) {
         for (int round = 0; round < rounds; round++) {
-            var expected = stateMachine.badAttempts() + 1;
-
-            deliver(engine, response(NODE_2, HIGH_PHASE, BAD_SNAPSHOT), response(NODE_3, LOW_PHASE, GOOD_SNAPSHOT));
-            assertThat(awaitCondition(() -> stateMachine.badAttempts() == expected)).as("failing round reached the restore")
-                                                                                    .isTrue();
-            awaitCondition(() -> false, SETTLE_MILLIS);
+            failingRound(engine, response(NODE_2, HIGH_PHASE, BAD_SNAPSHOT), response(NODE_3, LOW_PHASE, GOOD_SNAPSHOT));
         }
+    }
+
+    private void failingRound(RabiaEngine<TestCommand> engine, SyncResponse<TestCommand> first, SyncResponse<TestCommand> second) {
+        var expected = stateMachine.badAttempts() + 1;
+
+        deliver(engine, first, second);
+        assertThat(awaitCondition(() -> stateMachine.badAttempts() == expected)).as("failing round reached the restore")
+                                                                                .isTrue();
+        awaitCondition(() -> false, SETTLE_MILLIS);
+    }
+
+    /// A round that may restore or may be held: it waits up to [#QUIET_MILLIS] for an attempt, then settles as
+    /// [#failingRound] does.
+    private void attemptedOrHeldRound(RabiaEngine<TestCommand> engine,
+                                      SyncResponse<TestCommand> first,
+                                      SyncResponse<TestCommand> second) {
+        var attemptsBefore = stateMachine.attempts();
+
+        deliver(engine, first, second);
+        awaitCondition(() -> stateMachine.attempts() > attemptsBefore, QUIET_MILLIS);
+        awaitCondition(() -> false, SETTLE_MILLIS);
     }
 
     /// Rounds that are expected NOT to restore anything, followed by a quiet interval in which a restore would have shown
@@ -285,17 +359,19 @@ class RabiaRestoreRefusalTest {
         return engine;
     }
 
-    /// Fails to restore [#BAD_SNAPSHOT] and restores anything else, counting both.
+    /// Fails to restore any snapshot that starts with [#BAD_PREFIX] and restores anything else, counting both.
     private static final class SelectiveStateMachine extends TestStateMachine {
         private final AtomicInteger attempts = new AtomicInteger();
         private final AtomicInteger badAttempts = new AtomicInteger();
+        private final Map<String, Integer> badAttemptsBySnapshot = new ConcurrentHashMap<>();
         private final List<byte[]> restored = new CopyOnWriteArrayList<>();
 
         /// `attempts` rises last, so a reader that saw it rise also sees `badAttempts` and `restored`.
         @Override
         public Result<Unit> restoreSnapshot(byte[] snapshot) {
-            var outcome = Arrays.equals(snapshot, BAD_SNAPSHOT)
-                          ? failBad()
+            var text = new String(snapshot, StandardCharsets.UTF_8);
+            var outcome = text.startsWith(BAD_PREFIX)
+                          ? failBad(text)
                           : restoreGood(snapshot);
 
             attempts.incrementAndGet();
@@ -303,7 +379,8 @@ class RabiaRestoreRefusalTest {
             return outcome;
         }
 
-        private Result<Unit> failBad() {
+        private Result<Unit> failBad(String text) {
+            badAttemptsBySnapshot.merge(text, 1, Integer::sum);
             badAttempts.incrementAndGet();
 
             return UNDECODABLE.result();
@@ -321,6 +398,10 @@ class RabiaRestoreRefusalTest {
 
         int badAttempts() {
             return badAttempts.get();
+        }
+
+        int badAttempts(byte[] snapshot) {
+            return badAttemptsBySnapshot.getOrDefault(new String(snapshot, StandardCharsets.UTF_8), 0);
         }
 
         List<byte[]> restored() {
