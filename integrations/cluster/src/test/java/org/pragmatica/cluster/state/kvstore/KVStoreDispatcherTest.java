@@ -12,10 +12,12 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
+import java.lang.reflect.Field;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -24,6 +26,7 @@ import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -86,10 +89,14 @@ class KVStoreDispatcherTest {
     }
 
     KVStore<StructuredKey, Object> store(NotificationDelivery.ReplayRank rank) {
+        return store(router, rank, NotificationDelivery.DEFAULT_SLOW_HANDLER_NANOS);
+    }
+
+    KVStore<StructuredKey, Object> store(MessageRouter routedBy, NotificationDelivery.ReplayRank rank, long slowHandlerNanos) {
         var delivery = new NotificationDelivery.Dispatched("t" + System.nanoTime(), rank, sink, hold,
                                                            (code, subject, _) -> recordOperatorEvent(code.code() + "|" + subject),
-                                                           NotificationDelivery.DEFAULT_SLOW_HANDLER_NANOS);
-        var store = new KVStore<StructuredKey, Object>(router, new Serializer() {
+                                                           slowHandlerNanos);
+        var store = new KVStore<StructuredKey, Object>(routedBy, new Serializer() {
             @Override public <T> void write(ByteBuf buffer, T value) {}
         }, deserializer, delivery);
         opened.add(store);
@@ -119,6 +126,25 @@ class KVStoreDispatcherTest {
         return store.process(store.createBatch(List.of(new KVCommand.Put<>(key, value))));
     }
 
+    static List<Object> remove(KVStore<StructuredKey, Object> store, Key key) {
+        return store.process(store.createBatch(List.of(new KVCommand.Remove<>(key, Option.none()))));
+    }
+
+    static void delivered(KVStore<StructuredKey, Object> store) {
+        store.awaitDelivered(store.enqueuedSeq()).await();
+    }
+
+    /// The private state the tests below pin has no accessor (production is owned by another lane): read it by reflection.
+    static Object privateField(Object target, String name) throws Exception {
+        Field field = target.getClass().getDeclaredField(name);
+        field.setAccessible(true);
+        return field.get(target);
+    }
+
+    static NotificationDispatcher dispatcherOf(KVStore<?, ?> store) throws Exception {
+        return (NotificationDispatcher) privateField(store, "dispatcher");
+    }
+
     static <T> boolean resolvedWithin(Promise<T> promise, long millis) {
         return promise.await(TimeSpan.timeSpan(millis).millis()).isSuccess();
     }
@@ -143,7 +169,41 @@ class KVStoreDispatcherTest {
                                     .isNotEqualTo(Thread.currentThread().getName());
         }
 
-        /// (d) FIFO across a reentrant write: a write made by batch 1's handler is delivered after batch 2, which was
+        /// The delivery thread is a daemon, so a store nobody closed cannot hold the JVM open. Mutation: a non-daemon thread (red).
+        @Test
+        void deliveryThreadIsADaemon() throws Exception {
+            var store = store();
+            var daemon = new AtomicReference<Boolean>();
+            var delivered = new CountDownLatch(1);
+            router.addRoute(KVStoreNotification.ValuePut.class, _ -> {
+                daemon.set(Thread.currentThread().isDaemon());
+                delivered.countDown();
+            });
+
+            put(store, A, "one");
+
+            assertThat(delivered.await(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(daemon.get()).isTrue();
+        }
+
+        /// Once the removal batch is delivered the dispatcher keeps no tracking entry for the removed key (the tombstone
+        /// is trimmed at delivery). The removal is the last batch, so its tombstone seq equals the delivered seq.
+        /// Mutations: record no tombstone / never trim it / trim strictly below the delivered seq (each leaves an entry, red).
+        @Test
+        void removedKeyLeavesNoTrackingEntryOnceDelivered() throws Exception {
+            var store = store();
+            router.addRoute(KVStoreNotification.ValuePut.class, _ -> {});
+            router.addRoute(KVStoreNotification.ValueRemove.class, _ -> {});
+
+            put(store, A, "one");
+            remove(store, A);
+            delivered(store);
+            sleep(200);
+
+            assertThat((Map<?, ?>) privateField(dispatcherOf(store), "lastModifiedSeq")).isEmpty();
+        }
+
+        /// (d) FIFO across a reentrant write:a write made by batch 1's handler is delivered after batch 2, which was
         /// already queued: mutation, deliver a write made on the dispatcher thread at once.
         @Test
         void reentrantWriteFromAHandlerQueuesBehindEarlierBatches() throws Exception {
@@ -301,6 +361,43 @@ class KVStoreDispatcherTest {
             assertThat(view).containsEntry(A, "one");
         }
 
+        /// An apply promise parks behind its OWN batch, not the one before it: with batch 2's handler still running, the
+        /// promise of batch 2 stays unresolved, and resolves once that handler returns.
+        /// Mutation: park on the previous seq (resolves while batch 2 is still being delivered, red).
+        @Test
+        void applyPromiseNotResolvedBeforeItsOwnBatchIsDelivered() throws Exception {
+            var store = store();
+            var releaseB = new CountDownLatch(1);
+            var inB = new CountDownLatch(1);
+            router.addRoute(KVStoreNotification.ValuePut.class, (KVStoreNotification.ValuePut<StructuredKey, Object> p) -> {
+                if (p.cause().key().equals(B)) {
+                    inB.countDown();
+                    awaitUninterrupted(releaseB);
+                }
+            });
+            hold.holdFrom(1);
+            put(store, A, "one");
+            assertThat(hold.awaitHeld(10)).isTrue();
+            put(store, B, "two");
+            var promise = Promise.<Unit>promise();
+            store.completeAfterDelivery(promise, Unit.unit());
+
+            hold.release();
+
+            assertThat(inB.await(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(resolvedWithin(promise, 300)).as("batch B (its own) is still being delivered").isFalse();
+            releaseB.countDown();
+            assertThat(resolvedWithin(promise, 10_000)).isTrue();
+        }
+
+        private static void awaitUninterrupted(CountDownLatch latch) {
+            try {
+                latch.await(20, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
         /// Lane-1 decision review: a parked apply promise waits for the newest `enqueuedSeq` AT PARK TIME, a target fixed
         /// when it parks, so a continuous writer stream can delay it only by the batches enqueued between its own batch
         /// and its park, never starve it. A writer keeps the queue about 50 batches deep for up to 3 s while each
@@ -389,6 +486,42 @@ class KVStoreDispatcherTest {
         void control_readOfAKeyNoLaterBatchWroteCountsNothing() throws Exception {
             assertThat(readAheadsWhenBatchTwoWrites(L)).isZero();
             assertThat(eventsOf("kv-dispatch-read-ahead")).isEmpty();
+        }
+
+        /// A handler reading the key its OWN batch wrote is not a read-ahead (fence compares strictly after the batch).
+        /// Mutation: the point-read fence is inclusive (counts one, red).
+        @Test
+        void handlerReadingItsOwnBatchsKeyCountsNoReadAhead() throws Exception {
+            var store = store();
+            var done = new CountDownLatch(1);
+            router.addRoute(KVStoreNotification.ValuePut.class, (KVStoreNotification.ValuePut<StructuredKey, Object> p) -> {
+                store.get(p.cause().key());
+                done.countDown();
+            });
+
+            put(store, A, "one");
+
+            assertThat(done.await(10, TimeUnit.SECONDS)).isTrue();
+            delivered(store);
+            assertThat(store.readAheadReads(NotificationDispatcher.PHASE_LIVE, "Key")).isZero();
+        }
+
+        /// A snapshot taken by a handler while no later batch is enqueued is not a read-ahead.
+        /// Mutation: the snapshot fence is inclusive (counts one, red).
+        @Test
+        void snapshotWithNoLaterBatchCountsNoSnapshotReadAhead() throws Exception {
+            var store = store();
+            var done = new CountDownLatch(1);
+            router.addRoute(KVStoreNotification.ValuePut.class, _ -> {
+                store.snapshot();
+                done.countDown();
+            });
+
+            put(store, A, "one");
+
+            assertThat(done.await(10, TimeUnit.SECONDS)).isTrue();
+            delivered(store);
+            assertThat(store.deliveryMetrics().snapshotReadAheadsLive()).isZero();
         }
 
         private long readAheadsWhenBatchTwoWrites(Key written) throws Exception {
@@ -730,6 +863,105 @@ class KVStoreDispatcherTest {
             assertThat(store.get(A).or("absent")).isEqualTo("one");
             assertThat(store.enqueuedSeq()).isEqualTo(seq);
         }
+
+        /// A wait parked on an INLINE store after close fails with outcome-unknown: the inline executor would otherwise
+        /// complete it as a success. Mutation: completeNow ignores the closed state (succeeds, red).
+        @Test
+        void closedInlineStoreFailsACompleteAfterDeliveryWithOutcomeUnknown() {
+            var store = new KVStore<StructuredKey, Object>(router, new Serializer() {
+                @Override public <T> void write(ByteBuf buffer, T value) {}
+            }, deserializer, NotificationDelivery.inline());
+            store.close();
+            var promise = Promise.<Unit>promise();
+
+            store.completeAfterDelivery(promise, Unit.unit());
+
+            promise.await(TimeSpan.timeSpan(5).seconds())
+                   .onSuccess(_ -> fail("a closed store must fail the wait"))
+                   .onFailure(cause -> assertThat(cause).isInstanceOf(KVDeliveryError.DeliveryOutcomeUnknown.class));
+        }
+
+        /// On a closed dispatched store the failure carries the "closed" reason, not the executor-rejection one (the shut
+        /// down executor also yields outcome-unknown, which masks the mutation in a type-only assertion).
+        /// Mutation: completeNow ignores the closed state (reason becomes the rejection, red).
+        @Test
+        void closedDispatchedStoreFailsACompleteAfterDeliveryWithReasonClosed() {
+            var store = store();
+            router.addRoute(KVStoreNotification.ValuePut.class, _ -> {});
+            store.close();
+            var promise = Promise.<Unit>promise();
+
+            store.completeAfterDelivery(promise, Unit.unit());
+
+            promise.await(TimeSpan.timeSpan(5).seconds())
+                   .onSuccess(_ -> fail("a closed store must fail the wait"))
+                   .onFailure(cause -> assertThat(((KVDeliveryError.DeliveryOutcomeUnknown) cause).reason()).isEqualTo("closed"));
+        }
+
+        /// An append that lands after close() starts no delivery thread and no watchdog (close() takes no mutation guard,
+        /// so a writer past its allocate can race it). Mutation: ensureStarted runs after stop (a watchdog leaks, red).
+        @Test
+        void appendAfterCloseStartsNoThread() throws Exception {
+            var store = store();
+            var dispatcher = dispatcherOf(store);
+            long seq;
+            synchronized (store) {
+                seq = dispatcher.allocate();
+            }
+            var batch = dispatcher.batch(seq, 0, List.of(), false).fold(() -> null, b -> b);
+            store.close();
+
+            dispatcher.append(batch);
+            sleep(300);
+
+            var alive = Thread.getAllStackTraces().keySet().stream()
+                              .filter(t -> t.getName().startsWith(store.dispatcherThreadName()) && t.isAlive())
+                              .count();
+            assertThat(alive).as("no delivery thread and no watchdog thread started after close").isZero();
+        }
+
+        /// close() drops the undelivered queue: with batch 1 held and two more enqueued, the queue is empty after close.
+        /// `droppedAtClose` is computed before the clear, so only the queue itself can see this.
+        /// Mutation: close keeps the queue (red).
+        @Test
+        void closeDropsTheUndeliveredQueue() throws Exception {
+            var store = store();
+            router.addRoute(KVStoreNotification.ValuePut.class, _ -> {});
+            hold.holdFrom(1);
+            put(store, A, "one");
+            assertThat(hold.awaitHeld(10)).isTrue();
+            put(store, B, "two");
+            put(store, K, "three");
+
+            store.close();
+
+            assertThat((java.util.Collection<?>) privateField(dispatcherOf(store), "queue")).isEmpty();
+        }
+
+        /// close() stops the watchdog thread: control that `<name>-watchdog` runs, then it is gone within 5 s of close.
+        /// (`closeJoinsTheDispatcherThread` compares the delivery thread's name only.) Mutation: close leaves the watchdog (red).
+        @Test
+        void closeStopsTheWatchdogThread() {
+            var store = store();
+            router.addRoute(KVStoreNotification.ValuePut.class, _ -> {});
+            put(store, A, "one");
+            delivered(store);
+            var watchdog = store.dispatcherThreadName() + "-watchdog";
+            assertThat(threadAlive(watchdog)).as("control: the watchdog runs while the store is open").isTrue();
+
+            store.close();
+
+            var deadline = System.nanoTime() + BOUND.toNanos() / 2;
+            while (threadAlive(watchdog) && System.nanoTime() < deadline) {
+                sleep(20);
+            }
+            assertThat(threadAlive(watchdog)).as("watchdog thread gone after close").isFalse();
+        }
+
+        private static boolean threadAlive(String name) {
+            return Thread.getAllStackTraces().keySet().stream()
+                         .anyMatch(thread -> thread.getName().equals(name) && thread.isAlive());
+        }
     }
 
     @Nested
@@ -778,6 +1010,67 @@ class KVStoreDispatcherTest {
 
             assertThat(seen.await(10, TimeUnit.SECONDS)).isTrue();
             assertThat(sink.reasons).isEmpty();
+        }
+
+        /// An exception escaping the router itself (not a handler: the stock router already swallows those) is isolated per
+        /// notification: delivery continues and the node is not stopped. Mutation: the loop rethrows it (red).
+        @Test
+        void routerThrowingIsIsolatedPerNotification() throws Exception {
+            var calls = new AtomicInteger();
+            var seen = new CountDownLatch(1);
+            MessageRouter throwing = new MessageRouter.ImmutableRouter<Message>() {
+                @Override
+                public Map<Class<Message>, List<java.util.function.Consumer<Message>>> routingTable() {
+                    return Map.of();
+                }
+
+                @Override
+                public <R extends Message> void route(R message) {
+                    if (calls.incrementAndGet() == 1) {
+                        throw new IllegalStateException("router blew up");
+                    }
+                    seen.countDown();
+                }
+            };
+            var store = store(throwing, NotificationDelivery.ReplayRank.flat(), NotificationDelivery.DEFAULT_SLOW_HANDLER_NANOS);
+
+            put(store, A, "one");
+            put(store, B, "two");
+
+            assertThat(seen.await(10, TimeUnit.SECONDS)).as("the second notification is delivered").isTrue();
+            assertThat(sink.reasons).isEmpty();
+        }
+
+        /// A failure reported after a normal close() is ignored: the node is not stopped and no failure event is raised.
+        /// Mutations: fail() not guarded by the close-once / close-once not idempotent (the sink is called, red).
+        @Test
+        void failureAfterCloseDoesNotStopTheNode() throws Exception {
+            var store = store();
+            router.addRoute(KVStoreNotification.ValuePut.class, _ -> {});
+            put(store, A, "one");
+            delivered(store);
+            store.close();
+
+            dispatcherOf(store).fail("late", new IllegalStateException("late failure"));
+
+            assertThat(sink.reasons).isEmpty();
+            assertThat(eventsOf("kv-dispatcher-failed")).isEmpty();
+        }
+
+        /// Two failures stop the node once: the sink and the failure event are each hit once.
+        /// Mutations: close-once not idempotent / fail() not guarded (twice, red).
+        @Test
+        void twoFailuresStopTheNodeOnce() throws Exception {
+            var store = store();
+            router.addRoute(KVStoreNotification.ValuePut.class, _ -> {});
+            put(store, A, "one");
+            delivered(store);
+
+            dispatcherOf(store).fail("first", new IllegalStateException("one"));
+            dispatcherOf(store).fail("second", new IllegalStateException("two"));
+
+            assertThat(sink.reasons).hasSize(1);
+            assertThat(eventsOf("kv-dispatcher-failed")).hasSize(1);
         }
 
         /// (l) an Error raised while applying (between the storage change and the append) stops the node and reaches
@@ -887,6 +1180,26 @@ class KVStoreDispatcherTest {
             store.awaitDelivered(store.enqueuedSeq()).await();
             assertThat(store.deliveryMetrics().slowHandlers()).isEqualTo(1);
             assertThat(events).containsExactly("kv-dispatch-slow-handler|ValuePut Key", "kv-dispatch-slow-handler-returned|ValuePut Key");
+        }
+
+        /// A second slow handler of the same tag inside the throttle interval raises no second event: two 400 ms handlers
+        /// of one tag over a 5 ms threshold give exactly one `kv-dispatch-slow-handler`. Mutation: unthrottled report (two, red).
+        @Test
+        void slowHandlerReportIsThrottledPerTag() throws Exception {
+            var store = store(router, NotificationDelivery.ReplayRank.flat(), TimeUnit.MILLISECONDS.toNanos(5));
+            var done = new CountDownLatch(2);
+            router.addRoute(KVStoreNotification.ValuePut.class, _ -> {
+                sleep(400);
+                done.countDown();
+            });
+
+            put(store, A, "one");
+            put(store, B, "two");
+
+            assertThat(done.await(15, TimeUnit.SECONDS)).isTrue();
+            delivered(store);
+            sleep(200);
+            assertThat(eventsOf("kv-dispatch-slow-handler")).hasSize(1);
         }
 
         private static Unit recordEvent(List<String> events, String event) {
