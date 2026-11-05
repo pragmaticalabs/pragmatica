@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.membership.ntt;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -1841,11 +1842,34 @@ public final class LeaderReconciler {
         }
 
         var generation = substituteGeneration(nowNanos);
+        var departed = departedVoters(currentMembers).iterator();
 
         peersToProvision.forEach(placeholder -> dispatchSingleProvision(nowNanos,
                                                                         placeholder,
                                                                         currentMembers,
-                                                                        generation));
+                                                                        generation,
+                                                                        nextDeparted(departed)));
+    }
+
+    /// #2115 — the voters of the verified installed electorate that are not members now: the nodes whose departure opened the deficit. A
+    /// replacement is made in the source of the node it replaces, so each placeholder is paired with one of them in a stable order (a placeholder
+    /// that has not joined is not a voter yet, so it is never one of them). The pairing is a best reading: a departed node the voter reconciler has not yet swapped
+    /// out of the electorate can precede a newer one, and the unwired electorate (legacy fixtures) pairs nothing, so the manager then
+    /// resolves the source as it does for a node that carries none.
+    private List<NodeId> departedVoters(Set<NodeId> currentMembers) {
+        return installedVotersSupplier.get()
+                                      .map(supplier -> supplier.get()
+                                                               .stream()
+                                                               .filter(voter -> !currentMembers.contains(voter))
+                                                               .sorted(Comparator.comparing(NodeId::id))
+                                                               .toList())
+                                      .or(List.of());
+    }
+
+    private static Option<NodeId> nextDeparted(Iterator<NodeId> departed) {
+        return departed.hasNext()
+               ? some(departed.next())
+               : none();
     }
 
     /// #1786 — a provision dispatched while a discounted (unjoined past the join grace) entry is still in flight
@@ -1863,7 +1887,8 @@ public final class LeaderReconciler {
     private void dispatchSingleProvision(long nowNanos,
                                          NodeId placeholder,
                                          Set<NodeId> currentMembers,
-                                         int generation) {
+                                         int generation,
+                                         Option<NodeId> departed) {
         inFlightProvisioning.put(placeholder,
                                  InFlightEntry.inFlightEntry(nowNanos,
                                                              ctm.replacementCeiling(NodeRole.CORE),
@@ -1888,10 +1913,7 @@ public final class LeaderReconciler {
         //     placeholder would mask the deficit and permanently wedge auto-heal once the breaker
         //     trips). A deferral is NOT a failure — no provisioning failure is recorded.
         //   - failure (genuine boot failure) → REMOVE it (the CTM already recorded the failure).
-        ctm.provisionReplacement(placeholder,
-                                 none(),
-                                 currentMembers,
-                                 NodeRole.CORE)
+        ctm.provisionReplacement(placeholder, departed, currentMembers, NodeRole.CORE)
            .withSuccess(disposition -> reconcileInFlightForDisposition(placeholder, disposition))
            .withFailure(cause -> reapFailedProvision(placeholder, cause));
     }

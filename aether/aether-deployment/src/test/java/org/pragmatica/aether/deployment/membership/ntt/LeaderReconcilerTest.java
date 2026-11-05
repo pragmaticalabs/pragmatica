@@ -559,6 +559,54 @@ class LeaderReconcilerTest {
         assertThat(ctm.provisionReplacementCalls()).isEmpty();
     }
 
+    /// #2115: a replacement is made in the source of the node it replaces, so the reconciler must name the departed node. The departed
+    /// nodes are the installed voters that are not members; each placeholder is paired with a different one.
+    @Test
+    void provisionNamesTheDepartedInstalledVoterForEveryPlaceholder() {
+        configuredCoreCount.set(5);
+        leaderTerm.set(2L);
+        seedClusterWithPeers(PEER_A, PEER_B);
+        reconciler.setInstalledVotersSupplier(() -> Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D));
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(ctm.provisionReplacementCalls()).hasSize(2);
+        assertThat(ctm.provisionReplacementFailedPeers()).containsExactlyInAnyOrder(Option.some(PEER_C), Option.some(PEER_D));
+    }
+
+    /// #2115: fewer placeholders than departed voters pairs the placeholder with the same departed node on every pass (smallest id first), so
+    /// the choice of source never depends on set iteration order.
+    @Test
+    void provisionPairsAPlaceholderWithTheSmallestIdDepartedVoter() {
+        var firstDeparted = new NodeId("departed-1");
+        var secondDeparted = new NodeId("departed-2");
+
+        configuredCoreCount.set(5);
+        leaderTerm.set(2L);
+        seedClusterWithPeers(PEER_A, PEER_B, PEER_C);
+        reconciler.setInstalledVotersSupplier(() -> new java.util.LinkedHashSet<>(List.of(SELF, PEER_A, PEER_B, PEER_C, secondDeparted, firstDeparted)));
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(ctm.provisionReplacementFailedPeers()).containsExactly(Option.some(firstDeparted));
+    }
+
+    /// #2115: with no verified electorate wired there is no departed node to name; the manager resolves the source as for a node that
+    /// carries none.
+    @Test
+    void provisionNamesNoDepartedNodeWhenNoElectorateIsWired() {
+        configuredCoreCount.set(5);
+        leaderTerm.set(2L);
+        seedClusterWithPeers(PEER_A, PEER_B);
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(ctm.provisionReplacementFailedPeers()).isNotEmpty().allMatch(Option::isEmpty);
+    }
+
     @Test
     void desiredSevenUsesInstalledThreeQuorumAndProvisionsFourAfterDelay() {
         configuredCoreCount.set(7);
@@ -4478,6 +4526,7 @@ class LeaderReconcilerTest {
         private final List<NodeId> drainNodeCalls = new CopyOnWriteArrayList<>();
         private final List<NodeId> provisionReplacementCalls = new CopyOnWriteArrayList<>();
         private final List<NodeRole> provisionReplacementRoles = new CopyOnWriteArrayList<>();
+        private final List<Option<NodeId>> provisionReplacementFailedPeers = new CopyOnWriteArrayList<>();
         private final List<DrainReason> drainReasons = new CopyOnWriteArrayList<>();
         private final AtomicInteger reconcileCount = new AtomicInteger(0);
         // Auto-heal-wedge fix: the disposition the next provisionReplacement resolves to. Defaults
@@ -4552,6 +4601,7 @@ class LeaderReconcilerTest {
             drainNodeCalls.clear();
             provisionReplacementCalls.clear();
             provisionReplacementRoles.clear();
+            provisionReplacementFailedPeers.clear();
             drainReasons.clear();
         }
 
@@ -4573,6 +4623,10 @@ class LeaderReconcilerTest {
             return List.copyOf(provisionReplacementRoles);
         }
 
+        List<Option<NodeId>> provisionReplacementFailedPeers() {
+            return List.copyOf(provisionReplacementFailedPeers);
+        }
+
         List<DrainReason> drainReasons() {
             return List.copyOf(drainReasons);
         }
@@ -4588,6 +4642,7 @@ class LeaderReconcilerTest {
                                                                   NodeRole intendedRole) {
             provisionReplacementCalls.add(newNodeId);
             provisionReplacementRoles.add(intendedRole);
+            provisionReplacementFailedPeers.add(failedPeer);
             if (real != null) {
                 return real.provisionReplacement(newNodeId, failedPeer, clusterMembers, intendedRole);
             }
