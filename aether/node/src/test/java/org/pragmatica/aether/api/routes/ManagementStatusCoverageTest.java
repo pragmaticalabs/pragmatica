@@ -123,6 +123,7 @@ class ManagementStatusCoverageTest {
             entry(ROUTES + "ScaleRouteError$InstancesAboveMax", "BAD_REQUEST"),
             entry(ROUTES + "ScaleRouteError$InstancesBelowFloor", "BAD_REQUEST"),
             entry(ROUTES + "ScaleRouteError$InstancesBelowMinAvailable", "BAD_REQUEST"),
+            entry(ROUTES + "SliceRoutes$NothingToRelease", "CONFLICT"),
             entry(ROUTES + "ScheduledTaskRoutes$InjectError$General#DEV_MODE_DISABLED", "FORBIDDEN"),
             entry(ROUTES + "ScheduledTaskRoutes$InjectError$General#MISSING_ARTIFACT", "BAD_REQUEST"),
             entry(ROUTES + "ScheduledTaskRoutes$InjectError$General#MISSING_BODY", "BAD_REQUEST"),
