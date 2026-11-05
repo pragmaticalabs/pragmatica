@@ -68,9 +68,49 @@ class SliceRouterDeclaredStatusTest {
         assertThat(send(composite)).isEqualTo(500);
     }
 
+    record AwareValidation(String message) implements HttpStatusAware, Cause.Validation {
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
+    record AwareWrapper(String message, Cause origin) implements HttpStatusAware, Cause.Wrapped {
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
+    @Test void handle_wrappedValidationCause_returns422() {
+        assertThat(send(new Wrapper("outer", Causes.validation("bad input")))).isEqualTo(422);
+    }
+
+    @Test void handle_validationAsCauseSource_returns422() {
+        assertThat(send(Causes.cause("outer", Option.some(Causes.validation("bad input"))))).isEqualTo(422);
+    }
+
+    @Test void handle_statusAwareAboveValidation_returnsDeclaredStatus() {
+        assertThat(send(new AwareWrapper("outer", Causes.validation("bad input")))).isEqualTo(409);
+    }
+
+    @Test void handle_statusAwareValidation_returnsDeclaredStatus() {
+        assertThat(send(new AwareValidation("both"))).isEqualTo(409);
+    }
+
+    @Test void handle_wrappedValidationWithExplicitMapperStatus_keepsMapperStatus() {
+        var mapper = (ErrorMapper) cause -> HttpStatus.FORBIDDEN.with(cause);
+
+        assertThat(send(new Wrapper("outer", Causes.validation("bad input")), mapper)).isEqualTo(403);
+    }
+
     private static int send(Cause failure) {
+        return send(failure, UNMAPPED);
+    }
+
+    private static int send(Cause failure, ErrorMapper mapper) {
         var route = Route.<String>get("/items").withoutParameters().to(_ -> Promise.<String>failure(failure)).asJson();
-        var router = SliceRouter.sliceRouter(route, UNMAPPED, JsonMapper.defaultJsonMapper());
+        var router = SliceRouter.sliceRouter(route, mapper, JsonMapper.defaultJsonMapper());
 
         return router.handle(HttpRequestContext.httpRequestContext("/items", "GET", Map.<String, List<String>>of(), Map.of(), "test"))
                      .await(timeSpan(5).seconds()).unwrap().statusCode();

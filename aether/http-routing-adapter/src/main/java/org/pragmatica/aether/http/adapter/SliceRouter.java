@@ -378,7 +378,7 @@ public interface SliceRouter {
             /// hard-coded 500 that cannot see [Cause#isTransient].
             ///
             /// A cause declaring its own status ([HttpStatusAware]) wins anywhere in the cause chain. A [Cause.Validation]
-            /// the mapper left at 500 answers 422 (see [ErrorMapper#defaultMapper]); nothing else is inferred.
+            /// anywhere in the chain, left at 500 by the mapper, answers 422 ([#markedValidation]); nothing else is inferred.
             ///
             /// A composite is resolved member by member ([#mapComposite]): it keeps a status only when EVERY member agrees,
             /// so a parameter error next to a server fault answers 500, never the client error that would conceal it.
@@ -413,6 +413,14 @@ public interface SliceRouter {
 
                 return cause instanceof Causes.CompositeCause composite && mapped.status() == HttpStatus.INTERNAL_SERVER_ERROR
                        ? mapComposite(composite, mapped)
+                       : markedValidation(cause, mapped);
+            }
+
+            /// A [Cause.Validation] anywhere in the cause chain answers 422, but only where the mapper left the cause at 500:
+            /// a status the slice mapper chose explicitly (and a transient 503) still wins.
+            private HttpError markedValidation(Cause cause, HttpError mapped) {
+                return mapped.status() == HttpStatus.INTERNAL_SERVER_ERROR && chain(cause).anyMatch(Cause.Validation.class::isInstance)
+                       ? HttpStatus.UNPROCESSABLE_ENTITY.with(cause)
                        : mapped;
             }
 
