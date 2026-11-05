@@ -97,21 +97,35 @@ class LeaderTermFailoverTest {
                                                            activation.reachedFullMembership());
     }
 
-    /// #1559: the reconciler's LeaderChange route runs BEFORE the one that adopts the committed term, so
-    /// what the pre-latch reads at activation is only visible until the first reconcile pass, which is
-    /// delayed by the activation quiesce and can latch the same flag from observed membership. The
-    /// snapshot is therefore read inside that window, and the window is asserted rather than assumed: a
-    /// snapshot taken after the first pass could not tell the pre-latch from the pass.
+    /// #1559: what the pre-latch sets at activation is only visible until the first reconcile pass, which is
+    /// delayed by the activation quiesce and can latch the same flag from observed membership. The snapshot is
+    /// therefore read inside that window, and the window is asserted rather than assumed: a snapshot taken after
+    /// the first pass could not tell the pre-latch from the pass.
+    ///
+    /// D1-react (#2648): the reconciler's activation runs on the LeaderManager react executor, after the
+    /// committed `LeaderKey` and the minted term are visible, so a settled leader is not yet an activated one.
+    /// The snapshot is polled until the activation latched the flag or the first pass ran, whichever comes
+    /// first; a missing pre-latch then shows as a snapshot taken after the pass (red).
     private static ProvisioningDecisionSnapshot activationSnapshot(AetherNode leader) {
-        var snapshot = leader.provisioningDiagnostics()
-                             .map(ProvisioningDiagnostics::decision)
-                             .unwrap();
+        await().atMost(BUDGET.duration())
+               .until(() -> activatedOrEvaluated(decisionOf(leader)));
+        var snapshot = decisionOf(leader);
 
         assertThat(snapshot.reason()).as("leader %s must be observed before its first reconcile pass",
                                          leader.self().id())
                   .isEqualTo("NOT_EVALUATED");
 
         return snapshot;
+    }
+
+    private static boolean activatedOrEvaluated(ProvisioningDecisionSnapshot snapshot) {
+        return snapshot.reachedFullMembership() || !"NOT_EVALUATED".equals(snapshot.reason());
+    }
+
+    private static ProvisioningDecisionSnapshot decisionOf(AetherNode leader) {
+        return leader.provisioningDiagnostics()
+                     .map(ProvisioningDiagnostics::decision)
+                     .unwrap();
     }
 
     private Option<AetherNode> settledLeader(Option<String> excluded) {

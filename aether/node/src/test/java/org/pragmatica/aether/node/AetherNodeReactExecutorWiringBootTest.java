@@ -166,13 +166,12 @@ class AetherNodeReactExecutorWiringBootTest {
         var droppedBefore = executors.stream().mapToLong(ReactExecutor::droppedEngineStopped).sum();
         var stopped = node.stop();
         release.countDown();
-        for (var executor : executors) {
-            drain(executor);
-        }
 
+        // The executors may already be closed here (the store close is a dependent step of stop(), v-2648 F2), and a closed
+        // executor runs a submitted drain undo on the caller at once, ahead of its queue: wait for the drops instead.
+        assertThat(awaitDropped(executors, droppedBefore + executors.size())).as("each executor dropped its probe")
+                                                                             .isGreaterThanOrEqualTo(droppedBefore + executors.size());
         assertThat(ran.get()).as("no side-effect reaction runs once stop() started").isZero();
-        assertThat(executors.stream().mapToLong(ReactExecutor::droppedEngineStopped).sum() - droppedBefore)
-            .as("each executor dropped its probe").isGreaterThanOrEqualTo(executors.size());
 
         assertThat(stopped.await(timeSpan(60).seconds()).isSuccess()).as("the stop completed").isTrue();
         node = null;
@@ -284,11 +283,17 @@ class AetherNodeReactExecutorWiringBootTest {
         assertThat(started.await(10, SECONDS)).as("%s held", executor.component()).isTrue();
     }
 
-    private static void drain(ReactExecutor executor) throws InterruptedException {
-        var done = new CountDownLatch(1);
+    /// The executors' total dropped count once it reaches `atLeast`, or what it is after 30 s.
+    private static long awaitDropped(List<ReactExecutor> executors, long atLeast) throws InterruptedException {
+        var deadline = System.nanoTime() + SECONDS.toNanos(30);
+        var dropped = executors.stream().mapToLong(ReactExecutor::droppedEngineStopped).sum();
 
-        executor.undo("v2653-drain", done::countDown);
-        assertThat(done.await(10, SECONDS)).as("%s drained", executor.component()).isTrue();
+        while (dropped < atLeast && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+            dropped = executors.stream().mapToLong(ReactExecutor::droppedEngineStopped).sum();
+        }
+
+        return dropped;
     }
 
     private static void awaitQuietly(CountDownLatch started, CountDownLatch release) {
