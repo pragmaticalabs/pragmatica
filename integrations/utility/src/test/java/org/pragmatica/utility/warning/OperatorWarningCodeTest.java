@@ -188,6 +188,19 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING.level()).isEqualTo(WarningLevel.WARNING);
     }
 
+    /// #2316: a refused responder snapshot leaves the node out of service with no automatic exit, so it is critical and closed
+    /// by an INFO recovery of the same subsystem when any restore succeeds; both wire strings are pinned.
+    @Test
+    void consensusRestoreRefused_isCritical_andIsClosedByAnInfoRecovery() {
+        assertThat(OperatorWarningCode.CONSENSUS_RESTORE_RECOVERED.recoveryOf()
+                                                                  .unwrap()).isEqualTo(OperatorWarningCode.CONSENSUS_RESTORE_REFUSED);
+        assertThat(OperatorWarningCode.CONSENSUS_RESTORE_RECOVERED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.CONSENSUS_RESTORE_REFUSED.level()).isEqualTo(WarningLevel.CRITICAL);
+        assertThat(OperatorWarningCode.CONSENSUS_RESTORE_REFUSED.code()).isEqualTo("consensus-restore-refused");
+        assertThat(OperatorWarningCode.CONSENSUS_RESTORE_RECOVERED.code()).isEqualTo("consensus-restore-recovered");
+        assertThat(OperatorWarningCode.CONSENSUS_RESTORE_RECOVERED.subsystem()).isEqualTo(OperatorWarningCode.CONSENSUS_RESTORE_REFUSED.subsystem());
+    }
+
     /// #2201 C-16, owner ruling 2026-10-28 on Q11: a cursor expiry is critical and closed by an INFO recovery of the same
     /// subsystem when the cursor is re-established; both wire strings are pinned.
     @Test
