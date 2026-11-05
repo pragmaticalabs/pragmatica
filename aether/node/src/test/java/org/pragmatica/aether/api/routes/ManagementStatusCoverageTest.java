@@ -120,6 +120,7 @@ class ManagementStatusCoverageTest {
             entry(ROUTES + "ObservabilityRoutes$ObservabilityError#KEY_REQUIRED", "BAD_REQUEST"),
             entry(ROUTES + "ObservabilityRoutes$ObservabilityError#MISSING_FIELDS", "BAD_REQUEST"),
             entry(ROUTES + "ObservabilityRoutes$ObservabilityError#REQUEST_ID_REQUIRED", "BAD_REQUEST"),
+            entry(ROUTES + "ScaleRouteError$InstancesAboveMax", "BAD_REQUEST"),
             entry(ROUTES + "ScaleRouteError$InstancesBelowFloor", "BAD_REQUEST"),
             entry(ROUTES + "ScaleRouteError$InstancesBelowMinAvailable", "BAD_REQUEST"),
             entry(ROUTES + "ScheduledTaskRoutes$InjectError$General#DEV_MODE_DISABLED", "FORBIDDEN"),

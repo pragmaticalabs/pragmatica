@@ -18,9 +18,12 @@ import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceRequirementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.RequirementKind;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceRequirementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -64,7 +67,9 @@ class SliceRoutesScaleOrderingTest {
         commitAllAsTheyArrive();
 
         assertThat(status(response)).isEqualTo(HttpStatus.OK);
-        assertThat(committedTarget().map(SliceTargetValue::targetInstances)).isEqualTo(Option.some(4));
+        assertThat(operatorRequirement()).as("the scale commits the OPERATOR requirement").isEqualTo(Option.some(4));
+        assertThat(committedTarget().map(SliceTargetValue::targetInstances)).as("rc6 INV-02: the count is the combiner's, not the route's")
+                                                                           .isEqualTo(Option.some(2));
     }
 
     /// The blueprint is deleted and its target removed after the read; the scale commits last. It must not re-create the target.
@@ -96,7 +101,8 @@ class SliceRoutesScaleOrderingTest {
         var committed = committedTarget().unwrap();
 
         assertThat(committed.currentVersion()).as("the republished version is not reverted").isEqualTo(V2.version());
-        assertThat(committed.targetInstances()).as("the rebuilt write scales the moved target").isEqualTo(4);
+        assertThat(operatorRequirement()).as("the rebuilt write commits the requirement against the moved target").isEqualTo(Option.some(4));
+        assertThat(committed.targetInstances()).as("rc6 INV-02: the count is the combiner's, not the route's").isEqualTo(2);
         assertThat(status(response)).isEqualTo(HttpStatus.OK);
     }
 
@@ -140,7 +146,8 @@ class SliceRoutesScaleOrderingTest {
         var committed = committedTarget().unwrap();
 
         assertThat(committed.owningBlueprint()).as("the blueprint's ownership survives").isEqualTo(Option.some(BLUEPRINT_ID));
-        assertThat(committed.targetInstances()).isEqualTo(4);
+        assertThat(committed.targetInstances()).as("rc6 INV-02: the blueprint's committed count stands").isEqualTo(3);
+        assertThat(operatorRequirement()).isEqualTo(Option.some(4));
         assertThat(status(response)).isEqualTo(HttpStatus.OK);
     }
 
@@ -153,6 +160,12 @@ class SliceRoutesScaleOrderingTest {
 
         assertThat(status(response)).isEqualTo(HttpStatus.OK);
         assertThat(committedTarget().map(SliceTargetValue::owningBlueprint)).isEqualTo(Option.some(Option.none()));
+    }
+
+    private Option<Integer> operatorRequirement() {
+        return store.getTyped(SliceRequirementKey.sliceRequirementKey(SLICE.base(), RequirementKind.OPERATOR),
+                              SliceRequirementValue.class)
+                    .map(SliceRequirementValue::instances);
     }
 
     private CompletableFuture<SliceRoutesScaleFloorTest.RecordingResponseWriter> scaleTo(int instances) {
