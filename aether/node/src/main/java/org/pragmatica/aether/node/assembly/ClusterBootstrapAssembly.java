@@ -208,42 +208,42 @@ public sealed interface ClusterBootstrapAssembly {
         var epochSources = in.epochSources();
 
         return KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
-                                                 .onPut(AetherKey.SpokesmanKey.class,
-                                                        _ -> bootstrapModule.retryIfNeeded())
-                                                 // #2654: the incarnation-commit re-drive — see onIncarnationCommit.
-                                                 .onPut(AetherKey.ClusterIncarnationKey.class,
-                                                        (KVStoreNotification.ValuePut<AetherKey.ClusterIncarnationKey, AetherValue.ClusterIncarnationValue> put) -> onIncarnationCommit(put,
-                                                                                                                                                                                        epochSources.incarnation(),
-                                                                                                                                                                                        bootstrapModule))
-                                                 // #1533: the ONE restore-commit hook — see onRestoreDecision.
-                                                 .onPut(AetherKey.BackupRestoreKey.class,
-                                                        (KVStoreNotification.ValuePut<AetherKey.BackupRestoreKey, AetherValue.BackupRestoreValue> put) -> onRestoreDecision(put,
-                                                                                                                                                                            bootstrapModule,
-                                                                                                                                                                            deploymentManager,
-                                                                                                                                                                            abTestManager))
-                                                 .onPut(AetherKey.ClusterConfigKey.class,
-                                                        (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue> put) -> onClusterConfigPut(put,
-                                                                                                                                                                             clusterTopologyManager,
-                                                                                                                                                                             leaderReconciler))
-                                                 // #1777 track 1: a committed `[replication]` change re-places the DHT live; R1b: the
-                                                 // leader commits the change record it carries
-                                                 .onPut(AetherKey.ClusterConfigKey.class,
-                                                        (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue> put) -> {
-                                                            resolveDhtReplication(Option.some(put.cause().value()),
-                                                                                  dhtNode,
-                                                                                  config,
-                                                                                  cacheDhtConfig,
-                                                                                  dhtSettlement);
-                                                            dhtSettlement.onConfigCommitted(put.cause().value());
-                                                        })
-                                                 // #1777 R1b: every node follows the committed change; the leader advances it on reports
-                                                 .onPut(AetherKey.DhtReplicationChangeKey.class,
-                                                        (KVStoreNotification.ValuePut<AetherKey.DhtReplicationChangeKey, AetherValue.DhtReplicationChangeValue> put) -> dhtSettlement.onChangeCommitted(put.oldValue(),
-                                                                                                                                                                                                        put.cause()
-                                                                                                                                                                                                           .value()))
-                                                 .onPut(AetherKey.DhtReplicationReportKey.class,
-                                                        _ -> dhtSettlement.evaluate())
-                                                 .build();
+                                   .onPut(AetherKey.SpokesmanKey.class,
+                                          _ -> bootstrapModule.retryIfNeeded())
+                                   // #2654: the incarnation-commit re-drive — see onIncarnationCommit.
+                                   .onPut(AetherKey.ClusterIncarnationKey.class,
+                                          (KVStoreNotification.ValuePut<AetherKey.ClusterIncarnationKey, AetherValue.ClusterIncarnationValue> put) -> onIncarnationCommit(put,
+                                                                                                                                                                          epochSources.incarnation(),
+                                                                                                                                                                          bootstrapModule))
+                                   // #1533: the ONE restore-commit hook — see onRestoreDecision.
+                                   .onPut(AetherKey.BackupRestoreKey.class,
+                                          (KVStoreNotification.ValuePut<AetherKey.BackupRestoreKey, AetherValue.BackupRestoreValue> put) -> onRestoreDecision(put,
+                                                                                                                                                              bootstrapModule,
+                                                                                                                                                              deploymentManager,
+                                                                                                                                                              abTestManager))
+                                   .onPut(AetherKey.ClusterConfigKey.class,
+                                          (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue> put) -> onClusterConfigPut(put,
+                                                                                                                                                               clusterTopologyManager,
+                                                                                                                                                               leaderReconciler))
+                                   // #1777 track 1: a committed `[replication]` change re-places the DHT live; R1b: the
+                                   // leader commits the change record it carries
+                                   .onPut(AetherKey.ClusterConfigKey.class,
+                                          (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue> put) -> {
+                                              resolveDhtReplication(Option.some(put.cause().value()),
+                                                                    dhtNode,
+                                                                    config,
+                                                                    cacheDhtConfig,
+                                                                    dhtSettlement);
+                                              dhtSettlement.onConfigCommitted(put.cause().value());
+                                          })
+                                   // #1777 R1b: every node follows the committed change; the leader advances it on reports
+                                   .onPut(AetherKey.DhtReplicationChangeKey.class,
+                                          (KVStoreNotification.ValuePut<AetherKey.DhtReplicationChangeKey, AetherValue.DhtReplicationChangeValue> put) -> dhtSettlement.onChangeCommitted(put.oldValue(),
+                                                                                                                                                                                          put.cause()
+                                                                                                                                                                                             .value()))
+                                   .onPut(AetherKey.DhtReplicationReportKey.class,
+                                          _ -> dhtSettlement.evaluate())
+                                   .build();
     }
 
     /// What `bootstrapRegistrars` reads from the assembly built so far.
