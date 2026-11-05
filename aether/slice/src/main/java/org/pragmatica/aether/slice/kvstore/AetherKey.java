@@ -1321,6 +1321,25 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
+    /// rc6 §4.2: one admitted workflow, by its id (`wf-…`). Runtime state: a workflow names nodes and operations a restored
+    /// cluster no longer has.
+    record WorkflowRunKey(String id) implements RuntimeKey {
+        @Override
+        public String asString() {
+            return "workflow-run/" + id;
+        }
+    }
+
+    /// rc6 §4.3: the claim of one conflict key (node incarnation, slice artifact, community, source binding, provider operation)
+    /// by the one admitted workflow holding it. Created with the run in the admission transaction, deleted in the transaction that
+    /// commits the run's terminal state. Runtime state, like the run it belongs to.
+    record WorkflowClaimKey(String conflictKey) implements RuntimeKey {
+        @Override
+        public String asString() {
+            return "workflow-claim/" + conflictKey;
+        }
+    }
+
     record CommunityPlacementAvailabilityKey(String communityId, String source, Option<String> zone) implements RuntimeKey {
         @Override
         public String asString() {
