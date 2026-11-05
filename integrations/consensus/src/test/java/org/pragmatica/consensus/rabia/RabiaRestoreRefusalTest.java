@@ -70,6 +70,7 @@ class RabiaRestoreRefusalTest {
     private static final int CLUSTER_SIZE = 5;
     private static final long BUDGET_MILLIS = 2_000;
     private static final long QUIET_MILLIS = 200;
+    private static final long SETTLE_MILLIS = 100;
     private static final byte[] BAD_SNAPSHOT = "undecodable".getBytes(StandardCharsets.UTF_8);
     private static final byte[] GOOD_SNAPSHOT = "readable".getBytes(StandardCharsets.UTF_8);
     private static final Phase HIGH_PHASE = Phase.phase(10);
@@ -217,7 +218,9 @@ class RabiaRestoreRefusalTest {
                                                           .allMatch(warning -> warning.subject().equals(NODE_1.id()));
     }
 
-    /// One round that restores the bad snapshot and fails, waited for by its attempt count.
+    /// One round that restores the bad snapshot and fails, waited for by its attempt count. The count rises inside
+    /// `restoreSnapshot`, just BEFORE the engine records the failure on the same executor thread, so each round also
+    /// settles for [#SETTLE_MILLIS]: a status or event read right after the count would race the recording.
     private void failingRounds(RabiaEngine<TestCommand> engine, int rounds) {
         for (int round = 0; round < rounds; round++) {
             var expected = stateMachine.badAttempts() + 1;
@@ -225,6 +228,7 @@ class RabiaRestoreRefusalTest {
             deliver(engine, response(NODE_2, HIGH_PHASE, BAD_SNAPSHOT), response(NODE_3, LOW_PHASE, GOOD_SNAPSHOT));
             assertThat(awaitCondition(() -> stateMachine.badAttempts() == expected)).as("failing round reached the restore")
                                                                                     .isTrue();
+            awaitCondition(() -> false, SETTLE_MILLIS);
         }
     }
 
