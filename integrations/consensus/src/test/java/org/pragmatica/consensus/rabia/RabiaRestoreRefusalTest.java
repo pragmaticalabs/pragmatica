@@ -214,6 +214,9 @@ class RabiaRestoreRefusalTest {
         assertThat(awaitCondition(() -> !engine.voterReconfigurationStatus().failure().contains(UNDECODABLE.message())))
             .as("#2316: a successful restore clears the refusal from the status")
             .isTrue();
+        // The status clears just before the recovery is handed to the sink, on the engine's thread: wait for the event.
+        assertThat(awaitCondition(() -> !published(CONSENSUS_RESTORE_RECOVERED).isEmpty())).as("the recovery is published")
+                                                                                           .isTrue();
         assertThat(published(CONSENSUS_RESTORE_RECOVERED)).as("and closes the event once").hasSize(1)
                                                           .allMatch(warning -> warning.subject().equals(NODE_1.id()));
     }
