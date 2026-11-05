@@ -146,9 +146,9 @@ class OperatorWarningWiringTest {
         var code = assemblyCode();
 
         assertThat(code).containsOnlyOnce("spi.registerExtension(OperatorWarningSink.class,operatorWarningSink);");
-        // The node's operator-warning sink is the sixth argument; what follows it (the HEADER-mode flag admission needs, #1206) is pinned on its own.
+        // The node's operator-warning sink is the sixth argument; what follows it (the HEADER-mode flag admission needs, #1206, and the engine's apply-record flag, phase-3 B17) is pinned on its own.
         assertThat(code).containsOnlyOnce("BlueprintService.blueprintService(clusterNode,kvStore,repository,artifactStore,resourceProviderSetup.nodeComposite(),operatorWarningSink,");
-        assertThat(code).containsOnlyOnce("operatorWarningSink,config.appHttp().apiVersioningDetection().isHeaderMode());");
+        assertThat(code).containsOnlyOnce("operatorWarningSink,config.appHttp().apiVersioningDetection().isHeaderMode(),deploymentWiring.applyRecords());");
         assertThat(code).containsOnlyOnce("cause->raiseClusterEventsRefusal(operatorWarningSink,alertManager,cause)");
         // v1680 N-r3-1: the refusal is also a REST-visible alert, resolved when a corrected config commits the stream.
         assertThat(code).containsOnlyOnce("()->alertManager.clearInjected(OperatorWarningCode.CLUSTER_EVENTS_REGISTRATION_REFUSED.code())");
@@ -196,6 +196,13 @@ class OperatorWarningWiringTest {
 
     /// The assembly source (`AetherNode.java` plus `node/assembly/*.java`) with line comments removed and all whitespace
     /// stripped; each pin must match exactly once across that set. See [AssemblySource].
+    /// #2034 T22: once the aggregator is bound, each drain episode's departure push raises its events through THIS node's aggregator,
+    /// for the episode's subject. `ClusterEventAggregatorTest.DepartureEventsBinding` drives the bound observer itself.
+    @Test
+    void assembly_bindsTheDepartureObserverFactoryToThisNodesAggregator() {
+        assertThat(assemblyCode()).containsOnlyOnce("departurePushObserverRef.set(subject->DhtDeparturePush.departureEvents(eventAggregator,config.self(),subject));");
+    }
+
     private static String assemblyCode() {
         return AssemblySource.stripped();
     }

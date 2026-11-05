@@ -95,6 +95,13 @@ public interface NodeLifecycleManager {
         return Option.none();
     }
 
+    /// The source COMMITTED for `nodeId` (its placement, or the source in its membership descriptor), and nothing else: unlike [#sourceOf] it
+    /// never answers a default for a node it knows nothing about, so an empty answer means unresolved. A core auto-heal replacement is made
+    /// in the source of the node it replaces (#2115), and a guess there would bill the wrong provider.
+    default Option<SourceName> committedSourceOf(NodeId nodeId) {
+        return Option.none();
+    }
+
     /// True when `nodeId` was admitted by an EXTERNAL admission (#1543): an operator started it, so there is no provider instance of ours
     /// to list or terminate and its capacity reservation carries no provider binding.
     default boolean externalNode(NodeId nodeId) {
@@ -423,6 +430,12 @@ record SourceNodeLifecycleManager(SourceComputeRegistry registry,
     @Override
     public Result<String> sourceBinding(SourceName source) {
         return registry.binding(source);
+    }
+
+    @Override
+    public Option<SourceName> committedSourceOf(NodeId nodeId) {
+        return sourceForNode.apply(nodeId)
+                            .option();
     }
 
     @Override

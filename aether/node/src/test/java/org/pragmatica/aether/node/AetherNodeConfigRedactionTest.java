@@ -9,6 +9,7 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.SliceConfig;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.lang.Option;
@@ -73,6 +74,18 @@ class AetherNodeConfigRedactionTest {
             .contains("clusterSecret=None");
     }
 
+    /// Phase-3 design 8.2: a node is LEGACY unless something says otherwise, the engine a test sets is the engine the config carries, and the
+    /// rendering names it (an operator reading a boot log sees which engine the node was constructed with).
+    @Test
+    void theDeploymentEngine_defaultsToLegacy_isCarriedByTheWither_andIsRendered() {
+        var config = minimalConfig();
+
+        assertThat(config.deploymentEngine()).isEqualTo(DeploymentEngine.LEGACY);
+        assertThat(config.toString()).contains("deploymentEngine=LEGACY");
+        assertThat(config.withDeploymentEngine(DeploymentEngine.FSM2).deploymentEngine()).isEqualTo(DeploymentEngine.FSM2);
+        assertThat(config.withDeploymentEngine(DeploymentEngine.FSM2).toString()).contains("deploymentEngine=FSM2");
+    }
+
     /// The rest of the rendering must survive — a `toString` that redacted the secret by dropping 32
     /// useful fields would pass the assertion above and destroy the diagnostic.
     @Test
@@ -95,7 +108,7 @@ class AetherNodeConfigRedactionTest {
                          + "override in AetherNodeConfig does NOT pick up new components "
                          + "automatically — add the new one to it (redacting it if it carries a "
                          + "secret), then update this expected count.")
-            .hasSize(32);
+            .hasSize(33);
     }
 
     /// Same shape as `AetherNodeStorageEncryptionBootTest#minimalConfig` — nothing here is on the path

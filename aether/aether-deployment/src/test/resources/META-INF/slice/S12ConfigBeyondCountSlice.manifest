@@ -1,0 +1,7 @@
+# F1 survivor pin fixture (wiring-SliceLegBuilders-06): a config-update entry at index reactive.count lies outside the declared count.
+slice.factory=org.example.ConfigFactory
+reactive.count=1
+reactive.0.category=config-update
+reactive.0.config=database
+reactive.1.category=config-update
+reactive.1.config=cache
