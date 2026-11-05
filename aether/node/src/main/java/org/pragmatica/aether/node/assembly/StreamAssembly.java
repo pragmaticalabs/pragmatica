@@ -909,6 +909,22 @@ public sealed interface StreamAssembly {
         defer.accept(() -> SharedScheduler.scheduleAtFixedRate(streamPartitionManager::repeatVisible,
                                                                ISR_MONITOR_INTERVAL));
         allEntries.add(MessageRouter.Entry.route(ClusterStateNotification.class, ownerActivation::onQuorumStateChange));
+        // #2682: a committed ownership record that newly names this node starts the promotion gate at once, so a new owner pulls
+        // the tail a live peer holds beyond its head even when nothing demands the partition; at most reshuffle_concurrency at once.
+        ownerActivation.eagerConcurrency(streamingConfig.reshuffleConcurrency());
+        allEntries.addAll(KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                              .onPut(AetherKey.StreamPartitionOwnershipKey.class,
+                                                     (ValuePut<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> put) -> ownerActivation.onCommittedOwnership(put.cause()
+                                                                                                                                                                           .key()
+                                                                                                                                                                           .stream(),
+                                                                                                                                                                        put.cause()
+                                                                                                                                                                           .key()
+                                                                                                                                                                           .partition(),
+                                                                                                                                                                        put.oldValue(),
+                                                                                                                                                                        put.cause()
+                                                                                                                                                                           .value()))
+                                              .build()
+                                              .asRouteEntries());
         // Reconcile on every membership decision (all variants via the tail helper) and on
         // ClusterStateNotification edges (PASSIVE suppresses; PASSIVE->ACTIVE re-reconciles).
         wireMembershipDecisionTail(allEntries, streamReplicaSetController::onMembershipDecision);

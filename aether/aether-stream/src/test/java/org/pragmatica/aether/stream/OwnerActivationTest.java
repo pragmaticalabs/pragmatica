@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
+import java.util.function.BooleanSupplier;
 import java.util.stream.LongStream;
 
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -57,6 +58,11 @@ class OwnerActivationTest {
     /// promise and its handlers).
     private final AtomicBoolean lateCatchUp = new AtomicBoolean();
     private final AtomicBoolean consensusActive = new AtomicBoolean(true);
+    /// #2682: while set, every probe is held unanswered until the test resolves it, so a gate stays in flight.
+    private final AtomicBoolean holdProbes = new AtomicBoolean();
+    private final List<HeldProbe> heldProbes = new CopyOnWriteArrayList<>();
+
+    private record HeldProbe(int partition, Promise<Long> answer) {}
 
     private final List<OwnerActivation.ActivationBlock> alarms = new CopyOnWriteArrayList<>();
     private final Set<NodeId> divergent = ConcurrentHashMap.newKeySet();
@@ -110,6 +116,14 @@ class OwnerActivationTest {
     }
 
     private Promise<Long> probe(NodeId target, String stream, int partition) {
+        if (holdProbes.get()) {
+            var held = Promise.<Long> promise();
+
+            heldProbes.add(new HeldProbe(partition, held));
+
+            return held;
+        }
+
         return unreachable.contains(target)
                ? Causes.cause("unreachable " + target).promise()
                : Promise.success(peerWatermarks.getOrDefault(target, -1L));
@@ -1288,5 +1302,131 @@ class OwnerActivationTest {
         assertThat(activate()).isTrue();
         assertThat(rounds).hasValue(0);
         assertThat(catchUps).containsExactly("peer-a@40");
+    }
+
+    /// #2682 eager activation. A committed record that newly names this node starts the gate with no demand: the peer ahead
+    /// (head 24 against the candidate's 19, the tail the candidate missed) is caught up from and the partition activates,
+    /// though nothing called `admit`. Before, nothing ran the gate until an owner action, which on an idle partition never came.
+    @Test
+    void onCommittedOwnership_newlyNamesSelf_peerAhead_catchesUpAndActivatesWithoutDemand() {
+        var owned = ownedBy(SELF, 1);
+
+        record.set(Option.some(owned));
+        members.set(List.of(SELF, PEER_A));
+        peerWatermarks.put(PEER_A, 24L);
+
+        activation.onCommittedOwnership(STREAM, PARTITION, Option.some(ownedBy(PEER_B, 0)), owned);
+
+        assertThat(eventuallyActivated()).as("activated with no admit").isTrue();
+        assertThat(catchUps).as("pulled the missed tail from the peer ahead").containsExactly("peer-a@24");
+        assertThat(localWatermark).hasValue(24);
+    }
+
+    /// #2682: a record that names another node starts no gate here.
+    @Test
+    void onCommittedOwnership_recordNamesAnotherNode_startsNoGate() {
+        var other = ownedBy(PEER_A, 2);
+
+        record.set(Option.some(other));
+        members.set(List.of(SELF, PEER_A));
+
+        activation.onCommittedOwnership(STREAM, PARTITION, Option.some(ownedBy(SELF, 1)), other);
+        LockSupport.parkNanos(300_000_000L);
+
+        assertThat(rounds).as("no gate ran").hasValue(0);
+        assertThat(catchUps).isEmpty();
+    }
+
+    /// #2682: an ISR-only change moves no ownership, so it starts no gate, on an owner not yet activated as on one that is,
+    /// and the activated owner stays activated.
+    @Test
+    void onCommittedOwnership_isrOnlyChange_startsNoGate_andKeepsTheActivation() {
+        var owned = ownedBy(SELF, 1);
+        var widened = owned.withIsr(List.of(SELF, PEER_A));
+
+        record.set(Option.some(widened));
+        activation.onCommittedOwnership(STREAM, PARTITION, Option.some(owned), widened);
+        LockSupport.parkNanos(300_000_000L);
+
+        assertThat(rounds).as("an ISR change on a not-yet-activated owner starts no gate").hasValue(0);
+
+        record.set(Option.some(owned));
+        assertThat(activate()).isTrue();
+        var roundsWhenActivated = rounds.get();
+
+        record.set(Option.some(widened));
+        activation.onCommittedOwnership(STREAM, PARTITION, Option.some(owned), widened);
+        LockSupport.parkNanos(300_000_000L);
+
+        assertThat(rounds.get()).as("nor on an activated one").isEqualTo(roundsWhenActivated);
+        assertThat(activation.isActivated(STREAM, PARTITION)).as("and the activation stands").isTrue();
+    }
+
+    /// #2682: the eager attempt is re-driven like a demanded one: its first probe fails (the peer is unreachable), and the
+    /// partition activates once the peer answers, with no demand at all.
+    @Test
+    void onCommittedOwnership_firstProbeFails_isRedriven_andActivates() {
+        var owned = ownedBy(SELF, 1);
+
+        record.set(Option.some(owned));
+        members.set(List.of(SELF, PEER_A));
+        unreachable.add(PEER_A);
+
+        activation.onCommittedOwnership(STREAM, PARTITION, Option.none(), owned);
+        LockSupport.parkNanos(50_000_000L);
+        unreachable.remove(PEER_A);
+
+        assertThat(eventuallyActivatedWithin(3_000L)).as("re-driven with no demand").isTrue();
+    }
+
+    /// #2682: at most `eagerConcurrency` eager gates are in flight; a further trigger waits, and runs once a slot frees.
+    @Test
+    void onCommittedOwnership_moreTriggersThanTheCap_atMostCapInFlight_theRestRunAsSlotsFree() {
+        var owned = ownedBy(SELF, 1);
+
+        record.set(Option.some(owned));
+        members.set(List.of(SELF, PEER_A));
+        holdProbes.set(true);
+        activation.eagerConcurrency(2);
+
+        List.of(0, 1, 2).forEach(partition -> activation.onCommittedOwnership(STREAM, partition, Option.none(), owned));
+        LockSupport.parkNanos(300_000_000L);
+
+        assertThat(heldProbes).as("two of three gates in flight").extracting(HeldProbe::partition).containsExactly(0, 1);
+
+        heldProbes.getFirst().answer().succeed(-1L);
+
+        assertThat(eventually(() -> heldProbes.size() == 3)).as("the third runs once a slot frees").isTrue();
+        assertThat(heldProbes.getLast().partition()).isEqualTo(2);
+        assertThat(activation.isActivated(STREAM, 0)).isTrue();
+    }
+
+    /// #2682: a demand is never capped: with every eager slot taken and a partition queued behind it, `admit` of that
+    /// partition starts its own gate at once.
+    @Test
+    void admit_duringACappedBacklog_startsItsOwnGate() {
+        var owned = ownedBy(SELF, 1);
+
+        record.set(Option.some(owned));
+        members.set(List.of(SELF, PEER_A));
+        holdProbes.set(true);
+        activation.eagerConcurrency(1);
+
+        List.of(0, 1).forEach(partition -> activation.onCommittedOwnership(STREAM, partition, Option.none(), owned));
+        LockSupport.parkNanos(300_000_000L);
+        assertThat(heldProbes).as("one eager gate in flight, one queued").extracting(HeldProbe::partition).containsExactly(0);
+
+        assertThat(activation.admit(STREAM, 1).isFailure()).isTrue();
+
+        assertThat(eventually(() -> heldProbes.size() == 2)).as("the demand ran its gate past the cap").isTrue();
+        assertThat(heldProbes.getLast().partition()).isEqualTo(1);
+    }
+
+    private static boolean eventually(BooleanSupplier condition) {
+        for (var attempt = 0; attempt < 200 && !condition.getAsBoolean(); attempt++) {
+            LockSupport.parkNanos(10_000_000L);
+        }
+
+        return condition.getAsBoolean();
     }
 }
