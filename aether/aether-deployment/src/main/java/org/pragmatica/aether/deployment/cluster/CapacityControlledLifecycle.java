@@ -1138,6 +1138,11 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
         return source(node).orElse(() -> delegate.sourceOf(node));
     }
 
+    @Override
+    public Option<SourceName> committedSourceOf(NodeId node) {
+        return source(node).orElse(() -> delegate.committedSourceOf(node));
+    }
+
     private static final int READMISSION_ATTEMPTS = 3;
 
     @Override

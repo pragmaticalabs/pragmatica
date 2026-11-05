@@ -22,7 +22,8 @@ package org.pragmatica.aether.deployment.cluster;
 ///   the breaker is already open (or will re-arm on its own), so no new provisioning failure is
 ///   recorded. A refused source admission ([DeferralReason#CAPACITY_ADMISSION]) is also a deferral
 ///   to the reconciler, but it was refused by the capacity authority, so `provisionReplacement`
-///   still counts and logs it as a provisioning failure.
+///   still counts and logs it as a provisioning failure. So is an unresolved source of the departed node
+///   ([DeferralReason#SOURCE_UNRESOLVED]).
 ///
 /// A genuine boot FAILURE is NOT modeled here — it stays in the `Promise` failure channel so the
 /// existing `onFailure(recordProvisioningFailure)` (breaker trip after 3) and the reconciler's
@@ -44,7 +45,11 @@ public sealed interface ProvisionDisposition {
         CIRCUIT_OPEN,
         /// No healthy peers were visible to seed the replacement's PEERS list, so a boot would be
         /// DOA. Retried on the next reconcile tick once peers reappear.
-        NO_HEALTHY_PEERS
+        NO_HEALTHY_PEERS,
+        /// The source of the departed node could not be resolved (#2115): nothing was provisioned because any pick
+        /// would be a guess at which provider to bill. Counted as a provisioning failure and told to the operator
+        /// once per run, like a refused admission.
+        SOURCE_UNRESOLVED
     }
 
     static ProvisionDisposition dispatched() {

@@ -54,6 +54,7 @@ class ReconciliationAdjustmentRouteWiringBootTest {
     @TempDir
     Path tempDir;
 
+    private static final String AGGREGATOR_LOGGER = ClusterEventAggregator.class.getName();
     private static final TimeSpan START_BOUND = timeSpan(30).seconds();
     private static final Duration STEP_BOUND = Duration.ofSeconds(20);
     private static final Artifact ARTIFACT = Artifact.artifact("org.example.h3:reconciled-" + UUID.randomUUID()
@@ -62,11 +63,11 @@ class ReconciliationAdjustmentRouteWiringBootTest {
     private static final String SCALE_UP = "SCALE_UP";
 
     private AetherNode node;
-    private LogCapture capture;
+    private LogCapture logs;
 
     @BeforeEach
     void setUp() {
-        capture = LogCapture.capture(ClusterEventAggregator.class, Level.DEBUG, false);
+        logs = LogCapture.capture(AGGREGATOR_LOGGER, Level.DEBUG, false);
     }
 
     @AfterEach
@@ -77,7 +78,7 @@ class ReconciliationAdjustmentRouteWiringBootTest {
                 .onFailure(cause -> {});
         }
 
-        capture.close();
+        logs.close();
         ConfigService.clear();
         ResourceProvider.clear();
     }
@@ -92,13 +93,13 @@ class ReconciliationAdjustmentRouteWiringBootTest {
             .await(START_BOUND)
             .onFailure(cause -> fail("start() must succeed: " + cause.message()));
 
-        assertThat(capture.messages()).as("control: nothing has raised this artifact's SCALE_UP before it is routed")
+        assertThat(logs.messages()).as("control: nothing has raised this artifact's SCALE_UP before it is routed")
                                        .noneMatch(this::isOurScaleUp);
 
         node.route(ReconciliationAdjustment.reconciliationAdjustment(ARTIFACT, 1, 2));
 
         await().atMost(STEP_BOUND)
-               .untilAsserted(() -> assertThat(capture.messages())
+               .untilAsserted(() -> assertThat(logs.messages())
                    .as("a ReconciliationAdjustment routed on the node's bus must reach the aggregator's handler")
                    .anyMatch(this::isOurScaleUp));
     }

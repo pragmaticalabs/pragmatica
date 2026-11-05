@@ -48,6 +48,7 @@ import org.pragmatica.aether.environment.ProviderDefaults;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.rabia.ParticipationMarker;
@@ -259,6 +260,17 @@ public final class EmberCluster {
     /// cannot admit each other's nodes; [#withClusterSecret] is the only sanctioned override.
     /// Exposed to tests via [#currentClusterSecret].
     private final AtomicReference<byte[]> clusterSecret = new AtomicReference<>(generateClusterSecret());
+    /// The engine the global selector names ([EngineSelector], `-Daether.deployment.engine`): read once per cluster. A value that names no
+    /// engine refuses [#start] instead of running LEGACY.
+    private final Result<DeploymentEngine> selectedEngine = EngineSelector.fromSystemProperty();
+
+    /// The deployment engine every node of this cluster is constructed with (phase-3 design 8.2): the selector's engine (LEGACY when the
+    /// property is absent) unless a test says otherwise. The committed engine marker, minted by the first leader, then makes the choice
+    /// cluster-wide.
+    private final AtomicReference<DeploymentEngine> deploymentEngine = new AtomicReference<>(selectedEngine.or(DeploymentEngine.LEGACY));
+
+    /// Per-node engine overrides (phase-3 design 8.2, W-29's misconfigured-newcomer arms), by NodeId; a node absent here takes [#deploymentEngine].
+    private final Map<String, DeploymentEngine> nodeEngines = new ConcurrentHashMap<>();
 
     /// #715 — the [AetherNodeConfig] object actually passed to the most recently constructed node's
     /// constructor. Captured from the real `config` value itself, never mirrored independently at
@@ -528,6 +540,24 @@ public final class EmberCluster {
         streamingConfig.set(config);
     }
 
+    /// Phase-3 design 8.2 — construct every node of this cluster with `engine`. MUST be called before [#start]. Harness-scoped: the engine
+    /// has no TOML key in phase 3.
+    @Contract
+    public void withDeploymentEngine(DeploymentEngine engine) {
+        deploymentEngine.set(engine);
+    }
+
+    /// W-29 — construct the node `nodeIdStr` with `engine`, whatever the cluster's engine is: a misconfigured node of the other engine. MUST be
+    /// called before that node is created (before [#start] for an initial node, before [#addCoreNode] for a newcomer). Harness-scoped.
+    @Contract
+    public void withDeploymentEngine(String nodeIdStr, DeploymentEngine engine) {
+        nodeEngines.put(nodeIdStr, engine);
+    }
+
+    private DeploymentEngine engineOf(NodeId nodeId) {
+        return Option.option(nodeEngines.get(nodeId.id())).or(deploymentEngine::get);
+    }
+
     /// #715 — override this instance's cluster QUIC/SWIM identity secret. MUST be called before
     /// [#start] (nodes derive their certificate/gossip-key material from this secret at creation).
     /// Production callers never call this: each instance otherwise gets a fresh `SecureRandom`
@@ -734,12 +764,18 @@ public final class EmberCluster {
     }
 
     private Promise<Unit> start(Set<String> heldBackNodeIds, Set<String> excludedFromGenesis) {
-        log.info("Starting Ember cluster with {} nodes on ports {}-{} ({} held back: {})",
+        return selectedEngine.async()
+                             .flatMap(_ -> startNodes(heldBackNodeIds, excludedFromGenesis));
+    }
+
+    private Promise<Unit> startNodes(Set<String> heldBackNodeIds, Set<String> excludedFromGenesis) {
+        log.info("Starting Ember cluster with {} nodes on ports {}-{} ({} held back: {}), deployment engine {}",
                  initialClusterSize,
                  basePort,
                  basePort + initialClusterSize - 1,
                  heldBackNodeIds.size(),
-                 heldBackNodeIds);
+                 heldBackNodeIds,
+                 deploymentEngine.get());
         int poolSize = 2 * targetClusterSize + additionalNodeSlots;
 
         genesisExcluded = Set.copyOf(excludedFromGenesis);
@@ -1632,7 +1668,7 @@ public final class EmberCluster {
         // in-process node derives its bootstrap admin key exactly as a production node does rather
         // than falling back to a random one. An Ember harness that diverged here would be a fixture
         // encoding different behaviour from the code it exists to exercise.
-        Option.some(new String(clusterSecret.get(), StandardCharsets.UTF_8)));
+        Option.some(new String(clusterSecret.get(), StandardCharsets.UTF_8))).withDeploymentEngine(engineOf(nodeId));
 
         lastNodeConfig.set(Option.some(config));
         // Single-JVM hosting: when this node would exit (drain complete, or its identity refused by the

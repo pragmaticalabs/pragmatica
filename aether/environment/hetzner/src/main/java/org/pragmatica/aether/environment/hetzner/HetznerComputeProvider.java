@@ -581,7 +581,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     ///    equally unfirewalled, so creating the replacement is PARITY, not new exposure — refusing
     ///    would kill auto-heal permanently for a supported configuration and buy no security.
     ///  - a firewall for this cluster DOES exist but this provision's source name did not select it
-    ///    (e.g. `ClusterTopologyManagerRecord.replacementSourceName` degraded to `default` because
+    ///    (e.g. the replacement's source name degraded to `default` because
     ///    the persisted cluster config was unparseable or carried no cloud source for the role).
     ///    Here the peers ARE firewalled and proceeding would create exactly the open node #444 is
     ///    about.
