@@ -101,12 +101,27 @@ class SourceCapacityProfileTest {
 
     @Test
     void effectiveLeadTime_perProviderDefaults_areStatedConstants() {
-        var cloudAws = parsedHz("", "").provider();
+        var hetznerSource = parsedHz("", "");
+        var awsSource = ClusterBootstrapConfigParser.parse(hetzner("", "", "").replace("provider = \"hetzner\"", "provider = \"aws\""))
+                                                    .fold(cause -> Assertions.fail(cause.message()),
+                                                          config -> config.sources().get("hz"));
+        var dockerSource = ClusterBootstrapConfigParser.parse(CLUSTER_HEAD.formatted("") + """
+                                                                [source.local]
+                                                                type = "docker"
 
-        assertThat(cloudAws).isEqualTo(Option.some(CloudProviderName.HETZNER));
+                                                                [source.local.core]
+                                                                count = 3
+                                                                """)
+                                                       .fold(cause -> Assertions.fail(cause.message()),
+                                                             config -> config.sources().get("local"));
+
+        assertThat(hetznerSource.provider()).isEqualTo(Option.some(CloudProviderName.HETZNER));
+        assertThat(hetznerSource.effectiveLeadTime(NodeRole.CORE).millis()).isEqualTo(65_000L);
+        assertThat(awsSource.effectiveLeadTime(NodeRole.CORE).millis()).isEqualTo(120_000L);
+        assertThat(dockerSource.effectiveLeadTime(NodeRole.CORE).millis()).isEqualTo(30_000L);
         assertThat(SourceProfile.HETZNER_LEAD_TIME.millis()).isEqualTo(65_000L);
-        assertThat(SourceProfile.OTHER_CLOUD_LEAD_TIME.millis()).isGreaterThan(SourceProfile.HETZNER_LEAD_TIME.millis());
-        assertThat(SourceProfile.NON_CLOUD_LEAD_TIME.millis()).isLessThan(SourceProfile.HETZNER_LEAD_TIME.millis());
+        assertThat(SourceProfile.OTHER_CLOUD_LEAD_TIME.millis()).isEqualTo(120_000L);
+        assertThat(SourceProfile.NON_CLOUD_LEAD_TIME.millis()).isEqualTo(30_000L);
     }
 
     @Test
@@ -161,7 +176,7 @@ class SourceCapacityProfileTest {
     void validate_spotCostClassOnHetzner_returnsPf37() {
         parseAndValidate(hetzner("", "cost_class = \"spot\"", ""))
             .onSuccess(_ -> Assertions.fail("Hetzner has no spot arm; cost_class = spot must be refused"))
-            .onFailure(cause -> assertThat(cause.message()).contains("PF-37").contains("hetzner").contains("'hz'"));
+            .onFailure(cause -> assertThat(cause.message()).contains("PF-37: ").doesNotContain("PF-37x").contains("hetzner").contains("'hz'"));
     }
 
     @Test
@@ -262,18 +277,23 @@ class SourceCapacityProfileTest {
                                                                  [source.hz.lead_time]
                                                                  core = "80s"
                                                                  """)).unwrap();
-        var plan = ClusterBootstrapConfigDiff.diff(base, changed);
-        var fields = plan.modifications()
-                         .stream()
-                         .map(Object::toString)
-                         .toList();
+        var sourceFields = ClusterBootstrapConfigDiff.diff(base, changed)
+                                                     .modifications()
+                                                     .stream()
+                                                     .filter(DiffAction.SourceFieldChange.class::isInstance)
+                                                     .map(DiffAction.SourceFieldChange.class::cast)
+                                                     .map(DiffAction.SourceFieldChange::field)
+                                                     .toList();
+        var clusterFields = ClusterBootstrapConfigDiff.diff(base, changed)
+                                                      .modifications()
+                                                      .stream()
+                                                      .filter(DiffAction.ClusterLevelChange.class::isInstance)
+                                                      .map(DiffAction.ClusterLevelChange.class::cast)
+                                                      .map(DiffAction.ClusterLevelChange::field)
+                                                      .toList();
 
-        assertThat(String.join(" ", fields)).contains("max_nodes")
-                                            .contains("leadTime")
-                                            .contains("maxNodes")
-                                            .contains("preference")
-                                            .contains("costClass")
-                                            .contains("fallback");
+        assertThat(sourceFields).containsExactlyInAnyOrder("leadTime", "maxNodes", "preference", "costClass", "fallback");
+        assertThat(clusterFields).containsExactly("max_nodes");
         assertThat(ClusterBootstrapConfigDiff.diff(base, base).modifications()).isEmpty();
     }
 }
