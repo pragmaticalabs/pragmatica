@@ -11,6 +11,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -45,6 +46,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.utility.react.ReactExecutor;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.utility.warning.OperatorWarnings;
@@ -70,6 +72,13 @@ public interface RollbackManager {
 
     Option<RollbackStats> getStats(ArtifactBase artifactBase);
     void resetRollbackCount(ArtifactBase artifactBase);
+
+    /// D1-react (KVStore dispatcher design §3.5.1 row 19): the executor the record derivation of [#onSliceTargetPut], and
+    /// every refusal retry of a derived write, run on. A node installs its gated executor once, at assembly; until then
+    /// (and in a host that installs none) both run inline, as before D1-react. Default no-op for [#disabled].
+    default Unit installReactExecutor(ReactExecutor executor) {
+        return Unit.unit();
+    }
 
     /// Per-artifact-base rollback bookkeeping. Everything but `lastRolledBackFrom`/`lastRolledBackTo` is
     /// rebuilt from the committed [PreviousVersionValue], so cooldown, maxRollbacks, the failed-version
@@ -143,6 +152,20 @@ public interface RollbackManager {
                                      Option.some(targetVersion),
                                      failed,
                                      timestamp);
+        }
+
+        /// The in-memory details of a committed rollback, and nothing else: the counters, the versions and the bake anchor arrive
+        /// from the committed record through [#withKVStoreUpdate] (D1-react: the mirror holds only committed values).
+        public RollbackState withRolledBack(Version failedVersion, Version targetVersion) {
+            return new RollbackState(artifactBase,
+                                     previousVersion,
+                                     currentVersion,
+                                     rollbackCount,
+                                     lastRollbackTimestamp,
+                                     Option.some(failedVersion),
+                                     Option.some(targetVersion),
+                                     failedVersions,
+                                     currentSince);
         }
 
         public RollbackState withReset() {
@@ -308,6 +331,7 @@ public interface RollbackManager {
                                Set<ArtifactBase> exhausted,
                                ConcurrentHashMap<ArtifactBase, Long> versionChanges,
                                OperatorWarningSink warnings,
+                               AtomicReference<ReactExecutor> react,
                                Logger log) implements RollbackManager {
             /// Attempts per refusal chain: the first write and two re-derivations. A guess (taste); settle by the contention test.
             private static final int MAX_RECORD_ATTEMPTS = 3;
@@ -357,6 +381,13 @@ public interface RollbackManager {
             @Override
             public boolean isActive() {
                 return leaderManager.isLeader();
+            }
+
+            @Override
+            public Unit installReactExecutor(ReactExecutor executor) {
+                react.set(executor);
+
+                return Unit.unit();
             }
 
             @Override
@@ -466,9 +497,12 @@ public interface RollbackManager {
                 return Option.option(rollbackStates.get(artifactBase)).map(RollbackState::toStats);
             }
 
+            /// D1-react (the mirror holds only committed values): the reset writes the record only. The mirror's counters follow
+            /// when the reset commits, through [#onPreviousVersionPut]; a refused or failed reset leaves them as committed. The
+            /// in-memory last-rollback details are kept: they describe the last rollback, which the reset does not undo.
             @Override
             public void resetRollbackCount(ArtifactBase artifactBase) {
-                rollbackStates.computeIfPresent(artifactBase, (_, state) -> resetState(artifactBase, state));
+                log.info("Rollback count reset requested for {}", artifactBase);
                 resetRecord(artifactBase, 1);
             }
 
@@ -490,12 +524,6 @@ public interface RollbackManager {
                                                                                                           List.of(),
                                                                                                           Option.some(record),
                                                                                                           record.withRollbackCountReset())));
-            }
-
-            private RollbackState resetState(ArtifactBase artifactBase, RollbackState state) {
-                log.info("Rollback count reset for {}", artifactBase);
-
-                return state.withReset();
             }
 
             private void loadPreviousVersionsFromKvStore() {
@@ -529,6 +557,10 @@ public interface RollbackManager {
             /// #2613: the mirror follows the notification (its `currentVersion` feeds [#decide]'s eligibility); its counters arrive only
             /// through [#onPreviousVersionPut] when a record commits, never from an uncommitted derivation. The record itself is then
             /// re-derived from the committed target and record, version change or not.
+            ///
+            /// D1-react (§3.5.1 row 19): the mirror and the version-change count stay in absorb; the derivation (HEAD reads plus the
+            /// guarded submit) is a reaction behind the engine-alive gate. No undo is needed: the write is guarded, and a dropped
+            /// derivation heals at the next SliceTarget notification or the next leader's activation.
             @Contract
             private void trackVersionChange(ArtifactBase artifactBase,
                                             SliceTargetValue sliceTargetValue,
@@ -545,7 +577,9 @@ public interface RollbackManager {
                     versionChanges.merge(artifactBase, 1L, Long::sum);
                 }
 
-                deriveRecord(artifactBase, new DerivationContext.Notification(sliceTargetValue, oldValue), 1);
+                var context = new DerivationContext.Notification(sliceTargetValue, oldValue);
+
+                react.get().react("RollbackManager record derive", () -> deriveRecord(artifactBase, context, 1));
             }
 
             private static boolean isVersionChange(SliceTargetValue value, Option<SliceTargetValue> oldValue) {
@@ -647,7 +681,10 @@ public interface RollbackManager {
             }
 
             /// A refused write re-derives with its own (previous, current) pair, so the retry rewrites exactly that change while the
-            /// target still names it, and writes nothing once a later version change has replaced it.
+            /// target still names it, and writes nothing once a later version change has replaced it. D1-react (§3.5.1 row 19): the
+            /// retry is a reaction behind the engine-alive gate too, so a refusal answered after an engine stop burns no attempt and
+            /// raises no exhaustion warning. It applies to an activation chain's retries as well (activation itself stays inline: it
+            /// is a leader-change call, not a KV notification).
             @Contract
             private void writeVersionChange(LeaderValue leader,
                                             Observed observed,
@@ -660,7 +697,11 @@ public interface RollbackManager {
 
                 submitRecord(versionChangeWrite(leader, observed, previous),
                              attempt,
-                             () -> deriveRecord(observed.base(), retry, attempt + 1));
+                             () -> react.get()
+                                        .react("RollbackManager record retry",
+                                               () -> deriveRecord(observed.base(),
+                                                                  retry,
+                                                                  attempt + 1)));
             }
 
             /// Which version the record may name as previous, or none when this derivation must write nothing.
@@ -890,8 +931,7 @@ public interface RollbackManager {
                                      .onPresent(transaction -> submitRollback(event,
                                                                               rollbackArtifact,
                                                                               decision,
-                                                                              transaction,
-                                                                              now));
+                                                                              transaction));
             }
 
             private Option<LeaderValue> committedLeaderIsSelf() {
@@ -961,12 +1001,11 @@ public interface RollbackManager {
             private void submitRollback(SliceFailureEvent.AllInstancesFailed event,
                                         Artifact rollbackArtifact,
                                         RollbackDecision decision,
-                                        KVCommand.LeaderTransaction<AetherKey, AetherValue> transaction,
-                                        long now) {
+                                        KVCommand.LeaderTransaction<AetherKey, AetherValue> transaction) {
                 cluster.<Object> apply(List.<KVCommand<AetherKey>> of(transaction))
                        .map(results -> accepted(results,
                                                 transaction.transactionId()))
-                       .onSuccess(accepted -> onRollbackCommitted(accepted, event, decision, rollbackArtifact, now))
+                       .onSuccess(accepted -> onRollbackCommitted(accepted, event, decision, rollbackArtifact))
                        .onFailure(cause -> log.error("[requestId={}] ROLLBACK FAILED: Could not update slice target for {}: {}",
                                                      event.requestId(),
                                                      rollbackArtifact,
@@ -985,8 +1024,7 @@ public interface RollbackManager {
             private void onRollbackCommitted(boolean accepted,
                                              SliceFailureEvent.AllInstancesFailed event,
                                              RollbackDecision decision,
-                                             Artifact rollbackArtifact,
-                                             long now) {
+                                             Artifact rollbackArtifact) {
                 if (!accepted) {
                     log.debug("[requestId={}] Rollback of {} refused by its fence: the cluster config, the target or the rollback record changed since the decision",
                               event.requestId(),
@@ -995,18 +1033,20 @@ public interface RollbackManager {
                     return;
                 }
 
-                recordRollbackCompleted(event, decision, rollbackArtifact, now);
+                recordRollbackCompleted(event, decision, rollbackArtifact);
             }
 
+            /// D1-react (the mirror holds only committed values): the continuation records only the in-memory last-rollback details. The
+            /// counters, the failed versions and the bake anchor arrive from the committed record through [#onPreviousVersionPut], the
+            /// mirror's one counter writer, so a continuation that runs after a later record (a reset) cannot write older counters
+            /// over it.
             @Contract
             private void recordRollbackCompleted(SliceFailureEvent.AllInstancesFailed event,
                                                  RollbackDecision decision,
-                                                 Artifact rollbackArtifact,
-                                                 long timestamp) {
+                                                 Artifact rollbackArtifact) {
                 rollbackStates.computeIfPresent(rollbackArtifact.base(),
-                                                (_, state) -> state.withRollbackCompleted(decision.failedVersion(),
-                                                                                          decision.targetVersion(),
-                                                                                          timestamp));
+                                                (_, state) -> state.withRolledBack(decision.failedVersion(),
+                                                                                   decision.targetVersion()));
                 log.info("[requestId={}] ROLLBACK INITIATED: SliceTarget updated to {}",
                          event.requestId(),
                          rollbackArtifact);
@@ -1023,6 +1063,7 @@ public interface RollbackManager {
                                           ConcurrentHashMap.newKeySet(),
                                           new ConcurrentHashMap<>(),
                                           warnings,
+                                          new AtomicReference<>(ReactExecutor.inline("RollbackManager")),
                                           LoggerFactory.getLogger(RollbackManager.class));
 
         manager.loadPreviousVersionsFromKvStore();

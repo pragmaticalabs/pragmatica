@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -35,7 +36,9 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.concurrent.CancellableTask;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.utility.react.ReactExecutor;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -62,6 +65,13 @@ public interface SpokesmanPingLoop {
 
     boolean isActive();
     List<CommunityReport> currentReports();
+
+    /// D1-react (KVStore dispatcher design §3.5.1 rows 72/73): the executor activation, deactivation and the status
+    /// writes run on. A node installs its gated executor once, at assembly; until then (and in a host that installs none)
+    /// they run inline, as before D1-react.
+    default Unit installReactExecutor(ReactExecutor executor) {
+        return Unit.unit();
+    }
 
     static SpokesmanPingLoop spokesmanPingLoop(NodeId self,
                                                ClusterNetwork network,
@@ -164,6 +174,16 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
 
     private final CancellableTask task = CancellableTask.cancellableTask();
 
+    /// D1-react (§3.5.1 rows 72/73). Activation and the status writes are side-effect reactions behind the engine-alive
+    /// gate; every deactivation (row 73's remove, an emptied or FAILED assignment, `stop()`) is an ungated undo on the same
+    /// executor (U1), so FIFO keeps it after the activation it undoes and an engine stop cannot leak the ping timer.
+    /// The writes are under U2: absorb of rows 72/73 bumps [#assignmentGeneration], and a reaction writes only if it has
+    /// not moved, so a removed assignment is never resurrected as `Put(ACTIVE)`.
+    private final AtomicReference<ReactExecutor> react = new AtomicReference<>(ReactExecutor.inline("SpokesmanPingLoop"));
+
+    private final AtomicLong assignmentGeneration = new AtomicLong();
+    private final Object writeGuard = new Object();
+
     SpokesmanPingLoopImpl(NodeId self,
                           ClusterNetwork network,
                           TimeSpan interval,
@@ -190,7 +210,14 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
     @Contract
     public void stop() {
         started.set(false);
-        deactivate();
+        react.get().undo("Spokesman stop", this::deactivate);
+    }
+
+    @Override
+    public Unit installReactExecutor(ReactExecutor executor) {
+        react.set(executor);
+
+        return Unit.unit();
     }
 
     @Override
@@ -205,35 +232,60 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
         }
 
         var value = notification.cause().value();
+        var generation = bumpGeneration();
 
         if (value.communities().isEmpty() || value.status() == SpokesmanStatus.FAILED) {
-            deactivate();
+            react.get().undo("Spokesman deactivate", this::deactivate);
 
             return;
         }
 
         if (value.status() == SpokesmanStatus.ACTIVE) {
-            activate(value.communities());
+            react.get().react("Spokesman activate", () -> activate(value.communities()));
 
             return;
         }
 
-        handleAssigned(value);
+        react.get().react("Spokesman assigned", () -> handleAssigned(value, generation));
     }
 
     @Contract
-    private void handleAssigned(SpokesmanValue baseValue) {
+    private void handleAssigned(SpokesmanValue baseValue, long generation) {
         try {
             activate(baseValue.communities());
-            statusWriter.writeActive(self, baseValue);
+            writeIfCurrent(generation, () -> statusWriter.writeActive(self, baseValue));
         } catch (RuntimeException ex) {
             log.warn("Activation failed on {} for communities {}: {}", self, baseValue.communities(), ex.getMessage());
             deactivate();
-            statusWriter.writeFailure(self,
-                                      baseValue,
-                                      ex.getMessage() == null
-                                      ? ex.getClass().getSimpleName()
-                                      : ex.getMessage());
+            writeIfCurrent(generation, () -> statusWriter.writeFailure(self, baseValue, failureReason(ex)));
+        }
+    }
+
+    private static String failureReason(RuntimeException ex) {
+        return ex.getMessage() == null
+               ? ex.getClass()
+                   .getSimpleName()
+               : ex.getMessage();
+    }
+
+    /// Absorb half of U2: under the guard, so a reaction's check-and-submit never interleaves with the bump.
+    private long bumpGeneration() {
+        synchronized (writeGuard) {
+            return assignmentGeneration.incrementAndGet();
+        }
+    }
+
+    /// Reaction half of U2: the write is submitted only if no later put or remove of the assignment was absorbed.
+    @Contract
+    private void writeIfCurrent(long generation, Runnable write) {
+        synchronized (writeGuard) {
+            if (assignmentGeneration.get() == generation) {
+                write.run();
+            } else {
+                log.debug("Spokesman status write on {} skipped: the assignment changed after generation {}",
+                          self,
+                          generation);
+            }
         }
     }
 
@@ -244,7 +296,8 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
             return;
         }
 
-        deactivate();
+        bumpGeneration();
+        react.get().undo("Spokesman remove", this::deactivate);
     }
 
     @Override

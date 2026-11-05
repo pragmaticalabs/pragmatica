@@ -84,6 +84,7 @@ class ConsumerGroupCoordinatorWiringTest {
                                           .isSameAs(node.consumerGroupRegistry());
 
         store.process(store.createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, LeaderValue.leaderValue(self, 7L)))));
+        KvDelivery.awaitDelivered(store);
 
         assertThat(coordinator.leaderEpoch().get().rabiaTerm()).as("the term follows the committed election that named this node")
                                                                .isEqualTo(7L);

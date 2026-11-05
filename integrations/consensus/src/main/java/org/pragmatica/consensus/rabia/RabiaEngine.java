@@ -1781,6 +1781,13 @@ public class RabiaEngine<C extends Command> {
                           .isActive();
     }
 
+    /// True once [#stop] was called on this engine: the one-way signal behind the D1-react engine-alive gate (KVStore
+    /// dispatcher design §3.5 R5). Not the Stopped state, which is also the state before the first start: boot-time reactions
+    /// must run.
+    public boolean isStopRequested() {
+        return stopping.get();
+    }
+
     /// Returns true when the engine is in the `Paused` state — quorum is currently
     /// unavailable, in-memory protocol state is retained, and new `apply()` submissions
     /// are rejected with [ConsensusError.QuorumPaused]. Mutually exclusive with `isActive`.
@@ -3731,13 +3738,19 @@ public class RabiaEngine<C extends Command> {
     }
 
     /// Triggers a resync when the node detects it's significantly behind.
-    /// No-op when already syncing — doSynchronize() handles retries internally.
+    /// No-op when already syncing — doSynchronize() handles retries internally — and while activation is gated and not yet
+    /// authorized (A-04): a ballot must not start a sync round, and so a path to serving, on an engine that was never
+    /// allowed to activate. A Paused engine still resyncs (ruling a20d1dbca5).
     private void triggerResync() {
-        if (engineState.get() instanceof EngineState.Syncing) {
+        if (engineState.get() instanceof EngineState.Syncing || awaitsAuthorization()) {
             return;
         }
 
         doClusterConnected();
+    }
+
+    private boolean awaitsAuthorization() {
+        return activationGated && !activationAuthorized;
     }
 
     private boolean isPastPhase(Phase proposalPhase, Phase current) {
@@ -4109,7 +4122,8 @@ public class RabiaEngine<C extends Command> {
         committedLedger.record(decision.value().id(),
                                decided);
         for (var correlationId : decided) {
-            Option.option(correlationMap.remove(correlationId)).onPresent(promise -> promise.succeed(results));
+            Option.option(correlationMap.remove(correlationId)).onPresent(promise -> stateMachine.completeAfterDelivery(promise,
+                                                                                                                        results));
         }
     }
 

@@ -98,6 +98,7 @@ class LeaderKeyCommitWiringBootTest {
         kvStore.process(kvStore.createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE,
                                                                                LeaderValue.leaderValue(leader,
                                                                                                        viewSequence)))));
+        KvDelivery.awaitDelivered(kvStore);
     }
 
     private static AetherNodeConfig minimalConfig(NodeId self, Path storageRoot) {

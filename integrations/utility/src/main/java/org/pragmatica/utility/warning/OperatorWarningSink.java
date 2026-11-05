@@ -20,6 +20,7 @@ import java.util.concurrent.RejectedExecutionHandler;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
 import org.pragmatica.lang.Contract;
@@ -62,10 +63,23 @@ public sealed interface OperatorWarningSink {
     /// A sink that hands each warning to `publisher` on its own virtual thread, one at a time and in
     /// order, through a queue of [#HAND_OFF_CAPACITY]. When the queue is full the warning is dropped and
     /// counted. Its log line has already been written, so only the event is lost. The next warning that
-    /// is accepted logs how many were dropped since the last report.
+    /// is accepted logs how many were dropped since the last report. No replay bit crosses: a publisher
+    /// that needs it takes [#handingOffTo(BooleanSupplier, Consumer)].
     static OperatorWarningSink handingOffTo(Consumer<OperatorWarning> publisher) {
-        return HandOff.handOff(publisher);
+        return handingOffTo(() -> false,
+                            handedOff -> publisher.accept(handedOff.warning()));
     }
+
+    /// As [#handingOffTo(Consumer)], and each warning crosses with the replay bit `replaying` read on the
+    /// RAISING thread when it is accepted (KVStore dispatcher design §3.5 R4): a warning a KV handler raises
+    /// during a replay burst is marked replayed, which the hand-off thread could never tell, since its own
+    /// `isReplaying()` always reads false.
+    static OperatorWarningSink handingOffTo(BooleanSupplier replaying, Consumer<HandedOff> publisher) {
+        return HandOff.handOff(replaying, publisher);
+    }
+
+    /// A warning as it crosses the hand-off, with the replay bit captured at raise.
+    record HandedOff(OperatorWarning warning, boolean replayed) {}
 
     enum LogOnly implements OperatorWarningSink {
         INSTANCE;
@@ -82,12 +96,14 @@ public sealed interface OperatorWarningSink {
         private static final Logger LOG = LoggerFactory.getLogger(HandOff.class);
         private static final long IDLE_THREAD_TIMEOUT_SECONDS = 10L;
 
-        private final Consumer<OperatorWarning> publisher;
+        private final BooleanSupplier replaying;
+        private final Consumer<HandedOff> publisher;
         private final AtomicLong dropped = new AtomicLong();
         private final AtomicLong droppedSinceReport = new AtomicLong();
         private final ThreadPoolExecutor executor;
 
-        private HandOff(Consumer<OperatorWarning> publisher) {
+        private HandOff(BooleanSupplier replaying, Consumer<HandedOff> publisher) {
+            this.replaying = replaying;
             this.publisher = publisher;
             this.executor = new ThreadPoolExecutor(1,
                                                    1,
@@ -99,16 +115,18 @@ public sealed interface OperatorWarningSink {
             this.executor.allowCoreThreadTimeOut(true);
         }
 
-        static HandOff handOff(Consumer<OperatorWarning> publisher) {
-            return new HandOff(publisher);
+        static HandOff handOff(BooleanSupplier replaying, Consumer<HandedOff> publisher) {
+            return new HandOff(replaying, publisher);
         }
 
+        /// The replay bit is read here, on the raising thread, before the warning leaves it.
         @Contract
         @Override
         public void accept(OperatorWarning warning) {
             var droppedBefore = dropped.get();
+            var handedOff = new HandedOff(warning, replaying.getAsBoolean());
 
-            executor.execute(() -> publish(warning));
+            executor.execute(() -> publish(handedOff));
             reportDroppedIfAccepted(droppedBefore);
         }
 
@@ -135,12 +153,12 @@ public sealed interface OperatorWarningSink {
 
         /// A publisher that throws must not kill the drain; it is logged and the next warning is published.
         /// That is forward recovery: the warning's log line is already written.
-        private Unit publish(OperatorWarning warning) {
+        private Unit publish(HandedOff handedOff) {
             return lift(Causes::fromThrowable,
-                        () -> publisher.accept(warning)).onFailure(cause -> LOG.warn("[{}] operator warning for {} not emitted, the log line stands: {}",
-                                                                                     warning.code().code(),
-                                                                                     warning.subject(),
-                                                                                     cause.message()))
+                        () -> publisher.accept(handedOff)).onFailure(cause -> LOG.warn("[{}] operator warning for {} not emitted, the log line stands: {}",
+                                                                                       handedOff.warning().code().code(),
+                                                                                       handedOff.warning().subject(),
+                                                                                       cause.message()))
                        .or(unit());
         }
 

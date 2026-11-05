@@ -133,12 +133,7 @@ class BlueprintRepublishPlacementTest {
                                                                                               Option.none()));
         harness.dispatch(new AppBlueprintPutReceived(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none())));
 
-        var proposed = cluster.commands.stream()
-                                       .filter(KVCommand.Put.class::isInstance)
-                                       .map(KVCommand.Put.class::cast)
-                                       .filter(put -> TARGET_KEY.equals(put.key()))
-                                       .map(put -> (SliceTargetValue) put.value())
-                                       .toList();
+        var proposed = TargetWrites.proposed(List.copyOf(cluster.commands), TARGET_KEY);
 
         assertThat(proposed).as("the republish must propose exactly one SliceTargetValue Put for the slice")
                             .hasSize(1);
