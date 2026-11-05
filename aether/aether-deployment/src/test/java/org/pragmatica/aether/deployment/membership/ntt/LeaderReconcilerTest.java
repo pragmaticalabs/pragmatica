@@ -617,6 +617,65 @@ class LeaderReconcilerTest {
         assertThat(ctm.provisionReplacementFailedPeers()).containsExactly(Option.some(departedC), Option.some(departedD));
     }
 
+    private void probeStart(NodeId c, int configured, Set<NodeId> voters, NodeId... members) {
+        configuredCoreCount.set(configured);
+        leaderTerm.set(2L);
+        seedClusterWithPeers(members);
+        reconciler.setInstalledVotersSupplier(() -> voters);
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+    }
+
+    @Test
+    void aSecondFailureAfterTheFirstReplacementIsConfirmed_isPairedWithItsOwnDeparted() {
+        var c = new NodeId("heal-c");
+        var d = new NodeId("heal-d");
+        probeStart(c, 5, Set.of(SELF, PEER_A, PEER_B, c, d), PEER_A, PEER_B, d);
+        var ph = ctm.provisionReplacementCalls().getFirst();
+        ctm.reportInstanceState(ph, ReplacementInstanceState.PRESENT);
+        advanceOnePollInterval();
+        removePeers(d);
+        triggerAndFireReconcile();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(ctm.provisionReplacementFailedPeers()).containsExactly(Option.some(c), Option.some(d));
+    }
+
+    @Test
+    void aSecondFailureAfterAbsentListingsBelowTheThreshold_isPairedWithItsOwnDeparted() {
+        var c = new NodeId("heal-c");
+        var d = new NodeId("heal-d");
+        probeStart(c, 5, Set.of(SELF, PEER_A, PEER_B, c, d), PEER_A, PEER_B, d);
+        var ph = ctm.provisionReplacementCalls().getFirst();
+        ctm.reportInstanceState(ph, ReplacementInstanceState.ABSENT);
+        advanceOnePollInterval();
+        advanceOnePollInterval();
+        removePeers(d);
+        triggerAndFireReconcile();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(ctm.provisionReplacementFailedPeers()).containsExactly(Option.some(c), Option.some(d));
+    }
+
+    @Test
+    void aSecondFailureAfterTheFirstReplacementJoinedBeforeTheVoterSwap_isPairedWithItsOwnDeparted() {
+        var c = new NodeId("heal-c");
+        var d = new NodeId("heal-d");
+        probeStart(c, 5, Set.of(SELF, PEER_A, PEER_B, c, d), PEER_A, PEER_B, d);
+        assertThat(ctm.provisionReplacementFailedPeers()).containsExactly(Option.some(c));
+        var placeholder = ctm.provisionReplacementCalls().getFirst();
+        seedClusterWithPeers(placeholder);
+        triggerAndFireReconcile();
+        removePeers(d);
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(ctm.provisionReplacementFailedPeers()).containsExactly(Option.some(c), Option.some(d));
+    }
+
     /// #2115: with no verified electorate wired there is no departed node to name; the manager resolves the source as for a node that
     /// carries none.
     @Test

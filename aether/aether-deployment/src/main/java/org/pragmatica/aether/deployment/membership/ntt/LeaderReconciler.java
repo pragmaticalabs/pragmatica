@@ -367,6 +367,10 @@ public final class LeaderReconciler {
 
     private final ConcurrentHashMap<NodeId, InFlightEntry> inFlightProvisioning = new ConcurrentHashMap<>();
 
+    /// #2115 — departed voters whose replacement has joined but that are still installed voters (the voter reconciler swaps them out serially, once the
+    /// replacement is synced). They stay "already paired" until they leave the electorate or rejoin, so a later failure is not healed in their source.
+    private final Set<NodeId> pairedDeparted = ConcurrentHashMap.newKeySet();
+
     /// #1404 — the committed capacity allocations a core replacement may still be riding on, supplied by the capacity
     /// ledger rather than by metrics gossip: an acknowledgement lost with the leader that issued the create is not
     /// absence of the VM. See [`#effectiveCapacity`] for what counts.
@@ -630,6 +634,7 @@ public final class LeaderReconciler {
         cancelSurplusFollowUp();
         cancelDrainGraceReEval();
         inFlightProvisioning.clear();
+        pairedDeparted.clear();
         statusQueriesOutstanding.clear();
         recordLeadershipLoss();
         deficitSinceNanos = UNSET_NANOS;
@@ -980,7 +985,7 @@ public final class LeaderReconciler {
         // signal; the provider-state poll and the per-source ceiling eviction above (#1049) remain the
         // backstop for provisions that never arrive (failed boot). This runs BEFORE computing `effective`/effectiveCapacity
         // so a fulfilled id is never double-counted in the union.
-        currentMembers.forEach(inFlightProvisioning::remove);
+        currentMembers.forEach(this::settleJoinedPlaceholder);
         var clusterMembershipCount = currentMembers.size();
         var configuredCoreCount = configuredCoreCountSupplier.getAsInt();
         var authorityEvidence = quorumEvidence(currentMembers, configuredCoreCount);
@@ -1860,13 +1865,27 @@ public final class LeaderReconciler {
         var replaced = departedWithReplacementInFlight();
 
         return installedVotersSupplier.get()
-                                      .map(supplier -> supplier.get()
-                                                               .stream()
-                                                               .filter(voter -> !currentMembers.contains(voter))
-                                                               .filter(voter -> !replaced.contains(voter))
-                                                               .sorted(Comparator.comparing(NodeId::id))
-                                                               .toList())
+                                      .map(supplier -> supplier.get())
+                                      .map(voters -> pairedAndUnswapped(voters, currentMembers, replaced))
                                       .or(List.of());
+    }
+
+    private List<NodeId> pairedAndUnswapped(Set<NodeId> voters, Set<NodeId> currentMembers, Set<NodeId> replaced) {
+        pairedDeparted.removeIf(id -> !voters.contains(id) || currentMembers.contains(id));
+        return voters.stream()
+                     .filter(voter -> !currentMembers.contains(voter))
+                     .filter(voter -> !replaced.contains(voter))
+                     .filter(voter -> !pairedDeparted.contains(voter))
+                     .sorted(Comparator.comparing(NodeId::id))
+                     .toList();
+    }
+
+    /// A joined placeholder leaves the in-flight map; the departed node it replaced stays "already paired" while it is an installed voter.
+    @Contract
+    private void settleJoinedPlaceholder(NodeId member) {
+        Option.option(inFlightProvisioning.remove(member))
+              .onPresent(entry -> entry.departed()
+                                       .onPresent(pairedDeparted::add));
     }
 
     /// A departed node whose replacement is already in flight is still an installed voter until the voter reconciler swaps it out; it must not be
