@@ -739,6 +739,11 @@ public interface SystemTags {
         pin(table, 2204, "org.pragmatica.aether.stream.forward.ControlOutcomeDto.Kind");
         pin(table, 2205, "org.pragmatica.aether.stream.forward.StreamForwardMessage.ControlAppendForward");
         pin(table, 2206, "org.pragmatica.aether.stream.forward.StreamForwardMessage.ControlAppendForwardResponse");
+        // rc6 f3a: arrival counters carried on the per-method/per-slice metrics, and the capacity sample of the system
+        // streams capacity-minute/capacity-hour. 2207..2209 were free on every origin ref, scanned 2026-11-05.
+        pin(table, 2207, "org.pragmatica.aether.worker.metrics.ArrivalCounts");
+        pin(table, 2208, "org.pragmatica.aether.worker.metrics.CapacitySample");
+        pin(table, 2209, "org.pragmatica.aether.worker.metrics.CapacityQuality");
         // ---- 2207..16383 RESERVED ----
         rejectDuplicateTags(table);
 

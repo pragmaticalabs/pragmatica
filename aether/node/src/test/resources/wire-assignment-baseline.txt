@@ -56,6 +56,7 @@ ENUM org.pragmatica.aether.slice.stream.StreamRegistryEntry$RegisteredByKind FRA
 ENUM org.pragmatica.aether.stream.forward.ControlOutcomeDto$Kind ADMITTED=0,REFUSED=1,OUTCOME_UNKNOWN=2,INDEX_UNAVAILABLE=3,UNKNOWN=4
 ENUM org.pragmatica.aether.stream.forward.ReadRefusal$Kind STREAM_NOT_FOUND=0,PARTITION_OUT_OF_RANGE=1,PARTITION_NOT_LOCAL=2,BUFFER_CLOSED=3,CURSOR_EXPIRED=4,OWNER_NOT_ACTIVATED=5,REPLICA_NOT_VERIFIED=6,STALE_EPOCH_READ=7,NOT_CURRENT_OWNER=8,OWNER_CATCHUP_PENDING=9,LINEARIZABLE_ROUND_TIMEOUT=10,PARTITION_HELD_NOT_MATERIALIZED=11,RING_INDEX_CORRUPTED=12,SEAL_IN_FLIGHT=13,SEALED_RANGE_MISSING=14,UNKNOWN=15
 ENUM org.pragmatica.aether.stream.provenance.ProvenanceEntry$ProvenanceKind OWNED=0,UNATTRIBUTED=1,BASE=2,UNKNOWN=3
+ENUM org.pragmatica.aether.worker.metrics.CapacityQuality FULL=0,THROUGHPUT_ONLY=1,UNKNOWN=2
 ENUM org.pragmatica.cluster.metrics.ConnectivityState CONNECTED=0,DISCONNECTED=1,STALE=2,UNKNOWN=3
 ENUM org.pragmatica.cluster.metrics.HealthHintWire HEALTHY=0,SUSPECTED=1,FAULTY=2,UNKNOWN=3
 ENUM org.pragmatica.cluster.replica.ReplicaFeedMessage$SubscribeMode LIVE_ONLY=0,FROM_ANCHOR=1,UNKNOWN=2
@@ -360,9 +361,11 @@ SHAPE org.pragmatica.aether.worker.metadata.WorkerMetadataMessage$DhtReplication
 SHAPE org.pragmatica.aether.worker.metadata.WorkerMetadataMessage$Manifest (sender:org.pragmatica.consensus.NodeId,requestId:long,incarnation:java.lang.String,generation:long,committedRevision:long,clusterIncarnation:long,scopes:java.util.List<org.pragmatica.aether.worker.metadata.WorkerMetadataMessage$ScopeContent>,error:java.lang.String)
 SHAPE org.pragmatica.aether.worker.metadata.WorkerMetadataMessage$ManifestRequest (sender:org.pragmatica.consensus.NodeId,requestId:long,minimumRevision:long,knownIncarnation:long)
 SHAPE org.pragmatica.aether.worker.metadata.WorkerMetadataMessage$ScopeContent (scope:java.lang.String,hash:java.lang.String,length:int)
+SHAPE org.pragmatica.aether.worker.metrics.ArrivalCounts (arrivals:long,accepted:long,rejected:long,completed:long,failed:long)
+SHAPE org.pragmatica.aether.worker.metrics.CapacitySample (minute:long,community:java.lang.String,artifact:org.pragmatica.aether.artifact.Artifact,arrivals:long,accepted:long,completed:long,failed:long,rejected:long,p95:double,instances:int,quality:org.pragmatica.aether.worker.metrics.CapacityQuality)
 SHAPE org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot (communityId:java.lang.String,governorId:org.pragmatica.consensus.NodeId,memberCount:int,sliceMetrics:java.util.List<org.pragmatica.aether.worker.metrics.PerSliceMetrics>,timestampMs:long,incarnation:long,sequence:long)
-SHAPE org.pragmatica.aether.worker.metrics.PerMethodMetrics (method:java.lang.String,activeInvocations:long,p95LatencyMs:double,errorRate:double,totalCalls:long)
-SHAPE org.pragmatica.aether.worker.metrics.PerSliceMetrics (artifact:org.pragmatica.aether.artifact.Artifact,activeInvocations:long,p95LatencyMs:double,errorRate:double,totalCalls:long,methods:java.util.List<org.pragmatica.aether.worker.metrics.PerMethodMetrics>)
+SHAPE org.pragmatica.aether.worker.metrics.PerMethodMetrics (method:java.lang.String,activeInvocations:long,p95LatencyMs:double,errorRate:double,totalCalls:long,external:org.pragmatica.aether.worker.metrics.ArrivalCounts,internal:org.pragmatica.aether.worker.metrics.ArrivalCounts)
+SHAPE org.pragmatica.aether.worker.metrics.PerSliceMetrics (artifact:org.pragmatica.aether.artifact.Artifact,activeInvocations:long,p95LatencyMs:double,errorRate:double,totalCalls:long,methods:java.util.List<org.pragmatica.aether.worker.metrics.PerMethodMetrics>,external:org.pragmatica.aether.worker.metrics.ArrivalCounts,internal:org.pragmatica.aether.worker.metrics.ArrivalCounts)
 SHAPE org.pragmatica.aether.worker.metrics.SourceMetricsBatch (sender:org.pragmatica.consensus.NodeId,snapshots:java.util.List<org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot>)
 SHAPE org.pragmatica.cluster.metrics.ClusterDirectory (generation:long,epochIncarnation:long,epochTerm:long,epochCounter:long,nodes:java.util.List<org.pragmatica.consensus.net.NodeInfo>,dhtReplication:org.pragmatica.cluster.metrics.ClusterDirectory$DhtReplication,voters:org.pragmatica.lang.Option<org.pragmatica.consensus.rabia.VoterConfiguration>)
 SHAPE org.pragmatica.cluster.metrics.ClusterDirectory$DhtReplication (replicationFactor:int,confirmationFactor:int,cacheReplicationFactor:int,cacheConfirmationFactor:int,configVersion:long,changeVersion:long,floorWriteQuorum:int,floorReadQuorum:int,changeSettled:boolean)
@@ -822,6 +825,9 @@ TAG  org.pragmatica.aether.worker.metadata.WorkerMetadataMessage$DhtReplication 
 TAG  org.pragmatica.aether.worker.metadata.WorkerMetadataMessage$Manifest 1696
 TAG  org.pragmatica.aether.worker.metadata.WorkerMetadataMessage$ManifestRequest 1695
 TAG  org.pragmatica.aether.worker.metadata.WorkerMetadataMessage$ScopeContent 1697
+TAG  org.pragmatica.aether.worker.metrics.ArrivalCounts 2207
+TAG  org.pragmatica.aether.worker.metrics.CapacityQuality 2209
+TAG  org.pragmatica.aether.worker.metrics.CapacitySample 2208
 TAG  org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot 86
 TAG  org.pragmatica.aether.worker.metrics.PerMethodMetrics 87
 TAG  org.pragmatica.aether.worker.metrics.PerSliceMetrics 88
