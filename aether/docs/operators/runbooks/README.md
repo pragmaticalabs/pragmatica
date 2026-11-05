@@ -23,9 +23,9 @@ Step-by-step runbooks for common operational tasks including incident response, 
 ### Health Check Endpoints
 
 ```bash
-curl http://node:8080/health          # Health status
-curl http://node:8080/metrics         # Node metrics
-curl http://node:8080/cluster/status  # Cluster status
+curl http://node:8080/api/v1/health          # Health status
+curl http://node:8080/api/v1/metrics         # Node metrics
+curl http://node:8080/api/v1/cluster/status  # Cluster status
 ```
 
 ### Key Metrics

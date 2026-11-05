@@ -23,7 +23,7 @@
 
 4. **Test endpoints**
    ```bash
-   curl http://node1:8080/api/my-slice/health
+   curl http://node1:8070/api/my-slice/health
    ```
 
 ### Update a Slice (Rolling Update)
@@ -51,7 +51,7 @@
 
 4. **Verify new version active**
    ```bash
-   curl http://node1:8080/api/my-slice/version
+   curl http://node1:8070/api/my-slice/version
    ```
 
 ### Rollback
@@ -124,7 +124,7 @@
 
 5. **Verify node joined cluster**
    ```bash
-   curl http://localhost:8080/health
+   curl http://localhost:8080/api/v1/health
    ```
 
 ### Upgrade Aether Version
@@ -135,7 +135,7 @@ boot token). Each node is replaced under a **new** NodeId, one at a time:
 
 1. **Verify cluster health**
    ```bash
-   curl http://node1:8080/health
+   curl http://node1:8080/api/v1/health
    # Must show quorum=true
    ```
 
@@ -193,7 +193,7 @@ boot token). Each node is replaced under a **new** NodeId, one at a time:
 3. **Verify TLS is active**
    ```bash
    # Should show HTTPS
-   curl -k https://node1:8080/health
+   curl -k https://node1:8080/api/v1/health
    ```
 
 ## Production prerequisite: `[backup]` with a remote
