@@ -745,7 +745,9 @@ public final class WaveExecutor {
     /// A stopped, exited or terminated instance (`docker ps -a` and some cloud listings still return them) serves nothing: it would take a
     /// slot among the "oldest" nodes and leave the live one undrained. Unknown and provisioning are not read as going (#1049).
     private static boolean isGoing(InstanceInfo info) {
-        return info.status().equals(InstanceStatus.STOPPING) || info.status().equals(InstanceStatus.TERMINATED);
+        return info.status()
+                   .equals(InstanceStatus.STOPPING) || info.status()
+                                                           .equals(InstanceStatus.TERMINATED);
     }
 
     private static boolean carries(InstanceInfo info,
@@ -811,12 +813,16 @@ public final class WaveExecutor {
 
         return nodes.isEmpty() && !hosts.isEmpty()
                ? new ApplyError.NothingReplaced(sourceName, role).<List<OldNode>> result()
-               : nodes.size() < count
-                 ? new ApplyError.OldNodesShort(sourceName,
-                                                role,
-                                                count,
-                                                nodes.stream().map(OldNode::nodeId).toList()).<List<OldNode>> result()
-                 : success(List.copyOf(nodes));
+               : enough(nodes, sourceName, role, count);
+    }
+
+    private static Result<List<OldNode>> enough(List<OldNode> nodes, SourceName sourceName, NodeRole role, int count) {
+        return nodes.size() < count
+               ? new ApplyError.OldNodesShort(sourceName,
+                                              role,
+                                              count,
+                                              nodes.stream().map(OldNode::nodeId).toList()).<List<OldNode>> result()
+               : success(List.copyOf(nodes));
     }
 
     /// Forge nodes are in-process placeholders that Forge stops itself; there is no management endpoint of theirs to drain.
