@@ -44,6 +44,7 @@ class DockerIntentRowCleanupTest {
     private final List<String> terminateCalls = new ArrayList<>();
     private boolean removalRefused;
     private boolean listFails;
+    private boolean realDockerIds;
 
     private final ComputeProvider docker = new ComputeProvider() {
         @Override
@@ -77,7 +78,7 @@ class DockerIntentRowCleanupTest {
             }
 
             return Promise.success(host.stream()
-                                       .map(name -> new InstanceInfo(new InstanceId(name),
+                                       .map(name -> new InstanceInfo(new InstanceId(realDockerIds ? hexIdOf(name) : name),
                                                                      InstanceStatus.RUNNING,
                                                                      List.of(),
                                                                      InstanceType.ON_DEMAND,
@@ -111,6 +112,11 @@ class DockerIntentRowCleanupTest {
     @AfterEach
     void remove() {
         ProviderResolver.dockerFactoryOverride = null;
+    }
+
+    /// A real docker id is 64 hex characters (`--no-trunc`) and shares no prefix with the container name.
+    private static String hexIdOf(String name) {
+        return "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
     }
 
     private static BootstrapState ledgerNaming(String name) {
@@ -156,5 +162,17 @@ class DockerIntentRowCleanupTest {
         var result = BootstrapCleanup.cleanup(ledgerNaming(ABSENT));
 
         assertThat(result.isFailure()).as("could not look is not proof of absence").isTrue();
+    }
+
+    @Test
+    void cleanup_ofAPresentContainerListedUnderItsRealHexId_butCannotBeRemoved_isStillAFailure() {
+        host.add(PRESENT);
+        removalRefused = true;
+        realDockerIds = true;
+
+        var result = BootstrapCleanup.cleanup(ledgerNaming(PRESENT));
+
+        assertThat(result.isFailure()).as("the listing names it by label, not by id: it is on the host").isTrue();
+        assertThat(host).containsExactly(PRESENT);
     }
 }

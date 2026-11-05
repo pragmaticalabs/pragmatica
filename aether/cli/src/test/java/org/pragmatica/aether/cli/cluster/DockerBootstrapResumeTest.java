@@ -49,22 +49,34 @@ import static org.assertj.core.api.Assertions.assertThat;
 class DockerBootstrapResumeTest {
     private static final ClusterName CLUSTER = uniqueClusterName();
 
-    private static final String TOML = """
-            config_version = "1.0.0"
+    private static final String TOML = toml(3, 2, 0);
 
-            [cluster]
-            name = "%s"
-            version = "1.0.0"
+    private static String toml(int cores, int workers, int spots) {
+        var spot = spots == 0
+                   ? ""
+                   : """
 
-            [source.local]
-            type = "docker"
+                     [source.local.spot]
+                     count = %d
+                     """.formatted(spots);
 
-            [source.local.core]
-            count = 3
+        return """
+               config_version = "1.0.0"
 
-            [source.local.worker]
-            count = 2
-            """.formatted(CLUSTER.value());
+               [cluster]
+               name = "%s"
+               version = "1.0.0"
+
+               [source.local]
+               type = "docker"
+
+               [source.local.core]
+               count = %d
+
+               [source.local.worker]
+               count = %d
+               """.formatted(CLUSTER.value(), cores, workers) + spot;
+    }
 
     private static ClusterName uniqueClusterName() {
         var suffix = new byte[6];
@@ -182,14 +194,87 @@ class DockerBootstrapResumeTest {
     }
 
     private static ClusterBootstrapConfig config() {
-        return ClusterBootstrapConfigParser.parse(TOML).flatMap(ClusterBootstrapConfigValidator::validate).unwrap();
+        return config(TOML);
+    }
+
+    private static ClusterBootstrapConfig config(String toml) {
+        return ClusterBootstrapConfigParser.parse(toml).flatMap(ClusterBootstrapConfigValidator::validate).unwrap();
+    }
+
+    /// The validator refuses a docker spot (PF-15), so the spot scenario skips it: what it pins is that the provisioning code treats every
+    /// role of [DockerCores#ROLE_ORDER] alike, not that the config schema admits the role on docker.
+    private static ClusterBootstrapConfig configUnvalidated(String toml) {
+        return ClusterBootstrapConfigParser.parse(toml).unwrap();
     }
 
     /// One run of the PROVISION phase over the ledger FILE as it stands, which is what a re-run starts from.
     private static Result<BootstrapContext> runPhase() {
+        return runPhase(TOML);
+    }
+
+    private static Result<BootstrapContext> runPhase(String toml) {
+        return runPhase(config(toml));
+    }
+
+    private static Result<BootstrapContext> runPhase(ClusterBootstrapConfig config) {
         var state = BootstrapStatePersistence.read(CLUSTER).unwrap().unwrap();
 
-        return BootstrapPhaseProvision.execute(BootstrapContext.bootstrapContext(config(), state, List.of(), List.of()));
+        return BootstrapPhaseProvision.execute(BootstrapContext.bootstrapContext(config, state, List.of(), List.of()));
+    }
+
+    private static List<String> rolesInLedger() {
+        return BootstrapStatePersistence.read(CLUSTER)
+                                        .unwrap()
+                                        .unwrap()
+                                        .createdResources()
+                                        .stream()
+                                        .filter(CreatedResource.ProvisionedVm.class::isInstance)
+                                        .map(CreatedResource.ProvisionedVm.class::cast)
+                                        .map(CreatedResource.ProvisionedVm::role)
+                                        .toList();
+    }
+
+    /// A view of the fake host as the two real providers differ: the creating one starts containers but is not cluster-scoped (it refuses to
+    /// list or terminate), the cluster-scoped one lists and removes but starts nothing.
+    private static final class ScopedView implements ComputeProvider {
+        private final FakeDocker host;
+        private final boolean scoped;
+
+        ScopedView(FakeDocker host, boolean scoped) {
+            this.host = host;
+            this.scoped = scoped;
+        }
+
+        @Override
+        public ProviderDefaults providerDefaults() {
+            return host.providerDefaults();
+        }
+
+        @Override
+        public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
+            return scoped
+                   ? Promise.failure(Causes.cause("the cluster-scoped provider creates nothing"))
+                   : host.createFrom(request);
+        }
+
+        @Override
+        public Promise<Unit> terminate(InstanceId instanceId) {
+            return scoped
+                   ? host.terminate(instanceId)
+                   : Promise.failure(Causes.cause("no cluster scope known"));
+        }
+
+        @Override
+        public Promise<List<InstanceInfo>> listInstances() {
+            return scoped
+                   ? host.listInstances()
+                   : Promise.failure(Causes.cause("no cluster scope known"));
+        }
+
+        @Override
+        public Promise<InstanceInfo> instanceStatus(InstanceId instanceId) {
+            return host.instanceStatus(instanceId);
+        }
     }
 
     private static List<String> ledgerNames() {
@@ -342,5 +427,75 @@ class DockerBootstrapResumeTest {
                                             .map(CreatedResource.ProvisionedVm::role)
                                             .collect(Collectors.groupingBy(role -> role, Collectors.counting())))
             .containsEntry("core", 3L).containsEntry("worker", 2L);
+    }
+
+    @Test
+    void rerun_listsAndRemovesThroughTheClusterScopedProvider_createsThroughTheCreatingOne() {
+        ProviderResolver.dockerFactoryOverride = new EnvironmentIntegrationFactory() {
+            @Override
+            public String providerName() {
+                return "docker";
+            }
+
+            @Override
+            public Result<EnvironmentIntegration> create(CloudConfig config) {
+                var scoped = config.compute().containsKey("cluster_name");
+
+                return Result.success(EnvironmentIntegration.withCompute(new ScopedView(docker, scoped)));
+            }
+        };
+        assertThat(runPhase().isSuccess()).isTrue();
+        var failed = docker.containers.keySet().stream().skip(3).findFirst().orElseThrow();
+        docker.containers.put(failed, InstanceStatus.STOPPING);
+        var attemptsBefore = docker.attempts.size();
+
+        var second = runPhase();
+
+        assertThat(second.isSuccess()).as("the lookups went to the provider that can answer them").isTrue();
+        assertThat(docker.terminated).containsExactly(failed);
+        assertThat(docker.attempts.subList(attemptsBefore, docker.attempts.size())).containsExactly(failed);
+        assertNoLeak();
+    }
+
+    @Test
+    void spotRole_isRecordedBeforeTheFirstCreate_andSurvivesAReRun() {
+        var withSpot = configUnvalidated(toml(3, 2, 1));
+        docker.failOnAttempt = 6;
+        assertThat(runPhase(withSpot).isFailure()).isTrue();
+        var recorded = List.copyOf(ledgerNames());
+        var failedBefore = docker.attempts.size();
+
+        assertThat(recorded).as("the spot's name was recorded before any create, with the cores' and workers'").hasSize(6);
+        assertThat(rolesInLedger()).containsOnlyOnce("spot");
+        assertThat(docker.ledgerRowsAtCreate).containsOnly(6);
+
+        docker.failOnAttempt = -1;
+        var second = runPhase(withSpot);
+
+        assertThat(second.isSuccess()).isTrue();
+        assertThat(ledgerNames()).as("the re-run recorded no new id").containsExactlyElementsOf(recorded);
+        assertThat(docker.attempts.size() - failedBefore).as("only the spot, which did not come up, was created again").isEqualTo(1);
+        assertThat(second.map(ctx -> ctx.nodes().size()).or(0)).isEqualTo(6);
+        assertNoLeakNoDuplicate();
+        assertThat(docker.containers).hasSize(6);
+    }
+
+    @Test
+    void rerun_withASmallerCoreCount_resumesOnlyTheCountedNodes_andKeepsTheDroppedRowsInTheLedger() {
+        assertThat(runPhase(toml(5, 2, 0)).isSuccess()).isTrue();
+        var recorded = List.copyOf(ledgerNames());
+        var firstCore = ledgerNames().getFirst();
+        docker.containers.remove(firstCore);
+        docker.created.remove(firstCore);
+        var attemptsBefore = docker.attempts.size();
+
+        var second = runPhase(toml(3, 2, 0));
+
+        assertThat(second.isSuccess()).isTrue();
+        assertThat(second.map(ctx -> ctx.nodes().size()).or(0)).as("3 cores + 2 workers: the fourth and fifth core are no longer part of the plan").isEqualTo(5);
+        assertThat(docker.attempts.subList(attemptsBefore, docker.attempts.size())).as("only the core that went missing was created").containsExactly(firstCore);
+        assertThat(peersOf(docker.requests.getLast())).as("its peers are the 3 counted cores, not the 5 recorded").hasSize(3).anyMatch(peer -> peer.startsWith(firstCore + ":"));
+        assertThat(ledgerNames()).as("the dropped cores' rows stay, so cleanup still names their containers").containsExactlyInAnyOrderElementsOf(recorded);
+        assertNoLeak();
     }
 }
