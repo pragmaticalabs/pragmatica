@@ -173,6 +173,25 @@ class AetherNodeStreamOwnershipRetryTest {
         assertThat(attempts.get()).as("and the retry keeps going: the cap bounds the rate, not the count").isGreaterThan(10);
     }
 
+    /// #2654 (v2691 N1): consecutive refusals back off like failures. The refusal must advance the failure count, or
+    /// a cluster whose incarnation stays uncommitted re-runs the pass at the base delay forever. Red if `refused` reads
+    /// the count without advancing it.
+    @Test
+    void refused_backsOffPerConsecutiveRefusal() {
+        var scheduled = new CopyOnWriteArrayList<Scheduled>();
+        var retry = AetherNode.StreamOwnershipRetry.streamOwnershipRetry((task, delay) -> scheduled.add(new Scheduled(task, delay)),
+                                                                         () -> {});
+
+        retry.refused(Causes.cause("incarnation not committed"));
+        retry.refused(Causes.cause("incarnation not committed"));
+
+        assertThat(scheduled).as("each refusal arms exactly one retry").hasSize(2);
+        assertThat(scheduled.get(0).delay()).as("first refusal: the base delay").isEqualTo(AetherNode.STREAM_OWNERSHIP_RETRY_BASE);
+        assertThat(scheduled.get(1).delay().millis()).as("second consecutive refusal: doubled")
+                                                     .isEqualTo(2 * AetherNode.STREAM_OWNERSHIP_RETRY_BASE.millis());
+        assertThat(retry.consecutiveFailures().get()).as("both refusals counted").isEqualTo(2);
+    }
+
     @Test
     void delayAfter_doublesFromTheBase_andIsCapped() {
         assertThat(AetherNode.StreamOwnershipRetry.delayAfter(0)).isEqualTo(AetherNode.STREAM_OWNERSHIP_RETRY_BASE);
