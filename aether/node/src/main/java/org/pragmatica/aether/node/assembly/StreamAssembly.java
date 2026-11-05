@@ -235,6 +235,31 @@ public sealed interface StreamAssembly {
                                     StreamReadForwardMetrics streamReadForwardMetrics,
                                     StreamForwardClient streamForwardClient) {}
 
+    /// #2682: the route that hands every committed ownership record to the owner-activation hook, which starts the promotion
+    /// gate when the record newly names this node.
+    static List<MessageRouter.Entry<?>> committedOwnershipRoutes(OwnerActivation ownerActivation) {
+        return KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                   .onPut(StreamPartitionOwnershipKey.class,
+                                          (ValuePut<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> put) -> committedOwnership(ownerActivation,
+                                                                                                                                           put))
+                                   .build()
+                                   .asRouteEntries();
+    }
+
+    @Contract
+    private static void committedOwnership(OwnerActivation ownerActivation,
+                                           ValuePut<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> put) {
+        ownerActivation.onCommittedOwnership(put.cause()
+                                                .key()
+                                                .stream(),
+                                             put.cause()
+                                                .key()
+                                                .partition(),
+                                             put.oldValue(),
+                                             put.cause()
+                                                .value());
+    }
+
     /// The replica registry, the replication manager and transport, the partition manager with its segment index and stores, the ISR announcer and the forward client.
     /// The run-forming sealer's thresholds, as the node's `[streaming] seal_*` keys set them (#2201 C-02).
     static SealerThresholds sealerThresholds(StreamingConfig streaming) {
@@ -912,19 +937,7 @@ public sealed interface StreamAssembly {
         // #2682: a committed ownership record that newly names this node starts the promotion gate at once, so a new owner pulls
         // the tail a live peer holds beyond its head even when nothing demands the partition; at most reshuffle_concurrency at once.
         ownerActivation.eagerConcurrency(streamingConfig.reshuffleConcurrency());
-        allEntries.addAll(KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
-                                              .onPut(AetherKey.StreamPartitionOwnershipKey.class,
-                                                     (ValuePut<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> put) -> ownerActivation.onCommittedOwnership(put.cause()
-                                                                                                                                                                           .key()
-                                                                                                                                                                           .stream(),
-                                                                                                                                                                        put.cause()
-                                                                                                                                                                           .key()
-                                                                                                                                                                           .partition(),
-                                                                                                                                                                        put.oldValue(),
-                                                                                                                                                                        put.cause()
-                                                                                                                                                                           .value()))
-                                              .build()
-                                              .asRouteEntries());
+        allEntries.addAll(committedOwnershipRoutes(ownerActivation));
         // Reconcile on every membership decision (all variants via the tail helper) and on
         // ClusterStateNotification edges (PASSIVE suppresses; PASSIVE->ACTIVE re-reconciles).
         wireMembershipDecisionTail(allEntries, streamReplicaSetController::onMembershipDecision);

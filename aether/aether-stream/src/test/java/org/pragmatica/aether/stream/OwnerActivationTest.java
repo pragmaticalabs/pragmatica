@@ -11,6 +11,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -21,6 +23,9 @@ import java.util.stream.LongStream;
 
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
+import org.pragmatica.aether.stream.forward.StreamForwardError;
+import org.pragmatica.aether.stream.replication.PartitionKey;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.hlc.HlcTimestamp;
@@ -61,6 +66,14 @@ class OwnerActivationTest {
     /// #2682: while set, every probe is held unanswered until the test resolves it, so a gate stays in flight.
     private final AtomicBoolean holdProbes = new AtomicBoolean();
     private final List<HeldProbe> heldProbes = new CopyOnWriteArrayList<>();
+    /// One permit per probe held, so a test waits for a gate to reach its probe without sleeping.
+    private final Semaphore probesHeld = new Semaphore(0);
+    /// One permit per read of the consensus state, so a test can tell a decision has looked at it.
+    private final Semaphore consensusReads = new Semaphore(0);
+    /// The thread each barrier round (a gate's first step) ran on.
+    private final List<Thread> roundThreads = new CopyOnWriteArrayList<>();
+    /// Peers whose probe is refused unsent (#2574), which starts the partition's refusal wait.
+    private final Set<NodeId> refusing = ConcurrentHashMap.newKeySet();
 
     private record HeldProbe(int partition, Promise<Long> answer) {}
 
@@ -88,7 +101,7 @@ class OwnerActivationTest {
                                                this::probe,
                                                (_, _) -> localWatermark.get(),
                                                this::catchUp,
-                                               consensusActive::get,
+                                               this::consensus,
                                                this::range,
                                                this::raise,
                                                unreachableAlarmAfter);
@@ -108,7 +121,14 @@ class OwnerActivationTest {
         return Unit.unit();
     }
 
+    private boolean consensus() {
+        consensusReads.release();
+
+        return consensusActive.get();
+    }
+
     private Promise<Unit> round(String stream, int partition) {
+        roundThreads.add(Thread.currentThread());
         rounds.incrementAndGet();
         duringRound.get().run();
 
@@ -120,8 +140,13 @@ class OwnerActivationTest {
             var held = Promise.<Long> promise();
 
             heldProbes.add(new HeldProbe(partition, held));
+            probesHeld.release();
 
             return held;
+        }
+
+        if (refusing.contains(target)) {
+            return StreamForwardError.ForwardNotSent.FACTORY.apply(new WriteOutcome.BackpressureRefused(target)).promise();
         }
 
         return unreachable.contains(target)
@@ -1379,9 +1404,11 @@ class OwnerActivationTest {
         assertThat(eventuallyActivatedWithin(3_000L)).as("re-driven with no demand").isTrue();
     }
 
-    /// #2682: at most `eagerConcurrency` eager gates are in flight; a further trigger waits, and runs once a slot frees.
+    /// #2682: at most `eagerConcurrency` eager gates are in flight; a further trigger waits, and runs once a slot frees. The
+    /// slots are taken on the triggering thread, so the waiting partition is known as soon as the triggers return; which of
+    /// the two running gates reaches its probe first is not (each starts on the async executor), so that set is unordered.
     @Test
-    void onCommittedOwnership_moreTriggersThanTheCap_atMostCapInFlight_theRestRunAsSlotsFree() {
+    void onCommittedOwnership_moreTriggersThanTheCap_atMostCapInFlight_theRestRunAsSlotsFree() throws InterruptedException {
         var owned = ownedBy(SELF, 1);
 
         record.set(Option.some(owned));
@@ -1390,21 +1417,194 @@ class OwnerActivationTest {
         activation.eagerConcurrency(2);
 
         List.of(0, 1, 2).forEach(partition -> activation.onCommittedOwnership(STREAM, partition, Option.none(), owned));
-        LockSupport.parkNanos(300_000_000L);
 
-        assertThat(heldProbes).as("two of three gates in flight").extracting(HeldProbe::partition).containsExactly(0, 1);
+        assertThat(activation.eagerWaiting()).as("the third waits for a slot").containsExactly(key(2));
+        assertThat(probesArrive(2)).as("two gates reach their probe").isTrue();
+        assertThat(heldProbes).as("the two in flight are the first two triggered")
+                              .extracting(HeldProbe::partition)
+                              .containsExactlyInAnyOrder(0, 1);
 
-        heldProbes.getFirst().answer().succeed(-1L);
+        heldFor(0).answer().succeed(-1L);
 
-        assertThat(eventually(() -> heldProbes.size() == 3)).as("the third runs once a slot frees").isTrue();
+        assertThat(probesArrive(1)).as("the third runs once a slot frees").isTrue();
+        assertThat(heldProbes).extracting(HeldProbe::partition).containsExactlyInAnyOrder(0, 1, 2);
         assertThat(heldProbes.getLast().partition()).isEqualTo(2);
-        assertThat(activation.isActivated(STREAM, 0)).isTrue();
+        assertThat(activation.isActivated(STREAM, 0)).as("the freed slot's gate activated its partition").isTrue();
+    }
+
+    /// #2682: queued gates run in arrival order: with one slot, the second trigger runs before the third.
+    @Test
+    void onCommittedOwnership_queuedGates_runInArrivalOrder() throws InterruptedException {
+        var owned = ownedBy(SELF, 1);
+
+        record.set(Option.some(owned));
+        members.set(List.of(SELF, PEER_A));
+        holdProbes.set(true);
+
+        List.of(0, 1, 2).forEach(partition -> activation.onCommittedOwnership(STREAM, partition, Option.none(), owned));
+
+        assertThat(activation.eagerWaiting()).containsExactly(key(1), key(2));
+        assertThat(probesArrive(1)).isTrue();
+
+        heldFor(0).answer().succeed(-1L);
+
+        assertThat(probesArrive(1)).as("the next gate runs once the slot frees").isTrue();
+        assertThat(heldProbes).as("the earlier trigger first").extracting(HeldProbe::partition).containsExactly(0, 1);
+    }
+
+    /// #2682: raising the cap with gates queued starts one per newly free slot at once, with no slot freed by a gate.
+    @Test
+    void eagerConcurrency_raisedWithGatesQueued_fillsEveryFreeSlot() throws InterruptedException {
+        var owned = ownedBy(SELF, 1);
+
+        record.set(Option.some(owned));
+        members.set(List.of(SELF, PEER_A));
+        holdProbes.set(true);
+
+        List.of(0, 1, 2).forEach(partition -> activation.onCommittedOwnership(STREAM, partition, Option.none(), owned));
+
+        assertThat(activation.eagerWaiting()).containsExactly(key(1), key(2));
+
+        activation.eagerConcurrency(3);
+
+        assertThat(probesArrive(3)).as("every queued gate starts").isTrue();
+        assertThat(heldProbes).extracting(HeldProbe::partition).containsExactlyInAnyOrder(0, 1, 2);
+        assertThat(activation.eagerWaiting()).isEmpty();
+    }
+
+    /// #2682: the gate starts on the async executor, never on the thread that applied the committed record: its first step
+    /// orders a consensus round.
+    @Test
+    void onCommittedOwnership_gateRunsOffTheTriggeringThread() throws InterruptedException {
+        var owned = ownedBy(SELF, 1);
+
+        record.set(Option.some(owned));
+        members.set(List.of(SELF, PEER_A));
+        holdProbes.set(true);
+
+        activation.onCommittedOwnership(STREAM, PARTITION, Option.none(), owned);
+
+        assertThat(probesArrive(1)).isTrue();
+        assertThat(roundThreads).as("the round ran on another thread").hasSize(1).doesNotContain(Thread.currentThread());
+    }
+
+    /// #2682: a queued partition a demand activated meanwhile runs no gate when its slot comes; the next one queued runs.
+    @Test
+    void onCommittedOwnership_queuedPartitionActivatedMeanwhile_runsNoGate_theNextQueuedRuns() throws InterruptedException {
+        var owned = ownedBy(SELF, 1);
+
+        record.set(Option.some(owned));
+        members.set(List.of(SELF, PEER_A));
+        holdProbes.set(true);
+
+        List.of(0, 1, 2).forEach(partition -> activation.onCommittedOwnership(STREAM, partition, Option.none(), owned));
+
+        assertThat(probesArrive(1)).isTrue();
+        assertThat(activation.admit(STREAM, 1).isFailure()).as("the demand starts partition 1's own gate").isTrue();
+        assertThat(probesArrive(1)).isTrue();
+
+        heldFor(1).answer().succeed(-1L);
+
+        assertThat(eventually(() -> activation.isActivated(STREAM, 1))).as("the demand activated partition 1").isTrue();
+
+        heldFor(0).answer().succeed(-1L);
+
+        assertThat(probesArrive(1)).isTrue();
+        assertThat(heldProbes).as("partition 1's slot ran no gate; partition 2's did")
+                              .extracting(HeldProbe::partition)
+                              .containsExactly(0, 1, 2);
+    }
+
+    /// #2682 (#2574, know 89e17399a9): an eager trigger inside the partition's refusal wait runs no gate; its slot frees at once
+    /// and the next queued gate runs. The wait (at least 200 ms: 250 ms less the 20% jitter) is started by the demand's refused
+    /// probe before the triggers, and outlasts the one async hop to the eager attempt.
+    @Test
+    void onCommittedOwnership_insideARefusalWait_runsNoGate_theNextQueuedRuns() throws InterruptedException {
+        var owned = ownedBy(SELF, 1);
+
+        record.set(Option.some(owned));
+        members.set(List.of(SELF, PEER_A));
+        refusing.add(PEER_A);
+
+        assertThat(activation.admit(STREAM, 1).isFailure()).as("the probe is refused unsent: the wait starts").isTrue();
+
+        refusing.remove(PEER_A);
+        holdProbes.set(true);
+        List.of(1, 2).forEach(partition -> activation.onCommittedOwnership(STREAM, partition, Option.none(), owned));
+
+        assertThat(probesArrive(1)).isTrue();
+        assertThat(heldProbes).as("the waiting partition probed nothing; the next queued gate ran")
+                              .extracting(HeldProbe::partition)
+                              .containsExactly(2);
+    }
+
+    /// #2682 (v-2699 F2): the eager gate's run fails while quorum is lost, quorum returns, and nothing demands the partition:
+    /// it still activates, because the re-drive outlives the quorum loss. Before, the loop ended at that failure (consensus
+    /// inactive) and nothing ran the gate again. Quorum returns only after the failure's re-drive has read the quorum state,
+    /// so the failure is always seen during the loss.
+    @Test
+    void onCommittedOwnership_gateFailsDuringQuorumLoss_activatesOnceQuorumReturns() throws InterruptedException {
+        var owned = ownedBy(SELF, 1);
+
+        record.set(Option.some(owned));
+        members.set(List.of(SELF, PEER_A));
+        peerWatermarks.put(PEER_A, 24L);
+        holdProbes.set(true);
+        activation.onCommittedOwnership(STREAM, PARTITION, Option.none(), owned);
+
+        assertThat(probesArrive(1)).as("the eager gate is in flight").isTrue();
+
+        consensusActive.set(false);
+        activation.onQuorumStateChange(ClusterStateNotification.passive());
+        holdProbes.set(false);
+        consensusReads.drainPermits();
+        heldProbes.getFirst().answer().resolve(Causes.cause("probe timed out during the quorum loss").result());
+
+        assertThat(consensusReads.tryAcquire(5, TimeUnit.SECONDS)).as("the re-drive read the quorum state").isTrue();
+
+        consensusActive.set(true);
+        activation.onQuorumStateChange(ClusterStateNotification.active());
+
+        assertThat(eventuallyActivatedWithin(5_000L)).as("activated after quorum returned, with no demand").isTrue();
+        assertThat(catchUps).as("pulled the missed tail").containsExactly("peer-a@24");
+    }
+
+    /// #2682: while quorum is lost the re-drive runs no gate, so an ex-owner re-runs the whole gate only after it heals back: the
+    /// loop keeps looking at the quorum state, one backoff at a time (two looks per cycle; the fourth is the second cycle's),
+    /// and the gate runs once quorum returns.
+    @Test
+    void redrive_duringQuorumLoss_runsNoGate_untilQuorumReturns() throws InterruptedException {
+        var owned = ownedBy(SELF, 1);
+
+        record.set(Option.some(owned));
+        members.set(List.of(SELF, PEER_A));
+        peerWatermarks.put(PEER_A, 24L);
+        holdProbes.set(true);
+        activation.onCommittedOwnership(STREAM, PARTITION, Option.none(), owned);
+
+        assertThat(probesArrive(1)).as("the eager gate is in flight").isTrue();
+
+        var roundsAtFailure = rounds.get();
+
+        consensusActive.set(false);
+        activation.onQuorumStateChange(ClusterStateNotification.passive());
+        holdProbes.set(false);
+        consensusReads.drainPermits();
+        heldProbes.getFirst().answer().resolve(Causes.cause("probe timed out during the quorum loss").result());
+
+        assertThat(consensusReads.tryAcquire(4, 10, TimeUnit.SECONDS)).as("the loop kept looking at the quorum state").isTrue();
+        assertThat(rounds.get()).as("and ran no gate while it was lost").isEqualTo(roundsAtFailure);
+
+        consensusActive.set(true);
+
+        assertThat(eventuallyActivatedWithin(5_000L)).as("activated once quorum returned").isTrue();
+        assertThat(rounds.get()).as("the gate re-ran after quorum returned").isGreaterThan(roundsAtFailure);
     }
 
     /// #2682: a demand is never capped: with every eager slot taken and a partition queued behind it, `admit` of that
     /// partition starts its own gate at once.
     @Test
-    void admit_duringACappedBacklog_startsItsOwnGate() {
+    void admit_duringACappedBacklog_startsItsOwnGate() throws InterruptedException {
         var owned = ownedBy(SELF, 1);
 
         record.set(Option.some(owned));
@@ -1413,13 +1613,30 @@ class OwnerActivationTest {
         activation.eagerConcurrency(1);
 
         List.of(0, 1).forEach(partition -> activation.onCommittedOwnership(STREAM, partition, Option.none(), owned));
-        LockSupport.parkNanos(300_000_000L);
-        assertThat(heldProbes).as("one eager gate in flight, one queued").extracting(HeldProbe::partition).containsExactly(0);
+
+        assertThat(activation.eagerWaiting()).as("one queued").containsExactly(key(1));
+        assertThat(probesArrive(1)).isTrue();
+        assertThat(heldProbes).as("one eager gate in flight").extracting(HeldProbe::partition).containsExactly(0);
 
         assertThat(activation.admit(STREAM, 1).isFailure()).isTrue();
 
-        assertThat(eventually(() -> heldProbes.size() == 2)).as("the demand ran its gate past the cap").isTrue();
-        assertThat(heldProbes.getLast().partition()).isEqualTo(1);
+        assertThat(probesArrive(1)).as("the demand ran its gate past the cap").isTrue();
+        assertThat(heldProbes).extracting(HeldProbe::partition).containsExactly(0, 1);
+    }
+
+    private boolean probesArrive(int count) throws InterruptedException {
+        return probesHeld.tryAcquire(count, 5, TimeUnit.SECONDS);
+    }
+
+    private HeldProbe heldFor(int partition) {
+        return heldProbes.stream()
+                         .filter(held -> held.partition() == partition)
+                         .findFirst()
+                         .orElseThrow();
+    }
+
+    private static PartitionKey key(int partition) {
+        return PartitionKey.partitionKey(STREAM, partition);
     }
 
     private static boolean eventually(BooleanSupplier condition) {
