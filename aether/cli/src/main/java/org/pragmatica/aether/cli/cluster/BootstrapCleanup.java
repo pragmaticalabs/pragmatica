@@ -1145,12 +1145,13 @@ sealed interface BootstrapCleanup {
                : containerGone(resourceId);
     }
 
+    /// A listed container is the recorded one when its `aether.node-id` label (the container name) equals the recorded name. The listing
+    /// (`docker ps -a --no-trunc`, DockerComputeProvider `buildFilteredListCommand`) yields full 64-hex ids that never prefix-match a name,
+    /// so the id is not consulted.
     private static boolean namesContainer(InstanceInfo info, String resourceId) {
-        var id = info.id().value();
-
         return info.nodeId()
                    .filter(resourceId::equals)
-                   .isPresent() || (!id.isEmpty() && (resourceId.startsWith(id) || id.startsWith(resourceId)));
+                   .isPresent();
     }
 
     private static Result<Unit> containerGone(String resourceId) {
