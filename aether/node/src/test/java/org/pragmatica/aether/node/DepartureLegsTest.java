@@ -77,6 +77,16 @@ class DepartureLegsTest {
         assertThat(seen.get().legsDeadlineNanos()).isEqualTo(LEGS_DEADLINE);
     }
 
+    @Test
+    @Timeout(10)
+    void movementAbsent_dhtAtRisk_compositeIsAtRisk() {
+        var legs = DepartureLegs.composed(capturing(new AtomicReference<>(), DepartureOutcome.COMPLETED_WITH_DATA_AT_RISK),
+                                          Option::none,
+                                          BUDGET);
+
+        assertThat(legs.apply(window()).await(SETTLE).unwrap()).isEqualTo(DepartureOutcome.COMPLETED_WITH_DATA_AT_RISK);
+    }
+
     /// E4: the movement drain is read once per departure; the read that shortened the DHT deadline also decides the movement leg.
     @Test
     @Timeout(10)

@@ -3281,6 +3281,20 @@ class ClusterEventAggregatorTest {
 
         @Test
         @Timeout(10)
+        void soleCopyDelivered_raisesTheRecoveryCodeForTheSameSubject() {
+            var h = Harness.create();
+            var observer = DhtDeparturePush.departureEvents(h.aggregator(), SELF, DhtDeparturePush.subject(SELF, DRAIN_START_MILLIS));
+
+            assertThat(observer.onSoleCopyAtRisk(2, List.of("k1", "k2")).await(SETTLE).isSuccess()).isTrue();
+            assertThat(observer.onSoleCopyDelivered(2).await(SETTLE).isSuccess()).isTrue();
+
+            assertThat(h.events()).hasSize(2);
+            assertThat(h.events().get(1).details()).containsEntry("code", "dht-departure-sole-copy-delivered")
+                                                   .containsEntry("subject", "self-node@1700000000123");
+        }
+
+        @Test
+        @Timeout(10)
         void incompleteReportWithSoleKeys_isTheDataAtRiskDepartureReport() {
             var h = Harness.create();
             var observer = DhtDeparturePush.departureEvents(h.aggregator(), SELF, DhtDeparturePush.subject(SELF, DRAIN_START_MILLIS));

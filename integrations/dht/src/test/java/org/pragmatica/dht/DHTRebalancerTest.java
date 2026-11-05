@@ -1049,6 +1049,250 @@ class DHTRebalancerTest {
             }
         }
 
+        // --- round B (#2684): pins for lines the first suite left unguarded ---
+
+        /// H2: a refused send is retried after `resendAfter`, never in a tight loop (an upper bound on sends: load can only lower it).
+        @Test
+        @Timeout(20)
+        void pushOnDeparture_persistentRefusal_pausesBetweenSends() {
+            var ring = fiveNodeRing();
+            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+            node.putLocal(soleKey(ring, "b-refusal"), value("payload")).await();
+            var network = ScriptedNetwork.scripted((_, _) -> Reply.refuse(WriteOutcome.ConnectionDead::new));
+            var run = push(node, network, T(1_000, 500, 200), Set.of());
+
+            assertThat(network.sends()).hasSizeBetween(2, 10);
+            assertThat(run.report().soleCopyAtRisk()).isEqualTo(1);
+        }
+
+        /// F1: the nack backoff doubles up to `nackBackoffCap` and no further. Cap 50 ms: no gap between two sends may reach the
+        /// uncapped 800 ms step (25, 50, 100, 200, 400, 800), whatever the load.
+        @Test
+        @Timeout(20)
+        void pushOnDeparture_persistentNack_backoffStopsAtTheCap() {
+            var ring = fiveNodeRing();
+            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+            node.putLocal(soleKey(ring, "b-cap"), value("payload")).await();
+            var network = ScriptedNetwork.scripted((_, _) -> Reply.NACK);
+            var run = push(node, network, new DeparturePushTuning(ms(2_500), ms(500), ms(25), ms(50), ms(200)), Set.of());
+
+            assertThat(network.sends()).hasSizeGreaterThanOrEqualTo(6);
+            assertThat(maxGapNanos(network.sends())).isLessThan(ms(600).nanos());
+            assertThat(run.report().soleCopyAtRisk()).isEqualTo(1);
+        }
+
+        private static long maxGapNanos(List<TimedSend> sends) {
+            long max = 0;
+            for (int i = 1; i < sends.size(); i++) {
+                max = Math.max(max, sends.get(i).atNanos() - sends.get(i - 1).atNanos());
+            }
+            return max;
+        }
+
+        /// A replicated page stops at `baseDeadline` (its key still has a survivor), and the push ends with it rather than at the later
+        /// backstop: an attempt's wait is clipped to the page's remaining time, however long `resendAfter` is.
+        @Test
+        @Timeout(20)
+        void pushOnDeparture_unackedAttemptWait_isClippedToThePageDeadline() {
+            var run = replicatedPageUnder(Reply.DROP, "b-wait");
+
+            assertThat(run.elapsedMillis()).isLessThan(1_500);
+            assertThat(run.report().replicatedAtRisk()).isEqualTo(1);
+        }
+
+        /// The pause after a nack is clipped the same way.
+        @Test
+        @Timeout(20)
+        void pushOnDeparture_nackPause_isClippedToThePageDeadline() {
+            var run = replicatedPageUnder(Reply.NACK, "b-pause");
+
+            assertThat(run.elapsedMillis()).isLessThan(1_500);
+            assertThat(run.report().replicatedAtRisk()).isEqualTo(1);
+        }
+
+        private Run replicatedPageUnder(Reply reply, String prefix) {
+            var ring = fiveNodeRing();
+            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF2);
+            node.putLocal(keyHeldBy(ring, 2, Set.of(LOCAL, PEER_A), prefix), value("payload")).await();
+            var network = ScriptedNetwork.scripted((_, _) -> reply);
+
+            return push(node, network, new DeparturePushTuning(ms(400), ms(5_000), ms(3_000), ms(3_000), ms(200)), Set.of());
+        }
+
+        /// A clean sole ack raises no event at all: DELIVERED is the recovery of an AT_RISK that was never raised.
+        @Test
+        @Timeout(20)
+        void pushOnDeparture_cleanSoleAck_raisesNoEvent() {
+            var ring = fiveNodeRing();
+            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+            node.putLocal(soleKey(ring, "b-clean"), value("payload")).await();
+            var run = push(node, ScriptedNetwork.scripted((_, _) -> Reply.ACK), T(2_000, 2_000, 50), Set.of());
+
+            assertThat(run.recorder().atRisk()).isEmpty();
+            assertThat(run.recorder().delivered()).isEmpty();
+            assertThat(run.recorder().incomplete()).isEmpty();
+            assertThat(run.report().soleCopyAtRisk()).isZero();
+        }
+
+        /// An observer that throws loses its own event only: the push still resolves, and the later events still reach the observer.
+        @Test
+        @Timeout(20)
+        void pushOnDeparture_throwingObserver_isIsolated() {
+            var ring = fiveNodeRing();
+            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+            node.putLocal(soleKey(ring, "b-throw"), value("payload")).await();
+            var recorder = new EventRecorder(SoleCopyDeparture::boom);
+            var run = push(node, ScriptedNetwork.scripted((_, _) -> Reply.DROP), T(200, 300, 50), Set.of(), recorder);
+
+            assertThat(run.report().soleCopyAtRisk()).isEqualTo(1);
+            assertThat(recorder.atRisk()).containsExactly(1);
+            assertThat(recorder.incomplete()).containsExactly(new Incomplete(1, 1));
+        }
+
+        private static void boom() {
+            throw new IllegalStateException("observer boom");
+        }
+
+        /// E4: a late quiesce leaves the events `eventDeliveryWait`, but never past the window's event floor; here the floor is the
+        /// deadline, 150 ms away, so an event in flight for 3 s is not awaited for the 2 s the tuning would allow.
+        @Test
+        @Timeout(20)
+        void pushOnDeparture_lateQuiesce_eventWaitStopsAtTheFloor() {
+            var ring = fiveNodeRing();
+            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+            node.putLocal(soleKey(ring, "b-floor"), value("payload")).await();
+            var recorder = new EventRecorder(() -> {}, () -> Promise.promise(ms(3_000), org.pragmatica.lang.Result::unitResult));
+            var started = System.nanoTime();
+            var report = dhtRebalancer(node, ScriptedNetwork.scripted((_, _) -> Reply.DROP), RF1)
+                             .pushOnDeparture(DepartureWindow.departureWindow(started + ms(150).nanos()),
+                                              new DeparturePushTuning(ms(10_000), ms(10_000), ms(50), ms(200), ms(2_000)),
+                                              Set.of(),
+                                              recorder)
+                             .await()
+                             .unwrap();
+
+            assertThat(recorder.atRisk()).as("control: the event was raised and is in flight").containsExactly(1);
+            assertThat(System.nanoTime() - started).isLessThan(ms(1_000).nanos());
+            assertThat(report.soleCopyAtRisk()).isEqualTo(1);
+        }
+
+        /// After the node halted nothing more is reported or awaited: the AT_RISK call halts the node and its event never settles;
+        /// the push resolves at once, without the incomplete report and without waiting for that event.
+        @Test
+        @Timeout(20)
+        void pushOnDeparture_haltedByTheAtRiskCall_reportsAndAwaitsNothingMore() {
+            var ring = fiveNodeRing();
+            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+            node.putLocal(soleKey(ring, "b-halt"), value("payload")).await();
+            var halted = new AtomicBoolean(false);
+            var recorder = new EventRecorder(() -> halted.set(true), () -> Promise.promise());
+            var started = System.nanoTime();
+
+            dhtRebalancer(node, ScriptedNetwork.scripted((_, _) -> Reply.DROP), RF1)
+                .pushOnDeparture(DepartureWindow.departureWindow(started + ms(3_000).nanos(), halted::get),
+                                 new DeparturePushTuning(ms(300), ms(500), ms(50), ms(200), ms(200)),
+                                 Set.of(),
+                                 recorder)
+                .await();
+
+            assertThat(recorder.atRisk()).as("control: the halting call was made").containsExactly(1);
+            assertThat(recorder.incomplete()).as("no report after a halt").isEmpty();
+            assertThat(System.nanoTime() - started).as("the in-flight event is not awaited after a halt").isLessThan(ms(2_000).nanos());
+        }
+
+        /// A halt before the base deadline also silences the scheduled re-evaluation: no AT_RISK is raised at the base deadline.
+        @Test
+        @Timeout(20)
+        void pushOnDeparture_haltedBeforeBase_raisesNothingAtTheBaseDeadline() {
+            var ring = fiveNodeRing();
+            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+            node.putLocal(soleKey(ring, "b-halt-base"), value("payload")).await();
+            var halted = new AtomicBoolean(false);
+            var recorder = new EventRecorder(() -> {});
+            var network = ScriptedNetwork.scripted((_, _) -> haltAndDrop(halted));
+
+            dhtRebalancer(node, network, RF1).pushOnDeparture(DepartureWindow.departureWindow(System.nanoTime() + ms(60_000).nanos(), halted::get),
+                                                              T(300, 1_000, 50),
+                                                              Set.of(),
+                                                              recorder)
+                                             .await();
+            awaitQuietly(new CountDownLatch(1), 800);
+
+            assertThat(network.sends()).hasSize(1);
+            assertThat(recorder.atRisk()).isEmpty();
+            assertThat(recorder.incomplete()).isEmpty();
+        }
+
+        /// A node that is already halted when the push starts raises nothing at plan time, whether the window is used up or the
+        /// inventory never enumerates.
+        @Test
+        @Timeout(20)
+        void pushOnDeparture_haltedAtStart_raisesNothing() {
+            var ring = fiveNodeRing();
+            var usedUp = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+            usedUp.putLocal(soleKey(ring, "b-halt-start"), value("payload")).await();
+            var planRecorder = new EventRecorder(() -> {});
+            var hung = dhtNode(LOCAL, stampsVia(_ -> Promise.promise()), ring, RF1);
+            var hungRecorder = new EventRecorder(() -> {});
+            var past = System.nanoTime() - ms(1).nanos();
+            var plan = dhtRebalancer(usedUp, ScriptedNetwork.scripted((_, _) -> Reply.ACK), RF1)
+                           .pushOnDeparture(DepartureWindow.departureWindow(past, () -> true), T(200, 300, 50), Set.of(), planRecorder);
+            var enumeration = dhtRebalancer(hung, ScriptedNetwork.scripted((_, _) -> Reply.ACK), RF1)
+                                  .pushOnDeparture(DepartureWindow.departureWindow(past, () -> true), T(200, 300, 50), Set.of(), hungRecorder);
+
+            plan.await();
+            enumeration.await();
+
+            assertThat(planRecorder.atRisk()).isEmpty();
+            assertThat(hungRecorder.atRisk()).isEmpty();
+        }
+
+        /// F7 at the end of the push: pages that end early (EncodeFailed is final) with the only plan-time survivor gone, long before
+        /// `baseDeadline`, still promote the key at the closing re-evaluation: AT_RISK and a sole-copy report, not a replicated one.
+        @Test
+        @Timeout(20)
+        void pushOnDeparture_pagesEndEarlyAfterTheSurvivorLeft_closingReevaluationPromotes() {
+            var ring = fiveNodeRing();
+            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF2);
+            node.putLocal(keyHeldBy(ring, 2, Set.of(LOCAL, PEER_A), "b-close"), value("payload")).await();
+            var network = ScriptedNetwork.scripted((_, _) -> removeAndFailToEncode(ring, PEER_A));
+            var run = push(node, network, T(10_000, 10_000, 50), Set.of());
+
+            assertThat(network.sends()).hasSize(1);
+            assertThat(run.recorder().atRisk()).containsExactly(1);
+            assertThat(run.report().soleCopyAtRisk()).isEqualTo(1);
+        }
+
+        private static Reply removeAndFailToEncode(ConsistentHashRing<NodeId> ring, NodeId survivor) {
+            ring.removeNode(survivor);
+            return Reply.refuse(id -> new WriteOutcome.EncodeFailed(id, "MigrationDataResponse"));
+        }
+
+        /// E2: with a co-drainer already pruned the survivors are unknown (`existingAtPlan` empty), so a replicated key whose current
+        /// set then leaves the ring is NOT promoted: disclosed as replicated, never guessed sole.
+        @Test
+        @Timeout(20)
+        void pushOnDeparture_coDrainerPruned_survivorsLeave_isNeverPromoted() {
+            var ring = fiveNodeRing();
+            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF3);
+            var probe = keyHeldBy(ring, 3, Set.of(LOCAL, PEER_B, PEER_C), "b-e2");
+            node.putLocal(probe, value("payload")).await();
+            ring.removeNode(PEER_B);
+            var survivors = ring.nodesFor(probe, 3).stream().filter(member -> !member.equals(LOCAL)).toList();
+            var network = ScriptedNetwork.scripted((index, _) -> index == 0 ? removeAllAndDrop(ring, survivors) : Reply.DROP);
+            var run = push(node, network, T(300, 600, 50), Set.of(PEER_B));
+
+            assertThat(survivors).as("control: two survivors, so the key is replicated at plan time").hasSize(2);
+            assertThat(run.recorder().atRisk()).isEmpty();
+            assertThat(run.report().soleCopyAtRisk()).isZero();
+            assertThat(run.report().replicatedAtRisk()).isEqualTo(1);
+        }
+
+        private static Reply removeAllAndDrop(ConsistentHashRing<NodeId> ring, List<NodeId> nodes) {
+            nodes.forEach(ring::removeNode);
+            return Reply.DROP;
+        }
+
         // --- fixtures ---
 
         private record Run(DeparturePushReport report, EventRecorder recorder, long elapsedMillis) {}
@@ -1304,9 +1548,16 @@ class DHTRebalancerTest {
         private final CopyOnWriteArrayList<Integer> delivered = new CopyOnWriteArrayList<>();
         private final CopyOnWriteArrayList<Incomplete> incomplete = new CopyOnWriteArrayList<>();
         private final Runnable onAtRisk;
+        private final java.util.function.Supplier<Promise<Unit>> atRiskResult;
 
         EventRecorder(Runnable onAtRisk) {
+            this(onAtRisk, Promise::unitPromise);
+        }
+
+        /// `atRiskResult` is the promise the at-risk call returns: the push awaits it like every event.
+        EventRecorder(Runnable onAtRisk, java.util.function.Supplier<Promise<Unit>> atRiskResult) {
             this.onAtRisk = onAtRisk;
+            this.atRiskResult = atRiskResult;
         }
 
         @Override
@@ -1318,7 +1569,7 @@ class DHTRebalancerTest {
         public Promise<Unit> onSoleCopyAtRisk(int count, List<String> sampleKeys) {
             atRisk.add(count);
             onAtRisk.run();
-            return Promise.unitPromise();
+            return atRiskResult.get();
         }
 
         @Override

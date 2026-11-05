@@ -9,8 +9,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 
+import org.pragmatica.aether.deployment.membership.ntt.DepartureOutcome;
 import org.pragmatica.aether.deployment.membership.ntt.DrainWindow;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
@@ -30,12 +32,15 @@ import org.pragmatica.dht.DHTNode;
 import org.pragmatica.dht.DHTRebalancer;
 import org.pragmatica.dht.DHTTopologyListener;
 import org.pragmatica.dht.DeparturePushObserver;
+import org.pragmatica.dht.DeparturePushReport;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.net.tcp.Server;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.lang.io.TimeSpan;
 
@@ -87,6 +92,99 @@ class DhtDeparturePushTest {
         assertThat(vacatedSlots).as("control: both drainers held the key, so two slots open").hasSize(2);
         assertThat(pushedTo.stream().distinct().toList()).as("the push reached every node that newly owns the key")
                                                      .containsExactlyInAnyOrderElementsOf(vacatedSlots);
+    }
+
+    /// #2684 round B, N09: the drain window's `halted` reaches the DHT window, so a node that already halted sends nothing.
+    @Test
+    @Timeout(20)
+    void departurePush_haltedDrainWindow_sendsNothing() {
+        var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+        RING_MEMBERS.forEach(ring::addNode);
+        var key = keyHeldByBoth(ring);
+        var pushedTo = new CopyOnWriteArrayList<NodeId>();
+        var node = DHTNode.dhtNode(SELF, memoryStorageEngine(), ring, CONFIG);
+        var rebalancer = DHTRebalancer.dhtRebalancer(node, recordingNetwork(pushedTo), CONFIG);
+        var collector = ClusterSyncCollector.clusterSyncCollector(SELF, new SilentClusterNetwork());
+
+        node.putLocal(key, "payload".getBytes(StandardCharsets.UTF_8)).await();
+        collector.setMetricsProducerEligibility(_ -> true);
+        collector.setPingAuthority(LEADER::equals, LEADER::equals);
+        collector.onClusterSyncPing(drainPing(Set.of(SELF, CO_DRAINER)));
+
+        var window = DrainWindow.drainWindow(System.nanoTime() + TimeSpan.timeSpan(3).seconds().nanos(),
+                                             System.currentTimeMillis(),
+                                             () -> true);
+        DhtDeparturePush.dhtDeparturePush(rebalancer, collector, SELF, () -> _ -> DeparturePushObserver.noop())
+                        .apply(window)
+                        .await();
+
+        assertThat(pushedTo).isEmpty();
+    }
+
+    /// #2684 round B, N08: the drain window's event floor reaches the DHT window. The legs deadline is 150 ms away, the floor 10 s:
+    /// the at-risk event in flight for 3 s is awaited for the push's event wait (2 s), not abandoned at the legs deadline.
+    @Test
+    @Timeout(20)
+    void departurePush_eventFloor_extendsTheEventWaitPastTheLegsDeadline() {
+        var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+        List.of(SELF, CO_DRAINER).forEach(ring::addNode);
+        var node = DHTNode.dhtNode(SELF, memoryStorageEngine(), ring, CONFIG);
+        var rebalancer = DHTRebalancer.dhtRebalancer(node, recordingNetwork(new CopyOnWriteArrayList<>()), CONFIG);
+        var collector = ClusterSyncCollector.clusterSyncCollector(SELF, new SilentClusterNetwork());
+        var atRiskCalls = new AtomicInteger();
+
+        node.putLocal("floor".getBytes(StandardCharsets.UTF_8), "payload".getBytes(StandardCharsets.UTF_8)).await();
+        collector.setMetricsProducerEligibility(_ -> true);
+        collector.setPingAuthority(LEADER::equals, LEADER::equals);
+        collector.onClusterSyncPing(drainPing(Set.of(SELF, CO_DRAINER)));
+
+        var started = System.nanoTime();
+        var window = new DrainWindow(started + TimeSpan.timeSpan(150).millis().nanos(),
+                                     started + TimeSpan.timeSpan(10).seconds().nanos(),
+                                     System.currentTimeMillis(),
+                                     () -> false);
+        DhtDeparturePush.dhtDeparturePush(rebalancer, collector, SELF, () -> _ -> slowAtRisk(atRiskCalls))
+                        .apply(window)
+                        .await();
+
+        assertThat(atRiskCalls.get()).as("control: the sole key was reported at risk").isEqualTo(1);
+        assertThat(System.nanoTime() - started).isGreaterThanOrEqualTo(TimeSpan.timeSpan(1_500).millis().nanos());
+    }
+
+    private static DeparturePushObserver slowAtRisk(AtomicInteger calls) {
+        return new DeparturePushObserver() {
+            @Override
+            public void onIncomplete(int keysAtRisk, List<String> sampleKeys) {}
+
+            @Override
+            public Promise<Unit> onSoleCopyAtRisk(int count, List<String> sampleKeys) {
+                calls.incrementAndGet();
+
+                return Promise.promise(TimeSpan.timeSpan(3).seconds(), Result::unitResult);
+            }
+        };
+    }
+
+    /// #2684 round B, N06/N14: the report-to-outcome mapping. Sole-copy keys unconfirmed, or an inventory never enumerated, is data at
+    /// risk; replicated keys unconfirmed are repaired from their survivor and are not.
+    @Test
+    void outcome_soleCopyKeysUnconfirmed_isCompletedWithDataAtRisk() {
+        assertThat(DhtDeparturePush.outcome(new DeparturePushReport(1, 0, true))).isEqualTo(DepartureOutcome.COMPLETED_WITH_DATA_AT_RISK);
+    }
+
+    @Test
+    void outcome_inventoryNotEnumerated_isCompletedWithDataAtRisk() {
+        assertThat(DhtDeparturePush.outcome(DeparturePushReport.NOT_ENUMERATED)).isEqualTo(DepartureOutcome.COMPLETED_WITH_DATA_AT_RISK);
+    }
+
+    @Test
+    void outcome_onlyReplicatedKeysUnconfirmed_isCompleted() {
+        assertThat(DhtDeparturePush.outcome(new DeparturePushReport(0, 3, true))).isEqualTo(DepartureOutcome.COMPLETED);
+    }
+
+    @Test
+    void outcome_nothingAtRisk_isCompleted() {
+        assertThat(DhtDeparturePush.outcome(DeparturePushReport.COMPLETE)).isEqualTo(DepartureOutcome.COMPLETED);
     }
 
     /// #1818 round 3, the receiving side: a departure push is accepted from a node the leader's drain ping
