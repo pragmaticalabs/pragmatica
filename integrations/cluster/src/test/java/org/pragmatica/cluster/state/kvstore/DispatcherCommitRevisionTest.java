@@ -24,14 +24,15 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// `notificationRevision` is MONOTONE per dispatcher for the life of the process (CTO ruling 2026-11-05; FSM spec R-3.1.7:
-/// FSM2 orders its inputs by it and defines no epoch boundary). An engine stop's `reset()` zeroes the store's committed
-/// revision, but the reset's remove burst is delivered at the last delivered revision +1, and later batches continue from
-/// `max(last delivered + 1, committed)`. Adopted from the vd1A2 ordering probe (wave3/v-2648-A2), whose first arm read
-/// the reset burst at revision 0 before the fix. Mutations: deliver every batch at its committed revision (the pre-fix
-/// code), or drop the +1 (red: the first arm, exact revisions).
+/// On the dispatched path, `notificationRevision` is the batch's COMMIT revision, in the space of `committedRevision` and of
+/// the FSM2 snapshot watermark (CTO ruling 2026-11-05, amending D1's monotone revision: FSM2 orders its inputs by mailbox
+/// delivery order and uses the revision only as the dedupe watermark, so a synthetic floor above the commit revision would
+/// stamp a batch already in a snapshot above that snapshot's watermark and step it twice). An engine stop's `reset()`
+/// zeroes the committed revision and its remove burst carries 0; later batches carry their own commit revision; a replay
+/// burst carries the revision of the state it replays. Adopted from the vd1A2 ordering probe (wave3/v-2648-A2).
+/// Mutations: the last delivered +1 floor (red: the first two arms), a constant revision (red: the first arm).
 @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
-class DispatcherRevisionMonotoneTest {
+class DispatcherCommitRevisionTest {
     final MessageRouter.MutableRouter router = MessageRouter.mutable();
     final HeldDelivery hold = HeldDelivery.heldDelivery();
     final InstallingDeserializer deserializer = new InstallingDeserializer();
@@ -90,12 +91,11 @@ class DispatcherRevisionMonotoneTest {
         }
     }
 
-    /// The engine stop path (shutdownAndReset -> reset(), then restore + replay, RE:1670 / RE:2696 / RE:2803). Before the
-    /// fix the reset burst read `rm:a@0`, `rm:b@0`. Exact revisions: the burst at the last delivered +1 (10), a write
-    /// committed below that after the reset at the next one (11), the replay at its install revision (12, above the
-    /// floor), the next live batch at its slot (13).
+    /// The engine stop path (shutdownAndReset -> reset(), then restore + replay, RE:1670 / RE:2696 / RE:2803). Exact
+    /// revisions: the reset burst at 0, a write committed after the reset at its own slot (3), the replay at its install
+    /// revision (12), the next live batch at its slot (13).
     @Test
-    void revisionsNeverRegressAcrossAnEngineStopRestoreReplay() throws Exception {
+    void resetBurstStampsZero_laterBatchesCarryTheirCommitRevision() throws Exception {
         var store = store();
         committed(store, new Key("a"), "one", 5);
         committed(store, new Key("b"), "two", 9);
@@ -114,18 +114,17 @@ class DispatcherRevisionMonotoneTest {
         assertThat(threads.iterator().next().getName()).isEqualTo(store.dispatcherThreadName());
         assertThat(seen).as("all deliveries: %s", seen).hasSize(9);
         assertThat(seen.subList(0, 2)).containsExactly("put:a@5", "put:b@9");
-        assertThat(seen.subList(2, 4)).as("the reset burst carries last + 1").containsExactlyInAnyOrder("rm:a@10", "rm:b@10");
-        assertThat(seen.get(4)).as("a write committed below the floor after the reset").isEqualTo("put:c@11");
+        assertThat(seen.subList(2, 4)).as("the reset burst carries 0").containsExactlyInAnyOrder("rm:a@0", "rm:b@0");
+        assertThat(seen.get(4)).as("a write committed after the reset carries its own slot").isEqualTo("put:c@3");
         assertThat(seen.subList(5, 8)).as("the replay burst carries its install revision")
                                       .containsExactlyInAnyOrder("put:a@12r", "put:k@12r", "rm:c@12r");
         assertThat(seen.get(8)).isEqualTo("put:m@13");
-        assertNeverRegresses();
     }
 
-    /// Two resets in a row with nothing delivered between them: the second burst is empty and consumes no revision, so the
-    /// next batch still carries the last delivered +1, never a revision a subscriber did not see skipped twice.
+    /// Two resets in a row with nothing delivered between them: the second burst is empty, and the next batch carries its
+    /// own commit revision, even below the revision delivered before the resets.
     @Test
-    void anEmptyResetBurstConsumesNoRevision() throws Exception {
+    void anEmptySecondResetDeliversNothing_theNextBatchCarriesItsCommitRevision() throws Exception {
         var store = store();
         committed(store, new Key("a"), "one", 5);
         store.reset();
@@ -133,7 +132,7 @@ class DispatcherRevisionMonotoneTest {
         committed(store, new Key("b"), "two", 2);
         store.awaitDelivered(store.enqueuedSeq()).await();
 
-        assertThat(seen).containsExactly("put:a@5", "rm:a@6", "put:b@7");
+        assertThat(seen).containsExactly("put:a@5", "rm:a@0", "put:b@2");
     }
 
     /// A live batch applied while a replay waits (the premise "the caller is the only live applier" broken on purpose).
@@ -175,7 +174,8 @@ class DispatcherRevisionMonotoneTest {
     }
 
     /// Four concurrent writers: every delivery on one thread, `deliveringSeq` increasing, each writer's own puts delivered
-    /// in its program order, and the revision increasing per delivered batch (every batch here is at committed revision 0).
+    /// in its program order. Every batch here is a mutation without a slot, so each carries the unchanged committed
+    /// revision 0: the order lives in `deliverySeq`, not in the revision.
     @Test
     void concurrentWritersDeliverInCommitOrderOnOneThread() throws Exception {
         var store = store();
@@ -195,8 +195,8 @@ class DispatcherRevisionMonotoneTest {
         assertThat(threads).hasSize(1);
         for (int i = 1; i < seqs.size(); i++) {
             assertThat(seqs.get(i)).as("seq order at %d", i).isGreaterThan(seqs.get(i - 1));
-            assertThat(revisionOf(seen.get(i))).as("revision increases per batch at %d", i)
-                                               .isGreaterThan(revisionOf(seen.get(i - 1)));
+            assertThat(revisionOf(seen.get(i))).as("a batch without a slot carries the committed revision at %d", i)
+                                               .isZero();
         }
         for (int w = 0; w < writers; w++) {
             var prefix = "put:w" + w + "-";

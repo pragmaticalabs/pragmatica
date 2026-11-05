@@ -84,6 +84,7 @@ public sealed interface SwimAssembly {
                               Runnable identityRefusedExit,
                               Runnable gossipKeyDivergedExit,
                               long bootToken,
+                              BootTokens bootTokens,
                               ClusterSyncCollector metricsCollector,
                               PeerObservationStore peerObservationStore,
                               BooleanSupplier isLeaderSupplier,
@@ -100,7 +101,9 @@ public sealed interface SwimAssembly {
     record SwimDetectorOutputs(AtomicLong swimBootAtMs,
                                BooleanSupplier swimIsBootingSupplier,
                                CoreSwimHealthDetector swimHealthDetector,
-                               Consumer<Promise<Unit>> startSwimTrigger) {}
+                               Consumer<Promise<Unit>> startSwimTrigger,
+                               SwimConfig swimConfig,
+                               long bootIncarnation) {}
 
     /// SWIM configuration, the cold-boot window, the failure detector, boot tokens, transport hints and the start trigger.
     static SwimDetectorOutputs swimDetector(SwimDetectorInputs in) {
@@ -113,6 +116,7 @@ public sealed interface SwimAssembly {
         var identityRefusedExit = in.identityRefusedExit();
         var gossipKeyDivergedExit = in.gossipKeyDivergedExit();
         var bootToken = in.bootToken();
+        var bootTokens = in.bootTokens();
         var metricsCollector = in.metricsCollector();
         var peerObservationStore = in.peerObservationStore();
         var isLeaderSupplier = in.isLeaderSupplier();
@@ -200,8 +204,6 @@ public sealed interface SwimAssembly {
         swimHealthDetectorHolder.set(swimHealthDetector);
         // ONE boot-token registry per process, shared by SWIM and the QUIC transport: a process
         // either layer refuses can never be admitted by the other (terminal removal, #1528).
-        var bootTokens = BootTokens.bootTokens(bootToken);
-
         swimHealthDetector.setBootTokens(bootTokens);
         // #1574: SWIM's operator warnings reach THIS node's event log, never another Ember node's.
         swimHealthDetector.setOperatorWarningSink(operatorWarningSink);
@@ -268,7 +270,12 @@ public sealed interface SwimAssembly {
                                                                              gossipKeyDivergedExit,
                                                                              startOutcome);
 
-        return new SwimDetectorOutputs(swimBootAtMs, swimIsBootingSupplier, swimHealthDetector, startSwimTrigger);
+        return new SwimDetectorOutputs(swimBootAtMs,
+                                       swimIsBootingSupplier,
+                                       swimHealthDetector,
+                                       startSwimTrigger,
+                                       swimConfig,
+                                       bootIncarnation);
     }
 
     /// Terminal removal (#1528): a peer refused this process's identity — its NodeId belongs to a retired or
