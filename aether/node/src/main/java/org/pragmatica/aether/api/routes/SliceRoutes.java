@@ -223,7 +223,7 @@ public final class SliceRoutes implements RouteSource {
         return guardInstanceFloor(instances).async()
                                  .flatMap(_ -> guardBlueprintMembership(artifact))
                                  .flatMap(_ -> guardMinInstances(artifact, instances))
-                                 .flatMap(_ -> guardMaxInstances(artifact, instances));
+                                 .flatMap(_ -> guardMaxInstances(nodeSupplier.get().kvStore(), artifact, instances));
     }
 
     /// #1495 (owner ruling): no slice is scaled below [SliceSpec#MIN_INSTANCES] at runtime either.
@@ -277,8 +277,8 @@ public final class SliceRoutes implements RouteSource {
     }
 
     /// rc6 §3.1: a requirement above the slice's `maxInstances` could never be met (the combiner clamps to it), so it is refused.
-    private Promise<Unit> guardMaxInstances(Artifact artifact, int requestedInstances) {
-        return SliceTargetFence.committedTarget(nodeSupplier.get().kvStore(),
+    static Promise<Unit> guardMaxInstances(KVStore<AetherKey, AetherValue> store, Artifact artifact, int requestedInstances) {
+        return SliceTargetFence.committedTarget(store,
                                                 SliceTargetKey.sliceTargetKey(artifact.base()))
                                .flatMap(SliceTargetValue::maxInstances)
                                .filter(max -> requestedInstances > max)

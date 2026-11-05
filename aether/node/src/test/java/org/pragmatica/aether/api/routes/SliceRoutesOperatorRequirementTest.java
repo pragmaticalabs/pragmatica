@@ -99,6 +99,29 @@ class SliceRoutesOperatorRequirementTest {
         assertThat(body.get()).contains("Requested 9 instances").contains("maxInstances is 6");
     }
 
+    @Test
+    void guardMaxInstances_requestAboveCommittedMax_isRefusedWithTheMax() {
+        var store = storeWithMax(6);
+
+        assertThat(SliceRoutes.guardMaxInstances(store, ARTIFACT, 9).await().isFailure()).isTrue();
+        assertThat(SliceRoutes.guardMaxInstances(store, ARTIFACT, 6).await().isSuccess()).isTrue();
+    }
+
+    @Test
+    void guardMaxInstances_targetWithoutMax_acceptsAnyCount() {
+        assertThat(SliceRoutes.guardMaxInstances(storeWithTarget(4), ARTIFACT, 50).await().isSuccess()).isTrue();
+    }
+
+    private static KVStore<AetherKey, AetherValue> storeWithMax(int max) {
+        var store = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+
+        commit(store, LeaderKey.INSTANCE, new LeaderValue(NodeId.nodeId("leader").unwrap(), 1));
+        commit(store, SliceTargetKey.sliceTargetKey(ARTIFACT.base()),
+               SliceTargetValue.sliceTargetValue(ARTIFACT.version(), 4, 3, Option.none(), Option.some(max), Option.none(), Option.none()));
+
+        return store;
+    }
+
     private static List<AetherKey> targetKeysWritten(LeaderTransaction<AetherKey, AetherValue> transaction) {
         return transaction.mutations()
                           .stream()
