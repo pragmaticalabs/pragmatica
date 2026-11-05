@@ -8,6 +8,7 @@ import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector.Origi
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector.Settlement;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.worker.metrics.ArrivalCounts;
+import org.pragmatica.aether.worker.metrics.PerSliceMetrics;
 
 import org.junit.jupiter.api.Test;
 
@@ -62,6 +63,44 @@ class InvocationMetricsCollectorArrivalTest {
                                                                                                                                          1,
                                                                                                                                          0,
                                                                                                                                          0));
+    }
+
+    @Test
+    void artifactWithArrivalsOnlyAndNoGauges_appearsInPerSliceMetrics() {
+        var ghost = Artifact.artifact("org.test:ghost:1.0.0").unwrap();
+
+        collector.recordArrival(ghost, "gone", Origin.INTERNAL);
+        collector.recordSettled(ghost, "gone", Origin.INTERNAL, Settlement.REJECTED);
+        var slices = collector.collectPerSliceMetrics();
+
+        assertThat(slices).hasSize(1);
+        assertThat(slices.getFirst().artifact()).isEqualTo(ghost);
+        assertThat(slices.getFirst().internal()).isEqualTo(new ArrivalCounts(1, 0, 1, 0, 0));
+    }
+
+    @Test
+    void perSliceMetrics_sumAllFiveCountsAcrossMethods() {
+        collector.recordSuccess(ARTIFACT, FAST, 500_000L, 10, 10);
+        offer(Origin.EXTERNAL, Settlement.COMPLETED);
+        offer(Origin.EXTERNAL, Settlement.FAILED);
+        offer(Origin.EXTERNAL, Settlement.FAILED);
+        collector.recordArrival(ARTIFACT, "other", Origin.EXTERNAL);
+        collector.recordSettled(ARTIFACT, "other", Origin.EXTERNAL, Settlement.FAILED);
+        collector.recordArrival(ARTIFACT, "other", Origin.EXTERNAL);
+        collector.recordSettled(ARTIFACT, "other", Origin.EXTERNAL, Settlement.REJECTED);
+        collector.recordArrival(ARTIFACT, "other", Origin.EXTERNAL);
+        var slice = collector.collectPerSliceMetrics().getFirst();
+
+        assertThat(slice.external()).isEqualTo(new ArrivalCounts(6, 4, 1, 1, 3));
+    }
+
+    @Test
+    void perSliceMetrics_nullArrivalCounts_normaliseToZero() {
+        var slice = new PerSliceMetrics(ARTIFACT, 0, 0.0, 0.0, 0, null, null, null);
+
+        assertThat(slice.external()).isEqualTo(ArrivalCounts.ZERO);
+        assertThat(slice.internal()).isEqualTo(ArrivalCounts.ZERO);
+        assertThat(slice.methods()).isEmpty();
     }
 
     @Test

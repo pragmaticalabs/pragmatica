@@ -65,4 +65,29 @@ class SystemStreamsTest {
     void isForbiddenEngineKey_emptyString_isFalse() {
         assertThat(SystemStreams.isForbiddenEngineKey("")).isFalse();
     }
+
+    /// Rc6 f3a: the retention numbers are a declared guess, so the record count and byte caps are pinned as well
+    /// as the age; an off-by-one in a cap silently shortens the window under mode ANY.
+    @Test
+    void retentionFor_capacityMinute_pinsCountBytesAndAge() {
+        var policy = SystemStreams.retentionFor(SystemStreams.CAPACITY_MINUTE).unwrap();
+
+        assertThat(policy.maxCount()).isEqualTo(10_000_000L);
+        assertThat(policy.maxBytes()).isEqualTo(2L * 1024 * 1024 * 1024);
+        assertThat(policy.maxAgeMs()).isEqualTo(35L * 24 * 60 * 60 * 1000);
+    }
+
+    @Test
+    void retentionFor_capacityHour_pinsCountBytesAndAge() {
+        var policy = SystemStreams.retentionFor(SystemStreams.CAPACITY_HOUR).unwrap();
+
+        assertThat(policy.maxCount()).isEqualTo(5_000_000L);
+        assertThat(policy.maxBytes()).isEqualTo(1024L * 1024 * 1024);
+        assertThat(policy.maxAgeMs()).isEqualTo(1095L * 24 * 60 * 60 * 1000);
+    }
+
+    @Test
+    void retentionFor_clusterEvents_keepsTheBootstrapDefault() {
+        assertThat(SystemStreams.retentionFor(SystemStreams.CLUSTER_EVENTS).isEmpty()).isTrue();
+    }
 }

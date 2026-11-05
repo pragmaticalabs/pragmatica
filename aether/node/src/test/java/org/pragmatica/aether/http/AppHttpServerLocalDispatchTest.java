@@ -180,6 +180,13 @@ class AppHttpServerLocalDispatchTest {
         assertThat(counts).isEqualTo(new ArrivalCounts(1, 0, 1, 0, 0));
     }
 
+    @Test
+    void externalArrival_refusedByAdmission_isArrivalAndRejected_notFailed() throws Exception {
+        var counts = countsAfterOneRequest(org.pragmatica.aether.invoke.InvocationAdmission.Error.DRAINING.promise());
+
+        assertThat(counts).isEqualTo(new ArrivalCounts(1, 0, 1, 0, 0));
+    }
+
     private ArrivalCounts countsAfterOneRequest(Promise<HttpResponseData> outcome) throws Exception {
         var collector = InvocationMetricsCollector.invocationMetricsCollector();
         var server = serverWithPublisher(Option.some(new StubRoutePublisher("GET",
