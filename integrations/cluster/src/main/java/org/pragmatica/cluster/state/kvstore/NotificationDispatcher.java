@@ -283,9 +283,7 @@ final class NotificationDispatcher {
     @Contract
     private void runLoop() {
         while (!stopRequested) {
-            Result.lift(Causes::fromThrowable, queue::take)
-                  .onSuccess(this::deliverGuarded)
-                  .onFailure(this::takeFailed);
+            Result.lift(Causes::fromThrowable, queue::take).onSuccess(this::deliverGuarded).onFailure(this::takeFailed);
         }
     }
 
@@ -305,7 +303,8 @@ final class NotificationDispatcher {
     /// (`stopRequested` set) is left for the loop to see.
     private void clearHandlerInterrupt() {
         if (!stopRequested && Thread.interrupted()) {
-            log.warn("KV dispatcher {}: a handler left the thread's interrupt flag set; cleared, delivery continues", name);
+            log.warn("KV dispatcher {}: a handler left the thread's interrupt flag set; cleared, delivery continues",
+                     name);
         }
     }
 
@@ -688,8 +687,10 @@ final class NotificationDispatcher {
                      stack);
             events.emit(OperatorWarningCode.KV_DISPATCH_SLOW_HANDLER,
                         tag,
-                        "KV store " + name + ": a handler of " + tag + " has run longer than "
-                        + TimeUnit.NANOSECONDS.toMillis(slowHandlerNanos) + " ms, holding notification delivery");
+                        "KV store " + name
+                       + ": a handler of " + tag
+                       + " has run longer than " + TimeUnit.NANOSECONDS.toMillis(slowHandlerNanos)
+                       + " ms, holding notification delivery");
             slowRaised = Option.some(tag);
         }
     }
@@ -901,8 +902,10 @@ final class NotificationDispatcher {
         bestEffort(() -> log.error("KV dispatcher {}: thread dump:{}", name, threadDump()));
         bestEffort(() -> events.emit(OperatorWarningCode.KV_DISPATCHER_FAILED,
                                      name,
-                                     "KV store " + name + ": notification dispatcher failed at " + step + ": " + cause
-                                     + "; the store is closed and the node is stopping"));
+                                     "KV store " + name
+                                    + ": notification dispatcher failed at " + step
+                                    + ": " + cause
+                                    + "; the store is closed and the node is stopping"));
     }
 
     private long enqueuedSeqUnlocked() {

@@ -38,8 +38,7 @@ public final class KvDispatchOperatorEvents implements OperatorEvents {
     /// Never blocks: every sink hands the warning off (`OperatorWarningSink` is sealed for that, #1617 R2).
     @Override
     public Unit emit(OperatorWarningCode code, String subject, String detail) {
-        sink.get()
-            .accept(OperatorWarning.operatorWarning(code, subject, detail));
+        sink.get().accept(OperatorWarning.operatorWarning(code, subject, detail));
 
         return unit();
     }
