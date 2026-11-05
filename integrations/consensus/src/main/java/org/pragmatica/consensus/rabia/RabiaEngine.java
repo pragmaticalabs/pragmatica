@@ -268,15 +268,18 @@ public class RabiaEngine<C extends Command> {
         }
 
         boolean admits(SyncResponse<?> response) {
-            return !excludes(snapshotDigest(response.state().snapshot())) && atOrAboveFloor(response);
+            return ! excludes(snapshotDigest(response.state().snapshot())) && atOrAboveFloor(response);
         }
 
         private boolean excludes(String digest) {
-            return refused.stream().anyMatch(prior -> prior.digest().equals(digest));
+            return refused.stream()
+                          .anyMatch(prior -> prior.digest()
+                                                  .equals(digest));
         }
 
         private boolean atOrAboveFloor(SyncResponse<?> response) {
-            return floor().map(phase -> atOrAbove(response, phase)).or(true);
+            return floor().map(phase -> atOrAbove(response, phase))
+                        .or(true);
         }
 
         Option<Phase> floor() {
