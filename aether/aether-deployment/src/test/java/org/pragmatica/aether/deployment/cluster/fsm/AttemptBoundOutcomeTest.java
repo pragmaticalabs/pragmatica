@@ -944,7 +944,7 @@ class AttemptBoundOutcomeTest {
         @Override public Promise<Unit> stop() {return Promise.unitPromise();}
 
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
-            if (batch.stream().anyMatch(KVCommand.LeaderTransaction.class::isInstance)) {
+            if (batch.stream().anyMatch(AttemptBoundOutcomeTest::isRollbackTransaction)) {
                 transactions++;
                 var once = interference;
                 interference = repeating ? once : () -> {};
@@ -1137,6 +1137,13 @@ class AttemptBoundOutcomeTest {
         return harness;
     }
 
+    /// A rollback is a transaction that mutates more than slice targets: it carries the blueprint and the outcome. The
+    /// blueprint-fenced slice-target transactions of #2628 are transactions too, and are not rollbacks.
+    private static boolean isRollbackTransaction(KVCommand<AetherKey> command) {
+        return command instanceof KVCommand.LeaderTransaction<AetherKey, ?> transaction
+               && transaction.mutations().stream().anyMatch(mutation -> !(mutation.key() instanceof AetherKey.SliceTargetKey));
+    }
+
     /// Applies what the leader submits into the store, as consensus does — unless HELD, in which case
     /// batches queue until [#release], so a test can order another writer's batch before them.
     private static final class HoldingClusterNode implements ClusterNode<KVCommand<AetherKey>> {
@@ -1193,7 +1200,7 @@ class AttemptBoundOutcomeTest {
         @Override public Promise<Unit> stop() {return Promise.unitPromise();}
 
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
-            if (batch.stream().anyMatch(KVCommand.LeaderTransaction.class::isInstance) && ++transactions > RUNAWAY) {
+            if (batch.stream().anyMatch(AttemptBoundOutcomeTest::isRollbackTransaction) && ++transactions > RUNAWAY) {
                 // A rollback that keeps resubmitting is cut off by failing the promise, so the test's count assertion
                 // reports it; throwing here would be swallowed by the promise chain.
                 return Promise.failure(org.pragmatica.lang.utils.Causes.cause("runaway rollback retry"));

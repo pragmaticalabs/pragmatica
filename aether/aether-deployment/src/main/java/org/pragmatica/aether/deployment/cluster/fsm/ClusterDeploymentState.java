@@ -8,6 +8,7 @@ import java.util.HashMap;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -19,6 +20,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.DoubleSupplier;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -99,6 +101,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent.Shutdown;
@@ -957,6 +960,83 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private void restoreSliceTarget(SliceTargetKey sliceTargetKey, SliceTargetValue sliceTargetValue) {
+            sliceTargetValue.owningBlueprint()
+                            .filter(owner -> ctx.kvStore()
+                                                .get(AppBlueprintKey.appBlueprintKey(owner))
+                                                .isEmpty())
+                            .apply(() -> adoptSliceTarget(sliceTargetKey, sliceTargetValue),
+                                   owner -> refuseOrphanTarget(sliceTargetKey, owner));
+        }
+
+        /// #2628 (D4): a committed target whose owning blueprint is absent is an orphan, and a new leader does not
+        /// re-adopt it: adopting it would LOAD slices of a blueprint that no longer exists. It is swept by the same
+        /// fenced removal a blueprint delete uses, which can only remove it while the blueprint is still absent.
+        private void refuseOrphanTarget(SliceTargetKey sliceTargetKey, BlueprintId owner) {
+            committedDeclarer(sliceTargetKey.artifactBase()).apply(() -> sweepOrphanTarget(sliceTargetKey, owner),
+                                                                   declarer -> reOwnTarget(sliceTargetKey,
+                                                                                           owner,
+                                                                                           declarer));
+        }
+
+        private void sweepOrphanTarget(SliceTargetKey sliceTargetKey, BlueprintId owner) {
+            log.warn("Restore: slice target {} names blueprint {}, which is not committed — not adopting it, removing the orphan",
+                     sliceTargetKey.artifactBase(),
+                     owner.asString());
+            submitFencedTargetRemovals(WriteSite.BLUEPRINT_DELETE_TARGET_REMOVE,
+                                       owner,
+                                       List.of(sliceTargetKey.artifactBase()),
+                                       0);
+        }
+
+        /// A target whose owner is gone while another COMMITTED blueprint declares its base (the window between a
+        /// different-id rollback restoring `previous` and `previous`'s own target put) is live: sweeping it would UNLOAD
+        /// the running instances until the awaited resubmission re-creates it. It is re-owned instead, by the declarer's
+        /// own fenced put, which carries the committed scale and placement.
+        private void reOwnTarget(SliceTargetKey sliceTargetKey, BlueprintId owner, AppBlueprintValue declarer) {
+            var base = sliceTargetKey.artifactBase();
+            var slices = declarer.blueprint()
+                                 .loadOrder()
+                                 .stream()
+                                 .filter(slice -> slice.artifact()
+                                                       .base()
+                                                       .equals(base))
+                                 .toList();
+
+            log.warn("Restore: slice target {} names blueprint {}, which is not committed; committed blueprint {} declares it — re-owning",
+                     base,
+                     owner.asString(),
+                     declarer.blueprint().id().asString());
+            submitFencedTargetPuts(WriteSite.DEPLOY_TARGET_PUT, declarer, slices, 0);
+        }
+
+        /// A committed, non-register-only blueprint declaring a slice of this base, if any.
+        private Option<AppBlueprintValue> committedDeclarer(ArtifactBase base) {
+            var declarers = new ArrayList<AppBlueprintValue>();
+
+            ctx.kvStore()
+               .forEach(AppBlueprintKey.class,
+                        AppBlueprintValue.class,
+                        (_, value) -> addIfDeclaresBase(declarers, value, base));
+
+            return declarers.isEmpty()
+                   ? Option.none()
+                   : Option.some(declarers.getFirst());
+        }
+
+        private static void addIfDeclaresBase(List<AppBlueprintValue> declarers,
+                                              AppBlueprintValue value,
+                                              ArtifactBase base) {
+            if (!value.registerOnly() && value.blueprint()
+                                              .loadOrder()
+                                              .stream()
+                                              .anyMatch(slice -> slice.artifact()
+                                                                      .base()
+                                                                      .equals(base))) {
+                declarers.add(value);
+            }
+        }
+
+        private void adoptSliceTarget(SliceTargetKey sliceTargetKey, SliceTargetValue sliceTargetValue) {
             var artifact = sliceTargetKey.artifactBase().withVersion(sliceTargetValue.currentVersion());
             var instances = sliceTargetValue.targetInstances();
             var minInstances = sliceTargetValue.effectiveMinInstances();
@@ -1099,15 +1179,16 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                             .equals(Option.some(removedBlueprintId)))
                                               .map(Map.Entry::getKey)
                                               .toList();
-            var consensusCommands = new ArrayList<KVCommand<AetherKey>>();
 
             for (var artifact : artifactsToRemove) {
                 blueprints.remove(artifact);
                 issueDeallocationCommands(artifact);
-                consensusCommands.add(new KVCommand.Remove<>(SliceTargetKey.sliceTargetKey(artifact.base())));
             }
 
-            submitBatch(WriteSite.BLUEPRINT_DELETE_TARGET_REMOVE, consensusCommands);
+            submitFencedTargetRemovals(WriteSite.BLUEPRINT_DELETE_TARGET_REMOVE,
+                                       removedBlueprintId,
+                                       artifactsToRemove.stream().map(Artifact::base).toList(),
+                                       0);
             SharedScheduler.schedule(this::reconcile, timeSpan(5).seconds());
         }
 
@@ -1795,7 +1876,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 return;
             }
 
-            var consensusCommands = new ArrayList<KVCommand<AetherKey>>();
+            var targetedSlices = new ArrayList<ResolvedSlice>();
             var schemaRequired = resolveSchemaRequired(expanded.id());
 
             for (var slice : expanded.loadOrder()) {
@@ -1830,13 +1911,291 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                    target.minInstances(),
                                                    Option.some(expanded.id()),
                                                    schemaRequired));
-                consensusCommands.add(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()),
-                                                          target));
-                ctx.pendingTargetPuts().put(artifact.base(), target);
+                targetedSlices.add(slice);
             }
 
-            submitBatch(WriteSite.DEPLOY_TARGET_PUT, consensusCommands);
+            submitFencedTargetPuts(WriteSite.DEPLOY_TARGET_PUT, value, targetedSlices, 0);
             trackInFlightBlueprint(expanded, value.attemptId(), previousExpanded);
+        }
+
+        /// #2628 (D4, D6): the slice-target puts of a blueprint, fenced on the exact `AppBlueprintValue` they derive from.
+        ///
+        /// The put used to be fire-and-forget beside the removal that a delete submits on the blueprint's removal
+        /// notification, and Rabia commits pending batches in content-hash order, not submission order. A put that
+        /// committed after the removal re-added the target for a deleted blueprint (nothing swept it, and
+        /// `restoreSliceTarget` re-adopted it on a leader change); two publishes of one id could commit their puts in
+        /// either order, and the older one then won. Neither depends on an engine ordering any more: the puts are ONE
+        /// [KVCommand.LeaderTransaction] whose read set holds the `AppBlueprintKey` at the value the notification
+        /// carried (its `attemptId` is the generation) and whose mutations hold the target values they were derived
+        /// from. The applier refuses it unless the blueprint is still exactly that attempt, so a put of a deleted or
+        /// superseded blueprint is refused whatever the commit order, and the put of the current attempt is the only
+        /// one that can land.
+        ///
+        /// A refusal is silent (the applier's result is not attributable under batch merging), so after the apply
+        /// resolves this re-reads, as the rollback does: a committed blueprint that is no longer `source` means the
+        /// refusal was the fence working, and nothing is written for it (a newer publish writes its own targets);
+        /// a target that does not yet declare the blueprint while the blueprint is unchanged was refused for a moved
+        /// target (an autoscaler write), and is rebuilt against the current one, bounded by
+        /// [#MAX_OUTCOME_MERGE_ATTEMPTS].
+        private void submitFencedTargetPuts(WriteSite site,
+                                            AppBlueprintValue source,
+                                            List<ResolvedSlice> slices,
+                                            int attempt) {
+            if (slices.isEmpty()) {
+                return;
+            }
+
+            termWriter.<Object> writeUnder(site,
+                                           leader -> targetPutTransaction(leader, source, slices))
+                      .onSuccess(_ -> confirmTargetPuts(site, source, slices, attempt))
+                      .onFailure(cause -> logTargetWriteFailure(site, cause));
+        }
+
+        private List<KVCommand<AetherKey>> targetPutTransaction(LeaderValue leader,
+                                                                AppBlueprintValue source,
+                                                                List<ResolvedSlice> slices) {
+            var expanded = source.blueprint();
+            var mutations = distinctByBase(slices).stream().map(slice -> targetPutMutation(expanded, slice)).toList();
+
+            return fencedTransaction(leader,
+                                     appBlueprintWitness(expanded.id(), Option.some(source)),
+                                     mutations);
+        }
+
+        private static KVCommand.ReadWitness<AetherKey> appBlueprintWitness(BlueprintId id,
+                                                                            Option<AetherValue> expected) {
+            return new KVCommand.ReadWitness<>(AppBlueprintKey.appBlueprintKey(id), expected.map(Object.class::cast));
+        }
+
+        private static List<KVCommand<AetherKey>> fencedTransaction(LeaderValue leader,
+                                                                    KVCommand.ReadWitness<AetherKey> fence,
+                                                                    List<KVCommand.Mutation<AetherKey, AetherValue>> mutations) {
+            return List.of(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(mutations.getFirst().key(),
+                                                                                   UUID.randomUUID().toString(),
+                                                                                   leader,
+                                                                                   List.of(fence),
+                                                                                   mutations));
+        }
+
+        /// One mutation per target key: the applier refuses a transaction that names a key twice, and a blueprint
+        /// can list one slice base twice. The later declaration wins, as the sequence of puts it replaces did.
+        private static List<ResolvedSlice> distinctByBase(List<ResolvedSlice> slices) {
+            return List.copyOf(slices.stream()
+                                     .collect(Collectors.toMap(slice -> slice.artifact()
+                                                                             .base(),
+                                                               slice -> slice,
+                                                               (_, later) -> later,
+                                                               LinkedHashMap::new))
+                                     .values());
+        }
+
+        private KVCommand.Mutation<AetherKey, AetherValue> targetPutMutation(ExpandedBlueprint expanded,
+                                                                             ResolvedSlice slice) {
+            var key = SliceTargetKey.sliceTargetKey(slice.artifact().base());
+            var target = declaredTarget(expanded, slice);
+            // The value the leader last submitted for this base: what AwaitedTargetWatch resubmits if it never commits.
+            ctx.pendingTargetPuts().put(slice.artifact().base(),
+                                        target);
+
+            return new KVCommand.Mutation<>(key,
+                                            ctx.kvStore().get(key),
+                                            Option.some(target));
+        }
+
+        private void confirmTargetPuts(WriteSite site,
+                                       AppBlueprintValue source,
+                                       List<ResolvedSlice> slices,
+                                       int attempt) {
+            var expanded = source.blueprint();
+            // Design-out: the fence refused this attempt's stale write, so a delete or a newer attempt owns the
+            // targets and the refusal needs no repair. Rebuilding here would only be refused again.
+            if (!ctx.kvStore().get(AppBlueprintKey.appBlueprintKey(expanded.id())).equals(Option.some(source))) {
+                log.info("Slice targets of blueprint {} (attempt '{}') not written: the committed blueprint is no longer that attempt"
+                        + " (deleted or published again), so the fence refuses its targets and the current attempt owns them",
+                         expanded.id().asString(),
+                         source.attemptId());
+
+                return;
+            }
+
+            var unlanded = distinctByBase(slices).stream().filter(slice -> !declaresTarget(expanded, slice)).toList();
+
+            if (unlanded.isEmpty()) {
+                return;
+            }
+
+            if (attempt >= MAX_OUTCOME_MERGE_ATTEMPTS) {
+                log.error("Slice targets {} of blueprint {} were refused {} times by concurrent changes to the targets and are NOT written",
+                          unlanded.stream().map(ResolvedSlice::artifact).toList(),
+                          expanded.id().asString(),
+                          attempt + 1);
+
+                return;
+            }
+
+            submitFencedTargetPuts(site, source, unlanded, attempt + 1);
+        }
+
+        /// Whether the committed target of the slice's base is the one this blueprint declares for it.
+        private boolean declaresTarget(ExpandedBlueprint expanded, ResolvedSlice slice) {
+            return committed(SliceTargetKey.sliceTargetKey(slice.artifact().base()),
+                             SliceTargetValue.class).filter(target -> declares(target, expanded, slice))
+                            .isPresent();
+        }
+
+        private <V extends AetherValue> Option<V> committed(AetherKey key, Class<V> type) {
+            return ctx.kvStore()
+                      .get(key)
+                      .filter(type::isInstance)
+                      .map(type::cast);
+        }
+
+        private static boolean declares(SliceTargetValue target, ExpandedBlueprint expanded, ResolvedSlice slice) {
+            return target.currentVersion()
+                         .equals(slice.artifact().version())
+                   && target.owningBlueprint()
+                            .equals(Option.some(expanded.id()))
+                   && target.minInstances() == slice.minAvailable()
+                   && target.maxInstances()
+                            .equals(slice.maxInstances())
+                   && target.scaleUpThreshold()
+                            .equals(slice.scaleUpThreshold())
+                   && target.scaleDownThreshold()
+                            .equals(slice.scaleDownThreshold());
+        }
+
+        /// #2628 (D4): the removal of the slice targets a deleted blueprint owned, fenced on the blueprint being absent.
+        ///
+        /// The transaction's read set holds `AppBlueprintKey(removed)` as ABSENT and each mutation holds the target it
+        /// read, so a publish of the same id that committed first refuses the removal (its targets are not removed from
+        /// under it), and a target that moved is rebuilt against the current one, bounded by
+        /// [#MAX_OUTCOME_MERGE_ATTEMPTS]. A target not committed when this is built is not written for here: the put
+        /// that would commit it later is the one the blueprint fence of [#submitFencedTargetPuts] refuses. This is also
+        /// the sweep for an orphan found at restore, which is a target whose blueprint is already absent.
+        private void submitFencedTargetRemovals(WriteSite site,
+                                                BlueprintId removed,
+                                                List<ArtifactBase> bases,
+                                                int attempt) {
+            var mutations = bases.stream().distinct().flatMap(base -> committedTargetRemoval(removed, base)).toList();
+
+            if (mutations.isEmpty()) {
+                return;
+            }
+
+            termWriter.<Object> writeUnder(site,
+                                           leader -> fencedTransaction(leader,
+                                                                       appBlueprintWitness(removed,
+                                                                                           Option.none()),
+                                                                       mutations))
+                      .onSuccess(_ -> confirmTargetRemovals(site, removed, bases, attempt))
+                      .onFailure(cause -> logTargetWriteFailure(site, cause));
+        }
+
+        private Stream<KVCommand.Mutation<AetherKey, AetherValue>> committedTargetRemoval(BlueprintId removed,
+                                                                                          ArtifactBase base) {
+            var key = SliceTargetKey.sliceTargetKey(base);
+
+            return removableTarget(removed, base).map(committed -> new KVCommand.Mutation<AetherKey, AetherValue>(key,
+                                                                                                                  Option.some(committed),
+                                                                                                                  Option.none()))
+                                  .stream();
+        }
+
+        /// The committed target of the base unless ANOTHER blueprint owns it. The mirror of a deleted blueprint can still
+        /// name a base whose target a different id of the same blueprint (an upgrade racing the delete of the old id) has
+        /// already re-owned: that target is the other blueprint's, and neither the removal nor its rebuild may take it.
+        private Option<AetherValue> removableTarget(BlueprintId removed, ArtifactBase base) {
+            return ctx.kvStore()
+                      .get(SliceTargetKey.sliceTargetKey(base))
+                      .filter(committed -> !ownedByAnother(committed, removed));
+        }
+
+        private static boolean ownedByAnother(AetherValue committed, BlueprintId removed) {
+            return committed instanceof SliceTargetValue target && target.owningBlueprint()
+                                                                         .filter(owner -> !owner.equals(removed))
+                                                                         .isPresent();
+        }
+
+        private void confirmTargetRemovals(WriteSite site, BlueprintId removed, List<ArtifactBase> bases, int attempt) {
+            if (ctx.kvStore().get(AppBlueprintKey.appBlueprintKey(removed)).isPresent()) {
+                return;
+            }
+
+            var remaining = bases.stream().filter(base -> removableTarget(removed, base).isPresent()).toList();
+
+            if (remaining.isEmpty()) {
+                return;
+            }
+
+            if (attempt >= MAX_OUTCOME_MERGE_ATTEMPTS) {
+                log.error("Slice targets {} of deleted blueprint {} were refused {} times by concurrent changes and are NOT removed",
+                          remaining,
+                          removed.asString(),
+                          attempt + 1);
+
+                return;
+            }
+
+            submitFencedTargetRemovals(site, removed, remaining, attempt + 1);
+        }
+
+        /// FER (degrade forward): a target write that could not be issued or applied is reported and not retried here.
+        /// Guarantee earned: nothing was written, so the committed targets are exactly what they were. Mechanism: an
+        /// uncommitted put is resubmitted by [AwaitedTargetWatch] (#1109) while its blueprint is desired, and a target
+        /// left behind by a removal that failed is an orphan the next leader's restore sweeps.
+        private void logTargetWriteFailure(WriteSite site, Cause cause) {
+            if (deactivated.get()) {
+                log.debug("Suppressing {} failure handling - Active state deactivated", site);
+
+                return;
+            }
+
+            log.error("Slice-target write {} failed: {}", site, cause.message());
+        }
+
+        /// #2628: the resubmission of a slice target an awaited apply is still missing, fenced like its first put. A slice of
+        /// a blueprint is resubmitted only while the COMMITTED blueprint of its owner still declares it, and is written as
+        /// a compare-and-set on the committed target under that blueprint's value, so a resubmission racing a delete (or a
+        /// newer attempt) is refused rather than re-adding a target. The watch repeats once per bound, so a refused
+        /// resubmission needs no retry of its own. An unowned slice has no blueprint to fence on and stays a plain put.
+        @Contract
+        void resubmitTarget(Artifact artifact, Blueprint blueprint, SliceTargetValue pending) {
+            blueprint.owner()
+                     .apply(() -> submitBatch(WriteSite.AWAITED_TARGET_RESUBMIT,
+                                              List.of(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()),
+                                                                          pending))),
+                            owner -> resubmitOwnedTarget(artifact, owner, pending));
+        }
+
+        private void resubmitOwnedTarget(Artifact artifact, BlueprintId owner, SliceTargetValue pending) {
+            committed(AppBlueprintKey.appBlueprintKey(owner),
+                      AppBlueprintValue.class).filter(source -> declaresSlice(source, artifact))
+                     .onPresent(source -> writeResubmission(source, artifact, pending))
+                     .onEmpty(() -> log.info("Slice target of {} not resubmitted: blueprint {} is no longer committed or no longer declares it",
+                                             artifact,
+                                             owner.asString()));
+        }
+
+        private static boolean declaresSlice(AppBlueprintValue source, Artifact artifact) {
+            return source.blueprint()
+                         .loadOrder()
+                         .stream()
+                         .anyMatch(slice -> slice.artifact()
+                                                 .equals(artifact));
+        }
+
+        private void writeResubmission(AppBlueprintValue source, Artifact artifact, SliceTargetValue pending) {
+            var key = SliceTargetKey.sliceTargetKey(artifact.base());
+
+            termWriter.<Object> writeUnder(WriteSite.AWAITED_TARGET_RESUBMIT,
+                                           leader -> fencedTransaction(leader,
+                                                                       appBlueprintWitness(source.blueprint().id(),
+                                                                                           Option.some(source)),
+                                                                       List.of(new KVCommand.Mutation<>(key,
+                                                                                                        ctx.kvStore()
+                                                                                                           .get(key),
+                                                                                                        Option.some(pending)))))
+                      .onFailure(cause -> logTargetWriteFailure(WriteSite.AWAITED_TARGET_RESUBMIT, cause));
         }
 
         /// The `SliceTargetValue` a republish proposes: the committed value re-declared by the blueprint when
