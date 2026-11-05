@@ -106,7 +106,7 @@ class EmberLostTailChunkRepairTest {
     }
 
     @Test
-    @Disabled("#2347 arm 4: RED in 2 of 5 samples (bigboy, readForward 1 s and 2 s): the committed new owner is the node that missed the tail "
+    @Disabled("#2682 (found by #2347 arm 4): RED in 2 of 5 samples (bigboy, readForward 1 s and 2 s): the committed new owner is the node that missed the tail "
               + "(head N-1) while the other survivor holds N, and in the red samples the new owner stayed at N-1 for 60 s. "
               + "Nondeterministic, so it cannot be an enabled tripwire; enable once the promotion gate pulls from the ahead survivor deterministically")
     @Order(2)
