@@ -55,6 +55,8 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.LayeredConfigProvider;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
@@ -759,7 +761,13 @@ public final class SliceRoutes implements RouteSource {
     }
 
     /// No operator requirement is committed for the slice a release names.
-    private record NothingToRelease(ArtifactBase base) implements Cause {
+    /// Never reaches a client ([#nothingReleased] turns it into success); it states its status so the management cause walk needs no row.
+    private record NothingToRelease(ArtifactBase base) implements Cause, HttpStatusAware {
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+
         @Override
         public String message() {
             return "No operator requirement of " + base.asString() + " is committed";
