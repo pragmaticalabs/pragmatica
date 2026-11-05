@@ -150,6 +150,44 @@ public enum OperatorWarningCode {
     /// (#2062), and its capacity reservation could not be reconciled: either the ledger cannot count its slot (the node is refused and is being drained), or the
     /// reconciliation failed and the node's reservation is not known to be in step with the ledger. Never log-only. The subject is the node.
     EXTERNAL_REJOIN_UNRECONCILED("external-rejoin-unreconciled", "deployment", WarningLevel.WARNING),
+    /// A node's configured deployment engine disagrees with the engine the cluster committed (phase-3 design 8.2): the node refuses itself and
+    /// exits when its window ends unless the mismatch clears. The message names the evidence and the recovery. Subject is the node.
+    DEPLOYMENT_ENGINE_MISMATCH("deployment-engine-mismatch", "deployment", WarningLevel.WARNING),
+    /// The deployment FSMs' warnings (phase-3 design 4.2, 5.2; owner ruling s37): every code the node FSM and the cluster FSM raise as a `Warn`
+    /// effect, so an operator reads it in the cluster event log and not only in the log. Subsystem `deployment`, level WARNING, as ruled. The text
+    /// of each is the FSM's own message; the subject names the node, artifact or datasource it is about. `FsmWarningCatalogueTest` enumerates the
+    /// codes the FSM sources raise against this list, so a new FSM warning without an entry here is a red test.
+    ACTIVATION_UNPERMITTED("activation-unpermitted", "deployment", WarningLevel.WARNING),
+    BLUEPRINT_DELETE_REFUSED("blueprint-delete-refused", "deployment", WarningLevel.WARNING),
+    BLUEPRINT_REJECTED("blueprint-rejected", "deployment", WarningLevel.WARNING),
+    BOOT_TOKEN_ABSENT("boot-token-absent", "deployment", WarningLevel.WARNING),
+    DEPARTURE_INFERRED("departure-inferred", "deployment", WarningLevel.WARNING),
+    DEPARTURE_INFERRED_REVERSED("departure-inferred-reversed", "deployment", WarningLevel.WARNING),
+    DEPARTURE_INFERRED_SUPPRESSED("departure-inferred-suppressed", "deployment", WarningLevel.WARNING),
+    IDENTITY_PROCESS_MISMATCH("identity-process-mismatch", "deployment", WarningLevel.WARNING),
+    INVALID_PLACEMENT("invalid-placement", "deployment", WarningLevel.WARNING),
+    JOIN_REFUSED_PROCESS("join-refused-process", "deployment", WarningLevel.WARNING),
+    JOIN_REFUSED_SUPERSEDED("join-refused-superseded", "deployment", WarningLevel.WARNING),
+    JOIN_UNMATCHED("join-unmatched", "deployment", WarningLevel.WARNING),
+    RETRY_EXHAUSTED_UNSETTLED("retry-exhausted-unsettled", "deployment", WarningLevel.WARNING),
+    SCHEMA_HOLD("schema-hold", "deployment", WarningLevel.WARNING),
+    SCHEMA_HOLD_CLEARED("schema-hold-cleared", "deployment", WarningLevel.WARNING),
+    SCHEMA_STATUS_UNKNOWN("schema-status-unknown", "deployment", WarningLevel.WARNING),
+    SLICE_UNRESPONSIVE("slice-unresponsive", "deployment", WarningLevel.WARNING),
+    SLICE_UNRESPONSIVE_EXPIRED("slice-unresponsive-expired", "deployment", WarningLevel.WARNING),
+    STRAY_INSTANCE("stray-instance", "deployment", WarningLevel.WARNING),
+    WORKER_ABSENCE_UNJUDGEABLE("worker-absence-unjudgeable", "deployment", WarningLevel.WARNING),
+    WORKER_NO_COMMUNITY_POLICY("worker-no-community-policy", "deployment", WarningLevel.WARNING),
+    WORKER_READMITTED_ON_EVIDENCE("worker-readmitted-on-evidence", "deployment", WarningLevel.WARNING),
+    /// A deployment FSM's mailbox holds more than 10,000 inputs (phase-3 design 3.1, N-5): the mailboxes are unbounded by design, so a consumer that
+    /// cannot keep up is reported here and nowhere else. The subject is `<node>/<fsm>`, the message names the depth. Closed by
+    /// [#DEPLOYMENT_FSM_BACKLOG_CLEARED].
+    DEPLOYMENT_FSM_BACKLOG("deployment-fsm-backlog", "deployment", WarningLevel.WARNING),
+    /// The recovery of [#DEPLOYMENT_FSM_BACKLOG], same subject: the mailbox is back below 1,000 inputs. Raised only when the warning was.
+    DEPLOYMENT_FSM_BACKLOG_CLEARED("deployment-fsm-backlog-cleared",
+                                   "deployment",
+                                   WarningLevel.INFO,
+                                   DEPLOYMENT_FSM_BACKLOG),
     /// A start this node refused for want of a committed `SliceTarget` (LOAD, ACTIVATE or an ACTIVE claim) has stayed parked past the
     /// bound (#1109): the target the leader acted on has not arrived in this node's applied log. The park stays retry-able and is
     /// re-driven when the target arrives. The subject is `<artifact>@<node>`. Closed by [#SLICE_START_DEFERRAL_ENDED].
@@ -511,6 +549,17 @@ public enum OperatorWarningCode {
     /// changed between each decision and its commit. Subject is the worker. The worker takes a community when it is admitted again (restart it
     /// if it does not). Closed by [#COMMUNITY_ASSIGNMENT_PLACED].
     COMMUNITY_ASSIGNMENT_UNPLACED("community-assignment-unplaced", "community-assignment", WarningLevel.WARNING),
+    /// A terminated node's activation directive and departure record are still not retired (deployment FSM phase 3, B18/B19): the retirement
+    /// has been refused, attempt after attempt, for longer than its overdue bound. Nothing else removes them under FSM2, so the node's
+    /// identity stays in the cluster's view. The message names the node, how long and the last refusal. Subject is the node. Closed by
+    /// [#TERMINATION_RETIREMENT_RESOLVED].
+    TERMINATION_RETIREMENT_OVERDUE("termination-retirement-overdue", "deployment", WarningLevel.WARNING),
+    /// The recovery of [#TERMINATION_RETIREMENT_OVERDUE], same subject: the retirement ended (it committed, both keys were gone, the record
+    /// was re-admitted, or the node stopped). The message says which. Raised only when the warning was, by the same node.
+    TERMINATION_RETIREMENT_RESOLVED("termination-retirement-resolved",
+                                    "deployment",
+                                    WarningLevel.INFO,
+                                    TERMINATION_RETIREMENT_OVERDUE),
     /// The recovery of [#COMMUNITY_ASSIGNMENT_UNPLACED], same subject (#241): the worker was assigned a community. INFO, published only after a
     /// published unplaced event for the worker (#752 mechanism).
     COMMUNITY_ASSIGNMENT_PLACED("community-assignment-placed",
@@ -833,6 +882,17 @@ public enum OperatorWarningCode {
     /// dispatcher calls `stopNode`; the sink hands it off asynchronously, so its delivery to the cluster event stream is
     /// best-effort once the node halts.
     KV_DISPATCHER_FAILED("kv-dispatcher-failed", "kv-store", WarningLevel.CRITICAL),
+    /// A core auto-heal replacement was refused because the source of the departed node could not be resolved (#2115): the node has no
+    /// committed placement, and the committed configuration does not name exactly one source declaring the role (or does not parse), so
+    /// any pick would be a guess at which provider to bill. Nothing was provisioned; the reconciler retries on its next pass. Raised on the
+    /// first refusal of a run, not on every tick; the subject is `core-replacement`. Closed by [#CORE_REPLACEMENT_SOURCE_RESOLVED]. A
+    /// permanent refusal never closes, which is what makes it visible. The operator names the source by declaring the role in one source only.
+    CORE_REPLACEMENT_SOURCE_UNRESOLVED("core-replacement-source-unresolved", "deployment", WarningLevel.WARNING),
+    /// The recovery of [#CORE_REPLACEMENT_SOURCE_UNRESOLVED], same subject (#2115): a core replacement resolved its source.
+    CORE_REPLACEMENT_SOURCE_RESOLVED("core-replacement-source-resolved",
+                                     "deployment",
+                                     WarningLevel.INFO,
+                                     CORE_REPLACEMENT_SOURCE_UNRESOLVED),
     /// The recovery of [#CONFIG_WATCH_CALLBACK_FAILED], same subject (#774): the next delivery bound and (when it called back) succeeded.
     /// INFO, published only after a published failure for the subject (#752 mechanism).
     CONFIG_WATCH_CALLBACK_RECOVERED("config-watch-callback-recovered",

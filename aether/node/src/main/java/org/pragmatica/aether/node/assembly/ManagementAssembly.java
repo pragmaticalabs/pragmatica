@@ -48,6 +48,7 @@ import org.pragmatica.serialization.Serializer;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.composite.CompositeMeterRegistry;
 import io.netty.channel.EventLoopGroup;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -107,7 +108,8 @@ public sealed interface ManagementAssembly {
                                   Option<EventLoopGroup> serverWorkerGroup,
                                   AtomicReference<Option<ManagementServer>> managementServerRef,
                                   EntityCheckpointDriver entityCheckpointDriver,
-                                  AetherNode node) {}
+                                  AetherNode node,
+                                  CompositeMeterRegistry deploymentMeters) {}
 
     /// The management security validator and the management server, published through the holder the route entries and the certificate rotation read.
     static ManagementServer managementServer(ManagementServerInputs in) {
@@ -134,6 +136,7 @@ public sealed interface ManagementAssembly {
         var managementServerRef = in.managementServerRef();
         var entityCheckpointDriver = in.entityCheckpointDriver();
         var node = in.node();
+        var deploymentMeters = in.deploymentMeters();
         var mgmtSecurityEnabled = config.appHttp().managementSecurityEnabled();
         // #962: `[management] security_mode` decides whether the Management API authenticates and,
         // when absent, INHERITS `[app-http] security_mode`. Both planes check the same
@@ -218,6 +221,7 @@ public sealed interface ManagementAssembly {
 
         managementServer.setOperatorWarningSink(operatorWarningSink);
         managementServerRef.set(Option.some(managementServer));
+        deploymentMeters.add(managementServer.meterRegistry());
         // #278: expose the node's real MeterRegistry to slice-facing resource
         // provisioning so MetricsInterceptorFactory records into the SAME
         // registry the Management API scrapes, instead of each interceptor

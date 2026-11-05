@@ -23,7 +23,6 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
-import org.pragmatica.utility.ULID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -77,25 +76,21 @@ public final class ClusterIncarnationRegistrar {
         return new ClusterIncarnationRegistrar(genesisLeg, scheduler);
     }
 
-    /// The genesis leg against a live node: mint when absent, then confirm by re-reading the committed
-    /// value.
+    /// The genesis leg against a live node: mint when absent (the incarnation and the engine marker in ONE leader transaction, witnessed by the
+    /// committed leader read on THIS pass), then confirm by re-reading the committed incarnation.
+    ///
+    /// Confirmation succeeds as soon as **the incarnation is present**, whoever wrote it: a restore of a pre-phase-3 backup leaves "incarnation
+    /// present, marker absent", and that counts as done (LEGACY), never as "retry forever". A pass never mints the marker alone.
     public static Supplier<Promise<Unit>> genesisLeg(Supplier<KVStore<AetherKey, AetherValue>> kvStore,
-                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
-        return genesisLeg(kvStore,
-                          applier,
-                          ClusterIncarnationRegistrar::freshUlid,
-                          ClusterIncarnationRegistrar::freshUlid);
-    }
-
-    static Supplier<Promise<Unit>> genesisLeg(Supplier<KVStore<AetherKey, AetherValue>> kvStore,
-                                              Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
-                                              Supplier<String> freshLineageId,
-                                              Supplier<String> freshIncarnationId) {
+                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                                     ClusterIncarnation.Mint mint) {
         return () -> ClusterIncarnation.genesisCommand(kvStore.get(),
-                                                       freshLineageId,
-                                                       freshIncarnationId)
-                                       .fold(Promise::unitPromise,
-                                             command -> mintAndConfirm(kvStore, applier, command));
+                                                       mint)
+                                       .async()
+                                       .flatMap(command -> command.fold(Promise::unitPromise,
+                                                                        minted -> mintAndConfirm(kvStore,
+                                                                                                 applier,
+                                                                                                 minted)));
     }
 
     private static Promise<Unit> mintAndConfirm(Supplier<KVStore<AetherKey, AetherValue>> kvStore,
@@ -109,10 +104,6 @@ public final class ClusterIncarnationRegistrar {
         return ClusterIncarnation.committed(kvStore)
                                  .map(_ -> Promise.unitPromise())
                                  .or(NOT_YET_COMMITTED::promise);
-    }
-
-    private static String freshUlid() {
-        return ULID.ulid().encoded();
     }
 
     /// `LeaderChange` route hook. On leader-gain arm the retry loop and run the first pass immediately;
