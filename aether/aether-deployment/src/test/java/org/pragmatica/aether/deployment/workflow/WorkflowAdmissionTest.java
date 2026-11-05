@@ -10,8 +10,6 @@ import java.util.Map;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.workflow.WorkflowAdmission.AdmissionRefusal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowClaimValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowRunValue;
@@ -21,17 +19,20 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.aether.deployment.workflow.WorkflowTestCluster.CORE_1;
 import static org.pragmatica.aether.deployment.workflow.WorkflowTestCluster.CORE_2;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// rc6 §4.3: admission is the one fence. Every case runs against a real [org.pragmatica.cluster.state.kvstore.KVStore] applier, so
 /// "refused" means the applier refused the transaction, not that the code declined to send it.
 class WorkflowAdmissionTest {
     private static final WorkflowKind<Unit0> PILOT = new WorkflowKind<>("pilot",
                                                                         new WorkflowBudget(3,
-                                                                                           TimeSpan.timeSpan(60)
-                                                                                                   .seconds(),
+                                                                                           TimeSpan.timeSpan(60).seconds(),
                                                                                            5),
                                                                         _ -> Option.none(),
                                                                         () -> Unit0.INSTANCE);
@@ -54,20 +55,22 @@ class WorkflowAdmissionTest {
     }
 
     private WorkflowAdmission admission(WorkflowLedger over) {
-        return WorkflowAdmission.workflowAdmission(over,
-                                                   Map.of("pilot", PILOT),
-                                                   () -> "wf-" + ids.incrementAndGet());
+        return WorkflowAdmission.workflowAdmission(over, Map.of("pilot", PILOT), () -> "wf-" + ids.incrementAndGet());
     }
 
     private Result<WorkflowRunValue> admit(List<String> keys) {
-        return admission.admit("pilot", Map.of("node", "n1"), keys, 1_000L)
+        return admission.admit("pilot",
+                               Map.of("node", "n1"),
+                               keys,
+                               1_000L)
                         .await();
     }
 
     private static Cause refusal(Result<?> result) {
-        return result.fold(cause -> cause, value -> {
-            throw new AssertionError("expected a refusal, got " + value);
-        });
+        return result.fold(cause -> cause,
+                           value -> {
+                               throw new AssertionError("expected a refusal, got " + value);
+                           });
     }
 
     @Test
@@ -86,13 +89,13 @@ class WorkflowAdmissionTest {
     @Test
     void admit_overlappingOnItsLastKey_isRefusedWhole_namingTheHolder() {
         admit(List.of("node:n1", "node:n2")).unwrap();
-
         var refused = refusal(admit(List.of("node:n3", "node:n2")));
 
         assertThat(refused).isEqualTo(new AdmissionRefusal.ConflictKeyHeld("node:n2", "wf-1"));
         assertThat(refused.message()).contains("node:n2", "wf-1");
         assertThat(cluster.run("wf-2")).as("the refused run is not created").isEqualTo(Option.none());
-        assertThat(cluster.claim("node:n3")).as("all-or-nothing: the free key is not claimed either").isEqualTo(Option.none());
+        assertThat(cluster.claim("node:n3")).as("all-or-nothing: the free key is not claimed either")
+                  .isEqualTo(Option.none());
         assertThat(cluster.claim("node:n2")).isEqualTo(Option.some(new WorkflowClaimValue("wf-1")));
     }
 
@@ -100,8 +103,8 @@ class WorkflowAdmissionTest {
     @Test
     void admit_overlappingOnItsFirstKey_isRefusedWhole_namingTheHolder() {
         admit(List.of("node:n1", "node:n2")).unwrap();
-
-        assertThat(refusal(admit(List.of("node:n1", "node:n4")))).isEqualTo(new AdmissionRefusal.ConflictKeyHeld("node:n1", "wf-1"));
+        assertThat(refusal(admit(List.of("node:n1", "node:n4")))).isEqualTo(new AdmissionRefusal.ConflictKeyHeld("node:n1",
+                                                                                                                 "wf-1"));
         assertThat(cluster.claim("node:n4")).isEqualTo(Option.none());
         assertThat(cluster.claim("node:n1")).isEqualTo(Option.some(new WorkflowClaimValue("wf-1")));
     }
@@ -110,7 +113,6 @@ class WorkflowAdmissionTest {
     void admit_disjointKeys_admitsBoth() {
         admit(List.of("node:n1")).unwrap();
         admit(List.of("node:n2")).unwrap();
-
         assertThat(cluster.claim("node:n1")).isEqualTo(Option.some(new WorkflowClaimValue("wf-1")));
         assertThat(cluster.claim("node:n2")).isEqualTo(Option.some(new WorkflowClaimValue("wf-2")));
     }
@@ -128,27 +130,25 @@ class WorkflowAdmissionTest {
 
             first.join();
             second.join();
-
             var won = results.stream().filter(Result::isSuccess).toList();
             var lost = results.stream().filter(Result::isFailure).toList();
 
             assertThat(won).as("round " + round).hasSize(1);
             assertThat(lost).as("round " + round).hasSize(1);
-
             var winner = won.getFirst().unwrap();
 
             assertThat(refusal(lost.getFirst())).as("round " + round)
-                                                .isEqualTo(new AdmissionRefusal.ConflictKeyHeld("node:shared", winner.id()));
+                      .isEqualTo(new AdmissionRefusal.ConflictKeyHeld("node:shared",
+                                                                      winner.id()));
             assertThat(cluster.claim("node:shared")).isEqualTo(Option.some(new WorkflowClaimValue(winner.id())));
-            assertThat(cluster.claim("node:a").isPresent() ^ cluster.claim("node:b").isPresent())
-                .as("round " + round + ": only the winner's private key is claimed")
-                .isTrue();
+            assertThat(cluster.claim("node:a").isPresent() ^ cluster.claim("node:b").isPresent()).as("round " + round
+                                                                                                    + ": only the winner's private key is claimed")
+                      .isTrue();
         }
     }
 
     private Thread racer(CyclicBarrier barrier, List<String> keys, List<Result<WorkflowRunValue>> results) {
-        return Thread.ofPlatform()
-                     .start(() -> race(barrier, keys, results));
+        return Thread.ofPlatform().start(() -> race(barrier, keys, results));
     }
 
     private void race(CyclicBarrier barrier, List<String> keys, List<Result<WorkflowRunValue>> results) {
@@ -157,6 +157,7 @@ class WorkflowAdmissionTest {
         } catch (Exception e) {
             throw new AssertionError(e);
         }
+
         var result = admit(keys);
 
         synchronized (results) {
@@ -193,7 +194,8 @@ class WorkflowAdmissionTest {
         assertThat(ledger.commit(run, waiting).await().unwrap()).isTrue();
         assertThat(ledger.commit(waiting, escalated).await().unwrap()).isTrue();
         assertThat(cluster.claim("node:n1")).isEqualTo(Option.some(new WorkflowClaimValue(run.id())));
-        assertThat(refusal(admit(List.of("node:n1")))).isEqualTo(new AdmissionRefusal.ConflictKeyHeld("node:n1", run.id()));
+        assertThat(refusal(admit(List.of("node:n1")))).isEqualTo(new AdmissionRefusal.ConflictKeyHeld("node:n1",
+                                                                                                      run.id()));
     }
 
     @Test
@@ -202,9 +204,9 @@ class WorkflowAdmissionTest {
         var waiting = run.issued("post", 2_000L);
 
         assertThat(ledger.commit(run, waiting).await().unwrap()).isTrue();
-        assertThat(ledger.commit(run, run.in(WorkflowState.DONE, "stale")).await().unwrap())
-            .as("compare-and-set on the exact run read")
-            .isFalse();
+        assertThat(ledger.commit(run,
+                                 run.in(WorkflowState.DONE, "stale")).await().unwrap()).as("compare-and-set on the exact run read")
+                  .isFalse();
         assertThat(cluster.run(run.id())).isEqualTo(Option.some(waiting));
         assertThat(cluster.claim("node:n1")).as("a refused terminal commit releases nothing").isPresent();
     }
@@ -236,8 +238,12 @@ class WorkflowAdmissionTest {
     @Test
     void admit_afterLeadershipMoved_isRefusedByTheOldLeader_andAdmittedByTheNew() {
         cluster.lead(CORE_2);
-
         assertThat(refusal(admit(List.of("node:n1")))).isEqualTo(AdmissionRefusal.NOT_LEADER);
-        assertThat(admission(cluster.ledger(CORE_2)).admit("pilot", Map.of(), List.of("node:n1"), 1L).await().isSuccess()).isTrue();
+        assertThat(admission(cluster.ledger(CORE_2)).admit("pilot",
+                                                           Map.of(),
+                                                           List.of("node:n1"),
+                                                           1L)
+                            .await()
+                            .isSuccess()).isTrue();
     }
 }

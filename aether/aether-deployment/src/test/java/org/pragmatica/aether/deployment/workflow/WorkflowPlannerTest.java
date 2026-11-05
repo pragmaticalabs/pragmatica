@@ -7,7 +7,6 @@ package org.pragmatica.aether.deployment.workflow;
 import java.util.List;
 import java.util.Map;
 
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.workflow.WorkflowPlanner.Plan;
 import org.pragmatica.aether.deployment.workflow.WorkflowStep.Readiness;
 import org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowRunValue;
@@ -17,7 +16,10 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
+import org.junit.jupiter.api.Test;
+
 import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// rc6 §4: the pure plan, branch by branch. The order of the checks IS the guarantee (postcondition first, then the deadline, the
 /// settle window, the budgets, and the precondition last), so each test pins one ordering against the check that would otherwise win.
@@ -26,27 +28,29 @@ class WorkflowPlannerTest {
     record Obs(boolean post0, boolean post1, Readiness pre) {}
 
     private static final WorkflowBudget BUDGET = new WorkflowBudget(2,
-                                                                    TimeSpan.timeSpan(100)
-                                                                            .seconds(),
+                                                                    TimeSpan.timeSpan(100).seconds(),
                                                                     3);
     private static final long SETTLE_MS = 10_000L;
     private static final WorkflowStep<Obs> STEP_0 = step("provision", Obs::post0, "node provisioned");
     private static final WorkflowStep<Obs> STEP_1 = step("verify", Obs::post1, "node verified");
     private static final List<WorkflowStep<Obs>> STEPS = List.of(STEP_0, STEP_1);
+
     private static final WorkflowPlanner<Obs> PLANNER = run -> run.stepIndex() < STEPS.size()
                                                                ? Option.some(STEPS.get(run.stepIndex()))
                                                                : Option.none();
+
     private static final Obs NOTHING_READY = new Obs(false, false, Readiness.READY);
     private static final long START = 1_000_000L;
 
-    private static WorkflowStep<Obs> step(String name, org.pragmatica.lang.Functions.Fn1<Boolean, Obs> post, String postName) {
+    private static WorkflowStep<Obs> step(String name,
+                                          org.pragmatica.lang.Functions.Fn1<Boolean, Obs> post,
+                                          String postName) {
         return new WorkflowStep<>(name,
                                   Obs::pre,
                                   _ -> Promise.success(Unit.unit()),
                                   post,
                                   postName,
-                                  TimeSpan.timeSpan(SETTLE_MS)
-                                          .millis());
+                                  TimeSpan.timeSpan(SETTLE_MS).millis());
     }
 
     private static WorkflowRunValue fresh() {
@@ -106,8 +110,7 @@ class WorkflowPlannerTest {
     /// INV-07: DONE only when the LAST step's postcondition is observed.
     @Test
     void plan_lastPostconditionObserved_isDone() {
-        var onLast = fresh().advanced()
-                            .issued("node verified", START);
+        var onLast = fresh().advanced().issued("node verified", START);
         var plan = plan(onLast, new Obs(true, true, Readiness.READY), START + 1);
 
         assertThat(plan).isInstanceOf(Plan.Commit.class);
@@ -128,9 +131,7 @@ class WorkflowPlannerTest {
     /// The postcondition is checked before the deadline and the budgets: work that is done is DONE, not ESCALATED.
     @Test
     void plan_postconditionObservedPastTheDeadlineAndBudgets_stillAdvances() {
-        var exhausted = fresh().issued("p", START)
-                               .issued("p", START)
-                               .issued("p", START);
+        var exhausted = fresh().issued("p", START).issued("p", START).issued("p", START);
 
         assertThat(plan(exhausted, new Obs(true, false, Readiness.READY), START + 1_000_000L)).isEqualTo(new Plan.Commit(exhausted.advanced()));
     }
@@ -143,13 +144,16 @@ class WorkflowPlannerTest {
         var escalated = ((Plan.Commit) plan).next();
 
         assertThat(escalated.state()).isEqualTo(WorkflowState.ESCALATED);
-        assertThat(escalated.detail()).contains("elapsed-time budget", "'node provisioned'", "resume", "abandon", "node:n1");
+        assertThat(escalated.detail()).contains("elapsed-time budget",
+                                                "'node provisioned'",
+                                                "resume",
+                                                "abandon",
+                                                "node:n1");
     }
 
     @Test
     void plan_attemptBudgetExhausted_escalates() {
-        var twice = fresh().issued("node provisioned", START)
-                           .issued("node provisioned", START);
+        var twice = fresh().issued("node provisioned", START).issued("node provisioned", START);
         var plan = plan(twice, NOTHING_READY, START + SETTLE_MS);
 
         assertThat(plan).isInstanceOf(Plan.Commit.class);
@@ -160,12 +164,23 @@ class WorkflowPlannerTest {
     @Test
     void plan_effectBudgetExhausted_escalates() {
         var spent = fresh().issued("node provisioned", START)
-                           .advanced()
-                           .issued("node verified", START)
-                           .issued("node verified", START)
-                           .advanced();
-        var onFirstAgain = new WorkflowRunValue(spent.id(), spent.kind(), spent.params(), 1, 0, spent.effects(), spent.startedAt(),
-                                                spent.deadline(), 0L, WorkflowState.RUNNING, "", spent.conflictKeys(), spent.epoch());
+                         .advanced()
+                         .issued("node verified", START)
+                         .issued("node verified", START)
+                         .advanced();
+        var onFirstAgain = new WorkflowRunValue(spent.id(),
+                                                spent.kind(),
+                                                spent.params(),
+                                                1,
+                                                0,
+                                                spent.effects(),
+                                                spent.startedAt(),
+                                                spent.deadline(),
+                                                0L,
+                                                WorkflowState.RUNNING,
+                                                "",
+                                                spent.conflictKeys(),
+                                                spent.epoch());
         var plan = plan(onFirstAgain, NOTHING_READY, START + 1);
 
         assertThat(onFirstAgain.effects()).isEqualTo(3);
@@ -190,8 +205,7 @@ class WorkflowPlannerTest {
 
     @Test
     void plan_noStepAtTheCommittedIndex_fails() {
-        var past = fresh().advanced()
-                          .advanced();
+        var past = fresh().advanced().advanced();
         var plan = plan(past, NOTHING_READY, START + 1);
 
         assertThat(plan).isInstanceOf(Plan.Commit.class);
@@ -205,7 +219,10 @@ class WorkflowPlannerTest {
                                  WorkflowState.FAILED,
                                  WorkflowState.ESCALATED,
                                  WorkflowState.UNKNOWN)) {
-            assertThat(plan(fresh().in(state, "x"), NOTHING_READY, START + 1_000_000L)).as(state.name()).isEqualTo(Plan.HOLD);
+            assertThat(plan(fresh().in(state, "x"),
+                            NOTHING_READY,
+                            START + 1_000_000L)).as(state.name())
+                      .isEqualTo(Plan.HOLD);
         }
     }
 
@@ -214,7 +231,9 @@ class WorkflowPlannerTest {
     void plan_isAPureFunctionOfRunObservationAndTime() {
         var waiting = fresh().issued("node provisioned", START);
 
-        assertThat(plan(waiting, NOTHING_READY, START + SETTLE_MS)).isEqualTo(plan(waiting, NOTHING_READY, START + SETTLE_MS));
+        assertThat(plan(waiting, NOTHING_READY, START + SETTLE_MS)).isEqualTo(plan(waiting,
+                                                                                   NOTHING_READY,
+                                                                                   START + SETTLE_MS));
         assertThat(plan(fresh(), NOTHING_READY, START + 5)).isEqualTo(plan(fresh(), NOTHING_READY, START + 5));
     }
 }

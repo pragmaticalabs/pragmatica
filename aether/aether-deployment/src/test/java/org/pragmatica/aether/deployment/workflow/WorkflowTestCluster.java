@@ -6,7 +6,6 @@ package org.pragmatica.aether.deployment.workflow;
 
 import java.util.List;
 
-import io.netty.buffer.ByteBuf;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowRunValue;
@@ -22,6 +21,9 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
+import io.netty.buffer.ByteBuf;
+
+
 /// A real [KVStore] with a committed leader record, so every transaction a [WorkflowLedger] builds is judged by the applier, not by
 /// its shape. `apply` is serialised on the store, as consensus serialises commands: two concurrent submitters are ordered, never
 /// interleaved inside one transaction.
@@ -33,14 +35,16 @@ final class WorkflowTestCluster {
     private long term = 1;
 
     WorkflowTestCluster() {
-        store = new KVStore<>(MessageRouter.mutable(), new Serializer() {
+        store = new KVStore<>(MessageRouter.mutable(),
+                              new Serializer() {
             @Override
             public <T> void write(ByteBuf buffer, T value) {}
-        }, new Deserializer() {
+        },
+                              new Deserializer() {
             @Override
             public <T> T read(ByteBuf buffer) {
-                return null;
-            }
+                                  return null;
+                              }
         });
         lead(CORE_1);
     }
@@ -52,7 +56,7 @@ final class WorkflowTestCluster {
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     WorkflowLedger ledger(NodeId self) {
-        return WorkflowLedger.workflowLedger((KVStore<AetherKey, AetherValue>) (KVStore<?, ?>) store,
+        return WorkflowLedger.workflowLedger((KVStore<AetherKey, AetherValue>)(KVStore<?, ?>) store,
                                              self,
                                              commands -> Promise.success(apply((List) commands)));
     }
@@ -78,7 +82,8 @@ final class WorkflowTestCluster {
 
         apply(List.of(new KVCommand.LeaderTransaction<StructuredKey, Object>(key,
                                                                              "raw-" + run.epoch() + "-" + run.id(),
-                                                                             store.getTyped(LeaderKey.INSTANCE, LeaderValue.class)
+                                                                             store.getTyped(LeaderKey.INSTANCE,
+                                                                                            LeaderValue.class)
                                                                                   .unwrap(),
                                                                              List.of(),
                                                                              List.of(new KVCommand.Mutation<>(key,

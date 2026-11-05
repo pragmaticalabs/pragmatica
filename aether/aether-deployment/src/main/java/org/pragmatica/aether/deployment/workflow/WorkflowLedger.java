@@ -37,16 +37,12 @@ import org.pragmatica.lang.Promise;
 public interface WorkflowLedger {
     /// Every committed run, oldest first.
     List<WorkflowRunValue> runs();
-
     /// The committed claim of `conflictKey`.
     Option<WorkflowClaimValue> claim(String conflictKey);
-
     /// Whether this node is the committed leader, the only node whose transactions are submitted.
     boolean leads();
-
     /// The admission transaction for `run`: `true` only when it was accepted.
     Promise<Boolean> create(WorkflowRunValue run);
-
     /// The compare-and-set of `expected` to `next` (with the claims released when `next` ends the run): `true` only when accepted.
     Promise<Boolean> commit(WorkflowRunValue expected, WorkflowRunValue next);
 
@@ -75,6 +71,7 @@ public interface WorkflowLedger {
                                                                  Option.some(new WorkflowClaimValue(expected.id())),
                                                                  Option.none())));
         }
+
         return List.copyOf(mutations);
     }
 
@@ -93,8 +90,7 @@ public interface WorkflowLedger {
                             .stream()
                             .filter(WorkflowRunValue.class::isInstance)
                             .map(WorkflowRunValue.class::cast)
-                            .sorted(Comparator.comparingLong(WorkflowRunValue::startedAt)
-                                              .thenComparing(WorkflowRunValue::id))
+                            .sorted(Comparator.comparingLong(WorkflowRunValue::startedAt).thenComparing(WorkflowRunValue::id))
                             .toList();
             }
 
@@ -127,8 +123,7 @@ public interface WorkflowLedger {
             private Promise<Boolean> submit(WorkflowRunKey key, List<Mutation<AetherKey, AetherValue>> mutations) {
                 return leader().fold(() -> Promise.success(false),
                                      value -> submit(new LeaderTransaction<>(key,
-                                                                             UUID.randomUUID()
-                                                                                 .toString(),
+                                                                             UUID.randomUUID().toString(),
                                                                              value,
                                                                              List.of(),
                                                                              mutations)));

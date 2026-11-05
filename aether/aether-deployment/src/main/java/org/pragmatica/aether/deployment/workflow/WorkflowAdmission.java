@@ -75,13 +75,13 @@ public interface WorkflowAdmission {
 
     /// Admission over `ledger` for the registered `kinds` (by name), with `wf-<uuid>` run ids.
     static WorkflowAdmission workflowAdmission(WorkflowLedger ledger, Map<String, WorkflowKind<?>> kinds) {
-        return workflowAdmission(ledger,
-                                 kinds,
-                                 () -> "wf-" + UUID.randomUUID());
+        return workflowAdmission(ledger, kinds, () -> "wf-" + UUID.randomUUID());
     }
 
     /// As [#workflowAdmission(WorkflowLedger, Map)], with run ids from `ids`.
-    static WorkflowAdmission workflowAdmission(WorkflowLedger ledger, Map<String, WorkflowKind<?>> kinds, Fn0<String> ids) {
+    static WorkflowAdmission workflowAdmission(WorkflowLedger ledger,
+                                               Map<String, WorkflowKind<?>> kinds,
+                                               Fn0<String> ids) {
         record admission(WorkflowLedger ledger, Map<String, WorkflowKind<?>> kinds, Fn0<String> ids) implements WorkflowAdmission {
             @Override
             public Promise<WorkflowRunValue> admit(String kind,
@@ -89,20 +89,21 @@ public interface WorkflowAdmission {
                                                    List<String> conflictKeys,
                                                    long now) {
                 return admissible(kind, conflictKeys).async()
-                                                     .flatMap(found -> create(WorkflowRunValue.admitted(ids.apply(),
-                                                                                                        found.name(),
-                                                                                                        params,
-                                                                                                        conflictKeys,
-                                                                                                        now,
-                                                                                                        now + found.budget()
-                                                                                                                   .elapsed()
-                                                                                                                   .toMillis())));
+                                 .flatMap(found -> create(WorkflowRunValue.admitted(ids.apply(),
+                                                                                    found.name(),
+                                                                                    params,
+                                                                                    conflictKeys,
+                                                                                    now,
+                                                                                    now + found.budget()
+                                                                                               .elapsed()
+                                                                                               .toMillis())));
             }
 
             private Result<WorkflowKind<?>> admissible(String kind, List<String> conflictKeys) {
                 if (!ledger.leads()) {
                     return AdmissionRefusal.NOT_LEADER.result();
                 }
+
                 return Option.option(kinds.get(kind))
                              .toResult(new AdmissionRefusal.UnknownKind(kind))
                              .flatMap(found -> validKeys(conflictKeys).map(_ -> found));
@@ -112,10 +113,11 @@ public interface WorkflowAdmission {
                 if (conflictKeys.isEmpty()) {
                     return new AdmissionRefusal.InvalidConflictKeys("none given").result();
                 }
-                if (conflictKeys.stream()
-                                .anyMatch(String::isBlank)) {
+
+                if (conflictKeys.stream().anyMatch(String::isBlank)) {
                     return new AdmissionRefusal.InvalidConflictKeys("a blank key").result();
                 }
+
                 return new HashSet<>(conflictKeys).size() == conflictKeys.size()
                        ? Result.unitResult()
                        : new AdmissionRefusal.InvalidConflictKeys("a key given twice in " + conflictKeys).result();
@@ -130,17 +132,14 @@ public interface WorkflowAdmission {
 
             /// The refusal of `run`, read back from the committed claims: the first of its keys held by another run.
             private Promise<WorkflowRunValue> refusal(WorkflowRunValue run) {
-                return Option.from(run.conflictKeys()
-                                      .stream()
-                                      .flatMap(key -> heldBy(key).stream())
-                                      .findFirst())
-                             .fold(() -> new AdmissionRefusal.NotAdmitted(run.id()).<WorkflowRunValue> promise(),
-                                   held -> held.<WorkflowRunValue> promise());
+                return Option.from(run.conflictKeys().stream().flatMap(key -> heldBy(key).stream()).findFirst()).fold(() -> new AdmissionRefusal.NotAdmitted(run.id()).<WorkflowRunValue> promise(),
+                                                                                                                      held -> held.<WorkflowRunValue> promise());
             }
 
             private Option<AdmissionRefusal.ConflictKeyHeld> heldBy(String key) {
                 return ledger.claim(key)
-                             .map(claim -> new AdmissionRefusal.ConflictKeyHeld(key, claim.holderRunId()));
+                             .map(claim -> new AdmissionRefusal.ConflictKeyHeld(key,
+                                                                                claim.holderRunId()));
             }
         }
 

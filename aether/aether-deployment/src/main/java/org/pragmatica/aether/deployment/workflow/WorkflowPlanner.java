@@ -44,10 +44,15 @@ public interface WorkflowPlanner<O> {
     }
 
     /// The plan for `run` under `budget`, given `observed` at `now`. Runs that are not `RUNNING` or `WAITING` are held.
-    static <O> Plan plan(WorkflowPlanner<O> planner, WorkflowBudget budget, WorkflowRunValue run, O observed, long now) {
+    static <O> Plan plan(WorkflowPlanner<O> planner,
+                         WorkflowBudget budget,
+                         WorkflowRunValue run,
+                         O observed,
+                         long now) {
         if (!run.active()) {
             return Plan.HOLD;
         }
+
         return planner.step(run)
                       .fold(() -> new Plan.Commit(run.in(WorkflowState.FAILED,
                                                          "kind " + run.kind() + " has no step " + run.stepIndex())),
@@ -60,25 +65,30 @@ public interface WorkflowPlanner<O> {
                                      WorkflowStep<O> step,
                                      O observed,
                                      long now) {
-        if (step.postcondition()
-                .apply(observed)) {
+        if (step.postcondition().apply(observed)) {
             return advance(planner, run, step);
         }
+
         if (now >= run.deadline()) {
             return escalate(run, step, "elapsed-time budget exhausted (deadline " + run.deadline() + ")");
         }
+
         if (settling(run, step, now)) {
             return Plan.HOLD;
         }
+
         if (run.attempts() >= budget.attempts()) {
             return escalate(run, step, "attempt budget of " + budget.attempts() + " exhausted");
         }
+
         if (run.effects() >= budget.effects()) {
             return escalate(run, step, "effect budget of " + budget.effects() + " exhausted");
         }
+
         return switch (step.precondition()
                            .apply(observed)) {
-            case Readiness.Ready _ -> new Plan.Issue(run.issued(step.postconditionName(), now), step.action());
+            case Readiness.Ready _ -> new Plan.Issue(run.issued(step.postconditionName(), now),
+                                                     step.action());
             case Readiness.NotYet _ -> Plan.HOLD;
             case Readiness.Impossible impossible -> new Plan.Commit(run.in(WorkflowState.FAILED,
                                                                            "step '" + step.name() + "': " + impossible.why()));
@@ -108,10 +118,17 @@ public interface WorkflowPlanner<O> {
 
     /// The incident an escalation commits and announces: the budget, the postcondition not observed, and the recovery verbs.
     static <O> String incident(WorkflowRunValue run, WorkflowStep<O> step, String budget) {
-        return "workflow " + run.id() + " (" + run.kind() + ") escalated: " + budget + "; postcondition '" + step.postconditionName()
-               + "' of step " + run.stepIndex() + " '" + step.name() + "' not observed after " + run.attempts() + " attempt(s), "
-               + run.effects() + " effect(s) in total. Recover: resume (re-arms the attempt and elapsed-time budgets; the postcondition"
-               + " is re-checked before anything is re-issued) or abandon (FAILED; releases " + String.join(", ", run.conflictKeys())
-               + ")";
+        return "workflow " + run.id()
+             + " (" + run.kind()
+             + ") escalated: " + budget
+             + "; postcondition '" + step.postconditionName()
+             + "' of step " + run.stepIndex()
+             + " '" + step.name()
+             + "' not observed after " + run.attempts()
+             + " attempt(s), " + run.effects()
+             + " effect(s) in total. Recover: resume (re-arms the attempt and elapsed-time budgets; the postcondition"
+             + " is re-checked before anything is re-issued) or abandon (FAILED; releases " + String.join(", ",
+                                                                                                          run.conflictKeys())
+             + ")";
     }
 }

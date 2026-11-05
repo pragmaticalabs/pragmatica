@@ -10,8 +10,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.workflow.WorkflowStep.Readiness;
 import org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowClaimValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowRunValue;
@@ -26,9 +24,13 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.aether.deployment.workflow.WorkflowTestCluster.CORE_1;
 import static org.pragmatica.aether.deployment.workflow.WorkflowTestCluster.CORE_2;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// rc6 f2a item 4: a TEST-ONLY pilot kind driven by the real reconciler over a real KV applier, through every state: RUNNING,
 /// WAITING, DONE, PAUSED, FAILED, ESCALATED and the UNKNOWN sentinel; across a leader change mid-run; with an effect whose call
@@ -113,23 +115,20 @@ class WorkflowPilotTest {
                                                   world::provision,
                                                   Obs::provisioned,
                                                   "node provisioned",
-                                                  TimeSpan.timeSpan(SETTLE_MS)
-                                                          .millis()),
+                                                  TimeSpan.timeSpan(SETTLE_MS).millis()),
                             new WorkflowStep<Obs>("verify",
                                                   _ -> Readiness.READY,
                                                   world::verify,
                                                   Obs::verified,
                                                   "node verified",
-                                                  TimeSpan.timeSpan(SETTLE_MS)
-                                                          .millis()));
+                                                  TimeSpan.timeSpan(SETTLE_MS).millis()));
         WorkflowPlanner<Obs> planner = run -> run.stepIndex() < steps.size()
                                               ? Option.some(steps.get(run.stepIndex()))
                                               : Option.none();
 
         return new WorkflowKind<>("pilot",
                                   new WorkflowBudget(2,
-                                                     TimeSpan.timeSpan(100)
-                                                             .seconds(),
+                                                     TimeSpan.timeSpan(100).seconds(),
                                                      4),
                                   planner,
                                   world::observe);
@@ -140,8 +139,13 @@ class WorkflowPilotTest {
     }
 
     private WorkflowRunValue admit() {
-        return WorkflowAdmission.workflowAdmission(cluster.ledger(CORE_1), kinds, () -> "wf-pilot")
-                                .admit("pilot", Map.of("node", "n1"), List.of("node:n1"), clock.get())
+        return WorkflowAdmission.workflowAdmission(cluster.ledger(CORE_1),
+                                                   kinds,
+                                                   () -> "wf-pilot")
+                                .admit("pilot",
+                                       Map.of("node", "n1"),
+                                       List.of("node:n1"),
+                                       clock.get())
                                 .await()
                                 .unwrap();
     }
@@ -152,9 +156,7 @@ class WorkflowPilotTest {
     }
 
     private static void tick(WorkflowReconciler reconciler) {
-        reconciler.reconcile()
-                  .await()
-                  .unwrap();
+        reconciler.reconcile().await().unwrap();
     }
 
     @Test
@@ -240,7 +242,8 @@ class WorkflowPilotTest {
         var leader = reconciler(CORE_1);
 
         tick(leader);
-        assertThat(committed().state()).as("a failed call leaves the run WAITING, not failed").isEqualTo(WorkflowState.WAITING);
+        assertThat(committed().state()).as("a failed call leaves the run WAITING, not failed")
+                  .isEqualTo(WorkflowState.WAITING);
         clock.addAndGet(SETTLE_MS * 2);
         tick(leader);
         assertThat(committed().stepIndex()).isEqualTo(1);
@@ -262,7 +265,6 @@ class WorkflowPilotTest {
         assertThat(warnings).isEmpty();
         clock.addAndGet(SETTLE_MS);
         tick(leader);
-
         var escalated = committed();
 
         assertThat(escalated.state()).isEqualTo(WorkflowState.ESCALATED);
@@ -300,7 +302,6 @@ class WorkflowPilotTest {
         admit();
         world.readiness = new Readiness.Impossible("node n1 left the cluster");
         tick(reconciler(CORE_1));
-
         assertThat(committed().state()).isEqualTo(WorkflowState.FAILED);
         assertThat(committed().detail()).contains("node n1 left the cluster");
         assertThat(cluster.claim("node:n1")).isEqualTo(Option.none());
@@ -324,7 +325,8 @@ class WorkflowPilotTest {
         assertThat(committed().stepIndex()).isZero();
         var paused = committed();
 
-        assertThat(ledger.commit(paused, paused.resumed(clock.get() + 100_000L)).await().unwrap()).isTrue();
+        assertThat(ledger.commit(paused,
+                                 paused.resumed(clock.get() + 100_000L)).await().unwrap()).isTrue();
         tick(leader);
         assertThat(committed().stepIndex()).as("the issued effect is adopted after the resume").isEqualTo(1);
         tick(leader);
@@ -360,8 +362,7 @@ class WorkflowPilotTest {
     void reconcile_aThrowingObservation_doesNotStopTheOtherRuns() {
         var broken = new WorkflowKind<Obs>("broken",
                                            new WorkflowBudget(2,
-                                                              TimeSpan.timeSpan(100)
-                                                                      .seconds(),
+                                                              TimeSpan.timeSpan(100).seconds(),
                                                               4),
                                            _ -> Option.none(),
                                            () -> {
@@ -369,8 +370,13 @@ class WorkflowPilotTest {
                                            });
 
         kinds = Map.of("pilot", pilot(world), "broken", broken);
-        WorkflowAdmission.workflowAdmission(cluster.ledger(CORE_1), kinds, () -> "wf-broken")
-                         .admit("broken", Map.of(), List.of("node:n9"), T0 - 1)
+        WorkflowAdmission.workflowAdmission(cluster.ledger(CORE_1),
+                                            kinds,
+                                            () -> "wf-broken")
+                         .admit("broken",
+                                Map.of(),
+                                List.of("node:n9"),
+                                T0 - 1)
                          .await()
                          .unwrap();
         admit();

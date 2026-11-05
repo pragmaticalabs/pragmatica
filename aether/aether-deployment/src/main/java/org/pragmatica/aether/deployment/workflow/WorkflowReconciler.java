@@ -20,6 +20,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.utility.warning.OperatorWarnings;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -45,8 +46,7 @@ public interface WorkflowReconciler {
                                   kinds,
                                   clock,
                                   warnings,
-                                  TimeSpan.timeSpan(30)
-                                          .seconds());
+                                  TimeSpan.timeSpan(30).seconds());
     }
 
     /// `bound`: how long a commit or an effect call may stay unanswered before the tick stops waiting for it; the next tick re-reads
@@ -70,9 +70,8 @@ public interface WorkflowReconciler {
                     return Promise.unitPromise();
                 }
                 // A tick that throws before it has a promise must still release the guard, or no later tick would run.
-                return Result.lift(this::tick)
-                             .fold(this::released,
-                                   promise -> promise.withResult(_ -> running.set(false)));
+                return Result.lift(this::tick).fold(this::released,
+                                                    promise -> promise.withResult(_ -> running.set(false)));
             }
 
             private Promise<Unit> released(Cause cause) {
@@ -82,10 +81,7 @@ public interface WorkflowReconciler {
             }
 
             private Promise<Unit> tick() {
-                return advanceFrom(ledger.runs()
-                                         .stream()
-                                         .filter(WorkflowRunValue::active)
-                                         .toList(),
+                return advanceFrom(ledger.runs().stream().filter(WorkflowRunValue::active).toList(),
                                    0);
             }
 
@@ -115,8 +111,8 @@ public interface WorkflowReconciler {
                 return switch (plan) {
                     case WorkflowPlanner.Plan.Hold _ -> Promise.unitPromise();
                     case WorkflowPlanner.Plan.Commit commit -> commit(run, commit.next()).flatMap(accepted -> accepted
-                                                                                                             ? announced(commit.next())
-                                                                                                             : Promise.unitPromise());
+                                                                                                              ? announced(commit.next())
+                                                                                                              : Promise.unitPromise());
                     case WorkflowPlanner.Plan.Issue issue -> commit(run, issue.next()).flatMap(accepted -> accepted
                                                                                                            ? performed(issue)
                                                                                                            : Promise.unitPromise());
@@ -137,8 +133,7 @@ public interface WorkflowReconciler {
             private Promise<Unit> performed(WorkflowPlanner.Plan.Issue issue) {
                 return Result.lift(() -> issue.action()
                                               .apply(issue.next()))
-                             .fold(Cause::<Unit> promise,
-                                   promise -> promise)
+                             .fold(Cause::<Unit> promise, promise -> promise)
                              .timeout(bound)
                              .recover(_ -> Unit.unit());
             }
