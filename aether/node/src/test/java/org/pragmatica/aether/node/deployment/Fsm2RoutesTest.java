@@ -155,6 +155,14 @@ class Fsm2RoutesTest {
             raw.processCommitted(raw.createBatch(List.of(new KVCommand.Put(LeaderKey.INSTANCE, leader))), ++slot);
         }
 
+        /// A `LeaderValue` committed under a key that is NOT `LeaderKey`: the leader route must read the key as well as the value.
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        void putLeaderValueUnder(AetherKey key, LeaderValue leader) {
+            var raw = (KVStore) store;
+
+            raw.processCommitted(raw.createBatch(List.of(new KVCommand.Put(key, leader))), ++slot);
+        }
+
         /// A leader-authorized write: one `LeaderTransaction` under the committed leader, as the cluster FSM writes.
         @SuppressWarnings({"unchecked", "rawtypes"})
         void leaderPut(AetherKey key, AetherValue value) {
@@ -296,6 +304,17 @@ class Fsm2RoutesTest {
             rig.putLeader(leader);
 
             assertThat(rig.cluster).extracting(Delivered::input).containsExactly(new ClusterInput.LeaderObserved(leader));
+        }
+
+        /// F1 survivor nodedep-Fsm2Routes-01 (`key instanceof LeaderKey && value instanceof LeaderValue`, the key conjunct made `true`): only the
+        /// `LeaderKey` row is the leader; a `LeaderValue` committed under any other key is not delivered as `LeaderObserved`.
+        @Test
+        void aLeaderValueUnderAnotherKey_isNotDeliveredAsLeaderObserved() {
+            var rig = new Rig();
+
+            rig.putLeaderValueUnder(new AetherKey.AlertThresholdKey("cpu"), new LeaderValue(SELF, 9L));
+
+            assertThat(rig.cluster).isEmpty();
         }
     }
 
