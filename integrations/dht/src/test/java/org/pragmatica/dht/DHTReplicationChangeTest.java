@@ -113,7 +113,7 @@ class DHTReplicationChangeTest {
         assertThat(cluster.readiness(replicas.get(0))).as("arming: the first two replicas have caught up").isEqualTo(Readiness.SERVING);
         assertThat(cluster.readiness(replicas.get(1))).isEqualTo(Readiness.SERVING);
 
-        var lagging = distributedDHTClient(cluster.nodes.get(replicas.get(2)), cluster::route, factors(3, 1));
+        var lagging = distributedDHTClient(cluster.nodes.get(replicas.get(2)), AcceptingNetwork.accepting(cluster::route), factors(3, 1));
 
         cluster.dropPutsTo = Set.of(replicas.get(0), replicas.get(1));
         assertThat(lagging.put(KEY, VALUE).await().isSuccess()).as("acked at the old W1 by a node yet to apply the change").isTrue();
@@ -1231,9 +1231,9 @@ class DHTReplicationChangeTest {
                 ids.forEach(ring::addNode);
                 nodes.put(id, dhtNode(id, memoryStorageEngine(), ring, config));
             });
-            ids.forEach(id -> antiEntropies.put(id, dhtAntiEntropy(nodes.get(id), this::route, _ -> false)));
+            ids.forEach(id -> antiEntropies.put(id, dhtAntiEntropy(nodes.get(id), AcceptingNetwork.accepting(this::route), _ -> false)));
             ids.forEach(id -> clients.put(id,
-                                          distributedDHTClient(nodes.get(id), this::route, OwnerEpochSource.zero())
+                                          distributedDHTClient(nodes.get(id), AcceptingNetwork.accepting(this::route), OwnerEpochSource.zero())
                                               .withResolveFallbackObserver(observer)));
         }
 
@@ -1283,7 +1283,7 @@ class DHTReplicationChangeTest {
                                                            org.pragmatica.hlc.HlcClock.hlcClock(id));
 
             nodes.put(id, fresh);
-            antiEntropies.put(id, dhtAntiEntropy(fresh, this::route, _ -> false));
+            antiEntropies.put(id, dhtAntiEntropy(fresh, AcceptingNetwork.accepting(this::route), _ -> false));
 
             return fresh;
         }

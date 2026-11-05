@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.db.r2dbc;
 
+import java.time.Duration;
 import java.util.List;
 
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
@@ -31,17 +32,24 @@ import static org.pragmatica.lang.Option.none;
 public final class R2dbcSqlConnector implements SqlConnector {
     private final DatabaseConnectorConfig config;
     private final ConnectionFactory connectionFactory;
+    private final ConnectionFactory unpooled;
     private final R2dbcOperations operations;
 
-    private R2dbcSqlConnector(DatabaseConnectorConfig config, ConnectionFactory connectionFactory) {
+    private R2dbcSqlConnector(DatabaseConnectorConfig config,
+                              ConnectionFactory connectionFactory,
+                              ConnectionFactory unpooled) {
         this.config = config;
         this.connectionFactory = connectionFactory;
+        this.unpooled = unpooled;
         this.operations = R2dbcOperations.r2dbcOperations(connectionFactory);
     }
 
+    /// `unpooled` is the raw factory the pool wraps; `pinned` opens its dedicated connection there and never from
+    /// `pooled`, so a session lock cannot outlive its connection inside a pool.
     public static R2dbcSqlConnector r2dbcSqlConnector(DatabaseConnectorConfig config,
-                                                      ConnectionFactory connectionFactory) {
-        return new R2dbcSqlConnector(config, connectionFactory);
+                                                      ConnectionFactory pooled,
+                                                      ConnectionFactory unpooled) {
+        return new R2dbcSqlConnector(config, pooled, unpooled);
     }
 
     public ConnectionFactory connectionFactory() {
@@ -94,6 +102,19 @@ public final class R2dbcSqlConnector implements SqlConnector {
     @Override
     public <T> Promise<T> transactional(SqlConnector.TransactionCallback<T> callback) {
         return withConnection(conn -> beginAndExecute(conn, callback).fold(result -> resolveTransaction(conn, result)));
+    }
+
+    /// R2DBC has no portable per-statement timeout, so `statementTimeout` is not enforced here: the bound is the
+    /// caller's own promise timeout.
+    @Override
+    public <T> Promise<T> pinned(Duration statementTimeout,
+                                 SqlConnector.TransactionCallback<T> body,
+                                 SqlConnector.TransactionCallback<Unit> release) {
+        return ReactiveOperations.<Connection> fromPublisher(unpooled.create()).flatMap(conn -> runPinned(conn,
+                                                                                                          new PinnedR2dbcConnector(config,
+                                                                                                                                   conn),
+                                                                                                          body,
+                                                                                                          release));
     }
 
     @Override
@@ -156,6 +177,29 @@ public final class R2dbcSqlConnector implements SqlConnector {
 
     private static <T> Promise<T> closeAndResolve(Connection conn, Result<T> result) {
         return ReactiveOperations.fromVoidPublisher(conn.close()).fold(_ -> Promise.resolved(result));
+    }
+
+    private static <T> Promise<T> runPinned(Connection conn,
+                                            SqlConnector session,
+                                            SqlConnector.TransactionCallback<T> body,
+                                            SqlConnector.TransactionCallback<Unit> release) {
+        return invoke(body, session).fold(bodyResult -> closeAfterRelease(conn, session, release, bodyResult));
+    }
+
+    private static <R> Promise<R> invoke(SqlConnector.TransactionCallback<R> callback, SqlConnector session) {
+        return Promise.lift(DatabaseConnectorError::databaseFailure,
+                            () -> callback.execute(session))
+                      .flatMap(promise -> promise);
+    }
+
+    // Close is the release (design 2.1 rule 2): the dedicated connection is physically closed, which ends the server
+    // session and drops every session-scoped lock. The explicit `release` step is a courtesy that ran just before; its
+    // outcome changes nothing, so a failure of it is absorbed (design-out: no pool exists to carry the session on).
+    private static <T> Promise<T> closeAfterRelease(Connection conn,
+                                                    SqlConnector session,
+                                                    SqlConnector.TransactionCallback<Unit> release,
+                                                    Result<T> bodyResult) {
+        return invoke(release, session).fold(_ -> closeAndResolve(conn, bodyResult));
     }
 
     private <T> Promise<T> beginAndExecute(Connection conn, SqlConnector.TransactionCallback<T> callback) {
@@ -243,6 +287,59 @@ public final class R2dbcSqlConnector implements SqlConnector {
             case R2dbcError.QueryFailed q -> DatabaseConnectorError.queryFailed("", q.message(), none(), q.sqlState());
             case R2dbcError.DatabaseFailure d -> DatabaseConnectorError.databaseFailure(d.cause());
         };
+    }
+
+    /// The pinned session: statements run on the delegate (autocommit), and `transactional` begins and commits on the
+    /// SAME connection instead of creating another.
+    private record PinnedR2dbcConnector(DatabaseConnectorConfig config,
+                                        Connection connection,
+                                        TransactionalR2dbcConnector statements) implements SqlConnector {
+        PinnedR2dbcConnector(DatabaseConnectorConfig config, Connection connection) {
+            this(config, connection, new TransactionalR2dbcConnector(config, connection));
+        }
+
+        @Override
+        public <T> Promise<T> queryOne(String sql, RowMapper<T> mapper, Object... params) {
+            return statements.queryOne(sql, mapper, params);
+        }
+
+        @Override
+        public <T> Promise<Option<T>> queryOptional(String sql, RowMapper<T> mapper, Object... params) {
+            return statements.queryOptional(sql, mapper, params);
+        }
+
+        @Override
+        public <T> Promise<List<T>> queryList(String sql, RowMapper<T> mapper, Object... params) {
+            return statements.queryList(sql, mapper, params);
+        }
+
+        @Override
+        public Promise<Integer> update(String sql, Object... params) {
+            return statements.update(sql, params);
+        }
+
+        @Override
+        public Promise<int[]> batch(String sql, List<Object[]> paramsList) {
+            return statements.batch(sql, paramsList);
+        }
+
+        @Override
+        public <T> Promise<T> transactional(SqlConnector.TransactionCallback<T> callback) {
+            return ReactiveOperations.fromVoidPublisher(connection.beginTransaction())
+                                     .flatMap(_ -> callback.execute(statements))
+                                     .flatMap(value -> commitAndResolve(connection, value))
+                                     .fold(result -> resolveTransaction(connection, result));
+        }
+
+        @Override
+        public DatabaseType databaseType() {
+            return config.effectiveType(DatabaseConnectorConfig.Transport.R2DBC);
+        }
+
+        @Override
+        public Promise<Boolean> isHealthy() {
+            return Promise.success(true);
+        }
     }
 
     private record TransactionalR2dbcConnector(DatabaseConnectorConfig config, Connection connection) implements SqlConnector {

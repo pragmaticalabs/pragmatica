@@ -27,6 +27,8 @@ import org.pragmatica.net.tcp.Server;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import org.pragmatica.consensus.net.WriteOutcome;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -377,9 +379,14 @@ class DeploymentMetricsCollectorTest {
         final List<SentMessage> sentMessages = new CopyOnWriteArrayList<>();
 
         @Override
-        public <M extends org.pragmatica.consensus.ProtocolMessage> Unit send(NodeId target, M message) {
+        public <M extends org.pragmatica.consensus.ProtocolMessage> Promise<WriteOutcome> send(NodeId target, M message) {
             sentMessages.add(new SentMessage(target, message));
-            return Unit.unit();
+            return Promise.success(new WriteOutcome.Sent(target));
+        }
+
+        @Override
+        public <M extends org.pragmatica.consensus.ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+            return send(nodeId, message);
         }
 
         @Override

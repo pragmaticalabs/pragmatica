@@ -15,6 +15,8 @@
  */
 package org.pragmatica.consensus.rabia;
 
+import java.util.List;
+
 import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
@@ -136,5 +138,12 @@ public sealed interface RabiaProtocolMessage extends ProtocolMessage {
         /// and re-queue a committed batch. A NewBatch is an optimisation: a missed one is repaired by the proposals that
         /// carry the batch ([RabiaEngine] learnProposedBatch), so dropping it for an offline peer costs nothing.
         record NewBatch<C extends Command>(NodeId sender, Batch<C> batch) implements Asynchronous, org.pragmatica.consensus.net.NoOfflineBuffering {}
+
+        /// #2045: answers a proposal whose batch carries correlation ids this voter's committed-batch ledger already holds.
+        /// A voter that skipped the committing slot (a snapshot restore) cannot know the batch was committed, keeps
+        /// proposing it, and the voters that know refuse to learn it; without this answer the two never agree on a value
+        /// again. The proposer records the ids and drops them from its queue. Not offline-buffered: a lost answer is
+        /// re-sent on the next proposal of the same batch.
+        record BatchCommitted(NodeId sender, Batch.Id batchId, List<CorrelationId> correlationIds) implements Asynchronous, org.pragmatica.consensus.net.NoOfflineBuffering {}
     }
 }

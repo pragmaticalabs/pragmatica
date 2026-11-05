@@ -39,7 +39,7 @@ class StreamForwardClientTest {
     @BeforeEach
     void setUp() {
         sentMessages = new ArrayList<>();
-        StreamForwardTransport capturingTransport = (target, message) -> sentMessages.add(new SentMessage(target, message));
+        StreamForwardTransport capturingTransport = AcceptingStreamForwardTransport.accepting((target, message) -> sentMessages.add(new SentMessage(target, message)));
         client = streamForwardClient(SELF, capturingTransport, TimeSpan.timeSpan(5).seconds());
     }
 
@@ -140,7 +140,7 @@ class StreamForwardClientTest {
 
         @Test
         void publishRemote_timeout_resolvesPromiseWithTimeoutError() {
-            var shortTimeoutTransport = (StreamForwardTransport) (_, _) -> {};
+            var shortTimeoutTransport = AcceptingStreamForwardTransport.accepting((_, _) -> {});
             var shortClient = streamForwardClient(SELF, shortTimeoutTransport, TimeSpan.timeSpan(100).millis());
 
             var promise = shortClient.publishRemote(GOVERNOR, STREAM, PARTITION, PAYLOAD, TIMESTAMP);
@@ -158,7 +158,7 @@ class StreamForwardClientTest {
         /// minute — pre-fix (full configured wait regardless of caller budget) turns this red.
         @Test
         void publishRemote_underSmallAmbientBudget_waitsTheBudgetNotTheConfiguredTimeout() {
-            var silentTransport = (StreamForwardTransport) (_, _) -> {};
+            var silentTransport = AcceptingStreamForwardTransport.accepting((_, _) -> {});
             var longClient = streamForwardClient(SELF, silentTransport, TimeSpan.timeSpan(60).seconds());
             var startedAt = System.nanoTime();
 
@@ -175,7 +175,7 @@ class StreamForwardClientTest {
 
         @Test
         void readRemote_underSmallAmbientBudget_waitsTheBudgetNotTheConfiguredTimeout() {
-            var silentTransport = (StreamForwardTransport) (_, _) -> {};
+            var silentTransport = AcceptingStreamForwardTransport.accepting((_, _) -> {});
             var longClient = streamForwardClient(SELF, silentTransport, TimeSpan.timeSpan(60).seconds());
             var startedAt = System.nanoTime();
 
@@ -259,7 +259,7 @@ class StreamForwardClientTest {
 
         @Test
         void readRemote_timeout_returnsReadForwardTimeout() {
-            var shortTimeoutTransport = (StreamForwardTransport) (_, _) -> {};
+            var shortTimeoutTransport = AcceptingStreamForwardTransport.accepting((_, _) -> {});
             var shortClient = streamForwardClient(SELF,
                                                   shortTimeoutTransport,
                                                   TimeSpan.timeSpan(5).seconds(),
@@ -315,7 +315,7 @@ class StreamForwardClientTest {
 
         @Test
         void readRemote_separateTimeoutFromPublish_honored() {
-            var timeoutTransport = (StreamForwardTransport) (_, _) -> {};
+            var timeoutTransport = AcceptingStreamForwardTransport.accepting((_, _) -> {});
             // Publish timeout long, read timeout short — prove they're independent
             var splitClient = streamForwardClient(SELF,
                                                   timeoutTransport,

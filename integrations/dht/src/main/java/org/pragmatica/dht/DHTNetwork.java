@@ -20,7 +20,6 @@ import java.util.Set;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.net.WriteOutcome;
-import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 
 
@@ -28,25 +27,14 @@ import org.pragmatica.lang.Promise;
 /// Core replicas and worker clients use the ClusterNetwork adapter to reach the core DHT ring.
 @FunctionalInterface
 public interface DHTNetwork {
-    /// Fire-and-forget send of a protocol message to the target peer. The synchronous
-    /// local-transport outcome is surfaced via [#sendOutcome] for adapters that can detect it;
-    /// this SAM is intentionally void so the simplest implementations remain a single lambda.
-    @Contract
-    void send(NodeId target, ProtocolMessage message);
-
-    /// Send a message and return the synchronous local-transport outcome.
+    /// Send a protocol message to the target peer and return the synchronous local-transport outcome.
     ///
-    /// Default impl falls back to `send` and reports [WriteOutcome.Sent] — adapters that
-    /// can detect immediate refusals (notably the QUIC-backed `ClusterNetwork` adapter)
-    /// override to surface them. DHT quorum collectors use this outcome to fail-fast
-    /// against unreachable replicas instead of waiting the per-op 10s timeout.
+    /// Adapters that can detect immediate refusals (notably the QUIC-backed `ClusterNetwork` adapter) surface them;
+    /// DHT quorum collectors use this outcome to fail-fast against unreachable replicas instead of waiting the per-op
+    /// 10s timeout. A simple implementation is a single lambda that reports [WriteOutcome.Sent].
     ///
-    /// See `aether/docs/specs/dht-resilience-spec.md` Layer 3.
-    default Promise<WriteOutcome> sendOutcome(NodeId target, ProtocolMessage message) {
-        send(target, message);
-
-        return Promise.success(new WriteOutcome.Sent(target));
-    }
+    /// See `aether/docs/specs/dht-resilience-spec.md` Layer 1 and Layer 3.
+    Promise<WriteOutcome> send(NodeId target, ProtocolMessage message);
 
     /// Currently-reachable peer set. Used by `DistributedDHTClient` to filter the static
     /// consistent-hash target list down to peers that can actually be addressed right now

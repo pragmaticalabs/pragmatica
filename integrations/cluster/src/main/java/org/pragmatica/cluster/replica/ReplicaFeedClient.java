@@ -352,7 +352,7 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
         session = new Session(++requestCounter, source, mode, nanos.getAsLong());
         currentSource = Option.some(source);
         if (resume) {
-            readiness.carryBeatsFor(limits.silenceMillis() * NANOS_PER_MILLI);
+            readiness.carryBeatsFor(limits.carryGraceMillis() * NANOS_PER_MILLI);
             applier.beginLive();
         } else {
             readiness.sourceChanged();

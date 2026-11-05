@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import org.pragmatica.aether.stream.forward.AcceptingStreamForwardTransport;
 import java.util.concurrent.TimeUnit;
 import java.util.ArrayList;
 import java.util.List;
@@ -94,7 +95,7 @@ class ReplicaFloorTripwireTest {
     }
 
     private StreamForwardTransport capturing() {
-        return (target, message) -> answers.add(new ForwardAnswer(target, message));
+        return AcceptingStreamForwardTransport.accepting((target, message) -> answers.add(new ForwardAnswer(target, message)));
     }
 
     /// The forward handler answers asynchronously, after its barrier (5 s ack timeout when a listed peer never acks).

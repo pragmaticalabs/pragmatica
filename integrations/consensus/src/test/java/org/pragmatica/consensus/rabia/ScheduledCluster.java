@@ -27,6 +27,9 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.function.BooleanSupplier;
 import java.util.stream.IntStream;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.consensus.net.WriteOutcome;
+import org.pragmatica.lang.io.TimeSpan;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -99,9 +102,14 @@ final class ScheduledCluster {
                 }
 
                 @Override
-                public <M extends ProtocolMessage> Unit send(NodeId id, M message) {
+                public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId id, M message) {
                     emit(new Delivery(sender, members.indexOf(id), message));
-                    return Unit.unit();
+                    return Promise.success(new WriteOutcome.Sent(id));
+                }
+
+                @Override
+                public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+                    return send(nodeId, message);
                 }
             };
             machines.add(machine);
@@ -285,6 +293,7 @@ final class ScheduledCluster {
             case ReconfigurationRequest message -> engine.reconfigurationRequest(message);
             case GenesisAnnouncement message -> engine.genesisAnnouncement(message);
             case SyncResponse<?> message -> engine.processSyncResponse((SyncResponse<TestCommand>) message);
+            case BatchCommitted message -> engine.handleBatchCommitted(message);
             default -> {}
         }
     }

@@ -172,7 +172,7 @@ class RepositoryGroupsTest(unittest.TestCase):
     def test_the_ci_groups_run_the_statemachine_test_jar_consumers_from_an_install(self):
         ci = groups.CI.read_text()
         self.assertIn('mvn install -B -DskipTests -pl "${{ steps.plan.outputs.modules }}" -am', ci)
-        self.assertIn("needs: [static-gates, test-group]", ci)
+        self.assertIn("needs: [push-dedupe, static-gates, test-group]", ci)
         self.assertIn("python3 -B tools/ci-test-groups.py verify-reports reports", ci)
 
 
@@ -211,8 +211,18 @@ class RepositoryGroupsTest(unittest.TestCase):
 
     def test_the_aggregate_fails_unless_every_needed_job_passed(self):
         job = groups.CI.read_text().split("\n  build-and-test:\n", 1)[1].split("\n  forge-tests:\n", 1)[0]
-        self.assertIn("    if: always()\n", job)  # without it a failed group SKIPS the required check, which passes
+        self.assertIn("    if: always() && needs.push-dedupe.outputs.skip != 'true'\n", job)  # always() without it a failed group SKIPS the required check, which passes
         self.assertIn('[ "${{ needs.static-gates.result }}" = success ] && [ "${{ needs.test-group.result }}" = success ]', job)
+
+    def test_a_skipped_duplicate_push_run_never_posts_a_required_context_name(self):
+        # a skipped check run named like a required context satisfies it (seen on #2657); the single-instance required jobs rename
+        # themselves when push-dedupe skips them, and the matrix jobs' unexpanded name template matches no required context
+        ci = groups.CI.read_text()
+        for name in ("build-and-test", "forge-tests", "stub-suites"):
+            job = ci.split(f"\n  {name}:\n", 1)[1].split("\n\n", 1)[0]
+            self.assertIn(f"    name: ${{{{ needs.push-dedupe.outputs.skip == 'true' && '{name} (duplicate push run, skipped)' || '{name}' }}}}\n", job)
+        for name in ("test-group", "ember-shard", "consensus-shard"):
+            self.assertIn(f"    name: {name}-${{{{ matrix.", ci.split(f"\n  {name}:\n", 1)[1].split("\n\n", 1)[0])
 
     def test_the_group_job_keeps_build_and_tests_test_flags(self):
         job = groups.CI.read_text().split("\n  test-group:\n", 1)[1].split("\n  build-and-test:\n", 1)[0]

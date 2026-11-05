@@ -190,7 +190,7 @@ class DHTDepartureStaleDrainSetTest {
                                         ? refusingBadPrefix(memoryStorageEngine(gate))
                                         : memoryStorageEngine(gate);
                 var node = dhtNode(id, storage, ring, CONFIG);
-                DHTNetwork net = this::deliver;
+                DHTNetwork net = AcceptingNetwork.accepting(this::deliver);
                 members.put(id, new Member(id, node, dhtRebalancer(node, net, CONFIG), dhtAntiEntropy(node, net, CONFIG, departing::contains), gate));
             });
         }

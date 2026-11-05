@@ -262,7 +262,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$CommunityValue (sourceName
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ConfigValue (key:java.lang.String,value:java.lang.String,updatedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerAssignmentValue (assignee:org.pragmatica.consensus.NodeId,epoch:org.pragmatica.aether.slice.generation.Epoch,assignmentTerm:long,assignedAt:org.pragmatica.hlc.HlcTimestamp)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerAssignmentValue$AssignmentToken (assignee:org.pragmatica.consensus.NodeId,epoch:org.pragmatica.aether.slice.generation.Epoch)
-SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerGroupValue (assignedTo:org.pragmatica.consensus.NodeId,consumerId:java.lang.String,assignedAt:long)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerGroupValue (assignedTo:org.pragmatica.consensus.NodeId,consumerId:java.lang.String,assignedAt:long,epoch:org.pragmatica.aether.slice.generation.Epoch)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$DeploymentApplyValue (attemptId:java.lang.String,previous:org.pragmatica.lang.Option<org.pragmatica.aether.slice.kvstore.AetherValue$AppBlueprintValue>,openedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$DeploymentOutcomeValue (status:org.pragmatica.aether.slice.kvstore.AetherValue$DeploymentOutcomeStatus,failingSlices:java.util.List<java.lang.String>,cause:java.lang.String,timestampMs:long,outcomeVersion:long,attemptId:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$DeploymentValue (deploymentId:java.lang.String,blueprintId:java.lang.String,oldVersion:java.lang.String,newVersion:java.lang.String,strategy:java.lang.String,state:java.lang.String,routing:java.lang.String,strategyConfig:java.lang.String,thresholds:java.lang.String,cleanupPolicy:java.lang.String,artifacts:java.lang.String,newInstances:int,createdAt:long,updatedAt:long)
@@ -411,6 +411,7 @@ SHAPE org.pragmatica.consensus.rabia.ClusterConfig (members:java.util.List<org.p
 SHAPE org.pragmatica.consensus.rabia.CorrelationId (id:java.lang.String)
 SHAPE org.pragmatica.consensus.rabia.Phase (value:long)
 SHAPE org.pragmatica.consensus.rabia.RabiaPersistence$SavedState (snapshot:byte[],lastCommittedPhase:org.pragmatica.consensus.rabia.Phase,pendingBatches:java.util.List<org.pragmatica.consensus.StateMachine$Batch<C>>,configuration:org.pragmatica.lang.Option<org.pragmatica.consensus.rabia.VoterConfiguration>)
+SHAPE org.pragmatica.consensus.rabia.RabiaProtocolMessage$Asynchronous$BatchCommitted (sender:org.pragmatica.consensus.NodeId,batchId:org.pragmatica.consensus.StateMachine$Batch$Id,correlationIds:java.util.List<org.pragmatica.consensus.rabia.CorrelationId>)
 SHAPE org.pragmatica.consensus.rabia.RabiaProtocolMessage$Asynchronous$GenesisAnnouncement (sender:org.pragmatica.consensus.NodeId,round:long,view:org.pragmatica.lang.Option<org.pragmatica.consensus.rabia.ClusterConfig>,formed:org.pragmatica.lang.Option<org.pragmatica.consensus.rabia.VoterConfiguration>)
 SHAPE org.pragmatica.consensus.rabia.RabiaProtocolMessage$Asynchronous$NewBatch (sender:org.pragmatica.consensus.NodeId,batch:org.pragmatica.consensus.StateMachine$Batch<C>)
 SHAPE org.pragmatica.consensus.rabia.RabiaProtocolMessage$Asynchronous$ReconfigurationRequest (sender:org.pragmatica.consensus.NodeId,epoch:long,target:org.pragmatica.consensus.rabia.ClusterConfig)
@@ -873,6 +874,7 @@ TAG  org.pragmatica.consensus.rabia.ClusterConfig 24
 TAG  org.pragmatica.consensus.rabia.CorrelationId 25
 TAG  org.pragmatica.consensus.rabia.Phase 26
 TAG  org.pragmatica.consensus.rabia.RabiaPersistence$SavedState 27
+TAG  org.pragmatica.consensus.rabia.RabiaProtocolMessage$Asynchronous$BatchCommitted 2201
 TAG  org.pragmatica.consensus.rabia.RabiaProtocolMessage$Asynchronous$GenesisAnnouncement 89
 TAG  org.pragmatica.consensus.rabia.RabiaProtocolMessage$Asynchronous$NewBatch 28
 TAG  org.pragmatica.consensus.rabia.RabiaProtocolMessage$Asynchronous$ReconfigurationRequest 120

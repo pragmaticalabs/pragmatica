@@ -43,6 +43,9 @@ import org.pragmatica.testlogging.LogCapture;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.consensus.net.WriteOutcome;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.pragmatica.consensus.NodeId.nodeId;
@@ -282,7 +285,7 @@ class RabiaOwnRestoreFailureTest {
         }
 
         @Override
-        public <M extends org.pragmatica.consensus.ProtocolMessage> Unit send(NodeId nodeId, M message) {
+        public <M extends org.pragmatica.consensus.ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
             var result = super.send(nodeId, message);
 
             if (message instanceof SyncRequest && nodeId.equals(NODE_2)) {

@@ -130,7 +130,7 @@ class RecreatedStreamReachesCaughtUpTest {
                                                             .or(-1L);
         ReplicaWatermarkProbe probe = (_, _, _) -> Promise.success(OWNER_RECORDS - 1L);
         CommittedStreamOwnerSource noCommittedOwner = (_, _) -> Option.none();
-        ReplicationTransport toOwner = (_, _) -> {};
+        ReplicationTransport toOwner = AcceptingReplicationTransport.accepting((_, _) -> {});
         var orchestrator = partitionBackfill(registry,
                                              manager.alignedRecovery(),
                                              new Owner(),

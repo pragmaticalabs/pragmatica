@@ -54,6 +54,7 @@ import org.pragmatica.consensus.rabia.ConsensusMetrics;
 import org.pragmatica.consensus.rabia.RabiaEngine;
 import org.pragmatica.consensus.rabia.RabiaPersistence;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.BatchCommitted;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.NewBatch;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRequest;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.RoundRequest;
@@ -694,7 +695,9 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                                        route(SyncRequest.class,
                                                                              consensus::handleSyncRequest),
                                                                        route(NewBatch.class,
-                                                                             (NewBatch b) -> consensus.handleNewBatch(b)));
+                                                                             (NewBatch b) -> consensus.handleNewBatch(b)),
+                                                                       route(BatchCommitted.class,
+                                                                             consensus::handleBatchCommitted));
         // Collect all entries
         var allEntries = new ArrayList<Entry<?>>();
 

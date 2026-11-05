@@ -26,6 +26,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.consensus.net.WriteOutcome;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -123,7 +125,7 @@ class DistributedDHTClientQuorumGuardTest {
                .onFailure(cause -> fail("Expected success: " + cause.message()));
     }
 
-    /// Network stub with a configurable `livePeers()` set. `sendOutcome` reports `Sent` and the
+    /// Network stub with a configurable `livePeers()` set. `send` reports `Sent` and the
     /// request is NEVER answered — so any op that is allowed to dispatch would hang to the per-op
     /// timeout. The fast-fail guard must therefore prevent the dispatch entirely.
     private static final class SilentNetwork implements DHTNetwork {
@@ -136,9 +138,11 @@ class DistributedDHTClientQuorumGuardTest {
         }
 
         @Override
-        public void send(NodeId target, ProtocolMessage message) {
+        public Promise<WriteOutcome> send(NodeId target, ProtocolMessage message) {
             sendCount++;
             recordPut(target, message);
+
+            return Promise.success(new WriteOutcome.Sent(target));
         }
 
         private void recordPut(NodeId target, ProtocolMessage message) {

@@ -368,7 +368,7 @@ class DHTMigrationEpochFenceTest {
                           ? refusingCopies(memoryStorageEngine(gate))
                           : memoryStorageEngine(gate);
             var node = dhtNode(id, storage, ring, CONFIG);
-            DHTNetwork network = this::deliver;
+            DHTNetwork network = AcceptingNetwork.accepting(this::deliver);
 
             return new Member(id,
                               node,

@@ -83,8 +83,8 @@ class CatchUpProvenanceTest {
         replica = streamPartitionManager(Long.MAX_VALUE, Option.some(replicaWal));
         owner.createStream(StreamConfig.streamConfig(STREAM)).onFailure(cause -> fail(cause.message()));
         replica.createStream(StreamConfig.streamConfig(STREAM)).onFailure(cause -> fail(cause.message()));
-        handler = streamForwardHandler(OWNER, owner, (_, message) -> client.onReadForwardResponse((ReadForwardResponse) message));
-        client = streamForwardClient(NEW_PEER, (_, message) -> handler.onReadForward((ReadForward) message));
+        handler = streamForwardHandler(OWNER, owner, AcceptingStreamForwardTransport.accepting((_, message) -> client.onReadForwardResponse((ReadForwardResponse) message)));
+        client = streamForwardClient(NEW_PEER, AcceptingStreamForwardTransport.accepting((_, message) -> handler.onReadForward((ReadForward) message)));
     }
 
     @AfterEach

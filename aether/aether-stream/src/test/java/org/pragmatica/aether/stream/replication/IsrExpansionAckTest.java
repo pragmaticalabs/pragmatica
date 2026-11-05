@@ -64,7 +64,7 @@ class IsrExpansionAckTest {
             .forEach(node -> registry.registerReplica(STREAM, PARTITION, node));
         manager = new DefaultReplicationManager(OWNER,
                                                 registry,
-                                                (_, _) -> {},
+                                                AcceptingReplicationTransport.accepting((_, _) -> {}),
                                                 () -> {},
                                                 (_, _) -> neverFires.schedule(() -> {}, 1, TimeUnit.HOURS));
         // The proposal's consensus round never completes here: proposed, not yet applied on this owner.
