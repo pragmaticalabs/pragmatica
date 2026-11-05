@@ -4,11 +4,12 @@ on:
   push:
     branches: [main, release-*, feature/*, 'overhaul/**', 'rewrite/**']
   pull_request:
-    # overhaul/** and rewrite/** are long-lived integration branches (#2222): PRs into them get the same gate as release-*
-    branches: [main, release-*, 'overhaul/**', 'rewrite/**']
+    # overhaul/**, rewrite/** and feature/** are long-lived integration branches (#2222; feature/** for rc6, #2703): PRs into
+    # them get the same gate as release-*
+    branches: [main, release-*, 'overhaul/**', 'rewrite/**', 'feature/**']
   # Merge queue (rc5): every required context below is produced here and runs unfiltered on the queue's temporary branch.
   merge_group:
-    branches: [main, release-*, 'overhaul/**', 'rewrite/**']
+    branches: [main, release-*, 'overhaul/**', 'rewrite/**', 'feature/**']
   workflow_dispatch:
 
 # A newer run on the same PR supersedes the in-progress one. Pushes get a per-commit group and are never
@@ -54,7 +55,7 @@ jobs:
                 echo "open PR base(s) for $BRANCH: ${bases:-none}"
                 for base in $bases; do
                   case "$base" in
-                    main|release-*|overhaul/*|rewrite/*) skip=true ;;
+                    main|release-*|overhaul/*|rewrite/*|feature/*) skip=true ;;
                   esac
                 done
               else
