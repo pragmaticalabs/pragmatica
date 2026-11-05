@@ -34,9 +34,13 @@ import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceRequirementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.RequirementKind;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceRequirementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
+import org.pragmatica.aether.slice.kvstore.SliceRequirements;
 import org.pragmatica.aether.slice.kvstore.SliceTargetFence;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
 import org.pragmatica.aether.worker.metrics.PerSliceMetrics;
@@ -621,25 +625,38 @@ public final class ControlLoopContext {
             return;
         }
 
-        decisions.changes().forEach(change -> prepareGuardedChange(change).onPresent(this::submitScaling));
+        decisions.changes().forEach(change -> prepareGuardedChange(change).filter(this::changesRequirement)
+                                                                          .onPresent(this::submitScaling));
     }
 
-    /// One scaling decision's write: the instance count chosen for `artifact`, derived from `observed`.
-    private record Scaling(Artifact artifact, SliceTargetValue observed, int newInstances) {}
+    /// Whether the decision differs from the committed `REACTIVE` requirement: while an operator floor holds the target above the
+    /// decision, every evaluation re-decides the same count, and re-writing an equal requirement would commit a write per cycle.
+    private boolean changesRequirement(Scaling scaling) {
+        return kvStore.getTyped(SliceRequirementKey.sliceRequirementKey(scaling.artifact().base(),
+                                                                        RequirementKind.REACTIVE),
+                                SliceRequirementValue.class)
+                      .map(committed -> committed.instances() != scaling.newInstances())
+                      .or(true);
+    }
 
-    /// #2662: the scaling write is fenced. It is ONE leader transaction whose mutation expects the target the decision was made from (the
-    /// observed value) and whose witness holds the target's owning blueprint at its committed value, so a write racing a blueprint delete
-    /// (the target removed) or a republish (the target moved) is refused instead of re-creating or reverting the target. The instance count
-    /// is derived from the observed target (its count, cap and floor), so it is never carried onto a moved target: a refused write is
-    /// resubmitted only while the committed target still equals the observed one (only the blueprint witness moved); otherwise it is
-    /// dropped ([SliceTargetFence.SliceTargetFenceError.TargetMoved]) and the next evaluation decides from the committed target. A target
-    /// that is gone, or whose blueprint is gone, is not written.
+    /// One scaling decision's write: the instance count chosen for `artifact`, derived from `observed`, and why.
+    private record Scaling(Artifact artifact, SliceTargetValue observed, int newInstances, String reason) {}
+
+    /// rc6 §3.1: the autoscaler writes its `REACTIVE` requirement, never the target; the leader's requirement combiner derives the
+    /// target from it and from every other requirement source, so an operator's floor and the autoscaler compose instead of racing.
+    ///
+    /// The write is fenced as the #2662 target write was: ONE leader transaction putting the requirement and witnessing the target at
+    /// the observed value the decision was made from, so a write racing a blueprint delete (the target removed) or a republish or
+    /// another source's combination (the target moved) is refused. The instance count is derived from the observed target (its count,
+    /// cap and floor), so it is never carried onto a moved target: a refused write is resubmitted only while the committed target still
+    /// equals the observed one; otherwise it is dropped ([SliceTargetFence.SliceTargetFenceError.TargetMoved]) and the next evaluation
+    /// decides from the committed target. A target that is gone is not written for.
     @Contract
     private void submitScaling(Scaling scaling) {
         SliceTargetFence.submit("autoscale " + scaling.artifact(),
                                 cluster::apply,
                                 () -> scalingTransaction(scaling,
-                                                         Option.some(scaling.observed())),
+                                                         scaling.observed()),
                                 () -> committedScalingTransaction(scaling))
                         .onFailure(cause -> scalingNotWritten(scaling.artifact(),
                                                               cause));
@@ -654,21 +671,19 @@ public final class ControlLoopContext {
     private Result<LeaderTransaction<AetherKey, AetherValue>> sameDecisionInput(Scaling scaling,
                                                                                 SliceTargetValue read) {
         return read.equals(scaling.observed())
-               ? scalingTransaction(scaling, Option.some(read))
+               ? scalingTransaction(scaling, read)
                : new SliceTargetFence.SliceTargetFenceError.TargetMoved(scaling.artifact().base()).result();
     }
 
-    private Result<LeaderTransaction<AetherKey, AetherValue>> scalingTransaction(Scaling scaling,
-                                                                                 Option<SliceTargetValue> read) {
-        var key = SliceTargetKey.sliceTargetKey(scaling.artifact().base());
+    private Result<LeaderTransaction<AetherKey, AetherValue>> scalingTransaction(Scaling scaling, SliceTargetValue read) {
+        var key = SliceRequirementKey.sliceRequirementKey(scaling.artifact().base(),
+                                                          RequirementKind.REACTIVE);
+        var requirement = SliceRequirementValue.sliceRequirementValue(scaling.newInstances(),
+                                                                      scaling.reason(),
+                                                                      Option.none(),
+                                                                      kvStore.committedRevision());
 
-        return SliceTargetFence.targetWrite(kvStore,
-                                            key,
-                                            read,
-                                            scaling.observed().withInstances(scaling.newInstances()))
-                               .flatMap(write -> SliceTargetFence.transaction(kvStore,
-                                                                              List.of(write),
-                                                                              List.of()));
+        return SliceRequirements.requirementTransaction(kvStore, read, key, Option.some(requirement));
     }
 
     /// FER (degrade forward): a scaling decision that was not written is reported, and the registration is re-read from the committed
@@ -786,29 +801,19 @@ public final class ControlLoopContext {
                        currentBlueprint.instances());
     }
 
-    /// Emits the autoscaler's `SliceTargetValue` Put as a transformation of the value last observed
-    /// for this slice, never as a fresh record assembled from the fields this class happens to hold.
+    /// Decides the autoscaler's `REACTIVE` requirement from the value last observed for this slice (rc6 §3.1). The autoscaler
+    /// decides one number and writes one number, and since rc6 that number is its requirement, not the target: the target is the
+    /// combiner's, and every component of it the autoscaler has no opinion about (placement, floor, owner, overrides) is untouched
+    /// by construction (#698, #936, #937).
     ///
-    /// That distinction is the whole of #698, #936 and #937. This method used to call a
-    /// `sliceTargetValue(...)` factory with seven arguments, so the two components it could not
-    /// express took factory defaults on every scaling event: `placement` reset to `CORE_ONLY` — and
-    /// the reset value is acted on, relocating the slice — while `minInstances` was handed
-    /// `newInstances` and ratcheted the scale-down floor up to the current count, where it stayed
-    /// for the life of the deployment. Deriving the value with `withInstances` leaves every
-    /// component the autoscaler has no opinion about exactly as the operator left it, including
-    /// components added to the record later. The autoscaler decides one number; this writes one
-    /// number.
+    /// The in-memory registration is NOT advanced to the decided count. It is fed only by the committed target
+    /// (`ControlLoop.onSliceTargetPut`), because the combined target can differ from the reactive requirement (an operator floor holds
+    /// it higher), and a registration ahead of the committed target would make the next decision derive from a count that never
+    /// committed. A write that does not commit re-reads the registration from the committed target ([#scalingNotWritten]).
     ///
-    /// The same instance is written to the in-memory registration and to the Put, so the mirror and
-    /// the durable record cannot disagree — and their disagreement is what #936 reported. Since #2662
-    /// the Put is the fenced write of [#submitScaling], and a write that does not commit re-reads the
-    /// registration from the committed target ([#scalingNotWritten]).
-    ///
-    /// No store read happens here. The observed value is carried in the registration map rather than
-    /// re-read, deliberately: a re-read would add a read-then-Put on the autoscaler's hot path, the
-    /// shape flagged by #906 and #805. The map has exactly one feeder,
-    /// `ControlLoop.onSliceTargetPut`, and an artifact with no observed value has no registration,
-    /// so `prepareChange` returns `none()` and this method is never reached for it.
+    /// No store read happens here. The observed value is carried in the registration map rather than re-read, deliberately: a
+    /// re-read would add a read-then-write on the autoscaler's hot path, the shape flagged by #906 and #805. An artifact with no
+    /// observed value has no registration, so `prepareChange` returns `none()` and this method is never reached for it.
     private Option<Scaling> applyScaling(BlueprintChange change,
                                          Artifact artifact,
                                          SliceTargetValue observed,
@@ -816,17 +821,22 @@ public final class ControlLoopContext {
                                          int newInstances,
                                          boolean capped) {
         var currentBlueprint = blueprintOf(artifact, observed);
-        var scaled = observed.withInstances(newInstances);
 
-        log.info("Applying scaling decision: {} from {} to {} instances",
+        log.info("Applying scaling decision: {} from {} to {} instances (REACTIVE requirement)",
                  artifact,
                  currentBlueprint.instances(),
                  newInstances);
-        putBlueprint(artifact, scaled);
         publishScalingEvent(change, artifact, currentBlueprint.instances(), newInstances);
         recordScaled(change, artifact, currentBlueprint, requestedInstances, newInstances, capped);
 
-        return Option.some(new Scaling(artifact, observed, newInstances));
+        return Option.some(new Scaling(artifact, observed, newInstances, reactiveReason(change, currentBlueprint.instances())));
+    }
+
+    private static String reactiveReason(BlueprintChange change, int fromInstances) {
+        return switch (change) {
+            case BlueprintChange.ScaleUp _ -> "autoscaler scale-up from " + fromInstances;
+            case BlueprintChange.ScaleDown _ -> "autoscaler scale-down from " + fromInstances;
+        };
     }
 
     private static int computeRequestedInstances(BlueprintChange change, ClusterController.Blueprint currentBlueprint) {
@@ -837,7 +847,9 @@ public final class ControlLoopContext {
         };
     }
 
-    private int effectiveClusterSize() {
+    /// The cluster size the autoscaler caps a scale-up at, and the combiner's placeable capacity (rc6 §3.1): the committed core
+    /// topology, never below 1.
+    public int effectiveClusterSize() {
         var size = topology.get().size();
 
         return size == 0

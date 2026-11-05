@@ -488,22 +488,36 @@ aether nodes health node-2 --liveness
 Output mirrors the JSON shape of `GET /health/ready` (or `/health/live` with `--liveness`).
 #### scale
 
-Scale a blueprint-deployed slice. The slice must be part of an active blueprint.
+Set, or release, the operator's instance requirement of a blueprint-deployed slice. The slice must be part of an active
+blueprint.
+
+The requirement is a floor, not a raw count. The slice's target is the largest of its requirements (the operator's, the
+autoscaler's, and the blueprint's `minAvailable`), bounded to at least 3 instances, at most the slice's `maxInstances`, and
+at most the cluster's placeable capacity. While the autoscaler's requirement is higher, the slice runs above the operator's
+value; the response's `target` says which count results. The autoscaler can still scale the slice up past the operator's
+value, and it scales down only to that value while the requirement holds. `--release` removes the requirement; the target
+then follows the remaining requirements, or keeps its current count when none remains.
 
 ```bash
 aether scale <artifact> -n <instances> [-p <placement>]
+aether scale <artifact> --release
 
-# Scale instances only
+# Hold at least 5 instances
 aether scale org.example:order:1.0.0 -n 5
 
-# Scale with placement strategy
+# Hold at least 5 instances, placed on workers first
 aether scale org.example:order:1.0.0 -n 5 -p WORKER_PREFERRED
+
+# Remove the operator's requirement
+aether scale org.example:order:1.0.0 --release
 ```
 
 | Option | Description |
 |--------|-------------|
-| `-n, --instances` | Target number of instances (required). At least 3 and at least the slice's `minAvailable`; fewer is refused with `400` (#1495) |
-| `-p, --placement` | Placement strategy: `CORE_ONLY`, `WORKER_PREFERRED`, `WORKER_ONLY` (optional) |
+| `-n, --instances` | The operator requirement. At least 3, at least the slice's `minAvailable`, and at most its `maxInstances`; anything else is refused with `400` (#1495). Exactly one of `-n` and `--release` is required |
+| `--release` | Remove the operator requirement. Takes no `-n` or `-p` |
+| `-p, --placement` | Placement strategy: `CORE_ONLY`, `WORKER_PREFERRED`, `WORKER_ONLY` (optional). Changes placement only; the instance count stays the combiner's |
+| `--wait` | Wait until the slice reports at least `-n` ACTIVE instances (not with `--release`) |
 
 > **Note:** Individual deploy/undeploy commands have been removed. Use `blueprint apply` and `blueprint delete` instead.
 

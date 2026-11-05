@@ -21,9 +21,11 @@ import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceRequirementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceRequirementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -67,6 +69,12 @@ public interface ControlLoop {
 
     @MessageReceiver
     void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove);
+
+    /// rc6 §3.1: a slice capacity requirement was put; the leader's [RequirementCombiner] re-combines the slice's target.
+    void onSliceRequirementPut(ValuePut<SliceRequirementKey, SliceRequirementValue> valuePut);
+
+    /// rc6 §3.1: a slice capacity requirement was removed; the leader's [RequirementCombiner] re-combines the slice's target.
+    void onSliceRequirementRemove(ValueRemove<SliceRequirementKey, SliceRequirementValue> valueRemove);
 
     @MessageReceiver
     void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
@@ -137,8 +145,13 @@ public interface ControlLoop {
                                                                                                                      config,
                                                                                                                      eventPublisher);
         var fsm = Fsm.fsm("control-loop", self.id(), initialStateFactory);
+        var ctx = ctxHolder.get();
+        var combiner = RequirementCombiner.requirementCombiner(kvStore,
+                                                               cluster::apply,
+                                                               ctx::nowMs,
+                                                               ctx::effectiveClusterSize);
 
-        return new ControlLoopAdapter(ctxHolder.get(), fsm);
+        return new ControlLoopAdapter(ctx, fsm, combiner);
     }
 
     private static ControlLoopState buildContext(AtomicReference<ControlLoopContext> ctxHolder,
@@ -168,13 +181,16 @@ public interface ControlLoop {
         return ctx.dormant();
     }
 
-    record ControlLoopAdapter(ControlLoopContext ctx, Fsm<ControlLoopState, ClusterFsmEvent> fsm) implements ControlLoop {
+    record ControlLoopAdapter(ControlLoopContext ctx,
+                              Fsm<ControlLoopState, ClusterFsmEvent> fsm,
+                              RequirementCombiner combiner) implements ControlLoop {
         private static final Logger log = LoggerFactory.getLogger(ControlLoop.class);
 
         @Override
         public Promise<Unit> activate() {
             log.info("Node {} activating control loop", ctx.self());
             fsm.dispatch(new Activate());
+            combiner.activate();
 
             return Promise.unitPromise();
         }
@@ -183,6 +199,7 @@ public interface ControlLoop {
         public Promise<Unit> deactivate() {
             log.info("Node {} deactivating control loop", ctx.self());
             fsm.dispatch(new Deactivate());
+            combiner.deactivate();
 
             return Promise.unitPromise();
         }
@@ -235,11 +252,23 @@ public interface ControlLoop {
 
             registerBlueprint(key.artifactBase().withVersion(value.currentVersion()),
                               value);
+            combiner.onSliceTargetPut(key);
         }
 
         @Override
         public void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) {
             ctx.removeBlueprintMatching(valueRemove.cause().key());
+            combiner.onSliceTargetRemove(valueRemove.cause().key());
+        }
+
+        @Override
+        public void onSliceRequirementPut(ValuePut<SliceRequirementKey, SliceRequirementValue> valuePut) {
+            combiner.onRequirementPut(valuePut.cause().key());
+        }
+
+        @Override
+        public void onSliceRequirementRemove(ValueRemove<SliceRequirementKey, SliceRequirementValue> valueRemove) {
+            combiner.onRequirementRemove(valueRemove.cause().key());
         }
 
         @Override

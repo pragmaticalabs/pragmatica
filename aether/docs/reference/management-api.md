@@ -853,9 +853,17 @@ These are the same lifecycle facts surfaced as response headers on a served requ
 
 ### POST /api/v1/scale
 
-Scale a blueprint-deployed slice to a new instance count. The slice must be part of an active blueprint.
+Set, or release, the operator's instance requirement of a blueprint-deployed slice. The slice must be part of an active
+blueprint.
 
-**Request:**
+The operator requirement is a floor. The leader combines it with the slice's other requirements (the autoscaler's, and the
+blueprint's `minAvailable`) into the target: `clamp(max(minAvailable, every unexpired requirement), 3, maxInstances,
+placeable capacity)`. The leader is the only writer of the target's instance count, so the operator and the autoscaler never
+overwrite each other's value [mechanism: each source commits its own requirement record; the leader's combiner writes the
+target as a compare-and-set on the target value it read]. When a slice has no target yet, this request creates it at
+`instances`, as before.
+
+**Request (set):**
 ```json
 {
   "artifact": "org.example:my-slice:1.0.0",
@@ -864,20 +872,37 @@ Scale a blueprint-deployed slice to a new instance count. The slice must be part
 }
 ```
 
+**Request (release):**
+```json
+{
+  "artifact": "org.example:my-slice:1.0.0",
+  "release": true
+}
+```
+
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `artifact` | string | Yes | Full artifact coordinates (group:artifact:version) |
-| `instances` | integer | Yes | Target number of instances. At least 3 (#1495: the floor holds at runtime, not only when a blueprint is declared), and at least the slice's `minAvailable`; fewer answers `400` |
-| `placement` | string | No | Placement strategy: `CORE_ONLY` (default), `WORKER_PREFERRED`, `WORKER_ONLY`. When omitted, preserves existing placement or defaults to `CORE_ONLY` for new targets. |
+| `instances` | integer | Unless `release` | The operator requirement. At least 3 (#1495: the floor holds at runtime, not only when a blueprint is declared), at least the slice's `minAvailable`, and at most its `maxInstances`; anything else answers `400` |
+| `placement` | string | No | Placement strategy: `CORE_ONLY` (default), `WORKER_PREFERRED`, `WORKER_ONLY`. When omitted, preserves existing placement or defaults to `CORE_ONLY` for new targets. Not allowed with `release` |
+| `release` | boolean | No | `true` removes the operator requirement. Takes neither `instances` nor `placement` (`400`). Releasing when no operator requirement is committed succeeds and writes nothing |
 
 **Response:**
 ```json
 {
   "status": "scaled",
   "artifact": "org.example:my-slice:1.0.0",
-  "instances": 5
+  "instances": 5,
+  "target": 7
 }
 ```
+
+`instances` is the operator requirement written (`0` when `status` is `released`). `target` is the count the committed
+requirements combine to at response time. It exceeds `instances` while the autoscaler's requirement is higher. It is
+computed before the bound to placeable capacity, which only the leader applies, so the committed target can be lower on a
+cluster with fewer placeable nodes. The leader commits the target asynchronously after the response.
+
+**Error `400` (above the slice's `maxInstances`):** `Requested 12 instances but the slice's maxInstances is 10`.
 
 **Error (slice not in any blueprint):**
 ```json

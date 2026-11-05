@@ -81,6 +81,44 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
+    /// rc6 §3.1: one capacity-requirement record of a slice, per requirement source. Each source writes only its own key, so the
+    /// autoscaler (`REACTIVE`) and the operator (`OPERATOR`) never contend on one record; the combiner reads every kind of a base and
+    /// is the only writer of the base's [SliceTargetKey] count. Cluster state: an operator's floor survives a cold restart.
+    record SliceRequirementKey(ArtifactBase artifactBase, AetherValue.RequirementKind kind) implements ClusterStateKey {
+        private static final String PREFIX = "slice-requirement/";
+
+        @Override
+        public String asString() {
+            return PREFIX + kind.name() + "/" + artifactBase.asString();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static SliceRequirementKey sliceRequirementKey(ArtifactBase artifactBase, AetherValue.RequirementKind kind) {
+            return new SliceRequirementKey(artifactBase, kind);
+        }
+
+        public static Result<SliceRequirementKey> sliceRequirementKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return SLICE_REQUIREMENT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            var rest = key.substring(PREFIX.length());
+            var separator = rest.indexOf('/');
+
+            if (separator <= 0) {
+                return SLICE_REQUIREMENT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return AetherValue.RequirementKind.requirementKind(rest.substring(0, separator))
+                              .flatMap(kind -> ArtifactBase.artifactBase(rest.substring(separator + 1))
+                                                           .map(base -> new SliceRequirementKey(base, kind)));
+        }
+    }
+
     /// The versions of one artifact in the built-in artifact store (#1778): a grow-only set whose entries carry
     /// the archived flag, kept in consensus so concurrent publishes are folded by the applier instead of racing
     /// as a read-modify-write on the DHT. The artifact bytes and per-version metadata stay in the DHT. Backed up
@@ -1707,6 +1745,8 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     Fn1<Cause, String> TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid topic-sub key format: %s");
 
     Fn1<Cause, String> SLICE_TARGET_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice-target key format: %s");
+
+    Fn1<Cause, String> SLICE_REQUIREMENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice-requirement key format: %s");
 
     Fn1<Cause, String> ARTIFACT_CONTENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid artifact-content key format: %s");
 

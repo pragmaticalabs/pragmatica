@@ -32,12 +32,16 @@ import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.blueprint.SliceSpec;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceRequirementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.RequirementKind;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceRequirementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
+import org.pragmatica.aether.slice.kvstore.SliceRequirements;
 import org.pragmatica.aether.slice.kvstore.SliceTargetFence;
 import org.pragmatica.aether.slice.kvstore.SliceTargetFence.SliceTargetFenceError;
 import org.pragmatica.aether.slice.kvstore.SliceTargetFence.TargetWrite;
@@ -72,6 +76,7 @@ public final class SliceRoutes implements RouteSource {
     private static final Logger log = LoggerFactory.getLogger(SliceRoutes.class);
     private static final Cause MISSING_ARTIFACT = new ManagementServerError.MissingField("artifact");
     private static final Cause MISSING_INSTANCES = new ManagementServerError.MissingField("instances");
+    private static final Cause RELEASE_WITH_VALUES = new ManagementServerError.InvalidRequest("'release' removes the operator requirement and takes neither 'instances' nor 'placement'");
     private static final Cause BLUEPRINT_NOT_FOUND = new ManagementServerError.NotFound("Blueprint not found");
 
     private static final Cause SLICE_NOT_LOADED = new ManagementServerError.NotFound("Slice not loaded or no per-slice config available");
@@ -88,7 +93,16 @@ public final class SliceRoutes implements RouteSource {
         return new SliceRoutes(nodeSupplier);
     }
 
-    record ScaleRequest(String artifact, Integer instances, String placement) {}
+    /// rc6 §3.1: `instances` sets the slice's OPERATOR requirement; `release: true` (with neither `instances` nor `placement`) removes it.
+    record ScaleRequest(String artifact, Integer instances, String placement, Boolean release) {
+        ScaleRequest(String artifact, Integer instances, String placement) {
+            this(artifact, instances, placement, null);
+        }
+
+        boolean releases() {
+            return Boolean.TRUE.equals(release);
+        }
+    }
 
     record BlueprintDeployRequest(String artifact) {}
 
@@ -145,18 +159,31 @@ public final class SliceRoutes implements RouteSource {
                                          .asJson());
     }
 
-    private record ScaleParams(String artifact, int instances, Option<String> placement) {}
+    /// `instances` absent means a release of the operator requirement.
+    private record ScaleParams(String artifact, Option<Integer> instances, Option<String> placement) {}
 
     private Result<ScaleParams> validateScaleRequest(ScaleRequest request) {
         // Sequential, not Result.all: a composite of two refusals is not HttpStatusAware, so the 400 would be lost
         // and a request missing both fields would answer 500 (#954).
         return Option.option(request.artifact())
                      .toResult(MISSING_ARTIFACT)
-                     .flatMap(art -> Option.option(request.instances())
-                                           .toResult(MISSING_INSTANCES)
-                                           .map(inst -> new ScaleParams(art,
-                                                                        inst,
-                                                                        Option.option(request.placement()))));
+                     .flatMap(art -> request.releases()
+                                     ? releaseParams(art, request)
+                                     : countParams(art, request));
+    }
+
+    private static Result<ScaleParams> releaseParams(String artifact, ScaleRequest request) {
+        return request.instances() == null && request.placement() == null
+               ? Result.success(new ScaleParams(artifact, Option.none(), Option.none()))
+               : RELEASE_WITH_VALUES.result();
+    }
+
+    private static Result<ScaleParams> countParams(String artifact, ScaleRequest request) {
+        return Option.option(request.instances())
+                     .toResult(MISSING_INSTANCES)
+                     .map(inst -> new ScaleParams(artifact,
+                                                  Option.some(inst),
+                                                  Option.option(request.placement())));
     }
 
     private record ValidatedScale(ScaleParams params, Artifact artifact) {}
@@ -178,13 +205,20 @@ public final class SliceRoutes implements RouteSource {
     }
 
     /// The floor comes first: a count below it is a malformed request whatever the slice's state, so it is
-    /// refused before any cluster lookup.
+    /// refused before any cluster lookup. A release asks for no count, so only the membership check applies to it.
     private Promise<ValidatedScale> guardScaleConstraints(ValidatedScale vs) {
-        return guardInstanceFloor(vs.params().instances()).async()
-                                 .flatMap(_ -> guardBlueprintMembership(vs.artifact()))
-                                 .flatMap(_ -> guardMinInstances(vs.artifact(),
-                                                                 vs.params().instances()))
-                                 .map(_ -> vs);
+        return vs.params()
+                 .instances()
+                 .fold(() -> guardBlueprintMembership(vs.artifact()),
+                       instances -> guardCount(vs.artifact(), instances))
+                 .map(_ -> vs);
+    }
+
+    private Promise<Unit> guardCount(Artifact artifact, int instances) {
+        return guardInstanceFloor(instances).async()
+                                 .flatMap(_ -> guardBlueprintMembership(artifact))
+                                 .flatMap(_ -> guardMinInstances(artifact, instances))
+                                 .flatMap(_ -> guardMaxInstances(artifact, instances));
     }
 
     /// #1495 (owner ruling): no slice is scaled below [SliceSpec#MIN_INSTANCES] at runtime either.
@@ -194,12 +228,31 @@ public final class SliceRoutes implements RouteSource {
                : Result.unitResult();
     }
 
+    /// rc6 §3.1: the response names the target the operator requirement yields: the combination of every committed requirement,
+    /// which exceeds the requested floor when the autoscaler's requirement is higher.
     private Promise<ScaleResponse> executeScale(ValidatedScale vs) {
-        return applyDeployCommand(vs.artifact(),
-                                  vs.params().instances(),
-                                  vs.params().placement()).map(_ -> new ScaleResponse("scaled",
-                                                                                      vs.artifact().asString(),
-                                                                                      vs.params().instances()));
+        var base = vs.artifact().base();
+
+        return applyOperatorRequirement(vs.artifact(),
+                                        vs.params().instances(),
+                                        vs.params().placement()).map(_ -> new ScaleResponse(vs.params()
+                                                                                              .instances()
+                                                                                              .isPresent()
+                                                                                            ? "scaled"
+                                                                                            : "released",
+                                                                                            vs.artifact().asString(),
+                                                                                            vs.params().instances().or(0),
+                                                                                            resultingTarget(base)));
+    }
+
+    /// The target the committed requirements of `base` combine to now, before the leader bounds it to placeable capacity (this node
+    /// does not hold the leader's view of placeable capacity); the committed count when no requirement remains.
+    private int resultingTarget(ArtifactBase base) {
+        return SliceRequirements.committedCombination(nodeSupplier.get().kvStore(),
+                                                      base,
+                                                      System.currentTimeMillis(),
+                                                      Integer.MAX_VALUE)
+                                .or(0);
     }
 
     private Promise<Unit> guardMinInstances(Artifact artifact, int requestedInstances) {
@@ -214,6 +267,16 @@ public final class SliceRoutes implements RouteSource {
                                ? Promise.unitPromise()
                                : ScaleRouteError.InstancesBelowMinAvailable.FACTORY.apply(requestedInstances, min).<Unit> promise())
                    .or(Promise.unitPromise());
+    }
+
+    /// rc6 §3.1: a requirement above the slice's `maxInstances` could never be met (the combiner clamps to it), so it is refused.
+    private Promise<Unit> guardMaxInstances(Artifact artifact, int requestedInstances) {
+        return SliceTargetFence.committedTarget(nodeSupplier.get().kvStore(),
+                                                SliceTargetKey.sliceTargetKey(artifact.base()))
+                               .flatMap(SliceTargetValue::maxInstances)
+                               .filter(max -> requestedInstances > max)
+                               .map(max -> ScaleRouteError.InstancesAboveMax.FACTORY.apply(requestedInstances, max).<Unit> promise())
+                               .or(Promise.unitPromise());
     }
 
     private Promise<Unit> guardBlueprintMembership(Artifact artifact) {
@@ -655,44 +718,88 @@ public final class SliceRoutes implements RouteSource {
                                                warnings);
     }
 
-    /// #2662: the scale write is fenced: ONE leader transaction whose mutation expects the target read and whose witness holds the
-    /// target's owning blueprint at its committed value, rebuilt from a fresh read while refused (bounded by
-    /// [SliceTargetFence#MAX_REBUILDS]). A target the blueprint has been deleted from under, or that moved, is refused (409) rather
-    /// than re-created or reverted.
+    /// rc6 §3.1: the scale route writes the slice's OPERATOR requirement (or, with `instances` absent, removes it); the leader's
+    /// combiner derives the target from it. The write is fenced as #2662's was: ONE leader transaction, rebuilt from a fresh read while
+    /// refused (bounded by [SliceTargetFence#MAX_REBUILDS]).
     ///
-    /// A slice with no target yet is still created, unowned, as before: this is the standalone deploy of a slice a committed blueprint
-    /// declares without writing its target (a register-only publish). The creation expects the target absent and witnesses every
-    /// committed blueprint declaring the slice, so a create racing the blueprint's own target put, or its delete, is refused; its
-    /// rebuild finds the put's target (and scales it) or no declaring blueprint (409).
-    private Promise<Unit> applyDeployCommand(Artifact artifact, int instances, Option<String> placement) {
+    /// - Over a committed target, the transaction witnesses the target at the value read, so a target removed with its blueprint, or
+    ///   moved, refuses the write (rebuilt; 409 once the target is gone). A placement change rides in the same transaction as a target
+    ///   write that carries the committed count unchanged.
+    /// - A slice with no target yet is still created, unowned, at the requested count, as before: this is the standalone deploy of a
+    ///   slice a committed blueprint declares without writing its target (a register-only publish). The creation expects the target
+    ///   absent and witnesses every committed blueprint declaring the slice, and the requirement commits with it.
+    /// - A release with nothing to release writes nothing and succeeds.
+    private Promise<Unit> applyOperatorRequirement(Artifact artifact, Option<Integer> instances, Option<String> placement) {
         var node = nodeSupplier.get();
 
         return SliceTargetFence.submit("scale " + artifact.base().asString(),
                                        node::apply,
-                                       () -> scaleTransaction(node.kvStore(),
-                                                              artifact,
-                                                              instances,
-                                                              placement))
+                                       () -> operatorTransaction(node.kvStore(),
+                                                                 artifact,
+                                                                 instances,
+                                                                 placement))
+                               .replaceResult(SliceRoutes::nothingReleased)
                                .mapError(SliceRoutes::scaleRefusal);
     }
 
-    private static Result<LeaderTransaction<AetherKey, AetherValue>> scaleTransaction(KVStore<AetherKey, AetherValue> store,
-                                                                                      Artifact artifact,
-                                                                                      int instances,
-                                                                                      Option<String> placement) {
+    /// Design-out: a release finding no committed operator requirement has its postcondition (no operator requirement) already
+    /// holding, so it succeeds without a write. Every other cause stays a failure.
+    private static Result<Unit> nothingReleased(Result<Unit> outcome) {
+        return outcome.fold(cause -> cause instanceof NothingToRelease
+                                     ? Result.unitResult()
+                                     : outcome,
+                            _ -> outcome);
+    }
+
+    /// No operator requirement is committed for the slice a release names.
+    private record NothingToRelease(ArtifactBase base) implements Cause {
+        @Override
+        public String message() {
+            return "No operator requirement of " + base.asString() + " is committed";
+        }
+    }
+
+    private static Result<LeaderTransaction<AetherKey, AetherValue>> operatorTransaction(KVStore<AetherKey, AetherValue> store,
+                                                                                         Artifact artifact,
+                                                                                         Option<Integer> instances,
+                                                                                         Option<String> placement) {
         var key = SliceTargetKey.sliceTargetKey(artifact.base());
+        var requirementKey = SliceRequirementKey.sliceRequirementKey(artifact.base(), RequirementKind.OPERATOR);
+        var requirement = instances.map(count -> SliceRequirementValue.sliceRequirementValue(count,
+                                                                                             "aether scale",
+                                                                                             Option.none(),
+                                                                                             store.committedRevision()));
+
+        if (requirement.isEmpty() && store.get(requirementKey)
+                                          .isEmpty()) {
+            return new NothingToRelease(artifact.base()).result();
+        }
 
         return SliceTargetFence.committedTarget(store, key)
-                               .fold(() -> createWrite(store, key, artifact, instances, placement),
-                                     read -> SliceTargetFence.targetWrite(store,
-                                                                          key,
-                                                                          Option.some(read),
-                                                                          applyScaleToExisting(read,
-                                                                                               instances,
-                                                                                               placement)))
-                               .flatMap(write -> SliceTargetFence.transaction(store,
-                                                                              List.of(write),
-                                                                              List.of()));
+                               .fold(() -> instances.toResult(new SliceTargetFenceError.TargetAbsent(artifact.base()))
+                                                    .flatMap(count -> createWrite(store, key, artifact, count, placement))
+                                                    .flatMap(write -> withRequirement(store, write, requirementKey, requirement)),
+                                     read -> placement.fold(() -> SliceRequirements.requirementTransaction(store,
+                                                                                                           read,
+                                                                                                           requirementKey,
+                                                                                                           requirement),
+                                                            newPlacement -> SliceTargetFence.targetWrite(store,
+                                                                                                         key,
+                                                                                                         Option.some(read),
+                                                                                                         read.withPlacement(newPlacement))
+                                                                                            .flatMap(write -> withRequirement(store,
+                                                                                                                              write,
+                                                                                                                              requirementKey,
+                                                                                                                              requirement))));
+    }
+
+    private static Result<LeaderTransaction<AetherKey, AetherValue>> withRequirement(KVStore<AetherKey, AetherValue> store,
+                                                                                     TargetWrite write,
+                                                                                     SliceRequirementKey requirementKey,
+                                                                                     Option<SliceRequirementValue> requirement) {
+        return SliceTargetFence.transaction(store,
+                                            List.of(write),
+                                            List.of(SliceRequirements.requirementMutation(store, requirementKey, requirement)));
     }
 
     /// The first write of a slice's target: expects it absent, witnessed by every committed blueprint declaring the slice.
@@ -745,15 +852,6 @@ public final class SliceRoutes implements RouteSource {
             case SliceTargetFenceError refusal -> new ManagementServerError.Conflict(refusal.message());
             default -> cause;
         };
-    }
-
-    private static AetherValue.SliceTargetValue applyScaleToExisting(AetherValue.SliceTargetValue existing,
-                                                                     int instances,
-                                                                     Option<String> placement) {
-        var updated = existing.withInstances(instances);
-
-        return placement.map(updated::withPlacement)
-                        .or(updated);
     }
 
     private Promise<SliceConfigResponse> handleSliceConfig(String id) {

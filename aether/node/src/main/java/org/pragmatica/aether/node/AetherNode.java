@@ -4733,6 +4733,10 @@ public interface AetherNode extends ManageableNode {
                                                          nodeDeploymentManager::onVersionRoutingPut)
                                                   .onRemove(AetherKey.SliceTargetKey.class,
                                                             controlLoop::onSliceTargetRemove)
+                                                  .onPut(AetherKey.SliceRequirementKey.class,
+                                                         controlLoop::onSliceRequirementPut)
+                                                  .onRemove(AetherKey.SliceRequirementKey.class,
+                                                            controlLoop::onSliceRequirementRemove)
                                                   .onPut(AetherKey.AlertThresholdKey.class,
                                                          alertManager::onAlertThresholdPut)
                                                   .onRemove(AetherKey.AlertThresholdKey.class,

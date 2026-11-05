@@ -26,9 +26,12 @@ import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceRequirementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.RequirementKind;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceRequirementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -44,6 +47,10 @@ import org.pragmatica.lang.io.TimeSpan;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// #2662: the autoscaler's read-modify-write of a slice target is correct whatever order consensus commits it in.
+///
+/// rc6 §3.1: the autoscaler now writes its `REACTIVE` requirement, never the target (the leader's combiner, not active in this
+/// test, derives the target). The requirement write keeps #2662's fence: it witnesses the observed target and its owning blueprint,
+/// so every race below leaves no requirement derived from a stale or orphaned target.
 ///
 /// The autoscaler decides from the target it observed and writes the scaled value. The write is held here while a racing change
 /// commits into the real `KVStore`, then the held write commits after it — the reverse of the order the two were decided in. A plain
@@ -84,14 +91,16 @@ class ControlLoopTargetOrderingTest {
         controlLoop.onSliceTargetPut(new ValuePut<>(new KVCommand.Put<>(TARGET_KEY, initial), Option.none()));
     }
 
-    /// Control of the instrument: with nothing racing, the scaling write commits.
+    /// Control of the instrument: with nothing racing, the scaling write commits as the REACTIVE requirement, and the target itself is
+    /// not written by the autoscaler.
     @Test
-    void applyScaling_nothingRaces_scaledTargetCommits() {
+    void applyScaling_nothingRaces_reactiveRequirementCommits() {
         ctx.runEvaluationCycle();
         cluster.awaitHeld(1);
         cluster.commitOldest();
 
-        assertThat(committedTarget().map(SliceTargetValue::targetInstances)).isEqualTo(Option.some(4));
+        assertThat(committedReactive()).isEqualTo(Option.some(4));
+        assertThat(committedTarget().map(SliceTargetValue::targetInstances)).as("the autoscaler never writes the target").isEqualTo(Option.some(2));
     }
 
     /// The blueprint is deleted and its target removed after the decision; the scaling write commits last. It must not re-create the target.
@@ -105,6 +114,7 @@ class ControlLoopTargetOrderingTest {
         cluster.commitAllAsTheyArrive();
 
         assertThat(committedTarget()).as("no target is re-created for a deleted blueprint").isEqualTo(Option.none());
+        assertThat(committedReactive()).as("no requirement is written for a removed target").isEqualTo(Option.none());
     }
 
     /// A republish moves the target to v2 after the decision; the scaling write commits last. The v1 value it was derived from must not win,
@@ -122,6 +132,7 @@ class ControlLoopTargetOrderingTest {
 
         assertThat(committed.currentVersion()).as("the republished version is not reverted").isEqualTo(V2.version());
         assertThat(committed.targetInstances()).as("the stale decision is dropped, not carried onto the moved target").isEqualTo(2);
+        assertThat(committedReactive()).as("the stale decision is dropped").isEqualTo(Option.none());
         assertThat(cluster.submitted()).as("one refused submission, no rebuild").isEqualTo(1);
     }
 
@@ -135,7 +146,7 @@ class ControlLoopTargetOrderingTest {
         commit(new KVCommand.Put<>(BLUEPRINT_KEY, blueprintOf(V2)));
         cluster.commitAllAsTheyArrive();
 
-        assertThat(committedTarget().map(SliceTargetValue::targetInstances)).as("the unchanged target is scaled by the resubmission").isEqualTo(Option.some(4));
+        assertThat(committedReactive()).as("the requirement over the unchanged target commits on resubmission").isEqualTo(Option.some(4));
         assertThat(cluster.submitted()).as("one refused submission and one resubmission").isEqualTo(2);
     }
 
@@ -148,7 +159,8 @@ class ControlLoopTargetOrderingTest {
         commit(new KVCommand.Put<>(TARGET_KEY, targetOf(V1, 6)));
         cluster.commitAllAsTheyArrive();
 
-        assertThat(committedTarget().map(SliceTargetValue::targetInstances)).as("the operator's scale stands").isEqualTo(Option.some(6));
+        assertThat(committedTarget().map(SliceTargetValue::targetInstances)).as("the moved target stands").isEqualTo(Option.some(6));
+        assertThat(committedReactive()).as("the decision made against 2 is dropped").isEqualTo(Option.none());
         assertThat(cluster.submitted()).as("one refused submission, no rebuild").isEqualTo(1);
     }
 
@@ -162,6 +174,7 @@ class ControlLoopTargetOrderingTest {
         cluster.commitAllAsTheyArrive();
 
         assertThat(committedTarget().map(SliceTargetValue::targetInstances)).as("the new cap of 3 is never exceeded").isEqualTo(Option.some(2));
+        assertThat(committedReactive()).as("the decision capped against the old cap is never written").isEqualTo(Option.none());
         assertThat(cluster.submitted()).as("one refused submission, no rebuild").isEqualTo(1);
     }
 
@@ -176,6 +189,7 @@ class ControlLoopTargetOrderingTest {
         cluster.commitAllAsTheyArrive();
 
         assertThat(committedTarget().map(SliceTargetValue::targetInstances)).as("the orphan is not scaled").isEqualTo(Option.some(2));
+        assertThat(committedReactive()).as("no requirement is written for an orphan").isEqualTo(Option.none());
         assertThat(cluster.submitted()).as("one refused submission, no rebuild written").isEqualTo(1);
     }
 
@@ -229,6 +243,12 @@ class ControlLoopTargetOrderingTest {
         while (!ctx.observedTarget(V1).map(SliceTargetValue::targetInstances).equals(instances) && System.currentTimeMillis() < deadline) {
             sleep();
         }
+    }
+
+    private Option<Integer> committedReactive() {
+        return store.getTyped(SliceRequirementKey.sliceRequirementKey(V1.base(), RequirementKind.REACTIVE),
+                              SliceRequirementValue.class)
+                    .map(SliceRequirementValue::instances);
     }
 
     private Option<SliceTargetValue> committedTarget() {

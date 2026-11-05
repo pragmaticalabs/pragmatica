@@ -161,18 +161,38 @@ public class PaymentProcessorSlice implements Slice {
 }
 ```
 
-### CLI Configuration
+### Capacity requirements: how the autoscaler and the operator compose
+
+Each source of capacity demand commits its own **requirement** record for a slice:
+
+| Source | Writer | Expiry |
+|--------|--------|--------|
+| `REACTIVE` | the autoscaler, on every scaling decision | none |
+| `OPERATOR` | `aether scale <artifact> -n <n>`; removed by `aether scale <artifact> --release` | none |
+| `SCHEDULED`, `CAMPAIGN`, `PREDICTIVE`, `RECOVERY` | defined; no writer yet | per record |
+
+The leader's **combiner** derives the slice's target from them:
+
+```
+target = clamp( max(minAvailable, every unexpired requirement), 3, maxInstances, placeable capacity )
+```
+
+- The combiner is the only writer of the target's instance count once the target exists. A blueprint's declared count
+  seeds the target when it is first created. A redeploy, an A/B test and a rolling update change the target's version
+  and keep its count [mechanism: those writers carry the committed count; the combiner runs on every requirement change,
+  target change and expiry].
+- `max` takes the largest estimate of the same demand; requirements never add up.
+- With no unexpired requirement, the current count stands. Releasing the operator requirement, or a requirement expiring,
+  removes that claim and does not by itself scale the slice down. Scale-down comes from the autoscaler's requirement falling.
+- No slice runs below 3 instances, whatever `maxInstances` or the capacity says.
+- When a blueprint is deleted, the slice's requirement records are removed with its target.
 
 ```bash
-# Set scaling parameters
-aether scale order-processor \
-  --min 2 \
-  --max 10 \
-  --target-cpu 60 \
-  --target-latency 100ms
+# Hold at least 5 instances; the autoscaler can still go higher
+aether scale org.example:order-processor:1.0.0 -n 5
 
-# Disable auto-scaling (manual only)
-aether scale order-processor --auto=false --instances 5
+# Remove the hold
+aether scale org.example:order-processor:1.0.0 --release
 ```
 
 ### Programmatic Configuration

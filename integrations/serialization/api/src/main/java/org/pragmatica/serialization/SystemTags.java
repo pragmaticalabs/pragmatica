@@ -736,7 +736,12 @@ public interface SystemTags {
         pin(table, 2204, "org.pragmatica.aether.stream.forward.ControlOutcomeDto.Kind");
         pin(table, 2205, "org.pragmatica.aether.stream.forward.StreamForwardMessage.ControlAppendForward");
         pin(table, 2206, "org.pragmatica.aether.stream.forward.StreamForwardMessage.ControlAppendForwardResponse");
-        // ---- 2207..16383 RESERVED ----
+        // rc6 §3.1 (lane f1): the per-source slice capacity requirement. 2207..2209 are left for rc6 lane f0; every origin branch
+        // tops out at 2206 (scanned 2026-11-05), so these take 2210..2212.
+        pin(table, 2210, "org.pragmatica.aether.slice.kvstore.AetherKey.SliceRequirementKey");
+        pin(table, 2211, "org.pragmatica.aether.slice.kvstore.AetherValue.SliceRequirementValue");
+        pin(table, 2212, "org.pragmatica.aether.slice.kvstore.AetherValue.RequirementKind");
+        // ---- 2213..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);

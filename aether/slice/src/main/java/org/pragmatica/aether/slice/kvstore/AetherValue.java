@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -39,7 +40,10 @@ import org.pragmatica.cluster.state.kvstore.VersionFenced;
 import org.pragmatica.cluster.state.kvstore.WitnessedRemoval;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Codec;
 import org.pragmatica.serialization.CodecFor;
 
@@ -397,6 +401,48 @@ public sealed interface AetherValue {
                                         maxInstances,
                                         scaleUpThreshold,
                                         scaleDownThreshold);
+        }
+    }
+
+    /// rc6 §3.1: the source of a slice capacity requirement. Each source writes only its own [AetherKey.SliceRequirementKey].
+    /// `REACTIVE` (the autoscaler) and `OPERATOR` (`aether scale`) have writers; `SCHEDULED`, `CAMPAIGN`, `PREDICTIVE` and `RECOVERY`
+    /// are defined for the sources that follow and have no writer yet. The declaration order is the combiner's tie-break order.
+    enum RequirementKind {
+        REACTIVE,
+        OPERATOR,
+        SCHEDULED,
+        CAMPAIGN,
+        PREDICTIVE,
+        RECOVERY;
+
+        private static final Fn1<Cause, String> UNKNOWN_KIND = Causes.forOneValue("Unknown slice requirement kind: %s");
+
+        public static Result<RequirementKind> requirementKind(String name) {
+            return Stream.of(values())
+                         .filter(kind -> kind.name()
+                                             .equals(name))
+                         .findFirst()
+                         .map(Result::success)
+                         .orElseGet(() -> UNKNOWN_KIND.apply(name)
+                                                      .result());
+        }
+    }
+
+    /// rc6 §3.1: one committed capacity requirement of a slice: the instance count its source asks for, why, until when (an
+    /// absent expiry never expires), and the store revision the source computed it against (diagnostic; the combiner's write is
+    /// fenced on the target value itself). The combiner takes the max of every unexpired requirement; it never sums them.
+    record SliceRequirementValue(int instances, String reason, Option<Long> expiresAt, long baseTargetRevision) implements AetherValue {
+        public static SliceRequirementValue sliceRequirementValue(int instances,
+                                                                  String reason,
+                                                                  Option<Long> expiresAt,
+                                                                  long baseTargetRevision) {
+            return new SliceRequirementValue(instances, reason, expiresAt, baseTargetRevision);
+        }
+
+        /// Whether the requirement still claims capacity at `nowMs`: it has no expiry, or its expiry is later than `nowMs`.
+        public boolean unexpiredAt(long nowMs) {
+            return expiresAt.map(expiry -> nowMs < expiry)
+                            .or(true);
         }
     }
 

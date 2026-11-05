@@ -160,7 +160,9 @@ public sealed interface SliceTargetFence {
                                                                                          Option.some(committed)))));
     }
 
-    private static Result<List<ReadWitness<AetherKey>>> ownerGuards(KVStore<AetherKey, AetherValue> store,
+    /// The witness on `owner`'s blueprint at its committed value (none when `owner` is absent), or
+    /// [SliceTargetFenceError.OrphanTarget] when the owner is not committed: a write must not keep an orphan alive.
+    static Result<List<ReadWitness<AetherKey>>> ownerGuards(KVStore<AetherKey, AetherValue> store,
                                                                     SliceTargetKey key,
                                                                     Option<BlueprintId> owner) {
         return owner.fold(() -> Result.success(List.of()),
@@ -187,6 +189,21 @@ public sealed interface SliceTargetFence {
         return store.getTyped(LeaderKey.INSTANCE, LeaderValue.class)
                     .toResult(SliceTargetFenceError.NoCommittedLeader.INSTANCE)
                     .map(leader -> transaction(leader, writes, others));
+    }
+
+    /// The leader transaction holding `mutations` under `guards`, authorized by the committed leader: the shape of a write that
+    /// mutates no target (the combiner's removal of an orphan's requirements). Fails with [SliceTargetFenceError.NoCommittedLeader]
+    /// when none is committed.
+    static Result<LeaderTransaction<AetherKey, AetherValue>> guardedTransaction(KVStore<AetherKey, AetherValue> store,
+                                                                                List<ReadWitness<AetherKey>> guards,
+                                                                                List<Mutation<AetherKey, AetherValue>> mutations) {
+        return store.getTyped(LeaderKey.INSTANCE, LeaderValue.class)
+                    .toResult(SliceTargetFenceError.NoCommittedLeader.INSTANCE)
+                    .map(leader -> new LeaderTransaction<>(mutations.getFirst().key(),
+                                                           UUID.randomUUID().toString(),
+                                                           leader,
+                                                           List.copyOf(guards),
+                                                           List.copyOf(mutations)));
     }
 
     private static LeaderTransaction<AetherKey, AetherValue> transaction(LeaderValue leader,

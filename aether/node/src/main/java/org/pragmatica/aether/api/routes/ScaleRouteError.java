@@ -29,6 +29,13 @@ public sealed interface ScaleRouteError extends Cause, HttpStatusAware {
                                                                                     InstancesBelowFloor::new);
     }
 
+    /// rc6 §3.1: more instances than the slice's `maxInstances`. The combiner clamps every requirement to it, so the requirement
+    /// could never be met.
+    record InstancesAboveMax(int requested, int maxInstances, String message) implements ScaleRouteError {
+        static final Fn2<InstancesAboveMax, Integer, Integer> FACTORY = Causes.forTwoValues("Requested %s instances but the slice's maxInstances is %s",
+                                                                                            InstancesAboveMax::new);
+    }
+
     /// Fewer instances than the slice's own `minAvailable`.
     record InstancesBelowMinAvailable(int requested, int minAvailable, String message) implements ScaleRouteError {
         static final Fn2<InstancesBelowMinAvailable, Integer, Integer> FACTORY = Causes.forTwoValues("Requested %s instances but the slice's minAvailable is %s",

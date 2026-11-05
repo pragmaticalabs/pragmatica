@@ -16,7 +16,6 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
-import org.pragmatica.aether.slice.blueprint.SliceSpec;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AbTestKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
@@ -98,12 +97,6 @@ public interface AbTestManager {
                              Map<String, AbTestDeployment> tests,
                              AtomicBoolean active) implements AbTestManager {
             private static final Logger log = LoggerFactory.getLogger(AbTestManager.class);
-            /// The canary runs at the slice floor. The variant IS the slice's own target (same key, new
-            /// version), so the runtime floor of [SliceSpec#MIN_INSTANCES] applies to it at every phase
-            /// (#1721, #1495). Deliberately NOT applied to `minInstances`, which belongs to the
-            /// operator (#982).
-            private static final int VARIANT_INSTANCES = SliceSpec.MIN_INSTANCES;
-
             @Override
             public Promise<Unit> activate() {
                 log.info("A/B test manager active (STRATEGIES task group assigned)");
@@ -303,8 +296,10 @@ public interface AbTestManager {
             /// the slice's ownership (#698), its placement (#937) or its availability floor (#982).
             /// [#variantTarget] and [#concludedTarget] therefore TRANSFORM this observed value rather
             /// than rebuilding one from parts, so every component neither of them deliberately
-            /// replaces survives by construction. Between them they replace `currentVersion` and
-            /// `targetInstances` only; `minInstances` is replaced by neither.
+            /// replaces survives by construction. Between them they replace `currentVersion` only:
+            /// since rc6 §3.1 the requirement combiner is the only writer of `targetInstances` after a
+            /// target's creation, so both carry the committed count, and `minInstances` is replaced by
+            /// neither.
             ///
             /// What that carries, `placement` included: #937 recorded it being reset to `CORE_ONLY`
             /// here, and the reset is not merely stored — `ClusterDeploymentState` feeds
@@ -337,49 +332,28 @@ public interface AbTestManager {
                                                                                       List.of()));
             }
 
-            /// The canary write. The variant runs at the slice floor, and the operator's floor is
-            /// carried untouched.
+            /// The canary write: the variant version takes over the slice's target at the committed count.
             ///
-            /// #982: this write used to set `minInstances = 1` as well, which silently replaced an
-            /// operator's configured floor for the rest of the slice's life — the conclusion writes
-            /// below re-applied the same pin rather than restoring it, so nothing ever put it back.
-            /// The autoscaler's scale-down ratchet masked it until #936 removed the ratchet.
-            ///
-            /// Lowering the floor was never needed to place the canary: the variant is a DIFFERENT
-            /// artifact version, so `ClusterDeploymentState.handleSliceTargetChange` allocates it
-            /// from zero instances and `SliceAllocationEngine.issueAdjustmentCommands` scales UP to
-            /// `targetInstances`. `minInstances` is only ever read as a cap on scale-DOWN removals
-            /// (`issueScaleDownCommands`) and as a scale-down gate (`DecisionTreeController`), and
-            /// teardown bypasses both by issuing unload commands directly. A preserved floor
-            /// therefore cannot hold the canary above the slice floor, nor pin a variant that has to
-            /// be removed.
+            /// rc6 §3.1: the requirement combiner is the only writer of `targetInstances` after a
+            /// target's creation (INV-02), so the variant carries the committed count, which the
+            /// combiner already derived from every requirement, instead of pinning it to the slice
+            /// floor (the pre-rc6 `VARIANT_INSTANCES`): a pinned count would be undone by the
+            /// combiner's next run anyway, and racing it is the "last write wins" gap §3.1 closes. The
+            /// operator's floor (#982), placement (#937) and owner (#698) are carried untouched.
             private static SliceTargetValue variantTarget(SliceTargetValue current, Version version) {
-                return current.withVersion(version)
-                              .withInstances(VARIANT_INSTANCES);
+                return current.withVersion(version);
             }
 
-            /// The conclusion writes — promote a winner, or restore the baseline on rollback.
-            ///
-            /// The concluded version takes over the slice, so it must not be left running at the
-            /// canary's instance count while the operator's floor says otherwise: the allocation
-            /// engine drives to `targetInstances`, and nothing climbs from below the floor on its
-            /// own, so `target = 3, min = 5` is a slice permanently parked under its own declared
-            /// minimum. `effectiveMinInstances()` is the operator's floor clamped to at least one,
-            /// but an operator floor below the slice floor (`min = 1`) must not park the winner under it
-            /// (#1721), so the count is clamped to at least [#VARIANT_INSTANCES].
-            ///
-            /// This restores the floor's worth of capacity, not necessarily the pre-test
-            /// `targetInstances` — a slice scaled to 8 above a floor of 5 concludes at 5 and climbs
-            /// again on load. Recovering the exact pre-test count would mean persisting it in
-            /// `AbTestValue` for the lifetime of the test; the floor is the operator's stated
-            /// guarantee and is already in the record, so it is the honest thing to restore here.
+            /// The conclusion writes: promote a winner, or restore the baseline on rollback. The
+            /// concluded version takes over the slice's target at the committed count, for the same
+            /// reason as [#variantTarget]: the count is the combiner's. Because the variant no longer
+            /// lowers the count, the pre-rc6 restore of the floor's worth of capacity (#1721) has
+            /// nothing to restore.
             ///
             /// #2662: an A/B test runs over a committed target ([#findCurrentVersion]), so no writer
             /// here creates one: a target that is gone was removed with its blueprint.
             private static SliceTargetValue concludedTarget(SliceTargetValue current, Version version) {
-                return current.withVersion(version)
-                              .withInstances(Math.max(current.effectiveMinInstances(),
-                                                      VARIANT_INSTANCES));
+                return current.withVersion(version);
             }
 
             private Promise<AbTestDeployment> activateTest(AbTestDeployment test) {

@@ -156,6 +156,12 @@ final class BackupFixtures {
 
         return List.of(new Fixture(SliceTargetKey.sliceTargetKey(base),
                                    SliceTargetValue.sliceTargetValue(v1, 3, Option.some(owner))),
+                       new Fixture(AetherKey.SliceRequirementKey.sliceRequirementKey(base,
+                                                                                     AetherValue.RequirementKind.OPERATOR),
+                                   AetherValue.SliceRequirementValue.sliceRequirementValue(5,
+                                                                                           "operator floor",
+                                                                                           Option.some(1_700_000_000_000L),
+                                                                                           42L)),
                        new Fixture(AppBlueprintKey.appBlueprintKey(owner), AppBlueprintValue.appBlueprintValue(blueprint(), true)),
                        new Fixture(AetherKey.ArtifactContentKey.artifactContentKey(ArtifactBase.artifactBase("org.example:orders-slice").unwrap(),
                                                                                    "1.0.0",
