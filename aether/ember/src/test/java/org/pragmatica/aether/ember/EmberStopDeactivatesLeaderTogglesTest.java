@@ -6,12 +6,15 @@ package org.pragmatica.aether.ember;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.utility.react.ReactExecutor;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
@@ -31,6 +34,13 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// started. Only the components `AetherNode` exposes are read; the other leader-toggled components share
 /// the same `LeaderChange` route and are not observable from here. `ttmManager` is not pinned either: TTM is
 /// disabled in this fixture, so it is never active and cannot discriminate.
+///
+/// #2688: `LeaderChange` is routed onto the `LeaderManager` react executor (D1-react), so the toggles run on that thread
+/// after `route(passive)` has returned. `stop()` must therefore not quiesce the router, nor resolve, before that reaction
+/// has run. The first test reads the outcome and was flaky under load (the reaction sometimes lost the race);
+/// the second forces the interleaving: the executor is held by a latch until `stop()` has returned its promise, so the
+/// reaction runs strictly after the synchronous part of `stop()` - red at the pre-fix tip (the quiesced router drops it,
+/// `deploymentManager` and `abTestManager` stay active), green when the quiesce and the promise wait for it.
 ///
 /// Mutation record (both red, three runs each): swapping `router.route(passive)` and `router.quiesce()` in
 /// `AetherNode.stop`, and making `DelegateRouter.route` asynchronous, each leave `deploymentManager` and
@@ -81,6 +91,54 @@ class EmberStopDeactivatesLeaderTogglesTest {
 
         assertThat(states(leader)).as("leader-toggled components after stop() returned")
                                   .allSatisfy((name, active) -> assertThat(active).as(name).isFalse());
+    }
+
+    @Test
+    @Timeout(420)
+    void stop_deactivatesLeaderToggledComponents_whenTheLeaderChangeReactionRunsAfterStopHasReturnedItsPromise()
+    throws InterruptedException {
+        cluster = EmberTestPorts.startedCluster(PORTS,
+                                                basePort -> emberCluster(CLUSTER_SIZE,
+                                                                         basePort,
+                                                                         basePort + MGMT_OFFSET,
+                                                                         basePort + APP_HTTP_OFFSET,
+                                                                         "stopdeact2"),
+                                                START_BOUND);
+        var leader = awaitLeaderNode();
+
+        awaitActive(leader);
+        assertThat(states(leader)).as("control: every pinned component is active on the elected leader")
+                                  .allSatisfy((name, active) -> assertThat(active).as(name).isTrue());
+
+        var held = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+
+        leaderManagerExecutor(leader).undo("hold", () -> hold(held, release));
+        assertThat(held.await(30, TimeUnit.SECONDS)).as("the LeaderManager executor is held").isTrue();
+
+        var stopped = leader.stop();
+
+        release.countDown();
+        assertThat(stopped.await(STOP_BOUND).isSuccess()).as("the leader stops").isTrue();
+        assertThat(states(leader)).as("leader-toggled components once stop() resolved, reaction held past its return")
+                                  .allSatisfy((name, active) -> assertThat(active).as(name).isFalse());
+    }
+
+    private static ReactExecutor leaderManagerExecutor(AetherNode node) {
+        return node.reactExecutors()
+                   .stream()
+                   .filter(executor -> executor.component().equals("LeaderManager"))
+                   .findFirst()
+                   .orElseThrow(() -> new AssertionError("no LeaderManager react executor"));
+    }
+
+    private static void hold(CountDownLatch held, CountDownLatch release) {
+        held.countDown();
+        try {
+            release.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private AetherNode awaitLeaderNode() {

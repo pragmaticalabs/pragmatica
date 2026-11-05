@@ -1922,7 +1922,12 @@ public interface AetherNode extends ManageableNode {
                                                    .or(Promise.unitPromise());
 
                 router.route(ClusterStateNotification.passive());
-                router.quiesce();
+                // #2688: the passive notification ends in LeaderChange(none), which the FSM routes onto the LeaderManager react
+                // executor (D1-react), so the leader-toggled components deactivate on that thread, after route() has returned.
+                // The router is quiesced only once that reaction has run (a quiesced router drops it), and the promise stop()
+                // returns waits for it, so "stopped" means those components are inactive.
+                var leaderChangeDelivered = reactors.executor("LeaderManager").drained();
+
                 controlLoop.stop();
                 workerMetricsAggregator.stop();
                 metricsScheduler.stop();
@@ -1984,18 +1989,27 @@ public interface AetherNode extends ManageableNode {
                 //
                 // #1612: the chain lives in NodeStopSequence, where a failed HTTP listener stop is logged and
                 // skipped past rather than ending the shutdown.
-                return backupFlushed.flatMap(() -> streamsStopped)
-                                    .flatMap(() -> NodeStopSequence.run(NodeStopSequence.Steps.steps(this::releaseWatchesThenDeactivate,
-                                                                                                     () -> managementServer.map(ManagementServer::stop)
-                                                                                                                           .or(Promise.unitPromise()),
-                                                                                                     appHttpServer::stop,
-                                                                                                     sliceInvoker::stop,
-                                                                                                     this::closeSharedResources,
-                                                                                                     this::shutdownStorage,
-                                                                                                     clusterNode::stop)))
-                                    .withResult(_ -> closeKvStore())
-                                    .onSuccess(_ -> log.info("Aether node {} stopped",
-                                                             self()));
+                return leaderChangeDelivered.map(this::quiesceRouter)
+                                            .flatMap(() -> backupFlushed)
+                                            .flatMap(() -> streamsStopped)
+                                            .flatMap(() -> NodeStopSequence.run(NodeStopSequence.Steps.steps(this::releaseWatchesThenDeactivate,
+                                                                                                             () -> managementServer.map(ManagementServer::stop)
+                                                                                                                                   .or(Promise.unitPromise()),
+                                                                                                             appHttpServer::stop,
+                                                                                                             sliceInvoker::stop,
+                                                                                                             this::closeSharedResources,
+                                                                                                             this::shutdownStorage,
+                                                                                                             clusterNode::stop)))
+                                            .withResult(_ -> closeKvStore())
+                                            .onSuccess(_ -> log.info("Aether node {} stopped",
+                                                                     self()));
+            }
+
+            /// #2688: the quiesce that follows the delivery of the passive notification's `LeaderChange` reaction.
+            private Unit quiesceRouter(Unit unit) {
+                router.quiesce();
+
+                return unit;
             }
 
             @Override
