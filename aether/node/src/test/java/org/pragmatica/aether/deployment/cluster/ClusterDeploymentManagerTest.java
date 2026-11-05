@@ -56,7 +56,7 @@ import java.util.function.Supplier;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class ClusterDeploymentManagerTest {
-    private static final SchemaOrchestratorService NO_OP_SCHEMA = noOpSchemaOrchestrator();
+    static final SchemaOrchestratorService NO_OP_SCHEMA = noOpSchemaOrchestrator();
 
     private static SchemaOrchestratorService noOpSchemaOrchestrator() {
         return new SchemaOrchestratorService() {

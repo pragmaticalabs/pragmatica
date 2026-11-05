@@ -21,9 +21,21 @@ import org.pragmatica.messaging.Message;
 
 
 public sealed interface LeaderNotification extends Message.Local {
-    record LeaderChange(Option<NodeId> leaderId, boolean localNodeIsLeader) implements LeaderNotification {}
+    /// `replayed` (KVStore dispatcher design §3.5 R3): the change was raised while the node store was delivering a replay
+    /// burst, captured where the change is raised. A receiver behind a react executor runs where `isReplaying()` always
+    /// reads false, so an announcing receiver reads this bit instead (v-2653 F3).
+    record LeaderChange(Option<NodeId> leaderId, boolean localNodeIsLeader, boolean replayed) implements LeaderNotification {
+        /// A change raised outside any replay burst.
+        public LeaderChange(Option<NodeId> leaderId, boolean localNodeIsLeader) {
+            this(leaderId, localNodeIsLeader, false);
+        }
+    }
 
     static LeaderChange leaderChange(Option<NodeId> leaderId, boolean localNodeIsLeader) {
         return new LeaderChange(leaderId, localNodeIsLeader);
+    }
+
+    static LeaderChange leaderChange(Option<NodeId> leaderId, boolean localNodeIsLeader, boolean replayed) {
+        return new LeaderChange(leaderId, localNodeIsLeader, replayed);
     }
 }
