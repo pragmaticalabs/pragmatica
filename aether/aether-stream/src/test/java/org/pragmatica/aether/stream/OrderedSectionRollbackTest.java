@@ -112,6 +112,25 @@ class OrderedSectionRollbackTest {
                     .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.BUFFER_CLOSED));
             }
         }
+
+        /// The halted ring keeps and returns the withdrawal's OWN cause: a fault other than the closed arena (an index fault) is what the
+        /// publish fails with and what every later append is refused with, so the cause is not a fixed constant.
+        @Test
+        void appendOrdered_whoseWithdrawalFailsOnAnIndexFault_failsWithThatCause_andKeepsRefusingWithIt() {
+            try (var ring = offHeapRingBuffer(8, 4096)) {
+                ring.append(bytes("a"), 1L).onFailure(cause -> fail(cause.message()));
+                ring.afterDurableCutProbe(OrderedSectionRollbackTest::indexFault);
+
+                ring.<Long> appendOrdered(bytes("orphan"), 2L, _ -> Causes.cause("wal refused").result())
+                    .onSuccess(offset -> fail("a failed continuation succeeded at " + offset))
+                    .onFailure(cause -> assertThat(cause).as("the withdrawal's own cause").isInstanceOf(StreamError.RingIndexCorrupted.class));
+                ring.afterDurableCutProbe(() -> {});
+
+                ring.<Long> appendOrdered(bytes("later"), 3L, Result::success)
+                    .onSuccess(offset -> fail("a halted ring accepted an append at " + offset))
+                    .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.RingIndexCorrupted.class));
+            }
+        }
     }
 
     /// NT-107: an ordered run the ring could not withdraw (it would evict its own members) is refused before any offset exists.
@@ -127,6 +146,22 @@ class OrderedSectionRollbackTest {
                 assertThat(refused.isFailure()).isTrue();
                 refused.onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.RUN_DOES_NOT_FIT));
                 assertThat(ring.headOffset()).as("no offset was assigned").isEqualTo(-1L);
+            }
+        }
+
+        /// The boundary: a run of exactly `capacity` events fits (it evicts only the events before it), so it is appended, not refused.
+        @Test
+        void appendBatchOrdered_runOfExactlyTheCapacity_isAppended_evictingOnlyEarlierEvents() {
+            try (var ring = offHeapRingBuffer(4, 4096)) {
+                ring.append(bytes("a"), 1L).onFailure(cause -> fail(cause.message()));
+                var payloads = IntStream.range(0, 4).mapToObj(i -> bytes("e" + i)).toList();
+
+                ring.<Long> appendBatchOrdered(payloads, new long[]{2L, 3L, 4L, 5L}, Result::success)
+                    .onFailure(cause -> fail("a run of exactly the capacity was refused: " + cause.message()));
+
+                assertThat(ring.headOffset()).isEqualTo(4L);
+                assertThat(texts(ring.read(1, 4).unwrap())).as("the run is whole; only the earlier event was evicted")
+                                                          .containsExactly("e0", "e1", "e2", "e3");
             }
         }
 
@@ -256,6 +291,10 @@ class OrderedSectionRollbackTest {
     /// What a native access throws once the ring's arena is closed under it.
     private static void arenaClosed() {
         throw new IllegalStateException("already closed");
+    }
+
+    private static void indexFault() {
+        throw new IndexOutOfBoundsException("index fault");
     }
 
     private static long truncationSeq(OffHeapRingBuffer ring) throws Exception {
