@@ -51,6 +51,7 @@ class DeploymentVersionRoundTripTest {
                                                           stubSerializer(),
                                                           stubDeserializer());
 
+        SliceTargetOverridePreservationTest.seedLeaderAndOwner(kvStore);
         seed(kvStore, DeploymentKey.deploymentKey(DEPLOYMENT_ID), deployedDeploymentValue());
 
         manager = DeploymentManager.deploymentManager(rabiaNode, kvStore);
@@ -108,8 +109,7 @@ class DeploymentVersionRoundTripTest {
 
     private static List<DeploymentValue> capturedDeploymentValues(List<KVCommand<AetherKey>> commands) {
         return commands.stream()
-                       .filter(KVCommand.Put.class::isInstance)
-                       .map(command -> ((KVCommand.Put<?, ?>) command).value())
+                       .flatMap(SliceTargetOverridePreservationTest::writtenValues)
                        .filter(DeploymentValue.class::isInstance)
                        .map(DeploymentValue.class::cast)
                        .toList();
