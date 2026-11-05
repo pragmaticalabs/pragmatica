@@ -16,10 +16,16 @@ import java.util.stream.Stream;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
+import java.util.function.ToLongFunction;
 import java.util.stream.Collectors;
+import java.util.function.LongSupplier;
 
 import org.pragmatica.aether.http.ListenerStops;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.KVStore.DeliveryMetrics;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
@@ -140,6 +146,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.utility.react.ReactExecutor;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.netty.channel.EventLoopGroup;
@@ -754,6 +761,7 @@ class ManagementServerImpl implements ManagementServer {
         registerStreamMemoryMetrics();
         registerStoragePromotionMetrics();
         registerDhtCatchUpMetrics();
+        registerKvDispatchMetrics();
         var transport = tls.isPresent()
                         ? "HTTPS"
                         : "HTTP";
@@ -795,6 +803,85 @@ class ManagementServerImpl implements ManagementServer {
                                 "class",
                                 keyClass.name().toLowerCase(Locale.ROOT));
         }
+    }
+
+    /// D1 (KVStore dispatcher design §3.6): the node store's delivery metrics, read from the store at each scrape. `lag.batches` is
+    /// seq-based (`enqueuedSeq - deliveredSeq`); `queue.bytes` is an ESTIMATE of the retained old and new values; the high-water
+    /// marks and read-ahead counters carry a `phase` tag (`live`, `replay`). The `kv-dispatch-lagging` warning watches the slope of
+    /// the first two. The node is an adapter boundary here, as for the consensus batch counters: a node double that answers `null`
+    /// for its store registers nothing.
+    @Contract
+    private void registerKvDispatchMetrics() {
+        Option.option(nodeSupplier.get().kvStore()).onPresent(this::registerKvDispatchGauges);
+        nodeSupplier.get().reactExecutors().forEach(this::registerReactGauges);
+    }
+
+    /// D1-react (KVStore dispatcher design §3.6, owner ruling 7): per C9 component, its react queue depth and high-water mark,
+    /// and the side-effect reactions the engine-alive gate dropped. Measured only: no alarm, no overflow policy.
+    private void registerReactGauges(ReactExecutor executor) {
+        reactGauge("aether.react.queue.depth", executor, executor::queueDepth);
+        reactGauge("aether.react.queue.high.water", executor, executor::highWater);
+        reactGauge("aether.react.dropped.engine.stopped", executor, executor::droppedEngineStopped);
+    }
+
+    private Unit reactGauge(String name, ReactExecutor executor, LongSupplier read) {
+        Supplier<Number> value = read::getAsLong;
+
+        observability.gauge(name, value, "component", executor.component());
+
+        return unit();
+    }
+
+    private Unit registerKvDispatchGauges(KVStore<AetherKey, AetherValue> store) {
+        kvDispatchGauge("aether.kv.dispatch.lag.batches", store, DeliveryMetrics::lagBatches);
+        kvDispatchGauge("aether.kv.dispatch.lag.oldest.age.ms", store, DeliveryMetrics::lagOldestAgeMillis);
+        kvDispatchGauge("aether.kv.dispatch.queue.depth", store, DeliveryMetrics::queueDepth);
+        kvDispatchGauge("aether.kv.dispatch.queue.high.water",
+                        store,
+                        DeliveryMetrics::queueHighWaterLive,
+                        "phase",
+                        "live");
+        kvDispatchGauge("aether.kv.dispatch.queue.high.water",
+                        store,
+                        DeliveryMetrics::queueHighWaterReplay,
+                        "phase",
+                        "replay");
+        kvDispatchGauge("aether.kv.dispatch.queue.bytes", store, DeliveryMetrics::queueBytesEstimate);
+        kvDispatchGauge("aether.kv.dispatch.readahead.reads",
+                        store,
+                        DeliveryMetrics::readAheadReadsLive,
+                        "phase",
+                        "live");
+        kvDispatchGauge("aether.kv.dispatch.readahead.reads",
+                        store,
+                        DeliveryMetrics::readAheadReadsReplay,
+                        "phase",
+                        "replay");
+        kvDispatchGauge("aether.kv.dispatch.readahead.snapshot.reads",
+                        store,
+                        DeliveryMetrics::snapshotReadAheadsLive,
+                        "phase",
+                        "live");
+        kvDispatchGauge("aether.kv.dispatch.readahead.snapshot.reads",
+                        store,
+                        DeliveryMetrics::snapshotReadAheadsReplay,
+                        "phase",
+                        "replay");
+        kvDispatchGauge("aether.kv.dispatch.slow.handlers", store, DeliveryMetrics::slowHandlers);
+        kvDispatchGauge("aether.kv.dispatch.slow.handler.max.nanos", store, DeliveryMetrics::slowHandlerMaxNanos);
+
+        return unit();
+    }
+
+    private Unit kvDispatchGauge(String name,
+                                 KVStore<AetherKey, AetherValue> store,
+                                 ToLongFunction<DeliveryMetrics> read,
+                                 String... tags) {
+        Supplier<Number> value = () -> read.applyAsLong(store.deliveryMetrics());
+
+        observability.gauge(name, value, tags);
+
+        return unit();
     }
 
     /// Promotion of each storage instance that promotes (an inert one has nothing to report), cumulative since boot, read

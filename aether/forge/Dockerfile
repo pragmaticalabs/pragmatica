@@ -30,4 +30,4 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=3 \
     CMD wget -q --spider http://localhost:${FORGE_PORT}/api/nodes/status || exit 1
 
 # Run the Forge server
-ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar /app/aether-forge.jar"]
+ENTRYPOINT ["sh", "-c", "java -XX:+ExitOnOutOfMemoryError $JAVA_OPTS -jar /app/aether-forge.jar"]

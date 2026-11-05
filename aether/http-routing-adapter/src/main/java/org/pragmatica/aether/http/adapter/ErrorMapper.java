@@ -29,9 +29,12 @@ public interface ErrorMapper {
     }
 
     private static HttpStatus unmappedStatus(Cause cause) {
-        return cause.isTransient()
-               ? HttpStatus.SERVICE_UNAVAILABLE
-               : HttpStatus.INTERNAL_SERVER_ERROR;
+        return switch (cause) {
+            case Cause.Validation _ -> HttpStatus.UNPROCESSABLE_ENTITY;
+            default -> cause.isTransient()
+                       ? HttpStatus.SERVICE_UNAVAILABLE
+                       : HttpStatus.INTERNAL_SERVER_ERROR;
+        };
     }
 
     default ErrorMapper orElse(ErrorMapper other) {

@@ -18,7 +18,7 @@ matrix/GATED/SYNC_ANSWERS mode=Idle events=[ConsensusActive] msgs=[] completions
 matrix/GATED/DECISION_CURRENT mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
 matrix/GATED/DECISION_FAR_FUTURE mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
 matrix/GATED/PROPOSE_CURRENT mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
-matrix/GATED/PROPOSE_FAR_FUTURE mode=Syncing events=[] msgs=[SyncRequest] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/GATED/PROPOSE_FAR_FUTURE mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
 matrix/GATED/STOP mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
 matrix/GATED_HELD/ACTIVE mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
 matrix/GATED_HELD/PASSIVE mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
@@ -29,7 +29,7 @@ matrix/GATED_HELD/SYNC_ANSWERS mode=Idle events=[ConsensusActive] msgs=[] comple
 matrix/GATED_HELD/DECISION_CURRENT mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
 matrix/GATED_HELD/DECISION_FAR_FUTURE mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
 matrix/GATED_HELD/PROPOSE_CURRENT mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
-matrix/GATED_HELD/PROPOSE_FAR_FUTURE mode=Syncing events=[] msgs=[SyncRequest] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/GATED_HELD/PROPOSE_FAR_FUTURE mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
 matrix/GATED_HELD/STOP mode=Stopped events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
 matrix/SYNCING/ACTIVE mode=Syncing events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
 matrix/SYNCING/PASSIVE mode=Paused events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0

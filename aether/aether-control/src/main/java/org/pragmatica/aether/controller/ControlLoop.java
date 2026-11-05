@@ -45,6 +45,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.statemachine.Fsm;
+import org.pragmatica.utility.react.ReactExecutor;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -95,6 +96,13 @@ public interface ControlLoop {
     void stop();
 
     default Unit setMetricsProducerEligibility(Predicate<NodeId> isEligible) {
+        return Unit.unit();
+    }
+
+    /// D1-react (KVStore dispatcher design §3.5.1 row 39): the executor the slice cooldown request of
+    /// [#onNodeArtifactPut] runs on. A node installs its gated executor once, at assembly; until then (and in a host
+    /// that installs none) the request runs inline, as before D1-react. Default no-op so stubs stay compilable.
+    default Unit installReactExecutor(ReactExecutor executor) {
         return Unit.unit();
     }
 
@@ -285,6 +293,11 @@ public interface ControlLoop {
         @Override
         public Unit setMetricsProducerEligibility(Predicate<NodeId> isEligible) {
             return ctx.setMetricsProducerEligibility(isEligible);
+        }
+
+        @Override
+        public Unit installReactExecutor(ReactExecutor executor) {
+            return ctx.installReactExecutor(executor);
         }
 
         @Override

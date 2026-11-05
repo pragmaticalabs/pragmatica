@@ -1,0 +1,2 @@
+### Fixed (2026-11-05 — #2122: RabiaEngineCleanupArmingTest flaked on a fixed sleep before activation)
+- **`RabiaEngineCleanupArmingTest` slept a fixed 150 ms + 50 ms and then asserted the engine was active**, so a loaded host failed `activation_armsTheCleanupTask` with no product defect (test-only; the engine is unchanged). The test now waits, bounded at 30 s, on the engine's own signals: `Syncing` before the sync responses are delivered, then `isActive()`. The arming assertions are unchanged. [mechanism: `RabiaEngineCleanupArmingTest.activateEngine`]

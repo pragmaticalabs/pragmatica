@@ -4,19 +4,31 @@
 package org.pragmatica.cluster.replica;
 
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.cluster.replica.ReplicaApplier.Step;
 import org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaEntries;
 import org.pragmatica.cluster.state.kvstore.CommitRing;
+import org.pragmatica.cluster.state.kvstore.DispatcherFailureSink;
+import org.pragmatica.cluster.state.kvstore.HeldDelivery;
 import org.pragmatica.cluster.state.kvstore.IncarnationTag;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
+import org.pragmatica.cluster.state.kvstore.NotificationDelivery;
 import org.pragmatica.cluster.state.kvstore.ReplicaEntry;
 import org.pragmatica.cluster.state.kvstore.ReplicaKeyFilter;
+import org.pragmatica.cluster.state.kvstore.ReplicaSnapshot;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
+import org.pragmatica.lang.Result;
+import org.pragmatica.messaging.MessageRouter;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.cluster.replica.ClientFixtures.CLIENT;
@@ -249,6 +261,79 @@ class ReplicaApplierTest {
         listened.install(snapshot.bytes(), snapshot.tag(), snapshot.revision(), snapshot.anchor()).unwrap();
 
         assertThat(seen).contains(new Key("a"));
+    }
+
+    /// KVStore dispatcher design §3.3: over a dispatched store, `install` returns only once every notification it enqueued is delivered, the
+    /// drained buffer's included. The replay burst's handler arms the hold just past the replay item, so the dispatcher stops before the first
+    /// drained batch (the replay itself is not held: its own wait is `replayNotifications`'). The install runs on its own thread and must not
+    /// have returned while the hold stands. Mutation: complete at apply (skip the wait in `ReplicaApplier.afterDelivery`).
+    @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void replicaInstall_completesOnlyAfterItsBurstIsDelivered() throws InterruptedException {
+        var router = MessageRouter.mutable();
+        var hold = HeldDelivery.heldDelivery();
+        var dispatched = new KVStore<StructuredKey, Object>(router,
+                                                            ClientFixtures.CODEC,
+                                                            ClientFixtures.DECODE,
+                                                            ReplicaKeyFilter.includeAll(),
+                                                            FeedFixtures.SOURCE,
+                                                            CommitRing.DEFAULT_BUDGET_BYTES,
+                                                            NotificationDelivery.dispatched("replica-install",
+                                                                                            DispatcherFailureSink.loggingOnly(),
+                                                                                            hold));
+        var delivered = new CopyOnWriteArrayList<Object>();
+        var source = ClientFixtures.store();
+
+        router.addRoute(KVStoreNotification.ValuePut.class,
+                        (KVStoreNotification.ValuePut<StructuredKey, Object> put) -> recordAndArm(dispatched, hold, delivered, put));
+        FeedFixtures.commit(source, 0, ClientFixtures.incarnation(1, "A"));
+        FeedFixtures.commit(source, 1, FeedFixtures.put("a", "1"));
+
+        var snapshot = source.captureReplicaSnapshot(ReplicaKeyFilter.includeAll()).unwrap();
+        var replica = ReplicaApplier.replicaApplier(dispatched, 1 << 20);
+
+        replica.beginBuffering();
+        assertThat(replica.accept(live(1, entry(TAG, 2, 2, "b", "2")))).isEqualTo(Step.BUFFERED);
+
+        var outcome = new AtomicReference<Result<Step>>();
+        var deliveredAtReturn = new AtomicReference<List<Object>>();
+        var returned = new CountDownLatch(1);
+
+        Thread.ofVirtual().start(() -> installAndRecord(replica, snapshot, delivered, outcome, deliveredAtReturn, returned));
+
+        try {
+            assertThat(hold.awaitHeld(10)).as("the first drained batch reached the hold").isTrue();
+            assertThat(returned.await(300, TimeUnit.MILLISECONDS)).as("not returned while the drained batch is held").isFalse();
+            hold.release();
+            assertThat(returned.await(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(outcome.get().unwrap()).isEqualTo(Step.APPLIED);
+            assertThat(deliveredAtReturn.get()).as("the drained entry was delivered at return").contains(new Key("b"));
+        } finally {
+            hold.release();
+            dispatched.close();
+        }
+    }
+
+    /// Records the key; during the replay burst, arms the hold just past the replay item, i.e. before the first drained batch.
+    private static void recordAndArm(KVStore<StructuredKey, Object> store,
+                                     HeldDelivery hold,
+                                     List<Object> delivered,
+                                     KVStoreNotification.ValuePut<StructuredKey, Object> put) {
+        delivered.add(put.cause().key());
+        if (store.isReplaying()) {
+            hold.holdFrom(store.enqueuedSeq() + 1);
+        }
+    }
+
+    private static void installAndRecord(ReplicaApplier<StructuredKey, Object> replica,
+                                         ReplicaSnapshot snapshot,
+                                         List<Object> delivered,
+                                         AtomicReference<Result<Step>> outcome,
+                                         AtomicReference<List<Object>> deliveredAtReturn,
+                                         CountDownLatch returned) {
+        outcome.set(replica.install(snapshot.bytes(), snapshot.tag(), snapshot.revision(), snapshot.anchor()));
+        deliveredAtReturn.set(List.copyOf(delivered));
+        returned.countDown();
     }
 
     @Test
