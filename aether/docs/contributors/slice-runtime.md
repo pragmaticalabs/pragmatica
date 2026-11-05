@@ -261,7 +261,7 @@ Automatically collected:
 
 Access via the metrics endpoint:
 ```bash
-curl http://localhost:8080/metrics
+curl http://localhost:8080/api/v1/metrics
 ```
 
 ### Tracing
@@ -435,16 +435,9 @@ curl -X POST http://localhost:5150/api/v1/controller/config -H "Content-Type: ap
 
 ### Request Tracing
 
-Trace specific request:
+List recent invocation traces, then fetch one by its request ID:
 
 ```bash
-curl -X POST http://localhost:8080/invoke \
-  -H "X-Trace-Id: my-trace-123" \
-  -H "X-Debug: true" \
-  -d '{"slice": "...", "method": "...", "request": {...}}'
-```
-
-View trace:
-```bash
-curl http://localhost:8080/traces/my-trace-123
+curl http://localhost:8080/api/v1/traces
+curl http://localhost:8080/api/v1/traces/my-trace-123
 ```

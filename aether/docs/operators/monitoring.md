@@ -42,7 +42,7 @@ aether thresholds set heap.usage 0.7 0.85
 Via REST API:
 
 ```bash
-curl -X POST http://localhost:8080/thresholds \
+curl -X POST http://localhost:8080/api/v1/thresholds \
   -H "Content-Type: application/json" \
   -d '{
     "metric": "cpu.usage",
@@ -58,7 +58,7 @@ curl -X POST http://localhost:8080/thresholds \
 aether thresholds list
 
 # REST API
-curl http://localhost:8080/thresholds
+curl http://localhost:8080/api/v1/thresholds
 ```
 
 Response:
@@ -76,7 +76,7 @@ Response:
 aether thresholds remove cpu.usage
 
 # REST API
-curl -X DELETE http://localhost:8080/thresholds/cpu.usage
+curl -X DELETE http://localhost:8080/api/v1/thresholds/cpu.usage
 ```
 
 ## Default Thresholds
@@ -131,13 +131,13 @@ Via REST API:
 
 ```bash
 # All alerts
-curl http://localhost:8080/alerts
+curl http://localhost:8080/api/v1/alerts
 
 # Active only
-curl http://localhost:8080/alerts/active
+curl http://localhost:8080/api/v1/alerts/active
 
 # History only
-curl http://localhost:8080/alerts/history
+curl http://localhost:8080/api/v1/alerts/history
 ```
 
 ### Alert Response Format
@@ -313,7 +313,7 @@ Configure controller thresholds separately from alert thresholds:
 aether thresholds set cpu.usage 0.7 0.9
 
 # Controller config (for scaling)
-curl -X POST http://localhost:8080/controller/config \
+curl -X POST http://localhost:8080/api/v1/controller/config \
   -d '{"cpuScaleUpThreshold": 0.8, "cpuScaleDownThreshold": 0.2}'
 ```
 
@@ -362,7 +362,7 @@ Thresholds are replicated via consensus:
 ### Alerts Not Triggering
 
 1. Verify thresholds are set: `aether thresholds list`
-2. Check metrics are being collected: `curl http://localhost:8080/metrics`
+2. Check metrics are being collected: `curl http://localhost:8080/api/v1/metrics`
 3. Verify metric names match exactly
 
 ### Too Many Alerts
