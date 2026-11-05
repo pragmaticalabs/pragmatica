@@ -36,6 +36,8 @@ class IsrMonitorTest {
     private static final int PARTITION = 0;
     private static final TimeSpan LAG_MAX = TimeSpan.timeSpan(30).seconds();
     private static final long HEAD = 10L;
+    /// The owner epoch of an earlier tenure; the record's is `1:1:1`.
+    private static final Epoch EARLIER_TENURE = Epoch.epoch(1L, 1L, 0L);
 
     private final AtomicLong clock = new AtomicLong();
     private final List<List<KVCommand<AetherKey>>> applied = new ArrayList<>();
@@ -127,11 +129,57 @@ class IsrMonitorTest {
         assertThat(monitor.nextIsr(owned(HEAD), clock.get()).unwrap()).containsExactly(OWNER, B, C);
     }
 
+    /// #2694: at the start of a tenure B, an ISR member, has confirmed nothing to this owner yet. C confirmed every
+    /// record under this epoch, but the records acknowledged in earlier tenures are counted on B, not on C, so nobody
+    /// joins until every member has confirmed under the current epoch.
+    @Test
+    void nextIsr_memberWithNoRowUnderTheOwnerEpoch_admitsNobody_evenACaughtUpReplica() {
+        confirm(C, HEAD);
+
+        assertThat(monitor.nextIsr(owned(HEAD), clock.get()).isEmpty()).as("B has not confirmed under this epoch")
+                                                                        .isTrue();
+        assertThat(monitor.maximalIsr(STREAM, PARTITION, record)).as("nothing pending").containsExactly(OWNER, B);
+    }
+
+    /// #2694 liveness: the admission waits only until the members confirm; a replica that caught up then joins.
+    @Test
+    void nextIsr_atTenureStart_replicaThatCatchesUp_isAdmitted_onceEveryMemberConfirmed() {
+        confirm(C, HEAD);
+        assertThat(monitor.nextIsr(owned(HEAD), clock.get()).isEmpty()).as("B has not confirmed yet").isTrue();
+
+        confirm(B, HEAD);
+        assertThat(monitor.nextIsr(owned(HEAD), clock.get()).unwrap()).containsExactly(OWNER, B, C);
+    }
+
+    /// #2694: a replica's row from an earlier tenure describes another lineage; it does not admit it, however high.
+    @Test
+    void nextIsr_replicaRowOfAnEarlierTenure_isNotCounted() {
+        confirm(B, 7L);
+        confirmUnder(C, HEAD, EARLIER_TENURE);
+
+        assertThat(monitor.nextIsr(owned(HEAD), clock.get()).isEmpty()).as("C confirmed nothing under this epoch")
+                                                                        .isTrue();
+    }
+
+    /// #2694: a member's row from an earlier tenure is not a confirmation to this owner, as the ack path reads it.
+    @Test
+    void nextIsr_memberRowOfAnEarlierTenure_admitsNobody() {
+        confirmUnder(B, HEAD, EARLIER_TENURE);
+        confirm(C, 3L);
+
+        assertThat(monitor.nextIsr(owned(HEAD), clock.get()).isEmpty()).as("B confirmed nothing under this epoch")
+                                                                        .isTrue();
+    }
+
     private IsrMonitor.Owned owned(long head) {
         return new IsrMonitor.Owned(STREAM, PARTITION, record, head);
     }
 
     private void confirm(NodeId replica, long offset) {
-        registry.updateWatermark(STREAM, PARTITION, replica, offset);
+        confirmUnder(replica, offset, record.ownerEpoch());
+    }
+
+    private void confirmUnder(NodeId replica, long offset, Epoch epoch) {
+        registry.updateWatermark(STREAM, PARTITION, replica, offset, ReplicationState.CAUGHT_UP, epoch);
     }
 }
