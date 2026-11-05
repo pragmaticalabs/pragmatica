@@ -10,6 +10,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -17,7 +18,11 @@ import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.worker.isolation.CoreAbsenceSnapshot;
 import org.pragmatica.aether.api.ManagementApiResponses.AutoHealStatusResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.AutoHealToggleResponse;
+import org.pragmatica.aether.api.ManagementApiResponses.CircuitBreakerResetRequest;
 import org.pragmatica.aether.api.ManagementApiResponses.CircuitBreakerResetResponse;
+import org.pragmatica.aether.api.ManagementApiResponses.SourceBreakerInfo;
+import org.pragmatica.aether.environment.SourceName;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.aether.api.ManagementApiResponses.CircuitBreakerStatusResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ClusterMembershipResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.RoleMismatchEntry;
@@ -90,7 +95,9 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                          .asJson(),
                          ManagementRoutes.<GovernorsResponse> route(ManagementRoute.CLUSTER_GOVERNORS).toJson(this::buildGovernorsResponse),
                          ManagementRoutes.<CircuitBreakerStatusResponse> route(ManagementRoute.CLUSTER_CIRCUIT_BREAKER_STATUS).toJson(_ -> buildCircuitBreakerStatus()),
-                         ManagementRoutes.<CircuitBreakerResetResponse> route(ManagementRoute.CLUSTER_CIRCUIT_BREAKER_RESET).toJson(_ -> resetCircuitBreaker()),
+                         ManagementRoutes.<CircuitBreakerResetResponse> route(ManagementRoute.CLUSTER_CIRCUIT_BREAKER_RESET)
+                                         .withBody(CircuitBreakerResetRequest.class)
+                                         .toJson(this::resetCircuitBreaker),
                          ManagementRoutes.<AutoHealStatusResponse> route(ManagementRoute.CLUSTER_AUTO_HEAL_STATUS).toJson(_ -> buildAutoHealStatus()),
                          ManagementRoutes.<RoleMismatchesResponse> route(ManagementRoute.CLUSTER_ROLE_MISMATCHES).toJson(_ -> buildRoleMismatches()),
                          ManagementRoutes.<AutoHealToggleResponse> route(ManagementRoute.CLUSTER_AUTO_HEAL_ENABLE).toJson(_ -> setAutoHeal(true)),
@@ -98,24 +105,51 @@ public final class ClusterTopologyRoutes implements RouteSource {
     }
 
     private Promise<CircuitBreakerStatusResponse> buildCircuitBreakerStatus() {
-        return ctmOpt().map(ctm -> {
-                                var state = ctm.circuitBreakerState();
-
-                                return new CircuitBreakerStatusResponse(state.consecutiveFailures(),
-                                                                        state.trippedAt(),
-                                                                        state.nextAllowedMs(),
-                                                                        state.tripped());
-                            })
+        return ctmOpt().map(ClusterTopologyRoutes::toBreakerStatus)
                      .async(CTM_UNAVAILABLE);
     }
 
-    private Promise<CircuitBreakerResetResponse> resetCircuitBreaker() {
-        return ctmOpt().map(ctm -> {
-                                var prior = ctm.resetCircuitBreaker("/api/cluster/topology/circuit-breaker/reset");
+    private static CircuitBreakerStatusResponse toBreakerStatus(ClusterTopologyManager ctm) {
+        var state = ctm.circuitBreakerState();
+        var sources = new TreeMap<String, SourceBreakerInfo>();
 
-                                return new CircuitBreakerResetResponse("reset", prior);
-                            })
-                     .async(CTM_UNAVAILABLE);
+        ctm.circuitBreakerStates()
+           .forEach((source, breaker) -> sources.put(source, toSourceBreaker(breaker)));
+
+        return new CircuitBreakerStatusResponse(state.consecutiveFailures(),
+                                                state.trippedAt(),
+                                                state.nextAllowedMs(),
+                                                state.tripped(),
+                                                sources);
+    }
+
+    private static SourceBreakerInfo toSourceBreaker(ClusterTopologyManager.CircuitBreakerState breaker) {
+        return new SourceBreakerInfo(breaker.consecutiveFailures(), breaker.tripped(), breaker.nextAllowedMs());
+    }
+
+    /// The reset of one source's breaker, or of every breaker when the request names no source (spec §8.3). A source name is parsed here,
+    /// at the boundary, so a malformed one is refused rather than silently resetting nothing.
+    private Promise<CircuitBreakerResetResponse> resetCircuitBreaker(CircuitBreakerResetRequest request) {
+        return ctmOpt().async(CTM_UNAVAILABLE)
+                     .flatMap(ctm -> resetRequested(ctm, request));
+    }
+
+    private static Promise<CircuitBreakerResetResponse> resetRequested(ClusterTopologyManager ctm, CircuitBreakerResetRequest request) {
+        return requestedSource(request).async()
+                              .map(source -> resetSource(ctm, source));
+    }
+
+    private static CircuitBreakerResetResponse resetSource(ClusterTopologyManager ctm, Option<SourceName> source) {
+        var prior = ctm.resetCircuitBreaker("/api/cluster/topology/circuit-breaker/reset", source);
+
+        return new CircuitBreakerResetResponse("reset", prior, source.map(SourceName::value).or("all"));
+    }
+
+    private static Result<Option<SourceName>> requestedSource(CircuitBreakerResetRequest request) {
+        return Option.option(request.source())
+                     .filter(Verify.Is::present)
+                     .fold(() -> Result.success(Option.<SourceName> none()),
+                           raw -> SourceName.sourceName(raw).map(Option::some));
     }
 
     /// #689: the operator-visible half of the role-mismatch detection — the same ledger the CTM's

@@ -11,6 +11,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -102,8 +103,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     AtomicReference<NodeReconcilerState> stateRef,
                                     AtomicBoolean active,
                                     ConcurrentHashMap<NodeId, Promise<?>> inFlightProvisions,
-                                    AtomicInteger consecutiveProvisioningFailures,
-                                    AtomicLong nextProvisioningAllowedMs,
+                                    ProvisioningBreakers breakers,
                                     AtomicLong lastProvisioningFailureMs,
                                     AtomicReference<LastProvisionFailure> lastProvisionFailureRef,
                                     AtomicLong formationAnchorMs,
@@ -260,8 +260,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicReference<>(new NodeReconcilerState.Inactive("not yet activated")),
                                                 new AtomicBoolean(false),
                                                 new ConcurrentHashMap<>(),
-                                                new AtomicInteger(0),
-                                                new AtomicLong(0L),
+                                                new ProvisioningBreakers(),
                                                 new AtomicLong(0L),
                                                 new AtomicReference<>(),
                                                 new AtomicLong(clock.getAsLong()),
@@ -398,7 +397,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             }
         }
 
-        resetProvisioningCircuit("setDesiredCount " + sourceName + "/" + role.value() + "=" + count);
+        resetProvisioningCircuit(sourceName, "setDesiredCount " + sourceName + "/" + role.value() + "=" + count);
 
         return applyDesiredCount(clusterConfigReader,
                                  hierarchyWriter.get(),
@@ -470,10 +469,19 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     // a pure actuator driven by the LeaderReconciler (spec §7). The ProvisioningSlotKey/
     // ProvisioningSlotValue KV types remain alive (deleted in a later phase).
     // ---------------------------------------------------------------------------------------
+    /// The source a joined node belongs to: the one its replacement was provisioned in, else the one committed for it. Empty when neither is
+    /// known, and then the join closes every breaker (it is evidence that provisioning works somewhere, and a stale open breaker costs more
+    /// than a spurious close).
+    private Option<SourceName> joinedSource(NodeId nodeId) {
+        return Option.option(replacementSources.get(nodeId))
+                     .orElse(() -> lifecycleManager.committedSourceOf(nodeId));
+    }
+
     @Contract
     @Override
     public void onNodeReady(NodeId nodeId) {
-        resetProvisioningCircuit("node " + nodeId + " became present");
+        joinedSource(nodeId).onPresent(source -> resetProvisioningCircuit(source, "node " + nodeId + " became present"))
+                            .onEmpty(() -> resetProvisioningCircuit("node " + nodeId + " became present"));
     }
 
     @Contract
@@ -741,28 +749,62 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         reapUnlessLive(departedNodeId, activationEpoch.get(), REAP_LIVENESS_RECHECKS);
     }
 
+    /// Close every source's breaker (a change of circumstance that is not tied to one source: new activation, phase NORMAL, an operator
+    /// reset without a source).
     @Contract
     private void resetProvisioningCircuit(String reason) {
-        var prev = consecutiveProvisioningFailures.getAndSet(0);
+        clearProvisioningWaits();
+        logCircuitReset(reason, breakers.resetAll());
+    }
 
-        nextProvisioningAllowedMs.set(0L);
+    /// Close one source's breaker; the others keep their count and window (spec §8.3).
+    @Contract
+    private void resetProvisioningCircuit(SourceName source, String reason) {
+        clearProvisioningWaits();
+        logCircuitReset(reason + " [" + source.value() + "]", breakers.reset(source.value()));
+    }
+
+    @Contract
+    private void clearProvisioningWaits() {
         // A reset is a change of circumstance (node joined, phase NORMAL, desired count changed, new activation): a wait recorded before it
         // is not known to still exist, and a status must not report one that no longer does.
         inventoryWaitRef.set(null);
         lifecycleManager.resetProvisionerState(resolveClusterName());
-        if (prev > 0) {
-            log.info("CTM: provisioning circuit breaker reset ({}); cleared {} prior failure(s)", reason, prev);
+    }
+
+    @Contract
+    private void logCircuitReset(String reason, int prior) {
+        if (prior > 0) {
+            log.info("CTM: provisioning circuit breaker reset ({}); cleared {} prior failure(s)", reason, prior);
         }
     }
 
+    /// The aggregate of the per-source breakers, for readers that want one answer: the worst count, the latest window, tripped when any
+    /// source is. [#circuitBreakerStates] is the per-source truth.
     @Override
     public CircuitBreakerState circuitBreakerState() {
-        var failures = consecutiveProvisioningFailures.get();
+        var all = breakers.snapshot().values();
 
-        return new CircuitBreakerState(failures,
+        return new CircuitBreakerState(all.stream().mapToInt(ProvisioningBreakers.Breaker::failures).max().orElse(0),
                                        MAX_CONSECUTIVE_PROVISIONING_FAILURES,
-                                       nextProvisioningAllowedMs.get(),
-                                       failures >= MAX_CONSECUTIVE_PROVISIONING_FAILURES);
+                                       all.stream().mapToLong(ProvisioningBreakers.Breaker::nextAllowedMs).max().orElse(0L),
+                                       all.stream().anyMatch(b -> b.isTripped(MAX_CONSECUTIVE_PROVISIONING_FAILURES)));
+    }
+
+    @Override
+    public Map<String, CircuitBreakerState> circuitBreakerStates() {
+        var states = new TreeMap<String, CircuitBreakerState>();
+
+        breakers.snapshot().forEach((source, breaker) -> states.put(source, breakerState(breaker)));
+
+        return states;
+    }
+
+    private static CircuitBreakerState breakerState(ProvisioningBreakers.Breaker breaker) {
+        return new CircuitBreakerState(breaker.failures(),
+                                       MAX_CONSECUTIVE_PROVISIONING_FAILURES,
+                                       breaker.nextAllowedMs(),
+                                       breaker.isTripped(MAX_CONSECUTIVE_PROVISIONING_FAILURES));
     }
 
     @Override
@@ -772,9 +814,16 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Override
     public int resetCircuitBreaker(String reason) {
-        var prev = consecutiveProvisioningFailures.get();
+        return resetCircuitBreaker(reason, Option.none());
+    }
 
-        resetProvisioningCircuit("operator: " + reason);
+    @Override
+    public int resetCircuitBreaker(String reason, Option<SourceName> source) {
+        var prev = source.map(named -> breakers.of(named.value()).failures())
+                         .or(() -> breakers.snapshot().values().stream().mapToInt(ProvisioningBreakers.Breaker::failures).sum());
+
+        source.onPresent(named -> resetProvisioningCircuit(named, "operator: " + reason))
+              .onEmpty(() -> resetProvisioningCircuit("operator: " + reason));
 
         return prev;
     }
@@ -907,11 +956,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         // symmetric with the "no healthy peers" deferral below. `onNodeReady`/`activate`/
         // phase→NORMAL/`setDesiredSize` reset the breaker the moment a replacement actually joins
         // or an operator intervenes.
-        if (provisioningCircuitOpen()) {
-            log.warn("CTM v2: provisionReplacement suppressed — provisioning circuit OPEN ({} consecutive failures, backoff until {}ms); "
+        if (provisioningCircuitOpen(sourceName)) {
+            log.warn("CTM v2: provisionReplacement suppressed — provisioning circuit for source {} OPEN ({} consecutive failures, backoff until {}ms); "
                     + "deferring until the backoff window clears or a node joins.",
-                     consecutiveProvisioningFailures.get(),
-                     nextProvisioningAllowedMs.get());
+                     sourceName,
+                     breakers.of(sourceName.value()).failures(),
+                     breakers.of(sourceName.value()).nextAllowedMs());
 
             return Promise.success(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.CIRCUIT_OPEN));
         }
@@ -948,16 +998,16 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                                         sourceName))
                                     .withSuccess(_ -> provisionedRoleIntents.put(newNodeId, intendedRole))
                                     .map(ClusterTopologyManagerRecord::asDispatched)
-                                    .fold(this::completeProvision)
-                                    .withFailure(this::recordProvisioningFailure);
+                                    .fold(result -> completeProvision(result, sourceName))
+                                    .withFailure(cause -> recordProvisioningFailure(sourceName.value(), cause));
     }
 
     /// A refusal before any provider effect (source admission, incomplete inventory) is a deferral for the reconciler: nothing was
     /// provisioned and the placeholder is removed. It is still a refused provision, so it is counted and logged through
     /// [#recordProvisioningFailure] (WARN, last failure, circuit after 3): a permanent refusal (fleet limit reached) must not retry
     /// invisibly on every reconcile tick for ever.
-    private Promise<ProvisionDisposition> completeProvision(Result<ProvisionDisposition> result) {
-        return result.fold(this::provisionRefused, this::provisionAccepted);
+    private Promise<ProvisionDisposition> completeProvision(Result<ProvisionDisposition> result, SourceName sourceName) {
+        return result.fold(cause -> provisionRefused(cause, sourceName), this::provisionAccepted);
     }
 
     private Promise<ProvisionDisposition> provisionAccepted(ProvisionDisposition disposition) {
@@ -978,20 +1028,20 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
     }
 
-    private Promise<ProvisionDisposition> provisionRefused(Cause cause) {
+    private Promise<ProvisionDisposition> provisionRefused(Cause cause, SourceName sourceName) {
         return cause instanceof CapacityControlledLifecycle.AdmissionFailure
-               ? deferAdmission(cause)
+               ? deferAdmission(cause, sourceName)
                : cause.promise();
     }
 
-    private Promise<ProvisionDisposition> deferAdmission(Cause cause) {
-        return Promise.success(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.CAPACITY_ADMISSION)).onSuccess(_ -> recordAdmissionDeferral(cause));
+    private Promise<ProvisionDisposition> deferAdmission(Cause cause, SourceName sourceName) {
+        return Promise.success(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.CAPACITY_ADMISSION)).onSuccess(_ -> recordAdmissionDeferral(cause, sourceName));
     }
 
     /// Counted like every refused provision, and told to the operator once per run of deferrals (the flag is the flood guard; the
     /// recovery clears it): a permanent refusal keeps the event open instead of retrying invisibly.
     @Contract
-    private void recordAdmissionDeferral(Cause cause) {
+    private void recordAdmissionDeferral(Cause cause, SourceName sourceName) {
         if (cause == CapacityControlledLifecycle.AdmissionFailure.INVENTORY_UNAVAILABLE) {
             recordInventoryWait(cause);
 
@@ -999,7 +1049,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
 
         inventoryWaitRef.set(null);
-        recordProvisioningFailure(cause);
+        recordProvisioningFailure(sourceName.value(), cause);
         if (admissionDeferred.compareAndSet(false, true)) {
             org.pragmatica.utility.warning.OperatorWarnings.raise(log,
                                                                   warningSink.get(),
@@ -1295,7 +1345,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Contract
     private void recordUnresolvedSource(Cause cause) {
-        recordProvisioningFailure(cause);
+        recordProvisioningFailure(ProvisioningBreakers.UNRESOLVED, cause);
         if (sourceUnresolved.compareAndSet(false, true)) {
             OperatorWarnings.raise(log,
                                    warningSink.get(),
@@ -1943,8 +1993,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// can never gate. The window is `nowMs() < nextProvisioningAllowedMs`, so once it elapses a
     /// single probe provision is allowed; a fresh failure re-arms the window, a success (node
     /// joins → `onNodeReady` → `resetProvisioningCircuit`) clears it.
-    private boolean provisioningCircuitOpen() {
-        return consecutiveProvisioningFailures.get() >= MAX_CONSECUTIVE_PROVISIONING_FAILURES && nowMs() < nextProvisioningAllowedMs.get();
+    private boolean provisioningCircuitOpen(SourceName sourceName) {
+        return breakers.isOpen(sourceName.value(), MAX_CONSECUTIVE_PROVISIONING_FAILURES, nowMs());
     }
 
     /// #148 — record a provisioning failure: bump the consecutive-failure counter and, once the
@@ -1952,24 +2002,25 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// provisioning is suppressed. The counter is reset on the next real node-join / activation /
     /// phase-NORMAL / operator reset via [#resetProvisioningCircuit].
     @Contract
-    private void recordProvisioningFailure(Cause cause) {
+    private void recordProvisioningFailure(String source, Cause cause) {
         if (cause instanceof FleetInventoryInitializing) {
             return;
         }
 
-        var failures = consecutiveProvisioningFailures.incrementAndGet();
+        var failures = breakers.recordFailure(source, MAX_CONSECUTIVE_PROVISIONING_FAILURES, nowMs(), autoHealConfig.provisioningTimeout().millis());
 
         lastProvisionFailureRef.set(new LastProvisionFailure(cause.message(), nowMs()));
         if (failures >= MAX_CONSECUTIVE_PROVISIONING_FAILURES) {
-            nextProvisioningAllowedMs.set(nowMs() + autoHealConfig.provisioningTimeout().millis());
-            log.warn("CTM v2: provisioning circuit TRIPPED after {} consecutive failures — suspending provisioning for {}ms (last: {})",
+            log.warn("CTM v2: provisioning circuit for source {} TRIPPED after {} consecutive failures — suspending provisioning for {}ms (last: {})",
+                     source,
                      failures,
                      autoHealConfig.provisioningTimeout().millis(),
                      cause.message());
         } else {
-            log.warn("CTM v2: provisioning failure {}/{} (last: {})",
+            log.warn("CTM v2: provisioning failure {}/{} for source {} (last: {})",
                      failures,
                      MAX_CONSECUTIVE_PROVISIONING_FAILURES,
+                     source,
                      cause.message());
         }
     }

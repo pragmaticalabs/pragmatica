@@ -5,6 +5,7 @@
 package org.pragmatica.aether.node;
 
 import java.lang.reflect.Proxy;
+import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
@@ -27,6 +28,7 @@ class AetherNodeProvisioningDiagnosticsTest {
                                                                new Class<?>[]{ClusterTopologyManager.class},
                                                                (_, method, _) -> switch (method.getName()) {
                                                                    case "circuitBreakerState" -> BREAKER;
+                                                                   case "circuitBreakerStates" -> Map.of();
                                                                    case "lastProvisionFailure" -> failure;
                                                                    case "inventoryWait" -> wait;
                                                                    case "inventoryWaits" -> waits;

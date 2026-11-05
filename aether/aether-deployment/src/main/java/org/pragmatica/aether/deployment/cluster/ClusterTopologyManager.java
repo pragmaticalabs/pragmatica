@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.cluster;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -92,7 +93,15 @@ public interface ClusterTopologyManager extends TopologyManager {
 
     record CircuitBreakerState(int consecutiveFailures, int trippedAt, long nextAllowedMs, boolean tripped) {}
 
+    /// The aggregate of the per-source breakers: the worst failure count, the latest window, tripped when any source is.
     CircuitBreakerState circuitBreakerState();
+
+    /// One breaker per source binding (spec §8.3): a source whose provisions keep failing opens only its own. Holds the sources that have
+    /// recorded a failure since their breaker was last closed; a failure counted before any source was resolved shows as `(unresolved)`
+    /// and gates nothing. The default answers none, for implementations that keep no breaker.
+    default Map<String, CircuitBreakerState> circuitBreakerStates() {
+        return Map.of();
+    }
 
     /// #336 observability — the most recent provisioning failure (`cause` message + the epoch-millis
     /// instant it was recorded), or empty when no provisioning failure has been recorded yet.
@@ -100,6 +109,12 @@ public interface ClusterTopologyManager extends TopologyManager {
 
     Option<LastProvisionFailure> lastProvisionFailure();
     int resetCircuitBreaker(String reason);
+
+    /// The operator reset of one source's breaker, or of every breaker when `source` is empty. Returns the failure count it cleared (the
+    /// sum over sources when none is named). The default ignores the source and resets everything, for implementations with one breaker.
+    default int resetCircuitBreaker(String reason, Option<SourceName> source) {
+        return resetCircuitBreaker(reason);
+    }
     /// #685 — the operator's auto-heal disable/enable is a durable cluster fact stored in consensus
     /// KV (`AetherKey.AutoHealStateKey`), never a leader's in-memory mood: a read reflects the log
     /// applied LOCALLY, so the flag becomes visible on a node when that node applies the committed

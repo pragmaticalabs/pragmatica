@@ -112,7 +112,7 @@ class ClusterTopologyCommand implements Callable<Integer> {
             }
         }
 
-        @Command(name = "reset", description = "Reset the CTM provisioning circuit breaker (operator override; use after fixing the underlying provisioning issue)")
+        @Command(name = "reset", description = "Reset the CTM provisioning circuit breaker of one source (--source) or of all (operator override; use after fixing the underlying provisioning issue)")
         @SuppressWarnings("JBCT-RET-01")
         static class ResetCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
@@ -121,10 +121,20 @@ class ClusterTopologyCommand implements Callable<Integer> {
             @Mixin
             ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
 
+            @CommandLine.Option(names = "--source",
+                                description = "Reset only this source's breaker (default: every source's)")
+            private String source = "";
+
+            private String requestBody() {
+                return source.isBlank()
+                       ? "{}"
+                       : "{\"source\":\"" + source + "\"}";
+            }
+
             @Override
             public Integer call() {
                 return clusterTarget.applyOverrides()
-                                    .flatMap(_ -> ClusterHttpClient.post(CLUSTER_CIRCUIT_BREAKER_RESET, "{}"))
+                                    .flatMap(_ -> ClusterHttpClient.post(CLUSTER_CIRCUIT_BREAKER_RESET, requestBody()))
                                     .fold(ResetCommand::onFailure, this::onSuccess);
             }
 

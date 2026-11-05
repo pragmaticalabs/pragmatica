@@ -690,9 +690,21 @@ public sealed interface ManagementApiResponses {
                          Option<Long> communityTerm,
                          Option<Integer> liveMembers) {}
 
-    record CircuitBreakerStatusResponse(int consecutiveFailures, int trippedAt, long nextAllowedMs, boolean tripped) {}
+    /// The aggregate of the per-source breakers (worst count, latest window, tripped when any is) and, in `sources`, each source's own.
+    record CircuitBreakerStatusResponse(int consecutiveFailures,
+                                        int trippedAt,
+                                        long nextAllowedMs,
+                                        boolean tripped,
+                                        Map<String, SourceBreakerInfo> sources) {}
 
-    record CircuitBreakerResetResponse(String status, int priorFailureCount) {}
+    /// One source's provisioning breaker.
+    record SourceBreakerInfo(int consecutiveFailures, boolean tripped, long nextAllowedMs) {}
+
+    /// `source` names the one breaker to reset; absent or blank resets every source's.
+    record CircuitBreakerResetRequest(String source) {}
+
+    /// `scope` is the source whose breaker was reset, or `all`.
+    record CircuitBreakerResetResponse(String status, int priorFailureCount, String scope) {}
 
     record AutoHealStatusResponse(boolean enabled) {}
 
@@ -755,7 +767,10 @@ public sealed interface ManagementApiResponses {
                                            long inventoryWaits,
                                            Option<ProvisionFailureInfo> lastInventoryWait) {}
 
-    record ProvisioningCircuitBreakerInfo(int consecutiveFailures, boolean tripped, long nextAllowedMs) {}
+    record ProvisioningCircuitBreakerInfo(int consecutiveFailures,
+                                          boolean tripped,
+                                          long nextAllowedMs,
+                                          Map<String, SourceBreakerInfo> sources) {}
 
     record ProvisionFailureInfo(String cause, long atEpochMs) {}
 

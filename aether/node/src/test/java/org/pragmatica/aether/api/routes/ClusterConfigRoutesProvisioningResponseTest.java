@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.util.Map;
+
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager.CircuitBreakerState;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager.LastProvisionFailure;
@@ -21,7 +23,7 @@ class ClusterConfigRoutesProvisioningResponseTest {
 
     @Test
     void anInventoryWait_isInventoryWaiting_andNotALastProvisionFailure() {
-        var response = ClusterConfigRoutes.toProvisioningResponse(new ProvisioningDiagnostics(DECISION, BREAKER, Option.none(),
+        var response = ClusterConfigRoutes.toProvisioningResponse(new ProvisioningDiagnostics(DECISION, BREAKER, Map.of(), Option.none(),
             Option.some(new LastProvisionFailure("Complete inventory is unavailable", 42L)), 7L));
 
         assertThat(response.inventoryWaiting()).isTrue();
@@ -33,7 +35,7 @@ class ClusterConfigRoutesProvisioningResponseTest {
 
     @Test
     void aResolvedWait_isNotWaiting_butStaysCounted() {
-        var response = ClusterConfigRoutes.toProvisioningResponse(new ProvisioningDiagnostics(DECISION, BREAKER,
+        var response = ClusterConfigRoutes.toProvisioningResponse(new ProvisioningDiagnostics(DECISION, BREAKER, Map.of(),
             Option.some(new LastProvisionFailure("boom", 1L)), Option.none(), 7L));
 
         assertThat(response.inventoryWaiting()).isFalse();
