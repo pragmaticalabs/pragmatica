@@ -106,6 +106,21 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.INSTANCE_REAP_HELD.level()).isEqualTo(WarningLevel.WARNING);
     }
 
+    /// FDB-2a (#2591): each schema-migration fence warning is closed by an INFO recovery of its own subsystem; the wire strings are pinned.
+    @Test
+    void schemaMigrationFenceWarnings_areClosedByInfoRecoveries() {
+        assertThat(OperatorWarningCode.SCHEMA_MIGRATION_FENCE_RELEASED.recoveryOf()
+                                                                      .unwrap()).isEqualTo(OperatorWarningCode.SCHEMA_MIGRATION_FENCE_HELD);
+        assertThat(OperatorWarningCode.SCHEMA_MIGRATION_FENCED.recoveryOf()
+                                                              .unwrap()).isEqualTo(OperatorWarningCode.SCHEMA_MIGRATION_UNFENCED);
+        assertThat(OperatorWarningCode.SCHEMA_MIGRATION_FENCE_RELEASED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.SCHEMA_MIGRATION_FENCED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.SCHEMA_MIGRATION_FENCE_RELEASED.code()).isEqualTo("schema-migration-fence-released");
+        assertThat(OperatorWarningCode.SCHEMA_MIGRATION_FENCED.code()).isEqualTo("schema-migration-fenced");
+        assertThat(OperatorWarningCode.SCHEMA_MIGRATION_FENCE_RELEASED.subsystem()).isEqualTo(OperatorWarningCode.SCHEMA_MIGRATION_FENCE_HELD.subsystem());
+        assertThat(OperatorWarningCode.SCHEMA_MIGRATION_FENCED.subsystem()).isEqualTo(OperatorWarningCode.SCHEMA_MIGRATION_UNFENCED.subsystem());
+    }
+
     /// #2306: the observer lag warning is closed by an INFO recovery of its own subsystem.
     @Test
     void observerConsensusLagging_isClosedByAnInfoRecovery() {
@@ -244,6 +259,8 @@ class OperatorWarningCodeTest {
         OperatorWarningCode.STORAGE_MEMORY_TIER_CLAMPED,
         OperatorWarningCode.STORAGE_SNAPSHOT_FELL_BACK,
         OperatorWarningCode.STORAGE_WAL_TAIL_CUT,
+        // D1, added on purpose: a failed KV dispatcher stops (in production, halts) its node; the only end is a restart.
+        OperatorWarningCode.KV_DISPATCHER_FAILED,
         OperatorWarningCode.STORAGE_VOLUME_GUARD_INACTIVE,
         OperatorWarningCode.STORAGE_WAL_FAIL_STOPPED,
         OperatorWarningCode.STORAGE_STREAM_DISK_CAP_OVER_SPACE,

@@ -13,5 +13,5 @@ execute = "POST /"
 default = 500
 HTTP_404 = ["*NotFound*"]
 HTTP_400 = ["*Invalid*", "*Insufficient*"]
-HTTP_402 = ["*PaymentFailed*"]
+HTTP_402 = ["*PaymentDeclined*"]
 HTTP_409 = ["*AlreadyExists*"]

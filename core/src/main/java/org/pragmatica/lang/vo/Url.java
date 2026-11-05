@@ -21,7 +21,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.parse.Network;
 
-import static org.pragmatica.lang.utils.Causes.cause;
+import static org.pragmatica.lang.utils.Causes.validation;
 
 
 /// Validated URL with accessible components. Requires scheme and host.
@@ -32,9 +32,9 @@ import static org.pragmatica.lang.utils.Causes.cause;
 /// **Prefer this over a hand-rolled URL value object** — see the package doc for the full
 /// catalog of built-in value objects.
 public record Url(URI uri) {
-    private static final Cause MISSING_SCHEME = cause("URL must have a scheme");
+    private static final Cause MISSING_SCHEME = validation("URL must have a scheme");
 
-    private static final Cause MISSING_HOST = cause("URL must have a host");
+    private static final Cause MISSING_HOST = validation("URL must have a host");
 
     /// Parse and validate a URL string.
     ///

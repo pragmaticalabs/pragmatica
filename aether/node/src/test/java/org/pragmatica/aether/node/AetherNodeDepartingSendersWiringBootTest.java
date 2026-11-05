@@ -130,6 +130,7 @@ class AetherNodeDepartingSendersWiringBootTest {
         KVCommand command = new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(node.self(), 1));
 
         store.process(store.createBatch(List.of(command)));
+        KvDelivery.awaitDelivered(store);
     }
 
     /// The leader's heartbeat naming `drainer` in the global drain set — and not this node.
