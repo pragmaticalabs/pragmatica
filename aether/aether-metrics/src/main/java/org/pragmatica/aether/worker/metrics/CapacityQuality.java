@@ -11,5 +11,8 @@ import org.pragmatica.serialization.Codec;
 @Codec
 public enum CapacityQuality {
     FULL,
-    THROUGHPUT_ONLY
+    THROUGHPUT_ONLY,
+    /// A quality this node does not know (decoded from a newer producer). Required last by the codec processor (#964);
+    /// consumers treat it like `THROUGHPUT_ONLY`: it never promotes a predictor.
+    UNKNOWN
 }
