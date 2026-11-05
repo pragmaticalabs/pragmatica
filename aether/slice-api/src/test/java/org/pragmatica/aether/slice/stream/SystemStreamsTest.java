@@ -12,7 +12,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 
 class SystemStreamsTest {
-
     /// Enumerated-set pin, not a structural/reflective scan: [SystemStreams#ALL] is a hand-maintained
     /// catalog (its own doc comment says as much — "adding a new system stream ... must also list it
     /// here"), and [SystemStreamBootstrap] registers exactly what it iterates. This test hardcodes the
@@ -24,9 +23,8 @@ class SystemStreamsTest {
     /// described a third creation path was deleted in #734).
     @Test
     void all_engineKeys_matchExpectedEnumeratedSet() {
-        var actual = SystemStreams.ALL.stream()
-                                      .map(address -> address.name().value())
-                                      .collect(Collectors.toSet());
+        var actual = SystemStreams.ALL.stream().map(address -> address.name()
+                                                                      .value()).collect(Collectors.toSet());
 
         assertThat(actual).isEqualTo(Set.of("cluster-events", "capacity-minute", "capacity-hour"));
     }

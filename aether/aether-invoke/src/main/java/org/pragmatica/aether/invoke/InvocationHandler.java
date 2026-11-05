@@ -208,8 +208,7 @@ class InvocationHandlerImpl implements InvocationHandler {
     }
 
     /// Rc6 f3a: counts the INTERNAL offered load of calls that enter a local bridge directly.
-    private record InternalCalls(Artifact artifact,
-                                 Option<InvocationMetricsCollector> metricsCollector) implements AdmittedSliceBridge.CallRecorder {
+    private record InternalCalls(Artifact artifact, Option<InvocationMetricsCollector> metricsCollector) implements AdmittedSliceBridge.CallRecorder {
         @Override
         public Unit arrived(String method) {
             metricsCollector.onPresent(mc -> mc.recordArrival(artifact, method, Origin.INTERNAL));
@@ -295,15 +294,17 @@ class InvocationHandlerImpl implements InvocationHandler {
     /// The INTERNAL arrival, counted at the entry before the slice lookup or any admission check.
     @Contract
     private void countArrival(InvokeRequest request) {
-        metricsCollector.onPresent(mc -> mc.recordArrival(request.targetSlice(), request.method().name(), Origin.INTERNAL));
+        metricsCollector.onPresent(mc -> mc.recordArrival(request.targetSlice(),
+                                                          request.method().name(),
+                                                          Origin.INTERNAL));
     }
 
     @Contract
     private void countSettled(InvokeRequest request, Settlement settlement) {
         metricsCollector.onPresent(mc -> mc.recordSettled(request.targetSlice(),
-                                                           request.method().name(),
-                                                           Origin.INTERNAL,
-                                                           settlement));
+                                                          request.method().name(),
+                                                          Origin.INTERNAL,
+                                                          settlement));
     }
 
     private void processInvokeRequest(InvokeRequest request) {
@@ -351,7 +352,6 @@ class InvocationHandlerImpl implements InvocationHandler {
         var responseBytes = responseData.length;
 
         countSettled(request, Settlement.COMPLETED);
-
         if (request.expectResponse()) {
             sendSuccessResponse(request, responseData);
         }

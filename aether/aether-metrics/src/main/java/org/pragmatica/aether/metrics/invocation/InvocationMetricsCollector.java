@@ -199,7 +199,8 @@ public final class InvocationMetricsCollector {
                                                       .noneMatch(g -> g.metrics.methodName()
                                                                                .name()
                                                                                .equals(entry.getKey())))
-                               .map(entry -> arrivalOnlyMethod(entry.getKey(), entry.getValue()))
+                               .map(entry -> arrivalOnlyMethod(entry.getKey(),
+                                                               entry.getValue()))
                                .toList();
         var methods = java.util.stream.Stream.concat(gaugeMethods.stream(), tallyOnly.stream()).toList();
 
@@ -234,7 +235,8 @@ public final class InvocationMetricsCollector {
                                                internal);
     }
 
-    private static PerMethodMetrics buildPerMethodMetrics(MethodMetricsWithSlowCalls collector, Option<ArrivalTally> tally) {
+    private static PerMethodMetrics buildPerMethodMetrics(MethodMetricsWithSlowCalls collector,
+                                                          Option<ArrivalTally> tally) {
         var snapshot = collector.metrics.snapshot();
         var p95Ms = snapshot.estimatePercentileNs(95) / 1_000_000.0;
         var errorRate = 1.0 - snapshot.successRate();

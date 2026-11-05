@@ -18,7 +18,11 @@ import org.pragmatica.serialization.Codec;
 public record ArrivalCounts(long arrivals, long accepted, long rejected, long completed, long failed) {
     public static final ArrivalCounts ZERO = new ArrivalCounts(0, 0, 0, 0, 0);
 
-    public static ArrivalCounts arrivalCounts(long arrivals, long accepted, long rejected, long completed, long failed) {
+    public static ArrivalCounts arrivalCounts(long arrivals,
+                                              long accepted,
+                                              long rejected,
+                                              long completed,
+                                              long failed) {
         return new ArrivalCounts(arrivals, accepted, rejected, completed, failed);
     }
 

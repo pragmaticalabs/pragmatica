@@ -3,38 +3,40 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.slice.RetentionPolicy;
-import org.pragmatica.aether.slice.stream.StreamRegistryEntry.RegisteredByKind;
-
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+
+import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.stream.StreamRegistryEntry.RegisteredByKind;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 
 class SystemStreamBootstrapTest {
-
     private InMemoryStreamRegistry registry;
 
-    @BeforeEach void setUp() {
+    @BeforeEach
+    void setUp() {
         registry = new InMemoryStreamRegistry();
     }
 
     @Test
     void bootstrapRegistersClusterEventsStream() {
         var bootstrap = new SystemStreamBootstrap(registry,
-                                                    RetentionPolicy.retentionPolicy(),
-                                                    Clock.fixed(Instant.EPOCH, ZoneOffset.UTC));
-
+                                                  RetentionPolicy.retentionPolicy(),
+                                                  Clock.fixed(Instant.EPOCH, ZoneOffset.UTC));
         var result = bootstrap.bootstrap();
 
         assertThat(result.isSuccess()).isTrue();
         var entries = result.unwrap();
+
         assertThat(entries).hasSize(SystemStreams.ALL.size());
         var entry = entries.getFirst();
+
         assertThat(entry.address()).isEqualTo(SystemStreams.CLUSTER_EVENTS);
         assertThat(entry.registeredBy()).isEqualTo(RegisteredByKind.FRAMEWORK);
         assertThat(entry.refCount()).isEqualTo(1);
@@ -49,7 +51,6 @@ class SystemStreamBootstrapTest {
         var defaults = RetentionPolicy.retentionPolicy();
 
         new SystemStreamBootstrap(registry, defaults, Clock.fixed(Instant.EPOCH, ZoneOffset.UTC)).bootstrap();
-
         var minute = registry.lookup(SystemStreams.CAPACITY_MINUTE).unwrap();
         var hour = registry.lookup(SystemStreams.CAPACITY_HOUR).unwrap();
 
@@ -80,8 +81,8 @@ class SystemStreamBootstrapTest {
         bootstrap.bootstrap();
         bootstrap.bootstrap();
         bootstrap.bootstrap();
-
         var entry = registry.lookup(SystemStreams.CLUSTER_EVENTS).unwrap();
+
         assertThat(entry.refCount()).isEqualTo(1);
     }
 
@@ -90,7 +91,6 @@ class SystemStreamBootstrapTest {
         var bootstrap = new SystemStreamBootstrap(registry);
 
         bootstrap.bootstrap();
-
         for (var address : SystemStreams.ALL) {
             assertThat(registry.lookup(address).isPresent()).as("address %s", address).isTrue();
         }

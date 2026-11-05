@@ -2447,14 +2447,16 @@ class AppHttpServerAdapter implements AppHttpServer {
     /// route rate limit runs. Requests refused earlier (authentication, no route, upload caps) have no resolved
     /// route and are not counted per artifact.
     private void recordArrival(ResolvedRoute route) {
-        metricsCollector.onPresent(mc -> mc.recordArrival(route.artifact(), route.method().name(), Origin.EXTERNAL));
+        metricsCollector.onPresent(mc -> mc.recordArrival(route.artifact(),
+                                                          route.method().name(),
+                                                          Origin.EXTERNAL));
     }
 
     private void recordSettled(ResolvedRoute route, Settlement settlement) {
         metricsCollector.onPresent(mc -> mc.recordSettled(route.artifact(),
-                                                           route.method().name(),
-                                                           Origin.EXTERNAL,
-                                                           settlement));
+                                                          route.method().name(),
+                                                          Origin.EXTERNAL,
+                                                          settlement));
     }
 
     /// Admission refusal and the route rate limit are REJECTED; any other failure is FAILED.

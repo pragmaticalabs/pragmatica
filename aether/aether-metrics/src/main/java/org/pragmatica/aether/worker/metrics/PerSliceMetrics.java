@@ -36,7 +36,14 @@ public record PerSliceMetrics(Artifact artifact,
                                                   double errorRate,
                                                   long totalCalls,
                                                   List<PerMethodMetrics> methods) {
-        return new PerSliceMetrics(artifact, activeInvocations, p95LatencyMs, errorRate, totalCalls, methods, ArrivalCounts.ZERO, ArrivalCounts.ZERO);
+        return new PerSliceMetrics(artifact,
+                                   activeInvocations,
+                                   p95LatencyMs,
+                                   errorRate,
+                                   totalCalls,
+                                   methods,
+                                   ArrivalCounts.ZERO,
+                                   ArrivalCounts.ZERO);
     }
 
     public static PerSliceMetrics perSliceMetrics(Artifact artifact,
@@ -44,7 +51,14 @@ public record PerSliceMetrics(Artifact artifact,
                                                   double p95LatencyMs,
                                                   double errorRate,
                                                   long totalCalls) {
-        return new PerSliceMetrics(artifact, activeInvocations, p95LatencyMs, errorRate, totalCalls, List.of(), ArrivalCounts.ZERO, ArrivalCounts.ZERO);
+        return new PerSliceMetrics(artifact,
+                                   activeInvocations,
+                                   p95LatencyMs,
+                                   errorRate,
+                                   totalCalls,
+                                   List.of(),
+                                   ArrivalCounts.ZERO,
+                                   ArrivalCounts.ZERO);
     }
 
     public static PerSliceMetrics perSliceMetrics(Artifact artifact,

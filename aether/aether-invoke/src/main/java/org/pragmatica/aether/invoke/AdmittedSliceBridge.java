@@ -58,7 +58,6 @@ record AdmittedSliceBridge(SliceBridge delegate,
         };
 
         Unit arrived(String method);
-
         Unit settled(String method, Settlement settlement);
     }
 
@@ -97,7 +96,8 @@ record AdmittedSliceBridge(SliceBridge delegate,
     private Promise<byte[]> counted(String method, Supplier<Promise<byte[]>> call) {
         calls.arrived(method);
 
-        return call.get().withResult(result -> countSettled(method, result));
+        return call.get()
+                   .withResult(result -> countSettled(method, result));
     }
 
     @Contract

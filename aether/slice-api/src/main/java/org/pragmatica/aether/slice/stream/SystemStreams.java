@@ -26,25 +26,22 @@ public final class SystemStreams {
 
     /// Per-minute capacity samples, one per (community, artifact) (rc6 spec 7.2). Written by each governor.
     public static final ResourceAddress CAPACITY_MINUTE = capacityStream("capacity-minute");
-
     /// The hourly roll-up of [#CAPACITY_MINUTE], written by the core leader's roll-up job.
     public static final ResourceAddress CAPACITY_HOUR = capacityStream("capacity-hour");
-
     /// All system stream addresses that must exist at cluster bootstrap.
     public static final List<ResourceAddress> ALL = List.of(CLUSTER_EVENTS, CAPACITY_MINUTE, CAPACITY_HOUR);
-
     private static final long DAY_MS = 24 * 60 * 60 * 1000L;
 
     /// 35 days. Count and byte caps are sized for ~50k records per artifact over the window (spec 7.2) with
     /// headroom for ~100 artifacts x communities; mode ANY, so an undersized cap would shorten the window.
     static final RetentionPolicy CAPACITY_MINUTE_RETENTION = RetentionPolicy.retentionPolicy(10_000_000L,
-                                                                                            2L * 1024 * 1024 * 1024,
-                                                                                            35 * DAY_MS);
+                                                                                             2L * 1024 * 1024 * 1024,
+                                                                                             35 * DAY_MS);
 
     /// 3 years (1095 days), ~26k records per artifact over the window (spec 7.2).
     static final RetentionPolicy CAPACITY_HOUR_RETENTION = RetentionPolicy.retentionPolicy(5_000_000L,
-                                                                                          1024L * 1024 * 1024,
-                                                                                          1095 * DAY_MS);
+                                                                                           1024L * 1024 * 1024,
+                                                                                           1095 * DAY_MS);
 
     private static final Map<ResourceAddress, RetentionPolicy> RETENTION = Map.of(CAPACITY_MINUTE,
                                                                                   CAPACITY_MINUTE_RETENTION,
