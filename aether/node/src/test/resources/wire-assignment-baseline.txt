@@ -43,6 +43,7 @@ ENUM org.pragmatica.aether.slice.kvstore.AetherValue$PartitionRecoveryReasonKind
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$PartitionRecoveryState CONSISTENT=0,FLAGGED=1,RESOLVED=2,UNKNOWN=3
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$PlacementOperationPhase RESERVED=0,CREATE_REQUESTED=1,AWAITING_READY=2,DRAIN_REQUESTED=3,DRAINED=4,TERMINATING=5,COMPLETE=6,CREATE_UNCERTAIN=7,DRAIN_UNCERTAIN=8,BLOCKED=9,READINESS_DELAYED=10,UNKNOWN=11
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$ProvisioningSource CTM=0,MANUAL=1,UNRECOGNISED=2,UNKNOWN=3
+ENUM org.pragmatica.aether.slice.kvstore.AetherValue$RequirementKind REACTIVE=0,OPERATOR=1,SCHEDULED=2,CAMPAIGN=3,PREDICTIVE=4,RECOVERY=5,UNKNOWN=6
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$SchemaStatus PENDING=0,MIGRATING=1,COMPLETED=2,FAILED=3,UNKNOWN=4
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$SliceGoal LOADED=0,ACTIVE=1,UNLOADED=2,UNKNOWN=3
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$SliceObservedState LOADING=0,LOADED=1,ACTIVATING=2,ACTIVE=3,DEACTIVATING=4,FAILED=5,UNLOADING=6,UNLOADED=7,UNKNOWN=8
@@ -220,6 +221,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$SchemaVersionKey (datasource
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$SliceDesiredKey (nodeId:org.pragmatica.consensus.NodeId,artifact:org.pragmatica.aether.artifact.Artifact)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$SliceNodeKey (artifact:org.pragmatica.aether.artifact.Artifact,nodeId:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$SliceObservedKey (nodeId:org.pragmatica.consensus.NodeId,artifact:org.pragmatica.aether.artifact.Artifact)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$SliceRequirementKey (artifactBase:org.pragmatica.aether.artifact.ArtifactBase,kind:org.pragmatica.aether.slice.kvstore.AetherValue$RequirementKind)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$SliceTargetKey (artifactBase:org.pragmatica.aether.artifact.ArtifactBase)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$SpokesmanKey (coreNodeId:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$StorageStatusKey (nodeId:org.pragmatica.consensus.NodeId,instanceName:java.lang.String)
@@ -302,6 +304,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$SchemaVersionValue (dataso
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$SliceDesiredValue (goal:org.pragmatica.aether.slice.kvstore.AetherValue$SliceGoal,generation:org.pragmatica.aether.slice.kvstore.AetherValue$Generation,issuedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$SliceNodeValue (state:org.pragmatica.aether.slice.SliceState,failureReason:org.pragmatica.lang.Option<java.lang.String>,fatal:boolean,transitionedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$SliceObservedValue (state:org.pragmatica.aether.slice.kvstore.AetherValue$SliceObservedState,version:long,forGeneration:org.pragmatica.aether.slice.kvstore.AetherValue$Generation,incarnation:org.pragmatica.aether.slice.kvstore.AetherValue$ProcessIncarnation,failureReason:org.pragmatica.lang.Option<java.lang.String>,fatal:boolean,instanceNumber:int,methods:java.util.List<java.lang.String>,transitionedAt:long)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$SliceRequirementValue (instances:int,reason:java.lang.String,expiresAt:org.pragmatica.lang.Option<java.lang.Long>,baseTargetRevision:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$SliceTargetValue (currentVersion:org.pragmatica.aether.artifact.Version,targetInstances:int,minInstances:int,owningBlueprint:org.pragmatica.lang.Option<org.pragmatica.aether.slice.blueprint.BlueprintId>,placement:java.lang.String,updatedAt:long,maxInstances:org.pragmatica.lang.Option<java.lang.Integer>,scaleUpThreshold:org.pragmatica.lang.Option<java.lang.Double>,scaleDownThreshold:org.pragmatica.lang.Option<java.lang.Double>)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$SpokesmanValue (communities:java.util.List<java.lang.String>,assignedEpoch:org.pragmatica.aether.slice.generation.Epoch,assignedAt:org.pragmatica.hlc.HlcTimestamp,version:long,status:org.pragmatica.aether.slice.kvstore.AetherValue$SpokesmanStatus,failureReason:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$StorageStatusValue (instanceName:java.lang.String,tiers:java.util.List<org.pragmatica.aether.slice.kvstore.AetherValue$StorageStatusValue$TierStatus>,readinessState:java.lang.String,isReadReady:boolean,isWriteReady:boolean,lastSnapshotEpoch:long,lastSnapshotTimestamp:long,walBytes:long,updatedAt:long)
@@ -651,6 +654,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherKey$SchemaVersionKey 1121
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$SliceDesiredKey 2143
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$SliceNodeKey 1122
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$SliceObservedKey 2144
+TAG  org.pragmatica.aether.slice.kvstore.AetherKey$SliceRequirementKey 2210
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$SliceTargetKey 1123
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$SpokesmanKey 1124
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$StorageStatusKey 1127
@@ -740,6 +744,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$PreviousVersionValue 1631
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ProcessIncarnation 2154
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ProvisioningSlotValue 1632
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ProvisioningSource 1633
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$RequirementKind 2212
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ScheduledTaskClaimValue 2167
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ScheduledTaskPauseValue 1708
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ScheduledTaskStateValue 2168
@@ -752,6 +757,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$SliceGoal 2155
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$SliceNodeValue 1639
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$SliceObservedState 2159
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$SliceObservedValue 2149
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$SliceRequirementValue 2211
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$SliceTargetValue 1640
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$SpokesmanStatus 1641
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$SpokesmanValue 1642
