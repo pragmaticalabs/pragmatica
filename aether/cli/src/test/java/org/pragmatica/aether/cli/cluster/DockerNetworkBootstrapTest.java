@@ -162,12 +162,14 @@ class DockerNetworkBootstrapTest {
     @BeforeEach
     void install() {
         docker = new ScriptedDocker();
+        DockerNodeLedger.override = _ -> DockerNodeLedger.none();
         DockerHostPorts.override = containerId -> Result.success(40_000 + Math.floorMod(containerId.hashCode(), 20_000));
         useProvider(docker);
     }
 
     @AfterEach
     void remove() {
+        DockerNodeLedger.override = null;
         DockerHostPorts.override = null;
         ProviderResolver.dockerFactoryOverride = null;
         ProviderResolver.ambientEnvOverride = null;

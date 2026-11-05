@@ -22,9 +22,16 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
+import org.pragmatica.aether.slice.kvstore.SliceTargetFence;
+import org.pragmatica.aether.slice.kvstore.SliceTargetFence.SliceTargetFenceError;
+import org.pragmatica.aether.slice.kvstore.SliceTargetFence.TargetWrite;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVCommand.LeaderTransaction;
+import org.pragmatica.cluster.state.kvstore.KVCommand.Mutation;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -283,22 +290,49 @@ final class DeploymentManagerImpl implements DeploymentManager {
     }
 
     private Result<Deployment> persistAndCacheDeployment(Deployment deployed, SliceContext context) {
-        var commands = buildStartCommands(deployed, context);
-
-        return applyConsensus(commands).map(_ -> cacheDeployment(deployed));
+        return applyFenced("deployment-start " + deployed.deploymentId(), () -> startTransaction(deployed, context)).map(_ -> cacheDeployment(deployed));
     }
 
-    private List<KVCommand<AetherKey>> buildStartCommands(Deployment deployment, SliceContext context) {
-        var commands = new ArrayList<KVCommand<AetherKey>>();
+    /// #2662: the start writes as ONE fenced transaction, rebuilt from a fresh read on every submission: each base's target moved to the
+    /// new version over exactly the value read (with a witness on its owning blueprint), its version routing, and the deployment record.
+    /// A base whose target is not committed is created as before (the first slice's absence is already refused by
+    /// [#resolveSlicesAndCurrentVersion]; a later slice may have none after a register-only publish), but only as a create that expects
+    /// the target absent and witnesses the deployment's blueprint: when that blueprint is gone the start is refused rather than creating
+    /// a target nothing declares.
+    private Result<LeaderTransaction<AetherKey, AetherValue>> startTransaction(Deployment deployment,
+                                                                               SliceContext context) {
+        var bases = context.artifacts().stream().distinct().toList();
+        var others = new ArrayList<Mutation<AetherKey, AetherValue>>();
 
-        for (var base : context.artifacts()) {
-            addSliceTargetCommand(commands, base, deployment.newVersion(), deployment.newInstances());
-            addVersionRoutingCommand(commands, base, deployment.oldVersion(), deployment.newVersion());
-        }
+        bases.forEach(base -> others.add(routingPut(base, deployment.oldVersion(), deployment.newVersion())));
+        others.add(deploymentPut(deployment));
 
-        addDeploymentCommand(commands, deployment);
+        return Result.firstFailureOf(bases.stream().map(base -> startTargetWrite(base, deployment)).toList()).flatMap(writes -> SliceTargetFence.transaction(kvStore,
+                                                                                                                                                             writes,
+                                                                                                                                                             others));
+    }
 
-        return commands;
+    private Result<TargetWrite> startTargetWrite(ArtifactBase base, Deployment deployment) {
+        return targetWrite(SliceTargetKey.sliceTargetKey(base), deployment, deployment.newVersion());
+    }
+
+    /// The write of the base's target at `version` and the deployment's instance count: over the committed target, or, when none is
+    /// committed, a create witnessed by the deployment's blueprint ([SliceTargetFence#createWrite]).
+    private Result<TargetWrite> targetWrite(SliceTargetKey key, Deployment deployment, Version version) {
+        return SliceTargetFence.committedTarget(kvStore, key).fold(() -> createTargetWrite(key, deployment, version),
+                                                                   read -> SliceTargetFence.targetWrite(kvStore,
+                                                                                                        key,
+                                                                                                        Option.some(read),
+                                                                                                        read.withVersion(version)
+                                                                                                            .withInstances(deployment.newInstances())));
+    }
+
+    private Result<TargetWrite> createTargetWrite(SliceTargetKey key, Deployment deployment, Version version) {
+        return BlueprintId.blueprintId(deployment.blueprintId()).flatMap(blueprint -> SliceTargetFence.createWrite(kvStore,
+                                                                                                                   key,
+                                                                                                                   blueprint,
+                                                                                                                   SliceTargetValue.sliceTargetValue(version,
+                                                                                                                                                     deployment.newInstances())));
     }
 
     private Result<Deployment> applyPromoteRouting(Deployment deployment) {
@@ -376,25 +410,64 @@ final class DeploymentManagerImpl implements DeploymentManager {
     /// and while it exists the rolled-back NEW version stays permitted (`CommittedSliceTarget`) and the
     /// leader keeps its instances allocated (`activeRoutings`). Request routing never read the entry —
     /// `activeRouting` filters terminal deployments — so nothing loses it. ORDER IS LOAD-BEARING: the
-    /// target must be restored to the old version BEFORE the routing removal in the same batch, because
-    /// the leader's `handleRoutingRemoval` deallocates every version the committed target does not name.
+    /// target must be restored to the old version BEFORE the routing removal is observed, because the
+    /// leader's `handleRoutingRemoval` deallocates every version the committed target does not name. Both
+    /// are mutations of one transaction, whose applier commits every mutation before any notification.
+    ///
+    /// #2662: the rollback writes are ONE fenced transaction, rebuilt from a fresh read on every submission. The target restore expects the
+    /// value read and witnesses its owning blueprint; a target that is not committed is created as before, witnessed by the deployment's
+    /// blueprint. A base whose committed target names an owner that is not committed, or whose target is absent while the deployment's
+    /// blueprint is not committed, is not restored: writing it would keep alive (or re-create) the target of a deleted blueprint, and there
+    /// is nothing left to roll back. The routing removal and the deployment record still commit, so the deployment ends.
     private Result<Deployment> applyRollbackRouting(Deployment deployment) {
         return deployment.rolledBack()
-                         .flatMap(finalized -> {
-                                      var commands = new ArrayList<KVCommand<AetherKey>>();
+                         .flatMap(finalized -> applyFenced("deployment-rollback " + finalized.deploymentId(),
+                                                           () -> rollbackTransaction(finalized)).map(_ -> cacheDeployment(finalized)));
+    }
 
-                                      for (var base : finalized.artifacts()) {
-                                          addSliceTargetCommand(commands,
-                                                                base,
-                                                                finalized.oldVersion(),
-                                                                finalized.newInstances());
-                                          commands.add(new KVCommand.Remove<>(VersionRoutingKey.versionRoutingKey(base)));
-                                      }
+    private Result<LeaderTransaction<AetherKey, AetherValue>> rollbackTransaction(Deployment finalized) {
+        var bases = finalized.artifacts().stream().distinct().toList();
+        var others = new ArrayList<Mutation<AetherKey, AetherValue>>();
 
-                                      addDeploymentCommand(commands, finalized);
+        bases.forEach(base -> routingRemoval(base).onPresent(others::add));
+        others.add(deploymentPut(finalized));
+        var writes = bases.stream().flatMap(base -> rollbackTargetWrite(base, finalized).stream()).toList();
 
-                                      return applyConsensus(commands).map(_ -> cacheDeployment(finalized));
-                                  });
+        return SliceTargetFence.transaction(kvStore, writes, others);
+    }
+
+    private Option<TargetWrite> rollbackTargetWrite(ArtifactBase base, Deployment finalized) {
+        return targetWrite(SliceTargetKey.sliceTargetKey(base),
+                           finalized,
+                           finalized.oldVersion()).onFailure(cause -> log.info("Deployment {} rollback does not restore the target of {}: {}",
+                                                                               finalized.deploymentId(),
+                                                                               base,
+                                                                               cause.message()))
+                          .option();
+    }
+
+    /// The removal of the base's version routing over the value read; nothing when none is committed.
+    private Option<Mutation<AetherKey, AetherValue>> routingRemoval(ArtifactBase base) {
+        var key = VersionRoutingKey.versionRoutingKey(base);
+
+        return kvStore.get(key)
+                      .map(read -> new Mutation<AetherKey, AetherValue>(key,
+                                                                        Option.some(read),
+                                                                        Option.none()));
+    }
+
+    private Mutation<AetherKey, AetherValue> routingPut(ArtifactBase base, Version oldVersion, Version newVersion) {
+        var key = VersionRoutingKey.versionRoutingKey(base);
+
+        return new Mutation<>(key,
+                              kvStore.get(key),
+                              Option.some(VersionRoutingValue.versionRoutingValue(oldVersion, newVersion)));
+    }
+
+    private Mutation<AetherKey, AetherValue> deploymentPut(Deployment deployment) {
+        var key = DeploymentKey.deploymentKey(deployment.deploymentId());
+
+        return new Mutation<>(key, kvStore.get(key), Option.some(deploymentValue(deployment)));
     }
 
     private Result<Deployment> applyCompleteRouting(Deployment deployment) {
@@ -421,31 +494,6 @@ final class DeploymentManagerImpl implements DeploymentManager {
         return commands;
     }
 
-    private void addSliceTargetCommand(List<KVCommand<AetherKey>> commands,
-                                       ArtifactBase base,
-                                       Version version,
-                                       int instances) {
-        var key = SliceTargetKey.sliceTargetKey(base);
-        var value = kvStore.get(key)
-                           .filter(SliceTargetValue.class::isInstance)
-                           .map(SliceTargetValue.class::cast)
-                           .map(current -> current.withVersion(version)
-                                                  .withInstances(instances))
-                           .or(SliceTargetValue.sliceTargetValue(version, instances));
-
-        commands.add(new KVCommand.Put<>(key, value));
-    }
-
-    private void addVersionRoutingCommand(List<KVCommand<AetherKey>> commands,
-                                          ArtifactBase base,
-                                          Version oldVersion,
-                                          Version newVersion) {
-        var key = VersionRoutingKey.versionRoutingKey(base);
-        var value = VersionRoutingValue.versionRoutingValue(oldVersion, newVersion);
-
-        commands.add(new KVCommand.Put<>(key, value));
-    }
-
     private void addVersionRoutingWeighted(List<KVCommand<AetherKey>> commands,
                                            ArtifactBase base,
                                            Deployment deployment) {
@@ -459,35 +507,53 @@ final class DeploymentManagerImpl implements DeploymentManager {
         commands.add(new KVCommand.Put<>(key, value));
     }
 
-    @SuppressWarnings("JBCT-SEQ-01")
     private void addDeploymentCommand(List<KVCommand<AetherKey>> commands, Deployment deployment) {
-        var key = DeploymentKey.deploymentKey(deployment.deploymentId());
+        commands.add(new KVCommand.Put<>(DeploymentKey.deploymentKey(deployment.deploymentId()),
+                                         deploymentValue(deployment)));
+    }
+
+    @SuppressWarnings("JBCT-SEQ-01")
+    private static DeploymentValue deploymentValue(Deployment deployment) {
         var artifactsStr = deployment.artifacts()
                                      .stream()
                                      .map(ArtifactBase::asString)
                                      .reduce((a, b) -> a + "," + b)
                                      .orElse("");
-        var value = DeploymentValue.deploymentValue(deployment.deploymentId(),
-                                                    deployment.blueprintId(),
-                                                    deployment.oldVersion().withQualifier(),
-                                                    deployment.newVersion().withQualifier(),
-                                                    deployment.strategy().name(),
-                                                    deployment.state().name(),
-                                                    deployment.routing().toString(),
-                                                    deployment.strategyConfig().toString(),
-                                                    serializeThresholds(deployment.thresholds()),
-                                                    deployment.cleanupPolicy().name(),
-                                                    artifactsStr,
-                                                    deployment.newInstances(),
-                                                    deployment.createdAt(),
-                                                    deployment.updatedAt());
 
-        commands.add(new KVCommand.Put<>(key, value));
+        return DeploymentValue.deploymentValue(deployment.deploymentId(),
+                                               deployment.blueprintId(),
+                                               deployment.oldVersion().withQualifier(),
+                                               deployment.newVersion().withQualifier(),
+                                               deployment.strategy().name(),
+                                               deployment.state().name(),
+                                               deployment.routing().toString(),
+                                               deployment.strategyConfig().toString(),
+                                               serializeThresholds(deployment.thresholds()),
+                                               deployment.cleanupPolicy().name(),
+                                               artifactsStr,
+                                               deployment.newInstances(),
+                                               deployment.createdAt(),
+                                               deployment.updatedAt());
     }
 
-    private String serializeThresholds(HealthThresholds t) {
+    private static String serializeThresholds(HealthThresholds t) {
         return t.maxErrorRate() + ":" + t.maxLatency()
                                          .millis() + ":" + t.requireManualApproval();
+    }
+
+    /// #2662: a fenced write, rebuilt by `build` from a fresh read while refused (bounded by [SliceTargetFence#MAX_REBUILDS]). A fence
+    /// refusal is reported as itself; any other failure is the consensus apply's.
+    @SuppressWarnings("JBCT-RET-01")
+    private Result<Unit> applyFenced(String write, Fn0<Result<LeaderTransaction<AetherKey, AetherValue>>> build) {
+        return SliceTargetFence.submit(write, clusterNode::apply, build)
+                               .await()
+                               .mapError(DeploymentManagerImpl::fenceOrConsensusFailure);
+    }
+
+    private static Cause fenceOrConsensusFailure(Cause cause) {
+        return cause instanceof SliceTargetFenceError
+               ? cause
+               : DeploymentError.ConsensusFailure.consensusFailure(cause);
     }
 
     @SuppressWarnings("JBCT-RET-01")

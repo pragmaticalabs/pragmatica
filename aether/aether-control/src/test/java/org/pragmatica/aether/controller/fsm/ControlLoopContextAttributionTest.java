@@ -369,6 +369,7 @@ class ControlLoopContextAttributionTest {
                                              new StubMetricsCollector(),
                                              Option.none(),
                                              cluster,
+                                             FencedTargetWrites.fencedStore(SELF),
                                              TimeSpan.timeSpan(5_000).millis(),
                                              config,
                                              sink);
@@ -396,8 +397,7 @@ class ControlLoopContextAttributionTest {
 
         List<Object> putBases() {
             return commands.stream()
-                           .filter(command -> command instanceof KVCommand.Put)
-                           .map(command -> ((KVCommand.Put<?, ?>) command).key())
+                           .flatMap(FencedTargetWrites::targetKeys)
                            .filter(key -> key instanceof SliceTargetKey)
                            .map(key -> (Object)((SliceTargetKey) key).artifactBase())
                            .toList();
@@ -405,10 +405,8 @@ class ControlLoopContextAttributionTest {
 
         int lastTargetInstances() {
             return commands.stream()
-                           .filter(command -> command instanceof KVCommand.Put)
-                           .map(command -> ((KVCommand.Put<?, ?>) command).value())
-                           .filter(value -> value instanceof AetherValue.SliceTargetValue)
-                           .map(value -> ((AetherValue.SliceTargetValue) value).targetInstances())
+                           .flatMap(FencedTargetWrites::targetValues)
+                           .map(AetherValue.SliceTargetValue::targetInstances)
                            .reduce((first, second) -> second)
                            .orElse(-1);
         }
@@ -438,7 +436,7 @@ class ControlLoopContextAttributionTest {
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> toApply) {
             commands.addAll(toApply);
 
-            return (Promise<List<R>>)(Promise<?>) Promise.success(List.of());
+            return (Promise<List<R>>)(Promise<?>) Promise.success(FencedTargetWrites.acceptedResults(toApply));
         }
     }
 
