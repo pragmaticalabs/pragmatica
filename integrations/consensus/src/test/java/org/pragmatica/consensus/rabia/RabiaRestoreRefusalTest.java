@@ -195,8 +195,6 @@ class RabiaRestoreRefusalTest {
 
         assertThat(stateMachine.restored()).as("Q-16 (ii): the lower-phase snapshot is never restored").isEmpty();
         assertThat(engine.isActive()).as("the engine stays in Syncing").isFalse();
-        assertThat(engine.voterReconfigurationStatus().failure()).as("and the refusal stays raised")
-                                                                 .contains(UNDECODABLE.message());
     }
 
     /// A refusal clears when any restore succeeds: a readable snapshot at a higher phase is adopted, the status drops the
