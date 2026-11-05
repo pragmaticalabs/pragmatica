@@ -23,6 +23,7 @@ import org.pragmatica.consensus.rabia.RabiaEngineTest.TestCommand;
 import org.pragmatica.consensus.rabia.RabiaEngineTest.TestStateMachine;
 import org.pragmatica.consensus.rabia.RabiaEngineTest.TestTopologyManager;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.GenesisAnnouncement;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.SyncResponse;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Option;
 import org.pragmatica.utility.warning.OperatorWarning;
@@ -51,6 +52,7 @@ class GenesisSeatUnreachableTest {
     private static final NodeId B = new NodeId("node-2");
     private static final NodeId X = new NodeId("node-4");
     private static final NodeId Y = new NodeId("node-5");
+    private static final NodeId Z = new NodeId("node-6");
     private static final ClusterConfig VIEW = new ClusterConfig(List.of(B, X, Y));
     private static final OperatorWarning SENTINEL = OperatorWarning.operatorWarning(OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED,
                                                                                     "sentinel",
@@ -117,14 +119,24 @@ class GenesisSeatUnreachableTest {
         assertThat(seatWarnings()).containsExactly(code(GENESIS_SEAT_UNREACHABLE, Y), code(GENESIS_SEAT_REACHABLE, Y));
     }
 
-    /// The replacement arm. `initializeVoters` (allowed here: the engine never started participating) stands in for the
-    /// committed reconfiguration that removes the seat; the check reads only the installed roster.
+    /// The replacement arm: a LIVE sync answer carries a newer roster without the seat (the committed reconfiguration that
+    /// replaced it), which the engine adopts; the next tick closes the warning.
     @Test
     void unreachableSeat_leavesTheVoterRoster_isClosedBySeatReachable() {
         formWithYGone();
-        var replaced = new VoterConfiguration(1, new ClusterConfig(List.of(B, X, new NodeId("node-6"))));
+        var replaced = new VoterConfiguration(1, new ClusterConfig(List.of(B, X, Z)));
 
-        assertThat(engine.initializeVoters(replaced).isSuccess()).isTrue();
+        for (var responder : List.of(X, Z)) {
+            engine.processSyncResponse(new SyncResponse<>(responder,
+                                                          new RabiaPersistence.SavedState<>(new byte[0],
+                                                                                            Phase.phase(7),
+                                                                                            List.of(),
+                                                                                            Option.some(replaced)),
+                                                          ResponderState.LIVE));
+        }
+        settle();
+        assertThat(engine.voterConfiguration()).as("precondition: the replacement roster was adopted")
+                                               .isEqualTo(Option.some(replaced));
         engine.runPhaseStallCheckForTesting();
         settle();
 
