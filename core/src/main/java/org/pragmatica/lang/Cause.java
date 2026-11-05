@@ -111,6 +111,12 @@ public interface Cause {
         }
     }
 
+    /// Marker for a domain-validation failure: the input was well-formed but violates a domain rule.
+    /// Produced by the validation helpers core owns ([Verify], the built-in value objects, and
+    /// [org.pragmatica.lang.utils.Causes#validation]). Carries no behaviour; an HTTP boundary may map it
+    /// to 422. A cause without the marker is never inferred to be a validation failure.
+    interface Validation extends Cause {}
+
     /// A cause wrapping an underlying cause. The `origin` component of the implementing record
     /// supplies [#source()]; the component cannot be named `source`, because the record accessor's
     /// return type (`Cause`) would clash with [#source()]'s (`Option<Cause>`).

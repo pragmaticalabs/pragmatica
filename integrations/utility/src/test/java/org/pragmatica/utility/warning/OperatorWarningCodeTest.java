@@ -257,6 +257,8 @@ class OperatorWarningCodeTest {
         OperatorWarningCode.STORAGE_MEMORY_TIER_CLAMPED,
         OperatorWarningCode.STORAGE_SNAPSHOT_FELL_BACK,
         OperatorWarningCode.STORAGE_WAL_TAIL_CUT,
+        // D1, added on purpose: a failed KV dispatcher stops (in production, halts) its node; the only end is a restart.
+        OperatorWarningCode.KV_DISPATCHER_FAILED,
         OperatorWarningCode.STORAGE_VOLUME_GUARD_INACTIVE,
         OperatorWarningCode.STORAGE_WAL_FAIL_STOPPED,
         OperatorWarningCode.STORAGE_STREAM_DISK_CAP_OVER_SPACE,

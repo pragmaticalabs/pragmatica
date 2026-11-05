@@ -963,8 +963,27 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         }
 
         var isSelf = leaderOpt.filter(ctx.self()::equals).isPresent();
+        var change = LeaderNotification.leaderChange(leaderOpt, isSelf, ctx.replaying());
 
-        ctx.router().route(LeaderNotification.leaderChange(leaderOpt, isSelf));
+        routeLeaderChange(ctx, change);
+    }
+
+    /// D1-react (KVStore dispatcher design §3.5.1 row 107, R5.8): the FSM step and `markNotified` stay in absorb; only the
+    /// route moves, onto the LeaderManager react executor, with the leader and the replay bit captured here (each
+    /// `LeaderChange` carries its own leader and `replayed`, R3). Every route takes the one executor, so FIFO keeps the order absorb gave them. A change that makes this
+    /// node the leader re-activates leader-pinned managers: a side effect, behind the engine-alive gate. Any other change
+    /// (another leader, or none) deactivates them: an undo, never gated (U1), so an engine stop cannot drop the
+    /// deactivation and leave a manager active.
+    private static void routeLeaderChange(LeaderElectionContext ctx, LeaderNotification.LeaderChange change) {
+        if (change.localNodeIsLeader()) {
+            ctx.reactExecutor().react("LeaderChange(self)",
+                                      () -> ctx.router()
+                                               .route(change));
+        } else {
+            ctx.reactExecutor().undo("LeaderChange(other)",
+                                     () -> ctx.router()
+                                              .route(change));
+        }
     }
 
     private static void clearLeaderAndNotify(LeaderElectionContext ctx) {

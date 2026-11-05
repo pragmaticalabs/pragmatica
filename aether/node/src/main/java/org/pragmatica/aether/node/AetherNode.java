@@ -250,6 +250,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.utility.react.ReactExecutor;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -381,27 +382,46 @@ public interface AetherNode extends ManageableNode {
     /// `System.exit` so the node's shutdown hooks run ([GossipKeyDivergenceGuard] measured that path); an
     /// in-JVM host records it and stops only that node (#1312).
     int EXIT_GOSSIP_KEY_DIVERGED = 1;
+    /// Process exit code when this node's KV notification dispatcher failed (KVStore dispatcher design §3.2, owner
+    /// ruling 1): a handler or the delivery loop threw an `Error`, or a replay was refused. The node holds committed state
+    /// it can no longer deliver to its own components, so it stops instead of serving it. 70 is `EX_SOFTWARE` in
+    /// sysexits(3): an internal software failure; a restart re-syncs the node, and the FATAL line and thread dump name
+    /// the handler. An in-JVM host records it and stops only that node.
+    int EXIT_KV_DISPATCHER_FAILED = 70;
 
+    /// A production boot whose dispatcher failure halts after a FATAL line, without a log flush of its own: [Main] boots
+    /// through [#aetherNode(AetherNodeConfig, DispatcherFailureSink)] with the sink that flushes first.
     static Result<AetherNode> aetherNode(AetherNodeConfig config) {
+        return aetherNode(config, haltingDispatcherSink(Runtime.getRuntime()::halt));
+    }
+
+    /// The production boot: `dispatcherSink` stops the process when the KV notification dispatcher fails (design §3.2
+    /// step 3); [Main] passes the FATAL-then-bounded-flush-then-halt sink.
+    static Result<AetherNode> aetherNode(AetherNodeConfig config, DispatcherFailureSink dispatcherSink) {
         return aetherNode(config,
                           MessageRouter.DelegateRouter.delegate(),
-                          NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs()));
+                          NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs()),
+                          dispatcherSink);
     }
 
     /// `processExit` receives the node's exit code — [#EXIT_DRAINED] after a completed drain,
     /// [#EXIT_IDENTITY_REFUSED] when the cluster refuses this process's identity, [#EXIT_GOSSIP_KEY_DIVERGED]
     /// when the gossip-key divergence gate refuses the boot. An in-JVM host records it and stops the node;
     /// production enters through [#aetherNode(AetherNodeConfig)] instead.
+    /// A KV dispatcher failure reaches it as [#EXIT_KV_DISPATCHER_FAILED].
     static Result<AetherNode> aetherNode(AetherNodeConfig config, IntConsumer processExit) {
         var delegateRouter = MessageRouter.DelegateRouter.delegate();
         var nodeCodec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
 
-        return aetherNode(config,
-                          delegateRouter,
-                          nodeCodec,
-                          () -> processExit.accept(EXIT_DRAINED),
-                          () -> processExit.accept(EXIT_IDENTITY_REFUSED),
-                          () -> processExit.accept(EXIT_GOSSIP_KEY_DIVERGED));
+        return boot(config,
+                    delegateRouter,
+                    nodeCodec,
+                    () -> processExit.accept(EXIT_DRAINED),
+                    () -> processExit.accept(EXIT_IDENTITY_REFUSED),
+                    () -> processExit.accept(EXIT_GOSSIP_KEY_DIVERGED),
+                    variable -> Option.option(System.getenv(variable)),
+                    BackupPreflight::requireGit,
+                    inJvmDispatcherSink(() -> processExit.accept(EXIT_KV_DISPATCHER_FAILED)));
     }
 
     /// Overload for single-JVM hosting (Forge / Ember). The `jvmExit` hook is invoked by
@@ -419,12 +439,57 @@ public interface AetherNode extends ManageableNode {
     static Result<AetherNode> aetherNode(AetherNodeConfig config,
                                          MessageRouter.DelegateRouter delegateRouter,
                                          SliceCodec nodeCodec) {
-        return aetherNode(config,
-                          delegateRouter,
-                          nodeCodec,
-                          () -> Runtime.getRuntime().halt(EXIT_DRAINED),
-                          () -> Runtime.getRuntime().halt(EXIT_IDENTITY_REFUSED),
-                          () -> System.exit(EXIT_GOSSIP_KEY_DIVERGED));
+        return aetherNode(config, delegateRouter, nodeCodec, haltingDispatcherSink(Runtime.getRuntime()::halt));
+    }
+
+    /// The production exits: halt after a drain or an identity refusal, `System.exit` on a gossip-key divergence, and
+    /// `dispatcherSink` on a KV dispatcher failure.
+    static Result<AetherNode> aetherNode(AetherNodeConfig config,
+                                         MessageRouter.DelegateRouter delegateRouter,
+                                         SliceCodec nodeCodec,
+                                         DispatcherFailureSink dispatcherSink) {
+        return boot(config,
+                    delegateRouter,
+                    nodeCodec,
+                    () -> Runtime.getRuntime().halt(EXIT_DRAINED),
+                    () -> Runtime.getRuntime().halt(EXIT_IDENTITY_REFUSED),
+                    () -> System.exit(EXIT_GOSSIP_KEY_DIVERGED),
+                    variable -> Option.option(System.getenv(variable)),
+                    BackupPreflight::requireGit,
+                    dispatcherSink);
+    }
+
+    /// A production sink with no log flush of its own: the FATAL line, then `halt` in a `finally`.
+    static DispatcherFailureSink haltingDispatcherSink(IntConsumer halt) {
+        return (reason, cause) -> haltOnDispatcherFailure(reason, cause, halt);
+    }
+
+    private static Unit haltOnDispatcherFailure(String reason, Throwable cause, IntConsumer halt) {
+        try {
+            LoggerFactory.getLogger(AetherNode.class).error("FATAL: the KV notification dispatcher failed ({}); halting with code {}",
+                                                            reason,
+                                                            EXIT_KV_DISPATCHER_FAILED,
+                                                            cause);
+        } finally {
+            halt.accept(EXIT_KV_DISPATCHER_FAILED);
+        }
+
+        return Unit.unit();
+    }
+
+    /// An in-JVM host's sink: one ERROR line, then `stopNode` on its own virtual thread. The sink is called on the failing
+    /// dispatcher thread, and the node's stop closes the store, which joins that thread, so the stop must not run on it.
+    static DispatcherFailureSink inJvmDispatcherSink(Runnable stopNode) {
+        return (reason, cause) -> stopInJvm(reason, cause, stopNode);
+    }
+
+    private static Unit stopInJvm(String reason, Throwable cause, Runnable stopNode) {
+        LoggerFactory.getLogger(AetherNode.class).error("KV notification dispatcher failed ({}); stopping this node only",
+                                                        reason,
+                                                        cause);
+        Thread.ofVirtual().name("kv-dispatcher-failed-stop").start(stopNode);
+
+        return Unit.unit();
     }
 
     /// In-JVM hosts: the one `jvmExit` hook serves the drain exit, an identity refusal and a gossip-key
@@ -485,6 +550,28 @@ public interface AetherNode extends ManageableNode {
                                          Runnable gossipKeyDivergedExit,
                                          Fn1<Option<String>, String> environment,
                                          Supplier<Result<Unit>> gitProbe) {
+        return boot(config,
+                    delegateRouter,
+                    nodeCodec,
+                    jvmExit,
+                    identityRefusedExit,
+                    gossipKeyDivergedExit,
+                    environment,
+                    gitProbe,
+                    inJvmDispatcherSink(jvmExit));
+    }
+
+    /// Every boot ends here. `dispatcherSink` stops the node when its KV notification dispatcher fails; the overloads
+    /// that take only `jvmExit` (in-JVM hosts and boot tests) stop the node through it.
+    private static Result<AetherNode> boot(AetherNodeConfig config,
+                                           MessageRouter.DelegateRouter delegateRouter,
+                                           SliceCodec nodeCodec,
+                                           Runnable jvmExit,
+                                           Runnable identityRefusedExit,
+                                           Runnable gossipKeyDivergedExit,
+                                           Fn1<Option<String>, String> environment,
+                                           Supplier<Result<Unit>> gitProbe,
+                                           DispatcherFailureSink dispatcherSink) {
         return config.validate()
                      .flatMap(_ -> createNode(config,
                                               delegateRouter,
@@ -493,7 +580,8 @@ public interface AetherNode extends ManageableNode {
                                               identityRefusedExit,
                                               gossipKeyDivergedExit,
                                               environment,
-                                              gitProbe));
+                                              gitProbe,
+                                              dispatcherSink));
     }
 
     /// #1549: the `CLUSTER_EVENTS_MAX_*` overrides are checked before anything is built — an out-of-range
@@ -507,14 +595,16 @@ public interface AetherNode extends ManageableNode {
                                                  Runnable identityRefusedExit,
                                                  Runnable gossipKeyDivergedExit,
                                                  Fn1<Option<String>, String> environment,
-                                                 Supplier<Result<Unit>> gitProbe) {
+                                                 Supplier<Result<Unit>> gitProbe,
+                                                 DispatcherFailureSink dispatcherSink) {
         return requireBackupGit(config, gitProbe).flatMap(_ -> createNodeWithinBounds(config,
                                                                                       delegateRouter,
                                                                                       nodeCodec,
                                                                                       jvmExit,
                                                                                       identityRefusedExit,
                                                                                       gossipKeyDivergedExit,
-                                                                                      environment));
+                                                                                      environment,
+                                                                                      dispatcherSink));
     }
 
     /// The environment-driven bounds, both checked before anything is built; each refusal names its variable.
@@ -524,7 +614,8 @@ public interface AetherNode extends ManageableNode {
                                                              Runnable jvmExit,
                                                              Runnable identityRefusedExit,
                                                              Runnable gossipKeyDivergedExit,
-                                                             Fn1<Option<String>, String> environment) {
+                                                             Fn1<Option<String>, String> environment,
+                                                             DispatcherFailureSink dispatcherSink) {
         return Result.all(ClusterEventsLimits.clusterEventsLimits(environment),
                           StreamMemoryBudget.streamMemoryBudget(environment,
                                                                 config.streaming(),
@@ -537,7 +628,35 @@ public interface AetherNode extends ManageableNode {
                                                                           gossipKeyDivergedExit,
                                                                           BootToken.bootToken(),
                                                                           limits,
-                                                                          budget));
+                                                                          budget,
+                                                                          dispatcherSink));
+    }
+
+    /// The node store's delivery: dispatched, named after the node, replaying in [#replayRank] order, stopping the node
+    /// through `dispatcherSink` once (R4.4: the core fatal-escape hook and the store may both report the same failure), and
+    /// raising its operator events through `events`, which the assembly binds to this node's operator-warning sink.
+    static NotificationDelivery kvDelivery(AetherNodeConfig config,
+                                           DispatcherFailureSink dispatcherSink,
+                                           KvDispatchOperatorEvents events) {
+        return NotificationDelivery.dispatched(config.self().id(),
+                                               AetherNode::replayRank,
+                                               DispatcherFailureSink.once(dispatcherSink),
+                                               events);
+    }
+
+    /// The replay-burst rank (KVStore dispatcher design §3.7, exit (z), D0 PAIR-1 and PAIR-2): ascending, rank-major, so a
+    /// replayed `VersionRouting` precedes the `SliceTarget` puts that read it, and an `AppBlueprint` (and `SchemaVersion`)
+    /// precedes `SliceTarget` and the `NodeArtifact` LOADED puts. `ClusterIncarnationKey` goes first (D0's optional PAIR-4
+    /// and PAIR-5 hardening, taste). Every other key is 0, the pre-D1 order.
+    static int replayRank(StructuredKey key) {
+        return switch (key) {
+            case AetherKey.ClusterIncarnationKey _ -> - 1;
+            case AetherKey.VersionRoutingKey _ -> 1;
+            case AetherKey.AppBlueprintKey _, AetherKey.SchemaVersionKey _ -> 2;
+            case AetherKey.SliceTargetKey _ -> 3;
+            case AetherKey.NodeArtifactKey _ -> 4;
+            default -> 0;
+        };
     }
 
     /// #2007: `[backup]` shells out to git, so a node that has it enabled and cannot run git refuses to boot here, naming `[backup]` and
@@ -555,7 +674,8 @@ public interface AetherNode extends ManageableNode {
                                                               Runnable gossipKeyDivergedExit,
                                                               long bootToken,
                                                               ClusterEventsLimits clusterEventsLimits,
-                                                              StreamMemoryBudget streamMemoryBudget) {
+                                                              StreamMemoryBudget streamMemoryBudget,
+                                                              DispatcherFailureSink dispatcherSink) {
         return resolveStorageEncryptionKeyring(config).flatMap(keyring -> createNodeWithStorage(config,
                                                                                                 delegateRouter,
                                                                                                 nodeCodec,
@@ -566,7 +686,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                 resolvePersistence(config),
                                                                                                 bootToken,
                                                                                                 clusterEventsLimits,
-                                                                                                streamMemoryBudget));
+                                                                                                streamMemoryBudget,
+                                                                                                dispatcherSink));
     }
 
     private static Result<AetherNode> createNodeWithStorage(AetherNodeConfig config,
@@ -579,17 +700,23 @@ public interface AetherNode extends ManageableNode {
                                                             RabiaPersistence<KVCommand<AetherKey>> persistence,
                                                             long bootToken,
                                                             ClusterEventsLimits clusterEventsLimits,
-                                                            StreamMemoryBudget streamMemoryBudget) {
+                                                            StreamMemoryBudget streamMemoryBudget,
+                                                            DispatcherFailureSink dispatcherSink) {
         Serializer serializer = nodeCodec;
         Deserializer deserializer = nodeCodec;
         // W-OBS W2: the commit ring records and serves under the committed cluster incarnation (the production reader), filtered by the
-        // exhaustive replica filter, at the default byte budget.
+        // exhaustive replica filter, at the default byte budget. D1: the node's store delivers its notifications on its own
+        // dispatcher thread (KVStore dispatcher design §3.1); the KVStore constructors default to inline delivery, so this
+        // opt-in is pinned by AetherNodeKvDispatcherWiringBootTest. Its operator events reach this node's sink once the
+        // assembly has built it (kvDispatchEvents.operatorWarnings below).
+        var kvDispatchEvents = KvDispatchOperatorEvents.kvDispatchOperatorEvents();
         var kvStore = new KVStore<AetherKey, AetherValue>(delegateRouter,
                                                           serializer,
                                                           deserializer,
                                                           ReplicaFilter.replicaFilter(),
                                                           ReplicaIncarnationSource.replicaIncarnationSource(),
-                                                          CommitRing.DEFAULT_BUDGET_BYTES);
+                                                          CommitRing.DEFAULT_BUDGET_BYTES,
+                                                          kvDelivery(config, dispatcherSink, kvDispatchEvents));
         // #345 1c: the per-ownership-domain epoch high-water (data-plane half of the ownership
         // fence) must exist BEFORE the DHT storage engine, because the engine's owner-epoch gate is
         // backed by it. The SAME instance is threaded into assembleNode for its KV-router
@@ -782,7 +909,9 @@ public interface AetherNode extends ManageableNode {
                                                              storageKeyring,
                                                              bootToken,
                                                              clusterEventsLimits,
-                                                             streamMemoryBudget));
+                                                             streamMemoryBudget,
+                                                             NodeReactors.nodeReactors(dispatcherSink),
+                                                             kvDispatchEvents));
     }
 
     /// #253 — resolves the boot-time storage-encryption keyring before any storage tier exists. No
@@ -1435,7 +1564,14 @@ public interface AetherNode extends ManageableNode {
                                                    Option<EncryptionKeyring> storageKeyring,
                                                    long bootToken,
                                                    ClusterEventsLimits clusterEventsLimits,
-                                                   StreamMemoryBudget streamMemoryBudget) {
+                                                   StreamMemoryBudget streamMemoryBudget,
+                                                   NodeReactors reactors,
+                                                   KvDispatchOperatorEvents kvDispatchEvents) {
+        // D1-react (KVStore dispatcher design §3.5 R5): the react gate reads this node's engine from here on.
+        reactors.bindEngine(clusterNode::isEngineStopRequested);
+        clusterNode.leaderManager().installReactExecutor(reactors.executor("LeaderManager"));
+        // R3 (v-2653 F3): a LeaderChange raised inside a replay burst carries the replay bit across the react hand-off.
+        clusterNode.leaderManager().installReplaySource(kvStore::isReplaying);
         // #329: leader-pinned task-group ownership is gated on consensus catch-up. A freshly
         // elected replacement leader whose Rabia log is still draining (isPendingCatchUp) is
         // isActive but not caught up; granting it ownership funnels every leader-pinned op
@@ -1632,7 +1768,8 @@ public interface AetherNode extends ManageableNode {
                           Option<SpiResourceProvider> spiResourceProvider,
                           NodeReplacementService nodeReplacementService,
                           UpgradeRunService upgradeRunService,
-                          StoragePrefetchChannel prefetchChannel) implements AetherNode {
+                          StoragePrefetchChannel prefetchChannel,
+                          NodeReactors reactors) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
             @Override
@@ -1766,6 +1903,9 @@ public interface AetherNode extends ManageableNode {
             @Override
             public Promise<Unit> stop() {
                 log.info("Stopping Aether node {}", self());
+                // D1-react (KVStore dispatcher design §3.5.1 "Gate predicate"): the stopping flag is set FIRST, so a reaction
+                // still queued on a react executor cannot restart what the steps below cancel (#642).
+                reactors.markStopping();
                 // #499 zombie fix: cancel this node's periodic SharedScheduler tasks FIRST — the
                 // scheduler is JVM-global, so anything left armed keeps firing against torn-down
                 // state after stop (the killed-node zombie backfill loop). cancel(false) inside:
@@ -1853,8 +1993,31 @@ public interface AetherNode extends ManageableNode {
                                                                                                      this::closeSharedResources,
                                                                                                      this::shutdownStorage,
                                                                                                      clusterNode::stop)))
+                                    .withResult(_ -> closeKvStore())
                                     .onSuccess(_ -> log.info("Aether node {} stopped",
                                                              self()));
+            }
+
+            @Override
+            public List<ReactExecutor> reactExecutors() {
+                return reactors.all();
+            }
+
+            @Override
+            public boolean leaderReplaying() {
+                return clusterNode.leaderManager()
+                                  .replaying();
+            }
+
+            /// KVStore dispatcher design §3.2 Lifecycle: after the engine stop (the last step above), whatever the stop's
+            /// outcome, the store closes: its undelivered queue is dropped (the router is quiesced), every waiter fails
+            /// with outcome-unknown, and the dispatcher thread is joined with a bound. A dependent step (`withResult`), so the
+            /// promise `stop()` returns resolves only after the close (v-2648 F2: an independent `onResultRun` let it
+            /// resolve first).
+            @Contract
+            private void closeKvStore() {
+                kvStore.close();
+                reactors.close();
             }
 
             /// After the stop seal: the partition manager closes the WALs, then (#932) the replication shutdown runs, after the
@@ -2460,7 +2623,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                  kvStore,
                                                                                                  clusterNode.topologyManager(),
                                                                                                  provider,
-                                                                                                 config.appHttp().port()));
+                                                                                                 config.appHttp().port(),
+                                                                                                 reactors.executor("LoadBalancerManager")));
         var discoveryProvider = config.environment().flatMap(EnvironmentIntegration::discovery);
         var registriesOut = SliceRuntimeAssembly.registries();
         var endpointRegistry = registriesOut.endpointRegistry();
@@ -2576,6 +2740,8 @@ public interface AetherNode extends ManageableNode {
         var operatorWarningSink = eventAggregatorOut.operatorWarningSink();
         // A0b: the storage instances were built before this sink existed; hand it to them now.
         StorageFactory.bindOperatorWarnings(storageSetups, operatorWarningSink);
+        // D1 (KVStore dispatcher design §3.6): so was the node's store; its dispatcher events reach this node's sink from here on.
+        kvDispatchEvents.operatorWarnings(operatorWarningSink);
         // #2258: the DHT engine's capacity transitions of this node become operator warnings (the engine knows no warning type)
         var dhtCapacityWarnings = DhtCapacityWarnings.dhtCapacityWarnings(config.self().id());
 
@@ -2635,7 +2801,8 @@ public interface AetherNode extends ManageableNode {
                                                   config.controllerConfig().scalingConfig().evaluationInterval(),
                                                   config.controllerConfig(),
                                                   delegateRouter::route);
-
+        // D1-react (KVStore dispatcher design §3.5.1 row 39): the slice cooldown request runs on the control loop's react executor.
+        controlLoop.installReactExecutor(reactors.executor("ControlLoop"));
         metricsScheduler.setSourceMetricsSupplier(() -> List.copyOf(controlLoop.communitySnapshots().values()));
         var workerMetricsAggregator = WorkerMetricsAggregator.workerMetricsAggregator(config.self(),
                                                                                       () -> config.self()
@@ -2658,6 +2825,9 @@ public interface AetherNode extends ManageableNode {
                                                               clusterNode.leaderManager(),
                                                               delegateRouter::route,
                                                               operatorWarningSink);
+        // D1-react (KVStore dispatcher design §3.5.1 row 19): the record derivation and its bounded retry run on the rollback
+        // manager's react executor.
+        rollbackManager.installReactExecutor(reactors.executor("RollbackManager"));
         // #1573: the one producer of AllInstancesFailed. Every node ships its slice execution outcomes on the
         // cluster-sync pong; the leader alone judges "every ACTIVE instance of this version is broken" and
         // routes the event to rollback, the cluster event and the alert. The tick forgets its state on a
@@ -2696,6 +2866,8 @@ public interface AetherNode extends ManageableNode {
         var abTestManager = sliceInvokerOut.abTestManager();
         var sliceInvoker = sliceInvokerOut.sliceInvoker();
         var scheduledTaskManager = sliceInvokerOut.scheduledTaskManager();
+        // D1-react (KVStore dispatcher design §3.5.1 rows 25/28): registry-driven timer arms run on the scheduler's react executor.
+        scheduledTaskManager.installReactExecutor(reactors.executor("ScheduledTaskRegistry"));
         var selfAddress = findSelfAddress(config);
         var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManagerFromSnapshot(config.self(),
                                                                                             selfAddress,
@@ -2832,7 +3004,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                               aetherEntries,
                                                                                                                               growthLog,
                                                                                                                               selfId,
-                                                                                                                              gossipKeyRotationHandler));
+                                                                                                                              gossipKeyRotationHandler,
+                                                                                                                              reactors.executor("WorkerActivation")));
         var governorAnnouncerHolder = workerActivationOut.governorAnnouncerHolder();
         var communityDirectory = workerActivationOut.communityDirectory();
         var activationKvRouter = workerActivationOut.activationKvRouter();
@@ -3110,7 +3283,12 @@ public interface AetherNode extends ManageableNode {
                                                                                                                               abTestManager,
                                                                                                                               allEntries,
                                                                                                                               leaderReconciler,
-                                                                                                                              bootstrapModule));
+                                                                                                                              bootstrapModule,
+                                                                                                                              reactors.executor("ClusterTopologyManager")));
+        // D1-react (KVStore dispatcher design §3.5.1 rows 72/73): activation, deactivation and status writes run on its react executor.
+        spokesmanPingLoop.installReactExecutor(reactors.executor("SpokesmanPingLoop"));
+        // D1-react (KVStore dispatcher design §3.5.1 rows 66/67): the bootstrap retry attempt runs on its react executor.
+        bootstrapModule.installReactExecutor(reactors.executor("BootstrapModule"));
         var streamReplicationOut = StreamAssembly.streamReplication(new StreamAssembly.StreamReplicationInputs(config,
                                                                                                                delegateRouter,
                                                                                                                kvStore,
@@ -3410,7 +3588,8 @@ public interface AetherNode extends ManageableNode {
                                   resourceProviderSetup.spiProvider(),
                                   replacementWiring.service(),
                                   upgradeWiring.service(),
-                                  prefetchChannel);
+                                  prefetchChannel,
+                                  reactors);
 
         nodeDeploymentManager.setShutdownCallback(node::stop);
         StreamAssembly.retentionWatch(new StreamAssembly.RetentionWatchInputs(kvStore,
@@ -3571,7 +3750,8 @@ public interface AetherNode extends ManageableNode {
                                                                             resourceProviderSetup.spiProvider(),
                                                                             replacementWiring.service(),
                                                                             upgradeWiring.service(),
-                                                                            prefetchChannel);
+                                                                            prefetchChannel,
+                                                                            reactors);
                                                   }
 
                                                   return node;

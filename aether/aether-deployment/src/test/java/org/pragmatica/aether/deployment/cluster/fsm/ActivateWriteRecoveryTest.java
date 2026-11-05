@@ -23,11 +23,15 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Node
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
+import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
@@ -113,6 +117,11 @@ class ActivateWriteRecoveryTest {
 
         harness = FsmTestHarness.harness("activate-recovery-" + System.nanoTime(), factory);
         kvStore.putRaw(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(SELF, 1)));
+        // The owner is committed: a leader restoring from the store does not adopt a target whose blueprint is gone (#2628).
+        var slice = ResolvedSlice.resolvedSlice(SLICE_BASE.withVersion(SLICE_VERSION), 1, 1, false, Set.of()).unwrap();
+
+        kvStore.put(AppBlueprintKey.appBlueprintKey(OWNER),
+                    AppBlueprintValue.appBlueprintValue(ExpandedBlueprint.expandedBlueprint(OWNER, List.of(slice), Option.none())));
         kvStore.put(SliceTargetKey.sliceTargetKey(SLICE_BASE), SliceTargetValue.sliceTargetValue(SLICE_VERSION, 1, Option.some(OWNER)));
         kvStore.put(ARTIFACT_KEY, LOADED);
     }

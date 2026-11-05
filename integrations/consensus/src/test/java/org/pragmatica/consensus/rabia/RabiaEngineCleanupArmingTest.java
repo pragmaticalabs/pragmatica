@@ -26,6 +26,9 @@ import org.pragmatica.consensus.rabia.RabiaEngineTest.TestTopologyManager;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.SyncResponse;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 
+import java.time.Duration;
+import java.util.function.BooleanSupplier;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
 
@@ -56,6 +59,8 @@ class RabiaEngineCleanupArmingTest {
     private static final NodeId NODE_2 = nodeId("node-2").unwrap();
     private static final NodeId NODE_3 = nodeId("node-3").unwrap();
     private static final int CLUSTER_SIZE = 3;
+    private static final Duration AWAIT_TIMEOUT = Duration.ofSeconds(30);
+    private static final long POLL_MILLIS = 5;
 
     private RabiaEngine<TestCommand> engine;
 
@@ -73,12 +78,30 @@ class RabiaEngineCleanupArmingTest {
         engine.stop().await();
     }
 
+    /// Drives the engine to Active by waiting on the real state signals, never on elapsed time (#2122):
+    /// `isPendingCatchUp` is true exactly while the engine is `Syncing`, which is when it accepts sync
+    /// responses; `isActive` is the activation itself. The state flips to active INSIDE the activation task
+    /// and the sweep is armed a few statements later in the same task, so `isActive` alone is not enough: the
+    /// settle then queues behind that task on the single apply executor, which returns only once it has run
+    /// to its end (observed: `isActive()` true with the sweep not yet armed, 1 run in 25 under load).
     private void activateEngine() throws InterruptedException {
         engine.clusterState(ClusterStateNotification.active());
-        Thread.sleep(150);
+        awaitCondition(engine::isPendingCatchUp, "engine entered Syncing");
         engine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
         engine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
-        Thread.sleep(50);
+        awaitCondition(engine::isActive, "engine activated");
+        engine.settleForTesting().await();
+    }
+
+    private static void awaitCondition(BooleanSupplier condition, String what) throws InterruptedException {
+        var deadline = System.nanoTime() + AWAIT_TIMEOUT.toNanos();
+
+        while (!condition.getAsBoolean()) {
+            assertThat(System.nanoTime())
+                .as("timed out waiting for: " + what)
+                .isLessThan(deadline);
+            Thread.sleep(POLL_MILLIS);
+        }
     }
 
     /// The defect itself: a constructed-but-never-activated engine must own no recurring work. This
@@ -135,7 +158,7 @@ class RabiaEngineCleanupArmingTest {
         assertThat(engine.cleanupArmed()).isTrue();
 
         engine.clusterState(ClusterStateNotification.active());
-        Thread.sleep(50);
+        engine.settleForTesting().await();
 
         assertThat(engine.cleanupArmed())
             .as("still armed, and by the same task — the CAS guard makes re-activation a no-op")

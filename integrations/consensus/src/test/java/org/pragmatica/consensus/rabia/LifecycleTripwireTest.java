@@ -33,18 +33,8 @@ class LifecycleTripwireTest {
 
     // ---- L-2: triggerResync on a gated, unauthorized engine ----
 
+    /// A-04: a far-future Propose must not start a sync round on a gated engine that was never authorized.
     @Test
-    void triggerResync_onGatedUnauthorizedStopped_sendsSyncRequest_pinsCurrentBehaviour() {
-        rig = LifecycleRig.rig(true).started();
-
-        rig.proposeAt(LifecycleRig.FAR);
-
-        assertThat(rig.mode()).as("control: the engine is gated and was never authorized, yet the far-future Propose moved it").isEqualTo("Syncing");
-        assertThat(syncRequests()).as("today a gated unauthorized engine broadcasts a SyncRequest (A-04)").isGreaterThanOrEqualTo(1);
-    }
-
-    @Test
-    @Disabled("L-2 enables this and deletes the _pinsCurrentBehaviour tripwire above")
     void triggerResync_onGatedUnauthorizedEngine_sendsNoSyncRequest() {
         rig = LifecycleRig.rig(true).started();
 
@@ -52,6 +42,19 @@ class LifecycleTripwireTest {
 
         assertThat(syncRequests()).isZero();
         assertThat(rig.mode()).isEqualTo("Stopped");
+    }
+
+    /// Control: the guard is the authorization, not the gate. Once authorized (no held notification), the same Propose syncs.
+    @Test
+    void triggerResync_onGatedAuthorizedEngine_stillSyncs() {
+        rig = LifecycleRig.rig(true).started();
+        rig.engine.authorizeActivation();
+        rig.settle();
+
+        rig.proposeAt(LifecycleRig.FAR);
+
+        assertThat(rig.mode()).isEqualTo("Syncing");
+        assertThat(syncRequests()).isGreaterThanOrEqualTo(1);
     }
 
     /// Ruling a20d1dbca5: a far-future Propose resyncs a Paused engine. Stays enabled forever.
