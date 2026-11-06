@@ -253,8 +253,7 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         // retryIfNeeded), which rewrites the provisional record at ownershipTerm + 1 under the committed incarnation, so the
         // record that completes the bootstrap never ranks below the committed life's epochs.
         var epoch = currentEpoch();
-        var provisional = epoch.mintable()
-                               .isFailure();
+        var provisional = epoch.mintable().isFailure();
         var self = selfSupplier.get();
         var partitions = collectPartitions(kvSnapshotSupplier.get());
         var existing = Option.option(partitions.get(BootstrapModule.CORE_PARTITION_ID));
@@ -402,6 +401,7 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         if (shouldRewriteCoreOwnership(owner, coreMembers, self)) {
             return Option.some(buildRewrittenCorePartition(owner, self, epoch));
         }
+
         return isProvisional(owner)
                ? Option.some(buildCorePartitionCommand(owner.ownerNodeId(), epoch, owner.ownershipTerm() + 1L))
                : Option.none();
