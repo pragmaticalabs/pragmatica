@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
@@ -142,7 +143,7 @@ class V2174bPinsTest {
         var h = LcSupport.leader(DeploymentAtomicity.ALL_OR_NOTHING, 0.5d, CORE_1, CORE_2, CORE_3);
 
         SlFixtures.seedTarget(h, ORDERS, 1, 1);
-        SlFixtures.seedJudgment(h, ORDERS, new ArtifactJudgmentValue(false, Map.of(), excludedCore2()));
+        SlFixtures.seedJudgment(h, ORDERS, new ArtifactJudgmentValue(false, Map.of(), excludedCore2(), Set.of()));
         SlFixtures.seedGoal(h, CORE_2, ORDERS, SliceGoal.UNLOADED, G2);
         SlFixtures.seedRow(h, CORE_2, ORDERS, SliceObservedState.UNLOADING, G2, 12L);
         SlFixtures.seedGoal(h, CORE_3, ORDERS, SliceGoal.LOADED, G3);
@@ -207,7 +208,7 @@ class V2174bPinsTest {
         var failure = h.submits(SubmitKind.FAILURE).getLast();
 
         new NodeSim(h, CORE_3, process(13L)).writes(ORDERS, SliceObservedState.UNLOADING, G3);
-        h.seed(new ArtifactJudgmentKey(ORDERS), new ArtifactJudgmentValue(false, Map.of(CORE_1, 1), excludedCore2()));
+        h.seed(new ArtifactJudgmentKey(ORDERS), new ArtifactJudgmentValue(false, Map.of(CORE_1, 1), excludedCore2(), Set.of()));
         h.drain();
         var verdict = h.applyHeld(failure.correlationId());
 

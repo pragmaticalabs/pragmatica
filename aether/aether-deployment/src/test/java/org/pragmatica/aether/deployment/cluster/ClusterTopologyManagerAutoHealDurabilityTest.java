@@ -15,6 +15,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AutoHealStateKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AutoHealStateValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -32,6 +33,7 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -93,6 +95,13 @@ class ClusterTopologyManagerAutoHealDurabilityTest {
     /// pinned independently of what the shared, consensus-materialized store actually holds, modeling
     /// a node that is behind on applying the log (#685 review round 1 SHOULD-FIX 2).
     private ClusterTopologyManager newCtm(Supplier<Option<AutoHealStateValue>> autoHealStateReader) {
+        return newCtm(autoHealStateReader, Option::none);
+    }
+
+    /// Same as [#newCtm(Supplier)], with a caller-supplied view of the committed cluster configuration: lets a test pin this node's
+    /// LOCAL configuration view behind what the shared store holds.
+    private ClusterTopologyManager newCtm(Supplier<Option<AutoHealStateValue>> autoHealStateReader,
+                                          Supplier<Option<ClusterConfigValue>> clusterConfigReader) {
         var config = new TopologyConfig(SELF, 5, timeSpan(60).seconds(), timeSpan(1).seconds(), List.of(INFO_SELF));
         var snapshotSource = new StubSnapshotSource();
         var observer = TopologyObserver.topologyObserver(config, quietRouter(), snapshotSource).unwrap();
@@ -103,7 +112,7 @@ class ClusterTopologyManagerAutoHealDurabilityTest {
                                                              autoHeal,
                                                              DeploymentMap.deploymentMap(),
                                                              snapshotSource,
-                                                             Option::none,
+                                                             clusterConfigReader,
                                                              commandApplier,
                                                              () -> ClusterPhase.NORMAL,
                                                              _ -> {},
@@ -185,6 +194,140 @@ class ClusterTopologyManagerAutoHealDurabilityTest {
         assertThat(outcome.isFailure()).isTrue();
         assertThat(kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class).unwrap().enabled()).isFalse();
 
+    }
+
+    /// v2711 finding 4: the disable records the version and per-subject scaling values of the configuration it is fenced on.
+    @Test
+    void disable_recordsTheWitnessedConfigurationsVersionAndScaling() {
+        commitConfig(config(2L, 2));
+        var ctm = newCtm(() -> kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class), this::storedConfig);
+
+        ctm.setAutoHealEnabled(false, "operator: maintenance").await().unwrap();
+
+        var record = kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class).unwrap();
+        assertThat(record.enabled()).isFalse();
+        assertThat(record.disabledAtConfigVersion()).isEqualTo(2L);
+        assertThat(record.disabledAtScaling()).containsExactlyInAnyOrderEntriesOf(Map.of("worker primary/core", 3, "worker primary/worker", 2));
+    }
+
+    /// v2711 finding 4: a node whose applied configuration lags the committed one (v2 decided, this node still on v1) must not record v1's
+    /// values: the witness on the configuration refuses the disable, and nothing is written.
+    @Test
+    void disable_isRefused_whenThisNodesConfigurationViewIsStale() {
+        var stale = config(1L, 2);
+        commitConfig(config(2L, 3));
+        var ctm = newCtm(() -> kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class), () -> Option.some(stale));
+
+        var outcome = ctm.setAutoHealEnabled(false, "operator: maintenance").await();
+
+        assertThat(outcome.isFailure()).as("the stale witness is refused").isTrue();
+        assertThat(kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class).isEmpty())
+                .as("no disable record was written")
+                .isTrue();
+    }
+
+    /// v2711 survivor 6: a disable made with no committed configuration records version 0 and no scaling, not a default version.
+    @Test
+    void disable_withNoCommittedConfiguration_recordsVersionZeroAndNoScaling() {
+        ctmA.setAutoHealEnabled(false, "operator: maintenance").await().unwrap();
+
+        var record = kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class).unwrap();
+        assertThat(record.enabled()).isFalse();
+        assertThat(record.disabledAtConfigVersion()).isZero();
+        assertThat(record.disabledAtScaling()).isEmpty();
+    }
+
+    /// v2711 survivor 6: the disable records each declared community's `target_size` under its hold subject, next to the worker counts, and
+    /// the configuration's own version.
+    @Test
+    void disable_recordsEachCommunitysTargetSizeBesideTheWorkerCounts() {
+        commitConfig(configWith(Option.some(COMMUNITY_TOML.formatted(4)),
+                                7L,
+                                new AetherValue.TopologyEntry("pool", "core", 3),
+                                new AetherValue.TopologyEntry("pool", "worker", 1)));
+        var ctm = newCtm(() -> kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class), this::storedConfig);
+
+        ctm.setAutoHealEnabled(false, "operator: maintenance").await().unwrap();
+
+        var record = kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class).unwrap();
+        assertThat(record.disabledAtConfigVersion()).isEqualTo(7L);
+        assertThat(record.disabledAtScaling()).containsExactlyInAnyOrderEntriesOf(Map.of("worker pool/core", 3,
+                                                                                         "worker pool/worker", 1,
+                                                                                         "community stable", 4));
+    }
+
+    /// v2711 survivor 6: a duplicated (source, role) records its first entry's count, as the desired-count lookup does.
+    @Test
+    void disable_recordsTheFirstEntryOfADuplicatedSourceRole() {
+        commitConfig(configWith(Option.none(),
+                                3L,
+                                new AetherValue.TopologyEntry("pool", "core", 3),
+                                new AetherValue.TopologyEntry("pool", "core", 5)));
+        var ctm = newCtm(() -> kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class), this::storedConfig);
+
+        ctm.setAutoHealEnabled(false, "operator: maintenance").await().unwrap();
+
+        var record = kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class).unwrap();
+        assertThat(record.disabledAtScaling()).containsExactlyEntriesOf(Map.of("worker pool/core", 3));
+    }
+
+    /// v2711 survivor 6: an enable records no configuration version and no scaling, even when a configuration is committed.
+    @Test
+    void enable_recordsNoVersionAndNoScaling_evenWithACommittedConfiguration() {
+        commitConfig(config(2L, 2));
+        var ctm = newCtm(() -> kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class), this::storedConfig);
+        ctm.setAutoHealEnabled(false, "operator: maintenance").await().unwrap();
+
+        ctm.setAutoHealEnabled(true, "operator: done").await().unwrap();
+
+        var record = kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class).unwrap();
+        assertThat(record.enabled()).isTrue();
+        assertThat(record.disabledAtConfigVersion()).isZero();
+        assertThat(record.disabledAtScaling()).isEmpty();
+    }
+
+    private Option<ClusterConfigValue> storedConfig() {
+        return kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT, ClusterConfigValue.class);
+    }
+
+    private void commitConfig(ClusterConfigValue value) {
+        kvStore.process(kvStore.createBatch((List) List.of(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT, value))));
+    }
+
+    private static final String COMMUNITY_TOML = """
+        config_version = "1.0.0"
+        [cluster]
+        name = "test"
+        version = "1.0.0"
+        [source.pool]
+        type = "forge"
+        zones = ["old", "new"]
+        [source.pool.core]
+        count = 3
+        [source.pool.worker]
+        count = 1
+        [community.stable]
+        target_size = %d
+        [community.stable.placement.destination]
+        source = "pool"
+        zone = "new"
+        """;
+
+    private static ClusterConfigValue configWith(Option<String> toml, long version, AetherValue.TopologyEntry... entries) {
+        return new ClusterConfigValue(toml, "test", "1.0.0", List.of(entries), 3, 9, "test", version, 1L);
+    }
+
+    private static ClusterConfigValue config(long version, int workers) {
+        return new ClusterConfigValue(Option.none(),
+                                      "test",
+                                      "1.0.0",
+                                      List.of(new AetherValue.TopologyEntry("primary", "core", 3),
+                                              new AetherValue.TopologyEntry("primary", "worker", workers)),
+                                      3,
+                                      9,
+                                      "test",
+                                      version,
+                                      1L);
     }
 
     private static MessageRouter.MutableRouter quietRouter() {

@@ -540,6 +540,8 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `json-config-rejected` (CRITICAL — a committed `[json]` change was refused for a slice and its HTTP routes keep the JSON codec selection they had; `subject` is `<slice artifact>/json`, the message names each refused key, its value and why, and the selection kept; raised once per node on the transition into refusal; the same configuration fails the slice's next provisioning, issue #2378)
 - `json-config-applied` (INFO — the recovery: a valid `[json]` configuration was adopted after a refusal; published only after a published `json-config-rejected` for the same `subject`)
 - `instance-reap-held` (WARNING — auto-heal is disabled, so the cluster did not delete the instance of a node it would otherwise have reaped: a departed node, an orphan the sweep found, a surplus trim, the reap of a never-joined zombie, or the retry or re-check of any of them; `subject` is the node, the message names which. The instance is kept for diagnosis and keeps billing. Raised once per node by the leader that held the reap; enable auto-heal to have it reaped, or terminate it at the provider yourself)
+- `auto-heal-scaling-held` (WARNING — auto-heal is disabled, so the cluster did not provision or terminate workers or begin a community placement operation on its own initiative; `subject` is `worker <source>/<role>` or `community <id>`; raised once per subject for the run of holds. A count or `target_size` changed while disabled, and an operator-directed retirement, are not held)
+- `auto-heal-scaling-resumed` (INFO — the recovery: auto-heal is enabled again and the paths act on their own again; published only after a published `auto-heal-scaling-held` for the same `subject`)
 - `instance-reap-released` (INFO — the recovery: auto-heal is enabled again and the reap is no longer held (it is then subject to the usual liveness and refusal checks), or the instance was deleted by a directed retirement after the reap was held, or the node joined the cluster again; published only after a published `instance-reap-held` for the same `subject`. Raised by the leader that held the reap, so a leader change in between leaves the held event open)
 - `upload-node-cap-saturated` (WARNING — an upload was refused `429` because the node holds `[app-http.upload] max_concurrent` uploads; `subject` is the node; raised once per episode on the first refusal, not once per refused request; a per-principal refusal raises nothing; issue #2410)
 - `upload-node-cap-restored` (INFO — the recovery: an upload finished and the node accepts uploads again; published only after a published `upload-node-cap-saturated` for the same `subject`)
@@ -3474,7 +3476,8 @@ Provisioning diagnostics — answers "why is a core-membership deficit being or 
   "circuitBreaker": {
     "consecutiveFailures": 0,
     "tripped": false,
-    "nextAllowedMs": 0
+    "nextAllowedMs": 0,
+    "sources": {}
   },
   "lastProvisionFailure": null,
   "inventoryWaiting": false,
@@ -3497,7 +3500,7 @@ Provisioning diagnostics — answers "why is a core-membership deficit being or 
   "lastTrigger": "NONE",
   "lastReason": "Provisioning diagnostics available only on the leader that owns a cluster topology manager",
   "deficitAgeMs": 0,
-  "circuitBreaker": {"consecutiveFailures": 0, "tripped": false, "nextAllowedMs": 0},
+  "circuitBreaker": {"consecutiveFailures": 0, "tripped": false, "nextAllowedMs": 0, "sources": {}},
   "lastProvisionFailure": null,
   "inventoryWaiting": false,
   "inventoryWaits": 0,
@@ -3675,7 +3678,7 @@ during formation is routine. For a liveness judgement prefer the membership view
 
 ### GET /api/v1/cluster/topology/circuit-breaker
 
-Snapshot of the CTM (Cluster Topology Manager) provisioning circuit breaker. The breaker trips after `MAX_CONSECUTIVE_PROVISIONING_FAILURES` (default 3) failed slot-deadline expirations or provider API rejections, halting auto-heal until a recovery trigger fires (`setDesiredSize`, `onNodeReady`, phase NORMAL transition, leader handoff, or operator reset).
+Snapshot of the CTM (Cluster Topology Manager) provisioning circuit breaker. The breaker trips after `MAX_CONSECUTIVE_PROVISIONING_FAILURES` (default 3) failed slot-deadline expirations or provider API rejections, halting provisioning in that source until a recovery trigger fires. There is one breaker per source binding (spec §8.3): a failing source opens only its own, and another source keeps provisioning. Recovery triggers: `setDesiredSize` (that source), `onNodeReady` (the joined node's source; every source when it is not known), phase NORMAL transition and leader handoff (every source), or operator reset. The top-level fields aggregate the sources (worst count, latest window, tripped when any is); `sources` lists each source that holds a failure, and a refusal counted before a source was resolved appears as `(unresolved)` and gates nothing.
 
 **RBAC:** ADMIN · **Routing:** LEADER
 
@@ -3685,13 +3688,14 @@ Snapshot of the CTM (Cluster Topology Manager) provisioning circuit breaker. The
   "consecutiveFailures": 0,
   "trippedAt": 3,
   "nextAllowedMs": 0,
-  "tripped": false
+  "tripped": false,
+  "sources": {}
 }
 ```
 
 ### POST /api/v1/cluster/topology/circuit-breaker/reset
 
-Operator-triggered reset of the CTM provisioning circuit breaker. Use after fixing an underlying provisioning issue (provider credentials, network connectivity, capacity quota) when none of the auto-recovery triggers (above) have fired. Returns the prior consecutive-failure count for the audit log.
+Operator-triggered reset of the CTM provisioning circuit breaker. Use after fixing an underlying provisioning issue (provider credentials, network connectivity, capacity quota) when none of the auto-recovery triggers (above) have fired. Returns the prior consecutive-failure count for the audit log. The optional body `{"source": "<name>"}` resets only that source's breaker; with `{}`, or with no body at all, every source's breaker is reset and the count is the sum. A malformed source name, and one the committed cluster configuration does not declare (as the handling node has applied it), is refused with 400 rather than silently resetting nothing.
 
 **RBAC:** ADMIN · **Routing:** LEADER
 
@@ -3699,7 +3703,8 @@ Operator-triggered reset of the CTM provisioning circuit breaker. Use after fixi
 ```json
 {
   "status": "reset",
-  "priorFailureCount": 3
+  "priorFailureCount": 3,
+  "scope": "all"
 }
 ```
 
@@ -3753,7 +3758,7 @@ Re-enable CTM auto-heal. Writes `AutoHealStateValue(enabled=true, reason)` throu
 
 ### POST /api/v1/cluster/topology/auto-heal/disable
 
-Disable CTM auto-heal. Writes `AutoHealStateValue(enabled=false, reason)` through the same consensus-backed command path as other topology mutations; already-in-flight provisioning attempts on any node continue to completion. While disabled the cluster also deletes no instance on its own initiative (a departed node, an orphan, the retry or re-check of either): the reap is held and the `instance-reap-held` event names the node (#1038); a retirement directed from outside is not held: the node-replacement protocol's drain (`POST /nodes/replace`, upgrade runs) and a community-placement retirement. A worker scale-down (`terminateSurplusWorkers`, desired count below actual) is config-directed operator intent and is not held either. Returns the prior `enabled` state, as observed by this node's local (possibly stale) view, for the audit log. A same-state call (already disabled, by that local view) still writes through unconditionally — the write is never skipped on a local-read shortcut, since that read can lag the durable value (#685 review round 1). The disable survives a leader failover (#685) — see the staleness note under `GET .../auto-heal`.
+Disable CTM auto-heal. Writes `AutoHealStateValue(enabled=false, reason)` through the same consensus-backed command path as other topology mutations; already-in-flight provisioning attempts on any node continue to completion. While disabled the cluster also deletes no instance on its own initiative (a departed node, an orphan, the retry or re-check of either): the reap is held and the `instance-reap-held` event names the node (#1038); a retirement directed from outside is not held: the node-replacement protocol's drain (`POST /nodes/replace`, upgrade runs) and a community-placement retirement. The worker and community paths are held the same way: while disabled the cluster provisions or terminates no worker (a worker or spot source/role short of or over its desired count) and begins no community placement operation on its own initiative, and raises `auto-heal-scaling-held` once per source/role or community. Two things are not held: an operator-directed retirement, and a desired count or community `target_size` that an operator commits while auto-heal is disabled (explicit intent: the disable records each source/role's committed count and each community's `target_size`, and only a commit that changes that subject's own value releases it; a commit that leaves it unchanged releases nothing). The disable is one transaction fenced on the committed configuration it read those values from: if the configuration changed in between, the disable is refused and should be retried. Enabling auto-heal, or a release, raises `auto-heal-scaling-resumed`. Returns the prior `enabled` state, as observed by this node's local (possibly stale) view, for the audit log. A same-state call (already disabled, by that local view) still writes through unconditionally — the write is never skipped on a local-read shortcut, since that read can lag the durable value (#685 review round 1). The disable survives a leader failover (#685) — see the staleness note under `GET .../auto-heal`.
 
 **RBAC:** ADMIN · **Routing:** LEADER
 

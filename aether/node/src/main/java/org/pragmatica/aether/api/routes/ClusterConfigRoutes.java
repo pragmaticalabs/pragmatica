@@ -7,6 +7,7 @@ package org.pragmatica.aether.api.routes;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -21,6 +22,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.ClusterStatusResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.LoadBalancerStatusInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.ProvisionFailureInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.ProvisioningCircuitBreakerInfo;
+import org.pragmatica.aether.api.ManagementApiResponses.SourceBreakerInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.ProvisioningDiagnosticsResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.DryRunResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ScaleClusterResponse;
@@ -177,12 +179,25 @@ public final class ClusterConfigRoutes implements RouteSource {
                                                    decision.deficitAgeMs(),
                                                    new ProvisioningCircuitBreakerInfo(breaker.consecutiveFailures(),
                                                                                       breaker.tripped(),
-                                                                                      breaker.nextAllowedMs()),
+                                                                                      breaker.nextAllowedMs(),
+                                                                                      sourceBreakers(diagnostics.circuitBreakers())),
                                                    diagnostics.lastProvisionFailure()
                                                               .map(ClusterConfigRoutes::toFailureInfo),
                                                    diagnostics.inventoryWait().isPresent(),
                                                    diagnostics.inventoryWaits(),
                                                    diagnostics.inventoryWait().map(ClusterConfigRoutes::toFailureInfo));
+    }
+
+    private static Map<String, SourceBreakerInfo> sourceBreakers(Map<String, ClusterTopologyManager.CircuitBreakerState> states) {
+        var infos = new TreeMap<String, SourceBreakerInfo>();
+
+        states.forEach((source, state) -> infos.put(source, toSourceBreaker(state)));
+
+        return infos;
+    }
+
+    private static SourceBreakerInfo toSourceBreaker(ClusterTopologyManager.CircuitBreakerState state) {
+        return new SourceBreakerInfo(state.consecutiveFailures(), state.tripped(), state.nextAllowedMs());
     }
 
     private static ProvisionFailureInfo toFailureInfo(ClusterTopologyManager.LastProvisionFailure failure) {
@@ -202,7 +217,8 @@ public final class ClusterConfigRoutes implements RouteSource {
                                                                                                                        0L,
                                                                                                                        new ProvisioningCircuitBreakerInfo(0,
                                                                                                                                                           false,
-                                                                                                                                                          0L),
+                                                                                                                                                          0L,
+                                                                                                                                                          Map.of()),
                                                                                                                        Option.none(),
                                                                                                                        false,
                                                                                                                        0L,

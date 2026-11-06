@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Map;
+import java.util.Set;
 
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
@@ -37,7 +38,8 @@ class GapJudgmentTest {
                                                   Map.of(CORE_2,
                                                          new UnresponsiveEntry(gen(1),
                                                                                SliceGoal.LOADED,
-                                                                               FsmHarness.START_WALL))));
+                                                                               FsmHarness.START_WALL)),
+                                                  Set.of()));
 
         return w;
     }

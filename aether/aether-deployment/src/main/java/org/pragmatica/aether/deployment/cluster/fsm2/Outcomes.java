@@ -7,6 +7,8 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -14,6 +16,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.ArtifactIntent;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.TxDraft;
+import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
@@ -22,6 +25,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentApplyValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -35,6 +39,8 @@ import org.pragmatica.lang.Option;
 /// under ALL_OR_NOTHING rolls back each open apply that declares the artifact, unless the artifact is in a rolling
 /// update (B-055); under BEST_EFFORT it merges the failure into the outcome record (B-056).
 public sealed interface Outcomes {
+    String MARKED_CAUSE = "A declared slice is marked permanently failed";
+
     // -- the apply ------------------------------------------------------------------------------------------------
     /// An apply is outstanding for `artifact` when a non-registerOnly blueprint that declares it has an open apply of its
     /// committed attempt (the discriminator of #922, R-2.7).
@@ -87,7 +93,118 @@ public sealed interface Outcomes {
                                                      ctx,
                                                      entry.getKey()));
 
+        return supersededMarks(rollbackMarked(m, ctx));
+    }
+
+    /// CF-8 (G2 P2 `newLeader_rollbackIntent_rollbackCompleted`): under ALL_OR_NOTHING the decision to roll back is the durable permanent-failure
+    /// mark of a declared artifact of an open apply, not the failure event that wrote it. A rollback lost with its term, or never sent
+    /// because the failure was committed by another leader, is derived again on every tick, until the apply is gone. The mark is scoped to
+    /// the attempts it judged ([ArtifactJudgmentValue#judgedAttempts]): an apply of any other attempt (a republish) is never rolled back
+    /// by it, whichever of the publish batch and the judgment removal commits first. A rollback in flight or a rolling update (B-055) is
+    /// respected as in `rollbackFor`.
+    private static ClusterModel rollbackMarked(ClusterModel m, Ctx ctx) {
+        if (ctx.settings().atomicity() != DeploymentAtomicity.ALL_OR_NOTHING) {
+            return m;
+        }
+
+        m.applies.entries()
+                 .stream()
+                 .sorted(Comparator.comparing(entry -> entry.getKey()
+                                                            .asString()))
+                 .filter(entry -> Blueprints.isOpen(m,
+                                                    entry.getKey(),
+                                                    entry.getValue()))
+                 .filter(entry -> attemptOf(m,
+                                            entry.getKey()).equals(entry.getValue().attemptId()))
+                 .forEach(entry -> rollbackJudged(m,
+                                                  ctx,
+                                                  entry.getKey(),
+                                                  entry.getValue().attemptId()));
+
         return m;
+    }
+
+    /// Rolls back the apply `attempt` of `id` once per declared artifact whose mark judged that attempt.
+    private static ClusterModel rollbackJudged(ClusterModel m, Ctx ctx, BlueprintId id, String attempt) {
+        markedArtifacts(m, id, attempt).filter(artifact -> !m.routings.containsKey(artifact.base()))
+                       .forEach(artifact -> rollback(m, ctx, id, artifact, MARKED_CAUSE));
+
+        return m;
+    }
+
+    /// The declared artifacts of `id` whose permanent mark judged `attempt`.
+    private static Stream<Artifact> markedArtifacts(ClusterModel m, BlueprintId id, String attempt) {
+        return declaredArtifacts(m, id).filter(artifact -> judgedAttempt(m, artifact, attempt));
+    }
+
+    private static Stream<Artifact> declaredArtifacts(ClusterModel m, BlueprintId id) {
+        return m.blueprints.get(id)
+                           .stream()
+                           .flatMap(value -> value.blueprint()
+                                                  .loadOrder()
+                                                  .stream())
+                           .map(slice -> slice.artifact());
+    }
+
+    /// CF-8 (V2771b): a permanent mark is superseded once an open apply of the current attempt declares the artifact and the mark did not
+    /// judge that attempt. The publish batch that removes the mark of a republish can be lost across a term change; the mark then
+    /// blocks placement of the new attempt for good while rolling nothing back. The leader removes it here, on every tick, at the
+    /// observed judgment value, so a newer mark committed meanwhile is never removed. In flight the removal is not sent again; a
+    /// refused or lost one is derived again by the next tick (`Outbox.rederive`).
+    private static ClusterModel supersededMarks(ClusterModel m) {
+        m.applies.entries()
+                 .stream()
+                 .sorted(Comparator.comparing(entry -> entry.getKey()
+                                                            .asString()))
+                 .filter(entry -> Blueprints.isOpen(m,
+                                                    entry.getKey(),
+                                                    entry.getValue()))
+                 .filter(entry -> attemptOf(m,
+                                            entry.getKey()).equals(entry.getValue().attemptId()))
+                 .forEach(entry -> removeSuperseded(m,
+                                                    entry.getKey(),
+                                                    entry.getValue().attemptId()));
+
+        return m;
+    }
+
+    private static ClusterModel removeSuperseded(ClusterModel m, BlueprintId id, String attempt) {
+        declaredArtifacts(m, id).filter(artifact -> supersededMark(m, artifact, attempt))
+                         .flatMap(artifact -> Blueprints.judgmentRemoval(m, artifact).stream())
+                         .filter(mutation -> !inFlight(m,
+                                                       SubmitKind.STALE_MARK,
+                                                       mutation.key()))
+                         .forEach(mutation -> Outbox.direct(m,
+                                                            TxDraft.draft(SubmitKind.STALE_MARK,
+                                                                          mutation.key(),
+                                                                          List.of(mutation))));
+
+        return m;
+    }
+
+    private static boolean supersededMark(ClusterModel m, Artifact artifact, String attempt) {
+        return m.judgments.get(artifact)
+                          .filter(ArtifactJudgmentValue::permanentFailure)
+                          .map(judgment -> !judgment.judgedAttempts()
+                                                    .contains(attempt))
+                          .or(false);
+    }
+
+    private static boolean judgedAttempt(ClusterModel m, Artifact artifact, String attempt) {
+        return m.judgments.get(artifact)
+                          .filter(ArtifactJudgmentValue::permanentFailure)
+                          .map(judgment -> judgment.judgedAttempts()
+                                                   .contains(attempt))
+                          .or(false);
+    }
+
+    /// CF-8: the attempts a permanent mark of `artifact` decided now judges, those of every blueprint declaring it.
+    static Set<String> declaringAttempts(ClusterModel m, Artifact artifact) {
+        return Idx.members(m.blueprintsByArtifact, artifact)
+                  .toList()
+                  .stream()
+                  .map(id -> attemptOf(m, id))
+                  .collect(Collectors.toSet());
     }
 
     /// R-2.1: deployed when every declared, non-registerOnly slice has at least one counted ACTIVE instance.
@@ -150,16 +267,19 @@ public sealed interface Outcomes {
     }
 
     private static boolean succeededInFlight(ClusterModel m, BlueprintId id) {
-        var key = new DeploymentOutcomeKey(id);
+        return inFlight(m, SubmitKind.SUCCEEDED, new DeploymentOutcomeKey(id));
+    }
 
+    /// Whether a draft of `kind` on `key` is submitted and unsettled, or waits in the outbox.
+    private static boolean inFlight(ClusterModel m, SubmitKind kind, AetherKey key) {
         return m.submitted.values()
                           .stream()
                           .flatMap(submitted -> submitted.drafts()
                                                          .stream())
-                          .anyMatch(draft -> draft.kind() == SubmitKind.SUCCEEDED && draft.key()
-                                                                                          .equals(key)) || m.outbox.stream()
-                                                                                                                   .anyMatch(draft -> draft.kind() == SubmitKind.SUCCEEDED && draft.key()
-                                                                                                                                                                                   .equals(key));
+                          .anyMatch(draft -> draft.kind() == kind && draft.key()
+                                                                          .equals(key)) || m.outbox.stream()
+                                                                                                   .anyMatch(draft -> draft.kind() == kind && draft.key()
+                                                                                                                                                   .equals(key));
     }
 
     /// "n of m" (R-2.1): the verdict states the coverage and never implies every instance is ACTIVE.

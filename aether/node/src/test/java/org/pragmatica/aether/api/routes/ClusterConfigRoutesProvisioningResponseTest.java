@@ -4,7 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.util.Map;
+
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.api.ManagementApiResponses.SourceBreakerInfo;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager.CircuitBreakerState;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager.LastProvisionFailure;
 import org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler.ProvisioningDecisionSnapshot;
@@ -21,7 +24,7 @@ class ClusterConfigRoutesProvisioningResponseTest {
 
     @Test
     void anInventoryWait_isInventoryWaiting_andNotALastProvisionFailure() {
-        var response = ClusterConfigRoutes.toProvisioningResponse(new ProvisioningDiagnostics(DECISION, BREAKER, Option.none(),
+        var response = ClusterConfigRoutes.toProvisioningResponse(new ProvisioningDiagnostics(DECISION, BREAKER, Map.of(), Option.none(),
             Option.some(new LastProvisionFailure("Complete inventory is unavailable", 42L)), 7L));
 
         assertThat(response.inventoryWaiting()).isTrue();
@@ -33,12 +36,27 @@ class ClusterConfigRoutesProvisioningResponseTest {
 
     @Test
     void aResolvedWait_isNotWaiting_butStaysCounted() {
-        var response = ClusterConfigRoutes.toProvisioningResponse(new ProvisioningDiagnostics(DECISION, BREAKER,
+        var response = ClusterConfigRoutes.toProvisioningResponse(new ProvisioningDiagnostics(DECISION, BREAKER, Map.of(),
             Option.some(new LastProvisionFailure("boom", 1L)), Option.none(), 7L));
 
         assertThat(response.inventoryWaiting()).isFalse();
         assertThat(response.inventoryWaits()).isEqualTo(7L);
         assertThat(response.lastInventoryWait().isPresent()).isFalse();
         assertThat(response.lastProvisionFailure().unwrap().cause()).isEqualTo("boom");
+    }
+
+    @Test
+    void perSourceBreakers_areMappedField_forField_andAggregateIsCarried() {
+        var aggregate = new CircuitBreakerState(4, 5, 6000L, true);
+        var sources = Map.of("eu-1", new CircuitBreakerState(2, 9, 700L, true), "us-2", new CircuitBreakerState(1, 0, 0L, false));
+        var response = ClusterConfigRoutes.toProvisioningResponse(new ProvisioningDiagnostics(DECISION, aggregate, sources, Option.none(), Option.none(), 0L));
+        var breaker = response.circuitBreaker();
+
+        assertThat(breaker.consecutiveFailures()).isEqualTo(4);
+        assertThat(breaker.tripped()).isTrue();
+        assertThat(breaker.nextAllowedMs()).isEqualTo(6000L);
+        assertThat(breaker.sources()).containsOnlyKeys("eu-1", "us-2");
+        assertThat(breaker.sources().get("eu-1")).isEqualTo(new SourceBreakerInfo(2, true, 700L));
+        assertThat(breaker.sources().get("us-2")).isEqualTo(new SourceBreakerInfo(1, false, 0L));
     }
 }

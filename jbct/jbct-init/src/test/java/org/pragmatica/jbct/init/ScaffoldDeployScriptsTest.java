@@ -103,6 +103,16 @@ class ScaffoldDeployScriptsTest {
     }
 
     @Test
+    void run_toleratesAScriptThatExitsWithoutReadingItsStdin() throws Exception {
+        Files.writeString(project.resolve("exits-at-once.sh"), "exit 3\n");
+
+        // more than a pipe buffer, so the write can only end in EPIPE once the script has exited
+        var run = run("exits-at-once.sh", "1.0.0", "x".repeat(1 << 20));
+
+        assertThat(run.exit()).isEqualTo(3);
+    }
+
+    @Test
     void deployProd_pushesTheRealReleaseVersion() throws Exception {
         var run = run("deploy-prod.sh", "1.4.2", "yes\n");
 
@@ -127,6 +137,18 @@ class ScaffoldDeployScriptsTest {
 
     private record Run(int exit, String output) {}
 
+    /// #2778: a script may refuse and exit before it reads its stdin (`deploy-prod.sh` does, by design, on a
+    /// SNAPSHOT), which closes the pipe, so the write or the close fails with EPIPE. That is an expected outcome, not
+    /// a test failure: what a test pins is the exit code, the output and the stub logs. A script that really needed
+    /// the input and did not get it cannot hide behind this: it fails those assertions or times out below.
+    private static void writeStdin(Process process, String stdin) {
+        try (var out = process.getOutputStream()) {
+            out.write(stdin.getBytes(StandardCharsets.UTF_8));
+        } catch (IOException _) {
+            // the script already exited; its exit code and output are asserted by the caller
+        }
+    }
+
     private Run run(String script, String projectVersion, String stdin) throws Exception {
         var builder = new ProcessBuilder(List.of("bash", project.resolve(script).toString())).directory(project.toFile())
                                                                                               .redirectErrorStream(true);
@@ -138,8 +160,7 @@ class ScaffoldDeployScriptsTest {
 
         var process = builder.start();
 
-        process.getOutputStream().write(stdin.getBytes(StandardCharsets.UTF_8));
-        process.getOutputStream().close();
+        writeStdin(process, stdin);
 
         var output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
 

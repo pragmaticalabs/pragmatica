@@ -247,7 +247,7 @@ validation before provisioning starts. A host may be declared by at most one `ss
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `[operations] auto_heal` | bool | `true` | Cluster-wide auto-heal master switch. |
+| `[operations] auto_heal` | bool | `true` | Cluster-wide auto-heal master switch. The live toggle (`aether cluster topology auto-heal disable`) it stands for covers core replacement, the worker and spot paths and community placement alike; see the note below for what it holds and what it does not. |
 | `[operations.auto_heal] enabled` | bool | `true` | `false` is **rejected at bootstrap** (error PF-25) — it has no runtime effect, so the parser refuses to accept a value that would silently lie. Use `aether cluster topology auto-heal disable` on a running cluster instead. See warning below. |
 | `[operations.auto_heal] retry_interval`, `startup_cooldown`, `stale_observation_ttl`, `quic_miss_promotion_threshold`, `provisioning_timeout`, `provision_stability_window`, `decommissioned_retention`, `swim_hints_ttl` | — | — | **Rejected at bootstrap** (error PF-26, #675). They parsed into `AutoHealSpec` and reached no node; see warning below. |
 | `[operations.tls] auto_generate` | bool | `true` | When `false`, the management API listener uses plain HTTP instead of an auto-generated self-signed cert. |
@@ -512,8 +512,19 @@ WARN naming the cluster, the cap, and the observed count.
 > `enabled = false` is **rejected at bootstrap** (error PF-25) rather than silently accepted and ignored
 > — the parsed value is never read by the provisioning path, so a `false` here would falsely promise
 > suppression it can't deliver. Set it to `true` (its only honest value) or omit the key, and use the
-> live operator toggle instead: `aether cluster topology auto-heal disable`, which actually suppresses
-> replacement provisioning for the current leader term.
+> live operator toggle instead: `aether cluster topology auto-heal disable`. The toggle is a durable
+> cluster fact (it survives a leader change), not a property of one leader term. While it is disabled
+> the cluster makes no provision or terminate on its own initiative: not a core replacement, not a
+> worker or spot source/role that is short or over its desired count, not a community member, and not
+> the deletion of a departed node's instance. Two things are not held: an operator-directed retirement,
+> and a desired count or community `target_size` that an operator **changes while auto-heal is
+> disabled**, which is explicit intent and is acted on. The release is per source/role and per
+> community: the disable records each one's committed count or `target_size`, and only a commit that
+> changes that subject's own value releases it (from then on it is acted on, a loss correction
+> included). A commit that leaves the value unchanged, such as another source's count or an unrelated
+> setting, releases nothing. A disable is refused if the configuration changed underneath it; retry it.
+> Each hold is announced once (`auto-heal-scaling-held`); a release, or enabling auto-heal again,
+> announces it (`auto-heal-scaling-resumed`).
 >
 > #675 made that decision: the node config is the one live surface; every key here that could not reach
 > a node is refused (PF-26), and `[timeouts.scaling] auto_heal_retry` was removed from the node config

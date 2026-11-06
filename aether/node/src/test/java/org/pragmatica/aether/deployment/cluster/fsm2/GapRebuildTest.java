@@ -88,7 +88,7 @@ class GapRebuildTest {
                                              Option.some(DepartureCause.WORKER_LEAVE),
                                              5L));
         h.seedQuietly(new ArtifactJudgmentKey(ORDERS_V2),
-                      new ArtifactJudgmentValue(true, Map.of(CORE_1, 2), Map.of()));
+                      new ArtifactJudgmentValue(true, Map.of(CORE_1, 2), Map.of(), Set.of()));
         h.seedQuietly(new DeploymentApplyKey(OTHER),
                       new DeploymentApplyValue(ATTEMPT, Option.none(), FsmHarness.START_WALL));
         h.seedQuietly(new DeploymentOutcomeKey(OTHER),
@@ -194,7 +194,7 @@ class GapRebuildTest {
 
         seedTarget(h, ORDERS, 1, 1);
         h.seedQuietly(new ArtifactJudgmentKey(ORDERS),
-                      new ArtifactJudgmentValue(true, Map.of(), Map.of()));
+                      new ArtifactJudgmentValue(true, Map.of(), Map.of(), Set.of()));
         h.activate();
         assertThat(h.submits()).as("a permanently failed artifact is not placed").isEmpty();
         h.seedRemove(new ArtifactJudgmentKey(ORDERS));
