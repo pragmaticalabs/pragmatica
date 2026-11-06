@@ -39,6 +39,8 @@ import org.pragmatica.messaging.MessageRouter;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 
+import static org.pragmatica.lang.Promise.promise;
+
 
 /// **The only place an engine-dependent hook is bound** (phase-3 design 8.3, D2, W-15, W-32). Every deployment hook of the node that differs
 /// between the legacy and the FSM2 engine goes through here, and each binding is recorded as `<branch point> -> <target>`; the record is compared
@@ -459,28 +461,30 @@ public final class DeploymentWiring {
     /// Under LEGACY the drain is a no-op and the order is the one the node always had.
     ///
     /// #2688: `delivered` is taken right after PASSIVE is routed and resolves once the reactions that edge queued (the `LeaderChange` the FSM routes onto
-    /// a react executor) have run; the quiesce, which would drop them, waits for it. The returned promise resolves after the quiesce. The quiesce and
-    /// whatever the caller chains on the returned promise run on a pooled thread, never on the thread that resolved `delivered`: that is the react
-    /// executor whose reactions it waited for, or the shared timeout scheduler when the caller bounded the wait, and the node's teardown chained here
-    /// blocks (the final cursor commits are awaited, bounded).
+    /// a react executor) have run; the quiesce, which would drop them, waits for it. The returned promise resolves after the quiesce. The quiesce is
+    /// itself the pooled step, started once `delivered` has resolved, so the quiesce runs on a pooled
+    /// thread in every ordering (`delivered` resolved before this call or after it), never on the thread that resolved `delivered` and never on the
+    /// caller. A continuation the caller chains on the returned promise runs on that pooled thread, or on the caller's own thread if the quiesce has
+    /// already finished, and never on the thread that resolved `delivered`: that is the react executor whose reactions it waited for, or the shared timeout scheduler when the caller bounded the wait, and the node's
+    /// teardown chained here blocks (the final cursor commits are awaited, bounded). Promise continuations run inline on the resolving thread, so a
+    /// hop that only started a pooled task and then mapped its result could still run the quiesce inline when the task finished first (#2806).
     public Promise<Unit> leaveQuorum(Runnable routePassive, Supplier<Promise<Unit>> delivered, Runnable quiesce) {
         routePassive.run();
         var reactionsRun = delivered.get();
 
         system.onPresent(Fsm2System::drainNode);
 
-        return reactionsRun.flatMap(DeploymentWiring::handedOff)
-                           .map(unit -> quiesced(quiesce));
+        return reactionsRun.flatMap(unit -> quiescedOnPool(quiesce));
     }
 
-    private static Promise<Unit> handedOff(Unit unit) {
-        return Promise.promise(Result::unitResult);
+    private static Promise<Unit> quiescedOnPool(Runnable quiesce) {
+        return promise(() -> quiesced(quiesce));
     }
 
-    private static Unit quiesced(Runnable quiesce) {
+    private static Result<Unit> quiesced(Runnable quiesce) {
         quiesce.run();
 
-        return Unit.unit();
+        return Result.unitResult();
     }
 
     /// The first step of the stop sequence (B13): under LEGACY the legacy deactivation; under FSM2 the cluster interpreter deactivates and closes.
