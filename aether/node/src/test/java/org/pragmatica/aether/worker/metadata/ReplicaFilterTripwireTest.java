@@ -132,7 +132,6 @@ class ReplicaFilterTripwireTest {
                                                                                                          .isFalse();
     }
 
-    @Disabled("enable at W3/W4 (worker replica): when the worker holds a full replica minus the exclusion set, re-point workerView at the filtered replica")
     /// F3 (P3-D, know `23ca0fd65f` D.2): the node FSM's two key families reach a worker over the replica feed: its goals (`SliceDesiredKey`) and
     /// the observed rows, its own echo included (`SliceObservedKey`). The cluster FSM's own families do not. MT: either family moved back to
     /// EXCLUDE is red here.
@@ -147,6 +146,7 @@ class ReplicaFilterTripwireTest {
         assertThat(filter.excludes(instanceOf(AetherKey.NodeDepartureKey.class))).as("cluster FSM only").isTrue();
     }
 
+    @Disabled("enable at W3/W4 (worker replica): when the worker holds a full replica minus the exclusion set, re-point workerView at the filtered replica")
     @Test
     void replicaHoldsEveryKeyOutsideTheFilter_andNoneInsideIt() {
         var index = WorkerMetadataIndex.workerMetadataIndex();

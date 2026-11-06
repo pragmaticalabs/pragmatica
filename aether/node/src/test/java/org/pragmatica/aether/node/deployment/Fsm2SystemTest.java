@@ -183,6 +183,8 @@ class Fsm2SystemTest {
             try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, true).assembled()) {
                 var legacy = new AtomicInteger();
 
+                harness.wiring.passiveClientSwitch(() -> {}).run();
+                harness.awaitThat(() -> activeNode(harness));
                 harness.wiring.configApplied(_ -> legacy.incrementAndGet()).accept("orders.banner");
 
                 harness.awaitThat(() -> harness.count("ConfigChanged", "applied", "node") == 1.0);
@@ -313,11 +315,12 @@ class Fsm2SystemTest {
             try (var worker = new Fsm2Harness(DeploymentEngine.FSM2, true).assembled()) {
                 var legacy = new AtomicInteger();
 
+                worker.commitLeader();
                 worker.put(AetherKey.SliceTargetKey.sliceTargetKey(ORDERS.base()), AetherValue.SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1));
                 worker.wiring.passiveClientSwitch(legacy::incrementAndGet).run();
                 worker.awaitThat(() -> activeNode(worker));
-                worker.put(AetherKey.SliceDesiredKey.sliceDesiredKey(Fsm2Harness.PEER, ORDERS), desired());
-                worker.put(AetherKey.SliceDesiredKey.sliceDesiredKey(Fsm2Harness.SELF, ORDERS), desired());
+                worker.leaderPut(AetherKey.SliceDesiredKey.sliceDesiredKey(Fsm2Harness.PEER, ORDERS), desired());
+                worker.leaderPut(AetherKey.SliceDesiredKey.sliceDesiredKey(Fsm2Harness.SELF, ORDERS), desired());
 
                 worker.awaitThat(() -> worker.count("DesiredPut", "applied", "node") == 1.0);
                 assertThat(legacy).as("never the NDM under FSM2").hasValue(0);

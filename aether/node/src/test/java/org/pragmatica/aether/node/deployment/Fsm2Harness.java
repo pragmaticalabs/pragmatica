@@ -20,6 +20,7 @@ import java.util.function.Consumer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.netty.buffer.ByteBuf;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.node.AetherNodeConfig;
@@ -270,6 +271,9 @@ final class Fsm2Harness implements AutoCloseable {
                                .environment(Option.none())
                                .managementHttpProtocol(HttpProtocol.H1)
                                .storageConfig(Map.of())
+                               .backupConfig(Option.none())
+                               .membership(Option.none())
+                               .streaming(StreamingConfig.streamingConfig())
                                .protocol(new ProtocolConfig(defaults.cleanupInterval(),
                                                             defaults.syncRetryInterval(),
                                                             defaults.removeOlderThanPhases(),
