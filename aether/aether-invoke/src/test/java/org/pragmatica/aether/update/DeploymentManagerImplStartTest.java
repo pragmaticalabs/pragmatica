@@ -11,6 +11,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
+import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -46,6 +47,7 @@ class DeploymentManagerImplStartTest {
     private static final ArtifactBase SECOND = Artifact.artifact("org.test:second-slice:1.0.0").unwrap().base();
     private static final SliceTargetKey BASE_TARGET = SliceTargetKey.sliceTargetKey(BASE);
     private static final SliceTargetKey SECOND_TARGET = SliceTargetKey.sliceTargetKey(SECOND);
+    private static final Version V3 = Version.version("3.0.0").unwrap();
     private static final int COMMITTED_COUNT = 7;
     private static final int DEPLOYMENT_COUNT = 5;
 
@@ -69,8 +71,12 @@ class DeploymentManagerImplStartTest {
     }
 
     private Result<Deployment> start(String blueprint) {
+        return start(blueprint, V2);
+    }
+
+    private Result<Deployment> start(String blueprint, Version version) {
         return manager.start(blueprint,
-                             V2,
+                             version,
                              DeploymentStrategy.BLUE_GREEN,
                              new StrategyConfig.BlueGreenConfig(timeSpan(30).seconds()),
                              HealthThresholds.DEFAULT,
@@ -130,16 +136,18 @@ class DeploymentManagerImplStartTest {
         assertThat(target(SECOND_TARGET)).isEqualTo(Option.none());
     }
 
-    /// One active deployment per blueprint: a second start is refused and leaves the first one's writes alone.
+    /// One active deployment per blueprint: a second start, to a different version so that nothing else refuses it, is refused and leaves
+    /// the first one's writes alone.
     @Test
     void start_blueprintAlreadyDeploying_isRefusedAndLeavesTheTargetsAlone() {
         activate();
         start(OWNER.asString()).unwrap();
 
-        var second = start(OWNER.asString());
+        var second = start(OWNER.asString(), V3);
 
         assertThat(second.isFailure()).isTrue();
         assertThat(manager.list()).hasSize(1);
+        assertThat(target(BASE_TARGET).map(SliceTargetValue::currentVersion)).isEqualTo(Option.some(V2));
         assertThat(target(BASE_TARGET).map(SliceTargetValue::targetInstances)).isEqualTo(Option.some(COMMITTED_COUNT));
     }
 
