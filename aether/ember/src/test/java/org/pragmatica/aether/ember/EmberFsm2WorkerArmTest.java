@@ -11,6 +11,7 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
 
+import io.micrometer.core.instrument.Counter;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -35,7 +36,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// community viability floor), whatever the global selector says.
 ///
 /// - Each worker is admitted by the leader's cluster FSM (B10 `WorkerJoin`): its activation directive is committed, it reports ready and its node
-///   FSM is active (B4 entry edge, the node half over the replica feed, know `23ca0fd65f` D.2).
+///   FSM is active, entered on the B4 edge (`QuorumEstablished`, not only the B3 heal's `ReconcileActivation`; the node half over the replica feed, know `23ca0fd65f` D.2).
 /// - A target placed WORKERS_ONLY gives one worker a `SliceDesiredKey`, and that key reaches the worker's own replica (its node FSM's input).
 /// - That worker's departure (B9 `WorkerLeave`) is recorded DEPARTED by the leader, which removes the worker's desired keys.
 ///
@@ -114,6 +115,9 @@ class EmberFsm2WorkerArmTest {
                        () -> leader().kvStore().getTyped(new AetherKey.ActivationDirectiveKey(workerId), AetherValue.class).isPresent());
         awaitCondition(workerId.id() + " reports ready", worker::isReady);
         awaitCondition("B4: the node FSM of " + workerId.id() + " is active", () -> nodeFsmActive(worker));
+        assertThat(appliedNodeInputs(worker, "QuorumEstablished")).as("B4: %s entered on its genuine edge, not only by the B3 level heal",
+                                                                      workerId.id())
+                                                                  .isPositive();
         assertThat(worker.deploymentWiring().system().map(Fsm2System::worker)).as("the worker runs the node half").isEqualTo(Option.some(true));
 
         return workerId;
@@ -123,6 +127,17 @@ class EmberFsm2WorkerArmTest {
         return Option.from(workers.stream()
                                   .filter(worker -> desiredFor(leader(), worker))
                                   .findFirst());
+    }
+
+    private static double appliedNodeInputs(AetherNode node, String input) {
+        return node.deploymentWiring()
+                   .meters()
+                   .find("aether_deployment_fsm_inputs_total")
+                   .tags("fsm", "node", "input", input, "result", "applied")
+                   .counters()
+                   .stream()
+                   .mapToDouble(Counter::count)
+                   .sum();
     }
 
     private static boolean nodeFsmActive(AetherNode node) {
