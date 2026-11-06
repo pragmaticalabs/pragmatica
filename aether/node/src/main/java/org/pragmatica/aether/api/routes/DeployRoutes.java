@@ -30,7 +30,6 @@ import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Verify;
 
 import static org.pragmatica.http.routing.PathParameter.aString;
 import static org.pragmatica.lang.Option.option;
@@ -46,7 +45,7 @@ public final class DeployRoutes implements RouteSource {
     private static final Cause MISSING_STRATEGY = DeployRouteError.MISSING_STRATEGY;
     private static final Cause INVALID_STRATEGY = DeployRouteError.INVALID_STRATEGY;
     private static final Cause MISSING_CANARY_STAGES = DeployRouteError.MISSING_CANARY_STAGES;
-    private static final Cause INSTANCES_BELOW_MINIMUM = DeployRouteError.INSTANCES_BELOW_MINIMUM;
+    private static final Cause INSTANCES_NOT_ACCEPTED = DeployRouteError.INSTANCES_NOT_ACCEPTED;
 
     private final Supplier<ManageableNode> nodeSupplier;
 
@@ -238,14 +237,14 @@ public final class DeployRoutes implements RouteSource {
         };
     }
 
-    /// A rollout writes `instances` onto every slice target of the blueprint, so it carries the same floor
-    /// and default as the blueprint's own `instances` (#1495): absent means [SliceSpec#DEFAULT_INSTANCES],
-    /// below [SliceSpec#MIN_INSTANCES] is refused.
+    /// v2713 item 6: `instances` is refused. A deployment needs a committed target (its current version is read from it), and over a
+    /// committed target the count is the requirement combiner's (rc6 §3.1), so a requested count would be silently ignored. The
+    /// operator sets a count as an operator requirement with `POST /api/scale`. Absent, a slice of the blueprint that has no target
+    /// yet is created at [SliceSpec#DEFAULT_INSTANCES] (#1495).
     private static Result<Integer> parseInstances(Integer raw) {
-        return Verify.ensure(option(raw).or(SliceSpec.DEFAULT_INSTANCES),
-                             Verify.Is::greaterThanOrEqualTo,
-                             SliceSpec.MIN_INSTANCES,
-                             INSTANCES_BELOW_MINIMUM);
+        return option(raw).isPresent()
+               ? INSTANCES_NOT_ACCEPTED.result()
+               : Result.success(SliceSpec.DEFAULT_INSTANCES);
     }
 
     private static Result<StrategyConfig> parseStrategyConfig(DeploymentStrategy strategy, DeployRequest request) {

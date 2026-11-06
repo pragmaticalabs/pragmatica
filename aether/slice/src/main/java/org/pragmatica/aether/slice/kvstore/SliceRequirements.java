@@ -36,8 +36,13 @@ import org.pragmatica.lang.Result;
 /// the same demand; it never sums them.
 ///
 /// With no unexpired requirement there is nothing to combine: the committed count stands (the blueprint's declared count seeds a
-/// target on creation, and an expiring or released requirement releases its claim without commanding a scale-down), so the combiner
-/// writes nothing.
+/// target on creation), so the combiner writes nothing.
+///
+/// Scale-down happens only through the `REACTIVE` term falling (spec §3.1, v2713 item 2). A claim that is released or lowered (an
+/// operator release) or that expires releases its claim without commanding a scale-down: the write that releases it re-bases `REACTIVE`
+/// to the committed count in the same transaction ([#requirementMutations], and the combiner's removal of expired records in
+/// [#combinerTransaction]), so the target holds until the autoscaler lowers `REACTIVE`, under its cooldown. The combiner removes an
+/// expired record in the same transaction as the re-base, so a committed expired record always means an expiry not yet handled.
 public sealed interface SliceRequirements {
     /// One committed requirement of a slice, typed by its source.
     record Requirement(RequirementKind kind, SliceRequirementValue value) {}
@@ -58,6 +63,15 @@ public sealed interface SliceRequirements {
             @Override
             public String message() {
                 return "Slice requirements of " + base.asString() + " are not orphaned; none was removed";
+            }
+        }
+
+        /// An A/B test runs a canary on the slice's target at the fixed variant count (#1721): the combiner does not scale it. The
+        /// test's terminal put re-runs the combination.
+        record CanaryRunning(ArtifactBase base) implements CombinerOutcome {
+            @Override
+            public String message() {
+                return "Slice target of " + base.asString() + " runs an A/B canary at its fixed variant count; not combined";
             }
         }
     }
@@ -137,39 +151,137 @@ public sealed interface SliceRequirements {
     /// values read, so a requirement or target that moved after the read refuses the write and the rebuild combines the moved
     /// state. Fails with [CombinerOutcome.Settled] when the committed target needs no write, and with a
     /// [SliceTargetFence.SliceTargetFenceError] when no target, owner or leader is committed.
+    ///
+    /// An expired requirement is removed in the same transaction, and while `REACTIVE` is below the committed count it is re-based to
+    /// that count with it ([#reactiveRebase]): an expiry releases its claim and never commands a scale-down (spec §3.1). Fails with [CombinerOutcome.CanaryRunning] while an A/B canary runs on the target.
     static Result<LeaderTransaction<AetherKey, AetherValue>> combinerTransaction(KVStore<AetherKey, AetherValue> store,
                                                                                  ArtifactBase base,
                                                                                  long nowMs,
                                                                                  int placeableCapacity) {
         var key = SliceTargetKey.sliceTargetKey(base);
 
+        if (canaryRunning(store, base)) {
+            return new CombinerOutcome.CanaryRunning(base).result();
+        }
+
         return SliceTargetFence.presentTarget(store, key)
-                               .flatMap(target -> combinedWrite(store, key, target, nowMs, placeableCapacity))
-                               .flatMap(write -> SliceTargetFence.transaction(store,
-                                                                              List.of(write),
-                                                                              List.of()));
+                               .flatMap(target -> combinerTransaction(store,
+                                                                      key,
+                                                                      target,
+                                                                      committedRequirements(store, base),
+                                                                      nowMs,
+                                                                      placeableCapacity));
     }
 
-    private static Result<TargetWrite> combinedWrite(KVStore<AetherKey, AetherValue> store,
-                                                     SliceTargetKey key,
-                                                     SliceTargetValue target,
-                                                     long nowMs,
-                                                     int placeableCapacity) {
+    private static Result<LeaderTransaction<AetherKey, AetherValue>> combinerTransaction(KVStore<AetherKey, AetherValue> store,
+                                                                                        SliceTargetKey key,
+                                                                                        SliceTargetValue target,
+                                                                                        List<Requirement> requirements,
+                                                                                        long nowMs,
+                                                                                        int placeableCapacity) {
         var base = key.artifactBase();
+        var expired = requirements.stream()
+                                  .filter(requirement -> !requirement.value()
+                                                                     .unexpiredAt(nowMs))
+                                  .toList();
+        var remaining = requirements.stream()
+                                    .filter(requirement -> requirement.value()
+                                                                      .unexpiredAt(nowMs))
+                                    .toList();
+        var rebase = expired.isEmpty()
+                     ? Option.<SliceRequirementValue>none()
+                     : reactiveRebase(store, base, target);
+        var mutations = new ArrayList<Mutation<AetherKey, AetherValue>>();
 
-        return combine(target,
-                       committedRequirements(store, base),
-                       nowMs,
-                       placeableCapacity).filter(combined -> combined != target.targetInstances())
-                      .toResult(new CombinerOutcome.Settled(base))
-                      .flatMap(combined -> SliceTargetFence.targetWrite(store,
-                                                                        key,
-                                                                        Option.some(target),
-                                                                        target.withInstances(combined)))
-                      .map(write -> new TargetWrite(write.mutation(),
-                                                    withRequirementWitnesses(store,
-                                                                             base,
-                                                                             write.guards())));
+        expired.stream()
+               .filter(requirement -> rebase.isEmpty() || requirement.kind() != RequirementKind.REACTIVE)
+               .forEach(requirement -> mutations.add(new Mutation<AetherKey, AetherValue>(SliceRequirementKey.sliceRequirementKey(base,
+                                                                                                             requirement.kind()),
+                                                                    Option.some(requirement.value()),
+                                                                    Option.none())));
+        rebase.onPresent(value -> mutations.add(requirementMutation(store,
+                                                                    SliceRequirementKey.sliceRequirementKey(base,
+                                                                                                            RequirementKind.REACTIVE),
+                                                                    Option.some(value))));
+        var combined = combine(target,
+                               withReactive(remaining, rebase),
+                               nowMs,
+                               placeableCapacity).or(target.targetInstances());
+
+        if (combined == target.targetInstances()) {
+            return mutations.isEmpty()
+                   ? new CombinerOutcome.Settled(base).result()
+                   : heldTargetTransaction(store, key, target, mutations);
+        }
+
+        return SliceTargetFence.targetWrite(store,
+                                            key,
+                                            Option.some(target),
+                                            target.withInstances(combined))
+                               .map(write -> new TargetWrite(write.mutation(),
+                                                             withRequirementWitnesses(store,
+                                                                                      base,
+                                                                                      write.guards())))
+                               .flatMap(write -> SliceTargetFence.transaction(store,
+                                                                              List.of(write),
+                                                                              mutations));
+    }
+
+    /// The requirement writes of a combination that leaves the target count as committed: witnessed on the target at `target` and on
+    /// its owning blueprint, so a target that moved or was removed after the read refuses them.
+    private static Result<LeaderTransaction<AetherKey, AetherValue>> heldTargetTransaction(KVStore<AetherKey, AetherValue> store,
+                                                                                          SliceTargetKey key,
+                                                                                          SliceTargetValue target,
+                                                                                          List<Mutation<AetherKey, AetherValue>> mutations) {
+        return SliceTargetFence.ownerGuards(store,
+                                            key,
+                                            target.owningBlueprint())
+                               .flatMap(ownerGuards -> SliceTargetFence.guardedTransaction(store,
+                                                                                           withTargetWitness(key,
+                                                                                                             target,
+                                                                                                             ownerGuards),
+                                                                                           mutations));
+    }
+
+    /// `requirements` with `REACTIVE` replaced by `rebase` when present.
+    private static List<Requirement> withReactive(List<Requirement> requirements, Option<SliceRequirementValue> rebase) {
+        return rebase.map(value -> Stream.concat(requirements.stream()
+                                                             .filter(requirement -> requirement.kind() != RequirementKind.REACTIVE),
+                                                 Stream.of(new Requirement(RequirementKind.REACTIVE, value)))
+                                         .toList())
+                     .or(requirements);
+    }
+
+    /// The `REACTIVE` value that holds `held`'s committed count, when the committed `REACTIVE` is below it (or absent): what a release,
+    /// a lowering or an expiry of another claim writes in the same transaction, so that claim releases capacity without commanding a
+    /// scale-down (spec §3.1). None when `REACTIVE` already holds the count.
+    static Option<SliceRequirementValue> reactiveRebase(KVStore<AetherKey, AetherValue> store,
+                                                        ArtifactBase base,
+                                                        SliceTargetValue held) {
+        var count = held.targetInstances();
+        var reactive = store.getTyped(SliceRequirementKey.sliceRequirementKey(base, RequirementKind.REACTIVE),
+                                      SliceRequirementValue.class)
+                            .map(SliceRequirementValue::instances)
+                            .or(0);
+
+        return reactive >= count
+               ? Option.none()
+               : Option.some(SliceRequirementValue.sliceRequirementValue(count,
+                                                                         "held at " + count + ": a claim was released or expired",
+                                                                         Option.none(),
+                                                                         store.committedRevision()));
+    }
+
+    /// Whether an A/B test runs a canary on `base`'s target ([AetherValue.AbTestValue#runsCanary]).
+    static boolean canaryRunning(KVStore<AetherKey, AetherValue> store, ArtifactBase base) {
+        var running = new boolean[1];
+
+        store.forEach(AetherKey.AbTestKey.class,
+                      AetherValue.AbTestValue.class,
+                      (_, test) -> running[0] |= test.artifactBase()
+                                                     .equals(base) && test.runsCanary());
+
+        return running[0];
     }
 
     private static List<ReadWitness<AetherKey>> withRequirementWitnesses(KVStore<AetherKey, AetherValue> store,
@@ -224,9 +336,43 @@ public sealed interface SliceRequirements {
                                                                                            withTargetWitness(targetKey,
                                                                                                              observed,
                                                                                                              ownerGuards),
-                                                                                           List.of(requirementMutation(store,
-                                                                                                                       key,
-                                                                                                                       replacement))));
+                                                                                           requirementMutations(store,
+                                                                                                                observed,
+                                                                                                                key,
+                                                                                                                replacement)));
+    }
+
+    /// The mutations of a requirement source's write of `replacement` at `key` over the committed target `observed`: the put or
+    /// removal itself and, when it releases or lowers a claim other than `REACTIVE` while `REACTIVE` is below the committed count,
+    /// `REACTIVE` re-based to that count ([#reactiveRebase]). A release or a lowered floor therefore never commands a scale-down; only
+    /// the autoscaler lowering `REACTIVE` does (spec §3.1).
+    static List<Mutation<AetherKey, AetherValue>> requirementMutations(KVStore<AetherKey, AetherValue> store,
+                                                                       SliceTargetValue observed,
+                                                                       SliceRequirementKey key,
+                                                                       Option<SliceRequirementValue> replacement) {
+        var mutations = new ArrayList<Mutation<AetherKey, AetherValue>>();
+
+        mutations.add(requirementMutation(store, key, replacement));
+        if (releasesClaim(store, key, replacement)) {
+            reactiveRebase(store,
+                           key.artifactBase(),
+                           observed).onPresent(value -> mutations.add(requirementMutation(store,
+                                                                                          SliceRequirementKey.sliceRequirementKey(key.artifactBase(),
+                                                                                                                                  RequirementKind.REACTIVE),
+                                                                                          Option.some(value))));
+        }
+
+        return mutations;
+    }
+
+    /// Whether writing `replacement` at `key` releases or lowers a committed claim of a source other than `REACTIVE`.
+    private static boolean releasesClaim(KVStore<AetherKey, AetherValue> store,
+                                         SliceRequirementKey key,
+                                         Option<SliceRequirementValue> replacement) {
+        return key.kind() != RequirementKind.REACTIVE && store.getTyped(key, SliceRequirementValue.class)
+                                                              .map(committed -> replacement.map(value -> value.instances() < committed.instances())
+                                                                                           .or(true))
+                                                              .or(false);
     }
 
     private static List<ReadWitness<AetherKey>> withTargetWitness(SliceTargetKey targetKey,
@@ -257,6 +403,14 @@ public sealed interface SliceRequirements {
 
     private static List<Mutation<AetherKey, AetherValue>> orphanRemovals(KVStore<AetherKey, AetherValue> store,
                                                                          ArtifactBase base) {
+        return requirementRemovals(store, base);
+    }
+
+    /// The removal of every committed requirement of `base`, each expecting the value read now: what a writer removing `base`'s target
+    /// puts in the same transaction, so a requirement never outlives its target (v2713 item 3). A requirement changed after the read
+    /// refuses the transaction, and the writer's rebuild reads it again.
+    static List<Mutation<AetherKey, AetherValue>> requirementRemovals(KVStore<AetherKey, AetherValue> store,
+                                                                      ArtifactBase base) {
         return committedRequirements(store, base).stream()
                                     .map(requirement -> new Mutation<AetherKey, AetherValue>(SliceRequirementKey.sliceRequirementKey(base,
                                                                                                                                      requirement.kind()),

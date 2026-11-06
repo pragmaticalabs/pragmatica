@@ -492,11 +492,13 @@ Set, or release, the operator's instance requirement of a blueprint-deployed sli
 blueprint.
 
 The requirement is a floor, not a raw count. The slice's target is the largest of its requirements (the operator's, the
-autoscaler's, and the blueprint's `minAvailable`), bounded to at least 3 instances, at most the slice's `maxInstances`, and
-at most the cluster's placeable capacity. While the autoscaler's requirement is higher, the slice runs above the operator's
-value; the response's `target` says which count results. The autoscaler can still scale the slice up past the operator's
-value, and it scales down only to that value while the requirement holds. `--release` removes the requirement; the target
-then follows the remaining requirements, or keeps its current count when none remains.
+autoscaler's, and the blueprint's `minAvailable`), bounded to at least 3 instances and at most the slice's `maxInstances`.
+The cluster's size does not bound it: a target above what the slice's placement audience can place leaves the excess
+unplaced and raises the `slice-target-exceeds-placement` warning. While the autoscaler's requirement is higher, the slice
+runs above the operator's value; the response's `target` says which count results. The autoscaler can still scale the slice
+up past the operator's value, and it scales down only to that value while the requirement holds. `--release`, or a lower
+`-n`, releases the operator's claim without scaling down: the slice keeps its current count until the autoscaler's
+requirement falls, under its cooldown. Only the autoscaler scales a slice down.
 
 ```bash
 aether scale <artifact> -n <instances> [-p <placement>]
@@ -720,7 +722,7 @@ aether deploy <group:artifact:version> --blue-green
 aether deploy <group:artifact:version> --rolling
 
 # Common options (all strategies):
-#   -n, --instances <n>      Number of new version instances (default: 3; fewer is refused, #1495)
+#   -n, --instances <n>      Refused (400): a deployment keeps the slice's instance count; use `aether scale -n`
 #   --error-rate <rate>      Max error rate threshold 0.0-1.0 (default: 0.01)
 #   --latency <ms>           Max latency threshold in ms (default: 500)
 #   --manual-approval        Require manual approval for routing changes
@@ -757,7 +759,7 @@ aether deploy complete <deploymentId>
 Example canary workflow:
 ```bash
 # Start canary: deploy v2.0.0 with progressive traffic shift
-aether deploy org.example:my-service:2.0.0 --canary -n 3
+aether deploy org.example:my-service:2.0.0 --canary
 
 # Check deployment health
 aether deploy status abc123
@@ -775,7 +777,7 @@ aether deploy rollback abc123
 Example blue-green workflow:
 ```bash
 # Deploy green version alongside current blue
-aether deploy org.example:my-service:2.0.0 --blue-green -n 3
+aether deploy org.example:my-service:2.0.0 --blue-green
 
 # Verify green is ready
 aether deploy status bg-xyz
@@ -792,8 +794,8 @@ aether deploy complete bg-xyz
 
 Example rolling deployment workflow:
 ```bash
-# Start rolling deployment: deploy 3 instances of v2.0.0 with 0% traffic
-aether deploy org.example:order-processor:2.0.0 --rolling -n 3
+# Start rolling deployment: deploy v2.0.0 at the slice's current instance count with 0% traffic
+aether deploy org.example:order-processor:2.0.0 --rolling
 
 # Gradually shift traffic
 aether deploy promote abc123    # shift to next traffic stage

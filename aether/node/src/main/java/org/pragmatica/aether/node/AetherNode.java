@@ -4878,6 +4878,7 @@ public interface AetherNode extends ManageableNode {
                                                          controlLoop::onSliceRequirementPut)
                                                   .onRemove(AetherKey.SliceRequirementKey.class,
                                                             controlLoop::onSliceRequirementRemove)
+                                                  .onPut(AetherKey.AbTestKey.class, controlLoop::onAbTestPut)
                                                   .onPut(AetherKey.AlertThresholdKey.class,
                                                          alertManager::onAlertThresholdPut)
                                                   .onRemove(AetherKey.AlertThresholdKey.class,

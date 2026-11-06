@@ -10,6 +10,7 @@ import org.pragmatica.aether.cli.AetherCli;
 import org.pragmatica.aether.cli.OutputFormatter;
 import org.pragmatica.aether.cli.OutputOptions;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -45,9 +46,10 @@ public class DeployCommand implements Callable<Integer> {
     @CommandLine.Option(names = "--traffic", description = "Initial canary traffic percentage (0-100)", defaultValue = "5")
     private int trafficPercent;
 
-    // Default mirrors SliceSpec.DEFAULT_INSTANCES (#1495); the server refuses fewer than 3.
-    @CommandLine.Option(names = {"-n", "--instances"}, description = "Number of instances (at least 3)", defaultValue = "3")
-    private int instances;
+    // v2713 item 6: sent only when given, and the server refuses it: a deployment keeps the slice's committed count, which the
+    // leader's requirement combiner owns. Kept as an option so a script passing it gets that error, not an unknown-option one.
+    @CommandLine.Option(names = {"-n", "--instances"}, description = "Refused: a deployment keeps the slice's instance count; use 'aether scale -n'")
+    private Integer instances;
 
     @CommandLine.Option(names = "--error-rate", description = "Max error rate threshold (0.0-1.0)", defaultValue = "0.01")
     private double errorRate;
@@ -110,25 +112,31 @@ public class DeployCommand implements Callable<Integer> {
         return OutputFormatter.printQuery(response, parent.outputOptions());
     }
 
+    private String instancesField() {
+        return Option.option(instances)
+                     .map(count -> "\"instances\":" + count + ",")
+                     .or("");
+    }
+
     private String buildCanaryBody() {
-        return "\"instances\":" + instances
-             + ",\"canary\":{\"stages\":[{\"trafficPercent\":" + trafficPercent
+        return instancesField()
+             + "\"canary\":{\"stages\":[{\"trafficPercent\":" + trafficPercent
              + ",\"observationMinutes\":10}]},\"thresholds\":{\"maxErrorRate\":" + errorRate
              + ",\"maxLatencyMs\":" + latencyMs
              + "}";
     }
 
     private String buildBlueGreenBody() {
-        return "\"instances\":" + instances
-             + ",\"blueGreen\":{\"drainTimeoutMs\":" + drainTimeoutMs
+        return instancesField()
+             + "\"blueGreen\":{\"drainTimeoutMs\":" + drainTimeoutMs
              + "},\"thresholds\":{\"maxErrorRate\":" + errorRate
              + ",\"maxLatencyMs\":" + latencyMs
              + "}";
     }
 
     private String buildRollingBody() {
-        return "\"instances\":" + instances
-             + ",\"rolling\":{\"requireManualApproval\":" + manualApproval
+        return instancesField()
+             + "\"rolling\":{\"requireManualApproval\":" + manualApproval
              + "},\"thresholds\":{\"maxErrorRate\":" + errorRate
              + ",\"maxLatencyMs\":" + latencyMs
              + "}";

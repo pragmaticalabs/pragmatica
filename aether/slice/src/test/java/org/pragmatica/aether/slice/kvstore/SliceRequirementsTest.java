@@ -98,8 +98,11 @@ class SliceRequirementsTest {
         assertThat(combined).isEqualTo(Option.some(3));
     }
 
+    /// The pure combination excludes an expired claim. It is NOT the committed outcome: the combiner's transaction removes the expired
+    /// record and re-bases REACTIVE to the committed count in the same write, so the target holds (v2713 item 2, pinned by
+    /// `RequirementCombinerOrderingTest.scheduledRequirementExpires_targetHoldsAtTheExpiry`).
     @Test
-    void combine_expiredRequirement_releasesItsClaim() {
+    void combine_expiredRequirement_isExcludedFromThePureCombination() {
         var combined = SliceRequirements.combine(target(9, 3, Option.none()),
                                                  List.of(expiring(RequirementKind.SCHEDULED, 9, NOW),
                                                          requirement(RequirementKind.REACTIVE, 4)),

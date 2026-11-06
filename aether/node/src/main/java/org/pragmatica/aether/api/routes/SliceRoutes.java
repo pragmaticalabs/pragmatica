@@ -254,8 +254,11 @@ public final class SliceRoutes implements RouteSource {
                                                                                             resultingTarget(base)));
     }
 
-    /// The target the committed requirements of `base` combine to now, before the leader bounds it to placeable capacity (this node
-    /// does not hold the leader's view of placeable capacity); the committed count when no requirement remains.
+    /// The target the committed requirements of `base` combine to now, the committed count when no requirement remains. It is computed
+    /// without placeable capacity, which is unbounded in F1 (spec §3.1); a target above what the cluster can place is reported by the
+    /// leader as `slice-target-exceeds-placement`. Clock caveat (v2713 item 8): expiry is judged on the clock of the node that handles
+    /// the request, not the leader's, so a term expiring within the clock skew of the two may be counted here and not by the leader's
+    /// combiner, or the reverse. The leader's combiner commits the target.
     private int resultingTarget(ArtifactBase base) {
         return SliceRequirements.committedCombination(nodeSupplier.get().kvStore(),
                                                       base,
@@ -801,8 +804,9 @@ public final class SliceRoutes implements RouteSource {
                                                                                                               placement))
                                                                                 .flatMap(write -> withRequirement(store,
                                                                                                                   write,
-                                                                                                                  requirementKey,
-                                                                                                                  requirement)),
+                                                                                                                  List.of(SliceRequirements.requirementMutation(store,
+                                                                                                                                                                requirementKey,
+                                                                                                                                                                requirement)))),
                                                                  read -> placement.fold(() -> SliceRequirements.requirementTransaction(store,
                                                                                                                                        read,
                                                                                                                                        requirementKey,
@@ -813,19 +817,16 @@ public final class SliceRoutes implements RouteSource {
                                                                                                                                      read.withPlacement(newPlacement))
                                                                                                                         .flatMap(write -> withRequirement(store,
                                                                                                                                                           write,
-                                                                                                                                                          requirementKey,
-                                                                                                                                                          requirement))));
+                                                                                                                                                          SliceRequirements.requirementMutations(store,
+                                                                                                                                                                                                 read,
+                                                                                                                                                                                                 requirementKey,
+                                                                                                                                                                                                 requirement)))));
     }
 
     private static Result<LeaderTransaction<AetherKey, AetherValue>> withRequirement(KVStore<AetherKey, AetherValue> store,
                                                                                      TargetWrite write,
-                                                                                     SliceRequirementKey requirementKey,
-                                                                                     Option<SliceRequirementValue> requirement) {
-        return SliceTargetFence.transaction(store,
-                                            List.of(write),
-                                            List.of(SliceRequirements.requirementMutation(store,
-                                                                                          requirementKey,
-                                                                                          requirement)));
+                                                                                     List<Mutation<AetherKey, AetherValue>> requirementWrites) {
+        return SliceTargetFence.transaction(store, List.of(write), requirementWrites);
     }
 
     /// The first write of a slice's target: expects it absent, witnessed by every committed blueprint declaring the slice.

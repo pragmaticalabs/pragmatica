@@ -57,6 +57,7 @@ class RequirementCombinerOrderingTest {
     private static final SliceRequirementKey REACTIVE = SliceRequirementKey.sliceRequirementKey(V1.base(), RequirementKind.REACTIVE);
     private static final SliceRequirementKey OPERATOR = SliceRequirementKey.sliceRequirementKey(V1.base(), RequirementKind.OPERATOR);
     private static final SliceRequirementKey SCHEDULED = SliceRequirementKey.sliceRequirementKey(V1.base(), RequirementKind.SCHEDULED);
+    private static final AetherKey.AbTestKey AB_TEST = new AetherKey.AbTestKey("t1");
     private static final int WINDOW = 3;
     private static final int CAPACITY = 9;
 
@@ -175,16 +176,43 @@ class RequirementCombinerOrderingTest {
         assertThat(committedTargetCount()).isEqualTo(Option.some(6));
     }
 
-    /// The operator's requirement is released with a reactive requirement present: the target follows the reactive one.
+    /// v2713 item 2 (spec §3.1): a release never commands a scale-down. Releasing the operator's 6 over a reactive 4 re-bases REACTIVE to
+    /// the committed 6 in the same transaction, so the target holds at 6; only REACTIVE falling (the autoscaler) then lowers it.
     @Test
-    void operatorReleased_targetFollowsTheRemainingRequirement() {
+    void operatorReleased_targetHoldsUntilReactiveFalls() {
         commit(new KVCommand.Put<>(OPERATOR, requirement(6)));
         commit(new KVCommand.Put<>(REACTIVE, requirement(4)));
         combineNow();
-        commit(new KVCommand.Remove<>(OPERATOR, Option.<Object> some(requirement(6))));
+        assertThat(committedTargetCount()).isEqualTo(Option.some(6));
+
+        releaseOperator();
+        cluster.awaitHeld(1);
+        cluster.commitAllAsTheyArrive();
         combineNow();
 
-        assertThat(committedTargetCount()).isEqualTo(Option.some(4));
+        assertThat(store.get(OPERATOR).isEmpty()).as("the operator requirement is released").isTrue();
+        assertThat(requirementCount(REACTIVE)).as("REACTIVE is re-based to the held count").isEqualTo(Option.some(6));
+        assertThat(committedTargetCount()).as("a release does not scale down").isEqualTo(Option.some(6));
+
+        commit(new KVCommand.Put<>(REACTIVE, requirement(5)));
+        combineNow();
+
+        assertThat(committedTargetCount()).as("REACTIVE falling scales down").isEqualTo(Option.some(5));
+    }
+
+    /// A lowered operator floor is a partial release: it does not scale down either.
+    @Test
+    void operatorLowered_targetHolds() {
+        commit(new KVCommand.Put<>(OPERATOR, requirement(8)));
+        commit(new KVCommand.Put<>(REACTIVE, requirement(4)));
+        combineNow();
+        submitOperator(5);
+        cluster.awaitHeld(1);
+        cluster.commitAllAsTheyArrive();
+        combineNow();
+
+        assertThat(requirementCount(OPERATOR)).isEqualTo(Option.some(5));
+        assertThat(committedTargetCount()).as("a lowered floor does not scale down").isEqualTo(Option.some(8));
     }
 
     /// The placeable capacity bounds the combined target.
@@ -197,10 +225,11 @@ class RequirementCombinerOrderingTest {
         assertThat(committedTargetCount()).isEqualTo(Option.some(CAPACITY));
     }
 
-    /// A requirement's expiry re-combines without any write to trigger it: the scheduled claim of 7 lapses and the target follows the
-    /// reactive requirement down to 4.
+    /// v2713 item 2: a requirement's expiry re-combines without any write to trigger it, and releases its claim without commanding a
+    /// scale-down: the scheduled claim of 7 lapses, the combiner removes the expired record and re-bases REACTIVE to 7 in the same
+    /// transaction, and the target holds at 7.
     @Test
-    void scheduledRequirementExpires_targetIsRecombinedAtTheExpiry() {
+    void scheduledRequirementExpires_targetHoldsAtTheExpiry() {
         commit(new KVCommand.Put<>(REACTIVE, requirement(4)));
         commit(new KVCommand.Put<>(SCHEDULED,
                                    SliceRequirementValue.sliceRequirementValue(7,
@@ -214,7 +243,127 @@ class RequirementCombinerOrderingTest {
         cluster.awaitHeld(1, 3_000);
         cluster.commitAllAsTheyArrive();
 
-        assertThat(committedTargetCount()).as("the expired claim no longer holds the target").isEqualTo(Option.some(4));
+        assertThat(store.get(SCHEDULED).isEmpty()).as("the expired record is removed").isTrue();
+        assertThat(requirementCount(REACTIVE)).as("REACTIVE is re-based to the held count").isEqualTo(Option.some(7));
+        assertThat(committedTargetCount()).as("an expiry does not scale down").isEqualTo(Option.some(7));
+    }
+
+    /// v2713 item 1, probe P1 (production wiring): the control loop's own combiner runs with unbounded placeable capacity, so an
+    /// operator requirement of 7 on a cluster of 3 core nodes commits 7, not 3.
+    @Test
+    void productionCombiner_operatorAboveCoreCount_commitsTheRequirement() {
+        var controlLoop = buildControlLoop();
+        var adapter = (ControlLoop.ControlLoopAdapter) controlLoop;
+
+        adapter.ctx().setTopology(List.of(SELF, NodeId.nodeId("n2").unwrap(), NodeId.nodeId("n3").unwrap()));
+        combiner.deactivate();
+        combiner = adapter.combiner();
+        combiner.activate();
+        commit(new KVCommand.Put<>(OPERATOR, requirement(7)));
+        combineNow();
+
+        assertThat(committedTargetCount()).as("the core count is not a placeable-capacity stand-in").isEqualTo(Option.some(7));
+    }
+
+    /// v2713 item 1: a topology change re-runs the combiner for every slice holding a requirement.
+    @Test
+    void topologyChange_reCombinesEverySliceHoldingARequirement() {
+        commit(new KVCommand.Put<>(OPERATOR, requirement(6)));
+        cluster.awaitQuiet();
+        assertThat(cluster.submitted()).as("a commit without a notification triggers nothing").isZero();
+
+        combiner.onTopologyChange();
+        cluster.awaitHeld(1);
+        cluster.commitAllAsTheyArrive();
+
+        assertThat(committedTargetCount()).isEqualTo(Option.some(6));
+    }
+
+    /// v2713 item 7 (owner ruling): while an A/B test runs its canary, the combiner never scales the variant; the test's terminal put
+    /// re-runs the combination.
+    @Test
+    void canaryRunning_targetIsNotCombined_untilTheTestEnds() {
+        commit(new KVCommand.Put<>(AB_TEST, abTest("ACTIVE")));
+        commit(new KVCommand.Put<>(OPERATOR, requirement(6)));
+        combiner.onRequirementPut(OPERATOR);
+        cluster.awaitQuiet();
+
+        assertThat(cluster.submitted()).as("no combination while the canary runs").isZero();
+        assertThat(committedTargetCount()).isEqualTo(Option.some(2));
+
+        commit(new KVCommand.Put<>(AB_TEST, abTest("COMPLETED")));
+        combiner.onAbTestPut(V1.base());
+        cluster.awaitHeld(1);
+        cluster.commitAllAsTheyArrive();
+
+        assertThat(committedTargetCount()).as("the ended test re-runs the combination").isEqualTo(Option.some(6));
+    }
+
+    /// v2713 item 3: an orphan removal whose apply fails is retried (backoff from 1 s), not only logged.
+    @Test
+    void orphanRemovalApplyFails_isRetried() {
+        commit(new KVCommand.Put<>(OPERATOR, requirement(6)));
+        commit(new KVCommand.Remove<>(TARGET_KEY, store.get(TARGET_KEY).map(Object.class::cast)));
+        combiner.onSliceTargetRemove(TARGET_KEY);
+        cluster.awaitHeld(1);
+        cluster.failOldest();
+        cluster.awaitHeld(1, 3_000);
+        cluster.commitAllAsTheyArrive();
+
+        assertThat(store.get(OPERATOR).isEmpty()).as("the retried removal applied").isTrue();
+    }
+
+    /// v2713 item 4, probe P3: with an operator floor of 10 and REACTIVE already 9, the autoscaler's repeated scale-down decision to
+    /// 9 announces nothing and writes nothing; a decision that writes REACTIVE without moving the target announces nothing either.
+    @Test
+    void floorHoldsTheTarget_noPhantomScalingEvents() {
+        var events = new ArrayList<ScalingEvent>();
+        var loop = buildControlLoop(new BlueprintChange.ScaleDown(V1, 1), events::add);
+        var loopCtx = ((ControlLoop.ControlLoopAdapter) loop).ctx();
+        var held = targetOf(10);
+
+        commit(new KVCommand.Put<>(TARGET_KEY, held));
+        commit(new KVCommand.Put<>(OPERATOR, requirement(10)));
+        commit(new KVCommand.Put<>(REACTIVE, requirement(9)));
+        loopCtx.setTopology(List.of(SELF, NodeId.nodeId("n2").unwrap(), NodeId.nodeId("n3").unwrap()));
+        loop.onSliceTargetPut(new ValuePut<>(new KVCommand.Put<>(TARGET_KEY, held), Option.none()));
+
+        for (var cycle = 0; cycle < 3; cycle++) {
+            loopCtx.runEvaluationCycle();
+        }
+        cluster.awaitQuiet();
+
+        assertThat(events).as("no ScaledDown for a target the floor holds").isEmpty();
+        assertThat(cluster.submitted()).as("an unchanged REACTIVE is not re-written").isZero();
+
+        commit(new KVCommand.Put<>(REACTIVE, requirement(8)));
+        loopCtx.runEvaluationCycle();
+        cluster.awaitHeld(1);
+
+        assertThat(events).as("REACTIVE 8 -> 9 under a floor of 10 moves no target").isEmpty();
+    }
+
+    /// Positive control for the test above: without the floor the same decision moves the target and is announced once.
+    @Test
+    void noFloor_scaleDownMovesTheTarget_isAnnounced() {
+        var events = new ArrayList<ScalingEvent>();
+        var loop = buildControlLoop(new BlueprintChange.ScaleDown(V1, 1), events::add);
+        var loopCtx = ((ControlLoop.ControlLoopAdapter) loop).ctx();
+        var held = targetOf(10);
+
+        commit(new KVCommand.Put<>(TARGET_KEY, held));
+        commit(new KVCommand.Put<>(REACTIVE, requirement(10)));
+        loopCtx.setTopology(List.of(SELF, NodeId.nodeId("n2").unwrap(), NodeId.nodeId("n3").unwrap()));
+        loop.onSliceTargetPut(new ValuePut<>(new KVCommand.Put<>(TARGET_KEY, held), Option.none()));
+        loopCtx.runEvaluationCycle();
+        cluster.awaitHeld(1);
+
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst()).isInstanceOf(ScalingEvent.ScaledDown.class);
+
+        cluster.commitAllAsTheyArrive();
+
+        assertThat(requirementCount(REACTIVE)).as("a scale-down is not capped at the 3 core nodes").isEqualTo(Option.some(9));
     }
 
     /// The target is removed (its blueprint deleted): the combiner removes the slice's requirements with it.
@@ -259,6 +408,20 @@ class RequirementCombinerOrderingTest {
         cluster.commitAllAsTheyArrive();
     }
 
+    private void releaseOperator() {
+        SliceTargetFence.submit("release",
+                                cluster::apply,
+                                () -> SliceTargetFence.presentTarget(store, TARGET_KEY)
+                                                      .flatMap(read -> SliceRequirements.requirementTransaction(store,
+                                                                                                                read,
+                                                                                                                OPERATOR,
+                                                                                                                Option.none())));
+    }
+
+    private static AetherValue.AbTestValue abTest(String state) {
+        return AetherValue.AbTestValue.abTestValue("t1", V1.base(), V1.version(), "{}", state, "{}", 50, 50, OWNER.asString(), 0L, 0L);
+    }
+
     private void submitOperator(int instances) {
         SliceTargetFence.submit("operator",
                                 cluster::apply,
@@ -290,8 +453,11 @@ class RequirementCombinerOrderingTest {
     }
 
     private ControlLoop buildControlLoop() {
-        Consumer<ScalingEvent> sink = _ -> {};
-        ClusterController controller = _ -> Promise.success(ControlDecisions.controlDecisions(new BlueprintChange.ScaleUp(V1, 2)));
+        return buildControlLoop(new BlueprintChange.ScaleUp(V1, 2), _ -> {});
+    }
+
+    private ControlLoop buildControlLoop(BlueprintChange decision, Consumer<ScalingEvent> sink) {
+        ClusterController controller = _ -> Promise.success(ControlDecisions.controlDecisions(decision));
 
         return ControlLoop.controlLoop(SELF,
                                        controller,
@@ -378,6 +544,17 @@ class RequirementCombinerOrderingTest {
 
         void commitOldest() {
             commit(true);
+        }
+
+        /// Fails the oldest held write as a consensus apply failure would.
+        void failOldest() {
+            Held entry;
+
+            synchronized (this) {
+                entry = held.removeFirst();
+            }
+
+            entry.promise().fail(org.pragmatica.lang.utils.Causes.cause("apply failed (test)"));
         }
 
         void commitNewest() {

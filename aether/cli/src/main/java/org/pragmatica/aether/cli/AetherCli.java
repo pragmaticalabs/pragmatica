@@ -1340,7 +1340,7 @@ public class AetherCli implements Runnable {
         @CommandLine.Option(names = {"-n", "--instances"}, description = "Operator instance requirement: the slice runs at least this many while the requirement holds")
         private Integer instances;
 
-        @CommandLine.Option(names = "--release", description = "Remove the operator instance requirement; the autoscaler's requirement and the slice floor remain")
+        @CommandLine.Option(names = "--release", description = "Remove the operator instance requirement; the slice keeps its count until the autoscaler's requirement falls")
         private boolean release;
 
         @CommandLine.Option(names = {"-p", "--placement"}, description = "Placement strategy: CORE_ONLY, WORKER_PREFERRED, WORKER_ONLY")

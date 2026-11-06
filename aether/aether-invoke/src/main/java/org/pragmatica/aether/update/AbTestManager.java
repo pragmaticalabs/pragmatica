@@ -16,6 +16,7 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
+import org.pragmatica.aether.slice.blueprint.SliceSpec;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AbTestKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
@@ -97,6 +98,11 @@ public interface AbTestManager {
                              Map<String, AbTestDeployment> tests,
                              AtomicBoolean active) implements AbTestManager {
             private static final Logger log = LoggerFactory.getLogger(AbTestManager.class);
+            /// The canary runs at the slice floor (#1721; owner ruling 2026-11-06, v2713 item 7). The variant IS the slice's own
+            /// target (same key, new version). While the test runs its canary ([AetherValue.AbTestValue#runsCanary]) the requirement
+            /// combiner and the autoscaler hold the slice, so the variant is never scaled to the full combined target. Deliberately
+            /// NOT applied to `minInstances`, which belongs to the operator (#982).
+            private static final int VARIANT_INSTANCES = SliceSpec.MIN_INSTANCES;
 
             @Override
             public Promise<Unit> activate() {
@@ -297,10 +303,8 @@ public interface AbTestManager {
             /// the slice's ownership (#698), its placement (#937) or its availability floor (#982).
             /// [#variantTarget] and [#concludedTarget] therefore TRANSFORM this observed value rather
             /// than rebuilding one from parts, so every component neither of them deliberately
-            /// replaces survives by construction. Between them they replace `currentVersion` only:
-            /// since rc6 §3.1 the requirement combiner is the only writer of `targetInstances` after a
-            /// target's creation, so both carry the committed count, and `minInstances` is replaced by
-            /// neither.
+            /// replaces survives by construction. Between them they replace `currentVersion` and
+            /// `targetInstances` only; `minInstances` is replaced by neither.
             ///
             /// What that carries, `placement` included: #937 recorded it being reset to `CORE_ONLY`
             /// here, and the reset is not merely stored — `ClusterDeploymentState` feeds
@@ -333,28 +337,32 @@ public interface AbTestManager {
                                                                                       List.of()));
             }
 
-            /// The canary write: the variant version takes over the slice's target at the committed count.
+            /// The canary write: the variant runs at [#VARIANT_INSTANCES], and the operator's floor (#982),
+            /// placement (#937) and owner (#698) are carried untouched.
             ///
-            /// rc6 §3.1: the requirement combiner is the only writer of `targetInstances` after a
-            /// target's creation (INV-02), so the variant carries the committed count, which the
-            /// combiner already derived from every requirement, instead of pinning it to the slice
-            /// floor (the pre-rc6 `VARIANT_INSTANCES`): a pinned count would be undone by the
-            /// combiner's next run anyway, and racing it is the "last write wins" gap §3.1 closes. The
-            /// operator's floor (#982), placement (#937) and owner (#698) are carried untouched.
+            /// This is the one write of `targetInstances` besides the requirement combiner's (rc6 §3.1,
+            /// INV-02), and it does not race the combiner: the test is committed as `DEPLOYING_VARIANTS`
+            /// before this write, and the combiner does not combine a slice whose test runs a canary
+            /// (`CombinerOutcome.CanaryRunning`). Lowering the floor was never needed to place the
+            /// canary: the variant is a DIFFERENT artifact version, allocated from zero instances.
             private static SliceTargetValue variantTarget(SliceTargetValue current, Version version) {
-                return current.withVersion(version);
+                return current.withVersion(version)
+                              .withInstances(VARIANT_INSTANCES);
             }
 
-            /// The conclusion writes: promote a winner, or restore the baseline on rollback. The
-            /// concluded version takes over the slice's target at the committed count, for the same
-            /// reason as [#variantTarget]: the count is the combiner's. Because the variant no longer
-            /// lowers the count, the pre-rc6 restore of the floor's worth of capacity (#1721) has
-            /// nothing to restore.
+            /// The conclusion writes: promote a winner, or restore the baseline on rollback. The concluded
+            /// version takes over the slice at its floor's worth of capacity, at least
+            /// [#VARIANT_INSTANCES] (#1721): the allocation engine drives to `targetInstances`, and a
+            /// winner parked at the canary count under its own floor would stay there. The test's
+            /// terminal put then re-runs the requirement combiner, which restores the count every
+            /// committed requirement (an operator floor, the autoscaler's `REACTIVE`) asks for.
             ///
             /// #2662: an A/B test runs over a committed target ([#findCurrentVersion]), so no writer
             /// here creates one: a target that is gone was removed with its blueprint.
             private static SliceTargetValue concludedTarget(SliceTargetValue current, Version version) {
-                return current.withVersion(version);
+                return current.withVersion(version)
+                              .withInstances(Math.max(current.effectiveMinInstances(),
+                                                      VARIANT_INSTANCES));
             }
 
             private Promise<AbTestDeployment> activateTest(AbTestDeployment test) {

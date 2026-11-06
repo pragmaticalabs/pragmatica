@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 import java.util.function.Predicate;
+import java.util.stream.Stream;
 
 import org.pragmatica.cluster.metrics.MetricObservation;
 import org.pragmatica.aether.artifact.Artifact;
@@ -627,7 +628,51 @@ public final class ControlLoopContext {
 
         decisions.changes()
                  .forEach(change -> prepareGuardedChange(change).filter(this::changesRequirement)
-                                                        .onPresent(this::submitScaling));
+                                                        .onPresent(this::announceAndSubmit));
+    }
+
+    /// v2713 item 4: the decision is announced (the `ScaledUp`/`ScaledDown` event and the `SCALED_*` decision record) only when it
+    /// changes the committed `REACTIVE` requirement ([#changesRequirement], applied before this) AND that change moves the combined
+    /// target. A decision another requirement holds the target above (an operator floor) is still written, so `REACTIVE` tracks the
+    /// load, but it announces no scaling that does not happen.
+    private void announceAndSubmit(Scaling scaling) {
+        if (movesTarget(scaling)) {
+            publishScalingEvent(scaling.change(), scaling.artifact(), scaling.observed().targetInstances(), scaling.newInstances());
+            recordScaled(scaling.change(),
+                         scaling.artifact(),
+                         blueprintOf(scaling.artifact(), scaling.observed()),
+                         scaling.requestedInstances(),
+                         scaling.newInstances(),
+                         scaling.capped());
+        } else {
+            log.debug("Scaling decision for {} writes REACTIVE {} without moving the target {}",
+                      scaling.artifact(),
+                      scaling.newInstances(),
+                      scaling.observed().targetInstances());
+        }
+
+        submitScaling(scaling);
+    }
+
+    /// Whether `REACTIVE` at the decided count changes the combination of the committed requirements of the observed target.
+    private boolean movesTarget(Scaling scaling) {
+        var base = scaling.artifact().base();
+        var observed = scaling.observed();
+        var withDecision = Stream.concat(SliceRequirements.committedRequirements(kvStore, base)
+                                                          .stream()
+                                                          .filter(requirement -> requirement.kind() != RequirementKind.REACTIVE),
+                                         Stream.of(new SliceRequirements.Requirement(RequirementKind.REACTIVE,
+                                                                                     SliceRequirementValue.sliceRequirementValue(scaling.newInstances(),
+                                                                                                                                 scaling.reason(),
+                                                                                                                                 Option.none(),
+                                                                                                                                 0L))))
+                                 .toList();
+
+        return SliceRequirements.combine(observed,
+                                         withDecision,
+                                         nowMs(),
+                                         Integer.MAX_VALUE)
+                                .or(observed.targetInstances()) != observed.targetInstances();
     }
 
     /// Whether the decision differs from the committed `REACTIVE` requirement: while an operator floor holds the target above the
@@ -641,7 +686,13 @@ public final class ControlLoopContext {
     }
 
     /// One scaling decision's write: the instance count chosen for `artifact`, derived from `observed`, and why.
-    private record Scaling(Artifact artifact, SliceTargetValue observed, int newInstances, String reason) {}
+    private record Scaling(Artifact artifact,
+                           SliceTargetValue observed,
+                           int newInstances,
+                           String reason,
+                           BlueprintChange change,
+                           int requestedInstances,
+                           boolean capped) {}
 
     /// rc6 §3.1: the autoscaler writes its `REACTIVE` requirement, never the target; the leader's requirement combiner derives the
     /// target from it and from every other requirement source, so an operator's floor and the autoscaler compose instead of racing.
@@ -734,6 +785,12 @@ public final class ControlLoopContext {
     private Option<Scaling> prepareChange(BlueprintChange change) {
         var artifact = change.artifact();
 
+        if (SliceRequirements.canaryRunning(kvStore, artifact.base())) {
+            log.debug("Scaling decision for {} held: an A/B canary runs at its fixed variant count", artifact);
+
+            return Option.none();
+        }
+
         return observedTarget(artifact).flatMap(observed -> prepareChangeToTarget(change, artifact, observed));
     }
 
@@ -742,8 +799,7 @@ public final class ControlLoopContext {
                                                   SliceTargetValue observed) {
         var currentBlueprint = blueprintOf(artifact, observed);
         var requestedInstances = computeRequestedInstances(change, currentBlueprint);
-        var clusterSize = effectiveClusterSize();
-        var capResult = applyCap(requestedInstances, currentBlueprint.maxInstances(), clusterSize);
+        var capResult = applyCap(requestedInstances, currentBlueprint.maxInstances(), clusterCapOf(change));
         var newInstances = capResult.value();
         var capped = capResult.reason().isPresent();
 
@@ -824,17 +880,18 @@ public final class ControlLoopContext {
                                          boolean capped) {
         var currentBlueprint = blueprintOf(artifact, observed);
 
-        log.info("Applying scaling decision: {} from {} to {} instances (REACTIVE requirement)",
+        log.debug("Scaling decision: {} from {} to {} instances (REACTIVE requirement)",
                  artifact,
                  currentBlueprint.instances(),
                  newInstances);
-        publishScalingEvent(change, artifact, currentBlueprint.instances(), newInstances);
-        recordScaled(change, artifact, currentBlueprint, requestedInstances, newInstances, capped);
 
         return Option.some(new Scaling(artifact,
                                        observed,
                                        newInstances,
-                                       reactiveReason(change, currentBlueprint.instances())));
+                                       reactiveReason(change, currentBlueprint.instances()),
+                                       change,
+                                       requestedInstances,
+                                       capped));
     }
 
     private static String reactiveReason(BlueprintChange change, int fromInstances) {
@@ -852,8 +909,18 @@ public final class ControlLoopContext {
         };
     }
 
-    /// The cluster size the autoscaler caps a scale-up at, and the combiner's placeable capacity (rc6 §3.1): the committed core
-    /// topology, never below 1.
+    /// The cluster size bound of a decision: a scale-up is capped at [#effectiveClusterSize] (#424); a scale-down is never pushed below
+    /// what it asked for by it. Since rc6 the target can exceed the core count (spec §3.1: placeable capacity is unbounded in F1), and a
+    /// scale-down capped at the core count would drop `REACTIVE` from such a target to the core count in one step.
+    private int clusterCapOf(BlueprintChange change) {
+        return switch (change) {
+            case BlueprintChange.ScaleUp _ -> effectiveClusterSize();
+            case BlueprintChange.ScaleDown _ -> Integer.MAX_VALUE;
+        };
+    }
+
+    /// The cluster size the autoscaler caps its own scale-up decision at (#424, reported as `CLUSTER_CAP`): the committed core
+    /// topology, never below 1. It is NOT the combiner's placeable capacity, which is unbounded in F1 (spec §3.1, v2713 item 1).
     public int effectiveClusterSize() {
         var size = topology.get().size();
 

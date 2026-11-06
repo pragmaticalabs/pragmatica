@@ -247,6 +247,17 @@ public final class ClusterDeploymentContext {
     /// A slice whose LOAD the gate refused since `since`; `warned` once the warning was raised, `lastResubmitMs` when its target put was last re-submitted.
     public record AwaitedTarget(long since, boolean warned, long lastResubmitMs) {}
 
+    /// v2713 item 1: slices whose committed target exceeds the eligible nodes of their placement audience, with the counts last
+    /// reported. Kept here, not in `Active`, so a leader FSM rebuild on this node does not raise the warning again.
+    private final java.util.concurrent.ConcurrentMap<org.pragmatica.aether.artifact.Artifact, PlacementShortfall> placementShortfalls = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /// A target of `desired` instances over `placeable` eligible nodes, `desired > placeable`.
+    public record PlacementShortfall(int desired, int placeable) {}
+
+    public java.util.concurrent.ConcurrentMap<org.pragmatica.aether.artifact.Artifact, PlacementShortfall> placementShortfalls() {
+        return placementShortfalls;
+    }
+
     /// #241: what the derived-community growth policy has decided but not yet seen commit, and the sources it has refused. Kept here, not in
     /// `Active`, so it survives a leader FSM rebuild on this node.
     private final CommunityAdmissionLedger communityAdmission = CommunityAdmissionLedger.communityAdmissionLedger();

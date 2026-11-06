@@ -8,6 +8,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactPutReceived;
@@ -923,6 +924,68 @@ class ClusterDeploymentStateActiveTest {
                                                       && put.value() instanceof NodeArtifactValue value
                                                       && value.state() == SliceState.LOAD)
                                    .toList();
+        }
+    }
+
+    /// v2713 item 1 (CTO condition): the combiner no longer clamps a target to the cluster, and one node hosts at most one instance of an
+    /// artifact, so a target above the audience's eligible nodes leaves the excess unplaced. That is a named, operator-visible state
+    /// (`slice-target-exceeds-placement`), raised once per distinct target/eligible pair, not on every reconcile tick, and closed by
+    /// `slice-target-placement-restored` when the target fits again.
+    @Nested
+    class PlacementShortfall {
+        private final List<org.pragmatica.utility.warning.OperatorWarning> warnings = Collections.synchronizedList(new ArrayList<>());
+        private org.pragmatica.utility.warning.OperatorWarningSink sink;
+
+        @org.junit.jupiter.api.BeforeEach
+        void activeLeaderWithAWideTarget() {
+            kvStore.put(SliceTargetKey.sliceTargetKey(ARTIFACT.base()),
+                        SliceTargetValue.sliceTargetValue(ARTIFACT.version(), 5));
+            harness.dispatch(new Activate());
+            sink = org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(warnings::add);
+            activeState().ctx().setOperatorWarningSink(sink);
+            activeState().blueprints()
+                         .put(ARTIFACT, ClusterDeploymentManager.Blueprint.blueprint(ARTIFACT, 5, 3, Option.none(), false));
+        }
+
+        private List<String> codes() {
+            var sentinel = org.pragmatica.utility.warning.OperatorWarning.operatorWarning(
+                    org.pragmatica.utility.warning.OperatorWarningCode.DEPLOY_WARNING, "sentinel", "sentinel");
+
+            sink.accept(sentinel);
+            org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.contains(sentinel));
+            warnings.remove(sentinel);
+
+            synchronized (warnings) {
+                return warnings.stream().map(w -> w.code().code()).toList();
+            }
+        }
+
+        @Test
+        void targetAboveEligibleNodes_raisedOnce_thenRestoredWhenItFits() {
+            activeState().reconcile();
+            activeState().reconcile();
+            activeState().reconcile();
+
+            assertThat(codes()).as("three ticks over the same shortfall: one warning, not a loop").containsExactly("slice-target-exceeds-placement");
+            var shortfall = activeState().ctx().placementShortfalls().get(ARTIFACT);
+            assertThat(shortfall.desired()).isEqualTo(5);
+            assertThat(shortfall.placeable()).as("the eligible nodes of the audience").isLessThan(5).isPositive();
+
+            activeState().blueprints()
+                         .put(ARTIFACT, ClusterDeploymentManager.Blueprint.blueprint(ARTIFACT, shortfall.placeable(), 1, Option.none(), false));
+            activeState().reconcile();
+
+            assertThat(codes()).containsExactly("slice-target-exceeds-placement", "slice-target-placement-restored");
+            assertThat(activeState().ctx().placementShortfalls()).isEmpty();
+        }
+
+        @Test
+        void sliceNoLongerDesired_closesTheShortfall() {
+            activeState().reconcile();
+            activeState().blueprints().remove(ARTIFACT);
+            activeState().reconcile();
+
+            assertThat(codes()).containsExactly("slice-target-exceeds-placement", "slice-target-placement-restored");
         }
     }
 

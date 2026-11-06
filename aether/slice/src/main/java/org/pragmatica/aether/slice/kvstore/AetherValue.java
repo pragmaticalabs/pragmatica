@@ -2551,6 +2551,12 @@ public sealed interface AetherValue {
                                    createdAt,
                                    updatedAt);
         }
+
+        /// Whether the test runs a canary on the slice's target: its variants are being deployed or it is active. The canary runs at the
+        /// fixed variant count (#1721), so the requirement combiner and the autoscaler hold that slice while this is true (v2713 item 7).
+        public boolean runsCanary() {
+            return "DEPLOYING_VARIANTS".equals(state) || "ACTIVE".equals(state);
+        }
     }
 
     /// Committed assignee of one consumer group's partition (#1271). Written by the leader-only

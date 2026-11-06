@@ -21,10 +21,12 @@ import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.AbTestKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceRequirementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AbTestValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceRequirementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
@@ -74,6 +76,9 @@ public interface ControlLoop {
     void onSliceRequirementPut(ValuePut<SliceRequirementKey, SliceRequirementValue> valuePut);
     /// rc6 §3.1: a slice capacity requirement was removed; the leader's [RequirementCombiner] re-combines the slice's target.
     void onSliceRequirementRemove(ValueRemove<SliceRequirementKey, SliceRequirementValue> valueRemove);
+
+    /// An A/B test was put: a canary starting or ending changes whether its slice is combined (v2713 item 7).
+    void onAbTestPut(ValuePut<AbTestKey, AbTestValue> valuePut);
 
     @MessageReceiver
     void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
@@ -148,7 +153,7 @@ public interface ControlLoop {
         var combiner = RequirementCombiner.requirementCombiner(kvStore,
                                                                cluster::apply,
                                                                ctx::nowMs,
-                                                               ctx::effectiveClusterSize);
+                                                               () -> RequirementCombiner.UNBOUNDED_CAPACITY);
 
         return new ControlLoopAdapter(ctx, fsm, combiner);
     }
@@ -220,9 +225,18 @@ public interface ControlLoop {
         @Override
         public void onMembershipDecision(MembershipDecision decision) {
             switch (decision) {
-                case NodeJoined(_, var newTopology, _, _) -> ctx.setTopology(newTopology);
-                case NodeRemoved(var departed, var newTopology, _, _) -> ctx.onNodeDeparted(departed, newTopology);
-                case NodeDecommissioned(var departed, var newTopology, _, _) -> ctx.onNodeDeparted(departed, newTopology);
+                case NodeJoined(_, var newTopology, _, _) -> {
+                    ctx.setTopology(newTopology);
+                    combiner.onTopologyChange();
+                }
+                case NodeRemoved(var departed, var newTopology, _, _) -> {
+                    ctx.onNodeDeparted(departed, newTopology);
+                    combiner.onTopologyChange();
+                }
+                case NodeDecommissioned(var departed, var newTopology, _, _) -> {
+                    ctx.onNodeDeparted(departed, newTopology);
+                    combiner.onTopologyChange();
+                }
                 // RC1 Step 2 lifecycle-projection variants: ControlLoop reacts to terminal
                 // topology changes only — JOINING / DRAINING / FAILED_DRAIN /
                 // SHUTTING_DOWN do not adjust the committed core set.
@@ -268,6 +282,11 @@ public interface ControlLoop {
         @Override
         public void onSliceRequirementRemove(ValueRemove<SliceRequirementKey, SliceRequirementValue> valueRemove) {
             combiner.onRequirementRemove(valueRemove.cause().key());
+        }
+
+        @Override
+        public void onAbTestPut(ValuePut<AbTestKey, AbTestValue> valuePut) {
+            combiner.onAbTestPut(valuePut.cause().value().artifactBase());
         }
 
         @Override

@@ -88,7 +88,7 @@ class ManagementStatusCoverageTest {
             entry(ROUTES + "CommunityRouteError$CommunityNotFound", "NOT_FOUND"),
             entry(ROUTES + "ConfigRoutes$ConfigError#KEY_REQUIRED", "BAD_REQUEST"),
             entry(ROUTES + "ConfigRoutes$ConfigError#MISSING_FIELDS", "BAD_REQUEST"),
-            entry(ROUTES + "DeployRouteError#INSTANCES_BELOW_MINIMUM", "BAD_REQUEST"),
+            entry(ROUTES + "DeployRouteError#INSTANCES_NOT_ACCEPTED", "BAD_REQUEST"),
             entry(ROUTES + "DeployRouteError#INVALID_STRATEGY", "BAD_REQUEST"),
             entry(ROUTES + "DeployRouteError#MISSING_BLUEPRINT", "BAD_REQUEST"),
             entry(ROUTES + "DeployRouteError#MISSING_CANARY_STAGES", "BAD_REQUEST"),
