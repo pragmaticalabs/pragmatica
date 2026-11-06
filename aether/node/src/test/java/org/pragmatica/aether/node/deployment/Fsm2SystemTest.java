@@ -19,6 +19,10 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel;
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterState;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision;
 import org.pragmatica.aether.deployment.node.machine.LocalStep;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmEffect;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmInput;
@@ -30,6 +34,8 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.node.ForwardingClusterNode;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
@@ -226,6 +232,63 @@ class Fsm2SystemTest {
             }
         }
 
+        /// B10, B11, B9 worker arms (#2762, W-23): a worker's admission, its placement re-drive (translated to the same join) and its leave reach
+        /// the cluster interpreter as `WorkerJoin` and `WorkerLeave`, never the legacy target, each followed by one sample. Without them a FSM2
+        /// leader never writes a worker's activation directive (`worker-assignment-overdue`).
+        @Test
+        void aWorkerJoin_aPlacementRedrive_andAWorkerLeave_reachTheClusterFsm_neverTheLegacyTarget() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, false).assembled()) {
+                var legacy = new AtomicInteger();
+
+                harness.awaitThat(() -> harness.samples.get() >= 1);
+                var before = harness.samples.get();
+
+                harness.wiring.workerJoin("B10.WorkerAdmission", _ -> legacy.incrementAndGet()).accept(workerJoined(WORKER));
+                harness.wiring.placementRedrive(_ -> legacy.incrementAndGet()).accept(placementPut(OTHER_WORKER));
+                harness.wiring.workerLeave(_ -> legacy.incrementAndGet()).accept(WorkerLeaveDecision.workerLeaveDecision(WORKER, HlcTimestamp.ZERO));
+
+                harness.awaitThat(() -> stepped(harness, "cluster", "WorkerJoin") == 2 && stepped(harness, "cluster", "WorkerLeave") == 1);
+                assertThat(legacy).as("never the CDM under FSM2").hasValue(0);
+                assertThat(harness.samples.get()).as("a sample after each worker input").isEqualTo(before + 3);
+                assertThat(harness.wiring.recorded()).contains("B10.WorkerAdmission -> fsm2:MembershipInputs.onWorkerJoin",
+                                                              "B11.PlacementRedrive -> fsm2:MembershipInputs.onWorkerJoin",
+                                                              "B9.cdm.WorkerLeave -> fsm2:MembershipInputs.onWorkerLeave");
+            }
+        }
+
+        /// B10, B11 on the leader (#2762): the active cluster FSM records each worker's admission, the joined worker with the token the registry
+        /// has now and the placement re-drive for the worker its record names, which is what its directive is written from (Joins, J5/J6).
+        @Test
+        void theWorkerArms_recordEachWorkersAdmission_inTheLeadersModel() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, false).assembled()) {
+                harness.bootTokens.admit(WORKER, 77L);
+                harness.commitLeader();
+                harness.router.route(LeaderNotification.leaderChange(Option.some(Fsm2Harness.SELF), true));
+                harness.awaitThat(() -> activeModel(harness).isPresent());
+
+                harness.wiring.workerJoin("B10.cdm.WorkerJoin", _ -> {}).accept(workerJoined(WORKER));
+                harness.wiring.placementRedrive(_ -> {}).accept(placementPut(OTHER_WORKER));
+
+                harness.awaitThat(() -> admitted(harness, OTHER_WORKER) && admitted(harness, WORKER));
+                assertThat(activeModel(harness).flatMap(model -> model.admission(WORKER)).map(admission -> admission.token())).isEqualTo(Option.some(77L));
+            }
+        }
+
+        /// Under LEGACY the worker arms keep their legacy target: the CDM's join, re-drive and leave.
+        @Test
+        void underLegacy_theWorkerArms_reachTheLegacyTarget() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.LEGACY, false).assembled()) {
+                var legacy = new AtomicInteger();
+
+                harness.wiring.workerJoin("B10.cdm.WorkerJoin", _ -> legacy.incrementAndGet()).accept(workerJoined(WORKER));
+                harness.wiring.placementRedrive(_ -> legacy.incrementAndGet()).accept(placementPut(OTHER_WORKER));
+                harness.wiring.workerLeave(_ -> legacy.incrementAndGet()).accept(WorkerLeaveDecision.workerLeaveDecision(WORKER, HlcTimestamp.ZERO));
+
+                assertThat(legacy).hasValue(3);
+                assertThat(harness.wiring.recorded()).contains("B10.cdm.WorkerJoin -> legacy", "B11.PlacementRedrive -> legacy", "B9.cdm.WorkerLeave -> legacy");
+            }
+        }
+
         /// W-14 / W-33 wired: the seam poller's samples reach the cluster interpreter, coalesced, and a token learned later is reported once.
         @Test
         void theSeamPoller_deliversSamples_andProcessKnownOnce() {
@@ -325,6 +388,24 @@ class Fsm2SystemTest {
                 worker.awaitThat(() -> worker.count("DesiredPut", "applied", "node") == 1.0);
                 assertThat(legacy).as("never the NDM under FSM2").hasValue(0);
                 assertThat(worker.count("QuorumEstablished", "applied", "node")).as("the genuine entry, not the heal").isEqualTo(1.0);
+            }
+        }
+
+        /// A worker runs no cluster FSM, so the worker membership arms (B9, B10, B11) are counted drops on a FSM2 worker: no cluster step, no
+        /// legacy target. MT: the core branch taken on a worker would bind `fsm2:MembershipInputs` here.
+        @Test
+        void aWorker_dropsTheWorkerMembershipArms_andCountsThem() {
+            try (var worker = new Fsm2Harness(DeploymentEngine.FSM2, true).assembled()) {
+                var legacy = new AtomicInteger();
+
+                worker.wiring.workerJoin("B10.cdm.WorkerJoin", _ -> legacy.incrementAndGet()).accept(workerJoined(WORKER));
+                worker.wiring.placementRedrive(_ -> legacy.incrementAndGet()).accept(placementPut(OTHER_WORKER));
+                worker.wiring.workerLeave(_ -> legacy.incrementAndGet()).accept(WorkerLeaveDecision.workerLeaveDecision(WORKER, HlcTimestamp.ZERO));
+
+                assertThat(legacy).hasValue(0);
+                assertThat(worker.wiring.recorded()).contains("B10.cdm.WorkerJoin -> dropped", "B11.PlacementRedrive -> dropped", "B9.cdm.WorkerLeave -> dropped");
+                assertThat(worker.registry.counter("aether_deployment_fsm2_dropped_total", "point", "B10.cdm.WorkerJoin").count()).isEqualTo(1.0);
+                assertThat(worker.registry.find("aether_deployment_fsm_step_seconds").tags("fsm", "cluster").timers()).as("no cluster step").isEmpty();
             }
         }
 
@@ -1033,6 +1114,29 @@ class Fsm2SystemTest {
     }
 
     // -- helpers -------------------------------------------------------------------------------------------------------------
+    private static final NodeId WORKER = NodeId.nodeId("worker-1").unwrap();
+    private static final NodeId OTHER_WORKER = NodeId.nodeId("worker-2").unwrap();
+
+    private static Option<ClusterModel> activeModel(Fsm2Harness harness) {
+        return harness.system.flatMap(system -> system.clusterInterpreter().state() instanceof ClusterState.Active active
+                                                ? Option.some(active.model())
+                                                : Option.none());
+    }
+
+    private static boolean admitted(Fsm2Harness harness, NodeId node) {
+        return activeModel(harness).flatMap(model -> model.admission(node)).isPresent();
+    }
+
+    private static WorkerJoinDecision workerJoined(NodeId worker) {
+        return WorkerJoinDecision.workerJoinDecision(worker, "worker", HlcTimestamp.ZERO);
+    }
+
+    private static ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue> placementPut(NodeId worker) {
+        return new ValuePut<>(new KVCommand.Put<>(new AetherKey.NodePlacementKey(worker),
+                                                  new AetherValue.NodePlacementValue("default", Option.none(), "i-1")),
+                              Option.none());
+    }
+
     private static long stepped(Fsm2Harness harness, String fsm, String input) {
         var timer = harness.registry.find("aether_deployment_fsm_step_seconds").tags("fsm", fsm, "input", input).timer();
 

@@ -16,10 +16,14 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmInput;
 import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.aether.deployment.wiring.FsmTimers;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
@@ -382,6 +386,49 @@ public final class DeploymentWiring {
 
     private void nodeDraining(NodeId node) {
         system.onPresent(fsm2 -> fsm2.onNodeDraining(node));
+    }
+
+    /// B10: membership admitted a worker (the direct admission call and the `WorkerJoinDecision` route). Under FSM2 on a core, the cluster
+    /// interpreter's `WorkerJoin` (CI-7) with the admission membership attaches; on a worker a counted drop (a worker runs no cluster FSM); under
+    /// LEGACY the legacy target, unchanged.
+    public Consumer<WorkerJoinDecision> workerJoin(String point, Consumer<WorkerJoinDecision> legacy) {
+        return isFsm2() && !worker
+               ? recorded(point, "fsm2:MembershipInputs.onWorkerJoin", this::workerJoined)
+               : legacy(point, legacy);
+    }
+
+    private void workerJoined(WorkerJoinDecision decision) {
+        system.onPresent(fsm2 -> fsm2.membership()
+                                     .onWorkerJoin(decision));
+    }
+
+    /// B11: a worker's placement record was written. Under FSM2 on a core, translated to the cluster interpreter's `WorkerJoin` (design 8.3), as
+    /// the legacy re-drive translates it to `onWorkerJoin`; on a worker a counted drop; under LEGACY the legacy target, unchanged.
+    public Consumer<ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue>> placementRedrive(Consumer<ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue>> legacy) {
+        return isFsm2() && !worker
+               ? recorded("B11.PlacementRedrive", "fsm2:MembershipInputs.onWorkerJoin", this::placementPut)
+               : legacy("B11.PlacementRedrive", legacy);
+    }
+
+    private void placementPut(ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue> put) {
+        workerJoined(WorkerJoinDecision.workerJoinDecision(put.cause()
+                                                              .key()
+                                                              .nodeId(),
+                                                           "worker",
+                                                           HlcTimestamp.ZERO));
+    }
+
+    /// B9 (worker arm): a worker left. Under FSM2 on a core, the cluster interpreter's `WorkerLeave` (CI-9); on a worker a counted drop; under
+    /// LEGACY the legacy target, unchanged.
+    public Consumer<WorkerLeaveDecision> workerLeave(Consumer<WorkerLeaveDecision> legacy) {
+        return isFsm2() && !worker
+               ? recorded("B9.cdm.WorkerLeave", "fsm2:MembershipInputs.onWorkerLeave", this::workerLeft)
+               : legacy("B9.cdm.WorkerLeave", legacy);
+    }
+
+    private void workerLeft(WorkerLeaveDecision decision) {
+        system.onPresent(fsm2 -> fsm2.membership()
+                                     .onWorkerLeave(decision));
     }
 
     /// B14: the committed snapshot was restored (`onStateRestored`). Under FSM2 on a core, the leader FSM's re-incarnation rule; on a worker a counted

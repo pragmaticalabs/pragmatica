@@ -2939,12 +2939,11 @@ public interface AetherNode extends ManageableNode {
         // #1935: a declared stream consumer that cannot be registered reaches THIS node's event log.
         nodeDeploymentManager.setOperatorWarningSink(operatorWarningSink);
         configChangeFeed.setOperatorWarningSink(operatorWarningSink);
-        // B4, B10, B11 (design 8.3): B10 and B11 are off the FSM2 path (counted drops under FSM2); B4 is a FSM2 worker's entry edge (F3). B12 is bound to the cluster FSM2 below.
+        // B4, B10, B11 (design 8.3): B10 and B11 reach a FSM2 core's cluster FSM as `WorkerJoin` (#2762); B4 is a FSM2 worker's entry edge (F3). B12 is bound to the cluster FSM2 below.
         var passiveClientActivation = deploymentWiring.passiveClientSwitch(() -> reconcileNodeActivation(() -> runtimeReady(clusterNode),
                                                                                                          nodeDeploymentManager));
-        var workerAdmissionJoin = deploymentWiring.legacy("B10.WorkerAdmission", clusterDeploymentManager::onWorkerJoin);
-        var placementRedrive = deploymentWiring.legacy("B11.PlacementRedrive",
-                                                       clusterDeploymentManager::onNodePlacementPut);
+        var workerAdmissionJoin = deploymentWiring.workerJoin("B10.WorkerAdmission", clusterDeploymentManager::onWorkerJoin);
+        var placementRedrive = deploymentWiring.placementRedrive(clusterDeploymentManager::onNodePlacementPut);
         var drainReportTarget = deploymentWiring.drainReport(clusterDeploymentManager::onNodeDraining);
         // B14 (design 4.4): under FSM2 a core's leader FSM is judged when the committed snapshot is restored; under LEGACY this adds nothing.
         clusterNode.onStateRestored(deploymentWiring.stateRestored());
@@ -5073,15 +5072,14 @@ public interface AetherNode extends ManageableNode {
         // topology stream), so without this route assignNodeRole is unreachable for exactly the
         // nodes that need a community — they reach FSM Member and are never assigned a role.
         entries.add(MessageRouter.Entry.route(WorkerJoinDecision.class,
-                                              deploymentWiring.legacy("B10.cdm.WorkerJoin",
-                                                                      clusterDeploymentManager::onWorkerJoin)));
+                                              deploymentWiring.workerJoin("B10.cdm.WorkerJoin",
+                                                                          clusterDeploymentManager::onWorkerJoin)));
         // #731: the non-core leave channel, symmetric to the join route above — a departed
         // worker's REMOVED edge never reaches MembershipDecision either, so without this route
         // handleNodeRemoval is unreachable for a dead worker and its allocation-pool slot and KV
         // footprint (SliceNodeKey/NodeArtifactKey/NodeRoutesKey) linger forever.
         entries.add(MessageRouter.Entry.route(WorkerLeaveDecision.class,
-                                              deploymentWiring.legacy("B9.cdm.WorkerLeave",
-                                                                      clusterDeploymentManager::onWorkerLeave)));
+                                              deploymentWiring.workerLeave(clusterDeploymentManager::onWorkerLeave)));
         entries.add(MessageRouter.Entry.route(WorkerLeaveDecision.class,
                                               decision -> {
                                                   var node = decision.nodeId();

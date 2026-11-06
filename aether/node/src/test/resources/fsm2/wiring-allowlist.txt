@@ -19,8 +19,8 @@
 1|AetherNode.java|construction: both managers are constructed under either engine and unbound under FSM2 (B15, design 8.3)|var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManagerFromSnapshot(config.self(),
 1|AetherNode.java|an engine-neutral setter: it configures the manager; no input reaches a manager unbound under FSM2|nodeDeploymentManager.setOperatorWarningSink(operatorWarningSink);
 2|AetherNode.java|the manager passed along to its LEGACY binding sites and to the node record|nodeDeploymentManager));
-1|AetherNode.java|a LEGACY target handed to DeploymentWiring, which binds it only under LEGACY and drops it, counted, under FSM2 (B1..B12)|var workerAdmissionJoin = deploymentWiring.legacy("B10.WorkerAdmission", clusterDeploymentManager::onWorkerJoin);
-1|AetherNode.java|a LEGACY target handed to DeploymentWiring (the line continues the call), bound only under LEGACY (B1..B12)|clusterDeploymentManager::onNodePlacementPut);
+1|AetherNode.java|a LEGACY target handed to DeploymentWiring, which binds it under LEGACY and replaces it with the cluster FSM2 WorkerJoin under FSM2 (B10, #2762)|var workerAdmissionJoin = deploymentWiring.workerJoin("B10.WorkerAdmission", clusterDeploymentManager::onWorkerJoin);
+1|AetherNode.java|a LEGACY target handed to DeploymentWiring, which binds it under LEGACY and replaces it with the cluster FSM2 WorkerJoin translation under FSM2 (B11, #2762)|var placementRedrive = deploymentWiring.placementRedrive(clusterDeploymentManager::onNodePlacementPut);
 1|AetherNode.java|a LEGACY target handed to DeploymentWiring, which binds it under LEGACY and replaces it with the cluster FSM2 drain report under FSM2 (B12)|var drainReportTarget = deploymentWiring.drainReport(clusterDeploymentManager::onNodeDraining);
 3|AetherNode.java|the manager passed along to its LEGACY binding sites and to the node record|nodeDeploymentManager,
 5|AetherNode.java|the manager passed along to its LEGACY binding sites, to the node record, and to the assembly phases that run its engine-neutral setters|clusterDeploymentManager,
@@ -49,8 +49,8 @@
 1|AetherNode.java|a LEGACY target handed to DeploymentWiring (the line continues the call), bound only under LEGACY (B1..B12)|nodeDeploymentManager::onQuorumStateChange)));
 1|AetherNode.java|the manager passed as the last argument of a call the line continues: the LEGACY leader toggle (B7) or a LEGACY binding site|clusterDeploymentManager))));
 7|AetherNode.java|a LEGACY target handed to DeploymentWiring (the line continues the call), bound only under LEGACY (B1..B12)|clusterDeploymentManager::onMembershipDecision)));
-1|AetherNode.java|a LEGACY target handed to DeploymentWiring (the line continues the call), bound only under LEGACY (B1..B12)|clusterDeploymentManager::onWorkerJoin)));
-1|AetherNode.java|a LEGACY target handed to DeploymentWiring (the line continues the call), bound only under LEGACY (B1..B12)|clusterDeploymentManager::onWorkerLeave)));
+1|AetherNode.java|a LEGACY target handed to DeploymentWiring, which binds it under LEGACY and replaces it with the cluster FSM2 WorkerJoin under FSM2 (the line continues the call; B10, #2762)|clusterDeploymentManager::onWorkerJoin)));
+1|AetherNode.java|a LEGACY target handed to DeploymentWiring, which binds it under LEGACY and replaces it with the cluster FSM2 WorkerLeave under FSM2 (B9, #2762)|deploymentWiring.workerLeave(clusterDeploymentManager::onWorkerLeave)));
 1|AetherNode.java|a comment: names the legacy manager, binds nothing|// RC1 Step 2: NodeDeploymentManager consumes MembershipDecision.NodeShuttingDown
 1|AetherNode.java|a LEGACY target handed to DeploymentWiring (the line continues the call), bound only under LEGACY (B1..B12)|nodeDeploymentManager::onMembershipDecision)));
 1|AetherNode.java|a LEGACY target handed to DeploymentWiring (the line continues the call), bound only under LEGACY (B1..B12)|clusterDeploymentManager::onSelfShutdown)));
