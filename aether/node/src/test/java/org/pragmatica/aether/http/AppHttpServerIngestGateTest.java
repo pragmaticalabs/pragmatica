@@ -307,7 +307,9 @@ class AppHttpServerIngestGateTest {
         }
         var bad = 0;
         try {
-            for (int i = 0; i < 1500; i++) {
+            var deadline = System.nanoTime() + 150_000_000_000L;
+            int i = 0;
+            for (; i < 100000 && System.nanoTime() < deadline; i++) {
                 var mode = i % 2 == 0 ? Mode.DECLARED : Mode.UNDECLARED;
                 var r = client.post("/api/small/", Option.some(KEY_A), 2 * MIB, mode);
                 if (r.status() != 413) { bad++; }
