@@ -32,15 +32,24 @@ class GovernorCommitWindowTest {
 
     private final List<List<KVCommand<AetherKey>>> submissions = new CopyOnWriteArrayList<>();
     private final AtomicBoolean failNext = new AtomicBoolean();
+    /// The window timers, in the order they were started. None runs until the test fires it: the order of "enqueue" and
+    /// "window elapses" is the test's, not the wall clock's (#2748).
+    private final List<Runnable> timers = new ArrayList<>();
 
     private GovernorCommitWindow window(TimeSpan window, int cap) {
-        return new GovernorCommitWindow(commands -> {
-            submissions.add(new ArrayList<>(commands));
-            if (failNext.getAndSet(false)) {
-                return Causes.cause("submission lost").promise();
-            }
-            return Promise.success(commands.stream().map(c -> (Object) c).toList());
-        }, window, cap);
+        return new GovernorCommitWindow(this::record, (task, span) -> timers.add(task), window, cap);
+    }
+
+    private GovernorCommitWindow clockWindow(TimeSpan window, int cap) {
+        return new GovernorCommitWindow(this::record, window, cap);
+    }
+
+    private Promise<List<Object>> record(List<KVCommand<AetherKey>> commands) {
+        submissions.add(new ArrayList<>(commands));
+        if (failNext.getAndSet(false)) {
+            return Causes.cause("submission lost").promise();
+        }
+        return Promise.success(commands.stream().map(c -> (Object) c).toList());
     }
 
     private static AetherKey key(String community) {
@@ -70,11 +79,26 @@ class GovernorCommitWindowTest {
 
         var first = window.enqueue(key("c1"), A, id -> command(key("c1"), id));
         var second = window.enqueue(key("c2"), B, id -> command(key("c2"), id));
-        assertThat(first.outcomes().await(BOUND).isSuccess()).as("the submission's outcome reaches its tickets").isTrue();
+        assertThat(submissions).as("the window is still open").isEmpty();
+        assertThat(timers).as("one timer per window").hasSize(1);
+        timers.getFirst().run();
 
+        assertThat(first.outcomes().await(BOUND).isSuccess()).as("the submission's outcome reaches its tickets").isTrue();
         assertThat(second.outcomes()).as("both tickets wait on the same submission").isSameAs(first.outcomes());
         assertThat(submissions).hasSize(1);
         assertThat(submissions.getFirst()).hasSize(2);
+    }
+
+    /// The production wiring: the shared scheduler fires the window. One enqueue, so no assertion depends on how long the
+    /// window stays open.
+    @Test
+    void enqueue_sharedSchedulerTimer_submitsTheWindowOnItsOwn() {
+        var window = clockWindow(SHORT, 16);
+
+        var only = window.enqueue(key("c1"), A, id -> command(key("c1"), id));
+
+        assertThat(only.outcomes().await(BOUND).isSuccess()).isTrue();
+        assertThat(submissions).hasSize(1);
     }
 
     @Test
@@ -114,18 +138,20 @@ class GovernorCommitWindowTest {
     }
 
     @Test
-    void enqueue_afterAnEarlySubmission_theStaleTimerDoesNotCutTheNextWindowShort() throws InterruptedException {
-        var window = window(TimeSpan.timeSpan(400).millis(), 2);
+    void enqueue_afterAnEarlySubmission_theStaleTimerDoesNotCutTheNextWindowShort() {
+        var window = window(LONG, 2);
 
         window.enqueue(key("c1"), A, id -> command(key("c1"), id));
         window.enqueue(key("c2"), A, id -> command(key("c2"), id));
         assertThat(submissions).hasSize(1);
-        Thread.sleep(250);
         var third = window.enqueue(key("c3"), A, id -> command(key("c3"), id));
-        Thread.sleep(250);
+        assertThat(timers).as("the first window's timer and the third command's").hasSize(2);
 
-        assertThat(submissions).as("the first window's timer (400 ms) has fired, the third command's (650 ms) has not").hasSize(1);
-        third.outcomes().await(TimeSpan.timeSpan(5).seconds());
+        timers.getFirst().run();
+
+        assertThat(submissions).as("the first window's timer has fired, the third command's has not").hasSize(1);
+        timers.getLast().run();
+        assertThat(third.outcomes().await(BOUND).isSuccess()).isTrue();
         assertThat(submissions).hasSize(2);
     }
 
@@ -140,6 +166,8 @@ class GovernorCommitWindowTest {
         window.enqueue(key("c2"), A, id -> remember(built, key("c2")));
         window.enqueue(key("c3"), B, id -> remember(built, key("c3")));
         var last = window.enqueue(key("c1"), A, id -> remember(built, key("c1")));
+        assertThat(timers).hasSize(1);
+        timers.getFirst().run();
 
         assertThat(last.outcomes().await(BOUND).isSuccess()).isTrue();
         assertThat(submissions).hasSize(1);
@@ -156,9 +184,12 @@ class GovernorCommitWindowTest {
         failNext.set(true);
 
         var lost = window.enqueue(key("c1"), A, id -> command(key("c1"), id));
+        timers.getFirst().run();
 
         assertThat(lost.outcomes().await(BOUND).isFailure()).isTrue();
         var next = window.enqueue(key("c1"), A, id -> command(key("c1"), id));
+        assertThat(timers).as("the next window is timed").hasSize(2);
+        timers.getLast().run();
 
         assertThat(next.outcomes()).isNotSameAs(lost.outcomes());
         assertThat(next.outcomes().await(BOUND).isSuccess()).isTrue();

@@ -23,6 +23,7 @@ import org.pragmatica.aether.config.ApiKeyEntry;
 import org.pragmatica.aether.config.BackupConfig.RestoreMode;
 import org.pragmatica.aether.config.SecurityMode;
 import org.pragmatica.aether.ember.EmberCluster;
+import org.pragmatica.aether.node.backup.RestoreGate;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterIncarnationKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
@@ -172,6 +173,7 @@ class ApiKeyFullRestartForgeTest {
         cluster = next;
         LifecycleAwait.settled("start of cluster " + prefix, next, next.start());
         awaitMembers(NODES);
+        awaitRestoreDecision();
 
         return next;
     }
@@ -402,6 +404,18 @@ class ApiKeyFullRestartForgeTest {
              .atMost(WAIT_TIMEOUT)
              .pollInterval(POLL_INTERVAL)
              .until(() -> leaderHealthReports(expected));
+    }
+
+    /// Every node's restore gate is open: the node holds a terminal backup-restore decision. A node refuses its OWN
+    /// submissions of backed-up keys (an API-key mint is one) until then (`RestoreGate`, #1533), and the decision
+    /// commits after the members and the leader are up, so waiting on membership alone races it (#2718).
+    private void awaitRestoreDecision() {
+        await().alias("every node holds a terminal backup restore decision")
+             .atMost(WAIT_TIMEOUT)
+             .pollInterval(POLL_INTERVAL)
+             .until(() -> cluster.allNodes()
+                                 .stream()
+                                 .allMatch(node -> RestoreGate.isOpen(node.kvStore())));
     }
 
     private boolean leaderHealthReports(int expected) {

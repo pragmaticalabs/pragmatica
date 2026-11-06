@@ -5,6 +5,7 @@
 package org.pragmatica.aether.stream.replication;
 
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiConsumer;
 
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -13,6 +14,7 @@ import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.NullReturn;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -24,8 +26,10 @@ import org.pragmatica.utility.warning.OperatorWarnings;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.aether.stream.replication.PartitionKey.partitionKey;
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.ReplicateAck.replicateAck;
 import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.utility.warning.OperatorWarningCode.REPLICA_FSYNC_FAILED;
 
 
@@ -90,6 +94,13 @@ import static org.pragmatica.utility.warning.OperatorWarningCode.REPLICA_FSYNC_F
 /// `awaitReplication(minAcks)` promise. The ack always reflects the replica's VERIFIED state — never a
 /// nominal batch end the replica did not actually reach contiguously.
 ///
+/// ## Ack gate (B7, #2599)
+/// A copy not yet compared with the committed owner of the current epoch acknowledges nothing ([AckGate]). The gate is read
+/// BEFORE the batch is applied when the batch carries the committed epoch: the copy's trust for an epoch is fixed at its first
+/// reading, from whether its head is still below the epoch's start, and reading it after the apply made a fresh replica doubt
+/// the owner's own first batch. An ack the gate holds back is deferred, not dropped, and sent when a compare verifies the copy
+/// ([#releaseDeferredAck]).
+///
 /// ## Partial-apply repair (M5)
 /// A mid-batch append failure applies only the contiguous prefix `[applyFrom, applyFrom+applied-1]`
 /// and leaves a gap for the tail of the batch. The handler acks ONLY that contiguous prefix (never the
@@ -148,6 +159,41 @@ public final class ReplicationReceiveHandler {
     }
 
     private volatile AckGate ackGate = (_, _) -> true;
+
+    /// #2599: the ack a batch could not send because the [AckGate] held it: the batch's sender, the highest offset of its
+    /// verified prefix, and its owner epoch. One per partition ([#deferredAcks]).
+    private record DeferredAck(NodeId owner, long through, Epoch ownerEpoch) {
+        static DeferredAck deferredAck(NodeId owner, long through, Epoch ownerEpoch) {
+            return new DeferredAck(owner, through, ownerEpoch);
+        }
+
+        /// The value kept when `fresh` is deferred over this one: the fresh one, unless it is of an older epoch, which a
+        /// release drops and so would lose this one's ack, or a lower re-delivery under the same epoch, which would lower what is
+        /// released.
+        DeferredAck mergedWith(DeferredAck fresh) {
+            return ownerEpoch.isStrictlyAfter(fresh.ownerEpoch()) || fresh.ownerEpoch()
+                                                                          .equals(ownerEpoch) && fresh.through() < through
+                   ? this
+                   : fresh;
+        }
+
+        /// Whether a live ack of `acked` under `epoch` leaves this one still to send: only a higher offset in the same epoch
+        /// is not covered by it. One of another epoch is dropped, as a release would drop it.
+        boolean outlives(long acked, Epoch epoch) {
+            return ownerEpoch.equals(epoch) && through > acked;
+        }
+
+        /// Whether a backfill's ack of `acked` under `epoch` settles this one: an offset not above it in the same epoch. One of
+        /// another epoch is kept for its own release.
+        boolean settledBy(long acked, Epoch epoch) {
+            return ownerEpoch.equals(epoch) && through <= acked;
+        }
+    }
+
+    /// #2599: the deferred acks ([DeferredAck]), at most one per partition. Every ack this handler sends goes out inside
+    /// this map's per-key section, and so does the backfill's ack of its watermark once wired ([#ackBackfill]), so a deferred
+    /// ack is never released after a live ack that covers it or a backfill ack of its epoch at or above it.
+    private final ConcurrentHashMap<PartitionKey, DeferredAck> deferredAcks = new ConcurrentHashMap<>();
 
     /// Late-bind the [AckGate]. Set once at wiring.
     @Contract
@@ -418,6 +464,7 @@ public final class ReplicationReceiveHandler {
                               long fromOffset,
                               List<byte[]> payloads,
                               List<Long> timestamps) {
+        var trustedBeforeApply = trustedBeforeApply(message);
         var outcome = applyBatch(streamName, partition, fromOffset, payloads, timestamps, message.ownerEpoch());
 
         outcome.refusal().onPresent(cause -> reportShortApply(message, fromOffset + outcome.held(), cause));
@@ -427,13 +474,8 @@ public final class ReplicationReceiveHandler {
 
         var highestHeld = fromOffset + outcome.held() - 1;
 
-        if (!ackGate.mayAck(streamName, partition)) {
-            log.debug("ReplicationReceiveHandler: {}[{}] up to {} applied but NOT acked: this copy is not yet verified against the "
-                     + "committed owner's epoch; backfill compares it first",
-                      streamName,
-                      partition,
-                      highestHeld);
-            onGap.accept(streamName, partition);
+        if (!trustedBeforeApply && !ackGate.mayAck(streamName, partition)) {
+            deferAck(message, streamName, partition, highestHeld);
 
             return;
         }
@@ -443,13 +485,184 @@ public final class ReplicationReceiveHandler {
         // the record is applied and serveable, but this replica must not be counted toward durability;
         // the owner's barrier degrades honestly instead of over-counting.
         durability.sync(streamName, partition)
-                  .onSuccess(_ -> transport.send(message.governorId(),
-                                                 replicateAck(self,
-                                                              streamName,
-                                                              partition,
-                                                              highestHeld,
-                                                              message.ownerEpoch())))
+                  .onSuccess(_ -> sendLiveAck(message, streamName, partition, highestHeld))
                   .onFailure(cause -> reportWithheldAck(streamName, partition, highestHeld, cause));
+    }
+
+    /// #2599: the [AckGate] read on the head the batch found, before it is applied, and only when the batch carries the
+    /// committed epoch. The copy's trust for an epoch is fixed at its first reading ([AckGate]): a head still below the epoch's
+    /// start holds nothing of an older lineage at or above it, and every record the batch then adds there is this owner's or
+    /// was verified identical to it ([#applyBatch] stops at a divergence). Read after the apply, the same fresh replica doubted
+    /// the owner's own first batch. A batch of another epoch reads the gate after the apply only, as before.
+    private boolean trustedBeforeApply(ReplicationMessage.ReplicateEvents message) {
+        return isCommittedEpoch(message.streamName(), message.partition(), message.ownerEpoch()) && ackGate.mayAck(message.streamName(),
+                                                                                                                   message.partition());
+    }
+
+    private boolean isCommittedEpoch(String streamName, int partition, Epoch epoch) {
+        return committedOwners.committedOwner(streamName, partition)
+                              .filter(committed -> committed.ownerEpoch()
+                                                            .equals(epoch))
+                              .isPresent();
+    }
+
+    /// The batch's own ack, sent inside the partition's [#deferredAcks] section. A deferred ack it covers ([DeferredAck#outlives])
+    /// is settled by it and dropped, so it is never released afterwards, lower.
+    @Contract
+    private void sendLiveAck(ReplicationMessage.ReplicateEvents message,
+                             String streamName,
+                             int partition,
+                             long highestHeld) {
+        deferredAcks.compute(partitionKey(streamName, partition),
+                             (_, deferred) -> sendCovering(message, streamName, partition, highestHeld, deferred));
+    }
+
+    @NullReturn
+    private DeferredAck sendCovering(ReplicationMessage.ReplicateEvents message,
+                                     String streamName,
+                                     int partition,
+                                     long highestHeld,
+                                     DeferredAck deferred) {
+        sendAck(message.governorId(), streamName, partition, highestHeld, message.ownerEpoch());
+
+        return option(deferred).filter(held -> held.outlives(highestHeld,
+                                                             message.ownerEpoch()))
+                     .or((DeferredAck) null);
+    }
+
+    /// #2599 G3: a backfill's ack of its watermark (`PartitionBackfill.ackBackfillToOwner`), sent inside the partition's
+    /// [#deferredAcks] section. A deferred ack of the same epoch at or below the watermark is settled by it ([DeferredAck#settledBy])
+    /// and dropped, so it is never released afterwards, lower. Production wires it as the backfill's
+    /// `PartitionBackfill.BackfillAckSink`.
+    @Contract
+    public void ackBackfill(NodeId owner, String streamName, int partition, long watermark, Epoch ownerEpoch) {
+        deferredAcks.compute(partitionKey(streamName, partition),
+                             (_, deferred) -> sendSettling(owner, streamName, partition, watermark, ownerEpoch, deferred));
+    }
+
+    @NullReturn
+    private DeferredAck sendSettling(NodeId owner,
+                                     String streamName,
+                                     int partition,
+                                     long watermark,
+                                     Epoch ownerEpoch,
+                                     DeferredAck deferred) {
+        sendAck(owner, streamName, partition, watermark, ownerEpoch);
+
+        return option(deferred).filter(held -> !held.settledBy(watermark, ownerEpoch))
+                     .or((DeferredAck) null);
+    }
+
+    /// #2599: the gate holds the ack back; it does not drop it. The ack is kept ([#deferredAcks]) and the gap repair asked to
+    /// compare the copy; [#releaseDeferredAck] sends it once the compare has verified the copy. Dropped, the ack of a batch that
+    /// landed after the compare acked its own watermark and before it marked the copy verified waited for a further backfill
+    /// run or a later batch, and the owner's await failed at its 5 s bound when neither came.
+    ///
+    /// The release is tried again once the ack is kept: a verification that landed between the gate read and the keep ran its
+    /// own release and found nothing.
+    @Contract
+    private void deferAck(ReplicationMessage.ReplicateEvents message,
+                          String streamName,
+                          int partition,
+                          long highestHeld) {
+        log.debug("ReplicationReceiveHandler: {}[{}] up to {} applied but NOT yet acked: this copy is not yet verified against the "
+                 + "committed owner's epoch; backfill compares it first, then the ack is sent",
+                  streamName,
+                  partition,
+                  highestHeld);
+        deferredAcks.merge(partitionKey(streamName, partition),
+                           DeferredAck.deferredAck(message.governorId(), highestHeld, message.ownerEpoch()),
+                           DeferredAck::mergedWith);
+        onGap.accept(streamName, partition);
+        releaseDeferredAck(streamName, partition);
+    }
+
+    /// #2599: sends the ack a batch deferred while this copy was unverified ([#deferAck]). Production calls it when a compare
+    /// verifies the copy (`StreamPartitionManager::onEpochVerified`). The caller's word is not taken for it: the [AckGate] is read
+    /// again here, and while it still holds, or when nothing was deferred, nothing is sent. Otherwise the ack goes through the
+    /// durability barrier first, like a live one, and is then sent only when its epoch is still the committed one, and no
+    /// higher than the head the copy holds then: a repair between the deferral and the release can have cut the deferred
+    /// offsets. A live ack sent meanwhile that covers it has already dropped it ([#sendLiveAck]).
+    ///
+    /// The release acks the deferred offset, never above it: a record past it was not covered by the batch that was deferred,
+    /// and a verified copy can hold, past it, records of a newer epoch's owner that this replica's committed view accepted.
+    /// The head read before the barrier is a further ceiling: a repair can have cut the deferred offsets before it, and a record
+    /// written again after the reading is not covered by the barrier. A backfill ack of the same epoch at or above the deferred
+    /// offset settles it first ([#ackBackfill]).
+    @Contract
+    public void releaseDeferredAck(String streamName, int partition) {
+        option(deferredAcks.get(partitionKey(streamName, partition))).filter(_ -> ackGate.mayAck(streamName, partition))
+              .onPresent(deferred -> releaseDurably(streamName,
+                                                    partition,
+                                                    deferred,
+                                                    resolveLocalNext(streamName,
+                                                                     partition,
+                                                                     deferred.through() + 1) - 1));
+    }
+
+    @Contract
+    private void releaseDurably(String streamName, int partition, DeferredAck gated, long headBeforeSync) {
+        durability.sync(streamName, partition)
+                  .onSuccess(_ -> deferredAcks.computeIfPresent(partitionKey(streamName, partition),
+                                                                (_, held) -> sendIfStillGated(streamName,
+                                                                                              partition,
+                                                                                              gated,
+                                                                                              held,
+                                                                                              headBeforeSync)))
+                  .onFailure(cause -> reportWithheldAck(streamName,
+                                                        partition,
+                                                        gated.through(),
+                                                        cause));
+    }
+
+    /// The send half of a release, inside the partition's [#deferredAcks] section. It sends only the deferral this release
+    /// gated and synced, and reads the gate again in the same section. A deferral that replaced it while the barrier was in
+    /// flight (a batch of a newly committed epoch on a copy not yet verified for it) is neither verified nor covered by this
+    /// barrier: it is kept for its own release.
+    @NullReturn
+    private DeferredAck sendIfStillGated(String streamName,
+                                         int partition,
+                                         DeferredAck gated,
+                                         DeferredAck held,
+                                         long headBeforeSync) {
+        return held == gated && ackGate.mayAck(streamName, partition)
+               ? sendIfCommitted(streamName, partition, held, headBeforeSync)
+               : held;
+    }
+
+    /// Sends a released deferred ack under its epoch when that is still the committed one, at its offset capped at
+    /// `headBeforeSync` and at the current head; in every case the deferred ack is consumed. One of an older epoch is dropped:
+    /// the next live batch acks under the new one.
+    @NullReturn
+    private DeferredAck sendIfCommitted(String streamName, int partition, DeferredAck deferred, long headBeforeSync) {
+        var upTo = Math.min(deferred.through(), headBeforeSync);
+        var through = Math.min(upTo, resolveLocalNext(streamName, partition, upTo + 1) - 1);
+
+        option(deferred).filter(held -> isCommittedEpoch(streamName,
+                                                         partition,
+                                                         held.ownerEpoch()))
+              .filter(_ -> through >= 0)
+              .onPresent(held -> sendAck(held.owner(),
+                                         streamName,
+                                         partition,
+                                         through,
+                                         held.ownerEpoch()));
+
+        return null;
+    }
+
+    /// #2599: the stream was removed; the acks deferred for its partitions are dropped with it, so none is released into a
+    /// stream recreated under the same name. Production calls it from `StreamPartitionManager::onStreamRemoved`.
+    @Contract
+    public void forgetDeferredAcks(String streamName) {
+        deferredAcks.keySet().removeIf(key -> key.streamName()
+                                                 .equals(streamName));
+    }
+
+    /// Fire-and-forget, as every ack here: an ack the transport loses is the owner's to time out.
+    @Contract
+    private void sendAck(NodeId owner, String streamName, int partition, long through, Epoch ownerEpoch) {
+        transport.send(owner, replicateAck(self, streamName, partition, through, ownerEpoch));
     }
 
     private Unit reportWithheldAck(String streamName, int partition, long highestHeld, Cause cause) {

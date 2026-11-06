@@ -701,7 +701,99 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
         assertThat(eventsOf(OperatorWarningCode.INSTANCE_REAP_HELD)).isZero();
     }
 
-    /// Auto-heal enabled: nothing is held, so a second reap of a confirmed node stays a no-op that asks the provider nothing.
+    /// #2457: with auto-heal ENABLED a never-joined instance that reuses an already-confirmed node id must not be left billing in silence:
+    /// it is deleted (a second provider terminate) or announced (any operator event naming the node).
+    private boolean reapedOrAnnounced() {
+        return terminates.get() >= 2 || events.stream().anyMatch(event -> event.subject().equals(LOST.id()));
+    }
+
+    private void automaticReapConfirmedThenAnotherInstanceUnderTheSameId() {
+        lost();
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+        settle();
+        relist();
+    }
+
+    @Test
+    void confirmedReap_thenNeverJoinedZombieUnderTheSameId_autoHealEnabled_isReapedOrAnnounced() {
+        automaticReapConfirmedThenAnotherInstanceUnderTheSameId();
+
+        ctm.drainNode(LOST, DrainReason.JOIN_GRACE_REAP);
+        settle();
+
+        assertThat(reapedOrAnnounced()).as("terminates=%s events=%s", terminates.get(), events).isTrue();
+    }
+
+    @Test
+    void confirmedReap_thenOrphanUnderTheSameId_autoHealEnabled_isReapedOrAnnounced() throws ReflectiveOperationException {
+        automaticReapConfirmedThenAnotherInstanceUnderTheSameId();
+
+        orphanSweepFinds(LOST);
+        settle();
+
+        assertThat(reapedOrAnnounced()).as("terminates=%s events=%s", terminates.get(), events).isTrue();
+    }
+
+    /// #2457: the look the evidence-bearing trigger buys is a pure read. A join-grace reap of a confirmed id under which nothing new is listed
+    /// terminates nothing and reports nothing unconfirmed: the confirmation stands.
+    @Test
+    void confirmedReap_thenJoinGraceReapWithNothingNewListed_autoHealEnabled_terminatesNothingAndRaisesNoUnconfirmedEvent() {
+        lost();
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+        settle();
+        var asked = listings.get();
+
+        ctm.drainNode(LOST, DrainReason.JOIN_GRACE_REAP);
+        settle();
+
+        assertThat(listings.get()).as("the evidence-bearing trigger looks").isGreaterThan(asked);
+        assertThat(terminates.get()).isEqualTo(1);
+        assertThat(events).as("a confirmed reap with nothing new under the id raises nothing").isEmpty();
+    }
+
+    /// #2457: the evidence belongs to the reap it started. Once that reap is confirmed, a later NodeRemoved of the node is again the no-op that asks
+    /// the provider nothing.
+    @Test
+    void confirmedReap_zombieReaped_thenNodeRemovedAgain_autoHealEnabled_asksTheProviderNothing() {
+        automaticReapConfirmedThenAnotherInstanceUnderTheSameId();
+        ctm.drainNode(LOST, DrainReason.JOIN_GRACE_REAP);
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 2);
+        settle();
+        var asked = listings.get();
+
+        lost();
+        settle();
+
+        assertThat(listings.get()).as("no provider call once the evidence-bearing reap is confirmed").isEqualTo(asked);
+        assertThat(terminates.get()).isEqualTo(2);
+    }
+
+    /// #2457: the evidence dies with the activation. A join-grace re-look cut off by a deactivation leaves no mark for the next activation, whose
+    /// NodeRemoved of the confirmed node asks the provider nothing.
+    @Test
+    void confirmedReap_joinGraceReLookCutOffByDeactivation_thenNodeRemovedAfterReactivation_autoHealEnabled_asksTheProviderNothing() {
+        lost();
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+        settle();
+        var before = listings.get();
+        onNextListing.set(ctm::deactivate);
+
+        ctm.drainNode(LOST, DrainReason.JOIN_GRACE_REAP);
+        await().atMost(Duration.ofSeconds(5)).until(() -> listings.get() > before);
+        settle();
+        ctm.activate();
+        settle();
+        var asked = listings.get();
+
+        lost();
+        settle();
+
+        assertThat(listings.get()).as("no provider call: the mark of the cut-off re-look did not survive the activation").isEqualTo(asked);
+        assertThat(terminates.get()).isEqualTo(1);
+    }
+
+    /// Auto-heal enabled: nothing is held, so a second reap of a confirmed node whose trigger reports no instance under the id (NodeRemoved again)
+    /// stays a no-op that asks the provider nothing (#2457 looks again only for a join-grace reap or the orphan sweep).
     @Test
     void confirmedReap_secondReapOfTheSameNode_autoHealEnabled_asksTheProviderNothing() {
         lost();
@@ -714,6 +806,23 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
 
         assertThat(listings.get()).as("no provider call for a second reap").isEqualTo(asked);
         assertThat(terminates.get()).isEqualTo(1);
+    }
+
+    /// The v-2062 B1 duplicate also comes as the drain-grace backstop of a directed drain (not a join-grace reap) after the reap of NodeRemoved was
+    /// confirmed: only a JOIN_GRACE_REAP is evidence of an instance under the id (#2457), so this one still asks the provider nothing.
+    @Test
+    void confirmedReap_thenDrainGraceBackstopOfADirectedDrain_autoHealEnabled_asksTheProviderNothing() {
+        lost();
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+        settle();
+        var asked = listings.get();
+
+        ctm.drainNode(LOST, DrainReason.OPERATOR_COMMAND);
+        settle();
+
+        assertThat(listings.get()).as("no provider call for the backstop of a drain that carries no evidence").isEqualTo(asked);
+        assertThat(terminates.get()).isEqualTo(1);
+        assertThat(events).as("no false unconfirmed event").isEmpty();
     }
 
     /// Forced interleaving: chain A lists a confirmed node and sees nothing new, and before A acts a concurrent chain B (which saw a new instance)

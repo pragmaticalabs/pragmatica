@@ -1,0 +1,2 @@
+### Changed
+- The HTTP/3 test clients `H3Probe` and `Http3TestClient` now record a timed event log of each exchange: connect, handshake, request written, headers, data, input end, close causes, and why the answer was finished. A failure message prints that log (refs #2746, #2605). A bare `closed` status named no cause. Both flakes fail after about 5.2-5.3 s, which matches the server's 5 s QUIC idle timeout, so the next occurrence should show where the exchange stalled. Test-only change.

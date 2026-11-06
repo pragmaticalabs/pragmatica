@@ -14,7 +14,6 @@ import org.pragmatica.aether.config.Environment;
 import org.pragmatica.aether.config.NodeConfig;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.TimeoutsConfig;
-import org.pragmatica.aether.config.TtmConfig;
 import org.pragmatica.aether.environment.DiscoveryProvider;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.environment.PeerInfo;
@@ -111,7 +110,6 @@ class MainPeerSourceOrderTest {
                                                      Option.none(),
                                                      Option.none(),
                                                      Option.none(),
-                                                     TtmConfig.ttmConfig(),
                                                      SliceConfig.sliceConfig(),
                                                      AppHttpConfig.appHttpConfig(),
                                                      BackupConfig.backupConfig(Environment.DOCKER),

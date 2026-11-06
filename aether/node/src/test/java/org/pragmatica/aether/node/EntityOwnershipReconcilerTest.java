@@ -1023,7 +1023,7 @@ class EntityOwnershipReconcilerTest {
 
         private StreamPartitionOwnershipWriter writer(StreamPartitionOwnershipWriter.HrwOwner hrwOwner) {
             return StreamPartitionOwnershipWriter.streamPartitionOwnershipWriter(() -> true,
-                                                                                 () -> Epoch.epoch(0L, 1L, 0L),
+                                                                                 () -> Epoch.epoch(1L, 1L, 0L),
                                                                                  HlcClock.hlcClock(N1),
                                                                                  (stream, partition) -> committed(stream, partition),
                                                                                  hrwOwner);

@@ -111,7 +111,6 @@ graph TB
     subgraph Scaling["Auto-Scaling"]
         CL["ControlLoop<br/>1s evaluation cycle"]
         DTC["DecisionTreeController<br/>CPU/latency thresholds"]
-        TTM["TTMManager<br/>ONNX predictive scaling<br/>(optional)"]
     end
 
     subgraph Messaging["Pub-Sub & Scheduling"]
@@ -159,7 +158,6 @@ graph TB
     MC -.->|Gossip| MAG
     MAG --> CL
     CL --> DTC
-    DTC -.-> TTM
     CL -->|Scale command| CDM
 
     %% Messaging
@@ -186,7 +184,7 @@ graph TB
 |----------|------------|------------|
 | **Deployment** | ClusterDeploymentManager | NodeDeploymentManager, RollingUpdateManager, RollbackManager |
 | **Metrics** | MetricsAggregator | MetricsCollector, AlertManager, ClusterEventAggregator |
-| **Scaling** | ControlLoop (executes) | ControlLoop (evaluates), DecisionTreeController, TTMManager |
+| **Scaling** | ControlLoop (executes) | ControlLoop (evaluates), DecisionTreeController |
 | **State** | -- | KV-Store (Rabia), LeaderManager, KVNotificationRouter |
 | **Network** | -- | ClusterNetwork, TopologyManager, MessageRouter |
 | **HTTP** | -- | AppHttpServer, ManagementServer |

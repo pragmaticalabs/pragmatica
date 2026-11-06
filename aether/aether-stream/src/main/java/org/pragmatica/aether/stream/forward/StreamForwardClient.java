@@ -319,7 +319,10 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
         var message = publishForward(selfNodeId, correlationId, streamName, partition, payload, timestamp, systemWriter);
         // The frame must not outlive the wait that just started (#1996): delivered later it would publish an event
         // whose caller was already told the outcome is unknown.
-        transport.send(governorId, message, publishWait);
+        // #2683: a frame the transport refused before writing it fails the publish at once with a known outcome (not
+        // written); its scheduled timeout then finds no pending entry. Detached, as for a read (see [#sendRead]).
+        transport.send(governorId, message, publishWait)
+                 .onSuccess(outcome -> failPublishIfNotSent(outcome, correlationId));
         log.trace("Sent PublishForward to {} for {}[{}] correlationId={}",
                   governorId,
                   streamName,
@@ -569,6 +572,32 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
             case WriteOutcome.BackpressureRefused _, WriteOutcome.ConnectionDead _, WriteOutcome.NoPeerState _ -> Option.some(StreamForwardError.ForwardNotSent.FACTORY.apply(outcome));
             case WriteOutcome.EncodeFailed _ -> Option.some(StreamForwardError.ForwardNotEncoded.FACTORY.apply(outcome));
         };
+    }
+
+    /// #2683: a forwarded publish whose frame was refused before it was written fails at once with a KNOWN outcome. Refused
+    /// under backpressure or with no peer state is the transient [StreamForwardError.PublishNotSent] the forwarder retries;
+    /// an encode failure is the hard [StreamForwardError.PublishNotEncoded]. `Sent` keeps the publish waiting for its ack,
+    /// and so does `ConnectionDead`: unlike a read, a publish is not idempotent, and a [StreamForwardMessage.PublishForward] is an ordinary frame
+    /// the offline buffer may still deliver within the wait, so its outcome stays unknown until the wait ends.
+    private static Option<Cause> publishNotSentCause(WriteOutcome outcome) {
+        return switch (outcome) {
+            case WriteOutcome.Sent _, WriteOutcome.ConnectionDead _ -> Option.none();
+            case WriteOutcome.BackpressureRefused _, WriteOutcome.NoPeerState _ -> Option.some(StreamForwardError.PublishNotSent.FACTORY.apply(outcome));
+            case WriteOutcome.EncodeFailed _ -> Option.some(StreamForwardError.PublishNotEncoded.FACTORY.apply(outcome));
+        };
+    }
+
+    private void failPublishIfNotSent(WriteOutcome outcome, String correlationId) {
+        publishNotSentCause(outcome).onPresent(cause -> failPublish(correlationId, cause));
+    }
+
+    private void failPublish(String correlationId, Cause cause) {
+        option(pendingRequests.remove(correlationId)).onPresent(promise -> publishNotSent(promise, cause));
+    }
+
+    private static void publishNotSent(Promise<Long> promise, Cause cause) {
+        log.debug("Stream forward publish not sent: {}", cause.message());
+        promise.resolve(cause.result());
     }
 
     private void failReadIfNotSent(WriteOutcome outcome, String correlationId) {

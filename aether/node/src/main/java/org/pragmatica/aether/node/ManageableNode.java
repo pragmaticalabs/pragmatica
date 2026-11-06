@@ -50,7 +50,6 @@ import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
-import org.pragmatica.aether.ttm.TTMManager;
 import org.pragmatica.aether.update.AbTestManager;
 import org.pragmatica.aether.update.DeploymentManager;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -165,7 +164,6 @@ public interface ManageableNode {
     AbTestManager abTestManager();
     AppHttpServer appHttpServer();
     HttpRouteRegistry httpRouteRegistry();
-    TTMManager ttmManager();
     ComprehensiveSnapshotCollector snapshotCollector();
     ArtifactMetricsCollector artifactMetricsCollector();
     DeploymentMap deploymentMap();

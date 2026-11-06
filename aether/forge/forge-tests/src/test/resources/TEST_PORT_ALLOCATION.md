@@ -21,7 +21,6 @@ even with large per-method offsets (e.g., ManagementApiTest has offsets up to 38
 | ManagementApiTest             | 9000      | 9100           | 380        | 3 nodes |
 | ControllerTest                | 9500      | 9600           | 35         | 3 nodes |
 | NetworkPartitionTest          | 10000     | 10100          | 80         | 3 nodes |
-| TtmTest                       | 10500     | 10600          | 35         | 3 nodes |
 | GracefulShutdownTest          | 11000     | 11100          | 60         | 3 nodes |
 | ForgeClusterIntegrationTest   | 11500     | 11600          | 15         | 3 nodes |
 | InvocationMetricsTest         | 12000     | 12100          | 0          | 5 nodes (shared cluster, `@BeforeAll`) |

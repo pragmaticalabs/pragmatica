@@ -78,7 +78,7 @@ Every node runs the same components. Leader-only components activate when a node
 | **Network** | ClusterNetwork (Netty), TopologyManager, MessageRouter | - |
 | **Storage** | DHTNode, ArtifactStore, DHTCacheBackend, AntiEntropy, Rebalancer | - |
 | **Observability** | MetricsCollector, AlertManager, ClusterEventAggregator | MetricsAggregator |
-| **Scaling** | DecisionTreeController, TTMManager | ControlLoop |
+| **Scaling** | DecisionTreeController | ControlLoop |
 | **Messaging** | TopicSubscriptionRegistry, TopicPublisher, ScheduledTaskManager | - |
 | **Resources** | ResourceProvider (SPI: DB, HTTP client, config) | - |
 | **Cloud** | EnvironmentIntegration, NodeLifecycleManager, DiscoveryProvider | - |
@@ -180,7 +180,7 @@ See [05-worker-pools.md](05-worker-pools.md) for details.
 | [05-worker-pools.md](05-worker-pools.md) | Two-layer topology, governors, SWIM protocol, scaling |
 | [06-http-routing.md](06-http-routing.md) | HTTP request routing, forwarding, route self-registration |
 | [07-observability.md](07-observability.md) | Metrics pipeline, alerting, dynamic aspects, Prometheus |
-| [08-scaling.md](08-scaling.md) | Decision tree controller, TTM predictor, control loop |
+| [08-scaling.md](08-scaling.md) | Decision tree controller, control loop |
 | [09-storage.md](09-storage.md) | DHT, artifact repository, consistent hashing, anti-entropy |
 | [10-security.md](10-security.md) | mTLS, gossip encryption, RBAC, API keys |
 | [11-slice-container.md](11-slice-container.md) | ClassLoader isolation, dependency materialization, lifecycle hooks |

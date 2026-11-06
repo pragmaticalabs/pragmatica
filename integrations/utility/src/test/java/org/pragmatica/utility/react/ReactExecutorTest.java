@@ -8,6 +8,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.testlogging.LogCapture;
 
 import java.util.List;
@@ -31,6 +32,36 @@ class ReactExecutorTest {
     @AfterEach
     void tearDown() {
         executor.close();
+    }
+
+    @Test
+    void drained_resolvesOnlyAfterEarlierReactionsRan_evenWhenGateIsClosed() throws InterruptedException {
+        var release = hold();
+        var calls = new CopyOnWriteArrayList<String>();
+
+        executor.undo("first", () -> calls.add("first"));
+        nodeStopping.set(true);
+
+        var drained = executor.drained();
+
+        assertThat(drained.isResolved()).as("held behind the blocked reaction").isFalse();
+        release.countDown();
+        assertThat(drained.await(TimeSpan.timeSpan(10).seconds()).isSuccess()).isTrue();
+        assertThat(calls).containsExactly("first");
+    }
+
+    /// A closed executor refuses the marker and runs it on the caller's thread, so a drain taken after the close (a second stop())
+    /// resolves at once instead of waiting forever.
+    @Test
+    void drained_afterClose_isResolved() {
+        executor.close();
+
+        assertThat(executor.drained().isResolved()).isTrue();
+    }
+
+    @Test
+    void drained_onInlineExecutor_isResolvedAtOnce() {
+        assertThat(ReactExecutor.inline("inline").drained().isResolved()).isTrue();
     }
 
     @Test

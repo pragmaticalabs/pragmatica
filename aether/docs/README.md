@@ -23,7 +23,7 @@ High-level design and the numbered architecture series, one document per subsyst
 - [05 — Worker Pools and Two-Layer Topology](architecture/05-worker-pools.md) — a two-layer topology designed to scale past the Rabia consensus limit (design target ~100 nodes per worker community; multi-community reach is unvalidated, see [Known Limitations](reference/known-limitations.md))
 - [06 — HTTP Request Routing](architecture/06-http-routing.md) — routing HTTP requests to slices, cross-node forwarding, retries
 - [07 — Observability](architecture/07-observability.md) — metrics pipeline, alerting, dynamic aspects, monitoring interfaces
-- [08 — Auto-Scaling](architecture/08-scaling.md) — the two-tier scaling system: reactive (decision tree) and predictive (TTM)
+- [08 — Auto-Scaling](architecture/08-scaling.md) — the two-tier scaling system: reactive decision tree
 - [09 — Distributed Storage (DHT)](architecture/09-storage.md) — distributed hash table for artifact storage and caching
 - [10 — Security](architecture/10-security.md) — mTLS, gossip encryption, RBAC, API key authentication
 - [11 — Slice Container](architecture/11-slice-container.md) — ClassLoader isolation, dependency materialization, lifecycle hooks
@@ -77,7 +77,6 @@ API specifications, CLI commands, and configuration options.
 Deploy, monitor, and maintain Aether clusters.
 
 - [Scaling](operators/scaling.md) — auto-scaling configuration and behavior
-- [TTM Guide](ttm-guide.md) — predictive auto-scaling with TTM
 - [Monitoring](operators/monitoring.md) — alerts and thresholds
 - [Networking Requirements](operators/networking.md) — QUIC transport and inter-node connectivity requirements
 - [TLS Certificate Management](operators/tls-certificates.md) — certificate provisioning and rotation for inter-node TLS
@@ -115,7 +114,6 @@ Extend and maintain the Aether platform internals.
 - [Envelope Format Versioning](contributors/envelope-versioning.md) — the invocation envelope wire format and its versioning scheme
 - [Metrics Control](contributors/metrics-control.md) — observability and AI integration
 - [Invocation Metrics](contributors/invocation-metrics.md) — slice invocation metrics collection
-- [TTM Integration](contributors/ttm-integration.md) — time-to-metric integration details
 - [Node Implementation](contributors/aether-node.md) — AetherNode internals
 - [Evolutionary Implementation Protocol](contributors/evolutionary-implementation.md) — the incremental build-and-validate protocol used for new subsystems
 - [Test Charter Template](contributors/test-charter-template.md) — template for per-suite test charters (`TC-<SUITE>-<NUMBER>` convention)

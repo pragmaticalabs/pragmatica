@@ -121,9 +121,8 @@ Supports canary (`--canary`), blue-green (`--blue-green`), and rolling (`--rolli
 | Tier | Interval | Function |
 |------|----------|----------|
 | Decision Tree (reactive) | 1 second | Responds to current conditions — CPU, latency, queue depth, error rate |
-| TTM Predictor (proactive) | 60 seconds | ONNX-based ML model forecasts load from 2-hour historical window, pre-scales before spikes |
 
-The reactive tier handles immediate demand. The predictive tier (when enabled with a trained model) anticipates patterns — daily peaks, scheduled events, gradual ramps — and scales preemptively.
+The reactive tier handles immediate demand.
 
 Configuration is per-blueprint:
 
@@ -218,7 +217,7 @@ Aether collapses this stack. The runtime provides service discovery, load balanc
 | Deployment unit | Slice (interface) | Container (full service) | Grain (actor) | Actor |
 | Service discovery | Built-in | External (etcd/Consul) | Built-in | Built-in |
 | Rolling updates | Built-in with traffic control | Manual or Argo/Flux | Manual | Manual |
-| Scaling | Reactive + predictive | HPA (reactive only) | Manual | Manual |
+| Scaling | Reactive | HPA (reactive only) | Manual | Manual |
 | Retry/resilience | Built-in fabric | Service mesh required | Built-in | Built-in |
 | Version compatibility | Built-in | Contract discipline | No built-in | No built-in |
 | Operational tooling | CLI + API | kubectl + ecosystem | Limited | Limited |
@@ -253,7 +252,7 @@ This is closer to how a well-designed monolith works internally, except the runt
 
 ### License
 
-Aether is **Apache-2.0 by default**. The runtime core is under the **Business Source License 1.1 (BSL)**: `node`, `aether-deployment`, `aether-control`, `aether-ttm`, `aether-ttm-onnx`, `aether-stream`, `aether-invoke`, `ember`, `forge-api`, `forge-core` (the list lives in `tools/license/bsl-modules.txt`; each carries its own `LICENSE`). Slice API, resources, CLI and tooling are Apache-2.0, and no Apache module depends on a BSL one. In practice, the BSL is nearly as permissive as open source:
+Aether is **Apache-2.0 by default**. The runtime core is under the **Business Source License 1.1 (BSL)**: `node`, `aether-deployment`, `aether-control`, `aether-stream`, `aether-invoke`, `ember`, `forge-api`, `forge-core` (the list lives in `tools/license/bsl-modules.txt`; each carries its own `LICENSE`). Slice API, resources, CLI and tooling are Apache-2.0, and no Apache module depends on a BSL one. In practice, the BSL is nearly as permissive as open source:
 
 **Permitted without any license:**
 - Internal use within your organization at any scale
@@ -349,7 +348,7 @@ No polling. No periodic reconciliation loops for core state.
 | **Consensus** | Rabia CFT protocol, KV-Store state machine, leader election (local + consensus modes), state sync/snapshot |
 | **Storage** | DHT with consistent hashing, quorum reads/writes, 3 replication modes, 64KB chunked artifact storage with integrity verification |
 | **Deployment** | Blueprint-based (TOML), unified deploy command (canary, blue-green, rolling) with weighted routing, health-based guardrails |
-| **Scaling** | Decision tree controller (1s reactive), TTM ONNX predictor (60s proactive), configurable per-blueprint thresholds and cooldowns |
+| **Scaling** | Decision tree controller (1s reactive), configurable per-blueprint thresholds and cooldowns |
 | **Observability** | Push-based metrics (1s), per-method invocation tracking with P50/P95/P99, Prometheus export, WebSocket live feeds, dynamic aspects, EMA latency smoothing |
 | **Alerts** | Configurable thresholds per metric, persistent via consensus, warning + critical levels |
 | **Management** | 37 CLI commands (single + REPL), 30+ REST endpoints |

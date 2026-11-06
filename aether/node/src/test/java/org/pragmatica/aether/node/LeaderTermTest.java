@@ -274,7 +274,7 @@ class LeaderTermTest {
 
     private ConsumerAssignmentWriter assignmentWriter(NodeId node) {
         return ConsumerAssignmentWriter.consumerAssignmentWriter(() -> node.equals(leader.get()),
-                                                                 () -> Epoch.epoch(0L, terms.get(node).current(), 0L),
+                                                                 () -> Epoch.epoch(1L, terms.get(node).current(), 0L),
                                                                  HlcClock.hlcClock(node),
                                                                  (stream, partition, group) -> kvStore.getTyped(ConsumerAssignmentKey.consumerAssignmentKey(stream,
                                                                                                                                                             partition,
@@ -284,7 +284,7 @@ class LeaderTermTest {
 
     private StreamPartitionOwnershipWriter ownershipWriter(NodeId node, NodeId owner) {
         return StreamPartitionOwnershipWriter.streamPartitionOwnershipWriter(() -> node.equals(leader.get()),
-                                                                             () -> Epoch.epoch(0L, terms.get(node).current(), 0L),
+                                                                             () -> Epoch.epoch(1L, terms.get(node).current(), 0L),
                                                                              HlcClock.hlcClock(node),
                                                                              (stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
                                                                                                                                                                              partition),
