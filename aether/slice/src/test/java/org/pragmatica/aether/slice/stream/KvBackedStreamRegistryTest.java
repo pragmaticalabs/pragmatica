@@ -132,6 +132,18 @@ class KvBackedStreamRegistryTest {
             assertThat(result.unwrap().address().version()).isEqualTo(resourceVersion(2, 0, 0).unwrap());
         }
 
+        /// Latest is chosen among the entries of THIS namespace and stream only. Red when the match is namespace OR stream: a higher
+        /// version of another stream in the same namespace would win.
+        @Test
+        void resolveLatestIgnoresAnotherStreamOfTheSameNamespace() {
+            registry.register(blueprintEntry(APP_ORDERS));
+            registry.register(blueprintEntry(resourceAddress("com.example.app:invoices:9.0.0").unwrap()));
+
+            var result = registry.resolve("com.example.app", "orders", StreamVersionSpec.latest());
+
+            assertThat(result.unwrap().address()).isEqualTo(APP_ORDERS);
+        }
+
         @Test
         void resolveExactReturnsMatchingEntry() {
             registry.register(blueprintEntry(APP_ORDERS));
@@ -178,6 +190,78 @@ class KvBackedStreamRegistryTest {
 
             assertThat(outcome.removed()).isTrue();
             assertThat(registry.lookup(SYSTEM_EVENTS).isEmpty()).isTrue();
+        }
+
+        /// The entry record outlives its last holder, invisible; `register` must treat it as absent and overwrite it. Red when the
+        /// already-registered check reads the raw record instead of the visible entry.
+        @Test
+        void registerAfterTheLastReleaseSucceedsOverTheHolderlessRecord() {
+            registry.register(frameworkEntry(SYSTEM_EVENTS));
+            registry.releaseReference(SYSTEM_EVENTS).await().unwrap();
+
+            var again = registry.register(frameworkEntry(SYSTEM_EVENTS));
+
+            assertThat(again.isSuccess()).isTrue();
+            assertThat(registry.lookup(SYSTEM_EVENTS).unwrap().refCount()).isEqualTo(1);
+        }
+
+        /// `register` reports the count the entry now has: the registrar's one reference, whatever count the caller's record carried.
+        @Test
+        void registerReportsOneReferenceWhateverCountTheRecordCarried() {
+            var registered = registry.register(frameworkEntry(SYSTEM_EVENTS).withRefCount(5)).unwrap();
+
+            assertThat(registered.refCount()).isEqualTo(1);
+        }
+
+        /// Registry attempts are seeded from the clock, so a restarted node does not re-use the attempt of a reference its previous run left.
+        @Test
+        void registryAttemptsAreSeededFromTheClock() {
+            registry.register(frameworkEntry(SYSTEM_EVENTS));
+            registry.acquireReference(SYSTEM_EVENTS).await().unwrap();
+
+            var attempts = new ArrayList<Long>();
+            kvStore.forEach(StreamRegistryHolderKey.class, AetherValue.StreamRegistryHolderValue.class, (key, _) -> attempts.add(key.attempt()));
+            assertThat(attempts).anyMatch(attempt -> attempt > 1_000_000_000_000L);
+        }
+
+        /// `releaseReference` drops this node's most recent registry reference, not an older one. Red when it picks the lowest attempt
+        /// (the registrar's own, attempt 0, would go while the newer acquires stay).
+        @Test
+        void releaseReferenceDropsTheLatestAttemptNotTheRegistrars() {
+            registry.register(frameworkEntry(SYSTEM_EVENTS));
+            registry.acquireReference(SYSTEM_EVENTS).await().unwrap();
+            registry.acquireReference(SYSTEM_EVENTS).await().unwrap();
+
+            registry.releaseReference(SYSTEM_EVENTS).await().unwrap();
+
+            var attempts = new ArrayList<Long>();
+            kvStore.forEach(StreamRegistryHolderKey.class, AetherValue.StreamRegistryHolderValue.class, (key, _) -> attempts.add(key.attempt()));
+            assertThat(attempts).hasSize(2).contains(0L);
+        }
+
+        /// With no reference of its own, `releaseReference` falls back to another node's registry reference, the one whose key sorts first, so
+        /// every node picks the same one. Red when the fallback picks the key that sorts last.
+        @Test
+        void releaseReferenceWithoutAnOwnReferenceDropsTheFirstSortingOthers() {
+            var nodeB = NodeId.nodeId("node-b").unwrap();
+            var nodeC = NodeId.nodeId("node-c").unwrap();
+            kvStore.process(kvStore.createBatch(KvBackedStreamRegistry.registerCommands(frameworkEntry(SYSTEM_EVENTS), nodeB, 1L)));
+            kvStore.process(kvStore.createBatch(KvBackedStreamRegistry.registerCommands(frameworkEntry(SYSTEM_EVENTS), nodeC, 1L)));
+
+            registry.releaseReference(SYSTEM_EVENTS).await().unwrap();
+
+            var remaining = new ArrayList<String>();
+            kvStore.forEach(StreamRegistryHolderKey.class, AetherValue.StreamRegistryHolderValue.class, (key, _) -> remaining.add(key.node().id()));
+            assertThat(remaining).containsExactly("node-c");
+        }
+
+        /// A snapshot reports each entry's holder count, as `lookup` does. Red when the snapshot reports a constant.
+        @Test
+        void snapshotReportsTheHolderCount() {
+            registry.register(frameworkEntry(SYSTEM_EVENTS));
+            registry.acquireReference(SYSTEM_EVENTS).await().unwrap();
+
+            assertThat(registry.snapshot()).singleElement().satisfies(entry -> assertThat(entry.refCount()).isEqualTo(2));
         }
 
         @Test
@@ -257,6 +341,27 @@ class KvBackedStreamRegistryTest {
 
             assertThat(command).isInstanceOf(KVCommand.Remove.class);
             assertThat(command.key()).isEqualTo(StreamRegistryHolderKey.streamRegistryHolderKey(APP_ORDERS, holder, slice, 3L));
+        }
+
+        @Test
+        void acquireCommandsStampTheHolderWithTheAcquireTime() {
+            var commands = registry.acquireCommands(blueprintEntry(APP_ORDERS), holder, slice, 0L, 1_234L);
+
+            assertThat(commands.getLast()).isEqualTo(new KVCommand.Put<>(StreamRegistryHolderKey.streamRegistryHolderKey(APP_ORDERS, holder, slice, 0L),
+                                                                         AetherValue.StreamRegistryHolderValue.streamRegistryHolderValue(1_234L)));
+        }
+
+        @Test
+        void registerCommandsCarryTheRegistrarsOwnReferenceAtAttemptZero() {
+            var commands = KvBackedStreamRegistry.registerCommands(blueprintEntry(APP_ORDERS), holder, 5_000L);
+
+            assertThat(commands).hasSize(2);
+            assertThat(commands.get(0).key()).isEqualTo(StreamRegistryKey.streamRegistryKey(APP_ORDERS));
+            assertThat(commands.get(1)).isEqualTo(new KVCommand.Put<>(StreamRegistryHolderKey.streamRegistryHolderKey(APP_ORDERS,
+                                                                                                                     holder,
+                                                                                                                     KvBackedStreamRegistry.REGISTRY_ARTIFACT,
+                                                                                                                     0L),
+                                                                      AetherValue.StreamRegistryHolderValue.streamRegistryHolderValue(5_000L)));
         }
 
         @Test
