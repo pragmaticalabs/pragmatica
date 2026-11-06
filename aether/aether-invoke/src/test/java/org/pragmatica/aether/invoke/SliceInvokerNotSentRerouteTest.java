@@ -9,14 +9,17 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
-import org.pragmatica.aether.http.forward.ForwardError;
+import org.pragmatica.aether.http.adapter.SliceRouter;
+import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeResponse;
 import org.pragmatica.aether.slice.MethodName;
@@ -26,12 +29,20 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.net.WriteOutcome;
+import org.pragmatica.http.CommonContentType;
+import org.pragmatica.http.HttpError;
+import org.pragmatica.http.HttpMethod;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.routing.Route;
+import org.pragmatica.http.routing.RouteSource;
+import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.CoreError;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Deadline;
 
@@ -129,7 +140,7 @@ class SliceInvokerNotSentRerouteTest {
     }
 
     /// (d) The bound: with `max_retries` = 2 and four refusing instances, three sends (the first plus two re-routes),
-    /// then the refusal itself as a typed failure.
+    /// then a typed NoInstanceAccepted failure (never the HttpError NotSent).
     @Test
     void invoke_everyInstanceRefuses_reroutesAtMostMaxRetriesTimes() {
         startInvoker(2, FIRST, SECOND, THIRD, FOURTH);
@@ -137,14 +148,14 @@ class SliceInvokerNotSentRerouteTest {
 
         var result = invoker.invoke(ARTIFACT, METHOD, "request", new TypeToken<String>() {}).await();
 
-        assertFailure(result, ForwardError.NotSent.class);
+        assertFailure(result, SliceInvokerError.NoInstanceAccepted.class);
         assertThat(network.targets()).as("one send plus max_retries re-routes, each to a different instance")
                   .hasSize(3)
                   .doesNotHaveDuplicates()
                   .startsWith(FIRST);
     }
 
-    /// (d) `max_retries` = 0 disables re-routing: the refusal surfaces after the one send.
+    /// (d) `max_retries` = 0 disables re-routing: the refusal surfaces, as NoInstanceAccepted, after the one send.
     @Test
     void invoke_maxRetriesZero_neverReroutes() {
         startInvoker(0, FIRST, SECOND);
@@ -152,7 +163,7 @@ class SliceInvokerNotSentRerouteTest {
 
         var result = invoker.invoke(ARTIFACT, METHOD, "request", new TypeToken<String>() {}).await();
 
-        assertFailure(result, ForwardError.NotSent.class);
+        assertFailure(result, SliceInvokerError.NoInstanceAccepted.class);
         assertThat(network.targets()).containsExactly(FIRST);
     }
 
@@ -169,7 +180,7 @@ class SliceInvokerNotSentRerouteTest {
                                       () -> invoker.invoke(ARTIFACT, METHOD, "request", new TypeToken<String>() {}))
                              .await();
 
-        assertFailure(result, ForwardError.NotSent.class);
+        assertFailure(result, SliceInvokerError.NoInstanceAccepted.class);
         assertThat(network.targets()).as("no re-route may start once the caller's deadline has passed")
                   .containsExactly(FIRST);
     }
@@ -188,6 +199,116 @@ class SliceInvokerNotSentRerouteTest {
         answer(awaitSend(2), true, new byte[0]);
         assertThat(call.await().isSuccess()).isTrue();
         assertThat(network.targets()).containsExactly(FIRST, SECOND);
+    }
+
+    /// A15, F2: `stop()` lands between the refusal and the re-route decision (driven through the deadline clock, which
+    /// the decision reads just before the stopped guard). A stopped invoker sends no further frame: its pending map is
+    /// already cleared, so a new frame could only be settled by its own timeout.
+    @Test
+    void invoke_stopBetweenRefusalAndReroute_sendsNoFurtherFrame() {
+        startInvoker(3, FIRST, SECOND);
+        network.outcome(FIRST, WriteOutcome.NoPeerState::new);
+        var stopFired = new AtomicBoolean();
+        var deadline = Deadline.startingNow(timeSpan(10).seconds(), () -> stopOnceFirstFrameWasSent(stopFired));
+
+        var result = Deadline.runWith(deadline,
+                                      () -> invoker.invoke(ARTIFACT, METHOD, "request", new TypeToken<String>() {}))
+                             .await(timeSpan(3).seconds());
+
+        assertThat(stopFired.get()).as("control: stop() ran inside the re-route decision").isTrue();
+        assertThat(network.targets()).as("no frame may go out once the invoker is stopped").containsExactly(FIRST);
+        assertFailure(result, SliceInvokerError.NoInstanceAccepted.class);
+    }
+
+    private long stopOnceFirstFrameWasSent(AtomicBoolean stopFired) {
+        if (!network.requests().isEmpty() && stopFired.compareAndSet(false, true)) {
+            invoker.stop().await();
+        }
+
+        return 0L;
+    }
+
+    /// A07: an encode failure happens before any write, so it proves the request never left and is re-routed.
+    @Test
+    void invoke_encodeFailedOnFirstInstance_reroutesToSecond() {
+        startInvoker(3, FIRST, SECOND);
+        network.outcome(FIRST, node -> new WriteOutcome.EncodeFailed(node, "InvokeRequest"));
+
+        var call = invoker.invoke(ARTIFACT, METHOD, "request", new TypeToken<String>() {});
+
+        answer(awaitSend(2), true, new byte[0]);
+        assertThat(call.await().isSuccess()).isTrue();
+        assertThat(network.targets()).containsExactly(FIRST, SECOND);
+    }
+
+    /// A27: the affinity node hosts nothing, so the endpoint registry falls back to its own pick, which here can only
+    /// be the refused instance. The re-route must not take it: with nothing else left the call fails after one send.
+    @Test
+    void invoke_affinityFallbackLandsOnRefusedInstance_isNotResentThere() {
+        startInvoker(3, FIRST);
+        invoker.registerAffinityResolver(ARTIFACT, METHOD, _ -> Option.some(new NodeId("ghost-node")));
+        network.outcome(FIRST, WriteOutcome.NoPeerState::new);
+
+        var result = invoker.invoke(ARTIFACT, METHOD, "request", new TypeToken<String>() {}).await();
+
+        assertFailure(result, SliceInvokerError.NoInstanceAccepted.class);
+        assertThat(network.targets()).as("the refused instance must not be picked again through the affinity fallback")
+                  .containsExactly(FIRST);
+    }
+
+    /// A31: the re-route is armed from the call's own remaining budget. The refusal settles on another thread, where
+    /// the ambient deadline is unbound and reads as unbounded; a re-route that asked the ambient scope would wait the
+    /// full invocation timeout instead of what is left of the caller's budget.
+    @Test
+    void invoke_rerouteAfterAsyncRefusal_waitsForTheCallsRemainingBudgetOnly() {
+        startInvoker(3, FIRST, SECOND);
+        network.refuseAsync(FIRST);
+        var budget = timeSpan(100).millis();
+        var deadline = Deadline.startingNow(budget, () -> 0L);
+
+        Deadline.runWith(deadline, () -> invoker.invoke(ARTIFACT, METHOD, "request", new TypeToken<String>() {}));
+        awaitSend(2);
+
+        assertThat(network.waits()).as("first send and re-route").hasSize(2);
+        assertThat(network.waits().get(1).nanos()).as("the re-route waits for the call's remaining budget, not the "
+                                                      + "full invocation timeout")
+                          .isLessThanOrEqualTo(budget.nanos());
+    }
+
+    /// F1: the failure a route returns for an exhausted call is not an HttpError and claims nothing about the outer
+    /// handler's effects: the status is 500 and the body never says "safe to retry" or "nothing was applied".
+    @Test
+    void route_exhaustedReroutes_answersWithoutSafeToRetryClaim() {
+        startInvoker(0, FIRST, SECOND);
+        network.refuseAll();
+        Route<String> route = Route.route(HttpMethod.GET,
+                                          "/outer",
+                                          _ -> invoker.invoke(ARTIFACT, METHOD, "request", new TypeToken<String>() {}),
+                                          CommonContentType.APPLICATION_JSON,
+                                          List.of(),
+                                          "outer");
+        RouteSource source = () -> Stream.of(route);
+        var router = SliceRouter.sliceRouter(source, cause -> HttpError.httpError(HttpStatus.INTERNAL_SERVER_ERROR, cause), JsonMapper.defaultJsonMapper());
+        var request = HttpRequestContext.httpRequestContext("/outer", "GET", Map.of(), Map.of(), "req_2807");
+
+        var response = router.handle(request).await().unwrap();
+        var body = new String(response.body(), StandardCharsets.UTF_8);
+
+        assertThat(response.statusCode()).isEqualTo(500);
+        assertThat(body).doesNotContain("safe to retry").doesNotContain("nothing was applied");
+        assertThat(network.targets()).containsExactly(FIRST);
+    }
+
+    /// F1: the exhausted failure itself is a plain slice-level cause, never the transport-hop HttpError.
+    @Test
+    void invoke_exhausted_failureIsNotAnHttpError() {
+        startInvoker(0, FIRST);
+        network.refuseAll();
+
+        invoker.invoke(ARTIFACT, METHOD, "request", new TypeToken<String>() {})
+               .await()
+               .onSuccess(value -> fail("expected failure, got " + value))
+               .onFailure(cause -> assertThat(cause).isNotInstanceOf(HttpError.class));
     }
 
     private static WriteOutcome expireThenRefuse(AtomicLong now, NodeId node) {
@@ -248,7 +369,25 @@ class SliceInvokerNotSentRerouteTest {
         private final List<InvokeRequest> requests = new CopyOnWriteArrayList<>();
         private final List<NodeId> targets = new CopyOnWriteArrayList<>();
         private final Map<NodeId, Function<NodeId, WriteOutcome>> outcomes = new ConcurrentHashMap<>();
+        private final List<TimeSpan> waits = new CopyOnWriteArrayList<>();
+        private final java.util.Set<NodeId> asyncRefusals = ConcurrentHashMap.newKeySet();
         private volatile boolean refuseAll;
+
+        /// The node refuses every write, but reports it from another thread, as the real transport does.
+        void refuseAsync(NodeId node) {
+            asyncRefusals.add(node);
+        }
+
+        List<TimeSpan> waits() {
+            return List.copyOf(waits);
+        }
+
+        @Override
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+            waits.add(offlineTtl);
+
+            return send(nodeId, message);
+        }
 
         void outcome(NodeId node, Function<NodeId, WriteOutcome> outcome) {
             outcomes.put(node, outcome);
@@ -263,6 +402,10 @@ class SliceInvokerNotSentRerouteTest {
             if (message instanceof InvokeRequest request) {
                 requests.add(request);
                 targets.add(nodeId);
+            }
+
+            if (asyncRefusals.contains(nodeId)) {
+                return Promise.<WriteOutcome> promise(promise -> Thread.startVirtualThread(() -> promise.succeed(new WriteOutcome.NoPeerState(nodeId))));
             }
 
             return Promise.success(refuseAll

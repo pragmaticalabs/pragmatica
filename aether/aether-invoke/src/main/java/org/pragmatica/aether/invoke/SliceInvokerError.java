@@ -68,6 +68,21 @@ public sealed interface SliceInvokerError extends Cause {
         }
     }
 
+    /// #2807: every instance the typed call could be routed to refused the request at the transport, so this call
+    /// reached no callee. It is a failure of THIS slice-to-slice hop only: it is deliberately not an HttpError and keeps
+    /// the refusal out of `source()`, so a route that returns it makes no claim about the caller's own effects (the
+    /// outer handler may have applied some before it made this call) and never tells a client to retry.
+    record NoInstanceAccepted(Artifact artifact, MethodName method, Cause refusal) implements SliceInvokerError {
+        public static NoInstanceAccepted noInstanceAccepted(Artifact artifact, MethodName method, Cause refusal) {
+            return new NoInstanceAccepted(artifact, method, refusal);
+        }
+
+        @Override
+        public String message() {
+            return "No instance of " + artifact + ":" + method + " accepted the request: " + refusal.message();
+        }
+    }
+
     record NoEndpointsError(Artifact artifact, MethodName method) implements SliceInvokerError, Cause.Transient {
         public static NoEndpointsError noEndpointsError(Artifact artifact, MethodName method) {
             return new NoEndpointsError(artifact, method);

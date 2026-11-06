@@ -672,6 +672,18 @@ class SliceInvokerImpl implements SliceInvoker {
     private <R> Promise<R> rerouteIfNotSent(RouteAttempt<R> attempt, NodeId refusedNode, Cause cause) {
         return isReroutable(attempt, cause)
                ? reroute(attempt.refusedBy(refusedNode), refusedNode, cause)
+               : surface(attempt, cause);
+    }
+
+    /// The failure a typed call ends with. A [ForwardError.NotSent] never leaves `invoke` as itself: it is an
+    /// [org.pragmatica.http.HttpError] whose client text claims "nothing was applied; safe to retry", true of this hop
+    /// only. It becomes [SliceInvokerError.NoInstanceAccepted], carrying the transport's own refusal.
+    private <R> Promise<R> surface(RouteAttempt<?> attempt, Cause cause) {
+        return cause instanceof ForwardError.NotSent notSent
+               ? SliceInvokerError.NoInstanceAccepted.noInstanceAccepted(attempt.slice(),
+                                                                         attempt.method(),
+                                                                         notSent.origin())
+                                                     .promise()
                : cause.promise();
     }
 
@@ -697,7 +709,7 @@ class SliceInvokerImpl implements SliceInvoker {
         return selectEndpointWithAffinity(next.slice(),
                                           next.method(),
                                           next.request(),
-                                          next.refusedNodes()).orElse(notSent::promise)
+                                          next.refusedNodes()).orElse(() -> surface(next, notSent))
                                          .flatMap(endpoint -> invokeAt(next, endpoint));
     }
 
