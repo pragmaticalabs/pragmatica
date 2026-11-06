@@ -196,6 +196,41 @@ class SliceDeploymentTest {
 
     // ===== HTTP Helper Methods =====
 
+    @Test
+    void scaleSlice_aboveTheFloor_commitsTheTargetThroughTheRequirementRoutes_andReleaseHoldsIt() {
+        var leaderPort = cluster.getLeaderManagementPort().unwrap();
+
+        deploy(leaderPort, TEST_ARTIFACT, 3);
+        await().atMost(DEPLOY_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> sliceIsActive(TEST_ARTIFACT));
+
+        // The operator requirement is committed to the KV store; only the SliceRequirementKey put route
+        // (AetherNode: controlLoop::onSliceRequirementPut) hands it to the leader's combiner, which commits the target.
+        // Only the committed TARGET is asserted: a 3-node cluster cannot place the fourth instance (PlacementShortfall).
+        var scaled = scale(leaderPort, TEST_ARTIFACT, 4);
+        assertThat(scaled).doesNotContain("\"error\"");
+        await().atMost(DEPLOY_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> committedTarget(leaderPort, 4));
+
+        // A release never commands a scale-down (spec 3.1): the same write re-bases the autoscaler's requirement to 4
+        var released = post(leaderPort,
+                            "/api/v1/scale",
+                            "{\"artifact\": \"" + TEST_ARTIFACT + "\", \"release\": true}",
+                            "application/json");
+        assertThat(released).doesNotContain("\"error\"");
+        await().during(Duration.ofSeconds(5))
+               .atMost(DEPLOY_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> committedTarget(leaderPort, 4));
+    }
+
+    private boolean committedTarget(int port, int expected) {
+        return getSlices(port).replaceAll("\\s", "")
+                              .contains("\"targetInstances\":" + expected + ",");
+    }
+
     private String deploy(int port, String artifact, int instances) {
         var blueprint = """
             id = "%s"
