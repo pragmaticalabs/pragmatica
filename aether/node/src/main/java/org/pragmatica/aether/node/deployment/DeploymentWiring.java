@@ -459,28 +459,29 @@ public final class DeploymentWiring {
     /// Under LEGACY the drain is a no-op and the order is the one the node always had.
     ///
     /// #2688: `delivered` is taken right after PASSIVE is routed and resolves once the reactions that edge queued (the `LeaderChange` the FSM routes onto
-    /// a react executor) have run; the quiesce, which would drop them, waits for it. The returned promise resolves after the quiesce. The quiesce and
-    /// whatever the caller chains on the returned promise run on a pooled thread, never on the thread that resolved `delivered`: that is the react
-    /// executor whose reactions it waited for, or the shared timeout scheduler when the caller bounded the wait, and the node's teardown chained here
-    /// blocks (the final cursor commits are awaited, bounded).
+    /// a react executor) have run; the quiesce, which would drop them, waits for it. The returned promise resolves after the quiesce. The quiesce is
+    /// itself the pooled step, started once `delivered` has resolved, so it and whatever the caller chains on the returned promise run on a pooled
+    /// thread in every ordering (`delivered` resolved before this call or after it), never on the thread that resolved `delivered` nor on the caller:
+    /// that is the react executor whose reactions it waited for, or the shared timeout scheduler when the caller bounded the wait, and the node's
+    /// teardown chained here blocks (the final cursor commits are awaited, bounded). Promise continuations run inline on the resolving thread, so a
+    /// hop that only started a pooled task and then mapped its result could still run the quiesce inline when the task finished first (#2806).
     public Promise<Unit> leaveQuorum(Runnable routePassive, Supplier<Promise<Unit>> delivered, Runnable quiesce) {
         routePassive.run();
         var reactionsRun = delivered.get();
 
         system.onPresent(Fsm2System::drainNode);
 
-        return reactionsRun.flatMap(DeploymentWiring::handedOff)
-                           .map(unit -> quiesced(quiesce));
+        return reactionsRun.flatMap(unit -> quiescedOnPool(quiesce));
     }
 
-    private static Promise<Unit> handedOff(Unit unit) {
-        return Promise.promise(Result::unitResult);
+    private static Promise<Unit> quiescedOnPool(Runnable quiesce) {
+        return Promise.promise(() -> quiesced(quiesce));
     }
 
-    private static Unit quiesced(Runnable quiesce) {
+    private static Result<Unit> quiesced(Runnable quiesce) {
         quiesce.run();
 
-        return Unit.unit();
+        return Result.unitResult();
     }
 
     /// The first step of the stop sequence (B13): under LEGACY the legacy deactivation; under FSM2 the cluster interpreter deactivates and closes.

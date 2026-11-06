@@ -8,6 +8,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -52,6 +53,7 @@ import static org.awaitility.Awaitility.await;
 /// dispatch across a real snapshot (PR C obligation 1).
 class Fsm2SystemTest {
     private static final Artifact ORDERS = Artifact.artifact("org.example:orders:1.0.0").unwrap();
+    private static final int ROUNDS = 300;
     private static final TimeSpan LEFT_BOUND = TimeSpan.timeSpan(10).seconds();
 
     private static boolean activeNode(Fsm2Harness harness) {
@@ -400,22 +402,54 @@ class Fsm2SystemTest {
             }
         }
 
-        /// #2688: the quiesce, and what the caller chains after it (the node's teardown, which blocks), never run on the thread that resolved the
-        /// wait: in the node that is the react executor whose reactions were awaited, or the shared timeout scheduler.
+        /// #2688, #2806: the quiesce, and what the caller chains after it (the node's teardown, which blocks), never run on the thread that resolved the
+        /// wait: in the node that is the react executor whose reactions were awaited, or the shared timeout scheduler. Ordering (b): the wait is
+        /// resolved on a named executor thread after the call. Repeated, because a hop that only starts a pooled task and maps its result runs the
+        /// quiesce inline whenever the task finishes first (#2806).
         @Test
-        void leaveQuorum_quiescesOffTheThreadThatResolvedTheWait() {
+        void leaveQuorum_quiescesOffTheThreadThatResolvedTheWait_whenTheWaitResolvesAfterTheCall() throws InterruptedException {
+            var resolver = Executors.newSingleThreadExecutor(runnable -> new Thread(runnable, "resolver-2806"));
+
             try (var harness = new Fsm2Harness(DeploymentEngine.LEGACY, false).assembled()) {
-                var quiescedOn = new CopyOnWriteArrayList<Thread>();
-                var delivered = Promise.<Unit> promise();
-                var left = harness.wiring.leaveQuorum(() -> {}, () -> delivered, () -> quiescedOn.add(Thread.currentThread()));
+                for (var round = 0; round < ROUNDS; round++) {
+                    var quiescedOn = new CopyOnWriteArrayList<Thread>();
+                    var resolvedOn = new AtomicReference<Thread>();
+                    var delivered = Promise.<Unit> promise();
+                    var left = harness.wiring.leaveQuorum(() -> {}, () -> delivered, () -> quiescedOn.add(Thread.currentThread()));
 
-                delivered.succeed(Unit.unit());
+                    resolver.execute(() -> resolveOn(delivered, resolvedOn));
 
-                assertThat(left.await(LEFT_BOUND).isSuccess()).as("the quorum is left").isTrue();
-                assertThat(quiescedOn).as("quiesced once, on another thread than the one that resolved the wait")
-                                      .hasSize(1)
-                                      .doesNotContain(Thread.currentThread());
+                    assertThat(left.await(LEFT_BOUND).isSuccess()).as("the quorum is left").isTrue();
+                    assertThat(quiescedOn).as("quiesced once, off the resolver thread and off the caller, round " + round)
+                                          .hasSize(1)
+                                          .doesNotContain(resolvedOn.get(), Thread.currentThread());
+                }
+            } finally {
+                resolver.shutdownNow();
             }
+        }
+
+        /// #2806, ordering (a): the wait is already resolved when the quiesce is requested; the quiesce is still pooled, not run on the caller.
+        @Test
+        void leaveQuorum_quiescesOffTheCallerThread_whenTheWaitIsAlreadyResolved() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.LEGACY, false).assembled()) {
+                for (var round = 0; round < ROUNDS; round++) {
+                    var quiescedOn = new CopyOnWriteArrayList<Thread>();
+                    var left = harness.wiring.leaveQuorum(() -> {},
+                                                          Promise::unitPromise,
+                                                          () -> quiescedOn.add(Thread.currentThread()));
+
+                    assertThat(left.await(LEFT_BOUND).isSuccess()).as("the quorum is left").isTrue();
+                    assertThat(quiescedOn).as("quiesced once, off the caller, round " + round)
+                                          .hasSize(1)
+                                          .doesNotContain(Thread.currentThread());
+                }
+            }
+        }
+
+        private static void resolveOn(Promise<Unit> delivered, AtomicReference<Thread> resolvedOn) {
+            resolvedOn.set(Thread.currentThread());
+            delivered.succeed(Unit.unit());
         }
 
         /// A10 on the stop path, with no waiting: a leader that never steps down (its deactivation is never delivered) holds the quiesce until the
