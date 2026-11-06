@@ -101,9 +101,11 @@ public final class ClusterTestPorts {
             return first + "-" + last + " (" + source + ")";
         }
 
+        /// Line-wise, never `Files.readString`: procfs reports size 0, and the size-driven read returned one byte ("3")
+        /// on cloudbb-d1 (JDK 25).
         private static String read(Path path) {
             try {
-                return Files.readString(path);
+                return String.join(" ", Files.readAllLines(path));
             } catch (IOException e) {
                 throw new UncheckedIOException(e);
             }
