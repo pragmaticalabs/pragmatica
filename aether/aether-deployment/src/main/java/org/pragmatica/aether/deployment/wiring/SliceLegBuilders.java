@@ -559,8 +559,9 @@ final class SliceLegBuilders {
     }
 
     /// The mirror of [#acquireCommands], as legacy: one release of this node's own holder key per declared role whose address the blueprint's
-    /// bindings resolve. It reads neither the registry nor the cluster: removing a key that is not held is a no-op, so a release needs no read
-    /// and is built whether or not the acquire committed.
+    /// bindings resolve, witnessed by the value the key holds in the applied mirror (`KvBackedStreamRegistry.releaseCommand`), so a release
+    /// that lands after this node's next activation acquired again is refused. It reads no cluster, and is built whether or not the acquire
+    /// committed: a release of a key that is not held is a no-op.
     private List<LegCommand> releaseCommands(Artifact artifact, List<StreamRole> declarations) {
         var bindings = owningBlueprintId(artifact).flatMap(this::bindingsFor);
 
@@ -572,7 +573,8 @@ final class SliceLegBuilders {
 
         for (var declaration : declarations) {
             bindings.flatMap(found -> found.addressFor(declaration.alias()))
-                    .map(address -> KvBackedStreamRegistry.releaseCommand(address,
+                    .map(address -> KvBackedStreamRegistry.releaseCommand(sources.kvStore(),
+                                                                          address,
                                                                           sources.self(),
                                                                           artifact,
                                                                           SLICE_HOLDER_ATTEMPT))

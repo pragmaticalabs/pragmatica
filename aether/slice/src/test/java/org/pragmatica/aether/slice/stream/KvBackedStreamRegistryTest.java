@@ -24,6 +24,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -255,6 +256,40 @@ class KvBackedStreamRegistryTest {
             assertThat(remaining).containsExactly("node-c");
         }
 
+        /// K26 (#2505 mutation): references are counted per address. Holders of one stream neither count toward nor make visible another.
+        @Test
+        void holdersOfOneAddressDoNotCountTowardAnother() {
+            var slice = Artifact.artifact("com.example:orders-slice:1.0.0").unwrap();
+            registry.register(blueprintEntry(APP_ORDERS));
+            registry.register(blueprintEntry(APP_ORDERS_V2));
+            kvStore.process(kvStore.createBatch(registry.acquireCommands(blueprintEntry(APP_ORDERS), NodeId.nodeId("node-1").unwrap(), slice, 0L, 1L)));
+            kvStore.process(kvStore.createBatch(registry.acquireCommands(blueprintEntry(APP_ORDERS), NodeId.nodeId("node-2").unwrap(), slice, 0L, 1L)));
+
+            assertThat(registry.lookup(APP_ORDERS).unwrap().refCount()).as("registrar + two slices").isEqualTo(3);
+            assertThat(registry.lookup(APP_ORDERS_V2).unwrap().refCount()).as("its registrar only").isEqualTo(1);
+            assertThat(registry.lookup(SYSTEM_EVENTS).isEmpty()).as("no holder of its own: not visible").isTrue();
+        }
+
+        /// K13 (#2505 mutation): `acquireReference` on a record no holder references is NOT_FOUND, as on a missing one. Red when it reads
+        /// the raw record.
+        @Test
+        void acquireReferenceOnAHolderlessRecordIsNotFound() {
+            registry.register(frameworkEntry(SYSTEM_EVENTS));
+            registry.releaseReference(SYSTEM_EVENTS).await().unwrap();
+
+            assertThat(errorOf(registry.acquireReference(SYSTEM_EVENTS))).isEqualTo(General.NOT_FOUND);
+        }
+
+        /// K22 (#2505 mutation): a snapshot lists only entries with a holder; a holder-less record is invisible there as in `lookup`.
+        @Test
+        void snapshotOmitsAHolderlessRecord() {
+            registry.register(frameworkEntry(SYSTEM_EVENTS));
+            registry.register(frameworkEntry(APP_ORDERS));
+            registry.releaseReference(SYSTEM_EVENTS).await().unwrap();
+
+            assertThat(registry.snapshot()).extracting(StreamRegistryEntry::address).containsExactly(APP_ORDERS);
+        }
+
         /// A snapshot reports each entry's holder count, as `lookup` does. Red when the snapshot reports a constant.
         @Test
         void snapshotReportsTheHolderCount() {
@@ -335,12 +370,24 @@ class KvBackedStreamRegistryTest {
                                 .satisfies(command -> assertThat(command.key()).isEqualTo(StreamRegistryHolderKey.streamRegistryHolderKey(APP_ORDERS, holder, slice, 0L)));
         }
 
+        /// A release of a key that is not held removes only that key, and carries no witness: a no-op while the key stays empty.
         @Test
         void releaseCommandRemovesOnlyTheHoldersOwnKey() {
-            var command = KvBackedStreamRegistry.releaseCommand(APP_ORDERS, holder, slice, 3L);
+            var command = KvBackedStreamRegistry.releaseCommand(kvStore, APP_ORDERS, holder, slice, 3L);
 
-            assertThat(command).isInstanceOf(KVCommand.Remove.class);
-            assertThat(command.key()).isEqualTo(StreamRegistryHolderKey.streamRegistryHolderKey(APP_ORDERS, holder, slice, 3L));
+            assertThat(command).isEqualTo(new KVCommand.Remove<>(StreamRegistryHolderKey.streamRegistryHolderKey(APP_ORDERS, holder, slice, 3L),
+                                                                 Option.none()));
+        }
+
+        /// A release of a held key carries the value the key holds as its witness. Red when the release is a bare `Remove(key)`.
+        @Test
+        void releaseCommandOfAHeldKeyIsWitnessedByTheValueItHolds() {
+            kvStore.process(kvStore.createBatch(registry.acquireCommands(blueprintEntry(APP_ORDERS), holder, slice, 0L, 1_000L)));
+
+            var command = KvBackedStreamRegistry.releaseCommand(kvStore, APP_ORDERS, holder, slice, 0L);
+
+            assertThat(command).isEqualTo(new KVCommand.Remove<>(StreamRegistryHolderKey.streamRegistryHolderKey(APP_ORDERS, holder, slice, 0L),
+                                                                 Option.<Object> some(AetherValue.StreamRegistryHolderValue.streamRegistryHolderValue(1_000L, 1L))));
         }
 
         @Test
@@ -348,7 +395,67 @@ class KvBackedStreamRegistryTest {
             var commands = registry.acquireCommands(blueprintEntry(APP_ORDERS), holder, slice, 0L, 1_234L);
 
             assertThat(commands.getLast()).isEqualTo(new KVCommand.Put<>(StreamRegistryHolderKey.streamRegistryHolderKey(APP_ORDERS, holder, slice, 0L),
-                                                                         AetherValue.StreamRegistryHolderValue.streamRegistryHolderValue(1_234L)));
+                                                                         AetherValue.StreamRegistryHolderValue.streamRegistryHolderValue(1_234L, 1L)));
+        }
+
+        /// A re-acquire of a held key writes the key's NEXT version with the new acquire time: what makes a value read before it a stale
+        /// witness. Red when the re-acquire writes the first version again (the applier would refuse it, and a stale remover would match).
+        @Test
+        void aReAcquireWritesTheNextVersionOfTheKey() {
+            kvStore.process(kvStore.createBatch(registry.acquireCommands(blueprintEntry(APP_ORDERS), holder, slice, 0L, 1_000L)));
+
+            var commands = registry.acquireCommands(blueprintEntry(APP_ORDERS), holder, slice, 0L, 2_000L);
+            kvStore.process(kvStore.createBatch(commands));
+
+            assertThat(commands).singleElement()
+                                .isEqualTo(new KVCommand.Put<>(StreamRegistryHolderKey.streamRegistryHolderKey(APP_ORDERS, holder, slice, 0L),
+                                                               AetherValue.StreamRegistryHolderValue.streamRegistryHolderValue(2_000L, 2L)));
+            assertThat(kvStore.get(StreamRegistryHolderKey.streamRegistryHolderKey(APP_ORDERS, holder, slice, 0L)).unwrap())
+                .as("the applier admitted the successor version")
+                .isEqualTo(AetherValue.StreamRegistryHolderValue.streamRegistryHolderValue(2_000L, 2L));
+        }
+
+        /// F4 (#2505 review): a release of the previous activation that lands after the next activation of the same artifact on the same
+        /// node acquired again (one key, attempt 0) is refused, so the ACTIVE instance keeps its reference. Red with a bare `Remove(key)`.
+        @Test
+        void aLateReleaseOfThePreviousActivationKeepsTheCurrentActivationsReference() {
+            kvStore.process(kvStore.createBatch(registry.acquireCommands(blueprintEntry(APP_ORDERS), holder, slice, 0L, 1_000L)));
+            var lateRelease = KvBackedStreamRegistry.releaseCommand(kvStore, APP_ORDERS, holder, slice, 0L);
+            kvStore.process(kvStore.createBatch(registry.acquireCommands(blueprintEntry(APP_ORDERS), holder, slice, 0L, 2_000L)));
+            assertThat(registry.lookup(APP_ORDERS).unwrap().refCount()).as("control: the current activation holds it").isEqualTo(1);
+
+            kvStore.process(kvStore.createBatch(List.of(lateRelease)));
+
+            assertThat(registry.lookup(APP_ORDERS).map(StreamRegistryEntry::refCount).or(0)).as("the current activation's reference stays")
+                                                                                          .isEqualTo(1);
+        }
+
+        /// The same late release, retried after the previous activation's release already landed and the next activation acquired the empty
+        /// key afresh: the new life of the key is not the one the release read. Red when the witness is compared by version alone.
+        @Test
+        void aRetriedReleaseAfterTheKeyWasTakenAfreshIsRefused() {
+            kvStore.process(kvStore.createBatch(registry.acquireCommands(blueprintEntry(APP_ORDERS), holder, slice, 0L, 1_000L)));
+            var release = KvBackedStreamRegistry.releaseCommand(kvStore, APP_ORDERS, holder, slice, 0L);
+            kvStore.process(kvStore.createBatch(List.of(release)));
+            assertThat(registry.lookup(APP_ORDERS).isEmpty()).as("control: the first copy of the release landed").isTrue();
+            kvStore.process(kvStore.createBatch(registry.acquireCommands(blueprintEntry(APP_ORDERS), holder, slice, 0L, 2_000L)));
+
+            kvStore.process(kvStore.createBatch(List.of(release)));
+
+            assertThat(registry.lookup(APP_ORDERS).map(StreamRegistryEntry::refCount).or(0)).isEqualTo(1);
+        }
+
+        /// F5 (#2505 review): an acquire of a stream whose record no holder references any more writes its own template, so the deleted
+        /// entry's metadata (an OPERATOR record here) does not come back. Red when the template is written only when no record exists.
+        @Test
+        void anAcquireOverAHolderlessRecordWritesItsTemplate() {
+            registry.register(StreamRegistryEntry.operator(APP_ORDERS, RetentionPolicy.retentionPolicy(), Instant.EPOCH)).unwrap();
+            registry.releaseReference(APP_ORDERS).await().unwrap();
+            assertThat(registry.lookup(APP_ORDERS).isEmpty()).as("control: deleted").isTrue();
+
+            kvStore.process(kvStore.createBatch(registry.acquireCommands(blueprintEntry(APP_ORDERS), holder, slice, 0L, 2_000L)));
+
+            assertThat(registry.lookup(APP_ORDERS).unwrap().registeredBy()).isEqualTo(StreamRegistryEntry.RegisteredByKind.BLUEPRINT);
         }
 
         @Test
@@ -361,7 +468,7 @@ class KvBackedStreamRegistryTest {
                                                                                                                      holder,
                                                                                                                      KvBackedStreamRegistry.REGISTRY_ARTIFACT,
                                                                                                                      0L),
-                                                                      AetherValue.StreamRegistryHolderValue.streamRegistryHolderValue(5_000L)));
+                                                                      AetherValue.StreamRegistryHolderValue.streamRegistryHolderValue(5_000L, 1L)));
         }
 
         @Test
@@ -370,7 +477,7 @@ class KvBackedStreamRegistryTest {
             kvStore.process(kvStore.createBatch(registry.acquireCommands(blueprintEntry(APP_ORDERS), holder, slice, 1L, 1_000L)));
             kvStore.process(kvStore.createBatch(registry.acquireCommands(blueprintEntry(APP_ORDERS), holder, slice, 2L, 1_001L)));
 
-            kvStore.process(kvStore.createBatch(List.of(KvBackedStreamRegistry.releaseCommand(APP_ORDERS, holder, slice, 1L))));
+            kvStore.process(kvStore.createBatch(List.of(KvBackedStreamRegistry.releaseCommand(kvStore, APP_ORDERS, holder, slice, 1L))));
 
             assertThat(registry.lookup(APP_ORDERS).unwrap().refCount()).as("registrar + attempt 2").isEqualTo(2);
         }
@@ -395,7 +502,7 @@ class KvBackedStreamRegistryTest {
             registry.register(blueprintEntry(APP_ORDERS));
             kvStore.process(kvStore.createBatch(registry.acquireCommands(blueprintEntry(APP_ORDERS), holder, slice, 0L, 1_000L)));
 
-            kvStore.process(kvStore.createBatch(List.of(KvBackedStreamRegistry.releaseCommand(APP_ORDERS, stranger, slice, 0L))));
+            kvStore.process(kvStore.createBatch(List.of(KvBackedStreamRegistry.releaseCommand(kvStore, APP_ORDERS, stranger, slice, 0L))));
 
             assertThat(registry.lookup(APP_ORDERS).unwrap().refCount()).as("registrar + the holder, both untouched").isEqualTo(2);
         }

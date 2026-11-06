@@ -58,7 +58,7 @@ class NodeFsmWriteProbeTest {
     private static LegCommand holderAcquire(NodeId holder) {
         return LegCommand.legCommand(LegCommand.LegKind.STREAM_REF,
                                      new KVCommand.Put<AetherKey, AetherValue>(StreamRegistryHolderKey.streamRegistryHolderKey(REF.address(), holder, ARTIFACT, 0L),
-                                                                               StreamRegistryHolderValue.streamRegistryHolderValue(0L)));
+                                                                               StreamRegistryHolderValue.streamRegistryHolderValue(0L, StreamRegistryHolderValue.FIRST_VERSION)));
     }
 
     /// The reference count an entry reports since #1978: the number of holder keys of its address.

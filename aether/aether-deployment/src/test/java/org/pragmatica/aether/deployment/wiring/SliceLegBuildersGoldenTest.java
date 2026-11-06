@@ -441,6 +441,11 @@ class SliceLegBuildersGoldenTest {
                            .as("#1978: each release removes this node's own holder key and nothing else")
                            .containsExactly(StreamRegistryHolderKey.streamRegistryHolderKey(EVENTS, SELF, ARTIFACT, 0L),
                                             StreamRegistryHolderKey.streamRegistryHolderKey(AUDIT, SELF, ARTIFACT, 0L));
+        assertThat(adapter).extracting(LegCommand::command)
+                           .as("#2505 F4: each release is witnessed by the value its acquire committed, so a late one cannot remove a re-acquire")
+                           .allSatisfy(command -> assertThat(((KVCommand.Remove<AetherKey>) command).witness()).isEqualTo(kv.get(command.key())
+                                                                                                                           .map(Object.class::cast)))
+                           .allSatisfy(command -> assertThat(((KVCommand.Remove<AetherKey>) command).witness().isPresent()).isTrue());
     }
 
     /// #1978: removing a holder key that is not held is a no-op, so a release is built without reading whether the acquire committed, and

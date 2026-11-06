@@ -3922,6 +3922,35 @@ public sealed interface AetherValue {
         }
     }
 
+    /// #1978 / #2160 (I-36): a holder's reference to a stream-registry entry (see `AetherKey.StreamRegistryHolderKey`). Its existence is
+    /// the reference; it carries when it was taken and the version of this life of the key.
+    ///
+    /// **Removal-fenced (#806 [WitnessedRemoval]).** One holder key names every activation of an artifact on a node (attempt 0), so a
+    /// bare `Remove(key)` cannot tell the reference it read from a later one: a late release of the previous activation, or a departure
+    /// sweep that lands after the node came back and acquired again, would delete the live reference. Every remover therefore carries the
+    /// value it read as its witness, and the applier deletes the key only while that exact value is committed. A re-acquire of a held key
+    /// writes the next `holderVersion` ([VersionFenced]), so any value read before it no longer matches; a key acquired again after its
+    /// removal restarts at [#FIRST_VERSION] with its own acquire time, which a witness read from the previous life does not equal.
+    record StreamRegistryHolderValue(long acquiredAtEpochMillis, long holderVersion) implements AetherValue, WitnessedRemoval {
+        /// The version of a reference taken on a key that holds none; the applier does not fence a first write.
+        public static final long FIRST_VERSION = 1L;
+
+        public static StreamRegistryHolderValue streamRegistryHolderValue(long acquiredAtEpochMillis,
+                                                                          long holderVersion) {
+            return new StreamRegistryHolderValue(acquiredAtEpochMillis, holderVersion);
+        }
+
+        /// The value a re-acquire of the key holding THIS value writes: the next version, stamped `acquiredAtEpochMillis`.
+        public StreamRegistryHolderValue reacquired(long acquiredAtEpochMillis) {
+            return new StreamRegistryHolderValue(acquiredAtEpochMillis, holderVersion + 1);
+        }
+
+        @Override
+        public long fenceVersion() {
+            return holderVersion;
+        }
+    }
+
     // Stage 1 (stream-namespaces) additive graft: stream-registry value. Added alongside the
     // retained ClusterEventValue (cluster-events replacement is a later stage).
     /// Consensus-replicated form of [StreamRegistryEntry].
@@ -3930,14 +3959,6 @@ public sealed interface AetherValue {
     /// — implementation choice for atomic refcount mutation in the same consensus round as the
     /// SliceNodeValue update (§8.5). The conceptual separation in the spec is preserved at the
     /// reader/writer API but the wire form is one record.
-    /// #1978 / #2160 (I-36): a holder's reference to a stream-registry entry (see `AetherKey.StreamRegistryHolderKey`). Carries only when
-    /// it was taken; its existence is the reference.
-    record StreamRegistryHolderValue(long acquiredAtEpochMillis) implements AetherValue {
-        public static StreamRegistryHolderValue streamRegistryHolderValue(long acquiredAtEpochMillis) {
-            return new StreamRegistryHolderValue(acquiredAtEpochMillis);
-        }
-    }
-
     record StreamRegistryValue(StreamRegistryEntry entry) implements AetherValue {
         public static StreamRegistryValue streamRegistryValue(StreamRegistryEntry entry) {
             return new StreamRegistryValue(entry);

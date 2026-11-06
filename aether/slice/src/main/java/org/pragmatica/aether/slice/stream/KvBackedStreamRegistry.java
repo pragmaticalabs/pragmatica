@@ -8,7 +8,9 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Collectors;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
@@ -46,10 +48,20 @@ import static org.pragmatica.lang.Option.option;
 /// only that key, and the reference count an entry reports is the NUMBER of holder keys of its address. Nothing reads a
 /// count and writes count+1, so two holders acquiring at once keep both references, and a release never removes an
 /// entry another holder still needs. A holder whose node crashed is removed by the departure sweep
-/// ([#sweepHoldersOf]) when the node leaves committed membership: at most the detection time plus one sweep, not for
-/// ever as the absolute count was. An entry is VISIBLE (lookup, resolve, snapshot) only while it has a holder; the entry
-/// record itself is metadata and is never removed by a release, because a removal racing a concurrent acquire could
-/// drop the entry of a live holder. A holder-less entry record is invisible and is overwritten by the next `register`.
+/// ([#sweepHoldersOf]) when the node leaves committed membership, and by the level reconcile
+/// ([StreamRegistryHolderReconciler]) when the sweep's event was missed or its apply failed. An entry is VISIBLE (lookup,
+/// resolve, snapshot) only while it has a holder; the entry record itself is metadata and is never removed by a release,
+/// because a removal racing a concurrent acquire could drop the entry of a live holder. A holder-less entry record is
+/// invisible, and the next `register` or slice acquire overwrites it, so a deleted stream's metadata never comes back.
+///
+/// **Node-owned and cluster-owned references.** A slice's reference is NODE-owned: it lives as long as the slice on that
+/// node, so the sweep removes it when the node leaves. A reference held under [#REGISTRY_ARTIFACT] (the registrar's, and
+/// the convenience wrappers') is CLUSTER-owned: an operator or framework stream is permanent until an explicit delete, and
+/// the node that served the create is only where the request landed. The sweep never removes one.
+///
+/// **Every removal is fenced on the value it read** (`StreamRegistryHolderValue` is a `WitnessedRemoval`). One key names
+/// every activation of an artifact on a node, so a release or sweep built before a re-acquire must not delete the reference
+/// the re-acquire took: it carries the value it read, and the applier refuses it once the key holds another.
 ///
 /// Refcount mutations piggyback on the slice-state KV write: the FSM that drives slice ACTIVE transitions composes its
 /// own [KVCommand] list together with the commands produced by [#acquireCommands] / [#releaseCommand] and submits the
@@ -92,37 +104,55 @@ public final class KvBackedStreamRegistry implements StreamRegistry {
     }
 
     /// The commands that register a fresh entry: its metadata record and the registrar's own reference. Caller composes
-    /// them into a consensus batch that runs alongside the slice-state write.
+    /// them into a consensus batch that runs alongside the slice-state write. A register is admitted only while the entry has
+    /// no holder, so the registrar's key holds nothing and its reference is the key's first version.
     public static List<KVCommand<AetherKey>> registerCommands(StreamRegistryEntry entry, NodeId registrar, long nowMs) {
         return List.of(new KVCommand.Put<>(StreamRegistryKey.streamRegistryKey(entry.address()),
                                            StreamRegistryValue.streamRegistryValue(entry)),
-                       holderPut(entry.address(), registrar, REGISTRY_ARTIFACT, REGISTRAR_ATTEMPT, nowMs));
+                       new KVCommand.Put<>(StreamRegistryHolderKey.streamRegistryHolderKey(entry.address(),
+                                                                                           registrar,
+                                                                                           REGISTRY_ARTIFACT,
+                                                                                           REGISTRAR_ATTEMPT),
+                                           StreamRegistryHolderValue.streamRegistryHolderValue(nowMs,
+                                                                                               StreamRegistryHolderValue.FIRST_VERSION)));
     }
 
     /// The commands that take a reference for `(node, artifact, attempt)`: the holder's own key, and the entry's metadata
-    /// from `template` when the store holds none yet. The caller passes the template used when no entry record exists
-    /// (typically derived from blueprint validation output). Taking the same reference twice is the same key.
+    /// from `template` when the entry is not visible (no record, or a record no holder references any more: a deleted
+    /// stream's metadata must not outlive it). The caller passes the template derived from blueprint validation output.
+    /// Taking the same reference twice is the same key; the second take writes the key's next version, so a release or
+    /// sweep that read the first one is refused.
     public List<KVCommand<AetherKey>> acquireCommands(StreamRegistryEntry template,
                                                       NodeId node,
                                                       Artifact artifact,
                                                       long attempt,
                                                       long nowMs) {
-        var holder = holderPut(template.address(), node, artifact, attempt, nowMs);
+        var holder = holderPut(StreamRegistryHolderKey.streamRegistryHolderKey(template.address(),
+                                                                               node,
+                                                                               artifact,
+                                                                               attempt),
+                               nowMs);
 
-        return rawEntry(template.address()).isPresent()
+        return visibleEntry(template.address()).isPresent()
                ? List.of(holder)
                : List.of(new KVCommand.Put<>(StreamRegistryKey.streamRegistryKey(template.address()),
                                              StreamRegistryValue.streamRegistryValue(template)),
                          holder);
     }
 
-    /// The command that drops the reference `(node, artifact, attempt)` holds: removes that holder's key and nothing else.
-    /// Dropping a reference that is not held is a no-op, so a release needs no read.
-    public static KVCommand<AetherKey> releaseCommand(ResourceAddress address,
+    /// The command that drops the reference `(node, artifact, attempt)` holds: removes that holder's key and nothing else,
+    /// witnessed by the value the key holds now. A release that lands after the same holder acquired again (a late or
+    /// retried release of the previous activation) is refused, because the key holds a newer value. Dropping a reference
+    /// that is not held carries no witness: a no-op while the key stays empty, refused once it is taken again. Reads only
+    /// `kvStore` (the applied mirror), never the cluster.
+    public static KVCommand<AetherKey> releaseCommand(KVStore<AetherKey, AetherValue> kvStore,
+                                                      ResourceAddress address,
                                                       NodeId node,
                                                       Artifact artifact,
                                                       long attempt) {
-        return new KVCommand.Remove<>(StreamRegistryHolderKey.streamRegistryHolderKey(address, node, artifact, attempt));
+        var key = StreamRegistryHolderKey.streamRegistryHolderKey(address, node, artifact, attempt);
+
+        return new KVCommand.Remove<>(key, heldValue(kvStore, key).map(Object.class::cast));
     }
 
     /// Awaits the consensus commit (#968): the entry is registered only once the put commits, so a
@@ -169,10 +199,10 @@ public final class KvBackedStreamRegistry implements StreamRegistry {
     private Promise<StreamRegistryEntry> applyAcquire(StreamRegistryEntry entry, NodeId self) {
         var address = entry.address();
 
-        return cluster.<Object> apply(List.of(holderPut(address,
-                                                        self,
-                                                        REGISTRY_ARTIFACT,
-                                                        attempts.incrementAndGet(),
+        return cluster.<Object> apply(List.of(holderPut(StreamRegistryHolderKey.streamRegistryHolderKey(address,
+                                                                                                        self,
+                                                                                                        REGISTRY_ARTIFACT,
+                                                                                                        attempts.incrementAndGet()),
                                                         System.currentTimeMillis())))
                       .onFailure(cause -> log.warn("Stream registry acquireReference({}) consensus apply failed: {}",
                                                    address.asString(),
@@ -195,10 +225,10 @@ public final class KvBackedStreamRegistry implements StreamRegistry {
                                .flatMap(holder -> applyRelease(entry, holder));
     }
 
-    private Promise<ReleaseOutcome> applyRelease(StreamRegistryEntry entry, StreamRegistryHolderKey holder) {
+    private Promise<ReleaseOutcome> applyRelease(StreamRegistryEntry entry, Holder holder) {
         var remaining = entry.decrementRef();
 
-        return cluster.<Object> apply(List.of(new KVCommand.Remove<>(holder)))
+        return cluster.<Object> apply(List.of(holder.witnessedRemove()))
                       .onFailure(cause -> log.warn("Stream registry releaseReference({}) consensus apply failed: {}",
                                                    entry.address().asString(),
                                                    cause.message()))
@@ -206,30 +236,44 @@ public final class KvBackedStreamRegistry implements StreamRegistry {
                                                    remaining.refCount() <= 0));
     }
 
-    /// The departure sweep (#1978, I-36): removes every reference `departed` held. Called for each node that leaves committed
-    /// membership; idempotent, so every core node may run it. A failed sweep is logged and not retried (FER: the references
-    /// stay until the same node id is swept again, which is the stated bound -- detection plus one sweep -- failing only when
-    /// the apply itself fails).
+    /// The departure sweep (#1978, I-36): removes every node-owned reference `departed` held. Called for each node that
+    /// leaves committed membership; idempotent, so every core node may run it.
     public Promise<Unit> sweepHoldersOf(NodeId departed) {
-        var held = holderKeys().stream()
-                             .filter(key -> key.node()
-                                               .equals(departed))
-                             .<KVCommand<AetherKey>> map(KVCommand.Remove::new)
-                             .toList();
+        return sweepHoldersOf(Set.of(departed));
+    }
+
+    /// Removes every node-owned reference held by a node of `departed`, each witnessed by the value read now: a sweep that
+    /// lands after one of those nodes came back and acquired again is refused for that key. Cluster-owned references
+    /// ([#REGISTRY_ARTIFACT]) are never swept. A failed apply is logged and not retried here (FER): the references stay
+    /// until the next sweep of the node, which the level reconcile ([StreamRegistryHolderReconciler]) runs on its next pass.
+    public Promise<Unit> sweepHoldersOf(Set<NodeId> departed) {
+        var held = holders().stream()
+                          .filter(holder -> holder.nodeOwned() && departed.contains(holder.key().node()))
+                          .map(Holder::witnessedRemove)
+                          .toList();
 
         if (held.isEmpty()) {
             return Promise.unitPromise();
         }
 
         return cluster.<Object> apply(held)
-                      .onSuccess(_ -> log.info("Stream registry swept {} reference(s) held by departed node {}",
+                      .onSuccess(_ -> log.info("Stream registry swept {} reference(s) held by departed node(s) {}",
                                                held.size(),
-                                               departed.id()))
-                      .onFailure(cause -> log.warn("Stream registry sweep of node {} failed ({} reference(s) stay): {}",
-                                                   departed.id(),
+                                               departed))
+                      .onFailure(cause -> log.warn("Stream registry sweep of node(s) {} failed ({} reference(s) stay): {}",
+                                                   departed,
                                                    held.size(),
                                                    cause.message()))
                       .mapToUnit();
+    }
+
+    /// The nodes that hold a node-owned reference now: what the level reconcile compares against committed membership.
+    public Set<NodeId> nodeOwnedHolderNodes() {
+        return holders().stream()
+                      .filter(Holder::nodeOwned)
+                      .map(holder -> holder.key()
+                                           .node())
+                      .collect(Collectors.toUnmodifiableSet());
     }
 
     @Override
@@ -251,13 +295,19 @@ public final class KvBackedStreamRegistry implements StreamRegistry {
         option(counts.get(key.address())).onPresent(held -> sink.add(value.entry().withRefCount(held)));
     }
 
-    private static KVCommand<AetherKey> holderPut(ResourceAddress address,
-                                                  NodeId node,
-                                                  Artifact artifact,
-                                                  long attempt,
-                                                  long nowMs) {
-        return new KVCommand.Put<>(StreamRegistryHolderKey.streamRegistryHolderKey(address, node, artifact, attempt),
-                                   StreamRegistryHolderValue.streamRegistryHolderValue(nowMs));
+    /// The Put that takes the reference `key` names: the key's next version when it is held, else its first.
+    private KVCommand<AetherKey> holderPut(StreamRegistryHolderKey key, long nowMs) {
+        return new KVCommand.Put<>(key,
+                                   heldValue(kvStore, key).map(held -> held.reacquired(nowMs))
+                                            .or(() -> StreamRegistryHolderValue.streamRegistryHolderValue(nowMs,
+                                                                                                          StreamRegistryHolderValue.FIRST_VERSION)));
+    }
+
+    private static Option<StreamRegistryHolderValue> heldValue(KVStore<AetherKey, AetherValue> kvStore,
+                                                               StreamRegistryHolderKey key) {
+        return kvStore.get(key)
+                      .filter(StreamRegistryHolderValue.class::isInstance)
+                      .map(StreamRegistryHolderValue.class::cast);
     }
 
     /// The entry record, visible or not.
@@ -270,39 +320,61 @@ public final class KvBackedStreamRegistry implements StreamRegistry {
 
     /// The entry, with the reference count it has now: the number of holder keys of its address, none when it has none.
     private Option<StreamRegistryEntry> visibleEntry(ResourceAddress address) {
-        var held = holderKeys().stream().filter(key -> key.address()
-                                                          .equals(address)).count();
+        var held = holders().stream().filter(holder -> holder.key()
+                                                             .address()
+                                                             .equals(address)).count();
 
         return held == 0
                ? none()
                : rawEntry(address).map(entry -> entry.withRefCount((int) held));
     }
 
-    private Option<StreamRegistryHolderKey> registryHolderOf(ResourceAddress address, NodeId self) {
-        var registryHolders = holderKeys().stream()
-                                        .filter(key -> key.address()
-                                                          .equals(address) && REGISTRY_ARTIFACT.equals(key.artifact()))
-                                        .toList();
+    private Option<Holder> registryHolderOf(ResourceAddress address, NodeId self) {
+        var registryHolders = holders().stream()
+                                     .filter(holder -> holder.key()
+                                                             .address()
+                                                             .equals(address) && !holder.nodeOwned())
+                                     .toList();
 
         return Option.from(registryHolders.stream()
-                                          .filter(key -> key.node()
-                                                            .equals(self))
-                                          .max(Comparator.comparingLong(StreamRegistryHolderKey::attempt))).orElse(() -> Option.from(registryHolders.stream()
-                                                                                                                                                    .min(Comparator.comparing(StreamRegistryHolderKey::asString))));
+                                          .filter(holder -> holder.key()
+                                                                  .node()
+                                                                  .equals(self))
+                                          .max(Comparator.comparingLong(holder -> holder.key()
+                                                                                        .attempt()))).orElse(() -> Option.from(registryHolders.stream()
+                                                                                                                                              .min(Comparator.comparing(holder -> holder.key()
+                                                                                                                                                                                        .asString()))));
     }
 
-    private List<StreamRegistryHolderKey> holderKeys() {
-        var keys = new ArrayList<StreamRegistryHolderKey>();
+    /// One committed reference: its key and the value a remover must carry as its witness.
+    private record Holder(StreamRegistryHolderKey key, StreamRegistryHolderValue value) {
+        /// Whether the reference lives and dies with its node (a slice's), as opposed to a cluster-owned one held under
+        /// [#REGISTRY_ARTIFACT].
+        boolean nodeOwned() {
+            return ! REGISTRY_ARTIFACT.equals(key.artifact());
+        }
 
-        kvStore.forEach(StreamRegistryHolderKey.class, StreamRegistryHolderValue.class, (key, _) -> keys.add(key));
+        KVCommand<AetherKey> witnessedRemove() {
+            return new KVCommand.Remove<>(key, Option.<Object> some(value));
+        }
+    }
 
-        return keys;
+    private List<Holder> holders() {
+        var holders = new ArrayList<Holder>();
+
+        kvStore.forEach(StreamRegistryHolderKey.class,
+                        StreamRegistryHolderValue.class,
+                        (key, value) -> holders.add(new Holder(key, value)));
+
+        return holders;
     }
 
     private Map<ResourceAddress, Integer> holderCounts() {
         var counts = new HashMap<ResourceAddress, Integer>();
 
-        holderKeys().forEach(key -> counts.merge(key.address(), 1, Integer::sum));
+        holders().forEach(holder -> counts.merge(holder.key().address(),
+                                                 1,
+                                                 Integer::sum));
 
         return counts;
     }

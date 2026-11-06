@@ -2196,9 +2196,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                      refCommands);
         }
 
-        /// Mirror of [#transitionToActiveWithStreamRefs] for transitions OUT of ACTIVE. Decrements
-        /// (or removes when refcount drops to zero) the per-stream refcount entries this slice
-        /// instance had been holding. Best-effort: a release failure is logged but does not abort
+        /// Mirror of [#transitionToActiveWithStreamRefs] for transitions OUT of ACTIVE. Removes the
+        /// per-stream holder keys this slice instance had been holding (#1978). Best-effort: a release failure is logged but does not abort
         /// the deactivate/unload chain (the slice is already leaving ACTIVE).
         private Promise<Unit> releaseStreamReferences(SliceNodeKey sliceKey) {
             var commands = buildStreamRefCommands(sliceKey, RefcountAction.RELEASE);
@@ -2254,7 +2253,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         /// One reference per (stream, this node, this artifact): the slice's own holder key (#1978, I-36). Attempt 0, because a node
-        /// has one instance of an artifact at a time; acquire and release of the same instance name the same key.
+        /// has one instance of an artifact at a time; acquire and release of the same instance name the same key. The release carries
+        /// the value the key holds now as its witness, so a release still in flight (retried by [#applyWithRetry]) when the next
+        /// instance acquires again is refused instead of removing the new instance's reference.
         private void appendRefCommands(org.pragmatica.aether.slice.stream.KvBackedStreamRegistry registry,
                                        List<KVCommand<AetherKey>> sink,
                                        SliceNodeKey sliceKey,
@@ -2266,7 +2267,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                                      sliceKey.artifact(),
                                                                      SLICE_HOLDER_ATTEMPT,
                                                                      ctx.nowMs()));
-                case RELEASE -> sink.add(org.pragmatica.aether.slice.stream.KvBackedStreamRegistry.releaseCommand(address,
+                case RELEASE -> sink.add(org.pragmatica.aether.slice.stream.KvBackedStreamRegistry.releaseCommand(ctx.kvStore(),
+                                                                                                                  address,
                                                                                                                   ctx.self(),
                                                                                                                   sliceKey.artifact(),
                                                                                                                   SLICE_HOLDER_ATTEMPT));

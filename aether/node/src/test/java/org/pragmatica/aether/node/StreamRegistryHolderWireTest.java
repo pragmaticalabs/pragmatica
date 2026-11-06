@@ -36,12 +36,33 @@ class StreamRegistryHolderWireTest {
     @Test
     void holderValue_roundTripsThroughTheNodeCodec() {
         var codec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
-        var value = StreamRegistryHolderValue.streamRegistryHolderValue(1_700_000_000_000L);
+        var value = StreamRegistryHolderValue.streamRegistryHolderValue(1_700_000_000_000L, 3L);
         var buffer = Unpooled.buffer();
 
         codec.write(buffer, value);
 
         assertThat((Object) codec.read(buffer)).isEqualTo(value);
+    }
+
+    /// A08 (#2505 mutation): the factory keeps what it is given, read through the accessors rather than through a second factory call; the
+    /// version is the removal fence's version.
+    @Test
+    void holderValue_carriesItsAcquireTimeAndVersion() {
+        var value = StreamRegistryHolderValue.streamRegistryHolderValue(1_700_000_000_000L, 3L);
+
+        assertThat(value.acquiredAtEpochMillis()).isEqualTo(1_700_000_000_000L);
+        assertThat(value.holderVersion()).isEqualTo(3L);
+        assertThat(value.fenceVersion()).isEqualTo(3L);
+        assertThat(value.reacquired(1_700_000_000_500L)).isEqualTo(StreamRegistryHolderValue.streamRegistryHolderValue(1_700_000_000_500L, 4L));
+    }
+
+    /// A01/A05/A06 (#2505 mutation): the key's string form, which `known-limitations.md` tells operators to look under, exactly.
+    @Test
+    void holderKey_stringFormIsPinned() {
+        var key = StreamRegistryHolderKey.streamRegistryHolderKey(ORDERS, NodeId.nodeId("node-1").unwrap(), SLICE, 7L);
+
+        assertThat(key.asString()).isEqualTo("stream-registry-holder/com.example.app/orders/1.0.0/node-1/com.example:orders-slice:1.0.0/7");
+        assertThat(key.toString()).isEqualTo(key.asString());
     }
 
     @Test

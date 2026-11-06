@@ -157,6 +157,7 @@ import org.pragmatica.aether.stream.segment.SegmentSealer;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.stream.KvBackedStreamRegistry;
+import org.pragmatica.aether.slice.stream.StreamRegistryHolderReconciler;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
@@ -3047,9 +3048,19 @@ public interface AetherNode extends ManageableNode {
                                                               aetherEntries));
         var growthLog = LoggerFactory.getLogger(AetherNode.class);
         var selfId = config.self();
-        // #1978 (I-36): the references a node held to stream-registry entries leave with it. Every core node runs the same idempotent sweep.
-        wireStreamRegistrySweep(aetherEntries,
-                                KvBackedStreamRegistry.kvBackedStreamRegistry(clusterNode, kvStore)::sweepHoldersOf);
+        // #1978 (I-36): the references a node held to stream-registry entries leave with it. Every node runs the same idempotent sweep on
+        // the departure edge; the leader's level reconcile sweeps a node still holding after two passes absent from membership, which
+        // covers a missed edge and a failed sweep apply (owner ruling Q19 (a)).
+        var streamRegistry = KvBackedStreamRegistry.kvBackedStreamRegistry(clusterNode, kvStore);
+        wireStreamRegistrySweep(aetherEntries, streamRegistry::sweepHoldersOf);
+        var streamRegistryHolderReconciler = StreamRegistryHolderReconciler.streamRegistryHolderReconciler(streamRegistry,
+                                                                                                           selfId,
+                                                                                                           () -> Option.option(membershipFsmRef.get())
+                                                                                                                       .map(MembershipFsm::countedMembers),
+                                                                                                           isLeaderSupplier);
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(streamRegistryHolderReconciler::tick,
+                                                                      StreamRegistryHolderReconciler.INTERVAL,
+                                                                      StreamRegistryHolderReconciler.INTERVAL));
         var gossipEncryptionOut = SwimAssembly.gossipEncryption(new SwimAssembly.GossipEncryptionInputs(config));
         var rotatingEncryptor = gossipEncryptionOut.rotatingEncryptor();
         var gossipKeyRotationHandler = gossipEncryptionOut.gossipKeyRotationHandler();
@@ -4443,13 +4454,16 @@ public interface AetherNode extends ManageableNode {
         };
     }
 
-    /// #1978 (I-36): a node that leaves committed membership, or is decommissioned, loses the stream-registry references it held. The
-    /// sweep is idempotent (it removes keys), so running it on every node is the same outcome as running it on one.
+    /// #1978 (I-36): a node that leaves membership loses the stream-registry references it held. A core's departure is the
+    /// `NodeRemoved` edge; a worker's never reaches `MembershipDecision` and travels on [WorkerLeaveDecision] (#731). The sweep is
+    /// idempotent and witnessed (it removes the keys it read, and only while they still hold what it read), so running it on every
+    /// node is the same outcome as running it on one. `NodeDecommissioned` is not routed: no production code emits it (its factory
+    /// has no production caller), and the level reconcile sweeps any node that is no longer a member, however it left.
     @Contract
     static void wireStreamRegistrySweep(List<MessageRouter.Entry<?>> entries, Consumer<NodeId> sweep) {
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
                                               decision -> sweep.accept(decision.nodeId())));
-        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
+        entries.add(MessageRouter.Entry.route(WorkerLeaveDecision.class,
                                               decision -> sweep.accept(decision.nodeId())));
     }
 

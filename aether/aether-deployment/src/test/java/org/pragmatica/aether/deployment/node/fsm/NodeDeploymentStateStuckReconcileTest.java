@@ -321,9 +321,19 @@ class NodeDeploymentStateStuckReconcileTest {
 
         activeState().remediateStuckRouting(seed(SliceState.ROUTING));
 
-        assertThat(holderPuts(cluster.batches.getFirst()).getFirst().key())
+        var redrive = holderPuts(cluster.batches.getFirst()).getFirst();
+
+        assertThat(redrive.key())
                 .as("the re-drive names the instance's own holder key: the late original and the re-drive are one reference")
                 .isEqualTo(lost.key());
+        var holder = (StreamRegistryHolderKey) lost.key();
+        assertThat(holder.node()).as("this node's own key").isEqualTo(SELF);
+        assertThat(holder.artifact()).as("this artifact's key").isEqualTo(ARTIFACT);
+        assertThat(holder.attempt()).as("one instance of an artifact per node: attempt 0").isZero();
+        assertThat(((KVCommand.Put<AetherKey, ?>) redrive).value())
+                .as("#2505: the re-drive over the landed original writes the key's next version, so a release that read the original is refused")
+                .isInstanceOfSatisfying(AetherValue.StreamRegistryHolderValue.class,
+                                        value -> assertThat(value.holderVersion()).isEqualTo(2L));
     }
 
     private static List<KVCommand<AetherKey>> holderPuts(List<KVCommand<AetherKey>> batch) {
