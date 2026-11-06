@@ -98,7 +98,7 @@ class EmberSealedTierRetentionTripwireTest {
         var owner = cluster.getNode(StreamTripwireSupport.awaitFullIsr(cluster, ENGINE_KEY, ISR_BUDGET_MS).owner().id()).unwrap();
 
         for (var i = 0; i < PUBLISHED; i++) {
-            var response = StreamTripwireSupport.publishVia(cluster.getLeaderManagementPort().or(-1), STREAM, "event-" + i);
+            var response = StreamTripwireSupport.publishViaOnceActivated(cluster.getLeaderManagementPort().or(-1), STREAM, "event-" + i);
 
             assertThat(response.acked()).as("publish %d: %s", i, response.body()).isTrue();
         }

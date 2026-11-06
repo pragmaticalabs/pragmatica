@@ -74,7 +74,6 @@ class EmberColdRestartAckedLossTripwireTest {
                                                                                     StreamTripwireSupport.APP_HTTP_OFFSET);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(240).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(120).seconds();
-    private static final TimeSpan PUBLISH_BOUND = TimeSpan.timeSpan(20).seconds();
     private static final int ACKED = 20;
     private static final int POST = 5;
     private static final long ISR_BUDGET_MS = 90_000L;
@@ -165,7 +164,7 @@ class EmberColdRestartAckedLossTripwireTest {
         var router = StreamTripwireSupport.component(owner, "streamWriteRouter", StreamWriteRouter.class);
 
         for (var i = 0; i < ACKED; i++) {
-            var offset = router.publish(key, PARTITION, ackedPayloadBytes(i), System.currentTimeMillis()).await(PUBLISH_BOUND);
+            var offset = StreamTripwireSupport.publishOnceActivated(router, key, ackedPayloadBytes(i));
 
             assertThat(offset.isSuccess()).as("acknowledged publish %d: %s", i, offset).isTrue();
         }
@@ -209,7 +208,7 @@ class EmberColdRestartAckedLossTripwireTest {
         var newRouter = StreamTripwireSupport.component(newOwner, "streamWriteRouter", StreamWriteRouter.class);
 
         for (var i = 0; i < POST; i++) {
-            var offset = newRouter.publish(key, PARTITION, ("post-" + i).getBytes(StandardCharsets.UTF_8), System.currentTimeMillis()).await(PUBLISH_BOUND);
+            var offset = StreamTripwireSupport.publishOnceActivated(newRouter, key, ("post-" + i).getBytes(StandardCharsets.UTF_8));
 
             assertThat(offset.isSuccess()).as("post-restart publish %d on %s: %s", i, newOwner.self().id(), offset).isTrue();
         }
@@ -237,7 +236,7 @@ class EmberColdRestartAckedLossTripwireTest {
         var router = StreamTripwireSupport.component(cluster.getNode(record.owner().id()).unwrap(), "streamWriteRouter", StreamWriteRouter.class);
 
         for (var i = 0; i < ACKED; i++) {
-            assertThat(router.publish(key, PARTITION, ackedPayloadBytes(i), System.currentTimeMillis()).await(PUBLISH_BOUND).isSuccess()).as("acknowledged publish %d", i).isTrue();
+            assertThat(StreamTripwireSupport.publishOnceActivated(router, key, ackedPayloadBytes(i)).isSuccess()).as("acknowledged publish %d", i).isTrue();
         }
         assertThat(cluster.stop().await(STOP_BOUND).fold(Cause::message, _ -> "stopped")).isEqualTo("stopped");
         assertThat(cluster.start().await(START_BOUND).fold(Cause::message, _ -> "started")).isEqualTo("started");

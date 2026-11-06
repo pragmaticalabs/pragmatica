@@ -20,7 +20,6 @@ import org.junit.jupiter.api.TestMethodOrder;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.node.AetherNode;
-import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
@@ -180,19 +179,7 @@ class EmberLostTailChunkRepairTest {
 
     /// Publishes once through the new owner's router, retrying while its promotion gate has not activated it yet.
     private Result<Long> publishThroughTheNewOwner(AetherNode newOwner) {
-        var deadline = System.currentTimeMillis() + 2 * PUBLISH_BOUND.millis();
-        var outcome = publishAsync(newOwner, "arm4-next").await(PUBLISH_BOUND);
-
-        while (notActivated(outcome) && System.currentTimeMillis() < deadline) {
-            sleepQuietly(200L);
-            outcome = publishAsync(newOwner, "arm4-next").await(PUBLISH_BOUND);
-        }
-
-        return outcome;
-    }
-
-    private static boolean notActivated(Result<Long> outcome) {
-        return outcome.fold(cause -> cause instanceof StreamError.OwnerNotActivated, _ -> false);
+        return StreamTripwireSupport.publishOnceActivated(() -> publishAsync(newOwner, "arm4-next"));
     }
 
     /// The payload `node` holds at `offset`, read from its ring including the appended, not yet visible, suffix.
@@ -275,7 +262,7 @@ class EmberLostTailChunkRepairTest {
         var replica = replicaOf(owner);
         var tail = ringHead(owner) + 1;
         var startedAt = System.currentTimeMillis();
-        var outcome = publishAsync(owner, "control-" + round).await(PUBLISH_BOUND);
+        var outcome = StreamTripwireSupport.publishOnceActivated(() -> publishAsync(owner, "control-" + round));
 
         assertThat(outcome.isSuccess()).as("control round %d: undisturbed publish succeeds: %s", round, outcome).isTrue();
         awaitUntil(() -> ringHead(replica) == tail, CONTROL_BUDGET_MS, "control round " + round + ": undisturbed replica holds the tail at once");
@@ -355,7 +342,7 @@ class EmberLostTailChunkRepairTest {
     /// A tail past offset 0, so the lost chunk is a tail and not a lost first event (a different path).
     private void warmUp(AetherNode owner) {
         for (var i = 0; i < WARM_UP; i++) {
-            var outcome = publishAsync(owner, "warm-" + i).await(PUBLISH_BOUND);
+            var outcome = StreamTripwireSupport.publishOnceActivated(() -> publishAsync(owner, "warm-" + i));
 
             assertThat(outcome.isSuccess()).as("warm-up publish %d: %s", i, outcome).isTrue();
         }
