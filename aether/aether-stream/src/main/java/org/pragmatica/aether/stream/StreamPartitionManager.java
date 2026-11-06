@@ -3658,10 +3658,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// not block.
     interface WalFailStop {
         Unit walFailStopped(String streamName, int partition, Cause cause);
-
         Unit walWritable(String streamName, int partition);
 
-        static WalFailStop walFailStop(Fn3<Unit, String, Integer, Cause> failStopped, Fn2<Unit, String, Integer> writable) {
+        static WalFailStop walFailStop(Fn3<Unit, String, Integer, Cause> failStopped,
+                                       Fn2<Unit, String, Integer> writable) {
             record walFailStop(Fn3<Unit, String, Integer, Cause> failStopped, Fn2<Unit, String, Integer> writable) implements WalFailStop {
                 @Override
                 public Unit walFailStopped(String streamName, int partition, Cause cause) {
