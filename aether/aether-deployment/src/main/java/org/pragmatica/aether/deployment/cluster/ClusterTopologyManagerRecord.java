@@ -997,8 +997,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                               Option<NodeId> failedPeer,
                                                               Set<NodeId> clusterMembers,
                                                               NodeRole intendedRole) {
+        if (breakers.isRefused(unresolvedKey(failedPeer), nowMs())) {
+            return Promise.success(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.SOURCE_UNRESOLVED));
+        }
+
         return healSource(failedPeer, intendedRole).onSuccess(_ -> resumeSourceResolution())
-                         .fold(this::deferUnresolvedSource,
+                         .fold(cause -> deferUnresolvedSource(failedPeer, cause),
                                source -> provisionReplacement(newNodeId,
                                                               failedPeer,
                                                               clusterMembers,
@@ -1047,6 +1051,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                      breakers.of(sourceName.value()).nextAllowedMs());
 
             return Promise.success(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.CIRCUIT_OPEN));
+        }
+
+        if (breakers.isRefused(sourceName.value(), nowMs())) {
+            return Promise.success(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.CAPACITY_ADMISSION));
         }
 
         var contextBase = buildProvisionContext(newNodeId, intendedRole, sourceName);
@@ -1124,7 +1132,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                                                                                                              sourceName));
     }
 
-    /// Counted like every refused provision, and told to the operator once per run of deferrals (the flag is the flood guard; the
+    /// Not a provider failure, so never counted by the circuit (spec §8.3); paced by its own window instead, so it neither retries hot
+    /// nor trips the source. Told to the operator once per run of deferrals (the flag is the flood guard; the
     /// recovery clears it): a permanent refusal keeps the event open instead of retrying invisibly.
     @Contract
     private void recordAdmissionDeferral(Cause cause, SourceName sourceName) {
@@ -1135,13 +1144,13 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
 
         inventoryWaitRef.set(null);
-        recordProvisioningFailure(sourceName.value(), cause);
+        recordRefusal(sourceName.value(), cause);
         if (admissionDeferred.compareAndSet(false, true)) {
             org.pragmatica.utility.warning.OperatorWarnings.raise(log,
                                                                   warningSink.get(),
                                                                   org.pragmatica.utility.warning.OperatorWarningCode.PROVISION_ADMISSION_DEFERRED,
                                                                   ADMISSION_SUBJECT,
-                                                                  "Core replacement is deferred by capacity admission ({}); it is retried on the next pass and counts toward the provisioning circuit",
+                                                                  "Core replacement is deferred by capacity admission ({}); it is not asked again for the refusal backoff; it never counts toward the provisioning circuit",
                                                                   cause.message());
         }
     }
@@ -1419,19 +1428,35 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                          .or(() -> sourceOfSourcelessNode(intendedRole));
     }
 
+    /// A refusal that is not a provider failure: kept as the last provisioning failure for diagnostics and paced by its own window (one
+    /// provisioning timeout), but never counted by a breaker.
+    @Contract
+    private void recordRefusal(String key, Cause cause) {
+        lastProvisionFailureRef.set(new LastProvisionFailure(cause.message(), nowMs()));
+        breakers.refuseUntil(key, nowMs() + autoHealConfig.provisioningTimeout().millis());
+    }
+
     private static final String SOURCE_SUBJECT = "core-replacement";
 
     /// The refusal of [#healSource]: nothing was provisioned, and no source was guessed. The failure is absorbed into a deferral by design
     /// (FER: the reconciler removes its placeholder and re-derives the deficit on its next pass, which asks again), and it is never silent:
-    /// it is counted like every refused provision, and told to the operator once per run of refusals (the flag is the flood guard;
+    /// it is not a provider failure, so the circuit never counts it: it is paced by its own window, and told to the operator once per run of refusals (the flag is the flood guard;
     /// [#resumeSourceResolution] clears it). No provider effect has happened on this path, so there is nothing to compensate.
-    private Promise<ProvisionDisposition> deferUnresolvedSource(Cause cause) {
-        return Promise.success(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.SOURCE_UNRESOLVED)).onSuccess(_ -> recordUnresolvedSource(cause));
+    private Promise<ProvisionDisposition> deferUnresolvedSource(Option<NodeId> failedPeer, Cause cause) {
+        return Promise.success(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.SOURCE_UNRESOLVED))
+                      .onSuccess(_ -> recordUnresolvedSource(failedPeer, cause));
+    }
+
+    /// The refusal window of an unresolved source is per departed node: another node whose source resolves is not held by it.
+    /// A committed configuration change is a change of circumstance: it carries its version in the key, so the next pass resolves afresh.
+    private String unresolvedKey(Option<NodeId> failedPeer) {
+        return failedPeer.map(peer -> ProvisioningBreakers.UNRESOLVED + peer.id())
+                         .or(ProvisioningBreakers.UNRESOLVED) + "@" + committedConfigVersion();
     }
 
     @Contract
-    private void recordUnresolvedSource(Cause cause) {
-        recordProvisioningFailure(ProvisioningBreakers.UNRESOLVED, cause);
+    private void recordUnresolvedSource(Option<NodeId> failedPeer, Cause cause) {
+        recordRefusal(unresolvedKey(failedPeer), cause);
         if (sourceUnresolved.compareAndSet(false, true)) {
             OperatorWarnings.raise(log,
                                    warningSink.get(),

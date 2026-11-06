@@ -286,16 +286,46 @@ class ClusterTopologyManagerPerSourceBreakerTest {
         assertThat(manager.circuitBreakerStates()).isEmpty();
     }
 
-    /// A refusal before a source is resolved is reported under its own bucket and gates no source.
+    /// Item 1 / 8 of the #2711 fix round: an unresolved source is not a provider failure. Three refusals leave no bucket, the aggregate
+    /// is not tripped, and after the cause is gone and a node joins the report stays clean (the old `(unresolved)` bucket kept the
+    /// aggregate tripped for ever).
     @Test
-    void unresolvedRefusal_isCountedApart_andGatesNoSource() {
-        heal(Option.some(UNPLACED));
-        heal(Option.some(UNPLACED));
-        heal(Option.some(UNPLACED));
+    void unresolvedRefusal_isNeverCounted_soNoBucketAndTheAggregateStaysClosed() {
+        for (var i = 0; i < 3; i++) {
+            manager.resetCircuitBreaker("test: end the refusal backoff");
+            heal(Option.some(UNPLACED));
+        }
 
-        assertThat(manager.circuitBreakerStates().keySet()).containsExactly("(unresolved)");
+        assertThat(manager.circuitBreakerStates()).isEmpty();
+        assertThat(manager.circuitBreakerState().tripped()).isFalse();
+        assertThat(manager.circuitBreakerState().consecutiveFailures()).isZero();
         placeBoth();
         assertThat(heal(Option.some(FROM_FIRST)).unwrap()).isInstanceOf(ProvisionDisposition.Dispatched.class);
+        manager.onNodeReady(FROM_FIRST);
+        assertThat(manager.circuitBreakerState().tripped()).isFalse();
+        assertThat(manager.circuitBreakerStates()).isEmpty();
+    }
+
+    /// Item 9: an unresolved source has a backoff of its own. The same departed node is not resolved again inside the window (no hot
+    /// retry), while another departed node whose source resolves is not held by it.
+    @Test
+    void unresolvedRefusal_isPacedByItsOwnBackoff_perDepartedNode() {
+        var asked = new java.util.concurrent.atomic.AtomicInteger();
+        committedSource.set(node -> {
+            asked.incrementAndGet();
+
+            return node.equals(FROM_FIRST)
+                   ? Result.success(FIRST)
+                   : Causes.cause("no placement for " + node.id()).<SourceName> result();
+        });
+
+        for (var i = 0; i < 5; i++) {
+            assertThat(heal(Option.some(UNPLACED)).unwrap()).isEqualTo(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.SOURCE_UNRESOLVED));
+        }
+
+        assertThat(asked.get()).as("inside the backoff window the node's source is resolved once, not hot-retried").isEqualTo(1);
+        assertThat(manager.circuitBreakerStates()).isEmpty();
+        assertThat(heal(Option.some(FROM_FIRST)).unwrap()).as("another node is not held by it").isInstanceOf(ProvisionDisposition.Dispatched.class);
     }
 
     private void failHeals(NodeId departed, int times) {

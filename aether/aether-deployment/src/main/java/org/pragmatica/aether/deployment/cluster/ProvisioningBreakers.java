@@ -17,10 +17,10 @@ import org.pragmatica.lang.Option;
 /// which the source is not asked again; it opens when the count reaches the cap and the instant is still ahead.
 ///
 /// Each update of one source is a single atomic step on the map entry, so concurrent failures of one source count exactly. Sources are
-/// keyed by their name; a refusal that happens before any source is resolved is counted under [#UNRESOLVED], which can never be a source
-/// name (it is outside the name grammar), so it is reported but gates nothing.
+/// keyed by their name. A refusal that is not a provider failure (admission refusal, unresolved source) is never counted here: it has its
+/// own window ([#refuseUntil]), keyed by source or by [#UNRESOLVED], which can never be a source name (it is outside the name grammar).
 final class ProvisioningBreakers {
-    /// The bucket of a failure counted before a source was resolved.
+    /// The key of the refusal window of a core replacement whose source could not be resolved.
     static final String UNRESOLVED = "(unresolved)";
 
     /// One source's breaker.
@@ -46,6 +46,25 @@ final class ProvisioningBreakers {
     }
 
     private final ConcurrentHashMap<String, Breaker> breakers = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Long> refusedUntil = new ConcurrentHashMap<>();
+
+    /// A refusal that is not a provider failure (a capacity admission refusal of a source, an unresolved source) is paced by its own
+    /// window, keyed like the breakers but never counted by them: the key is not asked again before `untilMs`.
+    @Contract
+    void refuseUntil(String key, long untilMs) {
+        refusedUntil.put(key, untilMs);
+    }
+
+    /// Whether `key` is inside the window its last refusal armed.
+    boolean isRefused(String key, long nowMs) {
+        return nowMs < refusedUntil.getOrDefault(key, 0L);
+    }
+
+    /// End the refusal window of `key`.
+    @Contract
+    void clearRefusal(String key) {
+        refusedUntil.remove(key);
+    }
 
     /// Count a failure of `source`; once `cap` is reached the backoff window is armed. Returns the new consecutive count.
     @Contract
@@ -73,6 +92,8 @@ final class ProvisioningBreakers {
     /// Close `source`'s breaker; returns the consecutive count it held.
     @Contract
     int reset(String source) {
+        refusedUntil.remove(source);
+
         return Option.option(breakers.remove(source))
                      .map(Breaker::failures)
                      .or(0);
@@ -81,6 +102,8 @@ final class ProvisioningBreakers {
     /// Close every breaker; returns the sum of the counts they held.
     @Contract
     int resetAll() {
+        refusedUntil.clear();
+
         return breakers.keySet()
                        .stream()
                        .mapToInt(this::reset)

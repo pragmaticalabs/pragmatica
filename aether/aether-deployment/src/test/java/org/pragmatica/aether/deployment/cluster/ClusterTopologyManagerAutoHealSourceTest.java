@@ -209,7 +209,7 @@ class ClusterTopologyManagerAutoHealSourceTest {
         assertThat(first.unwrap()).isEqualTo(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.SOURCE_UNRESOLVED));
         assertThat(second.unwrap()).isEqualTo(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.SOURCE_UNRESOLVED));
         assertThat(requests).as("no provider effect, so no guessed source is billed").isEmpty();
-        assertThat(manager.circuitBreakerState().consecutiveFailures()).as("a refusal is counted like every refused provision").isEqualTo(2);
+        assertThat(manager.circuitBreakerState().consecutiveFailures()).as("a refusal is not a provider failure: never counted").isZero();
         assertThat(manager.lastProvisionFailure().map(ClusterTopologyManager.LastProvisionFailure::cause).or(""))
             .as("the cause names the role and the candidate sources")
             .contains("core", "eu-0", "eu-1", "eu-2");
@@ -233,6 +233,7 @@ class ClusterTopologyManagerAutoHealSourceTest {
         Awaitility.await().atMost(Duration.ofSeconds(5)).until(() -> events.size() == 1);
 
         placeNode(FROM_SECOND, SECOND);
+        manager.resetCircuitBreaker("test: end the refusal backoff");
         var outcome = heal(Option.some(FROM_SECOND));
 
         assertThat(outcome.unwrap()).isInstanceOf(ProvisionDisposition.Dispatched.class);
@@ -249,6 +250,7 @@ class ClusterTopologyManagerAutoHealSourceTest {
         Awaitility.await().atMost(Duration.ofSeconds(5)).until(() -> events.size() == 1);
 
         placeNode(FROM_SECOND, SECOND);
+        manager.resetCircuitBreaker("test: end the refusal backoff");
         heal(Option.some(FROM_SECOND));
         heal(Option.some(FROM_SECOND));
 
