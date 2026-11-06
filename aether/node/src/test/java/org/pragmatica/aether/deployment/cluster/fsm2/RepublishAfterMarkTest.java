@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
@@ -17,6 +18,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.UnresponsiveEntry;
 import org.pragmatica.lang.Option;
 
@@ -164,6 +166,49 @@ class RepublishAfterMarkTest {
         assertThat(later.map(ArtifactJudgmentValue::judgedAttempts)).isEqualTo(Option.some(Set.of("attempt-1",
                                                                                                   "attempt-3")));
         assertThat(later.map(ArtifactJudgmentValue::retries)).isEqualTo(Option.some(Map.of()));
+    }
+
+    /// FIRST published and loading on CORE_1 (its apply open), then a judgment `seeded` for ORDERS: a mark committed by an earlier
+    /// leader, whose settings may differ (atomicity is configuration).
+    private static FsmHarness openApplyWithJudgment(FsmHarness h, ArtifactJudgmentValue seeded) {
+        var node = node(h, CORE_1, 11);
+
+        publish(h, FIRST);
+        node.writes(ORDERS, SliceObservedState.LOADING);
+        h.drain();
+        h.seed(new ArtifactJudgmentKey(ORDERS), seeded);
+        h.drain();
+        h.advance(h.settings.timing().tick() * 3);
+
+        return h;
+    }
+
+    // Control for the two pins below: a committed mark that judged the open attempt derives the rollback on a tick.
+    // Red when: rollbackMarked does not roll back an open apply whose attempt the mark judged.
+    @Test
+    void allOrNothing_seededMarkOfTheOpenAttempt_rollsBack() {
+        var h = openApplyWithJudgment(active(),
+                                      new ArtifactJudgmentValue(true, Map.of(), Map.of(), Set.of("attempt-1")));
+
+        assertThat(h.submits(SubmitKind.ROLLBACK)).as("the mark of the open attempt rolls it back").isNotEmpty();
+    }
+
+    // Red when: rollbackMarked runs under BEST_EFFORT (there a failure records FAILED with the mark, it never rolls back).
+    @Test
+    void bestEffort_seededMarkOfTheOpenAttempt_derivesNoRollback() {
+        var h = openApplyWithJudgment(leader(DeploymentAtomicity.BEST_EFFORT, 0.0, CORE_1, CORE_2, CORE_3).activate(),
+                                      new ArtifactJudgmentValue(true, Map.of(), Map.of(), Set.of("attempt-1")));
+
+        assertThat(h.submits(SubmitKind.ROLLBACK)).as("BEST_EFFORT never rolls back from a mark").isEmpty();
+    }
+
+    // Red when: judged attempts without the permanent mark derive a rollback (the permanentFailure filter is dropped).
+    @Test
+    void allOrNothing_seededAttemptsWithoutAPermanentMark_deriveNoRollback() {
+        var h = openApplyWithJudgment(active(),
+                                      new ArtifactJudgmentValue(false, Map.of(CORE_1, 1), Map.of(), Set.of("attempt-1")));
+
+        assertThat(h.submits(SubmitKind.ROLLBACK)).as("no permanent mark, no rollback").isEmpty();
     }
 
     private static FsmHarness settleHeld(FsmHarness h, ClusterEffect.Submit submit) {

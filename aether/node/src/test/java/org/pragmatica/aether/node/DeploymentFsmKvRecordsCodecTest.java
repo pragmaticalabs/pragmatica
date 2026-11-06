@@ -222,7 +222,11 @@ class DeploymentFsmKvRecordsCodecTest {
         void artifactJudgment_roundTripsJudgedAttempts() {
             var key = ArtifactJudgmentKey.artifactJudgmentKey(ARTIFACT);
 
-            roundTrip(key, new ArtifactJudgmentValue(true, Map.of(), Map.of(), Set.of("attempt-2", "attempt-1", "attempt-3")));
+            var judgment = new ArtifactJudgmentValue(true, Map.of(), Map.of(), Set.of("attempt-2", "attempt-1", "attempt-3"));
+
+            assertThat(judgment.judgedAttempts()).as("held sorted: every node encodes the same bytes")
+                                                 .containsExactly("attempt-1", "attempt-2", "attempt-3");
+            roundTrip(key, judgment);
         }
 
         @Test
