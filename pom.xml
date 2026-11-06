@@ -102,7 +102,6 @@
         <picocli.version>4.7.7</picocli.version>
         <asm.version>9.9.1</asm.version>
         <micrometer.version>1.16.1</micrometer.version>
-        <onnxruntime.version>1.23.2</onnxruntime.version>
 
         <!-- Integration Dependencies -->
         <jackson.version>3.1.0</jackson.version>

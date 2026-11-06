@@ -379,7 +379,7 @@ the rows disagree.
 known to have overclaimed at row level: row 39 (`Alert management`) read `Complete` while `AlertForwarder`
 was never constructed in production (#926). It now reads `Partial`, and the wiring was fixed
 in #957 -- which is what correcting ONE row looks like, not evidence that the rest have
-been checked. Read the total as "230 rows asserting a capability", not as 230 working
+been checked. Read the total as "229 rows asserting a capability", not as 229 working
 capabilities.
 
 | Status | Count |
@@ -387,9 +387,9 @@ capabilities.
 | Complete | 170 |
 | Cluster-tested | 0 |
 | Battle-tested | 23 |
-| Partial | 27 |
+| Partial | 26 |
 | Planned | 10 |
-| Total | 230 |
+| Total | 229 |
 <!-- END GENERATED STATISTICS -->
 
 **Highest-priority gap** (a priority, not a status — the row's completion level is in the

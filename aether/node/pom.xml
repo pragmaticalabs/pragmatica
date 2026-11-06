@@ -450,12 +450,6 @@
                                         <exclude>META-INF/*.RSA</exclude>
                                     </excludes>
                                 </filter>
-                                <filter>
-                                    <artifact>com.microsoft.onnxruntime:onnxruntime</artifact>
-                                    <excludes>
-                                        <exclude>ai/onnxruntime/native/osx-*/**/*.dSYM/**</exclude>
-                                    </excludes>
-                                </filter>
                             </filters>
                             <createDependencyReducedPom>false</createDependencyReducedPom>
                             <finalName>aether-node</finalName>
