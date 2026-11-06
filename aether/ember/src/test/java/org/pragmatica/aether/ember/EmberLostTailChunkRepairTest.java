@@ -342,7 +342,8 @@ class EmberLostTailChunkRepairTest {
     /// A tail past offset 0, so the lost chunk is a tail and not a lost first event (a different path).
     private void warmUp(AetherNode owner) {
         for (var i = 0; i < WARM_UP; i++) {
-            var outcome = StreamTripwireSupport.publishOnceActivated(() -> publishAsync(owner, "warm-" + i));
+            var label = "warm-" + i;
+            var outcome = StreamTripwireSupport.publishOnceActivated(() -> publishAsync(owner, label));
 
             assertThat(outcome.isSuccess()).as("warm-up publish %d: %s", i, outcome).isTrue();
         }
