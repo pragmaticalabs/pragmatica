@@ -309,8 +309,8 @@ class BootstrapModuleTest {
             fixture.module.onLeaderGained();
             var provisional = coreOwnershipPut(fixture.cluster.batches);
             fixture.kv.put(DhtPartitionOwnershipKey.dhtPartitionOwnershipKey(BootstrapModule.CORE_PARTITION_ID), provisional);
-            // More passes than the attempt budget while still uncommitted: the held provisional record is not rewritten,
-            // and the budget is left for the commit's rewrite.
+            // More passes than the attempt budget while still uncommitted: the held provisional record is not rewritten
+            // (and spends no attempt), so the budget is left for the commit's rewrite.
             for (var pass = 0; pass < BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS; pass++) {
                 fixture.module.retryIfNeeded();
             }

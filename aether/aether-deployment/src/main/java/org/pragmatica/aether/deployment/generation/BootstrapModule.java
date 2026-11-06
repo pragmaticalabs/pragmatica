@@ -501,11 +501,10 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
     }
 
     /// A provisional record owns the partition but does not complete the bootstrap: the incarnation commit must still
-    /// supersede it, so the attempt budget is reset for that rewrite.
+    /// supersede it.
     @Contract
     private void onCoreBootstrapCommitted(boolean provisional) {
         if (provisional) {
-            bootstrapAttempts.set(0);
             log.info("Core DhtPartitionOwnership minted PROVISIONALLY (incarnation not committed); the incarnation commit rewrites it");
 
             return;
