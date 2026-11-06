@@ -922,7 +922,9 @@ public enum OperatorWarningCode {
     /// The recovery of [#WORKFLOW_ESCALATED], same subject (rc6 §4.4, CTO ruling Q4): an ESCALATED workflow reached a terminal state, DONE
     /// or FAILED (an abandon commits FAILED; the message names the outcome). A resume does NOT resolve it, see [#WORKFLOW_RESUMED]. INFO;
     /// raised at most once per run per ESCALATED episode, with the same guarantee and by the same owner as [#WORKFLOW_ESCALATED].
-    WORKFLOW_RESOLVED("workflow-resolved", "workflow", WarningLevel.INFO, WORKFLOW_ESCALATED),
+    /// Closes across nodes: the open state is the committed run state, so the cluster-events owner that applies the terminal state may be
+    /// a different node (or process) than the one that raised the ESCALATED, which holds no open state for it (#2062).
+    WORKFLOW_RESOLVED("workflow-resolved", "workflow", WarningLevel.INFO, WORKFLOW_ESCALATED, true),
     /// A workflow left ESCALATED by an operator resume and is RUNNING or WAITING again (rc6 §4.4, CTO ruling Q4). A point event with no
     /// recovery pairing: it does not close [#WORKFLOW_ESCALATED] (only a terminal state does), and a run that escalates again opens a new
     /// incident. Subject is the workflow id. INFO; same guarantee and owner as [#WORKFLOW_ESCALATED].

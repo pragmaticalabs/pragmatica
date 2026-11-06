@@ -2005,6 +2005,19 @@ class ClusterEventAggregatorTest {
         assertThat(codes(successor)).containsExactly("instance-termination-confirmed");
     }
 
+    /// F1 (v2803): the owner of the cluster events may have moved or restarted since the ESCALATED was raised; the successor holds no open state
+    /// but the committed run state closes the incident, so the recovery is published, once.
+    @Test
+    void onOperatorWarning_aWorkflowResolution_isPublishedByANodeThatDidNotRaiseTheEscalation() {
+        var successor = Harness.create();
+
+        successor.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.WORKFLOW_RESOLVED,
+                                                                                "wf-0123",
+                                                                                "outcome FAILED"));
+
+        assertThat(codes(successor)).containsExactly("workflow-resolved");
+    }
+
     /// Control: only a code that says so is published without a warning of this node. Every other recovery still needs the warning it closes.
     @Test
     void onOperatorWarning_anOrdinaryRecovery_stillNeedsTheWarningItCloses() {
@@ -2022,6 +2035,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.COMMUNITY_PLACEMENT_RESUMED,
                 OperatorWarningCode.COMMUNITY_PLACEMENT_CLEARED,
                 OperatorWarningCode.STORAGE_WAL_WRITABLE,
+                OperatorWarningCode.WORKFLOW_RESOLVED,
             });
     }
 

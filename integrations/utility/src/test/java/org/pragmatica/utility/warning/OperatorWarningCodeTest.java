@@ -77,6 +77,7 @@ class OperatorWarningCodeTest {
         assertThat(resolved.subsystem()).isEqualTo("workflow");
         assertThat(resolved.level()).isEqualTo(WarningLevel.INFO);
         assertThat(resolved.recoveryOf()).isEqualTo(Option.some(OperatorWarningCode.WORKFLOW_ESCALATED));
+        assertThat(resolved.closesAcrossNodes()).as("the open state is the committed run state, not this node's memory").isTrue();
     }
 
     @Test
