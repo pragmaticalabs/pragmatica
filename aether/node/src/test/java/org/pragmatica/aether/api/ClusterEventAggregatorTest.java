@@ -1721,14 +1721,19 @@ class ClusterEventAggregatorTest {
         var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
         h.aggregator().onOperatorWarning(walFailStopped("orders[0]"));
         h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        // An open warning whose key is shorter than the fail-stop's code prefix: the retire must select by code, not cut every key.
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STORAGE_TIER_FULL, "t1", "tier full"));
         h.aggregator().onMembershipDecision(new MembershipDecision.NodeRemoved(new NodeId("another"), List.of(), 1L, h.hlc().now()));
         assertThat(codes(h)).as("control: another node's removal leaves the fail-stop open")
-                            .containsExactly("storage-wal-fail-stopped", "stream-consumer-state-diverged");
+                            .containsExactly("storage-wal-fail-stopped", "stream-consumer-state-diverged", "storage-tier-full");
 
         h.aggregator().onMembershipDecision(new MembershipDecision.NodeRemoved(SELF, List.of(), 2L, h.hlc().now()));
 
-        assertThat(codes(h)).as("only the WAL fail-stop is retired; the unrelated open warning is left to its own recovery")
-                            .containsExactly("storage-wal-fail-stopped", "stream-consumer-state-diverged", "storage-wal-retired");
+        assertThat(codes(h)).as("only the WAL fail-stop is retired; the unrelated open warnings are left to their own recoveries")
+                            .containsExactly("storage-wal-fail-stopped",
+                                             "stream-consumer-state-diverged",
+                                             "storage-tier-full",
+                                             "storage-wal-retired");
         var retired = h.events().getLast();
         assertThat(retired.details()).containsEntry("subject", "orders[0]");
         assertThat(retired.summary()).as("names the departure").contains(SELF.id()).contains("removed from the cluster");
