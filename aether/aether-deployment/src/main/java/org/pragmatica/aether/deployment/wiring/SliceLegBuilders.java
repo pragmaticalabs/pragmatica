@@ -87,7 +87,6 @@ import org.slf4j.LoggerFactory;
 final class SliceLegBuilders {
     private static final Logger log = LoggerFactory.getLogger(SliceLegBuilders.class);
     private static final String MANIFEST_DIR = "META-INF/slice/";
-
     /// The attempt of a slice's holder key, as legacy's `SLICE_HOLDER_ATTEMPT`: a node runs one instance of an artifact at a time, so acquire
     /// and release of the same instance name the same key.
     private static final long SLICE_HOLDER_ATTEMPT = 0L;
@@ -544,7 +543,8 @@ final class SliceLegBuilders {
                                                                    artifact,
                                                                    SLICE_HOLDER_ATTEMPT,
                                                                    sources.clock().getAsLong())
-                                                  .forEach(command -> commands.add(LegCommand.legCommand(LegKind.STREAM_REF, command))));
+                                                  .forEach(command -> commands.add(LegCommand.legCommand(LegKind.STREAM_REF,
+                                                                                                         command))));
         }
 
         return List.copyOf(commands);
@@ -572,7 +572,10 @@ final class SliceLegBuilders {
 
         for (var declaration : declarations) {
             bindings.flatMap(found -> found.addressFor(declaration.alias()))
-                    .map(address -> KvBackedStreamRegistry.releaseCommand(address, sources.self(), artifact, SLICE_HOLDER_ATTEMPT))
+                    .map(address -> KvBackedStreamRegistry.releaseCommand(address,
+                                                                          sources.self(),
+                                                                          artifact,
+                                                                          SLICE_HOLDER_ATTEMPT))
                     .onPresent(command -> commands.add(LegCommand.legCommand(LegKind.STREAM_REF, command)));
         }
 
