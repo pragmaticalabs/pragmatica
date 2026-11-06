@@ -372,7 +372,6 @@ class SliceRoutesScaleFloorTest {
         @Override
         public HttpRouteRegistry httpRouteRegistry() { return unsupported("httpRouteRegistry"); }
         @Override
-        @Override
         public ComprehensiveSnapshotCollector snapshotCollector() { return unsupported("snapshotCollector"); }
         @Override
         public ArtifactMetricsCollector artifactMetricsCollector() { return unsupported("artifactMetricsCollector"); }
