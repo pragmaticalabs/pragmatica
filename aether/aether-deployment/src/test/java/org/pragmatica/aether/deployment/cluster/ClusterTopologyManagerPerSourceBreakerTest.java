@@ -373,8 +373,8 @@ class ClusterTopologyManagerPerSourceBreakerTest {
         assertThat(manager.circuitBreakerStates()).isEmpty();
     }
 
-    /// v2711 survivor 9 (c01): a node that joins is attributed to the source its replacement was provisioned in, which is known before any
-    /// placement is committed for it; the join closes that source's breaker only.
+    /// v2711 survivor 9 (c01): a node that joins is attributed to the source its replacement was provisioned in, ahead of any
+    /// placement committed for it; the join closes that source's breaker only.
     @Test
     void nodeJoins_attributedToTheSourceItsReplacementWasProvisionedIn_notToACommittedPlacement() {
         placeBoth();
@@ -383,6 +383,10 @@ class ClusterTopologyManagerPerSourceBreakerTest {
         failHeals(FROM_FIRST, 1);
         failingSources.remove("eu-1");
         var replacement = NodeId.randomNodeId();
+        var placedElsewhere = committedSource.get();
+        committedSource.set(asked -> asked.equals(replacement)
+                                     ? Result.success(SECOND)
+                                     : placedElsewhere.apply(asked));
 
         var disposition = manager.provisionReplacement(replacement, Option.some(FROM_FIRST), MEMBERS, NodeRole.CORE).await();
         manager.onNodeReady(replacement);
