@@ -847,6 +847,30 @@ public final class SwimProtocol implements SwimMessageHandler {
                   origin,
                   TRANSPORT_HINT_SUSPECT_FLOOR_MS);
         initiateTransportDrivenSuspicion(peer);
+        probeFlooredSuspect(peer);
+    }
+
+    /// #2724: probe a hint-floored suspect now. The floor ([`#TRANSPORT_HINT_SUSPECT_FLOOR_MS`])
+    /// is shorter than one round-robin interval ((N-1) x period), and the tick expires suspicions
+    /// before it probes, so a hint landing just after the peer's probe would expire to FAULTY
+    /// before the peer is probed again: a death verdict with no probe after the hint. A live
+    /// peer's verified Ack to this probe ends the suspicion (probe-ack stays the sole ALIVE
+    /// authority; the hint only schedules the probe). A dead peer's probe cycle (direct, then
+    /// indirect: 2 x probeTimeout) times out inside the floor, so its verdict time is unchanged.
+    /// Skipped while a probe of the peer is already pending, so repeated hints do not stack
+    /// probes (or their Lifeguard LHM increments on timeout).
+    private void probeFlooredSuspect(NodeId peer) {
+        option(members.get(peer)).filter(member -> member.state() == MemberState.SUSPECT)
+              .filter(_ -> hasCurrentTransportDeathHint(peer))
+              .filter(_ -> noPendingProbeOf(peer))
+              .onPresent(this::probeTarget);
+    }
+
+    private boolean noPendingProbeOf(NodeId peer) {
+        return pendingProbes.values()
+                            .stream()
+                            .noneMatch(probe -> probe.targetId()
+                                                     .equals(peer));
     }
 
     /// Initiate ALIVE->SUSPECT for `peer` on a transport `PeerUnreachable` hint, gated
