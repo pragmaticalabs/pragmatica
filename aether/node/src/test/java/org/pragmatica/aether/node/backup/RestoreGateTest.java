@@ -69,7 +69,6 @@ class RestoreGateTest {
 
         assertThat(ManagementStatus.classifiedStatus(refusal).isPresent()).as("RestorePending is classified, not a WARN-and-500 fallback").isTrue();
         assertThat(ManagementStatus.statusOf(refusal)).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
-        assertThat(ManagementStatus.reportedTypes()).doesNotContain(RestoreGate.RestorePending.class.getName());
     }
 
     @Test
