@@ -4,7 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 
@@ -37,6 +39,11 @@ class UpgradeRunServiceTest {
 
     private final UpgradeRunIndex index = UpgradeRunIndex.upgradeRunIndex();
     private final List<UpgradeRunValue> committed = new ArrayList<>();
+    private final List<UpgradeRunValue> expectations = new ArrayList<>();
+    /// Each entry is a reconciler progress commit that lands between the request's read and its compare-and-set: the request's
+    /// commit is rejected and the index (as the delivered notification would) moves to the winner before the reject is answered.
+    private final Deque<UpgradeRunValue> racingProgress = new ArrayDeque<>();
+    private boolean progressForever = false;
     private Map<NodeId, NodeReplacementValue> records = Map.of();
     private boolean leader = true;
 
@@ -53,6 +60,20 @@ class UpgradeRunServiceTest {
 
         @Override
         public Promise<Boolean> commit(UpgradeRunValue expected, UpgradeRunValue next) {
+            expectations.add(expected);
+
+            if (progressForever) {
+                index.put(expected.with(expected.index(), expected.inFlight(), expected.state(), expected.stop(), expected.reason(), expected.updatedAtMs() + 1));
+
+                return Promise.success(false);
+            }
+
+            if (!racingProgress.isEmpty()) {
+                index.put(racingProgress.removeFirst());
+
+                return Promise.success(false);
+            }
+
             committed.add(next);
 
             return Promise.success(true);
@@ -193,6 +214,82 @@ class UpgradeRunServiceTest {
 
         assertThat(service().resume().await().isFailure()).as("not paused").isTrue();
         assertThat(service().abort().await().isFailure()).as("already ended").isTrue();
+        assertThat(committed).isEmpty();
+    }
+
+    /// #2737: the run's own progress commit (the replacement in flight advancing the run) landed between the abort's read and its
+    /// compare-and-set, and the operator got "The upgrade run changed concurrently; retry". The abort is re-decided against the run
+    /// that won and lands on it.
+    @Test
+    void abortThatLosesTheCompareAndSetToTheRunsProgress_isReDecidedAgainstTheWinner_andLands() {
+        var before = run(UpgradeRunState.RUNNING, UpgradeStop.NONE, "a");
+        var progressed = new UpgradeRunValue("2.0.0", List.of(A, B), 1, "b", UpgradeRunState.RUNNING, UpgradeStop.NONE, "why", 1L, 2L, 1L);
+
+        index.put(before);
+        racingProgress.add(progressed);
+
+        var result = service().abort().await();
+
+        assertThat(result.isSuccess()).as("abort answered: %s", result).isTrue();
+        assertThat(expectations).as("the second attempt compares against the run that won, not the one first read").containsExactly(before, progressed);
+        assertThat(committed).hasSize(1);
+        assertThat(committed.getFirst().stop()).isEqualTo(UpgradeStop.ABORT);
+        assertThat(committed.getFirst().inFlight()).as("built from the winner: its replacement in flight is kept").isEqualTo("b");
+    }
+
+    @Test
+    void pauseThatLosesTheCompareAndSetToTheRunsProgress_isReDecidedAgainstTheWinner_andLands() {
+        var before = run(UpgradeRunState.RUNNING, UpgradeStop.NONE, "a");
+        var progressed = new UpgradeRunValue("2.0.0", List.of(A, B), 1, "b", UpgradeRunState.RUNNING, UpgradeStop.NONE, "why", 1L, 2L, 1L);
+
+        index.put(before);
+        racingProgress.add(progressed);
+
+        var result = service().pause().await();
+
+        assertThat(result.isSuccess()).as("pause answered: %s", result).isTrue();
+        assertThat(expectations).containsExactly(before, progressed);
+        assertThat(committed.getFirst().stop()).isEqualTo(UpgradeStop.PAUSE);
+        assertThat(committed.getFirst().inFlight()).isEqualTo("b");
+    }
+
+    @Test
+    void resumeThatLosesTheCompareAndSet_isReDecidedAgainstTheWinner_andLands() {
+        var before = run(UpgradeRunState.PAUSED, UpgradeStop.NONE, "");
+        var rewritten = new UpgradeRunValue("2.0.0", List.of(A, B), 1, "", UpgradeRunState.PAUSED, UpgradeStop.NONE, "why", 1L, 2L, 1L);
+
+        index.put(before);
+        racingProgress.add(rewritten);
+
+        var result = service().resume().await();
+
+        assertThat(result.isSuccess()).as("resume answered: %s", result).isTrue();
+        assertThat(expectations).containsExactly(before, rewritten);
+        assertThat(committed.getFirst().state()).isEqualTo(UpgradeRunState.RUNNING);
+    }
+
+    @Test
+    void abortThatLosesTheCompareAndSetToTheRunsEnd_isRefusedForTheEndedRun_notAnsweredWithRetry() {
+        index.put(run(UpgradeRunState.RUNNING, UpgradeStop.NONE, "b"));
+        racingProgress.add(new UpgradeRunValue("2.0.0", List.of(A, B), 2, "", UpgradeRunState.COMPLETED, UpgradeStop.NONE, "", 1L, 2L, 1L));
+
+        var result = service().abort().await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause).isInstanceOf(Refusal.NotApplicable.class));
+        assertThat(committed).isEmpty();
+    }
+
+    @Test
+    void aRequestThatLosesEveryCompareAndSet_answersConflict_afterABoundedNumberOfAttempts() {
+        index.put(run(UpgradeRunState.RUNNING, UpgradeStop.NONE, "a"));
+        progressForever = true;
+
+        var result = service().abort().await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause).isInstanceOf(Refusal.Conflict.class));
+        assertThat(expectations).as("one compare-and-set per attempt, and no more").hasSize(UpgradeRunWiring.Service.REQUEST_ATTEMPTS);
         assertThat(committed).isEmpty();
     }
 
