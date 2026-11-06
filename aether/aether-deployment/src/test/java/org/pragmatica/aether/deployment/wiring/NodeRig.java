@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 
@@ -111,6 +112,7 @@ final class NodeRig implements AutoCloseable {
                                                                                          (_, input, _) -> {
                                                                                              stepThreads.add(Thread.currentThread().getName());
                                                                                              stepped.add(input);
+                                                                                             holdAtGate();
                                                                                          }),
                                                                   FsmRuntime.STOP_WAIT_MS,
                                                                   replayRule);
@@ -119,6 +121,17 @@ final class NodeRig implements AutoCloseable {
 
         if (started) {
             interpreter.start();
+        }
+    }
+
+    /// While set, the consumer thread parks after stepping an input until the latch opens: a test queues several items behind it, in a fixed order.
+    volatile CountDownLatch gate;
+
+    private void holdAtGate() {
+        var held = gate;
+
+        if (held != null) {
+            await().atMost(Duration.ofSeconds(10)).until(() -> held.getCount() == 0);
         }
     }
 

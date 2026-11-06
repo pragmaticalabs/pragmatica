@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
@@ -346,11 +347,19 @@ class NodeFsmInterpreterTest {
                 await().atMost(Duration.ofSeconds(10)).until(() -> !rig.store.hasPendingNotifications());
                 rig.settle();
                 rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(AUDIT.base(), AUDIT.version()), entered, true);
-                rig.enter();
-                var targets = rig.countOf("TargetPut");
-
-                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(BILLING.base(), BILLING.version()), entered, true);
                 rig.settle();
+
+                // the entry's own writes loop back as plain deliveries, which would close the burst too: park the consumer so the entry
+                // and the same-revision input are queued back to back, ahead of them
+                var gate = new CountDownLatch(1);
+                rig.gate = gate;
+                rig.interpreter.deliver(new NodeFsmInput.ConfigChanged("hold"));
+                var targets = rig.countOf("TargetPut");
+                rig.interpreter.requestEntry(false);
+                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(BILLING.base(), BILLING.version()), entered, true);
+                gate.countDown();
+                rig.settle();
+                rig.gate = null;
 
                 assertThat(rig.countOf("TargetPut")).as("the entry snapshot already holds it").isEqualTo(targets);
                 assertThat(rig.metric("TargetPut", "dropped_revision")).isEqualTo(1);
