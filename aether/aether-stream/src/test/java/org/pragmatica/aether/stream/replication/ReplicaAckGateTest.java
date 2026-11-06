@@ -16,11 +16,15 @@ import java.util.function.BooleanSupplier;
 import java.util.stream.IntStream;
 
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -97,6 +101,7 @@ class ReplicaAckGateTest {
         // The production wiring (StreamAssembly).
         handler.ackGate(replica::replicaVerified);
         replica.onEpochVerified(handler::releaseDeferredAck);
+        replica.onStreamRemoved(handler::forgetDeferredAcks);
     }
 
     @AfterEach
@@ -281,7 +286,7 @@ class ReplicaAckGateTest {
         handler.ackGate((stream, partition) -> readThenVerifyOnSecond(reads, stream, partition));
         handler.onReplicateEvents(liveBatch(5, 1, E2));
 
-        assertThat(reads.get()).as("read before and after the apply, then on the release").isEqualTo(3);
+        assertThat(reads.get()).as("read before and after the apply, then on the release and again in its send section").isEqualTo(4);
         assertThat(ackOffsets(E2)).containsExactly(5L);
     }
 
@@ -322,6 +327,192 @@ class ReplicaAckGateTest {
         assertThat(inWindow.get()).as("the live batch landed in the window").isTrue();
         assertThat(eventually(() -> ackOffsets(E2).contains(6L))).as("the window batch's own ack; acks = %s", acks).isTrue();
         ownerLog.close();
+    }
+
+    /// v2735 F1 (G1/G4): a release whose durability barrier is in flight when the committed epoch advances, and a batch of the
+    /// new epoch is deferred on a copy not verified for it, does not send that newer deferral when its barrier resolves. The newer
+    /// one waits for its own verification, and is then sent under its epoch.
+    @Test
+    void releaseInFlight_deferralOfANewEpochOnAnUnverifiedCopy_isNotSentUntilVerified() {
+        unverifiedCopyUnderE2();
+        handler.onReplicateEvents(liveBatch(5, 1, E2));
+        holdSyncs.set(true);
+        replica.markVerifiedForEpoch(STREAM, PARTITION, E2);
+        committed.set(E3);
+        holdSyncs.set(false);
+        assertThat(replica.replicaVerified(STREAM, PARTITION)).as("E3 starts at 0; head 5: unverified").isFalse();
+        handler.onReplicateEvents(liveBatch(6, 1, E3));
+        assertThat(acks).as("the E3 batch is deferred").isEmpty();
+
+        drain(heldSyncs.poll());
+
+        assertThat(replica.replicaVerified(STREAM, PARTITION)).as("still unverified for E3").isFalse();
+        assertThat(acks).as("no ack may leave a copy unverified for its epoch").isEmpty();
+
+        replica.markVerifiedForEpoch(STREAM, PARTITION, E3);
+
+        assertThat(ackOffsets(E3)).as("the E3 deferral is kept for its own release").containsExactly(6L);
+    }
+
+    /// v2735 F1, the identity half: the copy is verified for the new epoch before the first release's barrier resolves. That
+    /// release still does not send the deferral that replaced the one it gated: the replacement is sent by its own release,
+    /// after its own barrier.
+    @Test
+    void releaseInFlight_replacedDeferral_isSentOnlyAfterItsOwnBarrier() {
+        unverifiedCopyUnderE2();
+        handler.onReplicateEvents(liveBatch(5, 1, E2));
+        holdSyncs.set(true);
+        replica.markVerifiedForEpoch(STREAM, PARTITION, E2);
+        committed.set(E3);
+        handler.onReplicateEvents(liveBatch(6, 1, E3));
+        replica.markVerifiedForEpoch(STREAM, PARTITION, E3);
+
+        var gatedSync = heldSyncs.poll();
+        var replacementSync = heldSyncs.poll();
+
+        assertThat(replacementSync).as("the replacement's own release is waiting on its barrier").isNotNull();
+
+        drain(gatedSync);
+
+        assertThat(acks).as("the first release sends nothing it did not gate").isEmpty();
+
+        drain(replacementSync);
+
+        assertThat(ackOffsets(E3)).containsExactly(6L);
+    }
+
+    /// v2735 F1, the gate half: the gate is read again in the section that sends. A gate that closes while the release's
+    /// barrier is in flight keeps the deferral, and a later release sends it once the gate is open again.
+    @Test
+    void releaseInFlight_gateClosedBeforeTheSend_keepsTheDeferral() {
+        var gateOpen = new AtomicBoolean(true);
+
+        unverifiedCopyUnderE2();
+        handler.ackGate((stream, partition) -> gateOpen.get() && replica.replicaVerified(stream, partition));
+        handler.onReplicateEvents(liveBatch(5, 1, E2));
+        holdSyncs.set(true);
+        replica.markVerifiedForEpoch(STREAM, PARTITION, E2);
+        gateOpen.set(false);
+
+        releaseHeldSyncs();
+
+        assertThat(acks).as("the gate closed before the send").isEmpty();
+
+        holdSyncs.set(false);
+        gateOpen.set(true);
+        handler.releaseDeferredAck(STREAM, PARTITION);
+
+        assertThat(ackOffsets(E2)).containsExactly(5L);
+    }
+
+    /// v2735 F2 (G3): the backfill acks its watermark (outside the deferred-ack section) BEFORE the compare verifies the copy;
+    /// the release that follows acks the verified head, never the older deferred offset below it, so the owner's last ack of
+    /// this replica is not lowered.
+    @Test
+    void backfillAckThenRelease_neverLowersTheOwnersView() {
+        var ownerLog = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
+
+        ownerLog.createStream(StreamConfig.streamConfig(STREAM));
+        unverifiedCopyUnderE2();
+        IntStream.range(0, 11).forEach(i -> ownerLog.appendRecovered(STREAM, PARTITION, payload(i), 1000L + i).unwrap());
+        handler.onReplicateEvents(liveBatch(5, 1, E2));
+        assertThat(acks).as("deferred").isEmpty();
+
+        backfill((_, request) -> Promise.success(ownerResponse(ownerLog, request.fromOffset())),
+                 AcceptingReplicationTransport.accepting((_, message) -> recordAck(message)),
+                 (_, _, _) -> Promise.promise()).backfill(STREAM, PARTITION)
+                                                .await();
+
+        assertThat(eventually(() -> replica.replicaVerified(STREAM, PARTITION))).as("verified").isTrue();
+        assertThat(eventually(() -> acks.size() >= 2)).as("the backfill's ack and the release's; acks = %s", acks).isTrue();
+
+        var offsets = ackOffsets(E2);
+
+        assertThat(offsets.getFirst()).as("the backfill acked its watermark first; acks = %s", offsets).isEqualTo(10L);
+        assertThat(offsets).as("no ack lowers the one before it").isSorted();
+        ownerLog.close();
+    }
+
+    /// R1 TRIPWIRE (pins current behaviour): a compare whose response carries no records (an empty owner) never verifies the
+    /// copy, so the deferred ack stays held, not dropped, until a carrying compare verifies it. When an empty compare comes to
+    /// release the deferral, this pin turns red: replace it with a test of that release.
+    @Test
+    void tripwire_R1_emptyCompare_leavesTheDeferralHeld() {
+        var requests = new AtomicInteger();
+
+        unverifiedCopyUnderE2();
+        handler.onReplicateEvents(liveBatch(5, 1, E2));
+
+        var outcome = backfill((_, request) -> emptyResponse(requests, request.fromOffset()),
+                               AcceptingReplicationTransport.accepting((_, message) -> recordAck(message)),
+                               (_, _, _) -> Promise.success(-1L)).backfill(STREAM, PARTITION)
+                                                                 .await(TimeSpan.timeSpan(5).seconds());
+
+        assertThat(requests.get()).as("the compare asked the owner").isPositive();
+        assertThat(outcome.isFailure()).as("an empty owner is no source: %s", outcome).isTrue();
+        assertThat(replica.replicaVerified(STREAM, PARTITION)).as("R1: the empty compare did not verify the copy").isFalse();
+        assertThat(acks).as("R1: the deferral is held").isEmpty();
+
+        replica.markVerifiedForEpoch(STREAM, PARTITION, E2);
+
+        assertThat(ackOffsets(E2)).as("held, not dropped: a later verification releases it").containsExactly(5L);
+    }
+
+    /// m10: a deferral of the committed epoch is not displaced by a higher one of an older epoch. Deferred under E2 at 7, then
+    /// E3 is committed (the copy unverified for it) and a lower E3 batch is deferred; once E3 is verified its ack is sent. Kept
+    /// as the higher E2 one instead, the release dropped it (E2 is no longer committed) and the E3 batch had no ack.
+    @Test
+    void deferredAck_ofTheCommittedEpoch_isNotDisplacedByAHigherOlderEpochOne() {
+        unverifiedCopyUnderE2();
+        handler.onReplicateEvents(liveBatch(5, 3, E2));
+        committed.set(E3);
+        assertThat(replica.replicaVerified(STREAM, PARTITION)).as("unverified for E3").isFalse();
+        handler.onReplicateEvents(liveBatch(6, 1, E3));
+        assertThat(acks).as("both deferred").isEmpty();
+
+        replica.markVerifiedForEpoch(STREAM, PARTITION, E3);
+
+        assertThat(ackOffsets(E3)).as("the E3 ack, at the verified head").containsExactly(7L);
+    }
+
+    /// m10, the other order: a deferral of a newer epoch is not displaced by a later-deferred lower one of an older epoch, which
+    /// a release would drop.
+    @Test
+    void deferredAck_ofANewerEpoch_isNotDisplacedByALaterOlderEpochOne() {
+        unverifiedCopyUnderE2();
+        handler.onReplicateEvents(liveBatch(5, 2, E3));
+        handler.onReplicateEvents(liveBatch(5, 1, E2));
+        assertThat(acks).as("both deferred").isEmpty();
+        committed.set(E3);
+
+        replica.markVerifiedForEpoch(STREAM, PARTITION, E3);
+
+        assertThat(ackOffsets(E3)).containsExactly(6L);
+    }
+
+    /// Cleanup: a removed stream's deferred acks are dropped with it, so a later verification releases nothing. (The release
+    /// of the same deferral without the removal is `liveBatch_onUnverifiedCopy_isDeferred_andReleasedDurablyOnceVerified`.)
+    @Test
+    void deferredAck_ofARemovedStream_isForgotten() {
+        unverifiedCopyUnderE2();
+        handler.onReplicateEvents(liveBatch(5, 1, E2));
+
+        handler.forgetDeferredAcks(STREAM);
+        replica.markVerifiedForEpoch(STREAM, PARTITION, E2);
+
+        assertThat(replica.replicaVerified(STREAM, PARTITION)).isTrue();
+        assertThat(acks).isEmpty();
+    }
+
+    /// Cleanup wiring: the partition manager tells its listener the name of a stream it removed.
+    @Test
+    void streamRemoval_tellsTheRemovedListener() {
+        var removed = new ConcurrentLinkedQueue<String>();
+
+        replica.onStreamRemoved(removed::add);
+        replica.onStreamConfigRemove(removal());
+
+        assertThat(removed).containsExactly(STREAM);
     }
 
     /// The gate as wired, except that its second reading (after the apply) is followed by the compare's verification, before
@@ -404,6 +595,12 @@ class ReplicaAckGateTest {
     }
 
     private PartitionBackfill backfill(StreamPartitionManager ownerLog) {
+        return backfill((_, request) -> Promise.success(ownerResponse(ownerLog, request.fromOffset())),
+                        AcceptingReplicationTransport.accepting((_, _) -> {}),
+                        (_, _, _) -> Promise.promise());
+    }
+
+    private PartitionBackfill backfill(CatchupTransport catchup, ReplicationTransport replication, ReplicaWatermarkProbe probe) {
         var registry = replicaRegistry();
 
         registry.registerReplica(STREAM, PARTITION, owner);
@@ -411,9 +608,9 @@ class ReplicaAckGateTest {
 
         return partitionBackfill(registry,
                                  replica.alignedRecovery(),
-                                 (_, request) -> Promise.success(ownerResponse(ownerLog, request.fromOffset())),
-                                 AcceptingReplicationTransport.accepting((_, _) -> {}),
-                                 (_, _, _) -> Promise.promise(),
+                                 catchup,
+                                 replication,
+                                 probe,
                                  (stream, partition) -> replica.partitionInfo(stream, partition)
                                                                .map(StreamPartitionManager.PartitionInfo::headOffset)
                                                                .or(-1L),
@@ -423,6 +620,22 @@ class ReplicaAckGateTest {
                                  committedOwners(),
                                  replica::syncReplicated,
                                  replica.quarantineView());
+    }
+
+    private void recordAck(ReplicationMessage message) {
+        if (message instanceof ReplicationMessage.ReplicateAck ack) {
+            acks.add(ack);
+        }
+    }
+
+    private Promise<ReplicationMessage.CatchupResponse> emptyResponse(AtomicInteger requests, long fromOffset) {
+        requests.incrementAndGet();
+
+        return Promise.success(catchupResponse(owner, STREAM, PARTITION, fromOffset, fromOffset - 1, List.of(), List.of()));
+    }
+
+    private static ValueRemove<StreamConfigKey, StreamConfigValue> removal() {
+        return new ValueRemove<>(new KVCommand.Remove<StreamConfigKey>(StreamConfigKey.streamConfigKey(STREAM)), Option.empty());
     }
 
     private ReplicationMessage.CatchupResponse ownerResponse(StreamPartitionManager ownerLog, long fromOffset) {

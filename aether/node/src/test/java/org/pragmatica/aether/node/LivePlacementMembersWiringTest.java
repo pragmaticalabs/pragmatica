@@ -131,6 +131,8 @@ class LivePlacementMembersWiringTest {
         assertThat(code).containsOnlyOnce("streamReplicationReceiveHandler.ackGate(streamPartitionManager::replicaVerified);");
         assertThat(code).as("#2599: a compare's verification releases the ack the gate held back")
                         .containsOnlyOnce("streamPartitionManager.onEpochVerified(streamReplicationReceiveHandler::releaseDeferredAck);");
+        assertThat(code).as("#2599: a removed stream's deferred acks are dropped with it")
+                        .containsOnlyOnce("streamPartitionManager.onStreamRemoved(streamReplicationReceiveHandler::forgetDeferredAcks);");
         assertThat(code).containsOnlyOnce("streamReplicationManager.ownerEpochs(streamOwnerEpochSource);");
         assertThat(code).containsOnlyOnce("streamPartitionManager.repairReportBound(TimeSpan.timeSpan(STREAM_BACKFILL_REDRIVE_INTERVAL.millis()*12L).millis());");
         assertThat(code).containsOnlyOnce("ownerActivation.peerRingTail((node,stream,partition)->");

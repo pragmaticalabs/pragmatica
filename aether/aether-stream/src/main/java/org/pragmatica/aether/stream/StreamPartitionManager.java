@@ -1925,6 +1925,23 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         entries.appliedConfigs().remove(streamName);
         removeAndReleaseIfPresent(streamName);
+        streamRemoved.removed(streamName);
+    }
+
+    /// What [#onStreamConfigRemove] tells once it has removed a stream (#2599). Production wires
+    /// `ReplicationReceiveHandler::forgetDeferredAcks`; the default does nothing.
+    @FunctionalInterface
+    public interface StreamRemovedListener {
+        @Contract
+        void removed(String streamName);
+    }
+
+    private volatile StreamRemovedListener streamRemoved = _ -> {};
+
+    /// Late-bind the [StreamRemovedListener]. Set once at wiring.
+    @Contract
+    public void onStreamRemoved(StreamRemovedListener listener) {
+        this.streamRemoved = listener;
     }
 
     @SuppressWarnings("JBCT-RET-03")

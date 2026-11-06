@@ -1416,6 +1416,8 @@ public sealed interface StreamAssembly {
         streamReplicationReceiveHandler.ackGate(streamPartitionManager::replicaVerified);
         // #2599: the ack of a batch the gate held back is sent once a compare verifies the copy, not left to a later batch.
         streamPartitionManager.onEpochVerified(streamReplicationReceiveHandler::releaseDeferredAck);
+        // #2599: a removed stream's deferred acks go with it, so none is released into a stream recreated under its name.
+        streamPartitionManager.onStreamRemoved(streamReplicationReceiveHandler::forgetDeferredAcks);
         // #2087: a replica serves a consumer read only up to the owner's reported visible position.
         streamReplicationReceiveHandler.commitSink(streamPartitionManager::commitAdvanced);
         allEntries.add(MessageRouter.Entry.route(ReplicationMessage.CommitAdvance.class,
