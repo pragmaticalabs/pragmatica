@@ -34,17 +34,13 @@ import org.pragmatica.lang.io.TimeSpan;
 /// A run whose kind this node does not know (a newer node admitted it) is held, never failed.
 public interface WorkflowReconciler {
     Promise<Unit> reconcile();
-
     /// How long a commit or an effect call may stay unanswered before the tick stops waiting, when the caller names no bound.
     TimeSpan DEFAULT_BOUND = TimeSpan.timeSpan(30).seconds();
 
     static WorkflowReconciler workflowReconciler(WorkflowLedger ledger,
                                                  Map<String, WorkflowKind<?>> kinds,
                                                  LongSupplier clock) {
-        return workflowReconciler(ledger,
-                                  kinds,
-                                  clock,
-                                  DEFAULT_BOUND);
+        return workflowReconciler(ledger, kinds, clock, DEFAULT_BOUND);
     }
 
     /// `bound`: how long a commit or an effect call may stay unanswered before the tick stops waiting for it; the next tick re-reads

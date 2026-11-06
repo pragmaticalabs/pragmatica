@@ -144,9 +144,7 @@ public interface WorkflowAdmission {
 
     /// Admission over `ledger` for the registered `kinds` (by name); a create unanswered for [#DEFAULT_BOUND] is resolved by the read-back.
     static WorkflowAdmission workflowAdmission(WorkflowLedger ledger, Map<String, WorkflowKind<?>> kinds) {
-        return workflowAdmission(ledger,
-                                 kinds,
-                                 DEFAULT_BOUND);
+        return workflowAdmission(ledger, kinds, DEFAULT_BOUND);
     }
 
     /// As [#workflowAdmission(WorkflowLedger, Map)]; `bound`: how long the create may stay unanswered before the read-back decides.
