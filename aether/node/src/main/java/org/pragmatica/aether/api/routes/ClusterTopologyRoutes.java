@@ -77,6 +77,7 @@ import static org.pragmatica.aether.api.ManagementApiResponses.ClusterTopologySt
 
 public final class ClusterTopologyRoutes implements RouteSource {
     private static final TypeToken<CircuitBreakerResetRequest> RESET_REQUEST = TypeToken.typeToken(CircuitBreakerResetRequest.class);
+
     private final Supplier<ManageableNode> nodeSupplier;
 
     private ClusterTopologyRoutes(Supplier<ManageableNode> nodeSupplier) {
@@ -163,8 +164,8 @@ public final class ClusterTopologyRoutes implements RouteSource {
     private static Result<Option<SourceName>> declaredSource(ClusterTopologyManager ctm, Option<SourceName> source) {
         return source.filter(name -> !ctm.declaresSource(name))
                      .fold(() -> Result.success(source),
-                           name -> HttpStatus.BAD_REQUEST.with("Source '" + name.value() + "' is not declared by the committed cluster configuration")
-                                                 .result());
+                           name -> HttpStatus.BAD_REQUEST.with("Source '" + name.value()
+                                                              + "' is not declared by the committed cluster configuration").result());
     }
 
     private static CircuitBreakerResetResponse resetSource(ClusterTopologyManager ctm, Option<SourceName> source) {

@@ -1947,6 +1947,7 @@ public sealed interface AetherValue {
             if (reason == null) {
                 reason = "";
             }
+
             disabledAtScaling = Map.copyOf(disabledAtScaling);
         }
 

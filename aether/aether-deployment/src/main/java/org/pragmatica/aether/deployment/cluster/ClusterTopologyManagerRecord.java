@@ -874,7 +874,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Override
     public boolean declaresSource(SourceName source) {
         return clusterConfigReader.get()
-                                  .filter(config -> declares(config, source.value()))
+                                  .filter(config -> declares(config,
+                                                             source.value()))
                                   .isPresent();
     }
 
@@ -925,25 +926,29 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                       Option.some(autoHealRecord(enabled, reason, config)));
 
         return hierarchyWriter.get()
-                              .commit(List.of(mutation), autoHealGuards(enabled, config))
+                              .commit(List.of(mutation),
+                                      autoHealGuards(enabled, config))
                               .map(_ -> previous.map(AutoHealStateValue::enabled)
                                                 .or(true));
     }
 
-    private static List<KVCommand.ReadWitness<AetherKey>> autoHealGuards(boolean enabled, Option<ClusterConfigValue> config) {
+    private static List<KVCommand.ReadWitness<AetherKey>> autoHealGuards(boolean enabled,
+                                                                         Option<ClusterConfigValue> config) {
         return enabled
                ? List.of()
-               : List.of(new KVCommand.ReadWitness<AetherKey>(ClusterConfigKey.CURRENT, config.map(value -> (Object) value)));
+               : List.of(new KVCommand.ReadWitness<AetherKey>(ClusterConfigKey.CURRENT,
+                                                              config.map(value -> (Object) value)));
     }
 
     /// A disable records, from the one configuration snapshot it is fenced on, that configuration's version and each subject's scaling
     /// value, so a value committed after it can be told from one that was already there ([#scalingHeld]); an enable records none.
-    private static AutoHealStateValue autoHealRecord(boolean enabled, String reason, Option<ClusterConfigValue> config) {
+    private static AutoHealStateValue autoHealRecord(boolean enabled,
+                                                     String reason,
+                                                     Option<ClusterConfigValue> config) {
         return enabled
                ? AutoHealStateValue.autoHealStateValue(true, reason)
                : AutoHealStateValue.disabledAt(reason,
-                                               config.map(ClusterConfigValue::configVersion)
-                                                     .or(0L),
+                                               config.map(ClusterConfigValue::configVersion).or(0L),
                                                scalingOf(config));
     }
 
@@ -962,14 +967,17 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     private static Map<String, Integer> scalingOf(ClusterConfigValue config) {
-        return Stream.concat(workerScaling(config), communityScaling(config))
-                     .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (first, _) -> first));
+        return Stream.concat(workerScaling(config), communityScaling(config)).collect(Collectors.toMap(Map.Entry::getKey,
+                                                                                                       Map.Entry::getValue,
+                                                                                                       (first, _) -> first));
     }
 
     private static Stream<Map.Entry<String, Integer>> workerScaling(ClusterConfigValue config) {
         return config.desiredTopology()
                      .stream()
-                     .map(entry -> Map.entry(workerSubject(entry.sourceName(), entry.role()), entry.count()));
+                     .map(entry -> Map.entry(workerSubject(entry.sourceName(),
+                                                           entry.role()),
+                                             entry.count()));
     }
 
     private static Stream<Map.Entry<String, Integer>> communityScaling(ClusterConfigValue config) {
@@ -1015,9 +1023,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     private boolean unchangedSinceDisable(AutoHealStateValue state, String subject) {
-        return Option.option(state.disabledAtScaling()
-                                  .get(subject))
-                     .equals(Option.option(scalingOf(clusterConfigReader.get()).get(subject)));
+        return Option.option(state.disabledAtScaling().get(subject)).equals(Option.option(scalingOf(clusterConfigReader.get()).get(subject)));
     }
 
     @Contract
