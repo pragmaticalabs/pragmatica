@@ -23,6 +23,21 @@
             <scope>provided</scope>
         </dependency>
         <!-- slice-api, slice-annotations, core inherited from parent with provided scope -->
+
+        <!-- #2712: annotationProcessorPaths adds no reactor ordering edge, so under -T the processors may not be built and
+             installed yet. provided scope gives Maven the edge without putting them on the runtime classpath. -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>slice-processor</artifactId>
+            <version>${project.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>jbct-async-check</artifactId>
+            <version>${project.version}</version>
+            <scope>provided</scope>
+        </dependency>
     </dependencies>
 
     <build>
