@@ -229,6 +229,11 @@ public final class PartitionBackfill {
 
     private volatile Runnable releaseWindowHook = () -> {};
 
+    /// Test seam (#2599): runs after a compare's response was applied and acked ([#ackBackfillToOwner]) and before the copy is
+    /// marked verified ([#markVerifiedIfCompared]). A live batch landing in that window is the one whose ack the gate held. The
+    /// compare runs on a per-run view, which takes the hook set on the shared instance when the run starts.
+    private volatile Runnable verifyWindowHook = () -> {};
+
     /// #2574 F1: the per-partition hold a refused flight keeps its slot for ([RefusalBackoff]); shared by every run.
     private final RefusalBackoff<PartitionKey> refusalBackoff;
 
@@ -302,6 +307,7 @@ public final class PartitionBackfill {
         this.oversizedOrder = shared.oversizedOrder;
         this.current = current;
         this.refusalBackoff = shared.refusalBackoff;
+        this.verifyWindowHook = shared.verifyWindowHook;
     }
 
     /// Backward-compatible factory: no cold-start self-promotion (probe is a no-op that never reports a
@@ -710,6 +716,11 @@ public final class PartitionBackfill {
     @Contract
     void releaseWindowHook(Runnable hook) {
         this.releaseWindowHook = hook;
+    }
+
+    @Contract
+    void verifyWindowHook(Runnable hook) {
+        this.verifyWindowHook = hook;
     }
 
     /// #2574 F2: the re-run of a landed joined flight. It never joins: if a call already took the slot, that flight serves
@@ -1242,6 +1253,7 @@ public final class PartitionBackfill {
     /// epoch's start. Only a response that carried records compared anything.
     @Contract
     private void markVerifiedIfCompared(String streamName, int partition, Epoch epoch, boolean carriedRecords) {
+        verifyWindowHook.run();
         if (carriedRecords && !epoch.equals(Epoch.ZERO) && committedOwnerIsSender(streamName, partition)) {
             quarantine.verifiedForEpoch(streamName, partition, epoch);
         }

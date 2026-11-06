@@ -952,6 +952,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// A backfill compared this copy with the committed owner of `epoch` (captured BEFORE the compare, so an epoch that advanced
     /// meanwhile is not verified by a compare against the earlier one).
+    /// #2599: then tells [#onEpochVerified]'s listener, so an ack a batch deferred while the copy was unverified is sent now.
     @Contract
     public void markVerifiedForEpoch(String streamName, int partition, Epoch epoch) {
         standing(streamName).epochTrust()
@@ -960,6 +961,23 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                              .isStrictlyAfter(epoch)
                                        ? known
                                        : new EpochTrust(epoch, true));
+        epochVerified.verified(streamName, partition);
+    }
+
+    /// What [#markVerifiedForEpoch] tells once it has recorded a compare (#2599). Production wires
+    /// `ReplicationReceiveHandler::releaseDeferredAck`; the default does nothing.
+    @FunctionalInterface
+    public interface EpochVerifiedListener {
+        @Contract
+        void verified(String streamName, int partition);
+    }
+
+    private volatile EpochVerifiedListener epochVerified = (_, _) -> {};
+
+    /// Late-bind the [EpochVerifiedListener]. Set once at wiring.
+    @Contract
+    public void onEpochVerified(EpochVerifiedListener listener) {
+        this.epochVerified = listener;
     }
 
     /// What a validated consumer read returns: the events and the owner epoch they were served under (#1730 phase 2 /
