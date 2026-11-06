@@ -140,7 +140,9 @@ class AetherCliDeployCommandTest {
         var deploy = new CommandLine(new AetherCli()).getSubcommands().get("deploy").getCommandSpec();
 
         assertThat(deploy.findOption("--instances").defaultValue()).isNull();
-        assertThat(deploy.findOption("--instances").getValue()).isNull();
+        Object initial = deploy.findOption("--instances").getValue();
+
+        assertThat(initial).isNull();
     }
 
     /// c11: the deploy `--instances` text says it is refused and names the command to use instead.
