@@ -121,10 +121,10 @@ public sealed interface Blueprints {
         return submitTargets(m, id, mutations);
     }
 
-    /// CF-5 (#2759): a target batch commits only while its owner blueprint is still the value the declaration read. The witness
-    /// makes a put that would land after the blueprint's delete (or after a republish) a refusal by the applier, in any commit
-    /// order and across a leader change (plan D.9): a put that commits first is a committed target the delete's removal batch
-    /// removes, and a put that would commit after it is refused.
+    /// CF-5 (#2759): a target batch commits only while its owner blueprint is still the value the mirror held when the batch was sent. The
+    /// witness makes a put that would land after the blueprint's delete (or after a republish) a refusal by the applier, in any commit
+    /// order and across a leader change (plan D.9). A put that commits before the delete is removed by the delete's removal batch only
+    /// if that batch commits; a removal batch lost with its leader's term leaves an orphan target until CF-8's reconcile step.
     private static ClusterModel submitTargets(ClusterModel m,
                                               BlueprintId owner,
                                               List<KVCommand.Mutation<AetherKey, AetherValue>> mutations) {
@@ -137,7 +137,9 @@ public sealed interface Blueprints {
                                       .withGuards(List.of(ownerWitness(m, owner))));
     }
 
-    /// The owner blueprint at the value the mirror holds: the committed value the declaration was derived from.
+    /// The owner blueprint at the value the mirror holds when the batch is built. On the awaited-target re-send (`watch` ->
+    /// `submitTargets`) that is the mirror's value at re-send time, not the declaration's; the two differ only after a change that does
+    /// not re-declare (registerOnly, or a republish C2 rejected).
     private static KVCommand.ReadWitness<AetherKey> ownerWitness(ClusterModel m, BlueprintId owner) {
         return new KVCommand.ReadWitness<>(new AppBlueprintKey(owner),
                                            m.blueprints.get(owner).map(value -> (Object) value));

@@ -6,9 +6,12 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceDesiredValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.Test;
@@ -36,20 +39,28 @@ class ActivateReissueTest {
     }
 
     private static Option<SliceGoal> committedGoal(FsmHarness h) {
-        return h.store.get(new SliceDesiredKey(CORE_1, ORDERS))
+        return committedGoal(h, ORDERS);
+    }
+
+    private static Option<SliceGoal> committedGoal(FsmHarness h, Artifact artifact) {
+        return h.store.get(new SliceDesiredKey(CORE_1, artifact))
                       .filter(SliceDesiredValue.class::isInstance)
                       .map(SliceDesiredValue.class::cast)
                       .map(SliceDesiredValue::goal);
     }
 
     private static long activeGoalSubmits(FsmHarness h) {
+        return activeGoalSubmits(h, ORDERS);
+    }
+
+    private static long activeGoalSubmits(FsmHarness h, Artifact artifact) {
         return h.submits(SubmitKind.GOALS)
                 .stream()
                 .flatMap(submit -> submit.transaction()
                                          .mutations()
                                          .stream())
                 .filter(mutation -> mutation.key()
-                                            .equals(new SliceDesiredKey(CORE_1, ORDERS)))
+                                            .equals(new SliceDesiredKey(CORE_1, artifact)))
                 .filter(mutation -> mutation.replacement()
                                             .filter(SliceDesiredValue.class::isInstance)
                                             .map(SliceDesiredValue.class::cast)
@@ -118,5 +129,30 @@ class ActivateReissueTest {
 
         assertThat(committedGoal(h)).as("goal ACTIVE commits within three ticks of the resume")
                                     .isEqualTo(Option.some(SliceGoal.ACTIVE));
+    }
+
+    // CF-4, every observed version is covered, not only the committed target's: a rolling update's new version is named by the
+    // VersionRoutingKey alone (the target still names v1), is LOADED under goal LOADED, and its ACTIVE goal write is lost.
+    // Red when: reactivate walks only the committed targets' current versions (retryHeld), so the routing-only version stays LOADED.
+    @Test
+    void activate_routingOnlyVersionLostActiveWrite_reDerived() {
+        var h = harness(CORE_1);
+        var node = node(h, CORE_1, 11);
+
+        seedTarget(h, ORDERS, 1, 1);
+        h.seedQuietly(new VersionRoutingKey(ORDERS.base()),
+                      new VersionRoutingValue(ORDERS.version(), ORDERS_V2.version(), 1, 1, FsmHarness.START_WALL));
+        seedGoal(h, CORE_1, ORDERS_V2, SliceGoal.LOADED, G1);
+        h.activate();
+        h.policy = FsmHarness.SettlePolicy.LOSE;
+        node.writes(ORDERS_V2, SliceObservedState.LOADED);
+        h.drain();
+        h.policy = FsmHarness.SettlePolicy.APPLY;
+        assertThat(activeGoalSubmits(h, ORDERS_V2)).as("control: the ACTIVE goal was submitted once, and lost").isEqualTo(1L);
+        assertThat(committedGoal(h, ORDERS_V2)).as("control: the lost write did not commit").isEqualTo(Option.some(SliceGoal.LOADED));
+        h.advanceBySeconds(THREE_TICKS_SECONDS);
+
+        assertThat(committedGoal(h, ORDERS_V2)).as("the routing-only version's goal ACTIVE commits within three ticks")
+                                               .isEqualTo(Option.some(SliceGoal.ACTIVE));
     }
 }
