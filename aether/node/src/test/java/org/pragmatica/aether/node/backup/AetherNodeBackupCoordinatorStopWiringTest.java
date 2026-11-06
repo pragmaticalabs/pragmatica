@@ -34,12 +34,12 @@ class AetherNodeBackupCoordinatorStopWiringTest {
 
     /// Know 3b01e624f1: the flush is started before the teardown and the stop sequence runs only after it resolves, so a graceful stop
     /// completes after the backup flush (bounded by the deadline), not beside it. Know 73fd8d9759 puts the stream stop seal, which
-    /// runs beside the backup flush, between them.
+    /// runs beside the backup flush, between them (#2688: `stopNodeComponents` starts it and returns it to the chain).
     @Test
     void stop_runsTheStopSequence_onlyAfterTheBackupFlush() {
         var source = AssemblySource.spaced();
 
-        assertThat(source).containsOnlyOnce(".flatMap(() -> backupFlushed) .flatMap(() -> streamsStopped) .flatMap(() -> NodeStopSequence.run(");
+        assertThat(source).containsOnlyOnce("return quorumLeft.map(this::stopDeploymentWiring) .flatMap(this::stopNodeComponents) .flatMap(() -> backupFlushed) .flatMap(() -> NodeStopSequence.run(");
     }
 
     /// Know 6ee3dc3f0d (P-C): a worker holds a partial replica and must not stop-flush; the role is the node's own worker role (configuration or label,

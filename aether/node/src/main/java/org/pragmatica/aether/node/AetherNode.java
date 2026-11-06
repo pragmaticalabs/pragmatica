@@ -1115,6 +1115,11 @@ public interface AetherNode extends ManageableNode {
     /// the unsealed ranges and stops anyway. It runs beside the backup flush, inside `Main`'s 30 s and Ember's 10 s stop
     /// bounds; one seal is one local write and one DHT put. [guess: 5 s, nothing measured it]
     TimeSpan SEALER_STOP_FLUSH_BOUND = TimeSpan.timeSpan(5).seconds();
+    /// #2688: how long a stop waits for the leader deactivation (the `LeaderChange` the passive notification raises) to be
+    /// delivered to the leader-toggled components before it warns and quiesces the router anyway. The reaction is in-memory
+    /// toggling; the bound is for a wedged `LeaderManager` reaction, and it runs ahead of the backup and sealer flushes inside
+    /// Ember's 10 s and `Main`'s 30 s stop bounds. [guess: 2 s, nothing measured it]
+    TimeSpan LEADER_DEACTIVATION_BOUND = TimeSpan.timeSpan(2).seconds();
     /// #1730: how soon a refused (moved-record) ownership write is re-decided.
     TimeSpan OWNERSHIP_REDRIVE_DELAY = TimeSpan.timeSpan(1).seconds();
     /// Declarative stream-consumer ownership poll (#488). No role-change callback is available to a
@@ -1788,7 +1793,8 @@ public interface AetherNode extends ManageableNode {
                           StoragePrefetchChannel prefetchChannel,
                           // Phase-3 design 8.3: the one place the engine-dependent hooks are bound; stopped with the node.
                           DeploymentWiring deploymentWiring,
-                          NodeReactors reactors) implements AetherNode {
+                          NodeReactors reactors,
+                          LeaderDeactivation leaderDeactivation) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
             @Override
@@ -1943,13 +1949,53 @@ public interface AetherNode extends ManageableNode {
                 // B13 (design 7, 2a/2b): PASSIVE, then the FSM2 node's SUSPEND drain (a no-op under LEGACY), then the quiesce.
                 // #2688: the passive notification ends in LeaderChange(none), which the FSM routes onto the LeaderManager react
                 // executor (D1-react), so the leader-toggled components deactivate on that thread, after route() has returned.
-                // The quiesce (a quiesced router drops that reaction) and the FSM2 close wait for that reaction to have run, and the
-                // promise stop() returns waits for it, so "stopped" means those components are inactive.
+                // The quiesce (a quiesced router drops that reaction) waits, bounded, for that deactivation to have been delivered
+                // (LeaderDeactivation), and everything below runs after the quiesce, in rc5's order: the FSM2 close, the components'
+                // stops (stopNodeComponents), the backup and sealer flushes, then NodeStopSequence. The promise stop() returns
+                // waits for all of it, so "stopped" means those components are inactive.
                 var quorumLeft = deploymentWiring.leaveQuorum(() -> router.route(ClusterStateNotification.passive()),
-                                                              () -> reactors.executor("LeaderManager")
-                                                                            .drained(),
+                                                              () -> leaderDeactivation.delivered(reactors.executor("LeaderManager"),
+                                                                                                 LEADER_DEACTIVATION_BOUND),
                                                               router::quiesce);
 
+                // #642: the cluster-deployment FSM's fixed-rate reconcile timer is cancelled only by
+                // Active.onExit, which nothing reached at shutdown — a stopped node kept running full
+                // deployment reconciles. deactivate() is the same designed path a leader loss takes.
+                //
+                // It heads the chain, so the rest of the shutdown DEPENDS on it staying infallible: it
+                // currently dispatches an FSM event and returns unitPromise(), never a failure. Should
+                // it ever gain a failure path, every stop below — management server, app HTTP, slice
+                // invoker, cluster node — would be skipped by flatMap short-circuit. Recover here at
+                // that point rather than leaving the node half-stopped.
+                //
+                // #1612: the chain lives in NodeStopSequence, where a failed HTTP listener stop is logged and
+                // skipped past rather than ending the shutdown.
+                return quorumLeft.map(this::stopDeploymentWiring)
+                                 .flatMap(this::stopNodeComponents)
+                                 .flatMap(() -> backupFlushed)
+                                 .flatMap(() -> NodeStopSequence.run(NodeStopSequence.Steps.steps(this::releaseWatchesThenDeactivate,
+                                                                                                  () -> managementServer.map(ManagementServer::stop)
+                                                                                                                        .or(Promise.unitPromise()),
+                                                                                                  appHttpServer::stop,
+                                                                                                  sliceInvoker::stop,
+                                                                                                  this::closeSharedResources,
+                                                                                                  this::shutdownStorage,
+                                                                                                  clusterNode::stop)))
+                                 .withResult(_ -> closeKvStore())
+                                 .onSuccess(_ -> log.info("Aether node {} stopped",
+                                                          self()));
+            }
+
+            /// B13: the FSM2 interpreters close, after the quiesce that follows the delivery of the passive notification's `LeaderChange` reaction (#2688).
+            private Unit stopDeploymentWiring(Unit unit) {
+                deploymentWiring.stop();
+
+                return unit;
+            }
+
+            /// The components' stops, after the quiesce and the FSM2 close (rc5's order, restored by #2688). Returns the sealer's
+            /// bounded flush, which the stop waits for beside the backup's.
+            private Promise<Unit> stopNodeComponents(Unit unit) {
                 controlLoop.stop();
                 workerMetricsAggregator.stop();
                 metricsScheduler.stop();
@@ -1999,39 +2045,8 @@ public interface AetherNode extends ManageableNode {
                 alertManager.closeForwarder();
                 observabilityBaseline.sampler().onPresent(AdaptiveSampler::stop);
                 discoveryProvider.onPresent(this::deregisterFromDiscovery);
-                // #642: the cluster-deployment FSM's fixed-rate reconcile timer is cancelled only by
-                // Active.onExit, which nothing reached at shutdown — a stopped node kept running full
-                // deployment reconciles. deactivate() is the same designed path a leader loss takes.
-                //
-                // It heads the chain, so the rest of the shutdown DEPENDS on it staying infallible: it
-                // currently dispatches an FSM event and returns unitPromise(), never a failure. Should
-                // it ever gain a failure path, every stop below — management server, app HTTP, slice
-                // invoker, cluster node — would be skipped by flatMap short-circuit. Recover here at
-                // that point rather than leaving the node half-stopped.
-                //
-                // #1612: the chain lives in NodeStopSequence, where a failed HTTP listener stop is logged and
-                // skipped past rather than ending the shutdown.
-                return quorumLeft.map(this::stopDeploymentWiring)
-                                 .flatMap(() -> backupFlushed)
-                                 .flatMap(() -> streamsStopped)
-                                 .flatMap(() -> NodeStopSequence.run(NodeStopSequence.Steps.steps(this::releaseWatchesThenDeactivate,
-                                                                                                  () -> managementServer.map(ManagementServer::stop)
-                                                                                                                        .or(Promise.unitPromise()),
-                                                                                                  appHttpServer::stop,
-                                                                                                  sliceInvoker::stop,
-                                                                                                  this::closeSharedResources,
-                                                                                                  this::shutdownStorage,
-                                                                                                  clusterNode::stop)))
-                                 .withResult(_ -> closeKvStore())
-                                 .onSuccess(_ -> log.info("Aether node {} stopped",
-                                                          self()));
-            }
 
-            /// B13: the FSM2 interpreters close, after the quiesce that follows the delivery of the passive notification's `LeaderChange` reaction (#2688).
-            private Unit stopDeploymentWiring(Unit unit) {
-                deploymentWiring.stop();
-
-                return unit;
+                return streamsStopped;
             }
 
             @Override
@@ -3002,6 +3017,8 @@ public interface AetherNode extends ManageableNode {
         // routes through this detector's windowed path, so the route-collection needs the ref
         // (the detector itself is constructed below and `set` into the ref before routing starts).
         var quorumLossDetectorRef = new AtomicReference<QuorumLossDetector>();
+        // #2688: watches the LeaderChange deliveries the toggles receive, for stop() to wait on.
+        var leaderDeactivation = LeaderDeactivation.leaderDeactivation();
         var aetherEntries = collectRouteEntries(kvStore,
                                                 nodeDeploymentManager,
                                                 clusterDeploymentManager,
@@ -3042,6 +3059,7 @@ public interface AetherNode extends ManageableNode {
                                                 consumerGroupRegistry,
                                                 quorumLossDetectorRef,
                                                 managementServerRef,
+                                                leaderDeactivation,
                                                 config.self());
 
         TopologyAssembly.placementDrainRoutes(new TopologyAssembly.PlacementDrainRoutesInputs(config,
@@ -3672,7 +3690,8 @@ public interface AetherNode extends ManageableNode {
                                   upgradeWiring.service(),
                                   prefetchChannel,
                                   deploymentWiring,
-                                  reactors);
+                                  reactors,
+                                  leaderDeactivation);
 
         nodeDeploymentManager.setShutdownCallback(node::stop);
         StreamAssembly.retentionWatch(new StreamAssembly.RetentionWatchInputs(kvStore,
@@ -3885,7 +3904,8 @@ public interface AetherNode extends ManageableNode {
                                                                             upgradeWiring.service(),
                                                                             prefetchChannel,
                                                                             deploymentWiring,
-                                                                            reactors);
+                                                                            reactors,
+                                                                            leaderDeactivation);
                                                   }
 
                                                   return node;
@@ -4849,6 +4869,7 @@ public interface AetherNode extends ManageableNode {
                                                                     ConsumerGroupRegistry consumerGroupRegistry,
                                                                     AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
                                                                     AtomicReference<Option<ManagementServer>> managementServerRef,
+                                                                    LeaderDeactivation leaderDeactivation,
                                                                     NodeId self) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();
         // #887 E2/E3: every node derives its security overrides from the replicated blueprint. The
@@ -5061,6 +5082,8 @@ public interface AetherNode extends ManageableNode {
                                               change -> toggleAbTestOnLeaderChange(change, abTestManager)));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> toggleDeploymentManagerOnLeaderChange(change, deploymentManager)));
+        // #2688: after the toggles, on their route: stop() waits for the deactivation this records to be delivered.
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, leaderDeactivation::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> rabiaMetricsCollector.updateRole(change.localNodeIsLeader(),
                                                                                          change.leaderId()

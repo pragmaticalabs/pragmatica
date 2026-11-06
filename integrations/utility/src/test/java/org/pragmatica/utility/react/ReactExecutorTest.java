@@ -50,6 +50,15 @@ class ReactExecutorTest {
         assertThat(calls).containsExactly("first");
     }
 
+    /// A closed executor refuses the marker and runs it on the caller's thread, so a drain taken after the close (a second stop())
+    /// resolves at once instead of waiting forever.
+    @Test
+    void drained_afterClose_isResolved() {
+        executor.close();
+
+        assertThat(executor.drained().isResolved()).isTrue();
+    }
+
     @Test
     void drained_onInlineExecutor_isResolvedAtOnce() {
         assertThat(ReactExecutor.inline("inline").drained().isResolved()).isTrue();

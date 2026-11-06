@@ -32,6 +32,7 @@ import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
 
@@ -458,14 +459,22 @@ public final class DeploymentWiring {
     /// Under LEGACY the drain is a no-op and the order is the one the node always had.
     ///
     /// #2688: `delivered` is taken right after PASSIVE is routed and resolves once the reactions that edge queued (the `LeaderChange` the FSM routes onto
-    /// a react executor) have run; the quiesce, which would drop them, waits for it. The returned promise resolves after the quiesce.
+    /// a react executor) have run; the quiesce, which would drop them, waits for it. The returned promise resolves after the quiesce. The quiesce and
+    /// whatever the caller chains on the returned promise run on a pooled thread, never on the thread that resolved `delivered`: that is the react
+    /// executor whose reactions it waited for, or the shared timeout scheduler when the caller bounded the wait, and the node's teardown chained here
+    /// blocks (the final cursor commits are awaited, bounded).
     public Promise<Unit> leaveQuorum(Runnable routePassive, Supplier<Promise<Unit>> delivered, Runnable quiesce) {
         routePassive.run();
         var reactionsRun = delivered.get();
 
         system.onPresent(Fsm2System::drainNode);
 
-        return reactionsRun.map(unit -> quiesced(quiesce));
+        return reactionsRun.flatMap(DeploymentWiring::handedOff)
+                           .map(unit -> quiesced(quiesce));
+    }
+
+    private static Promise<Unit> handedOff(Unit unit) {
+        return Promise.promise(Result::unitResult);
     }
 
     private static Unit quiesced(Runnable quiesce) {

@@ -19,13 +19,12 @@ import org.pragmatica.utility.react.ReactExecutor;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 
-/// Wiring pin for [AetherNode#stop]: the leader-toggled control-plane components deactivate only through
-/// the synchronous chain `router.route(ClusterStateNotification.passive())` then `router.quiesce()`. The
+/// Wiring pin for [AetherNode#stop]: the leader-toggled control-plane components deactivate through
+/// `router.route(ClusterStateNotification.passive())` and must have done so before `router.quiesce()`. The
 /// passive notification must be delivered while the router still routes (`LeaderManager` turns it into
 /// `QuorumDisappeared`, then `QuorumLost`, then `LeaderChange(none, false)`, which every
 /// `toggle*OnLeaderChange` route receives); once the router is quiesced it silently drops everything, so
-/// the same two calls in the other order, or a `route` that hands the message to another thread, leave the
-/// components active on a stopped node.
+/// a quiesce that does not wait for that delivery leaves the components active on a stopped node.
 ///
 /// Real nodes, real QUIC and Rabia: a single node cannot elect (the election is skipped on an empty
 /// transport view), so the leader of a formed three-node cluster is stopped on its own and read after
@@ -40,7 +39,9 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// has run. The first test reads the outcome and was flaky under load (the reaction sometimes lost the race);
 /// the second forces the interleaving: the executor is held by a latch until `stop()` has returned its promise, so the
 /// reaction runs strictly after the synchronous part of `stop()` - red at the pre-fix tip (the quiesced router drops it,
-/// `deploymentManager` and `abTestManager` stay active), green when the quiesce and the promise wait for it.
+/// `deploymentManager` and `abTestManager` stay active), green when the quiesce and the promise wait for it; it also reads the
+/// promise `stop()` returned as still unresolved while the reaction is held. The third holds the executor past the stop's
+/// bound on that wait (`LEADER_DEACTIVATION_BOUND`): `stop()` must resolve anyway.
 ///
 /// Mutation record (both red, three runs each): swapping `router.route(passive)` and `router.quiesce()` in
 /// `AetherNode.stop`, and making `DelegateRouter.route` asynchronous, each leave `deploymentManager` and
@@ -59,6 +60,10 @@ class EmberStopDeactivatesLeaderTogglesTest {
                                                                                 APP_HTTP_OFFSET);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
+    /// The deactivation bound plus the rest of the stop (backup flush 10 s, sealer 5 s, run beside each other, and the stop
+    /// sequence); well under STOP_BOUND so a stop that does not give up at the bound still has headroom to show as a failure.
+    private static final TimeSpan HELD_STOP_BOUND = TimeSpan.timeSpan(AetherNode.LEADER_DEACTIVATION_BOUND.millis() + 25_000L).millis();
+    private static final long HELD_MS = 300L;
     private static final long POLL_MS = 250L;
     private static final long LEADER_BOUND_MS = 90_000L;
     private static final long ACTIVE_BOUND_MS = 60_000L;
@@ -118,10 +123,42 @@ class EmberStopDeactivatesLeaderTogglesTest {
 
         var stopped = leader.stop();
 
+        Thread.sleep(HELD_MS);
+        assertThat(stopped.isResolved()).as("stop() has not resolved while the LeaderChange reaction is held").isFalse();
         release.countDown();
         assertThat(stopped.await(STOP_BOUND).isSuccess()).as("the leader stops").isTrue();
         assertThat(states(leader)).as("leader-toggled components once stop() resolved, reaction held past its return")
                                   .allSatisfy((name, active) -> assertThat(active).as(name).isFalse());
+    }
+
+    /// F2 (#2688): a wedged `LeaderManager` reaction cannot hold the stop. The executor is held for the whole stop; `stop()`
+    /// resolves anyway, after the bound on the deactivation's delivery.
+    @Test
+    @Timeout(420)
+    void stop_resolves_whenTheLeaderManagerExecutorIsHeldPastTheBound() throws InterruptedException {
+        cluster = EmberTestPorts.startedCluster(PORTS,
+                                                basePort -> emberCluster(CLUSTER_SIZE,
+                                                                         basePort,
+                                                                         basePort + MGMT_OFFSET,
+                                                                         basePort + APP_HTTP_OFFSET,
+                                                                         "stopdeact3"),
+                                                START_BOUND);
+        var leader = awaitLeaderNode();
+
+        awaitActive(leader);
+
+        var held = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+
+        leaderManagerExecutor(leader).undo("hold", () -> hold(held, release));
+        assertThat(held.await(30, TimeUnit.SECONDS)).as("the LeaderManager executor is held").isTrue();
+        try {
+            var stopped = leader.stop();
+
+            assertThat(stopped.await(HELD_STOP_BOUND).isSuccess()).as("the leader stops with its LeaderManager executor held").isTrue();
+        } finally {
+            release.countDown();
+        }
     }
 
     private static ReactExecutor leaderManagerExecutor(AetherNode node) {
