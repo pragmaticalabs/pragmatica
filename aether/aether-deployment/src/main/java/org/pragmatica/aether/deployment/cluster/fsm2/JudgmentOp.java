@@ -6,7 +6,9 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Map;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.UnresponsiveEntry;
@@ -18,8 +20,9 @@ import org.pragmatica.lang.Option;
 /// operations of an artifact and the flush folds them over the committed value into **one** mutation (R-4.2.2,
 /// NT-108): contention on the judgment key is designed out.
 public sealed interface JudgmentOp {
-    /// A fatal failure: the permanent mark (R-3.3.6).
-    record Fatal() implements JudgmentOp {}
+    /// A fatal failure: the permanent mark (R-3.3.6), judging `attempts` (the attempts of the blueprints declaring the
+    /// artifact when the mark was decided; CF-8 scopes the ALL_OR_NOTHING rollback to them).
+    record Fatal(Set<String> attempts) implements JudgmentOp {}
 
     /// A transient failure on `node`: its count goes up by one (R-3.3.7).
     record Transient(NodeId node) implements JudgmentOp {}
@@ -47,30 +50,39 @@ public sealed interface JudgmentOp {
     static Option<ArtifactJudgmentValue> fold(Option<ArtifactJudgmentValue> committed, List<JudgmentOp> ops) {
         var start = new Judged(committed.map(ArtifactJudgmentValue::permanentFailure).or(false),
                                committed.map(ArtifactJudgmentValue::retries).or(Map.of()),
-                               committed.map(ArtifactJudgmentValue::unresponsive).or(Map.of()));
+                               committed.map(ArtifactJudgmentValue::unresponsive).or(Map.of()),
+                               committed.map(ArtifactJudgmentValue::judgedAttempts).or(Set.of()));
         var end = ops.stream().reduce(start, Judged::apply, (_, later) -> later);
 
         return end.isEmpty()
                ? Option.none()
-               : Option.some(new ArtifactJudgmentValue(end.permanent(), end.retries(), end.unresponsive()));
+               : Option.some(new ArtifactJudgmentValue(end.permanent(),
+                                                       end.retries(),
+                                                       end.unresponsive(),
+                                                       end.attempts()));
     }
 
     /// The judgment while operations are folded over it; each operation returns the next value.
-    record Judged(boolean permanent, Map<NodeId, Integer> retries, Map<NodeId, UnresponsiveEntry> unresponsive) {
+    record Judged(boolean permanent,
+                  Map<NodeId, Integer> retries,
+                  Map<NodeId, UnresponsiveEntry> unresponsive,
+                  Set<String> attempts) {
         Judged apply(JudgmentOp op) {
             return switch (op) {
-                case Fatal _ -> new Judged(true, retries, unresponsive);
+                case Fatal f -> new Judged(true, retries, unresponsive, union(attempts, f.attempts()));
                 case Transient t -> new Judged(permanent,
                                                with(retries,
                                                     t.node(),
                                                     retries.getOrDefault(t.node(), 0) + 1),
-                                               unresponsive);
-                case ResetRetries r -> new Judged(permanent, without(retries, r.node()), unresponsive);
-                case Exhausted e -> new Judged(permanent, without(retries, e.node()), unresponsive);
+                                               unresponsive,
+                                               attempts);
+                case ResetRetries r -> new Judged(permanent, without(retries, r.node()), unresponsive, attempts);
+                case Exhausted e -> new Judged(permanent, without(retries, e.node()), unresponsive, attempts);
                 case Retract r -> new Judged(permanent,
                                              retries,
-                                             with(unresponsive, r.node(), r.entry()));
-                case ClearUnresponsive c -> new Judged(permanent, retries, without(unresponsive, c.node()));
+                                             with(unresponsive, r.node(), r.entry()),
+                                             attempts);
+                case ClearUnresponsive c -> new Judged(permanent, retries, without(unresponsive, c.node()), attempts);
             };
         }
 
@@ -84,6 +96,14 @@ public sealed interface JudgmentOp {
             var next = new HashMap<>(map);
 
             next.put(node, value);
+
+            return next;
+        }
+
+        private static Set<String> union(Set<String> left, Set<String> right) {
+            var next = new HashSet<>(left);
+
+            next.addAll(right);
 
             return next;
         }

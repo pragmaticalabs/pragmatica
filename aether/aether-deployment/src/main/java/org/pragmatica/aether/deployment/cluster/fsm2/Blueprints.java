@@ -177,8 +177,7 @@ public sealed interface Blueprints {
     }
 
     /// The removal of the artifact's committed judgment, at its exact value.
-    private static Option<KVCommand.Mutation<AetherKey, AetherValue>> judgmentRemoval(ClusterModel m,
-                                                                                      Artifact artifact) {
+    static Option<KVCommand.Mutation<AetherKey, AetherValue>> judgmentRemoval(ClusterModel m, Artifact artifact) {
         return m.judgments.get(artifact)
                           .map(judgment -> new KVCommand.Mutation<AetherKey, AetherValue>(new ArtifactJudgmentKey(artifact),
                                                                                           Option.some((AetherValue) judgment),

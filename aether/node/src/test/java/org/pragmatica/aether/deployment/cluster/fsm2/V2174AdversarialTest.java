@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
@@ -230,7 +231,8 @@ class V2174AdversarialTest {
                                                           Map.of(CORE_2,
                                                                  new UnresponsiveEntry(SlFixtures.G1,
                                                                                        SliceGoal.LOADED,
-                                                                                       FsmHarness.START_WALL))));
+                                                                                       FsmHarness.START_WALL)),
+                                                          Set.of()));
         SlFixtures.seedGoal(h, CORE_2, ORDERS, SliceGoal.UNLOADED, g2);
         SlFixtures.seedRow(h, CORE_2, ORDERS, SliceObservedState.UNLOADING, g2, 12L);
         SlFixtures.seedGoal(h, CORE_3, ORDERS, SliceGoal.LOADED, g3);
@@ -315,7 +317,8 @@ class V2174AdversarialTest {
                                                           Map.of(CORE_2,
                                                                  new UnresponsiveEntry(SlFixtures.G1,
                                                                                        SliceGoal.LOADED,
-                                                                                       FsmHarness.START_WALL))));
+                                                                                       FsmHarness.START_WALL)),
+                                                          Set.of()));
         SlFixtures.seedGoal(h, CORE_2, ORDERS, SliceGoal.UNLOADED, g2);
         SlFixtures.seedRow(h, CORE_2, ORDERS, SliceObservedState.UNLOADING, g2, 12L);
         h.activate();

@@ -108,7 +108,7 @@ class DurableJudgmentTest {
         h.seedQuietly(new AppBlueprintKey(value.blueprint().id()),
                       value);
         h.seedQuietly(new ArtifactJudgmentKey(ORDERS),
-                      new ArtifactJudgmentValue(true, Map.of(), Map.of()));
+                      new ArtifactJudgmentValue(true, Map.of(), Map.of(), Set.of(ATTEMPT)));
         h.activate();
         h.advance(300_000L);
         assertThat(h.submits(SubmitKind.TARGETS)).as("the missing target IS re-driven").isNotEmpty();
@@ -243,7 +243,7 @@ class DurableJudgmentTest {
         var h = deployed(1);
 
         h.seed(new ArtifactJudgmentKey(ORDERS),
-               new ArtifactJudgmentValue(false, Map.of(CORE_1, 2), Map.of()));
+               new ArtifactJudgmentValue(false, Map.of(CORE_1, 2), Map.of(), Set.of()));
         h.drain();
         h.clearLog();
         h.seedRemove(new AppBlueprintKey(blueprintId(APP)));

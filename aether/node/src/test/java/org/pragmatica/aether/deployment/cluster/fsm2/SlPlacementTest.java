@@ -123,7 +123,8 @@ class SlPlacementTest {
                                                    Map.of(CORE_1,
                                                           new UnresponsiveEntry(G1,
                                                                                 SliceGoal.ACTIVE,
-                                                                                FsmHarness.START_WALL))));
+                                                                                FsmHarness.START_WALL)),
+                                                   Set.of()));
             stalePrefersFirst(h);
             assertThat(hosts(h, ORDERS)).containsExactly(CORE_2);
         }
@@ -199,7 +200,7 @@ class SlPlacementTest {
             seedTarget(h, ORDERS, 2, 1);
             seedJudgment(h,
                          ORDERS,
-                         new ArtifactJudgmentValue(true, Map.of(), Map.of()));
+                         new ArtifactJudgmentValue(true, Map.of(), Map.of(), Set.of()));
             h.activate();
             assertThat(countGoals(h, ORDERS)).isZero();
             assertThat(h.submits()).isEmpty();

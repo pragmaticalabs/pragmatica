@@ -76,6 +76,9 @@ public final class ClusterModel {
     PMap<ArtifactBase, SliceTargetValue> targets = PMap.empty(scans);
     PMap<ArtifactBase, VersionRoutingValue> routings = PMap.empty(scans);
     PMap<ArtifactBase, SliceTargetValue> pendingTargetPuts = PMap.empty(scans);
+    /// CF-8: the tick at which each currently orphaned target was first observed (the 2-tick hysteresis), and the tick of the last scan.
+    PMap<ArtifactBase, Long> orphanTargets = PMap.empty(scans);
+    long orphanTargetScanTick = -1L;
     PMap<Artifact, AwaitedTarget> awaitedTargets = PMap.empty(scans);
     PMap<BlueprintId, Long> redriveAt = PMap.empty(scans);
     PMap<Artifact, PSet<Artifact>> dependencies = PMap.empty(scans);
@@ -181,6 +184,8 @@ public final class ClusterModel {
         c.targets = targets.rebound(meter);
         c.routings = routings.rebound(meter);
         c.pendingTargetPuts = pendingTargetPuts.rebound(meter);
+        c.orphanTargets = orphanTargets.rebound(meter);
+        c.orphanTargetScanTick = orphanTargetScanTick;
         c.awaitedTargets = awaitedTargets.rebound(meter);
         c.redriveAt = redriveAt.rebound(meter);
         c.dependencies = dependencies.rebound(meter);
@@ -479,6 +484,8 @@ public final class ClusterModel {
         SCHEMA,
         OUTCOME,
         ORPHAN,
+        ORPHAN_TARGET,
+        STALE_MARK,
         DIVERGENCE
     }
 
