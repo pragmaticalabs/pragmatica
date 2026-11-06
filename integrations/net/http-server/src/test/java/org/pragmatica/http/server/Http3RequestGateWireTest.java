@@ -147,11 +147,11 @@ class Http3RequestGateWireTest {
     void bodyAtTheLimitPasses_oneByteOverIsRefused() throws Exception {
         start();
 
-        assertThat(Http3TestClient.exchange(port, stream -> body(stream, "/small", MIB, -1)).status()).isEqualTo("200");
-        assertThat(Http3TestClient.exchange(port, stream -> body(stream, "/small", MIB + 1, -1)).status()).isEqualTo("413");
-        assertThat(Http3TestClient.exchange(port, stream -> body(stream, "/small", MIB, MIB)).status()).as("declared length at the limit")
+        assertThat(Http3TestClient.exchange(port, stream -> body(stream, "/small", MIB, -1)).statusText()).isEqualTo("200");
+        assertThat(Http3TestClient.exchange(port, stream -> body(stream, "/small", MIB + 1, -1)).statusText()).isEqualTo("413");
+        assertThat(Http3TestClient.exchange(port, stream -> body(stream, "/small", MIB, MIB)).statusText()).as("declared length at the limit")
                                                                                                          .isEqualTo("200");
-        assertThat(Http3TestClient.exchange(port, stream -> body(stream, "/small", MIB + 1, MIB + 1)).status()).as("declared length over the limit")
+        assertThat(Http3TestClient.exchange(port, stream -> body(stream, "/small", MIB + 1, MIB + 1)).statusText()).as("declared length over the limit")
                                                                                                                  .isEqualTo("413");
     }
 
