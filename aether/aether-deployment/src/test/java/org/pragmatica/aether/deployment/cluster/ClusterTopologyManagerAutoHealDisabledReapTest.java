@@ -18,6 +18,7 @@ import java.util.function.Predicate;
 import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import org.pragmatica.aether.deployment.DeploymentMap;
@@ -699,6 +700,63 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
         settle();
 
         assertThat(eventsOf(OperatorWarningCode.INSTANCE_REAP_HELD)).isZero();
+    }
+
+    /// #2457: with auto-heal ENABLED a never-joined instance that reuses an already-confirmed node id must not be left billing in silence:
+    /// it is deleted (a second provider terminate) or announced (any operator event naming the node).
+    private boolean reapedOrAnnounced() {
+        return terminates.get() >= 2 || events.stream().anyMatch(event -> event.subject().equals(LOST.id()));
+    }
+
+    private void automaticReapConfirmedThenAnotherInstanceUnderTheSameId() {
+        lost();
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+        settle();
+        relist();
+    }
+
+    @Disabled("#2457 still present at 869dcab4637f: the confirmed-id recheck runs only with auto-heal disabled. Enable when fixed and delete the tripwires.")
+    @Test
+    void confirmedReap_thenNeverJoinedZombieUnderTheSameId_autoHealEnabled_isReapedOrAnnounced() {
+        automaticReapConfirmedThenAnotherInstanceUnderTheSameId();
+
+        ctm.drainNode(LOST, DrainReason.JOIN_GRACE_REAP);
+        settle();
+
+        assertThat(reapedOrAnnounced()).as("terminates=%s events=%s", terminates.get(), events).isTrue();
+    }
+
+    @Disabled("#2457 still present at 869dcab4637f: the confirmed-id recheck runs only with auto-heal disabled. Enable when fixed and delete the tripwires.")
+    @Test
+    void confirmedReap_thenOrphanUnderTheSameId_autoHealEnabled_isReapedOrAnnounced() throws ReflectiveOperationException {
+        automaticReapConfirmedThenAnotherInstanceUnderTheSameId();
+
+        orphanSweepFinds(LOST);
+        settle();
+
+        assertThat(reapedOrAnnounced()).as("terminates=%s events=%s", terminates.get(), events).isTrue();
+    }
+
+    /// TRIPWIRE for #2457: asserts what happens TODAY (the instance under the confirmed id is neither deleted nor announced).
+    /// When it goes red the bug is fixed: enable the two `@Disabled` tests above and delete both tripwires.
+    @Test
+    void tripwire_confirmedReap_thenZombieUnderTheSameId_autoHealEnabled_isNeitherReapedNorAnnouncedToday() {
+        automaticReapConfirmedThenAnotherInstanceUnderTheSameId();
+
+        ctm.drainNode(LOST, DrainReason.JOIN_GRACE_REAP);
+        settle();
+
+        assertThat(reapedOrAnnounced()).as("#2457 fixed? enable the @Disabled tests").isFalse();
+    }
+
+    @Test
+    void tripwire_confirmedReap_thenOrphanUnderTheSameId_autoHealEnabled_isNeitherReapedNorAnnouncedToday() throws ReflectiveOperationException {
+        automaticReapConfirmedThenAnotherInstanceUnderTheSameId();
+
+        orphanSweepFinds(LOST);
+        settle();
+
+        assertThat(reapedOrAnnounced()).as("#2457 fixed? enable the @Disabled tests").isFalse();
     }
 
     /// Auto-heal enabled: nothing is held, so a second reap of a confirmed node stays a no-op that asks the provider nothing.
