@@ -671,16 +671,28 @@ public enum OperatorWarningCode {
     STORAGE_VOLUME_GUARD_INACTIVE("storage-volume-guard-inactive", "storage", WarningLevel.WARNING),
     /// An append log fail-stopped after a failed fsync, frame write or reopen: every later append is refused for the rest of the node's
     /// process. Recovery is replacing the node: a node id never returns, so the replacement does not reopen the log. A whole-cluster
-    /// restart that keeps node ids reopens it, and the reopen recovers the valid prefix. A stream partition's log raises it with the subject `stream[partition]`, once per log (`know:`
-    /// `4ddd1ddfda`), and every publish to that partition on the node is refused from then on; a log with no owner of its own raises it
-    /// with the storage instance as the subject, once per instance (a second such log failing in the same boot is in the node log only).
-    /// The message names the log and the cause. Closed by [#STORAGE_WAL_WRITABLE] for a stream partition; the instance subject has no
-    /// recovery, because the instance raise names no log a later boot could report on.
+    /// restart that keeps node ids reopens it, and the reopen recovers the valid prefix. A stream partition's log raises it with the
+    /// subject `stream[partition]`, once per log (`know:` `4ddd1ddfda`), and every publish to that partition on the node is refused from
+    /// then on; a log with no owner of its own raises it with the storage instance as the subject, once per instance (a second such log
+    /// failing in the same boot is in the node log only). The message names the log and the cause.
+    ///
+    /// A stream partition's fail-stop is closed in one of three ways: [#STORAGE_WAL_WRITABLE] when a whole-cluster restart reopens the
+    /// log and it accepts a durable write; [#STORAGE_WAL_RETIRED] when the node that raised it leaves the cluster (its own removal or
+    /// decommission, as when it is replaced); and, when that node crashes, its `NODE_FAILED` supersedes the warning (the node can
+    /// publish nothing). The instance subject has no recovery, because the instance raise names no log a later boot could report on.
+    /// Named limit: the subject is the partition, not the node, so when two nodes fail-stop the same partition, one node's close also
+    /// closes the other's warning (it needs two independent WAL failures on one partition).
     STORAGE_WAL_FAIL_STOPPED("storage-wal-fail-stopped", "storage", WarningLevel.CRITICAL),
     /// The recovery of [#STORAGE_WAL_FAIL_STOPPED], same subject `stream[partition]`: the partition's log, reopened under the same node id
-    /// (a whole-cluster restart; a replaced node never reopens it, so no recovery follows a replacement), accepted its first durable write. INFO. The fail-stop leaves a mark beside the log (written best-effort: a volume that refused
-    /// the fsync may refuse the mark, and then no recovery is raised); a reopen that finds it raises this once and deletes the mark.
-    STORAGE_WAL_WRITABLE("storage-wal-writable", "storage", WarningLevel.INFO, STORAGE_WAL_FAIL_STOPPED),
+    /// (a whole-cluster restart; a replaced node never reopens it), accepted its first durable write. INFO. The fail-stop leaves a mark
+    /// beside the log (written best-effort: a volume that refused the fsync may refuse the mark, and then no recovery is raised); a
+    /// reopen that finds it raises this once and deletes the mark. Closes across processes: it is raised by a later process than the
+    /// one whose warning it closes, which holds no open state for it.
+    STORAGE_WAL_WRITABLE("storage-wal-writable", "storage", WarningLevel.INFO, STORAGE_WAL_FAIL_STOPPED, true),
+    /// The recovery of [#STORAGE_WAL_FAIL_STOPPED], same subject `stream[partition]`, raised by the node that fail-stopped when its own
+    /// removal or decommission commits (as when it is replaced): the log is not reopened, so it will never be writable; the message names
+    /// the departure. INFO. A shutdown is not a departure (a whole-cluster restart raises [#STORAGE_WAL_WRITABLE] instead).
+    STORAGE_WAL_RETIRED("storage-wal-retired", "storage", WarningLevel.INFO, STORAGE_WAL_FAIL_STOPPED),
     /// Block prefetching could not be started when the node reported ready, so the instance serves reads without the hints it would
     /// have acted on. The subject is the instance. Closed by [#STORAGE_PREFETCH_STARTED].
     STORAGE_PREFETCH_NOT_STARTED("storage-prefetch-not-started", "storage", WarningLevel.WARNING),

@@ -3723,8 +3723,9 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                   streamName + "[" + partition + "]",
                                                   "The WAL of stream {} partition {} fail-stopped: {}. Every publish to the partition on this node is refused "
                                                  + "from now on. Recovery: replace the node (POST /api/v1/nodes/replace/{id}); check the volume holding the WAL "
-                                                 + "(full or read-only). A node id never returns, so the replacement does not reopen this log; "
-                                                 + "storage-wal-writable closes this warning only when a whole-cluster restart reopens it under the same node id.",
+                                                 + "(full or read-only). A node id never returns, so the replacement does not reopen this log: "
+                                                 + "storage-wal-retired closes this warning when the node is removed or decommissioned, and "
+                                                 + "storage-wal-writable when a whole-cluster restart reopens the log under the same node id.",
                                                   streamName,
                                                   partition,
                                                   cause.message()));
