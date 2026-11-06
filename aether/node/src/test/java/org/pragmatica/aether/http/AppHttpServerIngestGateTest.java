@@ -313,6 +313,7 @@ class AppHttpServerIngestGateTest {
                 var mode = i % 2 == 0 ? Mode.DECLARED : Mode.UNDECLARED;
                 var r = client.post("/api/small/", Option.some(KEY_A), 2 * MIB, mode);
                 if (r.status() != 413) { bad++; }
+                if (i % 100 == 0) { System.err.println("DIAG2746 progress " + i); }
             }
         } catch (NumberFormatException e) {
             System.err.println("DIAG2746 NFE " + e);
