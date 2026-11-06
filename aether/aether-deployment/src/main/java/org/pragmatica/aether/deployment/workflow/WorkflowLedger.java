@@ -36,6 +36,8 @@ import org.pragmatica.lang.Promise;
 public interface WorkflowLedger {
     /// Every committed run, oldest first.
     List<WorkflowRunValue> runs();
+    /// The committed run `id`, as this node's store holds it.
+    Option<WorkflowRunValue> run(String id);
     /// The committed claim of `conflictKey`.
     Option<WorkflowClaimValue> claim(String conflictKey);
     /// Whether this node is the committed leader, the only node whose transactions are submitted.
@@ -88,6 +90,11 @@ public interface WorkflowLedger {
             @Override
             public List<WorkflowRunValue> runs() {
                 return index.runs();
+            }
+
+            @Override
+            public Option<WorkflowRunValue> run(String id) {
+                return store.getTyped(new WorkflowRunKey(id), WorkflowRunValue.class);
             }
 
             @Override

@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.pragmatica.aether.deployment.workflow.WorkflowStep.Readiness;
+import org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowClaimValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowRunValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowState;
 import org.pragmatica.lang.Cause;
@@ -93,7 +94,12 @@ class WorkflowReconcilerTest {
             }
 
             @Override
-            public Option<org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowClaimValue> claim(String conflictKey) {
+            public Option<WorkflowRunValue> run(String id) {
+                return real.run(id);
+            }
+
+            @Override
+            public Option<WorkflowClaimValue> claim(String conflictKey) {
                 return real.claim(conflictKey);
             }
 
@@ -118,15 +124,16 @@ class WorkflowReconcilerTest {
         return WorkflowReconciler.workflowReconciler(ledger(), Map.of("k", kind), () -> T0, bound);
     }
 
-    private WorkflowRunValue admit(String id, String key) {
-        return WorkflowAdmission.workflowAdmission(real, Map.of("k", kind), () -> id)
-                                .admit("k", Map.of(), List.of(key), T0)
+    /// Admits a run as the request `name`; tests name runs by their request key, [#committed] maps it to the keyed run id.
+    private WorkflowRunValue admit(String name, String key) {
+        return WorkflowAdmission.workflowAdmission(real, Map.of("k", kind))
+                                .admit("k", Map.of(), List.of(key), T0, name)
                                 .await()
                                 .unwrap();
     }
 
-    private WorkflowRunValue committed(String id) {
-        return cluster.run(id).unwrap();
+    private WorkflowRunValue committed(String name) {
+        return cluster.run(WorkflowAdmission.runId("k", name).unwrap()).unwrap();
     }
 
     private static void tick(WorkflowReconciler reconciler) {
