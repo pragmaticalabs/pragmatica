@@ -5,13 +5,13 @@ name: Changelog fragment
 # `release-prep` allows the CHANGELOG.md edit.
 on:
   pull_request:
-    branches: [main, release-*, 'overhaul/**', 'rewrite/**']
+    branches: [main, release-*, 'overhaul/**', 'rewrite/**', 'feature/**']
     types: [opened, synchronize, reopened, labeled, unlabeled]
   # Merge queue: `fragment` is a required context, so it must report on the queue's branch. The check itself is a
   # pull-request check (it needs the PR's labels and base ref, neither exists on merge_group); it ran on the PR head
   # and the merge_group run says so explicitly instead of skipping, because a skipped required job reads as success.
   merge_group:
-    branches: [main, release-*, 'overhaul/**', 'rewrite/**']
+    branches: [main, release-*, 'overhaul/**', 'rewrite/**', 'feature/**']
 
 # A newer run on the same PR supersedes the in-progress one.
 concurrency:

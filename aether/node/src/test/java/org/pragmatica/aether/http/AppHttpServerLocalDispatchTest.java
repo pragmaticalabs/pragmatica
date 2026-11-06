@@ -2,19 +2,28 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.http;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.http.routing.SliceVersionRegistry;
 import org.pragmatica.http.routing.VersioningMetricsSink;
-
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.http.HttpRoutePublisher.LocalRouteInfo;
 import org.pragmatica.aether.http.adapter.RouteDecorator;
+import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
+import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector.Origin;
+import org.pragmatica.aether.slice.RateGuardError;
+import org.pragmatica.aether.worker.metrics.ArrivalCounts;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpRequestHandler;
@@ -36,17 +45,13 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.time.Duration;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.Unit.unit;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// Regression coverage for the local-dispatch fast path: a request matching a locally-hosted
 /// ACTIVE slice must serve locally even while the route-table snapshot is empty and
@@ -55,8 +60,8 @@ class AppHttpServerLocalDispatchTest {
     private static final NodeId SELF_NODE = NodeId.nodeId("test-node").unwrap();
     private static final NodeId REMOTE_NODE = NodeId.nodeId("remote-node").unwrap();
     private static final Artifact TEST_ARTIFACT = Artifact.artifact("com.example:svc:1.0.0").unwrap();
-    private int port;
 
+    private int port;
     private HttpRouteRegistry registry;
     private HttpClient httpClient;
 
@@ -67,6 +72,11 @@ class AppHttpServerLocalDispatchTest {
     }
 
     private AppHttpServer serverWithPublisher(Option<HttpRoutePublisher> publisher) {
+        return serverWithPublisher(publisher, Option.none());
+    }
+
+    private AppHttpServer serverWithPublisher(Option<HttpRoutePublisher> publisher,
+                                              Option<InvocationMetricsCollector> collector) {
         return AppHttpServer.appHttpServer(AppHttpConfig.insecureAppHttpConfig(0),
                                            ForwardingTimeouts.forwardingTimeouts(),
                                            SELF_NODE,
@@ -76,10 +86,10 @@ class AppHttpServerLocalDispatchTest {
                                            Option.none(),
                                            Option.none(),
                                            Option.none(),
+                                           collector,
                                            Option.none(),
                                            Option.none(),
-                                           Option.none(),
-                                           Option.<org.pragmatica.aether.update.DeploymentManager>none());
+                                           Option.<org.pragmatica.aether.update.DeploymentManager> none());
     }
 
     @Test
@@ -87,14 +97,14 @@ class AppHttpServerLocalDispatchTest {
         var publisher = StubRoutePublisher.hosting("GET", "/local/", SELF_NODE);
         var server = serverWithPublisher(Option.some(publisher));
 
-        TlsProbe.requireStarted(server.start().await(), "app listener");
+        TlsProbe.requireStarted(server.start().await(),
+                                "app listener");
         port = TlsProbe.requireBoundPort(server.boundPort(), "app listener");
         try {
             // Reproduce the generation-churn window: routing quiesced => snapshot empty and
             // isRouteReady()=false, while the live publisher still hosts the ACTIVE slice.
             quiesceRouting(server);
             assertThat(server.isRouteReady()).isFalse();
-
             var response = get("/local/thing");
 
             assertThat(response.statusCode()).isEqualTo(200);
@@ -111,12 +121,12 @@ class AppHttpServerLocalDispatchTest {
         var publisher = StubRoutePublisher.hosting("GET", "/other/", SELF_NODE);
         var server = serverWithPublisher(Option.some(publisher));
 
-        TlsProbe.requireStarted(server.start().await(), "app listener");
+        TlsProbe.requireStarted(server.start().await(),
+                                "app listener");
         port = TlsProbe.requireBoundPort(server.boundPort(), "app listener");
         try {
             quiesceRouting(server);
             assertThat(server.isRouteReady()).isFalse();
-
             var response = get("/missing/thing");
 
             assertThat(response.statusCode()).isEqualTo(503);
@@ -135,7 +145,8 @@ class AppHttpServerLocalDispatchTest {
         var publisher = StubRoutePublisher.hosting("GET", "/local/", SELF_NODE);
         var server = serverWithPublisher(Option.some(publisher));
 
-        TlsProbe.requireStarted(server.start().await(), "app listener");
+        TlsProbe.requireStarted(server.start().await(),
+                                "app listener");
         port = TlsProbe.requireBoundPort(server.boundPort(), "app listener");
         try {
             var response = get("/remote/thing");
@@ -147,15 +158,63 @@ class AppHttpServerLocalDispatchTest {
         }
     }
 
+    /// Rc6 f3a: the EXTERNAL arrival counters at the HTTP ingress, counted per resolved route.
+    @Test
+    void externalArrival_servedRequest_isArrivalAcceptedCompleted() throws Exception {
+        var counts = countsAfterOneRequest(Promise.success(HttpResponseData.httpResponseData(200, "{}")));
+
+        assertThat(counts).isEqualTo(new ArrivalCounts(1, 1, 0, 1, 0));
+    }
+
+    @Test
+    void externalArrival_failedRequest_isAcceptedAndFailed() throws Exception {
+        var counts = countsAfterOneRequest(Causes.cause("boom").promise());
+
+        assertThat(counts).isEqualTo(new ArrivalCounts(1, 1, 0, 0, 1));
+    }
+
+    @Test
+    void externalArrival_rateLimited_isArrivalAndRejected_notAccepted() throws Exception {
+        var counts = countsAfterOneRequest(RateGuardError.LimitExceeded.limitExceeded(1000, 10, 0, 0).promise());
+
+        assertThat(counts).isEqualTo(new ArrivalCounts(1, 0, 1, 0, 0));
+    }
+
+    @Test
+    void externalArrival_refusedByAdmission_isArrivalAndRejected_notFailed() throws Exception {
+        var counts = countsAfterOneRequest(org.pragmatica.aether.invoke.InvocationAdmission.Error.DRAINING.promise());
+
+        assertThat(counts).isEqualTo(new ArrivalCounts(1, 0, 1, 0, 0));
+    }
+
+    private ArrivalCounts countsAfterOneRequest(Promise<HttpResponseData> outcome) throws Exception {
+        var collector = InvocationMetricsCollector.invocationMetricsCollector();
+        var server = serverWithPublisher(Option.some(new StubRoutePublisher("GET",
+                                                                            "/local/",
+                                                                            SELF_NODE,
+                                                                            new StubSliceRouter(outcome))),
+                                         Option.some(collector));
+
+        TlsProbe.requireStarted(server.start().await(),
+                                "app listener");
+        port = TlsProbe.requireBoundPort(server.boundPort(), "app listener");
+        try {
+            get("/local/thing");
+        } finally {
+            server.stop().await();
+        }
+
+        assertThat(collector.arrivalCounts(TEST_ARTIFACT, "create", Origin.INTERNAL)).isEqualTo(ArrivalCounts.ZERO);
+
+        return collector.arrivalCounts(TEST_ARTIFACT, "create", Origin.EXTERNAL);
+    }
+
     private static void quiesceRouting(AppHttpServer server) {
         server.onQuorumStateChange(ClusterStateNotification.passive());
     }
 
     private HttpResponse<String> get(String path) throws Exception {
-        var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + path))
-                                 .GET()
-                                 .build();
+        var request = HttpRequest.newBuilder().uri(URI.create("http://localhost:" + port + path)).GET().build();
 
         return httpClient.send(request, HttpResponse.BodyHandlers.ofString());
     }
@@ -172,8 +231,7 @@ class AppHttpServerLocalDispatchTest {
     /// Minimal HttpRoutePublisher stub: hosts exactly one live local route with a SliceRouter that
     /// returns a fixed 200. Mirrors the live ConcurrentHashMap-backed publisher's local source of
     /// truth without touching the cluster.
-    private record StubRoutePublisher(String httpMethod, String pathPrefix, NodeId nodeId, SliceRouter router)
-        implements HttpRoutePublisher {
+    private record StubRoutePublisher(String httpMethod, String pathPrefix, NodeId nodeId, SliceRouter router) implements HttpRoutePublisher {
         static StubRoutePublisher hosting(String httpMethod, String pathPrefix, NodeId nodeId) {
             return new StubRoutePublisher(httpMethod, pathPrefix, nodeId, new StubSliceRouter());
         }
@@ -206,7 +264,9 @@ class AppHttpServerLocalDispatchTest {
         }
 
         @Override
-        public Promise<Unit> publishRoutes(Artifact artifact, ClassLoader classLoader, SliceInvokerFacade invokerFacade) {
+        public Promise<Unit> publishRoutes(Artifact artifact,
+                                           ClassLoader classLoader,
+                                           SliceInvokerFacade invokerFacade) {
             return Promise.success(unit());
         }
 
@@ -261,9 +321,19 @@ class AppHttpServerLocalDispatchTest {
 
     /// Minimal SliceRouter stub returning a fixed 200; unversioned registry, identity observability.
     private static final class StubSliceRouter implements SliceRouter {
+        private final Promise<HttpResponseData> outcome;
+
+        StubSliceRouter() {
+            this(Promise.success(HttpResponseData.httpResponseData(200, "{\"result\":\"served-locally\"}")));
+        }
+
+        StubSliceRouter(Promise<HttpResponseData> outcome) {
+            this.outcome = outcome;
+        }
+
         @Override
         public Promise<HttpResponseData> handle(HttpRequestContext request) {
-            return Promise.success(HttpResponseData.httpResponseData(200, "{\"result\":\"served-locally\"}"));
+            return outcome;
         }
 
         @Override

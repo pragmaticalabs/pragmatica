@@ -11,12 +11,30 @@ public record PerMethodMetrics(String method,
                                long activeInvocations,
                                double p95LatencyMs,
                                double errorRate,
-                               long totalCalls) {
+                               long totalCalls,
+                               ArrivalCounts external,
+                               ArrivalCounts internal) {
     public static PerMethodMetrics perMethodMetrics(String method,
                                                     long activeInvocations,
                                                     double p95LatencyMs,
                                                     double errorRate,
                                                     long totalCalls) {
-        return new PerMethodMetrics(method, activeInvocations, p95LatencyMs, errorRate, totalCalls);
+        return new PerMethodMetrics(method,
+                                    activeInvocations,
+                                    p95LatencyMs,
+                                    errorRate,
+                                    totalCalls,
+                                    ArrivalCounts.ZERO,
+                                    ArrivalCounts.ZERO);
+    }
+
+    public static PerMethodMetrics perMethodMetrics(String method,
+                                                    long activeInvocations,
+                                                    double p95LatencyMs,
+                                                    double errorRate,
+                                                    long totalCalls,
+                                                    ArrivalCounts external,
+                                                    ArrivalCounts internal) {
+        return new PerMethodMetrics(method, activeInvocations, p95LatencyMs, errorRate, totalCalls, external, internal);
     }
 }
