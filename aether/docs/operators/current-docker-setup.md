@@ -92,7 +92,7 @@ docker compose --profile forge up --build
 ### Health Check
 
 ```bash
-curl http://localhost:8080/health
+curl http://localhost:8080/api/v1/health
 ```
 
 ---

@@ -1,0 +1,7 @@
+# F1 survivor pin fixture (wiring-SliceLegBuilders-11): a stream consumer whose section has no stream-name segment after a dot.
+reactive.count=1
+reactive.0.category=stream
+reactive.0.method=onAudit
+reactive.0.config=audit
+reactive.0.batch=false
+reactive.0.eventType=com.example.Audit

@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -495,6 +496,12 @@ public final class OwnerActivation {
     /// and every partition's gate probes the same peers, so one peer's backoff paces all of them and a peer that answers
     /// is not held back by another that refuses. A run's wait is the longest hold among its refused peers.
     private final RefusalBackoff<NodeId> peerRefusals = RefusalBackoff.refusalBackoff();
+    /// #2682: eager gates ([#onCommittedOwnership]) waiting for a slot, in arrival order, and the slots taken; both guarded
+    /// by [#eagerOrder]. One unwired gate runs one eager gate at a time.
+    private final Object eagerOrder = new Object();
+    private final LinkedHashSet<PartitionKey> eagerBacklog = new LinkedHashSet<>();
+    private int eagerRunning;
+    private volatile int eagerConcurrency = 1;
     /// The block currently reported for each partition; the alarm fires when it first appears or changes.
     private final Map<PartitionKey, ActivationBlock> blocks = new ConcurrentHashMap<>();
     /// The "members did not answer" block, in its OWN slot (#1937): it is a condition independent of every other block, so a
@@ -690,14 +697,127 @@ public final class OwnerActivation {
         return new StreamError.OwnerNotActivated(stream, partition).result();
     }
 
+    /// #2682: the committed-record hook. A committed ownership record that newly names this node (no record before, or an
+    /// ownership other than the one before: owner, epoch, term, transfer stamp) starts the promotion gate at once, instead of
+    /// waiting for the first owner action to call [#admit]. Without it a new owner nothing publishes to or reads from never
+    /// runs the gate, so it never pulls the appended tail a live peer holds beyond its own head, and stays behind for good.
+    /// An ISR-only change starts nothing, for the reason [#isActivated] gives. The gate itself is unchanged: this only starts
+    /// the same attempt a demand starts, with its fresh view, re-drive loop and every safety step.
+    ///
+    /// Guarantee: a partition this node newly owns runs its gate within one eager slot's wait plus the gate's own run, with no
+    /// demand, and a failed run (one during a quorum loss included) is re-run until the partition is activated or this node
+    /// is no longer its named owner. Mechanism: the hook below and the re-drive loop of [#attempt]. Not covered: an attempt
+    /// that meets a gate already running for the partition ([ActivationError#IN_PROGRESS]) leaves the outcome to that gate.
+    /// At most [#eagerConcurrency] eager gates run at once (a mass reshuffle would otherwise probe `RF - 1` peers per moved
+    /// partition in one burst); the rest wait in arrival order. A demand ([#admit]) never waits for a slot.
+    @Contract
+    public void onCommittedOwnership(String stream,
+                                     int partition,
+                                     Option<StreamPartitionOwnershipValue> before,
+                                     StreamPartitionOwnershipValue after) {
+        if (after.owner().equals(self) && !sameOwnership(before, Option.some(after))) {
+            queueEager(PartitionKey.partitionKey(stream, partition));
+        }
+    }
+
+    /// Late-bind the eager-gate cap (#2682, `[streaming] reshuffle_concurrency`); the configuration validates it is at least 1.
+    /// Set once at wiring. THE VALUE IS A GUESS: it bounds the same per-node fan-out a reshuffle's backfill does, but no
+    /// measurement backs it; a reshuffle of more than 100 partitions, timing the probe burst, would settle it.
+    @Contract
+    public void eagerConcurrency(int cap) {
+        this.eagerConcurrency = cap;
+        drainEager();
+    }
+
+    /// The partitions whose eager gate waits for a slot, in arrival order: a snapshot, for the cap's tests.
+    List<PartitionKey> eagerWaiting() {
+        synchronized (eagerOrder) {
+            return List.copyOf(eagerBacklog);
+        }
+    }
+
+    @Contract
+    private void queueEager(PartitionKey key) {
+        synchronized (eagerOrder) {
+            eagerBacklog.add(key);
+        }
+
+        drainEager();
+    }
+
+    @Contract
+    private void drainEager() {
+        nextEager().onPresent(this::runEager);
+    }
+
+    /// The next queued partition, taking a slot for it; none while every slot is taken or nothing waits.
+    private Option<PartitionKey> nextEager() {
+        synchronized (eagerOrder) {
+            if (eagerRunning >= eagerConcurrency || eagerBacklog.isEmpty()) {
+                return Option.none();
+            }
+
+            eagerRunning++;
+
+            return Option.some(eagerBacklog.removeFirst());
+        }
+    }
+
+    /// The slot is held for the first gate run only; a failed run continues in the re-drive loop outside the cap, paced by
+    /// its backoff. The next queued partition is then tried, so a cap above one fills every free slot. The run starts on the
+    /// async executor, never on the thread that applied the committed record: the gate's first step orders a consensus round.
+    @Contract
+    private void runEager(PartitionKey key) {
+        Promise.async(() -> startEager(key));
+    }
+
+    @Contract
+    private void startEager(PartitionKey key) {
+        eagerAttempt(key.streamName(), key.partition()).onResultRun(this::eagerSlotFreed);
+        drainEager();
+    }
+
+    @Contract
+    private void eagerSlotFreed() {
+        synchronized (eagerOrder) {
+            eagerRunning--;
+        }
+
+        drainEager();
+    }
+
+    /// One [#attempt] whose completion is visible: an activation already in place runs nothing, a refusal's wait defers
+    /// the run (the slot frees at once), otherwise the gate runs and a failure is re-driven exactly as on demand.
+    /// FER, as in [#attempt]: nobody waits on this run, so its failure is not surfaced; the re-drive loop makes the next attempt.
+    private Promise<Unit> eagerAttempt(String stream, int partition) {
+        if (isActivated(stream, partition)) {
+            return Promise.unitPromise();
+        }
+
+        return refusalWaitLeft(PartitionKey.partitionKey(stream, partition)).fold(() -> activateOrRedrive(stream,
+                                                                                                          partition,
+                                                                                                          REDRIVE_INITIAL_BACKOFF),
+                                                                                  left -> Promise.success(deferPastRefusal(stream,
+                                                                                                                           partition,
+                                                                                                                           REDRIVE_INITIAL_BACKOFF,
+                                                                                                                           left)));
+    }
+
     /// One activation attempt. A failed attempt is re-driven here, with a doubling backoff, while this node still
     /// claims the partition and is not activated: without it a failure (a peer that has not applied the stream's
     /// config yet, a probe that timed out) waited for the next demand, and a partition nobody demanded again stayed
     /// refused until something else happened to probe it (cloud run 1: ~25 s).
     ///
     /// FER: the failure itself is not surfaced to the refused caller, which is told `OwnerNotActivated` and retries;
-    /// this loop only guarantees an attempt is made again. Stops when the node is activated, ownership left it
-    /// (`NOT_OWNER`), or consensus is inactive; a demand starts a fresh loop, and one loop runs per partition.
+    /// this loop only guarantees an attempt is made again. Stops when the node is activated or ownership left it
+    /// (`NOT_OWNER`); a demand starts a fresh loop, and one loop runs per partition.
+    ///
+    /// #2682: a quorum loss does not stop the loop. While consensus is inactive the loop runs no gate, so an ex-owner
+    /// re-runs the whole gate only after it heals back; it waits one more backoff (bounded by [#REDRIVE_MAX_BACKOFF])
+    /// and looks again. An ownership that moved away during the loss is seen by the gate's fresh view once quorum
+    /// returns, which ends the loop (`NOT_OWNER`); until then this node cannot learn of it. Before, a run that failed
+    /// while quorum was lost ended the loop, and a partition nothing demanded (one the eager hook started) stayed
+    /// un-activated after quorum returned, because nothing ran its gate again.
     ///
     /// #2574: an attempt that falls inside a refusal's wait ([#refusedUntilNanos]) runs no gate; it is re-driven at the
     /// wait's end instead. After a refused probe the redrive therefore takes the ruled shape (know 89e17399a9): the
@@ -709,8 +829,8 @@ public final class OwnerActivation {
                        .onPresent(left -> deferPastRefusal(stream, partition, backoff, left));
     }
 
-    private void activateOrRedrive(String stream, int partition, TimeSpan backoff) {
-        activate(stream, partition).onFailure(cause -> redrive(stream, partition, backoff, cause));
+    private Promise<Unit> activateOrRedrive(String stream, int partition, TimeSpan backoff) {
+        return activate(stream, partition).onFailure(cause -> redrive(stream, partition, backoff, cause));
     }
 
     /// The part of the partition's refusal wait still to run, none once it has passed.
@@ -721,10 +841,12 @@ public final class OwnerActivation {
                      .map(left -> TimeSpan.timeSpan(left).nanos());
     }
 
-    private void deferPastRefusal(String stream, int partition, TimeSpan backoff, TimeSpan left) {
+    private Unit deferPastRefusal(String stream, int partition, TimeSpan backoff, TimeSpan left) {
         if (redriving.add(PartitionKey.partitionKey(stream, partition))) {
             SharedScheduler.schedule(() -> redriveAfterBackoff(stream, partition, backoff), left);
         }
+
+        return Unit.unit();
     }
 
     /// #2574: each probed peer's hold advances on a refusal and resets once its probe was sent; the longest hold among this
@@ -760,19 +882,31 @@ public final class OwnerActivation {
 
     private void redrive(String stream, int partition, TimeSpan backoff, Cause cause) {
         log.debug("Owner activation of {}[{}] pending: {}", stream, partition, cause.message());
-        if (cause == ActivationError.IN_PROGRESS || cause == ActivationError.NOT_OWNER || !consensusActive.getAsBoolean()) {
+        if (cause == ActivationError.IN_PROGRESS || cause == ActivationError.NOT_OWNER) {
             return;
         }
 
+        scheduleRedrive(stream, partition, backoff);
+    }
+
+    @Contract
+    private void scheduleRedrive(String stream, int partition, TimeSpan backoff) {
         if (redriving.add(PartitionKey.partitionKey(stream, partition))) {
             SharedScheduler.schedule(() -> redriveAfterBackoff(stream, partition, backoff), backoff);
         }
     }
 
+    /// While consensus is inactive no gate runs: the loop waits one more backoff (see [#attempt]).
     private void redriveAfterBackoff(String stream, int partition, TimeSpan backoff) {
         redriving.remove(PartitionKey.partitionKey(stream, partition));
-        if (!isActivated(stream, partition)) {
+        if (isActivated(stream, partition)) {
+            return;
+        }
+
+        if (consensusActive.getAsBoolean()) {
             attempt(stream, partition, nextBackoff(backoff));
+        } else {
+            scheduleRedrive(stream, partition, nextBackoff(backoff));
         }
     }
 

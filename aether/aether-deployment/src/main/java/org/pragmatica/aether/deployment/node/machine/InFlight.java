@@ -145,10 +145,6 @@ public record InFlight(long correlation,
         return new InFlight(newCorrelation, version, state, commands, attempt + 1, purpose, cycle, probing.restarted());
     }
 
-    public InFlight nextCycle(long newCorrelation) {
-        return new InFlight(newCorrelation, version, state, commands, 1, purpose, cycle + 1, probing.restarted());
-    }
-
     public InFlight withProbing(Probing next) {
         return new InFlight(correlation, version, state, commands, attempt, purpose, cycle, next);
     }

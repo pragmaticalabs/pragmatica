@@ -21,9 +21,11 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.pragmatica.lang.Option;
 
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -51,6 +53,28 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.INSTANCE_TERMINATION_CLEARED.closesAcrossNodes()).isTrue();
     }
 
+    /// N-5 (deployment FSM design 3.1): the mailbox backlog alarm and its recovery, a WARNING and an INFO of the `deployment` subsystem.
+    @Test
+    void deploymentFsmBacklog_isAWarning_withAnInfoRecoveryOfTheSameSubsystem() {
+        assertThat(OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG.code()).isEqualTo("deployment-fsm-backlog");
+        assertThat(OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG.subsystem()).isEqualTo("deployment");
+        assertThat(OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG_CLEARED.code()).isEqualTo("deployment-fsm-backlog-cleared");
+        assertThat(OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG_CLEARED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG_CLEARED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG);
+        assertThat(OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG.hasRecovery()).isTrue();
+    }
+
+    /// F1 survivor u16: a retirement refused for longer than its overdue bound leaves a terminated node's identity in the cluster view, so the
+    /// alarm is a WARNING; its recovery is the INFO.
+    @Test
+    void terminationRetirementOverdue_isAWarning_withAnInfoRecoveryOfTheSameSubsystem() {
+        assertThat(OperatorWarningCode.TERMINATION_RETIREMENT_OVERDUE.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.TERMINATION_RETIREMENT_OVERDUE.subsystem()).isEqualTo("deployment");
+        assertThat(OperatorWarningCode.TERMINATION_RETIREMENT_RESOLVED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.TERMINATION_RETIREMENT_RESOLVED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.TERMINATION_RETIREMENT_OVERDUE);
+    }
+
     @Test
     void codes_areKebabCase() {
         assertThat(Arrays.stream(OperatorWarningCode.values())
@@ -68,7 +92,9 @@ class OperatorWarningCodeTest {
     /// Every operator-attention event has a recovery event (owner rule, 2026-10-03/05). A WARNING or CRITICAL code that is
     /// not itself a recovery must therefore be closed by some recovery code. The codes in [#UNCLOSED_BEFORE_THE_RULE] were
     /// shipped as point events before the rule was enforced: the list is frozen, so a NEW unclosed code fails here and must
-    /// either gain a recovery or be added to the list on purpose, in review.
+    /// either gain a recovery or be added to the list on purpose, in review. The codes in
+    /// [#FSM2_AWAITING_RECOVERY_BEFORE_CUTOVER] are the other frozen list: written after the rule, for an engine that is not
+    /// active yet.
     @Test
     void everyWarningOrCriticalCode_hasARecovery_unlessListedAsUnclosedBeforeTheRule() {
         var closed = Arrays.stream(OperatorWarningCode.values())
@@ -81,7 +107,9 @@ class OperatorWarningCodeTest {
                              .collect(Collectors.toSet());
 
         assertThat(unclosed).as("WARNING/CRITICAL codes without a recovery code that are not on the frozen list")
-                            .isSubsetOf(UNCLOSED_BEFORE_THE_RULE);
+                            .isSubsetOf(Stream.concat(UNCLOSED_BEFORE_THE_RULE.stream(),
+                                                      FSM2_AWAITING_RECOVERY_BEFORE_CUTOVER.stream())
+                                              .collect(Collectors.toSet()));
     }
 
     /// The frozen list may only shrink: a listed code that has gained a recovery (or been removed) must leave the list.
@@ -104,6 +132,36 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.INSTANCE_REAP_HELD.code()).isEqualTo("instance-reap-held");
         assertThat(OperatorWarningCode.INSTANCE_REAP_RELEASED.code()).isEqualTo("instance-reap-released");
         assertThat(OperatorWarningCode.INSTANCE_REAP_HELD.level()).isEqualTo(WarningLevel.WARNING);
+    }
+
+    /// The FSM2 list may only shrink, as the list above: a listed code that has gained a recovery (or been removed, or
+    /// re-levelled to INFO) must leave the list.
+    @Test
+    void fsm2AwaitingRecovery_listsOnlyCodesThatAreStillUnclosed() {
+        var closed = Arrays.stream(OperatorWarningCode.values())
+                           .flatMap(code -> code.recoveryOf().stream())
+                           .collect(Collectors.toSet());
+
+        assertThat(FSM2_AWAITING_RECOVERY_BEFORE_CUTOVER).noneMatch(closed::contains);
+        assertThat(FSM2_AWAITING_RECOVERY_BEFORE_CUTOVER).noneMatch(code -> code.level() == WarningLevel.INFO);
+        assertThat(FSM2_AWAITING_RECOVERY_BEFORE_CUTOVER).as("the two frozen lists are disjoint").doesNotContainAnyElementsOf(UNCLOSED_BEFORE_THE_RULE);
+    }
+
+    /// FSM2 cutover tripwire: while any FSM2 code lacks a recovery this stays green and the test beside it is disabled. When the
+    /// list is empty this goes red: enable [#fsm2CutoverUnblocked_everyFsm2CodeHasARecovery] and delete this one.
+    @Test
+    void fsm2CutoverBlocked_whileAnFsm2CodeLacksARecovery() {
+        assertThat(FSM2_AWAITING_RECOVERY_BEFORE_CUTOVER).as("FSM2 cutover blocked: %d codes lack a recovery",
+                                                              FSM2_AWAITING_RECOVERY_BEFORE_CUTOVER.size())
+                                                          .isNotEmpty();
+    }
+
+    @Disabled("FSM2 cutover blocked: the FSM2 warning codes lack a recovery")
+    @Test
+    void fsm2CutoverUnblocked_everyFsm2CodeHasARecovery() {
+        assertThat(FSM2_AWAITING_RECOVERY_BEFORE_CUTOVER).as("FSM2 cutover blocked: %d codes lack a recovery",
+                                                              FSM2_AWAITING_RECOVERY_BEFORE_CUTOVER.size())
+                                                          .isEmpty();
     }
 
     /// FDB-2a (#2591): each schema-migration fence warning is closed by an INFO recovery of its own subsystem; the wire strings are pinned.
@@ -219,6 +277,15 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.COMMUNITY_ASSIGNMENT_UNPLACED.code()).isEqualTo("community-assignment-unplaced");
     }
 
+    /// #2115: a refused core replacement is a WARNING (the cluster stays under-replaced), closed by an INFO recovery of the same subject. INFO
+    /// would exempt the code from the recovery-pairing rule, so the level is pinned.
+    @Test
+    void coreReplacementSourceUnresolved_isAWarning_andIsClosedByAnInfoRecovery() {
+        assertThat(OperatorWarningCode.CORE_REPLACEMENT_SOURCE_UNRESOLVED.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.CORE_REPLACEMENT_SOURCE_RESOLVED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.CORE_REPLACEMENT_SOURCE_RESOLVED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.CORE_REPLACEMENT_SOURCE_UNRESOLVED);
+    }
+
     /// #2378 (know 14b6b16b8): a refused live `[json]` change is CRITICAL and closed by an INFO recovery of its own
     /// subsystem.
     @Test
@@ -305,6 +372,35 @@ class OperatorWarningCodeTest {
         // it is ending; what it left unsealed is replayed from its WAL at restart, or is lost with the heap.
         OperatorWarningCode.STREAM_SEAL_STOP_INCOMPLETE);
 
+    /// The deployment FSM rewrite's WARNING codes that have no recovery yet (phase-3 design 4.2, 5.2, 8.2). They were written after
+    /// the recovery rule, so they are NOT on [#UNCLOSED_BEFORE_THE_RULE]: FSM2 is not the active deployment engine in rc5, and each
+    /// of these must gain a recovery, be re-levelled, or be removed before the FSM2 cutover. Frozen and shrink-only, like the list
+    /// above; [#fsm2CutoverBlocked_whileAnFsm2CodeLacksARecovery] keeps the cutover blocked while it is not empty.
+    private static final Set<OperatorWarningCode> FSM2_AWAITING_RECOVERY_BEFORE_CUTOVER = Set.of(
+        OperatorWarningCode.DEPLOYMENT_ENGINE_MISMATCH,
+        OperatorWarningCode.ACTIVATION_UNPERMITTED,
+        OperatorWarningCode.BLUEPRINT_DELETE_REFUSED,
+        OperatorWarningCode.BLUEPRINT_REJECTED,
+        OperatorWarningCode.BOOT_TOKEN_ABSENT,
+        OperatorWarningCode.DEPARTURE_INFERRED,
+        OperatorWarningCode.DEPARTURE_INFERRED_REVERSED,
+        OperatorWarningCode.DEPARTURE_INFERRED_SUPPRESSED,
+        OperatorWarningCode.IDENTITY_PROCESS_MISMATCH,
+        OperatorWarningCode.INVALID_PLACEMENT,
+        OperatorWarningCode.JOIN_REFUSED_PROCESS,
+        OperatorWarningCode.JOIN_REFUSED_SUPERSEDED,
+        OperatorWarningCode.JOIN_UNMATCHED,
+        OperatorWarningCode.RETRY_EXHAUSTED_UNSETTLED,
+        OperatorWarningCode.SCHEMA_HOLD,
+        OperatorWarningCode.SCHEMA_HOLD_CLEARED,
+        OperatorWarningCode.SCHEMA_STATUS_UNKNOWN,
+        OperatorWarningCode.SLICE_UNRESPONSIVE,
+        OperatorWarningCode.SLICE_UNRESPONSIVE_EXPIRED,
+        OperatorWarningCode.STRAY_INSTANCE,
+        OperatorWarningCode.WORKER_ABSENCE_UNJUDGEABLE,
+        OperatorWarningCode.WORKER_NO_COMMUNITY_POLICY,
+        OperatorWarningCode.WORKER_READMITTED_ON_EVIDENCE);
+
     /// #752: a recovery code closes a condition of its own subsystem, and a condition is not itself a recovery, so a
     /// recovery is never itself waiting for one.
     @Test
@@ -384,5 +480,17 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_SENDERS_SUPPRESSED.level()).isEqualTo(WarningLevel.INFO);
         assertThat(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_SENDERS_SUPPRESSED.subsystem()).isEqualTo("membership");
         assertThat(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_SENDERS_SUPPRESSED.recoveryOf().isEmpty()).as("a point event").isTrue();
+    }
+
+    /// #2034 (#2684 round B): the sole-copy departure warning is CRITICAL (data is lost with the node unless restored); its recovery,
+    /// raised by the draining node itself, is an INFO that names it as the recovery of that warning.
+    @Test
+    void dhtDepartureSoleCopy_isCriticalWithAnInfoRecovery() {
+        assertThat(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_AT_RISK.code()).isEqualTo("dht-departure-sole-copy-at-risk");
+        assertThat(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_AT_RISK.level()).isEqualTo(WarningLevel.CRITICAL);
+        assertThat(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED.code()).isEqualTo("dht-departure-sole-copy-delivered");
+        assertThat(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED.recoveryOf().or(OperatorWarningCode.JSON_CONFIG_APPLIED))
+            .isEqualTo(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_AT_RISK);
     }
 }

@@ -16,13 +16,9 @@
 package org.pragmatica.dht;
 
 import java.util.HashSet;
-import java.util.HexFormat;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
@@ -57,31 +53,19 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// which every version already accepts one by one, so paging needs no change on the receiver.
 public final class DHTRebalancer {
     private static final Logger log = LoggerFactory.getLogger(DHTRebalancer.class);
-    /// Bounded best-effort budget for the graceful-departure push (issue #427, D4). Sits inside the
-    /// drain grace window: acks are milliseconds, so the departing node normally settles far under
-    /// this; on overrun the at-risk keys are reported via the [DeparturePushObserver] and the node
-    /// halts anyway (never a hard gate on halt).
+    /// Legacy budget of the budget-only departure-push overloads (issue #427, D4): the whole resend window of
+    /// [#pushOnDeparture(TimeSpan, DeparturePushObserver)] callers that pass it. The no-budget overloads use
+    /// [DeparturePushTuning#DEFAULT] instead (#2034).
     public static final TimeSpan DEFAULT_DEPARTURE_PUSH_BUDGET = timeSpan(10).seconds();
-    /// Bound on the at-risk key sample carried in a [DeparturePushObserver] report — keeps the
-    /// operator-visible payload small on a large-inventory overrun (issue #427, D4).
-    private static final int SAMPLE_LIMIT = 16;
-    private static final HexFormat HEX = HexFormat.of();
 
     private final DHTNode node;
     private final DHTNetwork network;
     /// Fixed for [#dhtRebalancer(DHTNode, DHTNetwork, DHTConfig)]; the node's live replication for
     /// [#dhtRebalancer(DHTNode, DHTNetwork)] (#1777 track 1).
     private final Supplier<DHTConfig> config;
-    /// Pending graceful-departure pushes awaiting a [DHTMessage.MigrationDataAck], keyed by the
-    /// push's correlation id. Populated by [#sendAckedPush], drained by [#onMigrationDataAck];
-    /// whatever remains when the budget expires is the at-risk set reported to the observer.
-    private final ConcurrentHashMap<String, PendingPush> pendingPushes = new ConcurrentHashMap<>();
-
-    /// A departure page awaiting its ack: the keys it carries (reported at risk while pending) and the ack.
-    private record PendingPush(List<byte[]> keys, Promise<Unit> ackPromise) {}
-
-    /// A departure page planned and registered under its correlation id, sent when its turn comes.
-    private record PlannedPush(String correlationId, List<KeyStamp> page, Promise<Unit> ackPromise) {}
+    /// Departure pages awaiting an applied [DHTMessage.MigrationDataAck], keyed by the page's correlation id. Registered by a
+    /// [DeparturePushRun] at plan time, removed by an applied ack, a retarget or the end of the push.
+    private final ConcurrentHashMap<String, DeparturePushRun.Page> pendingPushes = new ConcurrentHashMap<>();
 
     private DHTRebalancer(DHTNode node, DHTNetwork network, Supplier<DHTConfig> config) {
         this.node = node;
@@ -120,48 +104,83 @@ public final class DHTRebalancer {
         }
     }
 
-    /// Graceful-departure push (issue #427, D1/D3/D4), paged (A6). Invoked by the departing node's drain
-    /// procedure while it is still reachable: enumerates every locally-held chunk directly from the
-    /// storage engine (independent of whether self is still in the ring), and for each pushes only to
-    /// the node(s) that NEWLY become responsible post-departure — the delta `newSet \ oldSet`, never
-    /// to nodes that were already replicas (storm guard, guards against the reverted `d3e54717e`
-    /// class). Each push is ack-requested; the returned promise settles when every ack lands or the
-    /// budget expires, at which point the still-unacknowledged keys are reported via `observer` as a
-    /// bounded at-risk sample. FULL replication mode is a no-op (every node already holds everything).
-    /// The promise ALWAYS succeeds — a departure push is best-effort and must never gate the halt.
+    /// Graceful-departure push (issue #427, D1/D3/D4; #2034), paged (A6). Invoked by the departing node's drain procedure while it
+    /// is still reachable: enumerates every locally-held chunk directly from the storage engine (independent of whether self is
+    /// still in the ring), and for each pushes only to the node(s) that NEWLY become responsible post-departure — the delta
+    /// `newSet \ oldSet`, never to nodes that were already replicas (storm guard, guards against the reverted `d3e54717e` class).
+    /// FULL replication mode is a no-op (every node already holds everything). The promise ALWAYS succeeds — a departure push must
+    /// never gate the halt.
     ///
-    /// Each target's chunks go in pages of at most one [PageBudget], sent one after another: the next page leaves
-    /// once the previous one is acked or nacked. Every page is registered as pending before the first is sent, so a
-    /// budget that expires mid-push reports the unsent pages at risk together with the unacknowledged ones.
-    public Promise<Unit> pushOnDeparture(DeparturePushObserver observer) {
-        return pushOnDeparture(DEFAULT_DEPARTURE_PUSH_BUDGET, observer);
+    /// Each page is resent to its target until an applied ack arrives, within a bounded window (#2034): a page whose keys still
+    /// have a surviving replica stops at `baseBudget`; a page carrying a key no surviving replica holds (a sole copy) continues for
+    /// `soleExtra` more. A target is replaced only when it leaves the ring. Each target's pages travel in two chains, sole and
+    /// replicated, each one page after another. See [DeparturePushRun] for the classification and the events.
+    ///
+    /// @param window      absolute drain-clock deadline, event floor and halt flag
+    /// @param tuning      the windows and resend cadence
+    /// @param coDeparting nodes leaving together with this one (issue #1818); self need not be in the set
+    /// @param observer    receives the at-risk, delivered and incomplete events
+    ///
+    /// @return what was left unconfirmed when the push resolved
+    public Promise<DeparturePushReport> pushOnDeparture(DepartureWindow window,
+                                                        DeparturePushTuning tuning,
+                                                        Set<NodeId> coDeparting,
+                                                        DeparturePushObserver observer) {
+        var t0 = System.nanoTime();
+
+        return config.get()
+                     .isFullReplication()
+               ? Promise.success(DeparturePushReport.COMPLETE)
+               : DeparturePushRun.departurePushRun(node,
+                                                   network,
+                                                   pendingPushes,
+                                                   config.get().effectiveReplicationFactor(node.ring().nodeCount()),
+                                                   leavingSet(coDeparting),
+                                                   t0,
+                                                   window,
+                                                   tuning,
+                                                   observer)
+                                 .run();
     }
 
-    /// Budget-explicit variant of [#pushOnDeparture(DeparturePushObserver)].
+    /// Legacy form of [#pushOnDeparture(DepartureWindow, DeparturePushTuning, Set, DeparturePushObserver)] with
+    /// [DeparturePushTuning#DEFAULT], no co-departing nodes, a deadline of base + sole extra + event wait from now, never halted.
+    public Promise<Unit> pushOnDeparture(DeparturePushObserver observer) {
+        return pushOnDeparture(Set.of(), observer);
+    }
+
+    /// Legacy budget-explicit form: `budget` is the whole resend window (no sole extra), an attempt waits `min(1 s, budget / 4)`,
+    /// and the push resolves by `budget` plus the event wait. With an observer whose events settle at once the event wait is zero.
     public Promise<Unit> pushOnDeparture(TimeSpan budget, DeparturePushObserver observer) {
         return pushOnDeparture(budget, Set.of(), observer);
     }
 
-    /// Departure push for a node leaving TOGETHER with `coDeparting` (issue #1818): every node in
-    /// that set is still in the ring but is about to halt, so it is neither a push target nor a
-    /// surviving replica. Without this, a push can land on a co-drainer that halts with the copy, and
-    /// two holders leaving together each count the other as a survivor, leaving the slot the other
-    /// vacates unstocked. Self need not be in the set.
+    /// Legacy form for a node leaving TOGETHER with `coDeparting` (issue #1818): every node in that set is still in the ring but is
+    /// about to halt, so it is neither a push target nor a surviving replica. Without this, a push can land on a co-drainer that
+    /// halts with the copy, and two holders leaving together each count the other as a survivor, leaving the slot the other vacates
+    /// unstocked. Self need not be in the set. Uses [DeparturePushTuning#DEFAULT].
     public Promise<Unit> pushOnDeparture(Set<NodeId> coDeparting, DeparturePushObserver observer) {
-        return pushOnDeparture(DEFAULT_DEPARTURE_PUSH_BUDGET, coDeparting, observer);
+        var tuning = DeparturePushTuning.DEFAULT;
+
+        return pushOnDeparture(DepartureWindow.departureWindow(System.nanoTime() + tuning.baseBudget()
+                                                                                         .nanos() + tuning.soleExtra()
+                                                                                                          .nanos() + tuning.eventDeliveryWait()
+                                                                                                                           .nanos()),
+                               tuning,
+                               coDeparting,
+                               observer).mapToUnit();
     }
 
-    /// Budget-explicit variant of [#pushOnDeparture(Set, DeparturePushObserver)].
+    /// Legacy budget-explicit form of [#pushOnDeparture(Set, DeparturePushObserver)]; see
+    /// [#pushOnDeparture(TimeSpan, DeparturePushObserver)].
     public Promise<Unit> pushOnDeparture(TimeSpan budget, Set<NodeId> coDeparting, DeparturePushObserver observer) {
-        if (config.get().isFullReplication()) {
-            return Promise.success(Unit.unit());
-        }
+        var tuning = DeparturePushTuning.forBudget(budget);
 
-        var leaving = leavingSet(coDeparting);
-
-        return node.storage()
-                   .stamps()
-                   .flatMap(stamps -> dispatchDeparturePush(stamps, leaving, budget, observer));
+        return pushOnDeparture(DepartureWindow.departureWindow(System.nanoTime() + budget.nanos() + tuning.eventDeliveryWait()
+                                                                                                          .nanos()),
+                               tuning,
+                               coDeparting,
+                               observer).mapToUnit();
     }
 
     private Set<NodeId> leavingSet(Set<NodeId> coDeparting) {
@@ -172,215 +191,21 @@ public final class DHTRebalancer {
         return Set.copyOf(leaving);
     }
 
-    /// Resolve the pending departure push matching an incoming ack's correlation id (issue #427, D2).
-    /// A late ack that arrives after the budget expired simply finds no pending entry — harmless. A
-    /// nack (issue #1818) settles the wait but leaves the batch pending, so [#reportIncomplete] counts
-    /// its chunks at risk exactly as it counts an ack that never came.
+    /// Settle the departure page matching an incoming ack's correlation id (issue #427, D2; #2034). An applied ack removes the page
+    /// and delivers its keys; a nack (issue #1818) leaves it pending and settles only the current attempt, so the page is resent
+    /// after a backoff. An ack for a page no longer registered (the push ended, or the page was retargeted) is a no-op.
     @Contract
     public void onMigrationDataAck(DHTMessage.MigrationDataAck ack) {
         var settled = ack.applied()
                       ? pendingPushes.remove(ack.requestId())
                       : pendingPushes.get(ack.requestId());
 
-        Option.option(settled).onPresent(pending -> pending.ackPromise()
-                                                           .succeed(Unit.unit()));
-    }
-
-    private Promise<Unit> dispatchDeparturePush(List<KeyStamp> stamps,
-                                                Set<NodeId> leaving,
-                                                TimeSpan budget,
-                                                DeparturePushObserver observer) {
-        var batches = groupByTarget(stamps, leaving);
-
-        return batches.isEmpty()
-               ? Promise.success(Unit.unit())
-               : awaitAcks(sendPushes(batches, leaving), budget, observer);
-    }
-
-    /// Group every locally-held entry's stamp under each node that newly becomes responsible for it, so a
-    /// target receives the pages carrying all of its owed chunks.
-    private Map<NodeId, List<KeyStamp>> groupByTarget(List<KeyStamp> stamps, Set<NodeId> leaving) {
-        var replicationFactor = config.get().effectiveReplicationFactor(node.ring().nodeCount());
-
-        return stamps.stream()
-                     .flatMap(stamp -> targetPairs(stamp, replicationFactor, leaving))
-                     .collect(Collectors.groupingBy(TargetEntry::target,
-                                                    Collectors.mapping(TargetEntry::stamp,
-                                                                       Collectors.toList())));
-    }
-
-    private record TargetEntry(NodeId target, KeyStamp stamp) {}
-
-    private Stream<TargetEntry> targetPairs(KeyStamp stamp, int replicationFactor, Set<NodeId> leaving) {
-        return departureTargets(stamp.key(),
-                                replicationFactor,
-                                leaving).stream()
-                               .map(target -> new TargetEntry(target, stamp));
-    }
-
-    /// Post-departure delta target set for one key (issue #427, D3). `newSet` is the responsible set
-    /// with every `leaving` node excluded — self and each co-departing node (issue #1818) — via the
-    /// filtered ring overload, robust whether or not they are still in the ring. When self is still a
-    /// ring member (the designed drain ordering), the nodes already holding the key are the members of
-    /// the current responsible set that are NOT leaving, so only the genuine newcomers
-    /// (`newSet \ existing`) are targeted. When self has ALREADY been pruned (the ring can no longer
-    /// identify the newcomer), fall back to the whole `newSet`: the versioned puts are idempotent, so
-    /// re-sending to an existing replica is harmless, and this guarantees no loss regardless of the
-    /// prune-vs-drain ordering. The same fallback applies when the exclusion exhausts the ring
-    /// (`newSet` shorter than the replication factor): no node lies beyond the vacated slots to absorb
-    /// the push, so a node wrongly in `leaving` would otherwise remove the only newcomer and leave the
-    /// copy resting on survivors that may not hold it.
-    private List<NodeId> departureTargets(byte[] key, int replicationFactor, Set<NodeId> leaving) {
-        var newSet = node.ring().nodesFor(key, replicationFactor, candidate -> !leaving.contains(candidate));
-        var currentSet = node.ring().nodesFor(key, replicationFactor);
-
-        return currentSet.contains(node.nodeId()) && newSet.size() >= replicationFactor
-               ? excludeExistingReplicas(newSet, currentSet, leaving)
-               : newSet;
-    }
-
-    private static List<NodeId> excludeExistingReplicas(List<NodeId> newSet,
-                                                        List<NodeId> currentSet,
-                                                        Set<NodeId> leaving) {
-        var existing = new HashSet<>(currentSet);
-
-        existing.removeAll(leaving);
-
-        return newSet.stream()
-                     .filter(candidate -> !existing.contains(candidate))
-                     .toList();
-    }
-
-    private List<Promise<Unit>> sendPushes(Map<NodeId, List<KeyStamp>> batches, Set<NodeId> leaving) {
-        return batches.entrySet()
-                      .stream()
-                      .map(batch -> pushPagesTo(batch.getKey(),
-                                                planPages(batch.getValue()),
-                                                leaving))
-                      .toList();
-    }
-
-    /// Every page of a target is registered as pending before the first leaves (see [#pushOnDeparture]).
-    private List<PlannedPush> planPages(List<KeyStamp> stamps) {
-        return pageBudget().pages(stamps)
-                         .stream()
-                         .map(this::registerPage)
-                         .toList();
+        Option.option(settled).onPresent(page -> page.settle(ack.applied()));
     }
 
     private PageBudget pageBudget() {
         return node.repair()
                    .pageBudget();
-    }
-
-    private PlannedPush registerPage(List<KeyStamp> page) {
-        var correlationId = IdGenerator.generate();
-        Promise<Unit> ackPromise = Promise.promise();
-
-        pendingPushes.put(correlationId,
-                          new PendingPush(page.stream().map(KeyStamp::key).toList(),
-                                          ackPromise));
-
-        return new PlannedPush(correlationId, page, ackPromise);
-    }
-
-    /// One target's pages, one after another: page `index` leaves once every earlier page is acked or nacked.
-    private Promise<Unit> pushPagesTo(NodeId target, List<PlannedPush> pages, Set<NodeId> leaving) {
-        return pushPageAt(target, pages, 0, leaving);
-    }
-
-    private Promise<Unit> pushPageAt(NodeId target, List<PlannedPush> pages, int index, Set<NodeId> leaving) {
-        return index >= pages.size()
-               ? Promise.success(Unit.unit())
-               : sendPlanned(target, pages.get(index), leaving).flatMap(_ -> pushPageAt(target,
-                                                                                        pages,
-                                                                                        index + 1,
-                                                                                        leaving));
-    }
-
-    /// Only this page's values are read, just before it leaves.
-    private Promise<Unit> sendPlanned(NodeId target, PlannedPush push, Set<NodeId> leaving) {
-        return node.readEntries(push.page())
-                   .flatMap(entries -> sendReadPage(target, push, entries, leaving));
-    }
-
-    private Promise<Unit> sendReadPage(NodeId target,
-                                       PlannedPush push,
-                                       List<DHTMessage.KeyValue> entries,
-                                       Set<NodeId> leaving) {
-        return entries.isEmpty()
-               ? Promise.success(settleEmptyPage(push))
-               : sendAckedPush(target, push, entries, leaving);
-    }
-
-    /// Every key of the page was removed meanwhile: nothing is owed, so nothing is at risk.
-    private Unit settleEmptyPage(PlannedPush push) {
-        pendingPushes.remove(push.correlationId());
-
-        return Unit.unit();
-    }
-
-    /// The push carries `leaving`, the set excluded when choosing its target (issue #1818 L1), so the receiver
-    /// checks placement against the same view rather than its own, which may not yet know every co-drainer.
-    private Promise<Unit> sendAckedPush(NodeId target,
-                                        PlannedPush push,
-                                        List<DHTMessage.KeyValue> entries,
-                                        Set<NodeId> leaving) {
-        log.debug("Departure-pushing a page of {} chunk(s) to {} (ack {})",
-                  entries.size(),
-                  target.id(),
-                  push.correlationId());
-        node.repair().notePageSent(PageBudget.transferBytes(entries));
-        network.send(target,
-                     new DHTMessage.MigrationDataResponse(push.correlationId(),
-                                                          node.nodeId(),
-                                                          entries,
-                                                          true,
-                                                          List.copyOf(leaving),
-                                                          List.copyOf(node.ring().nodes())));
-
-        return push.ackPromise();
-    }
-
-    /// Settles when every batch is acked or nacked, or the budget expires; either way the batches still
-    /// pending — nacked or unanswered — are reported. Recovery is FER: an expired budget degrades
-    /// forward to that report, because the push must never gate the halt (D4).
-    private Promise<Unit> awaitAcks(List<Promise<Unit>> acks, TimeSpan budget, DeparturePushObserver observer) {
-        return Promise.allOf(acks)
-                      .timeout(budget)
-                      .mapToUnit()
-                      .recover(_ -> Unit.unit())
-                      .map(_ -> reportIncomplete(observer));
-    }
-
-    private Unit reportIncomplete(DeparturePushObserver observer) {
-        var atRiskKeys = collectAtRiskKeys();
-
-        return atRiskKeys.isEmpty()
-               ? Unit.unit()
-               : emitIncomplete(observer, atRiskKeys);
-    }
-
-    private List<byte[]> collectAtRiskKeys() {
-        return pendingPushes.values()
-                            .stream()
-                            .flatMap(pending -> pending.keys()
-                                                       .stream())
-                            .toList();
-    }
-
-    private Unit emitIncomplete(DeparturePushObserver observer, List<byte[]> atRiskKeys) {
-        log.warn("Departure push incomplete: {} chunk(s) unacknowledged within budget", atRiskKeys.size());
-        observer.onIncomplete(atRiskKeys.size(), sampleKeys(atRiskKeys));
-
-        return Unit.unit();
-    }
-
-    private static List<String> sampleKeys(List<byte[]> keys) {
-        return keys.stream()
-                   .limit(SAMPLE_LIMIT)
-                   .map(HEX::formatHex)
-                   .toList();
     }
 
     private void rebalancePartition(int partitionIndex, int replicationFactor) {
