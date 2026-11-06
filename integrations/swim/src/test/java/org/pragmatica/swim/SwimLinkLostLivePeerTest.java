@@ -139,6 +139,43 @@ class SwimLinkLostLivePeerTest {
             .as("a dead peer under a current LINK_LOST hint dies at the floor, within one period after it")
             .isBetween(FLOOR_MS - 50, FLOOR_MS + PERIOD_MS + 500);
         assertThat(forLeader(SwimObservation.FaultyObserved.class)).hasSize(1);
+        assertThat(transport.otherPeerPingsBeforeDeath.get())
+            .as("the verdict lands in the same tick as at rc5: the 3rd or 4th tick after the hint, counted by the "
+                + "one round-robin probe of another peer each earlier tick sends (the hint-time probe neither "
+                + "delays nor advances it)")
+            .isBetween(2L, 3L);
+    }
+
+    /// #2724 side effect: the hint-time probe of a silent peer times out (direct, then indirect)
+    /// and adds exactly ONE Lifeguard LHM increment, even when a second hint arrives while that
+    /// probe is pending (the pending probe is not stacked). The next verified Ack (node-b's
+    /// round-robin probe one tick later) removes it.
+    @Test
+    void linkLostHint_silentPeer_hintProbeTimeoutAddsOneLhmIncrementClearedByNextAck() {
+        transport.secondHint.set(true);
+        startWith(Map.of(LEADER, false, NODE_B, true, NODE_C, true, NODE_D, true));
+
+        await().atMost(Duration.ofSeconds(5))
+               .pollInterval(Duration.ofMillis(10))
+               .until(() -> transport.hintedAt.get() > 0
+                            && System.currentTimeMillis() - transport.hintedAt.get() >= 700);
+        var lhmAfterHintProbe = protocol.lhmScoreForTest();
+        var pingsToB = transport.pingsTo(ADDR_B);
+
+        assertThat(pingsToB)
+            .as("instrument: read after the hint-time probe cycle (2 x 200 ms) and before the next tick's verified ack")
+            .isZero();
+        assertThat(lhmAfterHintProbe)
+            .as("one failed hint-time probe cycle = exactly one LHM increment (two hints, one probe)")
+            .isEqualTo(1);
+        await().atMost(Duration.ofSeconds(3))
+               .pollInterval(Duration.ofMillis(10))
+               .until(() -> transport.pingsTo(ADDR_B) >= 1);
+        await().atMost(Duration.ofSeconds(1))
+               .pollInterval(Duration.ofMillis(10))
+               .untilAsserted(() -> assertThat(protocol.lhmScoreForTest())
+                   .as("the next verified probe ack clears the increment")
+                   .isZero());
     }
 
     /// `answersAfterHint`: whether the leader keeps answering Pings after the eviction. Every peer
@@ -154,6 +191,7 @@ class SwimLinkLostLivePeerTest {
                                              liveTransport::contains)
                                .unwrap();
         protocol.addObservationListener(observations::add);
+        protocol.addObservationListener(transport::recordDeath);
         transport.protocol.set(protocol);
         seed(LEADER, ADDR_A);
         seed(NODE_B, ADDR_B);
@@ -195,7 +233,25 @@ class SwimLinkLostLivePeerTest {
         final AtomicReference<SwimProtocol> protocol = new AtomicReference<>();
         final AtomicBoolean hinted = new AtomicBoolean();
         final AtomicLong hintedAt = new AtomicLong();
+        final AtomicBoolean secondHint = new AtomicBoolean();
+        final AtomicLong pingIndexAtHint = new AtomicLong();
+        final AtomicLong otherPeerPingsBeforeDeath = new AtomicLong(-1);
         private final CopyOnWriteArrayList<InetSocketAddress> pings = new CopyOnWriteArrayList<>();
+
+        /// On the leader's death verdict: how many probes of OTHER peers were sent since the hint,
+        /// i.e. how many ticks passed before the verdict (one round-robin probe per tick).
+        void recordDeath(SwimObservation observation) {
+            if (observation instanceof SwimObservation.DepartedObserved departed && departed.peer().equals(LEADER)) {
+                otherPeerPingsBeforeDeath.compareAndSet(-1, otherPeerPingsSinceHint());
+            }
+        }
+
+        private long otherPeerPingsSinceHint() {
+            return pings.subList((int) pingIndexAtHint.get(), pings.size())
+                        .stream()
+                        .filter(target -> !ADDR_A.equals(target))
+                        .count();
+        }
 
         long pingsTo(InetSocketAddress target) {
             return pings.stream().filter(target::equals).count();
@@ -212,11 +268,19 @@ class SwimLinkLostLivePeerTest {
                 }
                 if (peer.equals(LEADER) && hinted.compareAndSet(false, true)) {
                     hintedAt.set(System.currentTimeMillis());
+                    pingIndexAtHint.set(pings.size());
                     protocol.get()
                             .recordTransportHint(LEADER,
                                                  new TransportObservation.PeerUnreachable(LEADER,
                                                                                           Causes.cause("QUIC link evicted by the leader after NodeRemoved"),
                                                                                           TransportObservation.HintOrigin.LINK_LOST));
+                    if (secondHint.get()) {
+                        protocol.get()
+                                .recordTransportHint(LEADER,
+                                                     new TransportObservation.PeerUnreachable(LEADER,
+                                                                                              Causes.cause("ClusterSync missed pongs"),
+                                                                                              TransportObservation.HintOrigin.PEER_UNRESPONSIVE));
+                    }
                 }
             }
 
