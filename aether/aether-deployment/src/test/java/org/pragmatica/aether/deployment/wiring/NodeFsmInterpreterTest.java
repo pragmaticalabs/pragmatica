@@ -338,8 +338,8 @@ class NodeFsmInterpreterTest {
             }
         }
 
-        /// The install just read is not opened again: after install R's burst closed and a live input moved the watermark above R, the same
-        /// signal at R is a no-op, so a replayed input at the watermark is dropped. Mutation: the install signal not recording its revision as
+        /// The install just read is not opened again: after install R's burst was closed by a live input, the same signal at R is a no-op, so a
+        /// replayed input at R is dropped against the watermark. Mutation: the install signal not recording its revision as
         /// the install's (the repeated signal resets the watermark to R and reopens the burst, and the replayed input is stepped).
         @Test
         void theSameInstallSignalledAgain_isNotOpenedAgain() {
@@ -354,7 +354,7 @@ class NodeFsmInterpreterTest {
                 var targets = rig.countOf("TargetPut");
 
                 rig.interpreter.installedAt(entered + 5);
-                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(AUDIT.base(), AUDIT.version()), entered + 6, true);
+                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(AUDIT.base(), AUDIT.version()), entered + 5, true);
                 rig.settle();
 
                 assertThat(rig.countOf("TargetPut")).as("the repeated install opened no burst").isEqualTo(targets);
