@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import java.util.Map;
+
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager.CircuitBreakerState;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager.LastProvisionFailure;
 import org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler.ProvisioningDecisionSnapshot;
@@ -18,7 +20,7 @@ import org.pragmatica.lang.Option;
 ///     latches, quorum safety, deficit-run age, and the precise suppression reason);
 ///   - `circuitBreaker`: the provisioning circuit-breaker state from the
 ///     [`org.pragmatica.aether.deployment.cluster.ClusterTopologyManager`] (consecutive failures,
-///     trip threshold, next-allowed instant, tripped flag);
+///     trip threshold, next-allowed instant, tripped flag), as the aggregate over sources and as `circuitBreakers`, one per source (spec §8.3);
 ///   - `lastProvisionFailure`: the most recent provisioning failure (`cause` + epoch-millis), empty
 ///     when none has been recorded;
 ///   - `inventoryWait` / `inventoryWaits`: the current wait for a complete inventory (a provider not ready at boot, no configuration
@@ -28,6 +30,7 @@ import org.pragmatica.lang.Option;
 /// node accessor returns `Option.empty()` otherwise.
 public record ProvisioningDiagnostics(ProvisioningDecisionSnapshot decision,
                                       CircuitBreakerState circuitBreaker,
+                                      Map<String, CircuitBreakerState> circuitBreakers,
                                       Option<LastProvisionFailure> lastProvisionFailure,
                                       Option<LastProvisionFailure> inventoryWait,
                                       long inventoryWaits) {}

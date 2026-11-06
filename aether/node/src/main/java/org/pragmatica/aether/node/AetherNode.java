@@ -1565,6 +1565,7 @@ public interface AetherNode extends ManageableNode {
                                                              ClusterTopologyManager manager) {
         return new ProvisioningDiagnostics(decision,
                                            manager.circuitBreakerState(),
+                                           manager.circuitBreakerStates(),
                                            manager.lastProvisionFailure(),
                                            manager.inventoryWait(),
                                            manager.inventoryWaits());

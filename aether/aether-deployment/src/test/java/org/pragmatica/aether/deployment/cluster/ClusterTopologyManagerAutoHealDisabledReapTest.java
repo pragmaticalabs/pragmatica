@@ -131,7 +131,7 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
     }
 
     private Option<AutoHealStateValue> autoHealState() {
-        return Option.some(new AutoHealStateValue(autoHealEnabled.get(), "test", 0L));
+        return Option.some(new AutoHealStateValue(autoHealEnabled.get(), "test", 0L, 0L, Map.of()));
     }
 
     private static InstanceInfo terminatedInstance(String instanceId) {
