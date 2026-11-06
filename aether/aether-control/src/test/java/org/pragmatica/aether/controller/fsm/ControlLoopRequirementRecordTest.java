@@ -56,6 +56,8 @@ class ControlLoopRequirementRecordTest {
     private KVStore<AetherKey, AetherValue> store;
     private ImmediateClusterNode cluster;
     private ControlLoopContext ctx;
+    private ControlLoopAdapter adapter;
+    private volatile BlueprintChange decision = new BlueprintChange.ScaleUp(V1, 2);
 
     @BeforeEach
     void loopOverAnOwnedTargetAtRevision42() {
@@ -69,6 +71,7 @@ class ControlLoopRequirementRecordTest {
 
         var loop = (ControlLoopAdapter) buildLoop();
 
+        adapter = loop;
         ctx = loop.ctx();
         ctx.setTopology(List.of(SELF,
                                 NodeId.nodeId("n2").unwrap(),
@@ -97,6 +100,57 @@ class ControlLoopRequirementRecordTest {
         assertThat(events).as("one scaling event").containsExactly(ScalingEvent.ScaledUp.scaledUp(V1, 2, 4));
     }
 
+    /// x12: the decision record carries the count the decision wrote (an uncapped scale-up requests and gets 4 from 2).
+    @Test
+    void scaleUp_recordsTheScaledCounts() {
+        ctx.runEvaluationCycle();
+
+        assertThat(await(() -> store.get(REACTIVE).isPresent())).as("the decision was written").isTrue();
+
+        var record = ctx.scalingDecisions().get(V1);
+
+        assertThat(record.outcome()).isEqualTo(ScalingDecisionRecord.Outcome.SCALED_UP);
+        assertThat(record.guard()).isEqualTo(ScalingDecisionRecord.Guard.NONE);
+        assertThat(record.currentInstances()).isEqualTo(2);
+        assertThat(record.requestedInstances()).isEqualTo(4);
+        assertThat(record.cappedInstances()).isEqualTo(4);
+    }
+
+    /// x08: a scale-up is capped at the cluster size (5 core nodes), not at the blueprint maximum (20).
+    @Test
+    void scaleUpBeyondTheClusterSize_isCappedAtTheClusterSize() {
+        decision = new BlueprintChange.ScaleUp(V1, 10);
+
+        ctx.runEvaluationCycle();
+
+        assertThat(await(() -> store.get(REACTIVE).isPresent())).as("the decision was written").isTrue();
+        assertThat(store.getTyped(REACTIVE, SliceRequirementValue.class).unwrap().instances()).isEqualTo(5);
+        assertThat(ctx.scalingDecisions().get(V1).cappedInstances()).isEqualTo(5);
+        assertThat(ctx.scalingDecisions().get(V1).guard()).isEqualTo(ScalingDecisionRecord.Guard.CLUSTER_CAP);
+    }
+
+    /// x05: whether the decision moves the target is judged at the count that will be written (the capped 5), not the requested 18.
+    /// With an operator floor of 8 holding the target, REACTIVE 5 moves nothing, so nothing is announced; REACTIVE 18 would.
+    @Test
+    void cappedDecisionBelowAnOperatorFloor_isWrittenButNotAnnounced() {
+        var target = SliceTargetValue.sliceTargetValue(V1.version(), 8, 1, Option.some(OWNER), Option.some(20), Option.none(), Option.none());
+
+        store.process(store.createBatch(List.of(new KVCommand.Put<AetherKey, AetherValue>(TARGET_KEY, target),
+                                                new KVCommand.Put<AetherKey, AetherValue>(OPERATOR,
+                                                                                          SliceRequirementValue.sliceRequirementValue(8,
+                                                                                                                                      "operator",
+                                                                                                                                      Option.none(),
+                                                                                                                                      0L)))));
+        adapter.onSliceTargetPut(new ValuePut<>(new KVCommand.Put<>(TARGET_KEY, target), Option.none()));
+        decision = new BlueprintChange.ScaleUp(V1, 10);
+
+        ctx.runEvaluationCycle();
+
+        assertThat(await(() -> store.get(REACTIVE).isPresent())).as("REACTIVE tracks the capped decision").isTrue();
+        assertThat(store.getTyped(REACTIVE, SliceRequirementValue.class).unwrap().instances()).isEqualTo(5);
+        assertThat(events).as("the floor holds the target, so no scaling is announced").isEmpty();
+    }
+
     /// x01, x02, x04: the same decision again is not written and not announced again.
     @Test
     void unchangedDecision_writesAndAnnouncesNothing() {
@@ -111,7 +165,7 @@ class ControlLoopRequirementRecordTest {
     }
 
     private ControlLoop buildLoop() {
-        ClusterController controller = _ -> Promise.success(ControlDecisions.controlDecisions(new BlueprintChange.ScaleUp(V1, 2)));
+        ClusterController controller = _ -> Promise.success(ControlDecisions.controlDecisions(decision));
 
         return ControlLoop.controlLoop(SELF,
                                        controller,
