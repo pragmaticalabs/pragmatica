@@ -37,7 +37,8 @@ public final class SystemStreamBootstrap {
         this(registry, RetentionPolicy.retentionPolicy(), Clock.systemUTC());
     }
 
-    /// Register every address in [SystemStreams.ALL]. Addresses already present are treated as
+    /// Register every address in [SystemStreams.ALL], each under its own [SystemStreams#retentionFor] or, when it
+    /// declares none, the default retention. Addresses already present are treated as
     /// idempotent no-ops, not errors. Short-circuits on the first registration failure.
     public Result<List<StreamRegistryEntry>> bootstrap() {
         var accumulated = new ArrayList<StreamRegistryEntry>(SystemStreams.ALL.size());
@@ -60,7 +61,8 @@ public final class SystemStreamBootstrap {
     }
 
     private Result<StreamRegistryEntry> registerFramework(ResourceAddress address) {
-        var entry = StreamRegistryEntry.framework(address, defaultRetention, clock.instant());
+        var retention = SystemStreams.retentionFor(address).or(defaultRetention);
+        var entry = StreamRegistryEntry.framework(address, retention, clock.instant());
 
         return registry.register(entry);
     }

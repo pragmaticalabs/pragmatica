@@ -147,6 +147,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     ConcurrentHashMap<NodeId, SourceName> replacementSources,
                                     AtomicLong replayRunning,
                                     AtomicLong lastSweepMs,
+                                    AtomicReference<TerminationRetirement> reapRetirement,
+                                    AtomicReference<TerminationRetirement> forcedClearRetirement,
                                     AtomicBoolean sourceUnresolved,
                                     Set<String> heldScaling) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
@@ -305,6 +307,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new ConcurrentHashMap<>(),
                                                 new AtomicLong(NOT_RUN),
                                                 new AtomicLong(0L),
+                                                new AtomicReference<>(TerminationRetirement.NONE),
+                                                new AtomicReference<>(TerminationRetirement.NONE),
                                                 new AtomicBoolean(false),
                                                 ConcurrentHashMap.newKeySet());
     }
@@ -325,6 +329,14 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Override
     public org.pragmatica.utility.warning.OperatorWarningSink operatorWarningSink() {
         return warningSink.get();
+    }
+
+    @Override
+    public Unit setTerminationRetirements(TerminationRetirement onConfirmedReap, TerminationRetirement onForcedClear) {
+        reapRetirement.set(onConfirmedReap);
+        forcedClearRetirement.set(onForcedClear);
+
+        return unit();
     }
 
     @Override
@@ -3229,6 +3241,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                               cleared.providerState(),
                                                               cleared.known(),
                                                               cleared.cause());
+        if (cleared.forced()) {
+            retireIdentity(forcedClearRetirement.get(), nodeId, "forced clear");
+        }
 
         return Promise.unitPromise();
     }
@@ -3515,6 +3530,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     private void reapConfirmed(NodeId nodeId) {
         closeHeldAsDeleted(nodeId);
+        retireIdentity(reapRetirement.get(), nodeId, "confirmed reap");
         replacementSources.remove(nodeId);
         failedReaps.remove(nodeId);
         var marked = unconfirmedReaps.remove(nodeId);
@@ -3532,6 +3548,18 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                   "Termination of the instance of retired node {} is now confirmed",
                                                                   nodeId.id());
         }
+    }
+
+    /// 12 item 4b (B18, B19): the termination is confirmed, so the node's directive and departure record are retired together. The retirement
+    /// retries itself until it commits or neither key is left (`TerminationRetirement`), so a failure reaching here means its retry gave up:
+    /// FER, logged and dropped; the directive and the record stay together (never one without the other).
+    @Contract
+    private void retireIdentity(TerminationRetirement retirement, NodeId nodeId, String authority) {
+        retirement.retire(nodeId)
+                  .onFailure(cause -> log.warn("CTM: {} of {} left its directive and departure record in place: {}",
+                                               authority,
+                                               nodeId,
+                                               cause.message()));
     }
 
     private void reapUnconfirmed(NodeId nodeId,

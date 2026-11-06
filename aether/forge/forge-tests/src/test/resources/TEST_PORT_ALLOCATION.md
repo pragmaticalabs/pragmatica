@@ -38,6 +38,9 @@ even with large per-method offsets (e.g., ManagementApiTest has offsets up to 38
 | DeclarativeConsumerPlacementTest | 18500  | 18600          | 0          | 7 nodes (shared cluster, app-http 18700; #535 delivery when the partition owner does not host the slice; 3 instances since #1495) |
 | DurableTopicDeliveryForgeTest | 19000     | 19100          | 0          | 5 nodes (shared cluster, app-http 19200; #386 composed durable pub/sub path, Heavy) |
 | DurableEntityForgeTest        | 24300     | 24320          | 0          | 5 nodes (shared cluster, app-http 24340, SWIM UDP 24400-24404; durable entities, Heavy). Moved off 19000, which it shared unregistered with the row above (#1627) |
+| Issue1117ReadinessTracerTest  | 26000     | 26100          | 0          | 5 nodes (app-http 26200; #1117 readiness tracer T, both engines in one class, Heavy) — registered late |
+| Fsm2DeployE01Test             | 28000     | 28100          | 0          | 3 nodes (app-http 28200; phase-3 E-01 on FSM2: one slice x 3 on 3 cores, Heavy) |
+| Fsm2LevelBBootTest            | 28500     | 28600          | 0          | 3 nodes (app-http 28700; phase-3 Level B boot test on FSM2, Heavy) |
 | ClusterEventOwnerFailoverTest | 24210     | 24230          | 0          | 5 nodes (single method, app-http 24250, SWIM UDP 24310-24314; #1640 events survive the cluster-events owner and leader dying) |
 | CoordinationSlopeInstrumentTest | 20000  | 20100          | 0          | 3 nodes (shared cluster, app-http 20200; #591 validates the coordination-load sampler against live endpoints) |
 | MembershipChaosCycleTest      | 20500     | 20600          | 0          | 5 nodes (shared cluster, app-http 20700; #232 kill -> detect -> decommission -> heal, Heavy) |
