@@ -327,6 +327,35 @@ class ClusterTopologyManagerWorkerReconcileTest {
         assertThat(manager.scalingHeld("community stable")).as("target_size changed while disabled").isFalse();
     }
 
+    /// v2711 survivor 5 (c49): installing the community reconciler hands it the CTM's own auto-heal hold, so the community path honours a
+    /// disable; without that wiring the reconciler's default hold answers "never held".
+    @Test
+    void installCommunityPlacement_handsTheReconcilerTheAutoHealHold() {
+        var manager = (ClusterTopologyManagerRecord) ctm;
+        var installed = new java.util.concurrent.atomic.AtomicReference<java.util.function.Predicate<String>>();
+        seedConfig(communityToml(1), entry("pool", "core", 3));
+        autoHealRef.set(Option.some(AetherValue.AutoHealStateValue.disabledAt("test", 1L, Map.of("community stable", 1))));
+
+        manager.installCommunityPlacement(new CommunityPlacementReconciler() {
+            public Promise<org.pragmatica.lang.Unit> reconcile() { return Promise.unitPromise(); }
+            public Promise<org.pragmatica.lang.Unit> requestRetirement(NodeId node, AetherValue.TopologyEntry entry) {
+                return Promise.unitPromise();
+            }
+            public Promise<Boolean> onDrainCompleted(NodeId node, String operation) { return Promise.success(false); }
+            public org.pragmatica.lang.Unit holdAutonomy(java.util.function.Predicate<String> held) {
+                installed.set(held);
+                return org.pragmatica.lang.Unit.unit();
+            }
+        });
+
+        assertThat(installed.get()).as("the reconciler was handed a hold").isNotNull();
+        assertThat(installed.get().test(CommunityPlacementReconciler.holdSubject("stable"))).as("disabled, target_size unchanged").isTrue();
+
+        seedConfig(communityToml(2), entry("pool", "core", 3));
+
+        assertThat(installed.get().test(CommunityPlacementReconciler.holdSubject("stable"))).as("target_size changed while disabled").isFalse();
+    }
+
     /// v2711 finding 7 (ii): a hold that lands while the resume drains the set is either resumed by that drain or stays held for the next
     /// one; it is never cleared without its resume (a `forEach` then `clear` loses it).
     @Test
