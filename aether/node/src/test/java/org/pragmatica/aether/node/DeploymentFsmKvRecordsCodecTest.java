@@ -9,6 +9,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Function;
 
 import io.netty.buffer.ByteBufUtil;
@@ -213,6 +214,15 @@ class DeploymentFsmKvRecordsCodecTest {
             assertThat(judgment.unresponsive()).as("the constructor keeps what it is given").isEqualTo(unresponsive);
             roundTrip(key, judgment);
             roundTrip(key, new ArtifactJudgmentValue(false, Map.of(), Map.of()));
+        }
+
+        /// CF-8 (#2759): the judged attempts are part of the encoded shape, so a rebuilt leader scopes the ALL_OR_NOTHING
+        /// rollback to the attempts the mark judged; they are held sorted, so the re-encoded bytes are identical.
+        @Test
+        void artifactJudgment_roundTripsJudgedAttempts() {
+            var key = ArtifactJudgmentKey.artifactJudgmentKey(ARTIFACT);
+
+            roundTrip(key, new ArtifactJudgmentValue(true, Map.of(), Map.of(), Set.of("attempt-2", "attempt-1", "attempt-3")));
         }
 
         @Test

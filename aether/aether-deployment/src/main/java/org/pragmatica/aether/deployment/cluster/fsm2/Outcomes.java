@@ -7,6 +7,8 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -23,6 +25,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentApplyValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -95,8 +98,10 @@ public sealed interface Outcomes {
 
     /// CF-8 (G2 P2 `newLeader_rollbackIntent_rollbackCompleted`): under ALL_OR_NOTHING the decision to roll back is the durable permanent-failure
     /// mark of a declared artifact of an open apply, not the failure event that wrote it. A rollback lost with its term, or never sent
-    /// because the failure was committed by another leader, is derived again on every tick, until the apply is gone. A rollback in flight
-    /// or a rolling update (B-055) is respected by `rollbackFor`.
+    /// because the failure was committed by another leader, is derived again on every tick, until the apply is gone. The mark is scoped to
+    /// the attempts it judged ([ArtifactJudgmentValue#judgedAttempts]): an apply of any other attempt (a republish) is never rolled back
+    /// by it, whichever of the publish batch and the judgment removal commits first. A rollback in flight or a rolling update (B-055) is
+    /// respected as in `rollbackFor`.
     private static ClusterModel rollbackMarked(ClusterModel m, Ctx ctx) {
         if (ctx.settings().atomicity() != DeploymentAtomicity.ALL_OR_NOTHING) {
             return m;
@@ -111,22 +116,48 @@ public sealed interface Outcomes {
                                                     entry.getValue()))
                  .filter(entry -> attemptOf(m,
                                             entry.getKey()).equals(entry.getValue().attemptId()))
-                 .flatMap(entry -> markedArtifacts(m,
-                                                   entry.getKey()))
-                 .distinct()
-                 .forEach(artifact -> rollbackFor(m, ctx, artifact, MARKED_CAUSE));
+                 .forEach(entry -> rollbackJudged(m,
+                                                  ctx,
+                                                  entry.getKey(),
+                                                  entry.getValue().attemptId()));
 
         return m;
     }
 
-    private static Stream<Artifact> markedArtifacts(ClusterModel m, BlueprintId id) {
+    /// Rolls back the apply `attempt` of `id` once per declared artifact whose mark judged that attempt.
+    private static ClusterModel rollbackJudged(ClusterModel m, Ctx ctx, BlueprintId id, String attempt) {
+        markedArtifacts(m, id, attempt).filter(artifact -> !m.routings.containsKey(artifact.base()))
+                       .forEach(artifact -> rollback(m, ctx, id, artifact, MARKED_CAUSE));
+
+        return m;
+    }
+
+    /// The declared artifacts of `id` whose permanent mark judged `attempt`.
+    private static Stream<Artifact> markedArtifacts(ClusterModel m, BlueprintId id, String attempt) {
         return m.blueprints.get(id)
                            .stream()
                            .flatMap(value -> value.blueprint()
                                                   .loadOrder()
                                                   .stream())
                            .map(slice -> slice.artifact())
-                           .filter(artifact -> Slices.permanentlyFailed(m, artifact));
+                           .filter(artifact -> judgedAttempt(m, artifact, attempt));
+    }
+
+    private static boolean judgedAttempt(ClusterModel m, Artifact artifact, String attempt) {
+        return m.judgments.get(artifact)
+                          .filter(ArtifactJudgmentValue::permanentFailure)
+                          .map(judgment -> judgment.judgedAttempts()
+                                                   .contains(attempt))
+                          .or(false);
+    }
+
+    /// CF-8: the attempts a permanent mark of `artifact` decided now judges, those of every blueprint declaring it.
+    static Set<String> declaringAttempts(ClusterModel m, Artifact artifact) {
+        return Idx.members(m.blueprintsByArtifact, artifact)
+                  .toList()
+                  .stream()
+                  .map(id -> attemptOf(m, id))
+                  .collect(Collectors.toSet());
     }
 
     /// R-2.1: deployed when every declared, non-registerOnly slice has at least one counted ACTIVE instance.

@@ -111,9 +111,10 @@ public sealed interface Orphans {
                                                                                       Option.none()));
     }
 
-    /// The target names an owner that the mirror does not hold, and nothing else could own it: no blueprint declares the base now (a
-    /// different-id restore re-owns the kept slices, G2 6.5), no put of it is in flight, and no rolling update names it. A target
-    /// with no owner at all was set by an operator and is not an orphan.
+    /// The target names an owner that the mirror does not hold, and no other holder is recorded: `ownerByBase` has no entry for the
+    /// base (it holds the blueprint that last indexed the base, as a different-id restore re-owning the kept slices does, G2 6.5; the
+    /// entry is cleared when that blueprint is removed, even while another present blueprint still declares the base), no put of it is
+    /// in flight, and no rolling update names it. A target with no owner at all was set by an operator and is not an orphan.
     private static boolean isOrphanTarget(ClusterModel m, ArtifactBase base) {
         return m.targets.get(base)
                         .flatMap(target -> target.owningBlueprint())

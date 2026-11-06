@@ -186,15 +186,18 @@ class BlueprintTargetFenceTest {
     }
 
     // CF-8, hysteresis (G2 6.5): an orphan is removed on its second observation, not its first
-    // Red when: the first tick that observes the orphan removes it (no hysteresis), or no tick removes it.
+    // Red when: the first tick that observes the orphan removes it (no hysteresis), or the second does not (a longer count, m04 2 -> 3).
     @Test
     void orphanTarget_isRemovedOnlyAfterTwoConsecutiveTicks() {
         var h = orphanAtRebuild();
 
         h.advance(h.settings.timing().tick());
-        assertThat(h.store.get(ORDERS_TARGET).isPresent()).as("observed once: kept").isTrue();
-        h.advance(h.settings.timing().tick() * 2);
-        assertThat(h.store.get(ORDERS_TARGET)).as("observed on consecutive ticks: removed").isEqualTo(Option.none());
+        assertThat(h.store.get(ORDERS_TARGET).isPresent()).as("tick 1, observed once: kept").isTrue();
+        assertThat(h.submits(SubmitKind.ORPHAN_TARGET)).as("tick 1: no removal submitted").isEmpty();
+        h.advance(h.settings.timing().tick());
+        assertThat(h.store.get(ORDERS_TARGET)).as("tick 2, observed on consecutive ticks: removed")
+                  .isEqualTo(Option.none());
+        assertThat(h.submits(SubmitKind.ORPHAN_TARGET)).as("tick 2: exactly one removal").hasSize(1);
     }
 
     // CF-8, the routing guard: a rolling update that names the base keeps its target until the update is gone
