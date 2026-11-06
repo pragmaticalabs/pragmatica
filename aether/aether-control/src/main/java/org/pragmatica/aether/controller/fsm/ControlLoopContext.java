@@ -637,7 +637,10 @@ public final class ControlLoopContext {
     /// load, but it announces no scaling that does not happen.
     private void announceAndSubmit(Scaling scaling) {
         if (movesTarget(scaling)) {
-            publishScalingEvent(scaling.change(), scaling.artifact(), scaling.observed().targetInstances(), scaling.newInstances());
+            publishScalingEvent(scaling.change(),
+                                scaling.artifact(),
+                                scaling.observed().targetInstances(),
+                                scaling.newInstances());
             recordScaled(scaling.change(),
                          scaling.artifact(),
                          blueprintOf(scaling.artifact(), scaling.observed()),
@@ -668,11 +671,7 @@ public final class ControlLoopContext {
                                                                                                                                  0L))))
                                  .toList();
 
-        return SliceRequirements.combine(observed,
-                                         withDecision,
-                                         nowMs(),
-                                         Integer.MAX_VALUE)
-                                .or(observed.targetInstances()) != observed.targetInstances();
+        return SliceRequirements.combine(observed, withDecision, nowMs(), Integer.MAX_VALUE).or(observed.targetInstances()) != observed.targetInstances();
     }
 
     /// Whether the decision differs from the committed `REACTIVE` requirement: while an operator floor holds the target above the
@@ -881,9 +880,9 @@ public final class ControlLoopContext {
         var currentBlueprint = blueprintOf(artifact, observed);
 
         log.debug("Scaling decision: {} from {} to {} instances (REACTIVE requirement)",
-                 artifact,
-                 currentBlueprint.instances(),
-                 newInstances);
+                  artifact,
+                  currentBlueprint.instances(),
+                  newInstances);
 
         return Option.some(new Scaling(artifact,
                                        observed,

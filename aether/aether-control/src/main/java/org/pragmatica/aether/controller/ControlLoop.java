@@ -76,7 +76,6 @@ public interface ControlLoop {
     void onSliceRequirementPut(ValuePut<SliceRequirementKey, SliceRequirementValue> valuePut);
     /// rc6 §3.1: a slice capacity requirement was removed; the leader's [RequirementCombiner] re-combines the slice's target.
     void onSliceRequirementRemove(ValueRemove<SliceRequirementKey, SliceRequirementValue> valueRemove);
-
     /// An A/B test was put: a canary starting or ending changes whether its slice is combined (v2713 item 7).
     void onAbTestPut(ValuePut<AbTestKey, AbTestValue> valuePut);
 

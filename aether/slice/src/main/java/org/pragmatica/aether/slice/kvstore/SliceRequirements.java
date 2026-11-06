@@ -71,7 +71,8 @@ public sealed interface SliceRequirements {
         record CanaryRunning(ArtifactBase base) implements CombinerOutcome {
             @Override
             public String message() {
-                return "Slice target of " + base.asString() + " runs an A/B canary at its fixed variant count; not combined";
+                return "Slice target of " + base.asString()
+                     + " runs an A/B canary at its fixed variant count; not combined";
             }
         }
     }
@@ -164,49 +165,42 @@ public sealed interface SliceRequirements {
             return new CombinerOutcome.CanaryRunning(base).result();
         }
 
-        return SliceTargetFence.presentTarget(store, key)
-                               .flatMap(target -> combinerTransaction(store,
-                                                                      key,
-                                                                      target,
-                                                                      committedRequirements(store, base),
-                                                                      nowMs,
-                                                                      placeableCapacity));
+        return SliceTargetFence.presentTarget(store, key).flatMap(target -> combinerTransaction(store,
+                                                                                                key,
+                                                                                                target,
+                                                                                                committedRequirements(store,
+                                                                                                                      base),
+                                                                                                nowMs,
+                                                                                                placeableCapacity));
     }
 
     private static Result<LeaderTransaction<AetherKey, AetherValue>> combinerTransaction(KVStore<AetherKey, AetherValue> store,
-                                                                                        SliceTargetKey key,
-                                                                                        SliceTargetValue target,
-                                                                                        List<Requirement> requirements,
-                                                                                        long nowMs,
-                                                                                        int placeableCapacity) {
+                                                                                         SliceTargetKey key,
+                                                                                         SliceTargetValue target,
+                                                                                         List<Requirement> requirements,
+                                                                                         long nowMs,
+                                                                                         int placeableCapacity) {
         var base = key.artifactBase();
-        var expired = requirements.stream()
-                                  .filter(requirement -> !requirement.value()
-                                                                     .unexpiredAt(nowMs))
-                                  .toList();
-        var remaining = requirements.stream()
-                                    .filter(requirement -> requirement.value()
-                                                                      .unexpiredAt(nowMs))
-                                    .toList();
+        var expired = requirements.stream().filter(requirement -> !requirement.value()
+                                                                              .unexpiredAt(nowMs)).toList();
+        var remaining = requirements.stream().filter(requirement -> requirement.value()
+                                                                               .unexpiredAt(nowMs)).toList();
         var rebase = expired.isEmpty()
-                     ? Option.<SliceRequirementValue>none()
+                     ? Option.<SliceRequirementValue> none()
                      : reactiveRebase(store, base, target);
         var mutations = new ArrayList<Mutation<AetherKey, AetherValue>>();
 
         expired.stream()
                .filter(requirement -> rebase.isEmpty() || requirement.kind() != RequirementKind.REACTIVE)
                .forEach(requirement -> mutations.add(new Mutation<AetherKey, AetherValue>(SliceRequirementKey.sliceRequirementKey(base,
-                                                                                                             requirement.kind()),
-                                                                    Option.some(requirement.value()),
-                                                                    Option.none())));
+                                                                                                                                  requirement.kind()),
+                                                                                          Option.some(requirement.value()),
+                                                                                          Option.none())));
         rebase.onPresent(value -> mutations.add(requirementMutation(store,
                                                                     SliceRequirementKey.sliceRequirementKey(base,
                                                                                                             RequirementKind.REACTIVE),
                                                                     Option.some(value))));
-        var combined = combine(target,
-                               withReactive(remaining, rebase),
-                               nowMs,
-                               placeableCapacity).or(target.targetInstances());
+        var combined = combine(target, withReactive(remaining, rebase), nowMs, placeableCapacity).or(target.targetInstances());
 
         if (combined == target.targetInstances()) {
             return mutations.isEmpty()
@@ -230,9 +224,9 @@ public sealed interface SliceRequirements {
     /// The requirement writes of a combination that leaves the target count as committed: witnessed on the target at `target` and on
     /// its owning blueprint, so a target that moved or was removed after the read refuses them.
     private static Result<LeaderTransaction<AetherKey, AetherValue>> heldTargetTransaction(KVStore<AetherKey, AetherValue> store,
-                                                                                          SliceTargetKey key,
-                                                                                          SliceTargetValue target,
-                                                                                          List<Mutation<AetherKey, AetherValue>> mutations) {
+                                                                                           SliceTargetKey key,
+                                                                                           SliceTargetValue target,
+                                                                                           List<Mutation<AetherKey, AetherValue>> mutations) {
         return SliceTargetFence.ownerGuards(store,
                                             key,
                                             target.owningBlueprint())
@@ -244,7 +238,8 @@ public sealed interface SliceRequirements {
     }
 
     /// `requirements` with `REACTIVE` replaced by `rebase` when present.
-    private static List<Requirement> withReactive(List<Requirement> requirements, Option<SliceRequirementValue> rebase) {
+    private static List<Requirement> withReactive(List<Requirement> requirements,
+                                                  Option<SliceRequirementValue> rebase) {
         return rebase.map(value -> Stream.concat(requirements.stream()
                                                              .filter(requirement -> requirement.kind() != RequirementKind.REACTIVE),
                                                  Stream.of(new Requirement(RequirementKind.REACTIVE, value)))
@@ -267,7 +262,8 @@ public sealed interface SliceRequirements {
         return reactive >= count
                ? Option.none()
                : Option.some(SliceRequirementValue.sliceRequirementValue(count,
-                                                                         "held at " + count + ": a claim was released or expired",
+                                                                         "held at " + count
+                                                                        + ": a claim was released or expired",
                                                                          Option.none(),
                                                                          store.committedRevision()));
     }
@@ -354,12 +350,10 @@ public sealed interface SliceRequirements {
 
         mutations.add(requirementMutation(store, key, replacement));
         if (releasesClaim(store, key, replacement)) {
-            reactiveRebase(store,
-                           key.artifactBase(),
-                           observed).onPresent(value -> mutations.add(requirementMutation(store,
-                                                                                          SliceRequirementKey.sliceRequirementKey(key.artifactBase(),
-                                                                                                                                  RequirementKind.REACTIVE),
-                                                                                          Option.some(value))));
+            reactiveRebase(store, key.artifactBase(), observed).onPresent(value -> mutations.add(requirementMutation(store,
+                                                                                                                     SliceRequirementKey.sliceRequirementKey(key.artifactBase(),
+                                                                                                                                                             RequirementKind.REACTIVE),
+                                                                                                                     Option.some(value))));
         }
 
         return mutations;

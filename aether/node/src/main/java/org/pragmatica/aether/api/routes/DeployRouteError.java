@@ -29,7 +29,7 @@ public enum DeployRouteError implements Cause, HttpStatusAware {
     INVALID_STRATEGY("Invalid strategy; must be one of: canary, blue_green, rolling", HttpStatus.BAD_REQUEST),
     MISSING_CANARY_STAGES("Canary strategy requires at least one stage", HttpStatus.BAD_REQUEST),
     INSTANCES_NOT_ACCEPTED("instances is not accepted: a deployment runs over the slice's committed target, whose count the leader's "
-                           + "requirement combiner owns (rc6 §3.1); set an operator requirement with POST /api/scale (aether scale -n)",
+                          + "requirement combiner owns (rc6 §3.1); set an operator requirement with POST /api/scale (aether scale -n)",
                            HttpStatus.BAD_REQUEST);
     private final String msg;
     private final HttpStatus status;

@@ -36,8 +36,7 @@ final class PlacementShortfallWatch {
         if (desired > placeable) {
             exceeds(artifact, new PlacementShortfall(desired, placeable));
         } else {
-            ended(artifact,
-                  "the target of " + desired + " fits the " + placeable + " eligible nodes");
+            ended(artifact, "the target of " + desired + " fits the " + placeable + " eligible nodes");
         }
     }
 
@@ -55,9 +54,7 @@ final class PlacementShortfallWatch {
     }
 
     private void exceeds(Artifact artifact, PlacementShortfall shortfall) {
-        var previous = active.ctx()
-                             .placementShortfalls()
-                             .put(artifact, shortfall);
+        var previous = active.ctx().placementShortfalls().put(artifact, shortfall);
 
         if (!shortfall.equals(previous)) {
             OperatorWarnings.raise(log,
@@ -75,9 +72,7 @@ final class PlacementShortfallWatch {
     }
 
     private void ended(Artifact artifact, String why) {
-        if (active.ctx()
-                  .placementShortfalls()
-                  .remove(artifact) != null) {
+        if (active.ctx().placementShortfalls().remove(artifact) != null) {
             OperatorWarnings.raise(log,
                                    active.ctx().operatorWarnings(),
                                    OperatorWarningCode.SLICE_TARGET_PLACEMENT_RESTORED,

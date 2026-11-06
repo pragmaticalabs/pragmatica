@@ -60,7 +60,6 @@ public interface RequirementCombiner {
     /// The placeable capacity F1 passes (spec §3.1): unbounded until §3.3 defines it per placement audience. A target above what the
     /// audience can place is reported by the leader's allocation (`slice-target-exceeds-placement`), not clamped here.
     int UNBOUNDED_CAPACITY = Integer.MAX_VALUE;
-
     /// Starts combining: this node became the leader. Sweeps every slice holding a requirement.
     Unit activate();
     /// Stops combining: this node is no longer the leader. Cancels every expiry timer.
@@ -266,7 +265,8 @@ public interface RequirementCombiner {
                      attempt,
                      delay,
                      cause.message());
-            SharedScheduler.schedule(() -> evaluate(base), TimeSpan.timeSpan(delay).millis());
+            SharedScheduler.schedule(() -> evaluate(base),
+                                     TimeSpan.timeSpan(delay).millis());
         }
 
         /// The backoff before retry `attempt` (from 1): 1 s doubling, at most 30 s.
