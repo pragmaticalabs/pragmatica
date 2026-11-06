@@ -35,13 +35,16 @@ import org.pragmatica.lang.io.TimeSpan;
 public interface WorkflowReconciler {
     Promise<Unit> reconcile();
 
+    /// How long a commit or an effect call may stay unanswered before the tick stops waiting, when the caller names no bound.
+    TimeSpan DEFAULT_BOUND = TimeSpan.timeSpan(30).seconds();
+
     static WorkflowReconciler workflowReconciler(WorkflowLedger ledger,
                                                  Map<String, WorkflowKind<?>> kinds,
                                                  LongSupplier clock) {
         return workflowReconciler(ledger,
                                   kinds,
                                   clock,
-                                  TimeSpan.timeSpan(30).seconds());
+                                  DEFAULT_BOUND);
     }
 
     /// `bound`: how long a commit or an effect call may stay unanswered before the tick stops waiting for it; the next tick re-reads

@@ -347,4 +347,10 @@ class WorkflowReconcilerTest {
 
         return answer;
     }
+
+    /// r03: the default commit/effect bound is 30 s; a shorter default would drop a slow but successful answer.
+    @Test
+    void defaultBound_isThirtySeconds() {
+        assertThat(WorkflowReconciler.DEFAULT_BOUND).isEqualTo(TimeSpan.timeSpan(30).seconds());
+    }
 }

@@ -139,11 +139,14 @@ public interface WorkflowAdmission {
                                                    .substring(0, 16));
     }
 
-    /// Admission over `ledger` for the registered `kinds` (by name); a create unanswered for 30 s is resolved by the read-back.
+    /// How long a create may stay unanswered before the read-back decides, when the caller names no bound.
+    TimeSpan DEFAULT_BOUND = TimeSpan.timeSpan(30).seconds();
+
+    /// Admission over `ledger` for the registered `kinds` (by name); a create unanswered for [#DEFAULT_BOUND] is resolved by the read-back.
     static WorkflowAdmission workflowAdmission(WorkflowLedger ledger, Map<String, WorkflowKind<?>> kinds) {
         return workflowAdmission(ledger,
                                  kinds,
-                                 TimeSpan.timeSpan(30).seconds());
+                                 DEFAULT_BOUND);
     }
 
     /// As [#workflowAdmission(WorkflowLedger, Map)]; `bound`: how long the create may stay unanswered before the read-back decides.

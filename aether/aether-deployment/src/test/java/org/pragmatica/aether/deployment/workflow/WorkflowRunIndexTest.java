@@ -4,8 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.workflow;
 
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.aether.slice.kvstore.AetherKey.WorkflowClaimKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.WorkflowRunKey;
@@ -117,6 +122,95 @@ class WorkflowRunIndexTest {
         }
 
         return snapshot;
+    }
+
+    /// i11: two runs started at the same instant are ordered by id, whatever order they were put in or the map iterates in.
+    @Test
+    void runs_withEqualStartedAt_areOrderedById() {
+        var ids = List.of("wf-e", "wf-b", "wf-d", "wf-a", "wf-c", "wf-f", "wf-h", "wf-g");
+        var index = WorkflowRunIndex.workflowRunIndex();
+
+        ids.forEach(id -> index.put(run(id, 10L)));
+        assertThat(index.runs()).extracting(WorkflowRunValue::id).isSortedAccordingTo(String::compareTo).hasSize(ids.size());
+        assertThat(index.runs()).extracting(WorkflowRunValue::id).containsExactly("wf-a", "wf-b", "wf-c", "wf-d", "wf-e", "wf-f", "wf-g", "wf-h");
+    }
+
+    /// i32/i33/i34: put, remove and restore each copy the map and republish it; without `synchronized` two of them interleave and one
+    /// update is lost. Spin-barrier start, a deadline on every wait; the writers touch disjoint ids, so every id must survive.
+    @Test
+    void concurrentPutsRemovesAndRestores_loseNoUpdate() throws Exception {
+        for (int round = 0; round < ROUNDS; round++) {
+            var index = WorkflowRunIndex.workflowRunIndex();
+            var go = new AtomicBoolean();
+            var ready = new AtomicInteger();
+            var threads = new ArrayList<Thread>();
+            var failure = new AtomicReference<Throwable>();
+
+            for (int t = 0; t < WRITERS; t++) {
+                var writer = t;
+
+                threads.add(Thread.ofPlatform().start(() -> write(index, go, ready, writer, failure)));
+            }
+
+            awaitReady(ready, WRITERS);
+            go.set(true);
+            for (var thread : threads) {
+                thread.join(10_000L);
+                assertThat(thread.isAlive()).as("round " + round + ": a writer did not finish").isFalse();
+            }
+
+            assertThat(failure.get()).isNull();
+            assertThat(index.runs()).as("round " + round + ": no lost update")
+                                    .hasSize(WRITERS * PER_WRITER / 2);
+        }
+    }
+
+    private static final int ROUNDS = 300;
+    private static final int WRITERS = 8;
+    private static final int PER_WRITER = 40;
+
+    /// Writer w puts PER_WRITER runs (w-0 ..), then removes the even ones (put and remove interleave across writers); the
+    /// survivors are exactly the odd ones. The restore path runs through `restoreFrom` on a snapshot of the live view, which
+    /// must keep every concurrent put (the F4 property).
+    private static void write(WorkflowRunIndex index, AtomicBoolean go, AtomicInteger ready, int writer, AtomicReference<Throwable> failure) {
+        ready.incrementAndGet();
+        var deadline = System.nanoTime() + 10_000_000_000L;
+
+        while (!go.get() && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+
+        try {
+            for (int n = 0; n < PER_WRITER; n++) {
+                index.put(run("wf-" + writer + "-" + n, n));
+            }
+
+            for (int n = 0; n < PER_WRITER; n += 2) {
+                index.remove("wf-" + writer + "-" + n);
+            }
+
+            index.restoreFrom(() -> restoreSnapshot(index));
+        } catch (Throwable e) {
+            failure.compareAndSet(null, e);
+        }
+    }
+
+    private static Map<?, ?> restoreSnapshot(WorkflowRunIndex index) {
+        var snapshot = new HashMap<WorkflowRunKey, WorkflowRunValue>();
+
+        index.runs().forEach(run -> snapshot.put(new WorkflowRunKey(run.id()), run));
+
+        return snapshot;
+    }
+
+    private static void awaitReady(AtomicInteger ready, int expected) {
+        var deadline = System.nanoTime() + 10_000_000_000L;
+
+        while (ready.get() < expected && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+
+        assertThat(ready.get()).as("all writers started").isEqualTo(expected);
     }
 
     //--- the announce: owner-only, never on replay, ESCALATED on entry, RESOLVED on terminal exit, RESUMED on resume

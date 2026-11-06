@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.aether.deployment.workflow.WorkflowAdmission.AdmissionRefusal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowClaimValue;
@@ -477,5 +478,106 @@ class WorkflowAdmissionTest {
         var refused = refusal(admission(refusing).admit("pilot", Map.of(), List.of("node:n1"), 1L, "req-1").await());
 
         assertThat(refused).isEqualTo(new AdmissionRefusal.NotAdmitted(id(1)));
+    }
+
+    //--- f2b v2803 P1/P2/P2b: one request key names one run across concurrency and a leader change
+
+    /// Eight submitters race ONE request key behind a barrier: the key is the identity, so every one is answered the SAME run, and
+    /// exactly one run and one claim exist. A non-keyed admission (a fresh id per call) would refuse seven on the held claim.
+    @Test
+    void admit_eightConcurrentAdmissionsOfOneRequestKey_areAllAnsweredTheSameRun() throws Exception {
+        for (int round = 0; round < 50; round++) {
+            setUp();
+            var barrier = new CyclicBarrier(8);
+            var results = new ArrayList<Result<WorkflowRunValue>>();
+            var threads = new ArrayList<Thread>();
+
+            for (int n = 0; n < 8; n++) {
+                threads.add(Thread.ofPlatform().start(() -> raceOneKey(barrier, results)));
+            }
+
+            for (var thread : threads) {
+                thread.join();
+            }
+
+            var expected = WorkflowAdmission.runId("pilot", "req-same").unwrap();
+
+            assertThat(results).as("round " + round).hasSize(8);
+            assertThat(results.stream().filter(Result::isSuccess)).as("round " + round + ": every submitter succeeded: " + results).hasSize(8);
+            assertThat(results.stream().map(result -> result.unwrap().id()).distinct().toList()).as("round " + round).containsExactly(expected);
+            assertThat(ledger.runs()).as("round " + round + ": one run").hasSize(1);
+            assertThat(cluster.claim("node:n1")).as("round " + round).isEqualTo(Option.some(new WorkflowClaimValue(expected)));
+        }
+    }
+
+    private void raceOneKey(CyclicBarrier barrier, List<Result<WorkflowRunValue>> results) {
+        try {
+            barrier.await();
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
+
+        var result = admission.admit("pilot", Map.of("node", "n1"), List.of("node:n1"), 1_000L, "req-same").await();
+
+        synchronized (results) {
+            results.add(result);
+        }
+    }
+
+    /// The leader admits, leadership moves, and the NEW leader receives the retry of the same request key: it is answered the
+    /// first run, and nothing is admitted twice.
+    @Test
+    void admit_retryOfARequestKeyOnANewLeader_answersTheFirstRun() {
+        var first = admission.admit("pilot", Map.of("node", "n1"), List.of("node:n1"), 1_000L, "req-a").await().unwrap();
+
+        cluster.lead(CORE_2);
+
+        var retried = admission(cluster.ledger(CORE_2)).admit("pilot", Map.of("node", "n1"), List.of("node:n1"), 2_000L, "req-a").await();
+
+        assertThat(retried.isSuccess()).as("answered by the new leader: " + retried).isTrue();
+        assertThat(retried.unwrap()).isEqualTo(first);
+        assertThat(ledger.runs()).as("one run").containsExactly(first);
+        assertThat(cluster.claim("node:n1")).isEqualTo(Option.some(new WorkflowClaimValue(first.id())));
+    }
+
+    /// The old leader's create is in flight (captured, unapplied) when leadership moves and the new leader admits the same request
+    /// key. The stale create then reaches the applier: it is refused (its leader record is stale), and the old caller's read-back
+    /// answers the NEW leader's run. One run, one claim.
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void admit_staleCreateFromTheOldLeader_isRefused_andTheOldCallerIsAnsweredTheNewLeadersRun() {
+        var captured = new AtomicReference<List<?>>();
+        var held = Promise.<List<Object>>promise();
+        var oldLeader = WorkflowAdmission.workflowAdmission(cluster.ledger(CORE_1,
+                                                                           commands -> {
+                                                                               captured.set(commands);
+                                                                               return held;
+                                                                           }),
+                                                            Map.of("pilot", PILOT),
+                                                            TimeSpan.timeSpan(30).seconds());
+        var oldCall = oldLeader.admit("pilot", Map.of("node", "n1"), List.of("node:n1"), 1_000L, "req-a");
+
+        assertThat(captured.get()).as("the old leader's create is in flight").isNotNull();
+
+        cluster.lead(CORE_2);
+
+        var newRun = admission(cluster.ledger(CORE_2)).admit("pilot", Map.of("node", "n1"), List.of("node:n1"), 2_000L, "req-a")
+                                                      .await()
+                                                      .unwrap();
+
+        held.succeed(cluster.apply((List) captured.get()));
+
+        var answered = oldCall.await(TimeSpan.timeSpan(10).seconds());
+
+        assertThat(answered.isSuccess()).as("the old caller is answered by the read-back: " + answered).isTrue();
+        assertThat(answered.unwrap()).isEqualTo(newRun);
+        assertThat(ledger.runs()).as("one run").containsExactly(newRun);
+        assertThat(cluster.claim("node:n1")).isEqualTo(Option.some(new WorkflowClaimValue(newRun.id())));
+    }
+
+    /// a07: the default create bound is 30 s; a shorter default would turn a slow consensus answer into Unanswered.
+    @Test
+    void defaultBound_isThirtySeconds() {
+        assertThat(WorkflowAdmission.DEFAULT_BOUND).isEqualTo(TimeSpan.timeSpan(30).seconds());
     }
 }
