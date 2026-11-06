@@ -1970,8 +1970,7 @@ public interface AetherNode extends ManageableNode {
                 // #1612: the chain lives in NodeStopSequence, where a failed HTTP listener stop is logged and
                 // skipped past rather than ending the shutdown.
                 return quorumLeft.map(this::stopDeploymentWiring)
-                                 .flatMap(this::stopNodeComponents)
-                                 .flatMap(() -> backupFlushed)
+                                 .flatMap(() -> stopNodeComponents(backupFlushed))
                                  .flatMap(() -> NodeStopSequence.run(NodeStopSequence.Steps.steps(this::releaseWatchesThenDeactivate,
                                                                                                   () -> managementServer.map(ManagementServer::stop)
                                                                                                                         .or(Promise.unitPromise()),
@@ -1992,9 +1991,9 @@ public interface AetherNode extends ManageableNode {
                 return unit;
             }
 
-            /// The components' stops, after the quiesce and the FSM2 close (rc5's order, restored by #2688). Returns the sealer's
-            /// bounded flush, which the stop waits for beside the backup's.
-            private Promise<Unit> stopNodeComponents(Unit unit) {
+            /// The components' stops, after the quiesce and the FSM2 close (rc5's order, restored by #2688). Returns the backup's
+            /// bounded flush and then the sealer's, which the stop waits for (rc5's join order, backup first).
+            private Promise<Unit> stopNodeComponents(Promise<Unit> backupFlushed) {
                 controlLoop.stop();
                 workerMetricsAggregator.stop();
                 metricsScheduler.stop();
@@ -2045,7 +2044,7 @@ public interface AetherNode extends ManageableNode {
                 observabilityBaseline.sampler().onPresent(AdaptiveSampler::stop);
                 discoveryProvider.onPresent(this::deregisterFromDiscovery);
 
-                return streamsStopped;
+                return backupFlushed.flatMap(() -> streamsStopped);
             }
 
             @Override

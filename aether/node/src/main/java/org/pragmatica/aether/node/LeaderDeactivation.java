@@ -8,6 +8,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
@@ -30,11 +31,26 @@ import static org.pragmatica.lang.Unit.unit;
 /// concurrent dispatch enqueues after it (the leader FSM's dispatch is caller-thread and CAS-guarded, so the thread whose CAS
 /// enters `QuorumLost` raises the change, and it can still be between its CAS and its entry action when the stop's own
 /// dispatch, finding `QuorumLost` already current, has returned).
-public record LeaderDeactivation(AtomicReference<Promise<Unit>> next) {
+///
+/// KNOWN RESIDUAL (#2688, not fixed here): the wait is not covered when, at the moment `stop()` takes [#next], this node is not
+/// yet recorded as the leader because a `LeaderChange(self)` is still queued and undelivered on the `LeaderManager` executor,
+/// AND the matching deactivation is enqueued after the drain marker. The state is then resolved, the marker passes, and the
+/// deactivation is dropped by the quiesce, so the leader-toggled components may stay active. It needs two racing leader-FSM
+/// dispatches around `stop()`. It is also unverified whether a toggle whose own `deactivate()` re-dispatches onto another
+/// executor (ControlLoop, RollbackManager) finishes inside this wait.
+///
+/// `deadline` arms the bound on the wait: [Promise#timeout] in production, a manual clock in the tests that pin the bound.
+public record LeaderDeactivation(AtomicReference<Promise<Unit>> next,
+                                 Fn2<Promise<Unit>, Promise<Unit>, TimeSpan> deadline) {
     private static final Logger log = LoggerFactory.getLogger(LeaderDeactivation.class);
 
     public static LeaderDeactivation leaderDeactivation() {
-        return new LeaderDeactivation(new AtomicReference<>(Promise.success(unit())));
+        return leaderDeactivation(Promise::timeout);
+    }
+
+    /// The bound armed by `deadline` instead of the shared timeout scheduler: the seam that lets a test pin the bound without waiting for it.
+    public static LeaderDeactivation leaderDeactivation(Fn2<Promise<Unit>, Promise<Unit>, TimeSpan> deadline) {
+        return new LeaderDeactivation(new AtomicReference<>(Promise.success(unit())), deadline);
     }
 
     /// One delivered `LeaderChange`, on the route the toggles share. Deliveries come one at a time, in order, from the
@@ -68,10 +84,9 @@ public record LeaderDeactivation(AtomicReference<Promise<Unit>> next) {
     /// registered after this record's. Never fails: past `bound` it warns and resolves, so a wedged reaction or a leader that
     /// never steps down cannot hold the stop.
     public Promise<Unit> delivered(ReactExecutor executor, TimeSpan bound) {
-        return next.get()
-                   .flatMap(executor::drained)
-                   .timeout(bound)
-                   .recover(cause -> undelivered(executor, bound, cause));
+        return deadline.apply(next.get().flatMap(executor::drained),
+                              bound)
+                       .recover(cause -> undelivered(executor, bound, cause));
     }
 
     // FER: the stop goes on and quiesces the router; a deactivation still undelivered past the bound is dropped by the quiesce,

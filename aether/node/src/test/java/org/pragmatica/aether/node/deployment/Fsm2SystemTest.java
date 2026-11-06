@@ -10,6 +10,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.Nested;
@@ -20,6 +21,8 @@ import org.pragmatica.aether.deployment.node.machine.LocalStep;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmEffect;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmInput;
 import org.pragmatica.aether.deployment.wiring.BacklogSampler;
+import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.LeaderDeactivation;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
@@ -34,6 +37,10 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.utility.react.ReactExecutor;
+import org.pragmatica.utility.react.ReactFailureSink;
+import org.pragmatica.utility.react.ReactGate;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -409,6 +416,41 @@ class Fsm2SystemTest {
                                       .hasSize(1)
                                       .doesNotContain(Thread.currentThread());
             }
+        }
+
+        /// A10 on the stop path, with no waiting: a leader that never steps down (its deactivation is never delivered) holds the quiesce until the
+        /// node's bound is reached; the bound armed is the node's, and when it is reached the quorum is left, quiesce after PASSIVE.
+        @Test
+        void leaveQuorum_withALeaderThatNeverStepsDown_quiescesWhenTheNodesBoundIsReached() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.LEGACY, false).assembled()) {
+                var executor = ReactExecutor.reactExecutor("LeaderManager", ReactGate.reactGate(() -> true, () -> false), ReactFailureSink.loggingOnly());
+                var order = new CopyOnWriteArrayList<String>();
+                var armed = new AtomicReference<Promise<Unit>>();
+                var bounds = new CopyOnWriteArrayList<TimeSpan>();
+                var deactivation = LeaderDeactivation.leaderDeactivation((promise, bound) -> arm(armed, bounds, promise, bound));
+
+                deactivation.onLeaderChange(LeaderNotification.leaderChange(Option.some(NodeId.nodeId("self").unwrap()), true));
+                var left = harness.wiring.leaveQuorum(() -> order.add("passive"),
+                                                      () -> deactivation.delivered(executor, AetherNode.LEADER_DEACTIVATION_BOUND),
+                                                      () -> order.add("quiesce"));
+
+                assertThat(bounds).as("armed once, with the node's bound").containsExactly(AetherNode.LEADER_DEACTIVATION_BOUND);
+                assertThat(left.isResolved()).as("the leader has not stepped down and the bound has not been reached").isFalse();
+                assertThat(order).containsExactly("passive");
+
+                armed.get().fail(Causes.cause("the bound was reached"));
+
+                assertThat(left.await(LEFT_BOUND).isSuccess()).as("the quorum is left at the bound").isTrue();
+                assertThat(order).containsExactly("passive", "quiesce");
+                executor.close();
+            }
+        }
+
+        private static Promise<Unit> arm(AtomicReference<Promise<Unit>> armed, List<TimeSpan> bounds, Promise<Unit> promise, TimeSpan bound) {
+            armed.set(promise);
+            bounds.add(bound);
+
+            return promise;
         }
 
         private static Promise<Unit> taken(List<String> order, Promise<Unit> delivered) {

@@ -13,9 +13,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
+import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.utility.react.ReactExecutor;
 import org.pragmatica.utility.react.ReactFailureSink;
@@ -131,6 +134,55 @@ class LeaderDeactivationTest {
             assertThat(elapsedMs).as("within the bound plus scheduling slack").isLessThan(5_000L);
             assertThat(capture.messages(Level.WARN)).as("the undelivered deactivation is reported")
                                                     .anySatisfy(message -> assertThat(message).contains("Leader deactivation not delivered on LeaderManager"));
+        }
+    }
+
+    /// The bound the node's stop uses, pinned by value (A10: an inflated bound would hold a stop for minutes behind a wedged reaction).
+    @Test
+    void theStopsBound_isTwoSeconds() {
+        assertThat(AetherNode.LEADER_DEACTIVATION_BOUND).isEqualTo(TimeSpan.timeSpan(2).seconds());
+    }
+
+    /// A10, on a manual clock (no waiting): with the executor held, the wait armed with the node's bound is still pending one millisecond before
+    /// the bound and resolved, with the warning, at it.
+    @Test
+    void delivered_withTheNodesBound_resolvesAtTheBoundOnAHeldExecutor() throws InterruptedException {
+        try (var capture = LogCapture.capture(LeaderDeactivation.class, Level.WARN, false)) {
+            var clock = new ManualDeadline();
+            var onClock = LeaderDeactivation.leaderDeactivation(clock);
+            var release = hold();
+
+            onClock.onLeaderChange(SELF);
+            var delivered = onClock.delivered(executor, AetherNode.LEADER_DEACTIVATION_BOUND);
+
+            assertThat(clock.armedWith).as("the wait is armed with the node's bound").isEqualTo(AetherNode.LEADER_DEACTIVATION_BOUND);
+            clock.advanceTo(AetherNode.LEADER_DEACTIVATION_BOUND.nanos() - 1_000_000L);
+            assertThat(delivered.isResolved()).as("held, and one millisecond short of the bound").isFalse();
+
+            clock.advanceTo(AetherNode.LEADER_DEACTIVATION_BOUND.nanos());
+            release.countDown();
+            assertThat(delivered.isResolved()).as("resolved at the bound").isTrue();
+            assertThat(delivered.await(AWAIT).isSuccess()).as("resolved, not failed").isTrue();
+            assertThat(capture.messages(Level.WARN)).anySatisfy(message -> assertThat(message).contains("Leader deactivation not delivered on LeaderManager within"));
+        }
+    }
+
+    /// A clock that only moves when the test says so: fails the bounded promise once the time advanced reaches the bound it was armed with.
+    private static final class ManualDeadline implements Fn2<Promise<Unit>, Promise<Unit>, TimeSpan> {
+        private Promise<Unit> armedPromise;
+        TimeSpan armedWith;
+
+        @Override
+        public Promise<Unit> apply(Promise<Unit> promise, TimeSpan bound) {
+            armedPromise = promise;
+            armedWith = bound;
+            return promise;
+        }
+
+        void advanceTo(long nanos) {
+            if (armedWith != null && nanos >= armedWith.nanos()) {
+                armedPromise.fail(Causes.cause("manual deadline reached"));
+            }
         }
     }
 

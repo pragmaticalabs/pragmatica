@@ -9,8 +9,11 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -34,15 +37,30 @@ class StopSequencePinTest {
     private static final Pattern INSTALLED = Pattern.compile("leaderManager\\(\\)\\s*\\.installReactExecutor\\(reactors\\.executor\\(\"LeaderManager\"\\)\\)");
     private static final Pattern LEADER_EXECUTOR = Pattern.compile("reactors\\.executor\\(\"LeaderManager\"\\)");
     private static final Pattern RECORDED = Pattern.compile("MessageRouter\\.Entry\\.route\\(LeaderNotification\\.LeaderChange\\.class,\\s*leaderDeactivation::onLeaderChange\\)");
-    private static final Pattern CHAIN_HEAD = Pattern.compile("return quorumLeft\\.map\\(this::stopDeploymentWiring\\)\\s*\\.flatMap\\(this::stopNodeComponents\\)");
+    private static final Pattern CHAIN_HEAD = Pattern.compile("return quorumLeft\\.map\\(this::stopDeploymentWiring\\)\\s*\\.flatMap\\(\\(\\) -> stopNodeComponents\\(backupFlushed\\)\\)");
     private static final String STOP = "public Promise<Unit> stop() {";
-    private static final String CONTINUATION = "return quorumLeft";
-    private static final String COMPONENTS = "private Promise<Unit> stopNodeComponents(Unit unit) {";
-    private static final String COMPONENTS_END = "return streamsStopped;";
-    private static final List<String> TEARDOWN = List.of("controlLoop.stop();",
-                                                         "streamConsumerManager.stop();",
-                                                         "streamSegmentSealer.stopSealed(",
-                                                         "discoveryProvider.onPresent(this::deregisterFromDiscovery);");
+    private static final String FSM2_CLOSE = "private Unit stopDeploymentWiring(Unit unit) {";
+    private static final String COMPONENTS = "private Promise<Unit> stopNodeComponents(Promise<Unit> backupFlushed) {";
+    private static final String COMPONENTS_END = "return backupFlushed.flatMap(() -> streamsStopped);";
+    /// The whole stop, in the order the ruling fixes (route(passive) -> drained -> quiesce -> FSM2 close -> the remaining teardown ->
+    /// backupFlushed -> streamsStopped -> NodeStopSequence), as the landmarks `stop()` must show, in this order, with nothing of the
+    /// teardown among them. The FSM2 close and the components' statements are checked in their own methods below.
+    private static final List<String> STOP_LANDMARKS = List.of("reactors.markStopping();",
+                                                               "periodicTasks.cancel();",
+                                                               "backupCoordinatorStop.run();",
+                                                               "var backupFlushed = ",
+                                                               "deploymentWiring.leaveQuorum(() -> router.route(ClusterStateNotification.passive()),",
+                                                               "() -> leaderDeactivation.delivered(",
+                                                               "router::quiesce);",
+                                                               "return quorumLeft.map(this::stopDeploymentWiring)",
+                                                               ".flatMap(() -> stopNodeComponents(backupFlushed))",
+                                                               ".flatMap(() -> NodeStopSequence.run(NodeStopSequence.Steps.steps(this::releaseWatchesThenDeactivate,",
+                                                               "managementServer.map(ManagementServer::stop)",
+                                                               "appHttpServer::stop,",
+                                                               "sliceInvoker::stop,",
+                                                               "this::closeSharedResources,",
+                                                               "this::shutdownStorage,",
+                                                               "clusterNode::stop)))");
 
     /// The occurrences of `quiesce` in `source` and of the sanctioned form of the stop.
     private record Scan(long length, long quiesces, long sanctioned) {}
@@ -55,17 +73,67 @@ class StopSequencePinTest {
         return pattern.matcher(source).results().count();
     }
 
-    /// The synchronous part of `stop()`: from its head to the chain that starts at `quorumLeft`.
-    private static String synchronousPart(String source) {
-        var start = source.indexOf(STOP);
+    private static String code(String text) {
+        return text.lines()
+                   .filter(line -> !line.strip().startsWith("//"))
+                   .collect(Collectors.joining(" "))
+                   .replaceAll("\\s+", " ")
+                   .strip();
+    }
 
-        return source.substring(start, source.indexOf(CONTINUATION, start));
+    private static String between(String source, String from, String to) {
+        var start = source.indexOf(from);
+
+        return code(source.substring(start, source.indexOf(to, start)));
+    }
+
+    /// `stop()` as code: from its head to the FSM2 close that follows it.
+    private static String stopMethod(String source) {
+        return between(source, STOP, FSM2_CLOSE);
+    }
+
+    private static String fsm2Close(String source) {
+        return between(source, FSM2_CLOSE, COMPONENTS);
     }
 
     private static String componentStops(String source) {
-        var start = source.indexOf(COMPONENTS);
+        return between(source, COMPONENTS, COMPONENTS_END);
+    }
 
-        return source.substring(start, source.indexOf(COMPONENTS_END, start));
+    /// Every statement of the components' stops, derived from the method body, so a stop added there is covered without editing this test.
+    private static List<String> teardownStatements(String source) {
+        var body = componentStops(source);
+
+        return Stream.of(body.substring(body.indexOf('{') + 1).split(";"))
+                     .map(String::strip)
+                     .filter(statement -> !statement.isEmpty())
+                     .map(statement -> statement + ";")
+                     .toList();
+    }
+
+    /// The teardown statements found in `stop()` itself, i.e. planted before (or anywhere around) the quiesce.
+    private static List<String> misplaced(String source) {
+        var stop = stopMethod(source);
+
+        return teardownStatements(source).stream().filter(stop::contains).toList();
+    }
+
+    /// The landmarks of `stop()` that are missing or out of order: each must come after the previous one.
+    private static List<String> outOfOrder(String source) {
+        var stop = stopMethod(source);
+        var broken = new ArrayList<String>();
+        var from = 0;
+
+        for (var landmark : STOP_LANDMARKS) {
+            var at = stop.indexOf(landmark, from);
+
+            if (at < 0) {
+                broken.add(landmark);
+            } else {
+                from = at + landmark.length();
+            }
+        }
+        return broken;
     }
 
     private static String read(Path path) {
@@ -97,16 +165,32 @@ class StopSequencePinTest {
     }
 
     @Test
-    void theComponentsStop_onlyAfterTheQuiesce() {
+    void theWholeStop_runsInTheRuledOrder_andNoTeardownStatementIsAmongItsSynchronousPart() {
         var source = read(NODE_SOURCE);
-        var synchronous = synchronousPart(source);
-        var components = componentStops(source);
 
-        assertThat(synchronous).as("the synchronous part of stop() was found").contains("reactors.markStopping();");
-        for (var stop : TEARDOWN) {
-            assertThat(synchronous).as("not before the quiesce: %s", stop).doesNotContain(stop);
-            assertThat(components).as("in the continuation after quorumLeft: %s", stop).contains(stop);
-        }
+        assertThat(stopMethod(source)).as("stop() was found").contains("reactors.markStopping();");
+        assertThat(teardownStatements(source)).as("the components' statements were derived (positive control)").hasSizeGreaterThan(20);
+        assertThat(outOfOrder(source)).as("route(passive) -> drained -> quiesce -> FSM2 close -> teardown -> flushes -> NodeStopSequence: missing or out of order").isEmpty();
+        assertThat(misplaced(source)).as("no teardown statement in stop() itself: all of them run after the quiesce, in stopNodeComponents").isEmpty();
+    }
+
+    /// A6: the FSM2 interpreters close in `stop()`, between the quiesce and the components. `Fsm2SystemTest.Stop` pins what `DeploymentWiring.stop()` closes; this
+    /// pins that the node calls it (an emptied body leaves the FSM2 timers and interpreters running on a stopped node).
+    @Test
+    void theFsm2Close_isTheNodesStepBetweenTheQuiesceAndTheComponents() {
+        var source = read(NODE_SOURCE);
+
+        assertThat(fsm2Close(source)).isEqualTo(FSM2_CLOSE + " deploymentWiring.stop(); return unit; }");
+    }
+
+    /// The joins at the end of the components' stop: the backup's flush, then the sealer's (rc5's order), and nothing after them.
+    @Test
+    void theFlushes_areJoinedBackupFirstThenStreams_asTheLastStepOfTheComponents() {
+        var source = read(NODE_SOURCE);
+        var tail = code(source.substring(source.indexOf(COMPONENTS_END)));
+
+        assertThat(count(Pattern.compile(Pattern.quote(COMPONENTS_END)), source)).isEqualTo(1L);
+        assertThat(tail).startsWith(COMPONENTS_END + " }");
     }
 
     @Test
@@ -132,11 +216,24 @@ class StopSequencePinTest {
         assertThat(scan("deploymentWiring.leaveQuorum(() -> router.route(ClusterStateNotification.passive()),\n () -> reactors.executor(\"LeaderManager\").drained(),\n router::quiesce);").sanctioned()).isZero();
     }
 
-    @Test
-    void aComponentStop_plantedBeforeTheQuiesce_isFound() {
-        var planted = STOP + " reactors.markStopping(); controlLoop.stop(); var quorumLeft = x; " + CONTINUATION + ".map(y); } " + COMPONENTS + " " + COMPONENTS_END;
+    private static String skeleton(String planted) {
+        return STOP + " reactors.markStopping(); " + planted + " var quorumLeft = x; return quorumLeft.map(y); } " + FSM2_CLOSE + " deploymentWiring.stop(); return unit; } "
+               + COMPONENTS + " controlLoop.stop(); metricsScheduler.stop(); " + COMPONENTS_END + " }";
+    }
 
-        assertThat(synchronousPart(planted)).contains(TEARDOWN.getFirst());
-        assertThat(componentStops(planted)).doesNotContain(TEARDOWN.getFirst());
+    @Test
+    void aComponentStop_plantedBeforeTheQuiesce_isFound_whicheverOneItIs() {
+        assertThat(misplaced(skeleton(""))).isEmpty();
+        assertThat(misplaced(skeleton("controlLoop.stop();"))).containsExactly("controlLoop.stop();");
+        assertThat(misplaced(skeleton("metricsScheduler.stop();"))).containsExactly("metricsScheduler.stop();");
+    }
+
+    @Test
+    void aMissingOrReorderedLandmark_isFound() {
+        var swapped = STOP + " " + String.join(" ", STOP_LANDMARKS.reversed()) + " } " + FSM2_CLOSE;
+        var inOrder = STOP + " " + String.join(" ", STOP_LANDMARKS) + " } " + FSM2_CLOSE;
+
+        assertThat(outOfOrder(inOrder)).isEmpty();
+        assertThat(outOfOrder(swapped)).isNotEmpty();
     }
 }
