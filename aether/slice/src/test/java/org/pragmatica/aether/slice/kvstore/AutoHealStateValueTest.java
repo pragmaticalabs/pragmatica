@@ -13,6 +13,7 @@ import io.netty.buffer.Unpooled;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 
 /// v2711 survivors 6-7: the factories decide what an enable and a plain disable record (no configuration version, no scaling values), and
@@ -52,6 +53,29 @@ class AutoHealStateValueTest {
         assertThat(value.reason()).isEqualTo("maintenance");
         assertThat(value.disabledAtConfigVersion()).isEqualTo(42L);
         assertThat(value.disabledAtScaling()).containsExactlyInAnyOrderEntriesOf(Map.of("worker primary/core", 3, "community stable", 4));
+    }
+
+    /// v2711c (v07): the record holds its own copy of the scaling map: the caller changing the map it passed in does not change the record,
+    /// and the record's map cannot be changed.
+    @Test
+    void disabledAtScaling_isADefensiveCopy_andImmutable() {
+        var passed = new java.util.HashMap<String, Integer>();
+
+        passed.put("worker primary/core", 3);
+        var value = AutoHealStateValue.disabledAt("maintenance", 42L, passed);
+
+        passed.put("community stable", 4);
+        passed.put("worker primary/core", 9);
+
+        assertThat(value.disabledAtScaling()).containsExactlyEntriesOf(Map.of("worker primary/core", 3));
+        assertThatThrownBy(() -> value.disabledAtScaling().put("x", 1)).isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    /// v2711c (v07): a null scaling map is refused at construction (the record is never half-built); a null reason is normalized to empty.
+    @Test
+    void nullScaling_isRefused_nullReasonIsNormalized() {
+        assertThatThrownBy(() -> new AutoHealStateValue(false, "r", 1L, 1L, null)).isInstanceOf(NullPointerException.class);
+        assertThat(new AutoHealStateValue(false, null, 1L, 1L, Map.of()).reason()).isEmpty();
     }
 
     @Test
