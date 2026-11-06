@@ -188,7 +188,7 @@ class RequirementCombinerOrderingTest {
         releaseOperator();
         cluster.awaitHeld(1);
         cluster.commitAllAsTheyArrive();
-        combineNow();
+        recombineExpectingNoWrite();
 
         assertThat(store.get(OPERATOR).isEmpty()).as("the operator requirement is released").isTrue();
         assertThat(requirementCount(REACTIVE)).as("REACTIVE is re-based to the held count").isEqualTo(Option.some(6));
@@ -209,7 +209,7 @@ class RequirementCombinerOrderingTest {
         submitOperator(5);
         cluster.awaitHeld(1);
         cluster.commitAllAsTheyArrive();
-        combineNow();
+        recombineExpectingNoWrite();
 
         assertThat(requirementCount(OPERATOR)).isEqualTo(Option.some(5));
         assertThat(committedTargetCount()).as("a lowered floor does not scale down").isEqualTo(Option.some(8));
@@ -406,6 +406,16 @@ class RequirementCombinerOrderingTest {
         combiner.onRequirementPut(REACTIVE);
         cluster.awaitHeld(1);
         cluster.commitAllAsTheyArrive();
+    }
+
+    /// Re-combines after a release re-based REACTIVE in the same transaction: the target already holds, so nothing may be written.
+    private void recombineExpectingNoWrite() {
+        var submitted = cluster.submitted();
+
+        combiner.onRequirementPut(REACTIVE);
+        cluster.commitAllAsTheyArrive();
+
+        assertThat(cluster.submitted()).as("a re-combination over a held target writes nothing").isEqualTo(submitted);
     }
 
     private void releaseOperator() {
