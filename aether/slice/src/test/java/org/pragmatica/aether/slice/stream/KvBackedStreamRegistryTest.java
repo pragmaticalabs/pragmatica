@@ -200,15 +200,9 @@ class KvBackedStreamRegistryTest {
 
         /// Reviewer test gap #17 — concurrent acquire on the same address.
         ///
-        /// The convenience methods are best-effort optimistic per the [KvBackedStreamRegistry]
-        /// contract: there is no CAS primitive in [KVCommand], so two concurrent
-        /// `acquireReference(addr)` calls can both observe `n=1` and both write `n+1=2`,
-        /// producing a final refcount of 2 instead of the strict-monotonic 3. This test pins the
-        /// guarantee the implementation actually provides: **both calls succeed**, the final
-        /// refcount is **at least 2** (no negative outcome), and the test cluster's serial-apply
-        /// stub causes both writes to land. Strict refcount monotonicity requires the FSM
-        /// piggyback path; this test exists so the relaxed guarantee is part of the visible
-        /// contract.
+        /// Since #1978 each `acquireReference` puts its own holder key (this node, [KvBackedStreamRegistry#REGISTRY_ARTIFACT],
+        /// a fresh attempt) and reads no count, so two concurrent calls keep both references: the registrar's plus two is
+        /// exactly 3. Red when an acquire writes a count read from the store (both would write 2) or reuses an attempt.
         @Test
         void concurrentAcquire_doesNotLoseRefs() throws Exception {
             registry.register(frameworkEntry(SYSTEM_EVENTS));
@@ -226,9 +220,7 @@ class KvBackedStreamRegistryTest {
             } finally {
                 executor.shutdownNow();
             }
-            // Final lookup confirms refcount advanced past the initial 1; exact value depends on
-            // serial-apply ordering in the test cluster stub but must be >= 2.
-            assertThat(registry.lookup(SYSTEM_EVENTS).unwrap().refCount()).isGreaterThanOrEqualTo(2);
+            assertThat(registry.lookup(SYSTEM_EVENTS).unwrap().refCount()).as("the registrar's reference and both acquires").isEqualTo(3);
         }
     }
 
@@ -276,6 +268,31 @@ class KvBackedStreamRegistryTest {
             kvStore.process(kvStore.createBatch(List.of(KvBackedStreamRegistry.releaseCommand(APP_ORDERS, holder, slice, 1L))));
 
             assertThat(registry.lookup(APP_ORDERS).unwrap().refCount()).as("registrar + attempt 2").isEqualTo(2);
+        }
+
+        /// Acquiring again as the same holder `(node, artifact, attempt)` puts the same key: one reference, not two. Red when a
+        /// re-acquire adds a reference (a rebuilt or re-driven activation would then leak one).
+        @Test
+        void aReAcquireBySameHolderIsTheSameReference() {
+            registry.register(blueprintEntry(APP_ORDERS));
+            kvStore.process(kvStore.createBatch(registry.acquireCommands(blueprintEntry(APP_ORDERS), holder, slice, 0L, 1_000L)));
+            kvStore.process(kvStore.createBatch(registry.acquireCommands(blueprintEntry(APP_ORDERS), holder, slice, 0L, 2_000L)));
+
+            assertThat(registry.lookup(APP_ORDERS).unwrap().refCount()).as("registrar + the one holder").isEqualTo(2);
+        }
+
+        /// Releasing as a holder that never acquired removes nothing: neither another holder's key nor the registrar's. Red when
+        /// a release removes anything but the named holder's own key.
+        @Test
+        void aReleaseByAHolderThatNeverAcquiredChangesNothing() {
+            var stranger = NodeId.nodeId("node-2").unwrap();
+
+            registry.register(blueprintEntry(APP_ORDERS));
+            kvStore.process(kvStore.createBatch(registry.acquireCommands(blueprintEntry(APP_ORDERS), holder, slice, 0L, 1_000L)));
+
+            kvStore.process(kvStore.createBatch(List.of(KvBackedStreamRegistry.releaseCommand(APP_ORDERS, stranger, slice, 0L))));
+
+            assertThat(registry.lookup(APP_ORDERS).unwrap().refCount()).as("registrar + the holder, both untouched").isEqualTo(2);
         }
 
         @Test

@@ -610,11 +610,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         ///    re-drive it IN FULL ([#transitionToActiveWithStreamRefs]: ACTIVE with its endpoints plus the stream-ref
         ///    commands), never a bare ACTIVE, which would leave the stream refcounts unacquired; but only while a
         ///    committed `SliceTarget` still names this version, because a rolled-back or replaced version must not be
-        ///    started again (#1068). The stream-ref commands are rebuilt from the CURRENT applied mirror: `acquireCommand` is
-        ///    an absolute Put (refCount = mirror + 1), so replaying the original's snapshot could overwrite another holder's
-        ///    acquire and let a later release delete the entry under it. Rebuilt, the failure direction flips: if the
-        ///    original write also lands late, this instance holds one reference too many and the stream outlives its
-        ///    holders (a leak, the safe direction). Per-holder reference entries would remove both cases (rc5).
+        ///    started again (#1068). The stream-ref commands are this instance's own holder keys (#1978, I-36): the re-drive
+        ///    puts the same keys the original write carried, so the original landing late as well changes nothing, and no
+        ///    other holder's reference is read or overwritten.
         ///  - anything else (DEACTIVATE, DEACTIVATING, FAILED, UNLOAD, UNLOADING, UNKNOWN, or no entry): the slice has
         ///    left the activation chain, so ACTIVE is never written over it. The mirror's value is adopted into local
         ///    state as its own notification would have been (an absent entry is handled as the removal it is), and the

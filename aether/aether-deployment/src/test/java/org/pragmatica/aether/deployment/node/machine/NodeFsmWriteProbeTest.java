@@ -13,15 +13,18 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistryHolderKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistryKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistryHolderValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistryValue;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.utils.Causes;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -42,11 +45,29 @@ class NodeFsmWriteProbeTest {
 
     // ------------------------------------------------------------------ fixtures
 
-    /// The stream-ref ACQUIRE for `count`, as `acquireCommand` builds it: an absolute value.
+    /// A synthetic mirror-dependent leg: an absolute count, as the stream-ref ACQUIRE was built before #1978. No production builder writes
+    /// it any more (references are per-holder keys, see [#holderAcquire]); it stays the instrument that tells a rebuild from a replay and
+    /// that pins L-20 for any leg whose value is read from the mirror.
     private static LegCommand acquire(int count) {
         return LegCommand.legCommand(LegCommand.LegKind.STREAM_REF,
                                      new KVCommand.Put<AetherKey, AetherValue>(StreamRegistryKey.streamRegistryKey(REF.address()),
                                                                                StreamRegistryValue.streamRegistryValue(REF.withRefCount(count))));
+    }
+
+    /// The stream-ref ACQUIRE as `KvBackedStreamRegistry.acquireCommands` builds it since #1978: `holder`'s own key, attempt 0.
+    private static LegCommand holderAcquire(NodeId holder) {
+        return LegCommand.legCommand(LegCommand.LegKind.STREAM_REF,
+                                     new KVCommand.Put<AetherKey, AetherValue>(StreamRegistryHolderKey.streamRegistryHolderKey(REF.address(), holder, ARTIFACT, 0L),
+                                                                               StreamRegistryHolderValue.streamRegistryHolderValue(0L)));
+    }
+
+    /// The reference count an entry reports since #1978: the number of holder keys of its address.
+    private static long holders(NodeHarness h) {
+        var count = new long[1];
+
+        h.store.forEach(StreamRegistryHolderKey.class, StreamRegistryHolderValue.class, (key, _) -> count[0] += key.address().equals(REF.address()) ? 1 : 0);
+
+        return count[0];
     }
 
     private static int refCount(NodeHarness h) {
@@ -224,7 +245,9 @@ class NodeFsmWriteProbeTest {
         assertSingleEffect(h, control());
     }
 
-    /// (b2) Tripwire for L-20, ENABLED, asserting today's behaviour (rebuild semantics): the probe rebuilds its ACQUIRE from the
+    /// (b2) Tripwire for L-20, ENABLED, asserting today's behaviour (rebuild semantics), with the synthetic absolute-count leg [#acquire]
+    /// (since #1978 no stream reference is built this way; [#nt134b2_holderKeys_otherHoldersReferenceSurvives] is the same run with holder
+    /// keys): the probe rebuilds its ACQUIRE from the
     /// mirror at probe time (n, so it writes n + 1). The held original commits (n + 1), another holder's ACQUIRE commits
     /// (n + 2), then the probe's resubmission commits: its fenced Put is refused, but its unfenced ACQUIRE writes n + 1.
     @Test
@@ -264,6 +287,30 @@ class NodeFsmWriteProbeTest {
         h.applyLate(probes(h).getFirst());
 
         assertThat(refCount(h)).isEqualTo(2);
+    }
+
+    /// (b2) with the holder keys the stream-ref ACQUIRE has been since #1978: the same run as the L-20 tripwire above, and the other holder's
+    /// reference survives, because the probe's unfenced ACQUIRE re-puts this node's own key and never writes the other holder's. L-20 itself
+    /// (a refused fenced Put still applies its legs) is unchanged; its lost-increment consequence for stream references is designed out. Red
+    /// when the builder's ACQUIRE is anything but this node's own key, e.g. a count read from the mirror.
+    @Test
+    @DisplayName("NT-134 (b2) #1978: with holder keys the other holder's reference survives the probe's resubmission")
+    void nt134b2_holderKeys_otherHoldersReferenceSurvives() {
+        var h = new NodeHarness();
+
+        h.script(LocalStep.BUILD_LEGS, LocalOutcome.done(List.of(NodeHarness.leg(LegCommand.LegKind.TOPIC_SUBSCRIPTION, ARTIFACT))))
+         .script(LocalStep.DESCRIBE_ACTIVE, LocalOutcome.described(List.of("handle"), List.of(holderAcquire(SELF))));
+        h.writeScript = submitted -> ownActive(submitted) || submitted.submit().isProbe() ? NodeHarness.WriteMode.LOST : null;
+        h.establish().permit(ARTIFACT).goal(ARTIFACT, SliceGoal.ACTIVE, G1);
+
+        var original = firstActive(h);
+
+        h.advance(probeOffset(h, 0));
+        h.applyLate(original);
+        h.applyBatch(List.of(holderAcquire(NodeHarness.PEER).command()));
+        h.applyLate(probes(h).getFirst());
+
+        assertThat(holders(h)).as("this node's reference and the other holder's").isEqualTo(2L);
     }
 
     /// (b3) The first-submission replay is closed. Attempt 1 is dropped. Another node's ACQUIRE of the same ref commits before the
