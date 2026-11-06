@@ -93,7 +93,7 @@ class WorkflowRunIndexTest {
         assertThat(probe.settled()).as("a restore is not a transition").isEmpty();
     }
 
-    //--- the announce: owner-only, never on replay, ESCALATED on entry and RESOLVED on exit
+    //--- the announce: owner-only, never on replay, ESCALATED on entry, RESOLVED on terminal exit, RESUMED on resume
 
     @Test
     void announcer_escalation_raisesOneIncident_withTheDetail() {
@@ -138,13 +138,14 @@ class WorkflowRunIndexTest {
         for (var node : nodes) {
             WorkflowRunIndex.absorbPut(node, () -> false, put(running));
             WorkflowRunIndex.absorbPut(node, () -> false, put(escalated));
-            WorkflowRunIndex.absorbPut(node, () -> false, put(escalated.resumed(99_000L)));
+            WorkflowRunIndex.absorbPut(node, () -> false, put(escalated.in(WorkflowState.FAILED, "abandoned")));
         }
         assertThat(codes(probe.settled())).containsExactly(OperatorWarningCode.WORKFLOW_ESCALATED, OperatorWarningCode.WORKFLOW_RESOLVED);
     }
 
+    /// CTO ruling Q4: a resume raises the INFO WORKFLOW_RESUMED and never WORKFLOW_RESOLVED; the incident stays open.
     @Test
-    void announcer_resumeOfAnEscalatedRun_raisesResolved() {
+    void announcer_resumeOfAnEscalatedRun_raisesResumed_notResolved() {
         var index = WorkflowRunIndex.workflowRunIndex();
         var escalated = run("wf-a", 10L).in(WorkflowState.ESCALATED, "incident");
 
@@ -153,12 +154,53 @@ class WorkflowRunIndexTest {
         index.put(escalated.resumed(99_000L));
         var raised = probe.settled();
 
-        assertThat(codes(raised)).containsExactly(OperatorWarningCode.WORKFLOW_ESCALATED, OperatorWarningCode.WORKFLOW_RESOLVED);
+        assertThat(codes(raised)).containsExactly(OperatorWarningCode.WORKFLOW_ESCALATED, OperatorWarningCode.WORKFLOW_RESUMED);
         assertThat(raised.getLast().subject()).isEqualTo("wf-a");
         assertThat(raised.getLast().message()).contains("RUNNING");
     }
 
-    /// An abandon ends the escalated run as FAILED: that also leaves ESCALATED, so it resolves the incident (Architect ruling Q4).
+    /// CTO ruling Q4: ESCALATED to DONE resolves the incident with outcome DONE.
+    @Test
+    void announcer_escalatedRunReachingDone_raisesResolved_withOutcomeDone() {
+        var index = WorkflowRunIndex.workflowRunIndex();
+        var escalated = run("wf-a", 10L).in(WorkflowState.ESCALATED, "incident");
+
+        index.onTransition(WorkflowRunIndex.announcer(() -> true, probe.sink()));
+        index.put(escalated);
+        index.put(escalated.in(WorkflowState.DONE, ""));
+        var raised = probe.settled();
+
+        assertThat(codes(raised)).containsExactly(OperatorWarningCode.WORKFLOW_ESCALATED, OperatorWarningCode.WORKFLOW_RESOLVED);
+        assertThat(raised.getLast().message()).contains("outcome DONE");
+    }
+
+    /// CTO ruling Q4: at most one RESOLVED per run per episode; a redelivered terminal commit has a terminal before.
+    @Test
+    void announcer_redeliveredTerminalCommit_raisesResolvedOnce() {
+        var index = WorkflowRunIndex.workflowRunIndex();
+        var escalated = run("wf-a", 10L).in(WorkflowState.ESCALATED, "incident");
+        var failed = escalated.in(WorkflowState.FAILED, "abandoned");
+
+        index.onTransition(WorkflowRunIndex.announcer(() -> true, probe.sink()));
+        index.put(escalated);
+        index.put(failed);
+        index.put(failed);
+        assertThat(codes(probe.settled())).containsExactly(OperatorWarningCode.WORKFLOW_ESCALATED, OperatorWarningCode.WORKFLOW_RESOLVED);
+    }
+
+    /// A terminal commit of a run that never escalated has no incident to resolve.
+    @Test
+    void announcer_terminalWithoutEscalation_raisesNothing() {
+        var index = WorkflowRunIndex.workflowRunIndex();
+        var running = run("wf-a", 10L);
+
+        index.onTransition(WorkflowRunIndex.announcer(() -> true, probe.sink()));
+        index.put(running);
+        index.put(running.in(WorkflowState.DONE, ""));
+        assertThat(probe.settled()).isEmpty();
+    }
+
+    /// An abandon ends the escalated run as FAILED (ABANDONED is reserved until the ledger has the verb): it resolves the incident, outcome FAILED.
     @Test
     void announcer_abandonOfAnEscalatedRun_raisesResolved() {
         var index = WorkflowRunIndex.workflowRunIndex();
@@ -167,7 +209,10 @@ class WorkflowRunIndexTest {
         index.onTransition(WorkflowRunIndex.announcer(() -> true, probe.sink()));
         index.put(escalated);
         index.put(escalated.in(WorkflowState.FAILED, "abandoned"));
-        assertThat(codes(probe.settled())).containsExactly(OperatorWarningCode.WORKFLOW_ESCALATED, OperatorWarningCode.WORKFLOW_RESOLVED);
+        var raised = probe.settled();
+
+        assertThat(codes(raised)).containsExactly(OperatorWarningCode.WORKFLOW_ESCALATED, OperatorWarningCode.WORKFLOW_RESOLVED);
+        assertThat(raised.getLast().message()).contains("outcome FAILED");
     }
 
     /// A run that escalates again after a resume opens a new incident; a re-applied ESCALATED value is not a new transition.
@@ -184,13 +229,13 @@ class WorkflowRunIndexTest {
         index.put(resumed);
         index.put(again);
         assertThat(codes(probe.settled())).containsExactly(OperatorWarningCode.WORKFLOW_ESCALATED,
-                                                           OperatorWarningCode.WORKFLOW_RESOLVED,
+                                                           OperatorWarningCode.WORKFLOW_RESUMED,
                                                            OperatorWarningCode.WORKFLOW_ESCALATED);
     }
 
-    /// End to end over the real store route: the ledger's resume commit of an escalated run raises RESOLVED.
+    /// End to end over the real store route: the ledger's resume commit of an escalated run raises RESUMED.
     @Test
-    void announcer_ledgerResumeCommit_viaTheStoreRoute_raisesResolved() {
+    void announcer_ledgerResumeCommit_viaTheStoreRoute_raisesResumed() {
         var ledger = cluster.ledger(CORE_1);
         var running = run("wf-a", 10L);
         var escalated = running.in(WorkflowState.ESCALATED, "incident");
@@ -199,6 +244,6 @@ class WorkflowRunIndexTest {
         ledger.create(running).await().unwrap();
         assertThat(ledger.commit(running, escalated).await().unwrap()).isTrue();
         assertThat(ledger.commit(escalated, escalated.resumed(99_000L)).await().unwrap()).isTrue();
-        assertThat(codes(probe.settled())).containsExactly(OperatorWarningCode.WORKFLOW_ESCALATED, OperatorWarningCode.WORKFLOW_RESOLVED);
+        assertThat(codes(probe.settled())).containsExactly(OperatorWarningCode.WORKFLOW_ESCALATED, OperatorWarningCode.WORKFLOW_RESUMED);
     }
 }

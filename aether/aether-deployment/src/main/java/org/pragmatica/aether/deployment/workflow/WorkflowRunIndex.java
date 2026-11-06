@@ -138,8 +138,11 @@ public final class WorkflowRunIndex {
     /// nothing: it is committed history, not a transition.
     ///
     /// - [OperatorWarningCode#WORKFLOW_ESCALATED] when `after` is `ESCALATED` and `before` was not; the message is the incident.
-    /// - [OperatorWarningCode#WORKFLOW_RESOLVED] when `before` was `ESCALATED` and `after` is anything else (a resume, or the
-    ///   terminal commit of an abandon). A run that escalates again opens a new incident.
+    /// - [OperatorWarningCode#WORKFLOW_RESOLVED] ONLY when `before` was `ESCALATED` and `after` is terminal (`DONE` or `FAILED`); the
+    ///   message carries the [Outcome]. At most one per run per ESCALATED episode: the raise is derived from the applied (before, after)
+    ///   pair, and the index holds the terminal run afterwards, so a redelivered terminal commit has a terminal `before` and raises nothing.
+    /// - [OperatorWarningCode#WORKFLOW_RESUMED] (INFO, not a recovery: the incident stays open) when `before` was `ESCALATED` and `after`
+    ///   is `RUNNING` or `WAITING`. A run that escalates again after a resume opens a new incident.
     ///
     /// Guarantee: each event is raised AT MOST ONCE per committed transition, by the cluster-events owner that applies it. Mechanism:
     /// the raise is derived from the applied (before, after) pair on the owner, never from a commit's answer, so a slow or failed
@@ -165,15 +168,48 @@ public final class WorkflowRunIndex {
                                           after.detail());
         }
 
-        return wasEscalated && !escalated(after)
+        return wasEscalated
+               ? announceLeft(warnings, after)
+               : Unit.unit();
+    }
+
+    private static Unit announceLeft(OperatorWarningSink warnings, WorkflowRunValue after) {
+        return outcomeOf(after.state()).fold(() -> announceResume(warnings, after),
+                                             outcome -> OperatorWarnings.raise(LOG,
+                                                                               warnings,
+                                                                               OperatorWarningCode.WORKFLOW_RESOLVED,
+                                                                               after.id(),
+                                                                               "Workflow {} left ESCALATED with outcome {}",
+                                                                               after.id(),
+                                                                               outcome));
+    }
+
+    private static Unit announceResume(OperatorWarningSink warnings, WorkflowRunValue after) {
+        return after.state() == WorkflowState.RUNNING || after.state() == WorkflowState.WAITING
                ? OperatorWarnings.raise(LOG,
                                         warnings,
-                                        OperatorWarningCode.WORKFLOW_RESOLVED,
+                                        OperatorWarningCode.WORKFLOW_RESUMED,
                                         after.id(),
-                                        "Workflow {} left ESCALATED: it is now {}",
+                                        "Workflow {} was resumed from ESCALATED and is now {}",
                                         after.id(),
                                         after.state())
                : Unit.unit();
+    }
+
+    /// How an escalated run ended. `ABANDONED` is RESERVED: the ledger has no abandon operation yet, so a committed abandon is
+    /// indistinguishable from a `FAILED` commit and is announced as `FAILED`; the lane that adds the abandon verb derives it.
+    public enum Outcome {
+        DONE,
+        FAILED,
+        ABANDONED
+    }
+
+    private static Option<Outcome> outcomeOf(WorkflowState state) {
+        return switch (state) {
+            case DONE -> Option.some(Outcome.DONE);
+            case FAILED -> Option.some(Outcome.FAILED);
+            default -> Option.none();
+        };
     }
 
     private static boolean escalated(WorkflowRunValue run) {

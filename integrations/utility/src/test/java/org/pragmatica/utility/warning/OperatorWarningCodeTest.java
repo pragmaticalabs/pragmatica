@@ -79,6 +79,16 @@ class OperatorWarningCodeTest {
         assertThat(resolved.recoveryOf()).isEqualTo(Option.some(OperatorWarningCode.WORKFLOW_ESCALATED));
     }
 
+    @Test
+    void workflowResumed_pinsItsCode_asAnInfoPointEventThatClosesNothing() {
+        var resumed = OperatorWarningCode.WORKFLOW_RESUMED;
+
+        assertThat(resumed.code()).isEqualTo("workflow-resumed");
+        assertThat(resumed.subsystem()).isEqualTo("workflow");
+        assertThat(resumed.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(resumed.recoveryOf()).isEqualTo(Option.none());
+    }
+
     /// #2062: the operator clear is a RECOVERY of the unconfirmed warning, announced at INFO; a higher level would open a new alert while closing one.
     @Test
     void instanceTerminationCleared_isAnInfoRecoveryThatClosesAcrossNodes() {

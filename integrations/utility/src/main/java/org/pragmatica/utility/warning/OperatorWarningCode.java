@@ -919,10 +919,14 @@ public enum OperatorWarningCode {
     /// (derived from the applied record, skipping replays, never from a commit's answer); [#WORKFLOW_RESOLVED] closes it. The event is
     /// lost only when that owner dies between the apply and the raise. The committed run keeps the incident as its detail in every case.
     WORKFLOW_ESCALATED("workflow-escalated", "workflow", WarningLevel.CRITICAL),
-    /// The recovery of [#WORKFLOW_ESCALATED], same subject (rc6 §4.4): the escalated workflow left ESCALATED by any committed
-    /// transition (a resume, or the terminal commit of an abandon). INFO; raised with the same guarantee and by the same owner as
-    /// [#WORKFLOW_ESCALATED], from the applied transition.
+    /// The recovery of [#WORKFLOW_ESCALATED], same subject (rc6 §4.4, CTO ruling Q4): an ESCALATED workflow reached a terminal state, DONE
+    /// or FAILED (an abandon commits FAILED; the message names the outcome). A resume does NOT resolve it, see [#WORKFLOW_RESUMED]. INFO;
+    /// raised at most once per run per ESCALATED episode, with the same guarantee and by the same owner as [#WORKFLOW_ESCALATED].
     WORKFLOW_RESOLVED("workflow-resolved", "workflow", WarningLevel.INFO, WORKFLOW_ESCALATED),
+    /// A workflow left ESCALATED by an operator resume and is RUNNING or WAITING again (rc6 §4.4, CTO ruling Q4). A point event with no
+    /// recovery pairing: it does not close [#WORKFLOW_ESCALATED] (only a terminal state does), and a run that escalates again opens a new
+    /// incident. Subject is the workflow id. INFO; same guarantee and owner as [#WORKFLOW_ESCALATED].
+    WORKFLOW_RESUMED("workflow-resumed", "workflow", WarningLevel.INFO),
     /// The recovery of [#CONFIG_WATCH_CALLBACK_FAILED], same subject (#774): the next delivery bound and (when it called back) succeeded.
     /// INFO, published only after a published failure for the subject (#752 mechanism).
     CONFIG_WATCH_CALLBACK_RECOVERED("config-watch-callback-recovered",
