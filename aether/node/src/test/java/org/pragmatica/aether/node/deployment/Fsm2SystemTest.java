@@ -5,7 +5,9 @@
 package org.pragmatica.aether.node.deployment;
 
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -27,6 +29,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.cluster.node.ForwardingClusterNode;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
@@ -48,7 +51,7 @@ import static org.awaitility.Awaitility.await;
 
 /// The FSM2 system over the production route table, a real `KVStore` applier and real interpreters (phase-3 design 4.1, 4.4, 5.1, 8.3): the
 /// route-level gates of the quorum edge (W-04, MT-05), the self-ready signal (W-22), the activation level-heal (W-21, B3), the config hook (W-20,
-/// N-2), core membership (W-23), the worker exclusion (N-3), the stop (B13) and the seams (W-14, W-33 wired), and the stamp read inside the
+/// N-2), core membership (W-23), the worker's node half (F3), the stop (B13) and the seams (W-14, W-33 wired), and the stamp read inside the
 /// dispatch across a real snapshot (PR C obligation 1).
 class Fsm2SystemTest {
     private static final Artifact ORDERS = Artifact.artifact("org.example:orders:1.0.0").unwrap();
@@ -174,16 +177,18 @@ class Fsm2SystemTest {
             }
         }
 
-        /// N-3: a worker has no node interpreter, so its config hook stays a counted drop under FSM2.
+        /// #2757 (F3, MT-14d worker arm): a worker's config hook reaches its node interpreter's `ConfigChanged`, never the NDM and never a drop.
         @Test
-        void theConfigHook_ofAWorker_isACountedDrop_underFsm2() {
+        void theConfigHook_ofAWorker_reachesItsNodeFsm_underFsm2() {
             try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, true).assembled()) {
                 var legacy = new AtomicInteger();
 
                 harness.wiring.configApplied(_ -> legacy.incrementAndGet()).accept("orders.banner");
 
-                assertThat(legacy).hasValue(0);
-                assertThat(harness.registry.counter("aether_deployment_fsm2_dropped_total", "point", "B5.ConfigApplied").count()).isEqualTo(1.0);
+                harness.awaitThat(() -> harness.count("ConfigChanged", "applied", "node") == 1.0);
+                assertThat(legacy).as("never the NDM under FSM2").hasValue(0);
+                assertThat(harness.registry.find("aether_deployment_fsm2_dropped_total").tags("point", "B5.ConfigApplied").counters()).as("not a drop").isEmpty();
+                assertThat(harness.wiring.recorded()).contains("B5.ConfigApplied -> fsm2:NodeFsmInput.ConfigChanged");
             }
         }
     }
@@ -253,22 +258,137 @@ class Fsm2SystemTest {
         }
     }
 
+    /// F3 (P3-D): a FSM2 worker runs the node half of the system over the replica feed (know `23ca0fd65f` D.2): the node FSM's routes, the quorum
+    /// edge, the passive-client switch as its entry edge, the config hook and the stop drain. Nothing of the cluster half is bound or started.
     @Nested
     class Workers {
-        /// N-3: a worker never gets an FSM2 system, and nothing is registered for one; its hooks are counted drops.
+        private static void enterWorker(Fsm2Harness worker) {
+            worker.wiring.passiveClientSwitch(() -> {}).run();
+            worker.awaitThat(() -> activeNode(worker));
+        }
+
+        private static AetherValue.SliceDesiredValue desired() {
+            return new AetherValue.SliceDesiredValue(AetherValue.SliceGoal.ACTIVE, new AetherValue.Generation(3L, 1L), 1L);
+        }
+
+        /// The worker's record: the node routes, B2, B4, B5 and the stop drain are FSM2 targets; no cluster route, no leader toggle, no
+        /// membership arm. MT: `registerKv`/`registerEntries` taking the core branch on a worker puts cluster rows here.
         @Test
-        void aWorker_getsNoSystem_noRoutes_andAttachIsRefused() {
-            try (var donor = new Fsm2Harness(DeploymentEngine.FSM2, false).assembled();
-                 var worker = new Fsm2Harness(DeploymentEngine.FSM2, true).assembled()) {
-                assertThat(worker.system.isPresent()).isFalse();
+        void aWorker_getsTheNodeHalf_andNoClusterBinding() {
+            try (var worker = new Fsm2Harness(DeploymentEngine.FSM2, true).assembled()) {
+                worker.wiring.passiveClientSwitch(() -> {});
+                worker.wiring.configApplied(_ -> {});
 
-                worker.wiring.attach(donor.system.unwrap());
-                assertThat(worker.wiring.system().isPresent()).as("MT: a runtime handed to a worker").isFalse();
+                assertThat(worker.system.map(Fsm2System::worker)).as("the node half is attached").isEqualTo(Option.some(true));
+                assertThat(worker.wiring.recorded()).contains("B1.node.SliceDesiredKey -> fsm2:Fsm2Routes",
+                                                             "B1.node.SliceObservedKey -> fsm2:Fsm2Routes",
+                                                             "B1.node.SliceTargetKey -> fsm2:Fsm2Routes",
+                                                             "B1.node.VersionRoutingKey -> fsm2:Fsm2Routes",
+                                                             "B2.ClusterStateNotification -> fsm2:Fsm2System.onClusterStateNotification",
+                                                             "B4.PassiveClientSwitch -> fsm2:Fsm2System.onPassiveClientReady",
+                                                             "B5.ConfigApplied -> fsm2:NodeFsmInput.ConfigChanged",
+                                                             "B13.StopDrain -> fsm2:Fsm2System.drainNode",
+                                                             "B15.construction -> fsm2:Fsm2System",
+                                                             "B16.Seams -> dropped");
+                assertThat(worker.wiring.recorded()).noneMatch(row -> row.startsWith("B1.cluster") || row.startsWith("B7.") || row.startsWith("B8.") || row.startsWith("B9."));
+            }
+        }
 
-                worker.router.route(ClusterStateNotification.active());
-                worker.put(SliceObservedKey.sliceObservedKey(Fsm2Harness.PEER, ORDERS), observed());
-                assertThat(worker.registry.find("aether_deployment_fsm_step_seconds").timers()).isEmpty();
-                assertThat(worker.wiring.recorded()).noneMatch(row -> row.startsWith("B1.cluster") || row.contains("fsm2:"));
+        /// The role is checked at attach: a core's system handed to a worker, or a worker's to a core, is refused.
+        @Test
+        void aSystemOfTheOtherRole_isRefusedAtAttach() {
+            try (var worker = new Fsm2Harness(DeploymentEngine.FSM2, true); var core = new Fsm2Harness(DeploymentEngine.FSM2, false)) {
+                worker.wiring.attach(worker.foreignRoleSystem());
+                core.wiring.attach(core.foreignRoleSystem());
+
+                assertThat(worker.wiring.system().isPresent()).as("MT: a core's runtime handed to a worker").isFalse();
+                assertThat(core.wiring.system().isPresent()).as("MT: a worker's runtime handed to a core").isFalse();
+            }
+        }
+
+        /// B4 is the worker's entry edge: the passive-client switch enters the node FSM (never the legacy reconcile), and then the worker's own
+        /// goal, delivered as a committed `SliceDesiredKey`, is stepped. A peer's goal is not (the own-node filter, NI-2).
+        @Test
+        void aWorker_entersOnThePassiveClientSwitch_andStepsOnlyItsOwnGoal() {
+            try (var worker = new Fsm2Harness(DeploymentEngine.FSM2, true).assembled()) {
+                var legacy = new AtomicInteger();
+
+                worker.put(AetherKey.SliceTargetKey.sliceTargetKey(ORDERS.base()), AetherValue.SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1));
+                worker.wiring.passiveClientSwitch(legacy::incrementAndGet).run();
+                worker.awaitThat(() -> activeNode(worker));
+                worker.put(AetherKey.SliceDesiredKey.sliceDesiredKey(Fsm2Harness.PEER, ORDERS), desired());
+                worker.put(AetherKey.SliceDesiredKey.sliceDesiredKey(Fsm2Harness.SELF, ORDERS), desired());
+
+                worker.awaitThat(() -> worker.count("DesiredPut", "applied", "node") == 1.0);
+                assertThat(legacy).as("never the NDM under FSM2").hasValue(0);
+                assertThat(worker.count("QuorumEstablished", "applied", "node")).as("the genuine entry, not the heal").isEqualTo(1.0);
+            }
+        }
+
+        /// The cluster half is never started on a worker: a leader toggle and a cluster-family fact reach no cluster step.
+        @Test
+        void aWorker_neverStepsTheClusterFsm() {
+            try (var worker = new Fsm2Harness(DeploymentEngine.FSM2, true).assembled()) {
+                worker.commitLeader();
+                enterWorker(worker);
+                worker.router.route(LeaderNotification.leaderChange(Option.some(Fsm2Harness.SELF), true));
+                worker.put(AetherKey.SliceTargetKey.sliceTargetKey(ORDERS.base()), AetherValue.SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1));
+
+                worker.awaitThat(() -> worker.count("TargetPut", "applied", "node") == 1.0);
+                assertThat(worker.registry.find("aether_deployment_fsm_step_seconds").tags("fsm", "cluster").timers()).as("no cluster step").isEmpty();
+                assertThat(worker.samples).as("the seam cadence never sampled").hasValue(0);
+            }
+        }
+
+        /// W-19 worker arm (D8, MT-20b): a re-subscription's install replays the difference to what was delivered while the worker's node FSM stays
+        /// ACTIVE; on a worker that burst is the carrier of the goals committed during the gap, so it is stepped, never dropped as a core drops it.
+        @Test
+        void aReplayedInstall_isSteppedAsFacts_onAWorker() {
+            try (var worker = new Fsm2Harness(DeploymentEngine.FSM2, true).assembled()) {
+                worker.put(AetherKey.SliceTargetKey.sliceTargetKey(ORDERS.base()), AetherValue.SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1));
+                enterWorker(worker);
+                var installed = new HashMap<AetherKey, AetherValue>(worker.store.snapshot());
+
+                installed.put(AetherKey.SliceDesiredKey.sliceDesiredKey(Fsm2Harness.SELF, ORDERS), desired());
+                worker.installing = Map.copyOf(installed);
+                assertThat(worker.store.restoreCommittedSnapshot(new byte[0], worker.slot.incrementAndGet() + 1).isSuccess()).isTrue();
+                worker.store.replayNotifications();
+
+                worker.awaitThat(() -> worker.count("DesiredPut", "applied", "node") == 1.0);
+                assertThat(worker.count("DesiredPut", "dropped_replay", "node")).as("MT-20b: the core rule on a worker").isZero();
+            }
+        }
+
+        /// D8's dedupe still holds on a worker (MT-25's inverse): a replayed fact at or below the entry snapshot's revision is in the snapshot, and is
+        /// dropped by revision.
+        @Test
+        void aReplayedFact_atOrBelowTheSnapshotRevision_isDroppedByRevision_onAWorker() {
+            try (var worker = new Fsm2Harness(DeploymentEngine.FSM2, true).assembled()) {
+                worker.put(AetherKey.SliceTargetKey.sliceTargetKey(ORDERS.base()), AetherValue.SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1));
+                worker.put(AetherKey.SliceTargetKey.sliceTargetKey(ORDERS.base()), AetherValue.SliceTargetValue.sliceTargetValue(ORDERS.version(), 2, 2));
+                enterWorker(worker);
+                var installed = new HashMap<AetherKey, AetherValue>(worker.store.snapshot());
+
+                installed.put(AetherKey.SliceDesiredKey.sliceDesiredKey(Fsm2Harness.SELF, ORDERS), desired());
+                worker.installing = Map.copyOf(installed);
+                assertThat(worker.store.restoreCommittedSnapshot(new byte[0], 1L).isSuccess()).isTrue();
+                worker.store.replayNotifications();
+
+                worker.awaitThat(() -> worker.count("DesiredPut", "dropped_revision", "node") == 1.0);
+                assertThat(worker.count("DesiredPut", "applied", "node")).isZero();
+            }
+        }
+
+        /// W-35 worker arm, wired (G-6 (a), MT-31): the worker's write-attempt bound is the forwarder's timeout + 5 s, whatever the configured
+        /// consensus `applyTimeout` (45 s here, so a bound sourced from it would read 50 s); a core's, built the same way, is the `applyTimeout`'s.
+        @Test
+        void theWriteAttemptBound_ofAWorker_isTheForwardersTimeout_notTheApplyTimeout() {
+            try (var worker = new Fsm2Harness(DeploymentEngine.FSM2, true).withApplyTimeout(TimeSpan.timeSpan(45).seconds()).assembled();
+                 var core = new Fsm2Harness(DeploymentEngine.FSM2, false).withApplyTimeout(TimeSpan.timeSpan(45).seconds()).assembled()) {
+                var forwarder = ForwardingClusterNode.forwardApplyTimeout().millis();
+
+                assertThat(worker.system.unwrap().nodeFsmConfig().timings().writeAttemptMs()).as("MT-31").isEqualTo(forwarder + 5_000L).isGreaterThan(forwarder);
+                assertThat(core.system.unwrap().nodeFsmConfig().timings().writeAttemptMs()).as("control: the core arm reads the configured applyTimeout").isEqualTo(50_000L);
             }
         }
     }

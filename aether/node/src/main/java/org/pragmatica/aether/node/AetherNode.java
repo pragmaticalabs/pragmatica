@@ -2939,10 +2939,9 @@ public interface AetherNode extends ManageableNode {
         // #1935: a declared stream consumer that cannot be registered reaches THIS node's event log.
         nodeDeploymentManager.setOperatorWarningSink(operatorWarningSink);
         configChangeFeed.setOperatorWarningSink(operatorWarningSink);
-        // B4, B10, B11 (design 8.3): hooks of the legacy engine that are off the FSM2 path; under FSM2 each is a counted drop. B12 is bound to the cluster FSM2 below.
-        var passiveClientActivation = deploymentWiring.legacyGated("B4.PassiveClientSwitch",
-                                                                   () -> reconcileNodeActivation(() -> runtimeReady(clusterNode),
-                                                                                                 nodeDeploymentManager));
+        // B4, B10, B11 (design 8.3): B10 and B11 are off the FSM2 path (counted drops under FSM2); B4 is a FSM2 worker's entry edge (F3). B12 is bound to the cluster FSM2 below.
+        var passiveClientActivation = deploymentWiring.passiveClientSwitch(() -> reconcileNodeActivation(() -> runtimeReady(clusterNode),
+                                                                                                        nodeDeploymentManager));
         var workerAdmissionJoin = deploymentWiring.legacy("B10.WorkerAdmission", clusterDeploymentManager::onWorkerJoin);
         var placementRedrive = deploymentWiring.legacy("B11.PlacementRedrive",
                                                        clusterDeploymentManager::onNodePlacementPut);
@@ -3692,8 +3691,8 @@ public interface AetherNode extends ManageableNode {
                                                                             nodeReportedStateHolder);
 
         deploymentWiring.legacyBinding("B6.SelfReady", () -> nodeDeploymentManager.setSelfReadySignal(selfReadySignal));
-        // Phase-3 design 4.2, 5.2, 8.3: the FSM2 engine, from this node's real collaborators. A worker never gets one (N-3).
-        if (deploymentWiring.isFsm2() && !configuredWorker(config)) {
+        // Phase-3 design 4.2, 5.2, 8.3: the FSM2 engine, from this node's real collaborators. A worker gets the node half (F3, P3-D).
+        if (deploymentWiring.isFsm2()) {
             deploymentWiring.attach(Fsm2System.fsm2System(new Fsm2System.Collaborators(config,
                                                                                        new AetherValue.ProcessIncarnation(bootIncarnation,
                                                                                                                           bootToken),
@@ -3735,7 +3734,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                               admissionSeam::tokenOf),
                                                                                        admissionSeam,
                                                                                        deploymentWiring.guard(),
-                                                                                       FsmTimers.sharedScheduler())));
+                                                                                       FsmTimers.sharedScheduler(),
+                                                                                       configuredWorker(config))));
         }
         // Activation level-heal: a cold-start `restart_all_nodes` can drop the single CAS-latched
         // ClusterStateNotification.ACTIVE edge while the router delegate is being rebuilt, leaving NDM

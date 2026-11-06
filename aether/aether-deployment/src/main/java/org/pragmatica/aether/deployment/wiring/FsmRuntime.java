@@ -28,7 +28,8 @@ import org.slf4j.LoggerFactory;
 ///
 /// **The core drop rule (design 4.4).** A KV-sourced input is dropped if it is replay-flagged (a restore never runs while the engine is
 /// ACTIVE, so the burst carries install-time values and would regress keys) or if its revision is at or below the revision of the last
-/// snapshot (the snapshot already contains it). Both are counted `inputs_total{result=dropped_replay|dropped_revision}`.
+/// snapshot (the snapshot already contains it). Both are counted `inputs_total{result=dropped_replay|dropped_revision}`. A worker's interpreter
+/// runs the [ReplayRule#WORKER] rule instead: a replay-flagged input is a fact, deduplicated by the same revision (design D8).
 abstract class FsmRuntime<I, K, A> {
     private static final Logger log = LoggerFactory.getLogger(FsmRuntime.class);
     /// How long a stop waits for an interpreter (design 7, 2b; the cluster's stop bound): `[guess: 10 s; settled by E-07]`.
@@ -44,6 +45,7 @@ abstract class FsmRuntime<I, K, A> {
     private final AtomicBoolean closeRequested = new AtomicBoolean();
     /// Counted down when the shutdown has run, by whoever ran it; every `close()` caller waits on this one completion.
     private final CountDownLatch stopped = new CountDownLatch(1);
+    private final ReplayRule replayRule;
     private long watermark;
 
     FsmRuntime(String threadName, FsmTimers.TimerService clock) {
@@ -51,7 +53,12 @@ abstract class FsmRuntime<I, K, A> {
     }
 
     FsmRuntime(String threadName, FsmTimers.TimerService clock, long stopWaitMs) {
+        this(threadName, clock, stopWaitMs, ReplayRule.CORE);
+    }
+
+    FsmRuntime(String threadName, FsmTimers.TimerService clock, long stopWaitMs, ReplayRule replayRule) {
         this.name = threadName;
+        this.replayRule = replayRule;
         this.stopWaitMs = stopWaitMs;
         this.mailbox = FsmMailbox.fsmMailbox(threadName, this::handle, this::shutdown);
         this.timers = FsmTimers.fsmTimers(clock, tick -> offered(mailbox.offer(new FsmItem.Tick<>(tick)), "Timer"));
@@ -165,7 +172,7 @@ abstract class FsmRuntime<I, K, A> {
     }
 
     private void keyValue(FsmItem.Kv<I, K> kv) {
-        if (kv.replay()) {
+        if (kv.replay() && replayRule == ReplayRule.CORE) {
             count(inputName(kv.input()), "dropped_replay");
         } else if (kv.revision() <= watermark) {
             count(inputName(kv.input()), "dropped_revision");
