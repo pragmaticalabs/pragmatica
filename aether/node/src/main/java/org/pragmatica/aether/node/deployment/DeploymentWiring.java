@@ -462,9 +462,10 @@ public final class DeploymentWiring {
     ///
     /// #2688: `delivered` is taken right after PASSIVE is routed and resolves once the reactions that edge queued (the `LeaderChange` the FSM routes onto
     /// a react executor) have run; the quiesce, which would drop them, waits for it. The returned promise resolves after the quiesce. The quiesce is
-    /// itself the pooled step, started once `delivered` has resolved, so it and whatever the caller chains on the returned promise run on a pooled
-    /// thread in every ordering (`delivered` resolved before this call or after it), never on the thread that resolved `delivered` nor on the caller:
-    /// that is the react executor whose reactions it waited for, or the shared timeout scheduler when the caller bounded the wait, and the node's
+    /// itself the pooled step, started once `delivered` has resolved, so the quiesce runs on a pooled
+    /// thread in every ordering (`delivered` resolved before this call or after it), never on the thread that resolved `delivered` and never on the
+    /// caller. A continuation the caller chains on the returned promise runs on that pooled thread, or on the caller's own thread if the quiesce has
+    /// already finished, and never on the thread that resolved `delivered`: that is the react executor whose reactions it waited for, or the shared timeout scheduler when the caller bounded the wait, and the node's
     /// teardown chained here blocks (the final cursor commits are awaited, bounded). Promise continuations run inline on the resolving thread, so a
     /// hop that only started a pooled task and then mapped its result could still run the quiesce inline when the task finished first (#2806).
     public Promise<Unit> leaveQuorum(Runnable routePassive, Supplier<Promise<Unit>> delivered, Runnable quiesce) {
