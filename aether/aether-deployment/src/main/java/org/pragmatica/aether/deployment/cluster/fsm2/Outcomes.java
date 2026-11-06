@@ -14,6 +14,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.ArtifactIntent;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.TxDraft;
+import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
@@ -35,6 +36,8 @@ import org.pragmatica.lang.Option;
 /// under ALL_OR_NOTHING rolls back each open apply that declares the artifact, unless the artifact is in a rolling
 /// update (B-055); under BEST_EFFORT it merges the failure into the outcome record (B-056).
 public sealed interface Outcomes {
+    String MARKED_CAUSE = "A declared slice is marked permanently failed";
+
     // -- the apply ------------------------------------------------------------------------------------------------
     /// An apply is outstanding for `artifact` when a non-registerOnly blueprint that declares it has an open apply of its
     /// committed attempt (the discriminator of #922, R-2.7).
@@ -87,7 +90,43 @@ public sealed interface Outcomes {
                                                      ctx,
                                                      entry.getKey()));
 
+        return rollbackMarked(m, ctx);
+    }
+
+    /// CF-8 (G2 P2 `newLeader_rollbackIntent_rollbackCompleted`): under ALL_OR_NOTHING the decision to roll back is the durable permanent-failure
+    /// mark of a declared artifact of an open apply, not the failure event that wrote it. A rollback lost with its term, or never sent
+    /// because the failure was committed by another leader, is derived again on every tick, until the apply is gone. A rollback in flight
+    /// or a rolling update (B-055) is respected by `rollbackFor`.
+    private static ClusterModel rollbackMarked(ClusterModel m, Ctx ctx) {
+        if (ctx.settings().atomicity() != DeploymentAtomicity.ALL_OR_NOTHING) {
+            return m;
+        }
+
+        m.applies.entries()
+                 .stream()
+                 .sorted(Comparator.comparing(entry -> entry.getKey()
+                                                            .asString()))
+                 .filter(entry -> Blueprints.isOpen(m,
+                                                    entry.getKey(),
+                                                    entry.getValue()))
+                 .filter(entry -> attemptOf(m,
+                                            entry.getKey()).equals(entry.getValue().attemptId()))
+                 .flatMap(entry -> markedArtifacts(m,
+                                                   entry.getKey()))
+                 .distinct()
+                 .forEach(artifact -> rollbackFor(m, ctx, artifact, MARKED_CAUSE));
+
         return m;
+    }
+
+    private static Stream<Artifact> markedArtifacts(ClusterModel m, BlueprintId id) {
+        return m.blueprints.get(id)
+                           .stream()
+                           .flatMap(value -> value.blueprint()
+                                                  .loadOrder()
+                                                  .stream())
+                           .map(slice -> slice.artifact())
+                           .filter(artifact -> Slices.permanentlyFailed(m, artifact));
     }
 
     /// R-2.1: deployed when every declared, non-registerOnly slice has at least one counted ACTIVE instance.
