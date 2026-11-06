@@ -1196,8 +1196,49 @@ class ProjectionTest {
 
         assertThat(store.generation.get()).isEqualTo(1L);
         assertThat(store.data).isEmpty();
-        assertThat(cursor.calls).as("capture before the reset, mint and rewind after it — the token is minted AFTER the reset, from state, never before")
-                                .containsExactly("capture@gen0/resets0", "mint@gen1/resets1", "rewind@gen1/resets1");
+        assertThat(cursor.calls).as("capture, then the #2654 mint probe, before the reset; the token's mint and the rewind after it — the token is minted AFTER the reset, from state, never before")
+                                .containsExactly("capture@gen0/resets0", "mint@gen0/resets0", "mint@gen1/resets1", "rewind@gen1/resets1");
+    }
+
+    /// #2654 (v2691 F1): the runtime refuses the mint while the life's incarnation is not committed. That refusal must
+    /// reach the rebuild BEFORE the reset: the read model keeps its state, no reset ran, and nothing is REBUILDING.
+    /// Red if the reset runs before the mint (the model reads cleared and REBUILDING).
+    @Test
+    void rebuild_refusedMint_leavesTheReadModelIntact_andNotRebuilding() {
+        var store = new InMemoryStore();
+        var refusal = Causes.cause("incarnation not committed");
+        var rewound = new AtomicBoolean();
+        var cursor = new Projection.ReplayCursor() {
+            @Override
+            public Promise<ProjectionStore.ReplayRange> capture() {
+                return Promise.success(new ProjectionStore.ReplayRange(Map.of(0, new ProjectionStore.PartitionRange(10L, 10L))));
+            }
+
+            @Override
+            public Promise<ProjectionStore.RewindToken> mintRewindToken(long generation) {
+                return refusal.promise();
+            }
+
+            @Override
+            public Promise<Unit> rewind(ProjectionStore.ReplayRange range, ProjectionStore.RewindToken token) {
+                rewound.set(true);
+
+                return Promise.unitPromise();
+            }
+        };
+        var projection = Projection.of(TOPIC)
+                                   .into(store, OrderSeen::orderId)
+                                   .apply("orders-proj", (current, event) -> current.or(0) + 1, cursor)
+                                   .withClaims(new InMemoryClaims(), LEASE);
+
+        projection.onEvent(new OrderSeen("a")).await().onFailure(cause -> fail(cause.message()));
+        var outcome = projection.rebuild().await();
+
+        assertThat(outcome.isFailure()).as("control: the refused mint fails the rebuild").isTrue();
+        assertThat(rewound.get()).as("control: no rewind after a refused mint").isFalse();
+        assertThat(store.data).as("the read model survives a refused rebuild").containsExactly(Map.entry("a", 1));
+        assertThat(store.resets.get()).as("no reset ran").isZero();
+        assertThat(store.replayThrough).as("nothing is REBUILDING").isEmpty();
     }
 
     /// #1298 — a single-argument fold in flight across [Projection#rebuild] read the PRE-reset model;

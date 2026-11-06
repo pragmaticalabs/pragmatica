@@ -716,6 +716,10 @@ public interface SystemTags {
         pin(table, 2188, "org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaSnapshotRequest");
         pin(table, 2189, "org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaSnapshotChunk");
         pin(table, 2190, "org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaHeartbeat");
+        // per-holder stream registry references (#1978, #2160; owner ruling Q19 (a)) -- 2191 and 2192 were left free for this PR by the
+        // O3-1 block below; a scan of every origin branch (368 refs, 2026-11-06) found them used by no other ref.
+        pin(table, 2191, "org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistryHolderKey");
+        pin(table, 2192, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistryHolderValue");
         // O3-1 (membership overhaul, owner ruling c37a7c11e2): the per-node lifecycle record, its two facets and their enums. 2191 and 2192 are
         // taken by an open PR (#2505, StreamRegistryHolder*), found by the 2026-10-31 scan of every origin branch and every open PR head, so
         // these take 2193..2200.

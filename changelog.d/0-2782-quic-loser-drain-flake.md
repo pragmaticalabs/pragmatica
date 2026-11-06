@@ -1,0 +1,2 @@
+### Fixed (2026-11-06 — #2782: `QuicLoserDrainTest` asserted the drain outcome before it was recorded)
+- **Three drain tests now await the reported `DrainEnd` (bounded, 5 s) after the channel close, instead of reading the list at once.** `closeAfterDrain` requests the close and only then reports the outcome, so the old read could see an empty list. Test-only change; the "closes without waiting for the bound" check (close within 5 s against a 60 s bound) is unchanged. [verified: red under an injected 300 ms delay between close and report, green with the await]

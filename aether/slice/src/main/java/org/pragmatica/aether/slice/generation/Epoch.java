@@ -3,7 +3,10 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.generation;
 
+import org.pragmatica.lang.Result;
 import org.pragmatica.serialization.Codec;
+
+import static org.pragmatica.lang.Result.success;
 
 
 /// A fencing epoch: `(incarnation, rabiaTerm, localCounter)`, ordered lexicographically.
@@ -19,10 +22,24 @@ import org.pragmatica.serialization.Codec;
 /// restart, and these epochs order exactly as they did before #1529 — never worse.
 @Codec
 public record Epoch(long incarnation, long rabiaTerm, long localCounter) implements Comparable<Epoch> {
+    /// `ClusterIncarnation.NONE`: the incarnation before genesis, and the mirror's value until a commit is observed.
+    public static final long NO_INCARNATION = 0L;
     public static final Epoch ZERO = new Epoch(0L, 0L, 0L);
 
     public static Epoch epoch(long incarnation, long rabiaTerm, long localCounter) {
         return new Epoch(incarnation, rabiaTerm, localCounter);
+    }
+
+    /// #2654: this epoch as the base of an ownership or lineage mint, refused with
+    /// [EpochMintError.General#INCARNATION_NOT_COMMITTED] while its incarnation is `ClusterIncarnation.NONE` (0). Until
+    /// the life's incarnation commits, a mint would rank below every epoch a restored life committed, so the writer
+    /// writes nothing and retries on its next pass.
+    public Result<Epoch> mintable() {
+        return success(this).filter(EpochMintError.General.INCARNATION_NOT_COMMITTED, Epoch::incarnationCommitted);
+    }
+
+    private boolean incarnationCommitted() {
+        return incarnation != NO_INCARNATION;
     }
 
     @Override

@@ -338,9 +338,10 @@ public record Projection<S, T>(String name,
         };
     }
 
-    /// Capture the replay range → reset the store to a new generation, REBUILDING over it, in one step →
-    /// mint the rewind token from committed state → record it on the store → rewind the cursor. Capture
-    /// comes first so the range exists before the reset needs it, and a refused capture touches nothing;
+    /// Capture the replay range → probe the mint (a refused mint touches nothing) → reset the store to a new
+    /// generation, REBUILDING over it, in one step → mint the rewind token from committed state → record it on the
+    /// store → rewind the cursor. Capture comes first so the range exists before the reset needs it, and a refused
+    /// capture touches nothing;
     /// the rewind comes LAST so no replay delivery arrives while the old generation is still current.
     public Promise<Unit> rebuild() {
         return claims.fold(() -> ProjectionError.UnguardedRebuild.FACTORY.apply(name).promise(),
@@ -349,6 +350,7 @@ public record Projection<S, T>(String name,
 
     private Promise<Unit> rebuildGuarded() {
         return replayCursor.capture()
+                           .flatMap(range -> probeMint().map(_ -> range))
                            .mapWith(store::resetToNewGeneration, Rebuild::new)
                            .mapWith(rebuild -> replayCursor.mintRewindToken(rebuild.generation()),
                                     Projection::rewound)
@@ -357,6 +359,16 @@ public record Projection<S, T>(String name,
                                     (rewound, _) -> rewound)
                            .flatMap(rewound -> replayCursor.rewind(rewound.range(),
                                                                    rewound.token()));
+    }
+
+    /// #2654: a mint the runtime refuses (the life's incarnation is not committed yet) must refuse the rebuild BEFORE the
+    /// reset clears the read model. The mint is a pure read of committed cursor state, so this probe at the generation the
+    /// reset will advance to changes nothing; the token the rewind uses is still minted after the reset, from the
+    /// generation the reset returned, so two concurrent rebuilds never share a token (#1304 X6).
+    private Promise<Unit> probeMint() {
+        return store.generation()
+                    .flatMap(current -> replayCursor.mintRewindToken(current + 1))
+                    .mapToUnit();
     }
 
     /// The range a rebuild replays and the generation it reset to.

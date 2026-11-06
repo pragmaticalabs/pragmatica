@@ -76,6 +76,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicTier;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.BlueprintStreamAddresses;
+import org.pragmatica.aether.slice.stream.KvBackedStreamRegistry;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.resource.ScheduleConfig;
 import org.pragmatica.aether.slice.StreamConfig;
@@ -610,11 +611,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         ///    re-drive it IN FULL ([#transitionToActiveWithStreamRefs]: ACTIVE with its endpoints plus the stream-ref
         ///    commands), never a bare ACTIVE, which would leave the stream refcounts unacquired; but only while a
         ///    committed `SliceTarget` still names this version, because a rolled-back or replaced version must not be
-        ///    started again (#1068). The stream-ref commands are rebuilt from the CURRENT applied mirror: `acquireCommand` is
-        ///    an absolute Put (refCount = mirror + 1), so replaying the original's snapshot could overwrite another holder's
-        ///    acquire and let a later release delete the entry under it. Rebuilt, the failure direction flips: if the
-        ///    original write also lands late, this instance holds one reference too many and the stream outlives its
-        ///    holders (a leak, the safe direction). Per-holder reference entries would remove both cases (rc5).
+        ///    started again (#1068). The stream-ref commands are this instance's own holder keys (#1978, I-36): the re-drive
+        ///    puts the same keys the original write carried, so the original landing late as well changes nothing, and no
+        ///    other holder's reference is read or overwritten.
         ///  - anything else (DEACTIVATE, DEACTIVATING, FAILED, UNLOAD, UNLOADING, UNKNOWN, or no entry): the slice has
         ///    left the activation chain, so ACTIVE is never written over it. The mirror's value is adopted into local
         ///    state as its own notification would have been (an absent entry is handled as the removal it is), and the
@@ -2198,9 +2197,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                      refCommands);
         }
 
-        /// Mirror of [#transitionToActiveWithStreamRefs] for transitions OUT of ACTIVE. Decrements
-        /// (or removes when refcount drops to zero) the per-stream refcount entries this slice
-        /// instance had been holding. Best-effort: a release failure is logged but does not abort
+        /// Mirror of [#transitionToActiveWithStreamRefs] for transitions OUT of ACTIVE. Removes the
+        /// per-stream holder keys this slice instance had been holding (#1978). Best-effort: a release failure is logged but does not abort
         /// the deactivate/unload chain (the slice is already leaving ACTIVE).
         private Promise<Unit> releaseStreamReferences(SliceNodeKey sliceKey) {
             var commands = buildStreamRefCommands(sliceKey, RefcountAction.RELEASE);
@@ -2216,6 +2214,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                               sliceKey.artifact(),
                                                               cause.message()));
         }
+
+        private static final long SLICE_HOLDER_ATTEMPT = 0L;
 
         private enum RefcountAction {
             ACQUIRE,
@@ -2247,19 +2247,32 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
             for (var declaration : declarations) {
                 bindings.flatMap(b -> b.addressFor(declaration.alias()))
-                        .onPresent(address -> appendRefCommand(registry, commands, address, action));
+                        .onPresent(address -> appendRefCommands(registry, commands, sliceKey, address, action));
             }
 
             return List.copyOf(commands);
         }
 
-        private void appendRefCommand(org.pragmatica.aether.slice.stream.KvBackedStreamRegistry registry,
-                                      List<KVCommand<AetherKey>> sink,
-                                      ResourceAddress address,
-                                      RefcountAction action) {
+        /// One reference per (stream, this node, this artifact): the slice's own holder key (#1978, I-36). Attempt 0, because a node
+        /// has one instance of an artifact at a time; acquire and release of the same instance name the same key. The release carries
+        /// the value the key holds now as its witness, so a release still in flight (retried by [#applyWithRetry]) when the next
+        /// instance acquires again is refused instead of removing the new instance's reference.
+        private void appendRefCommands(KvBackedStreamRegistry registry,
+                                       List<KVCommand<AetherKey>> sink,
+                                       SliceNodeKey sliceKey,
+                                       ResourceAddress address,
+                                       RefcountAction action) {
             switch (action) {
-                case ACQUIRE -> sink.add(registry.acquireCommand(blueprintTemplate(address)));
-                case RELEASE -> registry.releaseCommand(address).onPresent(sink::add);
+                case ACQUIRE -> sink.addAll(registry.acquireCommands(blueprintTemplate(address),
+                                                                     ctx.self(),
+                                                                     sliceKey.artifact(),
+                                                                     SLICE_HOLDER_ATTEMPT,
+                                                                     ctx.nowMs()));
+                case RELEASE -> sink.add(KvBackedStreamRegistry.releaseCommand(ctx.kvStore(),
+                                                                               address,
+                                                                               ctx.self(),
+                                                                               sliceKey.artifact(),
+                                                                               SLICE_HOLDER_ATTEMPT));
             }
         }
 
@@ -2269,9 +2282,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                  Instant.ofEpochMilli(ctx.nowMs()));
         }
 
-        private org.pragmatica.aether.slice.stream.KvBackedStreamRegistry streamRegistry() {
-            return org.pragmatica.aether.slice.stream.KvBackedStreamRegistry.kvBackedStreamRegistry(ctx.cluster(),
-                                                                                                    ctx.kvStore());
+        private KvBackedStreamRegistry streamRegistry() {
+            return KvBackedStreamRegistry.kvBackedStreamRegistry(ctx.cluster(), ctx.kvStore());
         }
 
         private Option<BlueprintStreamBindingsValue> lookupStreamBindings(SliceNodeKey sliceKey) {

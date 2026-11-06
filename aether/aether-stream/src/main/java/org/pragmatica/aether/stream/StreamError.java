@@ -561,6 +561,25 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// An owner append refused because the partition's WAL can no longer write (#2201 D-01): it fail-stopped after a failed fsync, frame
+    /// write or reopen, or it is closed. Refused in the ordered section before the ring assigns an offset, so a doomed publish takes none.
+    /// Terminal for this incarnation of the partition: every later append on this node is refused the same way for the rest of the node
+    /// process; the documented recovery is replacing the node (management API `wal.failStopped`). `cause` is the log's own refusal,
+    /// carried as the source.
+    record PartitionFailStopped(String streamName, int partition, Cause cause) implements StreamError, Cause.Terminal {
+        @Override
+        public String message() {
+            return "Append refused for %s[%d]: the partition's WAL on this node can no longer write (%s); replace the node".formatted(streamName,
+                                                                                                                                      partition,
+                                                                                                                                      cause.message());
+        }
+
+        @Override
+        public Option<Cause> source() {
+            return Option.some(cause);
+        }
+    }
+
     /// Owner-write admission refusal (#1230): an application append reached `publishLocal` on a node that is
     /// not the COMMITTED owner of `(streamName, partition)` — the committed `StreamPartitionOwnershipValue`
     /// names `committedOwner`. The epoch fence cannot catch this: a live non-owner stamps the same committed

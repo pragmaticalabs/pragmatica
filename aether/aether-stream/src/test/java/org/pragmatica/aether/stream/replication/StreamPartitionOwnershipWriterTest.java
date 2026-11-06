@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.generation.EpochMintError;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
@@ -37,7 +38,8 @@ class StreamPartitionOwnershipWriterTest {
 
     private static final BooleanSupplier LEADER = () -> true;
     private static final BooleanSupplier FOLLOWER = () -> false;
-    private static final Supplier<Epoch> GENERATION = () -> Epoch.epoch(0L, COMMITTED_TERM, 0L);
+    /// #2654: a committed incarnation (1); an epoch at `ClusterIncarnation.NONE` (0) is refused as a mint base.
+    private static final Supplier<Epoch> GENERATION = () -> Epoch.epoch(1L, COMMITTED_TERM, 0L);
     private static final HlcClock CLOCK = HlcClock.hlcClock(new NodeId("core-a"));
 
     private static StreamPartitionOwnershipValue ownership(NodeId owner, Epoch epoch, long ownershipTerm) {
@@ -55,8 +57,15 @@ class StreamPartitionOwnershipWriterTest {
     private static StreamPartitionOwnershipWriter writer(BooleanSupplier isLeader,
                                                          CommittedOwnership committedOwnership,
                                                          HrwOwner hrwOwner) {
+        return writer(isLeader, GENERATION, committedOwnership, hrwOwner);
+    }
+
+    private static StreamPartitionOwnershipWriter writer(BooleanSupplier isLeader,
+                                                         Supplier<Epoch> generation,
+                                                         CommittedOwnership committedOwnership,
+                                                         HrwOwner hrwOwner) {
         return StreamPartitionOwnershipWriter.streamPartitionOwnershipWriter(isLeader,
-                                                                             GENERATION,
+                                                                             generation,
                                                                              CLOCK,
                                                                              committedOwnership,
                                                                              hrwOwner);
@@ -219,13 +228,41 @@ class StreamPartitionOwnershipWriterTest {
             var command = require(writer.writeOwnershipChange(STREAM, PARTITION));
 
             assertThat(valueOf(command).owner()).isEqualTo(OWNER_A);
-            assertThat(valueOf(command).ownerEpoch()).isEqualTo(Epoch.epoch(0L, COMMITTED_TERM, 1));
+            assertThat(valueOf(command).ownerEpoch()).isEqualTo(Epoch.epoch(1L, COMMITTED_TERM, 1));
             assertThat(valueOf(command).ownershipTerm()).isEqualTo(1L);
+        }
+
+        /// #2654: while the life's incarnation is NONE (genesis not committed, or a restore not yet committed) the
+        /// leader mints nothing, so no record can rank below the restored life's epochs.
+        @Test
+        void writeOwnershipChange_leaderIncarnationNone_emitsNothing() {
+            var writer = writer(LEADER,
+                                () -> Epoch.epoch(0L, COMMITTED_TERM, 0L),
+                                committed(Option.none()),
+                                hrw(Option.some(OWNER_A)));
+
+            assertThat(writer.writeOwnershipChange(STREAM, PARTITION))
+                .as("no ownership record is minted while the life's incarnation is NONE")
+                .isEqualTo(Option.none());
+            assertThat(writer.mintGate().<Object>fold(cause -> cause, _ -> "passed"))
+                .as("the refusal reaches the batch driver through the gate")
+                .isEqualTo(EpochMintError.General.INCARNATION_NOT_COMMITTED);
+        }
+
+        @Test
+        void mintGate_followerIncarnationNone_passes_committedIncarnation_passes() {
+            assertThat(writer(FOLLOWER, () -> Epoch.epoch(0L, COMMITTED_TERM, 0L), committed(Option.none()), hrw(Option.some(OWNER_A))).mintGate()
+                                                                                                                         .isSuccess())
+                .as("a follower mints nothing, so its gate passes")
+                .isTrue();
+            assertThat(writer(LEADER, committed(Option.none()), hrw(Option.some(OWNER_A))).mintGate().isSuccess())
+                .as("a leader at a committed incarnation passes")
+                .isTrue();
         }
 
         @Test
         void writeOwnershipChange_leaderOwnerUnchanged_emitsNothing() {
-            var current = ownership(OWNER_A, Epoch.epoch(0L, COMMITTED_TERM, 1), 1L);
+            var current = ownership(OWNER_A, Epoch.epoch(1L, COMMITTED_TERM, 1), 1L);
             var writer = writer(LEADER,
                                 committed(Option.some(current)),
                                 hrw(Option.some(OWNER_A)));
@@ -237,7 +274,7 @@ class StreamPartitionOwnershipWriterTest {
 
         @Test
         void writeOwnershipChange_leaderOwnerChanged_emitsTakeoverPut() {
-            var current = ownership(OWNER_A, Epoch.epoch(0L, COMMITTED_TERM, 2), 2L);
+            var current = ownership(OWNER_A, Epoch.epoch(1L, COMMITTED_TERM, 2), 2L);
             var writer = writer(LEADER,
                                 committed(Option.some(current)),
                                 hrw(Option.some(OWNER_B)));
@@ -245,7 +282,7 @@ class StreamPartitionOwnershipWriterTest {
             var command = require(writer.writeOwnershipChange(STREAM, PARTITION));
 
             assertThat(valueOf(command).owner()).isEqualTo(OWNER_B);
-            assertThat(valueOf(command).ownerEpoch()).isEqualTo(Epoch.epoch(0L, COMMITTED_TERM, 3));
+            assertThat(valueOf(command).ownerEpoch()).isEqualTo(Epoch.epoch(1L, COMMITTED_TERM, 3));
             assertThat(valueOf(command).ownerEpoch().isStrictlyAfter(current.ownerEpoch()))
                 .as("the takeover epoch strictly dominates the deposed owner's committed epoch")
                 .isTrue();
@@ -269,8 +306,8 @@ class StreamPartitionOwnershipWriterTest {
     /// applies as a single consensus batch). A follower and unchanged partitions contribute nothing.
     @Nested
     class WriteOwnershipChanges {
-        private static final Epoch COMMITTED_EPOCH = Epoch.epoch(0L, COMMITTED_TERM, 1L);
-        private static final Epoch TAKEOVER_EPOCH = Epoch.epoch(0L, COMMITTED_TERM, 2L);
+        private static final Epoch COMMITTED_EPOCH = Epoch.epoch(1L, COMMITTED_TERM, 1L);
+        private static final Epoch TAKEOVER_EPOCH = Epoch.epoch(1L, COMMITTED_TERM, 2L);
 
         /// Committed = OWNER_A at (term, 1) for EVERY partition, so any partition whose HRW owner is OWNER_B
         /// is a genuine move and any partition whose HRW owner is OWNER_A is unchanged.

@@ -4830,6 +4830,11 @@ class LeaderReconcilerTest {
             return 0;
         }
 
+        @Override
+        public boolean declaresSource(SourceName source) {
+            return false;
+        }
+
         // #603 — real mutable state (default enabled, matching production's construction-time
         // default) so a test can flip it and assert the reconciler actually honours the flag,
         // rather than a fake that always reports enabled regardless of what was set.

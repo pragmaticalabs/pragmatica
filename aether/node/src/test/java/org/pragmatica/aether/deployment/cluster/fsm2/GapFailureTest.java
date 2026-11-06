@@ -50,7 +50,7 @@ class GapFailureTest {
         SlFixtures.seedRow(h, CORE_1, ORDERS, SliceObservedState.LOADING, SlFixtures.G1, 11L);
         SlFixtures.seedJudgment(h,
                                 ORDERS,
-                                new ArtifactJudgmentValue(false, Map.of(CORE_1, 5), Map.of()));
+                                new ArtifactJudgmentValue(false, Map.of(CORE_1, 5), Map.of(), Set.of()));
         h.activate();
         node(h, CORE_1, 11L).fails(ORDERS, false);
         h.drain();

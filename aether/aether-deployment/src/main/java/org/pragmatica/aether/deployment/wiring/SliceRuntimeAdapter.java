@@ -315,8 +315,8 @@ public final class SliceRuntimeAdapter implements LocalOpExecutor.StepRunner {
     }
 
     /// FER (degrade forward): a release the cluster refuses is logged and the cleanup goes on, because the slice has to leave either way. The
-    /// guarantee earned is that the slice is gone; the cost is a topic-subscription row or a stream reference count left behind until the next
-    /// goal for the pair. The mechanism is a single attempt, with no retry (legacy retried three times).
+    /// guarantee earned is that the slice is gone; the cost is a topic-subscription row or this node's stream reference holder key left behind until
+    /// the next goal for the pair or the departure sweep of the node. The mechanism is a single attempt, with no retry (legacy retried three times).
     private Promise<Unit> releaseLegs(Artifact artifact) {
         var commands = loaded(artifact).map(slice -> nodeScoped(builders.teardown(artifact,
                                                                                   slice.slice())))

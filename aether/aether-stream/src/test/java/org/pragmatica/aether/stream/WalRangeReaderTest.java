@@ -35,8 +35,12 @@ class WalRangeReaderTest {
 
     @BeforeEach
     void setUp() {
-        wal = AppendLog.open(walDir.resolve("0.wal")).onFailure(cause -> fail(cause.message())).unwrap();
-        // Offsets 0-4 and 6-9: offset 5 is missing from the WAL.
+        // Offsets 0-4 and 6-9: offset 5 is missing from the WAL. The WAL order rule (I-04, #2201) refuses such a hole: an unbounded
+        // sealed floor admits it, standing in for a corruption or a pre-rule writer.
+        wal = AppendLog.open(walDir.resolve("0.wal"))
+                       .onFailure(cause -> fail(cause.message()))
+                       .unwrap()
+                       .withSealedFloor(() -> Long.MAX_VALUE - 1);
         LongStream.rangeClosed(0, 9).filter(offset -> offset != 5).forEach(this::append);
     }
 

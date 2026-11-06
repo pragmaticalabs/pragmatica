@@ -72,6 +72,8 @@ class WaveExecutorReplaceBeforeRetireTest {
             [source.local.core]
             count = 1
             """;
+    /// The cluster endpoint these tests run against: plain http, so the scripted URLs the assertions name are the ones the drain wait builds.
+    private static final String PINNED_ENDPOINT = "http://127.0.0.1:1";
     private static final Map<String, String> DOCKER_LABELS = Map.of("aether.cluster", "prod-cluster", "aether.source", "local", "aether.role", "core");
 
     @RegisterExtension
@@ -79,11 +81,18 @@ class WaveExecutorReplaceBeforeRetireTest {
 
     private final ApplyChaosHarness harness = new ApplyChaosHarness();
     private HttpOperations originalHttp;
+    private String originalEndpoint;
+    private boolean originalEndpointFromContext;
     private PrintStream originalOut;
 
     @BeforeEach
     void stubStreamsAndHttp() {
         originalHttp = ClusterHttpClient.HTTP_OPS_REF.get();
+        originalEndpoint = ClusterHttpClient.ENDPOINT_OVERRIDE.get();
+        originalEndpointFromContext = ClusterHttpClient.ENDPOINT_FROM_CONTEXT.get();
+        // #2777: the drain and readiness URLs take their scheme from the resolved cluster endpoint; an endpoint another test class left in the
+        // process-wide override (https://...) or the operator's registry would turn every scripted URL into https, so the scheme is pinned here.
+        ClusterHttpClient.setEndpointOverride(PINNED_ENDPOINT);
         originalOut = System.out;
         System.setOut(new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8));
     }
@@ -92,6 +101,8 @@ class WaveExecutorReplaceBeforeRetireTest {
     void restore() {
         System.setOut(originalOut);
         ClusterHttpClient.HTTP_OPS_REF.set(originalHttp);
+        ClusterHttpClient.ENDPOINT_OVERRIDE.set(originalEndpoint);
+        ClusterHttpClient.ENDPOINT_FROM_CONTEXT.set(originalEndpointFromContext);
         ProviderResolver.dockerFactoryOverride = null;
         DockerHostPorts.override = null;
     }

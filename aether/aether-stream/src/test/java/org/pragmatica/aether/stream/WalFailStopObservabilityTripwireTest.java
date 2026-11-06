@@ -12,8 +12,8 @@ import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.lang.Option;
@@ -35,12 +35,14 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 /// (t-trip-cluster): the ownership step-down (the relinquish seam lives in the ownership writer on a node, with committed records to step down from; the
 /// manager has no hook for it) and the Prometheus gauge (registered by `ManagementServer`, not by the manager).
 ///
-/// TRIPWIRE (enabled, GREEN) beside the REAL assertion (`@Disabled`, RED today). The real assertion names no warning code: the overhaul chooses it;
-/// that some operator warning is raised for the fail-stop is the acceptance, and the figure of 5 s to raise it is a guess marked as one.
+/// PR-2c flipped it (D-01): the tripwire is deleted and the real assertion enabled. The manager registers a fail-stop listener on every partition log
+/// it opens and raises `STORAGE_WAL_FAIL_STOPPED` with the subject `stream[partition]` (`know:` `4ddd1ddfda`). The real assertion names no warning
+/// code: that some operator warning naming the partition is raised is the acceptance, and the figure of 5 s to raise it is a guess marked as one.
+/// `PartitionFailStopTest` pins the code, the subject, the once-per-log count and the refusal.
+@Timeout(60)
 class WalFailStopObservabilityTripwireTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
-    private static final String ENABLE = "D-01 tripwire: a WAL fail-stop now raises an operator warning; delete this tripwire and enable the real assertion beside it (#2201)";
 
     @TempDir
     Path walDir;
@@ -62,22 +64,6 @@ class WalFailStopObservabilityTripwireTest {
     }
 
     @Test
-    void walFailStop_isExposedAsAPullField_butRaisesNoOperatorWarning_tripwire() throws Exception {
-        failStopTheWal();
-
-        var first = manager.publishLocal(STREAM, PARTITION, "lost-1".getBytes(UTF_8), 2L);
-        var second = manager.publishLocal(STREAM, PARTITION, "lost-2".getBytes(UTF_8), 3L);
-
-        assertThat(first.isFailure()).as("control: the publish that met the I/O failure is reported failed").isTrue();
-        assertThat(second.isFailure()).as("control: the partition stays unwritable").isTrue();
-        assertThat(failStoppedInTheSnapshot()).as("control, 1b-edge: WalStats.failStopped IS exposed (the management JSON reads this)").isTrue();
-        // same 5 s allowance as the real assertion: an alarm raised late must also redden this tripwire
-        TimeUnit.SECONDS.sleep(5);
-        assertThat(warnings).as(ENABLE).isEmpty();
-    }
-
-    @Disabled("D-01 real assertion, RED today: a WAL fail-stop must raise an operator warning naming the stream and partition within 5 s (#2201)")
-    @Test
     void walFailStop_raisesAnOperatorWarning() throws Exception {
         failStopTheWal();
 
@@ -94,14 +80,6 @@ class WalFailStopObservabilityTripwireTest {
 
     private boolean namesTheStoppedPartition() {
         return warnings.stream().anyMatch(warning -> warning.subject().contains(STREAM) && warning.subject().contains(String.valueOf(PARTITION)));
-    }
-
-    private boolean failStoppedInTheSnapshot() {
-        return manager.walSnapshot()
-                      .streams()
-                      .stream()
-                      .flatMap(stream -> stream.partitions().stream())
-                      .anyMatch(view -> view.wal().map(AppendLog.WalStats::failStopped).or(false));
     }
 
     /// An I/O failure on the WAL's channel: the next frame write fails and the log stops for good (`failStop`).

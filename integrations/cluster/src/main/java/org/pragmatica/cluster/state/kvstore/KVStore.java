@@ -804,9 +804,11 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// closing the witnessless-delete gap. A non-fenced committed value, or an absent key, deletes
     /// freely — preserving every existing unfenced remover (locks, blueprints, registry entries; no
     /// production remover targets an epoch- or owner-fenced key today) — except a [WitnessedRemoval] value
-    /// (#806), which is deleted only by a witness EQUAL to it. Its one production user, the schema
-    /// migration lock, is never removed at all: it is released by a tombstone `Put` so its version chain
-    /// never restarts, and this arm exists to refuse a bare `Remove` that would restart it. The decision reads only committed storage and
+    /// (#806), which is deleted only by a witness EQUAL to it. Two production users: the schema
+    /// migration lock is never removed at all (it is released by a tombstone `Put` so its version chain
+    /// never restarts, and this arm refuses a bare `Remove` that would restart it); a stream-registry
+    /// holder value (#1978) is removed by a release or departure sweep carrying the value it read, so a
+    /// remover that read an earlier life of the key cannot delete a later one. The decision reads only committed storage and
     /// the command, so every replica accepts or rejects a delete identically inside the applier.
     private boolean staleRemove(Remove<K> remove) {
         var key = remove.key();

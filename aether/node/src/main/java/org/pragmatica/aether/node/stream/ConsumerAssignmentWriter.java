@@ -82,13 +82,23 @@ public interface ConsumerAssignmentWriter {
                                                       String stream,
                                                       String group,
                                                       List<PartitionAssignment> assignments) {
+        // #2654 FER: while the life's incarnation is not committed the pass writes nothing, so no assignment can rank below
+        // the restored life's epochs; the refusal is dropped because the consumer reconcile is periodic and re-decides on its
+        // next tick, by which time the commit is observed.
+        return generationEpoch.get()
+                              .mintable()
+                              .map(generation -> changesAt(generation, clock, committed, stream, group, assignments))
+                              .or(List.of());
+    }
+
+    private static List<KVCommand<AetherKey>> changesAt(Epoch generation,
+                                                        HlcClock clock,
+                                                        CommittedAssignments committed,
+                                                        String stream,
+                                                        String group,
+                                                        List<PartitionAssignment> assignments) {
         return assignments.stream()
-                          .flatMap(assignment -> decide(generationEpoch.get(),
-                                                        clock,
-                                                        committed,
-                                                        stream,
-                                                        group,
-                                                        assignment).stream())
+                          .flatMap(assignment -> decide(generation, clock, committed, stream, group, assignment).stream())
                           .toList();
     }
 

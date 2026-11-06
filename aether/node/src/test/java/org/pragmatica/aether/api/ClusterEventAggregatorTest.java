@@ -1708,6 +1708,111 @@ class ClusterEventAggregatorTest {
         assertThat(codes(h).stream().filter(code -> code != null).toList()).containsExactly("observer-consensus-lagging", "observer-consensus-resumed");
     }
 
+    // --- #2615: the three closes of a stream partition's WAL fail-stop (CTO ruling) -------------------------------------------
+
+    private static OperatorWarning walFailStopped(String subject) {
+        return OperatorWarning.operatorWarning(OperatorWarningCode.STORAGE_WAL_FAIL_STOPPED, subject, "The WAL of " + subject + " fail-stopped");
+    }
+
+    /// A replacement retires the old node through its own committed removal: the fail-stop it raised is closed by STORAGE_WAL_RETIRED,
+    /// same subject, naming the departure. Another node's removal closes nothing.
+    @Test
+    void walFailStop_isRetired_whenTheNodeItselfIsRemoved_notWhenAnotherIs() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().onOperatorWarning(walFailStopped("orders[0]"));
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        // An open warning whose key is shorter than the fail-stop's code prefix: the retire must select by code, not cut every key.
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STORAGE_TIER_FULL, "t1", "tier full"));
+        h.aggregator().onMembershipDecision(new MembershipDecision.NodeRemoved(new NodeId("another"), List.of(), 1L, h.hlc().now()));
+        assertThat(codes(h)).as("control: another node's removal leaves the fail-stop open")
+                            .containsExactly("storage-wal-fail-stopped", "stream-consumer-state-diverged", "storage-tier-full");
+
+        h.aggregator().onMembershipDecision(new MembershipDecision.NodeRemoved(SELF, List.of(), 2L, h.hlc().now()));
+
+        assertThat(codes(h)).as("only the WAL fail-stop is retired; the unrelated open warnings are left to their own recoveries")
+                            .containsExactly("storage-wal-fail-stopped",
+                                             "stream-consumer-state-diverged",
+                                             "storage-tier-full",
+                                             "storage-wal-retired");
+        var retired = h.events().getLast();
+        assertThat(retired.details()).containsEntry("subject", "orders[0]");
+        assertThat(retired.summary()).as("names the departure").contains(SELF.id()).contains("removed from the cluster");
+    }
+
+    /// A decommission retires every fail-stop still open on the node, each under its own subject.
+    @Test
+    void walFailStop_isRetired_whenTheNodeItselfIsDecommissioned_everyOpenPartition() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().onOperatorWarning(walFailStopped("orders[0]"));
+        h.aggregator().onOperatorWarning(walFailStopped("orders[3]"));
+        h.aggregator().onMembershipDecision(new MembershipDecision.NodeDecommissioned(new NodeId("another"), List.of(), 1L, h.hlc().now()));
+        assertThat(codes(h)).as("control: another node's decommission retires nothing").doesNotContain("storage-wal-retired");
+
+        h.aggregator().onMembershipDecision(new MembershipDecision.NodeDecommissioned(SELF, List.of(), 2L, h.hlc().now()));
+
+        var retired = h.events().stream().filter(event -> "storage-wal-retired".equals(event.details().get("code"))).toList();
+        assertThat(retired).extracting(event -> event.details().get("subject")).containsExactlyInAnyOrder("orders[0]", "orders[3]");
+        assertThat(retired).allSatisfy(event -> assertThat(event.summary()).contains("decommissioned"));
+    }
+
+    /// A fail-stop whose first publish failed is still awaiting delivery when the node leaves: it is retired too, and the retirement
+    /// follows the warning into the log once the retry lands (#752), never before it.
+    @Test
+    void walFailStop_awaitingDeliveryAtDeparture_isRetiredAfterTheWarningLands() throws InterruptedException {
+        var h = Harness.create();
+        var publisher = h.publisher().getAndSet(null);
+
+        h.aggregator().onOperatorWarning(walFailStopped("orders[0]"));
+        h.aggregator().onMembershipDecision(new MembershipDecision.NodeRemoved(SELF, List.of(), 2L, h.hlc().now()));
+        h.publisher().set(publisher);
+        assertThat(codes(h)).as("control: nothing is in the log yet").isEmpty();
+        Thread.sleep(ClusterEventRedelivery.INITIAL_BACKOFF_MS + 100);
+        h.aggregator().redeliverDue();
+
+        assertThat(codes(h)).containsExactly("storage-wal-fail-stopped", "storage-wal-retired");
+    }
+
+    /// A shutdown is not a departure: a whole-cluster restart reopens the log and closes the fail-stop with STORAGE_WAL_WRITABLE.
+    @Test
+    void walFailStop_isNotRetired_onShutdown() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().onOperatorWarning(walFailStopped("orders[0]"));
+
+        h.aggregator().onSelfShutdown(TransportObservation.selfShutdown(SELF, TransportObservation.ObservationSource.SWIM));
+
+        assertThat(codes(h)).containsExactly("storage-wal-fail-stopped");
+    }
+
+    /// A crash: the crashed node publishes nothing, so its fail-stop gets no RETIRED; the NODE_FAILED its peers emit on the confirmed
+    /// departure is the superseding event. A peer's own open fail-stop is not closed by it.
+    @Test
+    void walFailStop_crashOfTheRaisingNode_isSupersededByNodeFailed_notRetired() {
+        var h = Harness.create();
+        h.aggregator().onOperatorWarning(walFailStopped("orders[0]"));
+
+        h.aggregator().onConfirmedDeparture(new NodeId("crashed-1"));
+
+        assertThat(h.events().getLast()).isInstanceOf(ClusterEvent.NodeFailed.class);
+        assertThat(h.events().getLast().details()).containsEntry("nodeId", "crashed-1");
+        assertThat(codes(h)).as("no departure close for a crash, and this node's own fail-stop stays open").doesNotContain("storage-wal-retired");
+    }
+
+    /// After a restart the aggregator is new and holds no open state, yet the reopened log's STORAGE_WAL_WRITABLE must close the fail-stop
+    /// the previous process raised: it closes across processes. Control: an ordinary recovery on the same fresh aggregator is refused.
+    @Test
+    void walWritable_onTheBootAfterARestart_isPublished_withoutTheWarningInThisProcess() {
+        var booted = Harness.create();
+        booted.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STORAGE_WAL_RETIRED, "orders[1]", "control"));
+        assertThat(booted.events()).as("control: a recovery that does not close across processes is refused here").isEmpty();
+
+        booted.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STORAGE_WAL_WRITABLE,
+                                                                              "orders[0]",
+                                                                              "the reopened WAL accepted a durable write"));
+
+        assertThat(codes(booted)).containsExactly("storage-wal-writable");
+        assertThat(booted.events().getFirst().details()).containsEntry("subject", "orders[0]");
+    }
+
     private List<String> codes(Harness h) {
         return h.events().stream().map(event -> event.details().get("code")).toList();
     }
@@ -1916,6 +2021,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.INSTANCE_TERMINATION_CLEARED,
                 OperatorWarningCode.COMMUNITY_PLACEMENT_RESUMED,
                 OperatorWarningCode.COMMUNITY_PLACEMENT_CLEARED,
+                OperatorWarningCode.STORAGE_WAL_WRITABLE,
             });
     }
 
@@ -2701,6 +2807,7 @@ class ClusterEventAggregatorTest {
 
     /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the three consumer pairs of #2201
     /// C-16 (behind the ring, the hole, and the cursor expiry), the oversized-event refusal and the
+    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the refused consensus restore of #2316, a stream partition's WAL fail-stop of #2201); every other code keeps the plain 60 s throttle.
     /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the departure sole-copy pair of #2034); every other code keeps the plain 60 s throttle.
     /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the refused consensus restore of #2316); every other code keeps the plain 60 s throttle.
     @Test
@@ -2719,6 +2826,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.UPGRADE_RESUMED,
                 OperatorWarningCode.UPGRADE_PAUSE_ENDED,
                 OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED,
+                OperatorWarningCode.AUTO_HEAL_SCALING_RESUMED,
                 OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
                 OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN,
                 OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED,
@@ -2762,6 +2870,8 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STORAGE_DEMOTION_RESUMED,
                 OperatorWarningCode.STORAGE_SNAPSHOT_WRITE_RECOVERED,
                 OperatorWarningCode.STORAGE_TIER_WRITABLE,
+                OperatorWarningCode.STORAGE_WAL_WRITABLE,
+                OperatorWarningCode.STORAGE_WAL_RETIRED,
                 OperatorWarningCode.STORAGE_DHT_MARKER_VERIFIED,
                 OperatorWarningCode.STORAGE_MAINTENANCE_STARTED,
                 OperatorWarningCode.STORAGE_PREFETCH_STARTED,
@@ -2810,6 +2920,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STREAM_SEGMENT_DHT_FULL,
                 OperatorWarningCode.STREAM_SEGMENT_DISK_PRESSURE,
                 OperatorWarningCode.PROVISION_ADMISSION_DEFERRED,
+                OperatorWarningCode.AUTO_HEAL_SCALING_HELD,
                 OperatorWarningCode.CORE_CAPACITY_AWAITING_DURABLE,
                 OperatorWarningCode.CORE_REPLACEMENT_SOURCE_UNRESOLVED,
                 OperatorWarningCode.WORKFLOW_ESCALATED,
@@ -2833,6 +2944,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STORAGE_DEMOTION_REFUSED,
                 OperatorWarningCode.STORAGE_SNAPSHOT_WRITE_FAILED,
                 OperatorWarningCode.STORAGE_TIER_FULL,
+                OperatorWarningCode.STORAGE_WAL_FAIL_STOPPED,
                 OperatorWarningCode.STORAGE_DHT_MARKER_UNVERIFIED,
                 OperatorWarningCode.STORAGE_MAINTENANCE_NOT_STARTED,
                 OperatorWarningCode.STORAGE_PREFETCH_NOT_STARTED,

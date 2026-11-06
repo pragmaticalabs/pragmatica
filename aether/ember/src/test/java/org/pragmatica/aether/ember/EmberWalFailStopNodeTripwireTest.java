@@ -33,17 +33,20 @@ import static org.pragmatica.aether.ember.StreamTripwireSupport.awaitUntil;
 import static org.pragmatica.aether.ember.StreamTripwireSupport.engineKey;
 import static org.pragmatica.aether.ember.StreamTripwireSupport.sleepQuietly;
 
-/// Streams overhaul tripwire, step 2 (#2201), D-01 node-level half: a WAL fail-stop neither moves ownership nor shows in
+/// Streams overhaul tripwire, step 2 (#2201), D-01 node-level half: a WAL fail-stop does not move ownership, and (since PR-2c) shows in
 /// the node's metrics. (The component-level alarm half is `WalFailStopObservabilityTripwireTest`.)
 ///
 /// The owner's real WAL has its file channel closed (the same stand-in for an I/O failure the component test uses), so the
 /// next frame write fails and `AppendLog` stops for good. On a 3-node cluster:
-/// - Tripwire: every later publish through the owner fails (control: the fail-stop took), `walSnapshot().failStopped` is
-///   true (control: it IS exposed), yet for 60 s the committed owner of the partition is unchanged, and the owner's
-///   Prometheus scrape (`/api/v1/metrics/prometheus`) has no line matching one shared case-insensitive regex (`wal` and `fail|stop` on one line) (control: the
-///   scrape works and carries other `aether` lines).
-/// - `@Disabled` acceptance, two tests so that a fix doing only one shows: (a) `stepsDown`, (b) `isGauged`; both - the committed owner changes within 60 s, and a gauge line naming the WAL
-///   fail-stop appears. Which gauge name and which step-down mechanism is the overhaul's choice; the regex is the contract.
+/// - Ownership tripwire (enabled, GREEN): every later publish through the owner fails (control: the fail-stop took),
+///   `walSnapshot().failStopped` is true (control: it IS exposed), yet for 60 s the committed owner of the partition is unchanged
+///   (control: the scrape works and carries other `aether` lines). Its pair is `stepsDown`, which stays `@Disabled`: step-down is out of
+///   scope of the overhaul (spec Q7(i)) and belongs to a follow-up ticket.
+/// - `isGauged` (enabled by PR-2c, GREEN): a gauge line matching one shared case-insensitive regex (`wal` and `fail|stop` on one line) has a
+///   non-zero value after the fail-stop, and none has before it. The gauge is `aether.streams.wal.failstopped`; the regex is the contract.
+///
+/// PR-2c split the former tripwire `walFailStopOnTheOwner_tripwire_neitherMovesOwnershipNorShowsInTheMetrics`: its metrics conjunct is what
+/// the PR made false, so it keeps only the ownership conjunct, renamed `walFailStopOnTheOwner_ownershipTripwire_ownerDoesNotMove`.
 @PortBudget
 class EmberWalFailStopNodeTripwireTest {
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
@@ -89,7 +92,7 @@ class EmberWalFailStopNodeTripwireTest {
 
     @Test
     @Timeout(600)
-    void walFailStopOnTheOwner_tripwire_neitherMovesOwnershipNorShowsInTheMetrics() {
+    void walFailStopOnTheOwner_ownershipTripwire_ownerDoesNotMove() {
         var owner = failStopTheOwner();
         var ownerId = owner.self().id();
         var scrapeBefore = scrapeBeforeFailStop;
@@ -98,11 +101,9 @@ class EmberWalFailStopNodeTripwireTest {
         assertThat(publishFails(owner)).as("control: the owner's partition is unwritable after the fail-stop").isTrue();
         assertThat(failStopped(owner)).as("control, 1b-edge: WalStats.failStopped IS exposed").isTrue();
         sleepQuietly(WINDOW_MS);
-        assertThat(committedOwner()).as("D-01 fixed? The committed owner changed after the owner's WAL fail-stop. Delete this tripwire and enable "
-                                        + "walFailStopOnTheOwner_stepsDown and walFailStopOnTheOwner_isGauged (#2201)")
+        assertThat(committedOwner()).as("D-01 step-down fixed? The committed owner changed after the owner's WAL fail-stop. Delete this tripwire and enable "
+                                        + "walFailStopOnTheOwner_stepsDown (#2201, spec Q7(i))")
                                     .isEqualTo(Option.some(ownerId));
-        assertThat(nonZeroGauge(scrapeBefore)).as("control: before the fail-stop no scrape line matching " + GAUGE_REGEX + " has a non-zero value (no line, or a line at 0)").isFalse();
-        assertThat(nonZeroGauge(scrape(owner))).as("D-01 gauge fixed? A scrape line matching " + GAUGE_REGEX + " has a non-zero value after the fail-stop").isFalse();
     }
 
     @Test
@@ -117,7 +118,6 @@ class EmberWalFailStopNodeTripwireTest {
     }
 
     @Test
-    @Disabled("D-01 (#2201): enable when a WAL fail-stop is gauged; RED today: no scrape line matching the shared regex has a non-zero value")
     @Timeout(600)
     void walFailStopOnTheOwner_isGauged() {
         var owner = failStopTheOwner();

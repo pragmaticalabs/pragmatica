@@ -419,10 +419,16 @@ class ClusterDestroyCommandTest {
 
         private String originalApiKey;
 
+        private String originalEndpoint;
+
+        private boolean originalEndpointFromContext;
+
         @BeforeEach
         void isolateKeyFiles() {
             originalResolver = ClusterTargetMixin.apiKeyPathResolver;
             originalApiKey = ClusterHttpClient.API_KEY_OVERRIDE.get();
+            originalEndpoint = ClusterHttpClient.ENDPOINT_OVERRIDE.get();
+            originalEndpointFromContext = ClusterHttpClient.ENDPOINT_FROM_CONTEXT.get();
             ClusterTargetMixin.apiKeyPathResolver = name -> tempHome.resolve(name).resolve("api-key");
             ClusterHttpClient.API_KEY_OVERRIDE.set(null);
         }
@@ -431,6 +437,9 @@ class ClusterDestroyCommandTest {
         void restoreKeyFiles() {
             ClusterTargetMixin.apiKeyPathResolver = originalResolver;
             ClusterHttpClient.API_KEY_OVERRIDE.set(originalApiKey);
+            // #2777: installTargetOverrides also installs the target's endpoint; left behind it made later classes resolve https.
+            ClusterHttpClient.ENDPOINT_OVERRIDE.set(originalEndpoint);
+            ClusterHttpClient.ENDPOINT_FROM_CONTEXT.set(originalEndpointFromContext);
         }
 
         @Test

@@ -410,7 +410,7 @@ Metrics:
 Variants (wrap `/api/v1/metrics/*` REST routes):
 
 ```bash
-# Prometheus-format scrape (text/plain exposition)
+# Prometheus-format scrape (text/plain exposition); includes aether_streams_wal_failstopped (partitions whose WAL fail-stopped)
 aether metrics prometheus
 
 # Transport-layer metrics (node-level QUIC message/backpressure counters)
@@ -2163,7 +2163,7 @@ aether cluster topology
 
 ### `aether cluster topology circuit-breaker status`
 
-Show the CTM (Cluster Topology Manager) provisioning circuit breaker state. The breaker trips after 3 consecutive provisioning failures and halts auto-heal until reset.
+Show the CTM (Cluster Topology Manager) provisioning circuit breaker state. There is one breaker per source binding: a source trips after 3 consecutive provisioning failures in that source and halts provisioning in that source only, until reset; another source keeps provisioning. The top-level fields aggregate (worst count, latest window, tripped when any source is); `sources` shows each source that holds a failure. A refusal counted before any source was resolved shows as `(unresolved)` and gates nothing.
 
 ```bash
 aether cluster topology circuit-breaker status
@@ -2171,15 +2171,16 @@ aether cluster topology circuit-breaker status
 
 Example output:
 ```json
-{"consecutiveFailures": 0, "trippedAt": 3, "nextAllowedMs": 0, "tripped": false}
+{"consecutiveFailures": 3, "trippedAt": 3, "nextAllowedMs": 1762372800000, "tripped": true, "sources": {"hetzner-eu": {"consecutiveFailures": 3, "tripped": true, "nextAllowedMs": 1762372800000}}}
 ```
 
 ### `aether cluster topology circuit-breaker reset`
 
-Operator-triggered reset of the CTM provisioning circuit breaker. Use after fixing the underlying provisioning issue (provider credentials, network connectivity, capacity quota) when none of the auto-recovery triggers (`scale`, node-ready, phase NORMAL, leader handoff) have fired. Returns the prior consecutive-failure count.
+Operator-triggered reset of the CTM provisioning circuit breaker. Use after fixing the underlying provisioning issue (provider credentials, network connectivity, capacity quota) when none of the auto-recovery triggers (`scale`, node-ready, phase NORMAL, leader handoff) have fired. Returns the prior consecutive-failure count. `--source <name>` resets only that source's breaker; without it every source's breaker is reset (and the count is the sum).
 
 ```bash
 aether cluster topology circuit-breaker reset
+aether cluster topology circuit-breaker reset --source hetzner-eu
 ```
 
 Example output:
@@ -2204,7 +2205,7 @@ Example output:
 
 ### `aether cluster topology auto-heal disable`
 
-Disable CTM auto-heal — `handleDeficit` becomes a no-op until re-enabled. The cluster also deletes no instance on its own initiative while disabled (a departed node, a surplus trim, a never-joined zombie): its VM is kept for diagnosis and the `instance-reap-held` event names it (#1038). Use during disruption-budget testing, planned maintenance windows, or scenarios where the cluster must not automatically rebuild after node loss. Already-in-flight provisioning attempts continue to completion. Writes through the consensus-backed command path (see the staleness note under `status`); a same-state call (per this node's local, possibly stale view) still writes through unconditionally rather than short-circuiting.
+Disable CTM auto-heal — `handleDeficit` becomes a no-op until re-enabled. The cluster also deletes no instance on its own initiative while disabled (a departed node, a surplus trim, a never-joined zombie): its VM is kept for diagnosis and the `instance-reap-held` event names it (#1038). Use during disruption-budget testing, planned maintenance windows, or scenarios where the cluster must not automatically rebuild after node loss. The worker and community paths are held too (no worker provision or terminate and no new community placement operation on the cluster's own initiative; `auto-heal-scaling-held` names the source/role or community), except an operator-directed retirement and a desired count or community `target_size` changed while disabled (only that source/role or community is released), which is explicit intent and is acted on. Already-in-flight provisioning attempts continue to completion. Writes through the consensus-backed command path (see the staleness note under `status`); a same-state call (per this node's local, possibly stale view) still writes through unconditionally rather than short-circuiting.
 
 ```bash
 aether cluster topology auto-heal disable

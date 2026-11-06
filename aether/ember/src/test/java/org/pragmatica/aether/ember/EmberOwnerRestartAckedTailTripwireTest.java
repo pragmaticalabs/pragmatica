@@ -21,11 +21,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.config.BackupConfig.RestoreMode;
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.ember.StreamTripwireSupport.PARTITION;
@@ -54,6 +56,8 @@ import static org.pragmatica.aether.ember.StreamTripwireSupport.sleepQuietly;
 ///   Controls: the filter dropped at least one ack (it was live), and the ring holds the full tail.
 /// - `@Disabled` acceptance: the owner's visible head covers the acked tail with the replicas' acks still held off, because
 ///   the acknowledgement state survives the restart (persisted per epoch, or pulled by the owner on activation).
+/// - #2654: life 2's first ownership record carries an incarnation strictly above life 1's, because no ownership epoch is
+///   minted before the life's cluster incarnation commits.
 @PortBudget
 class EmberOwnerRestartAckedTailTripwireTest {
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(180).seconds();
@@ -62,6 +66,7 @@ class EmberOwnerRestartAckedTailTripwireTest {
     private static final int ACKED = 20;
     private static final long ACKED_TAIL = ACKED - 1;
     private static final long ISR_BUDGET_MS = 90_000L;
+    private static final long ACTIVATION_BOUND_MS = 120_000L;
     private static final long REBUILD_BUDGET_MS = 240_000L;
     private static final long HOLD_MS = 15_000L;
     private static final long CATCH_UP_BOUND_MS = 60_000L;
@@ -73,6 +78,8 @@ class EmberOwnerRestartAckedTailTripwireTest {
     private final AtomicLong droppedAcks = new AtomicLong();
     private final Set<AetherNode> filtered = ConcurrentHashMap.newKeySet();
     private EmberCluster cluster;
+    private long lifeOneIncarnation = -1L;
+    private long lifeTwoIncarnation = -1L;
     private Path baseDir;
 
     @AfterEach
@@ -113,6 +120,18 @@ class EmberOwnerRestartAckedTailTripwireTest {
         assertThat(highestVisibleOver(owner, 5_000L)).as("the owner's visible head, with replica acks held off, after its ring was rebuilt").isEqualTo(ACKED_TAIL);
     }
 
+    /// #2654: after the whole-cluster restore the new life's ownership record must outrank every epoch life 1 committed, so its
+    /// incarnation is strictly above life 1's. The control is the genesis half of the same defect: before the fix life 1's
+    /// first record could be minted at incarnation 0, ahead of the registrar's genesis commit.
+    @Test
+    @Timeout(1200)
+    void ownerAfterColdRestart_lifeTwoOwnershipIncarnation_isAboveLifeOnes() {
+        restartWithAcksHeldOff();
+
+        assertThat(lifeOneIncarnation).as("control: life 1's ownership record carries the committed genesis incarnation").isPositive();
+        assertThat(lifeTwoIncarnation).as("life 2's first ownership record's incarnation, against life 1's").isGreaterThan(lifeOneIncarnation);
+    }
+
     /// Life 1: acknowledge [#ACKED] events. Then a whole-cluster stop and start over the same directories with replica acks
     /// dropped from the moment each node object exists. Returns the node that owns the partition in life 2, once its ring holds
     /// the replayed tail.
@@ -128,10 +147,12 @@ class EmberOwnerRestartAckedTailTripwireTest {
 
         var record = StreamTripwireSupport.awaitFullIsr(cluster, ENGINE_KEY, ISR_BUDGET_MS);
         var firstOwner = cluster.getNode(record.owner().id()).unwrap();
+
+        lifeOneIncarnation = record.ownerEpoch().incarnation();
         var router = StreamTripwireSupport.component(firstOwner, "streamWriteRouter", StreamWriteRouter.class);
 
         for (var i = 0; i < ACKED; i++) {
-            var offset = router.publish(ENGINE_KEY, PARTITION, ("acked-" + i).getBytes(StandardCharsets.UTF_8), System.currentTimeMillis()).await(PUBLISH_BOUND);
+            var offset = publishOnceActivated(router, ("acked-" + i).getBytes(StandardCharsets.UTF_8));
 
             assertThat(offset.isSuccess()).as("acknowledged publish %d: %s", i, offset).isTrue();
         }
@@ -146,12 +167,32 @@ class EmberOwnerRestartAckedTailTripwireTest {
         try {
             LifecycleSettled.start(cluster, START_BOUND);
             awaitUntil(() -> restoredOwner().isPresent(), REBUILD_BUDGET_MS, "a node owns the restored partition with the replayed tail in its ring");
+            lifeTwoIncarnation = StreamTripwireSupport.committedRecord(cluster, ENGINE_KEY, PARTITION).map(value -> value.ownerEpoch().incarnation()).or(-1L);
         } finally {
             installerDone.set(true);
             StreamTripwireSupport.joinQuietly(installer);
         }
 
         return restoredOwner().unwrap();
+    }
+
+    /// A full in-sync set does not mean the owner finished its activation: until it does, a publish is refused with the transient
+    /// `OwnerNotActivated` and nothing is appended (#2774: the first publish of a loaded CI shard was refused). Retries on exactly that
+    /// refusal, within [#ACTIVATION_BOUND_MS]; any other outcome is returned as it is.
+    private static Result<Long> publishOnceActivated(StreamWriteRouter router, byte[] payload) {
+        var deadline = System.currentTimeMillis() + ACTIVATION_BOUND_MS;
+        var outcome = router.publish(ENGINE_KEY, PARTITION, payload, System.currentTimeMillis()).await(PUBLISH_BOUND);
+
+        while (notActivated(outcome) && System.currentTimeMillis() < deadline) {
+            sleepQuietly(200L);
+            outcome = router.publish(ENGINE_KEY, PARTITION, payload, System.currentTimeMillis()).await(PUBLISH_BOUND);
+        }
+
+        return outcome;
+    }
+
+    private static boolean notActivated(Result<Long> outcome) {
+        return outcome.fold(cause -> cause instanceof StreamError.OwnerNotActivated, _ -> false);
     }
 
     private final AtomicBoolean installerDone = new AtomicBoolean(false);

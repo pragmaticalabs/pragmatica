@@ -568,14 +568,25 @@ public enum OperatorWarningCode {
                                 COMMUNITY_ASSIGNMENT_UNPLACED),
     /// Auto-heal is disabled, so the cluster did NOT delete the instance of a node it would otherwise have reaped (#1038): a departed node,
     /// an orphan the sweep found, a surplus trim, the reap of a never-joined (join-grace) zombie, or the retry or re-check of any of them.
-    /// A retirement directed from outside (the node-replacement protocol, a community-placement retirement) and a worker scale-down (config-directed)
-    /// are operator intent and are not held. The instance is kept for diagnosis and keeps billing. Subject is the node. Raised
+    /// A retirement directed from outside (the node-replacement protocol, a community-placement retirement) is operator intent and is not held;
+    /// a worker scale-down is held like any other autonomous act unless a changed count was committed while auto-heal was disabled ([#AUTO_HEAL_SCALING_HELD]). The instance is kept for diagnosis and keeps billing. Subject is the node. Raised
     /// once per node by the leader that held the reap. Closed by [#INSTANCE_REAP_RELEASED].
     INSTANCE_REAP_HELD("instance-reap-held", "deployment", WarningLevel.WARNING),
     /// The recovery of [#INSTANCE_REAP_HELD], same subject (#1038): auto-heal is enabled again and the reap of the node is no longer held (it still passes the usual liveness and refusal checks), or the instance
     /// was deleted by a directed retirement after the reap was held, or the node joined the cluster again and has nothing to reap. INFO, published only after a published held event for the node (#752 mechanism). It
     /// is raised by the leader that held the reap: a leader change in between leaves the held event open.
     INSTANCE_REAP_RELEASED("instance-reap-released", "deployment", WarningLevel.INFO, INSTANCE_REAP_HELD),
+    /// Auto-heal is disabled, so the cluster did NOT provision or terminate workers (a worker or spot source/role) or community members on its own
+    /// initiative (spec §8.4). The disable records each subject's committed desired count or community `target_size`; while the subject's own
+    /// committed value still equals it, the subject is held, and so is the autonomous correction of a loss. A configuration commit that leaves the
+    /// value unchanged (another subject's, or an unrelated setting) releases nothing. A value an operator commits WHILE auto-heal is disabled differs:
+    /// that is explicit intent, the subject is released and acted on from then on, its loss correction included. An operator-directed retirement is
+    /// not held. Subject is the source/role or the community. Raised once per subject for the run of holds. Closed by [#AUTO_HEAL_SCALING_RESUMED].
+    AUTO_HEAL_SCALING_HELD("auto-heal-scaling-held", "deployment", WarningLevel.WARNING),
+    /// The recovery of [#AUTO_HEAL_SCALING_HELD], same subject: auto-heal is enabled again, or the subject was released by a new committed value, and
+    /// the worker or community path acts on it again. INFO, published only after a published held event for the subject (#752 mechanism). Raised by
+    /// the leader that held it.
+    AUTO_HEAL_SCALING_RESUMED("auto-heal-scaling-resumed", "deployment", WarningLevel.INFO, AUTO_HEAL_SCALING_HELD),
     /// An upload was refused 429 because this node's `[app-http.upload] max_concurrent` was reached (#2410): the node is holding
     /// as many upload bodies as it allows. Subject is the node. Raised once, on the transition into saturation, per node, not
     /// per refused request; a refusal for one principal's own cap is a client error and raises nothing. Closed by
@@ -669,10 +680,30 @@ public enum OperatorWarningCode {
     /// message names both paths. Decided once, at boot, so there is no recovery code: move the state directory
     /// (`-Daether.state.dir` / `AETHER_STATE_DIR`) off the volume and restart.
     STORAGE_VOLUME_GUARD_INACTIVE("storage-volume-guard-inactive", "storage", WarningLevel.WARNING),
-    /// An append log fail-stopped after a failed fsync, frame write or reopen: every later append is refused until the node restarts and
-    /// recovers the valid prefix. The subject is the storage instance; the message names the log and the cause. Raised once per
-    /// instance (a second log failing in the same boot is in the node log only). No recovery code: a restart is the recovery.
+    /// An append log fail-stopped after a failed fsync, frame write or reopen: every later append is refused for the rest of the node's
+    /// process. Recovery is replacing the node: a node id never returns, so the replacement does not reopen the log. A whole-cluster
+    /// restart that keeps node ids reopens it, and the reopen recovers the valid prefix. A stream partition's log raises it with the
+    /// subject `stream[partition]`, once per log (`know:` `4ddd1ddfda`), and every publish to that partition on the node is refused from
+    /// then on; a log with no owner of its own raises it with the storage instance as the subject, once per instance (a second such log
+    /// failing in the same boot is in the node log only). The message names the log and the cause.
+    ///
+    /// A stream partition's fail-stop is closed in one of three ways: [#STORAGE_WAL_WRITABLE] when a whole-cluster restart reopens the
+    /// log and it accepts a durable write; [#STORAGE_WAL_RETIRED] when the node that raised it leaves the cluster (its own removal or
+    /// decommission, as when it is replaced); and, when that node crashes, its `NODE_FAILED` supersedes the warning (the node can
+    /// publish nothing). The instance subject has no recovery, because the instance raise names no log a later boot could report on.
+    /// Named limit: the subject is the partition, not the node, so when two nodes fail-stop the same partition, one node's close also
+    /// closes the other's warning (it needs two independent WAL failures on one partition).
     STORAGE_WAL_FAIL_STOPPED("storage-wal-fail-stopped", "storage", WarningLevel.CRITICAL),
+    /// The recovery of [#STORAGE_WAL_FAIL_STOPPED], same subject `stream[partition]`: the partition's log, reopened under the same node id
+    /// (a whole-cluster restart; a replaced node never reopens it), accepted its first durable write. INFO. The fail-stop leaves a mark
+    /// beside the log (written best-effort: a volume that refused the fsync may refuse the mark, and then no recovery is raised); a
+    /// reopen that finds it raises this once and deletes the mark. Closes across processes: it is raised by a later process than the
+    /// one whose warning it closes, which holds no open state for it.
+    STORAGE_WAL_WRITABLE("storage-wal-writable", "storage", WarningLevel.INFO, STORAGE_WAL_FAIL_STOPPED, true),
+    /// The recovery of [#STORAGE_WAL_FAIL_STOPPED], same subject `stream[partition]`, raised by the node that fail-stopped when its own
+    /// removal or decommission commits (as when it is replaced): the log is not reopened, so it will never be writable; the message names
+    /// the departure. INFO. A shutdown is not a departure (a whole-cluster restart raises [#STORAGE_WAL_WRITABLE] instead).
+    STORAGE_WAL_RETIRED("storage-wal-retired", "storage", WarningLevel.INFO, STORAGE_WAL_FAIL_STOPPED),
     /// Block prefetching could not be started when the node reported ready, so the instance serves reads without the hints it would
     /// have acted on. The subject is the instance. Closed by [#STORAGE_PREFETCH_STARTED].
     STORAGE_PREFETCH_NOT_STARTED("storage-prefetch-not-started", "storage", WarningLevel.WARNING),
@@ -877,8 +908,7 @@ public enum OperatorWarningCode {
     KV_DISPATCH_READ_AHEAD("kv-dispatch-read-ahead", "kv-store", WarningLevel.INFO),
     /// The node's KV notification dispatcher failed (KVStore dispatcher design §3.2, owner ruling 1): the store is closed, every
     /// waiting write fails as outcome-unknown, and the node stops (the production node halts). The subject is the store; the
-    /// node log carries the failure, the batch and a thread dump. No recovery code: a restart is the recovery, as for
-    /// [#STORAGE_WAL_FAIL_STOPPED]. The node's operator-warning sink accepts this event (the publish call returns) before the
+    /// node log carries the failure, the batch and a thread dump. No recovery code: a restart is the recovery. The node's operator-warning sink accepts this event (the publish call returns) before the
     /// dispatcher calls `stopNode`; the sink hands it off asynchronously, so its delivery to the cluster event stream is
     /// best-effort once the node halts.
     KV_DISPATCHER_FAILED("kv-dispatcher-failed", "kv-store", WarningLevel.CRITICAL),

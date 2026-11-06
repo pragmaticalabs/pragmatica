@@ -34,7 +34,10 @@ class BlueprintsSurvivorPinsTest {
     private static ClusterModel withoutBlueprint() {
         var m = new ClusterModel();
 
-        m.pendingTargetPuts = m.pendingTargetPuts.put(ORDERS.base(), target(ORDERS, 1, 1, "CORE_ONLY"));
+        // The pending put names its owner, as every declaration's put does (`Blueprints.declaredTarget`): the watch re-sends only while
+        // the owner is published (CF-5).
+        m.pendingTargetPuts = m.pendingTargetPuts.put(ORDERS.base(),
+                                                      SlFixtures.ownedTarget(ORDERS, 1, 1, blueprintId("org.example:app:1.0.0")));
 
         return m;
     }
@@ -132,6 +135,22 @@ class BlueprintsSurvivorPinsTest {
     void sweepAwaited_resubmitsThePut_atExactlyTheBoundSinceTheLastResubmit() {
         assertThat(resubmissionsAt(1_000L + bound())).as("at the bound").isEqualTo(1);
         assertThat(resubmissionsAt(1_000L + bound() - 1)).as("control: one ms before it").isZero();
+    }
+
+    /// CF-5 (#2759). Red when: a pending put whose owner blueprint is no longer published is re-sent because another blueprint still
+    /// lists the artifact: its witness would expect the owner absent, so it could commit as an ownerless target.
+    @Test
+    void sweepAwaited_aPutWhoseOwnerIsUnpublished_isNotResent_andTheWaitEnds() {
+        var m = withoutBlueprint();
+        var other = blueprint("org.example:app:2.0.0", false, "a2", slice(ORDERS, 1, 1, Set.of()));
+
+        Indexer.indexBlueprint(m, other.blueprint().id(), other);
+        m.awaitedTargets = m.awaitedTargets.put(ORDERS, new ClusterModel.AwaitedTarget(0L, true, 1_000L));
+        Blueprints.sweepAwaited(m, SurvivorPinSupport.ctx(1_000L + bound(), 0L));
+
+        assertThat(m.blueprintsByArtifact.containsKey(ORDERS)).as("control: another blueprint lists the artifact").isTrue();
+        assertThat(m.outbox).as("not re-sent").isEmpty();
+        assertThat(m.pendingTargetPuts.containsKey(ORDERS.base())).as("no longer watched").isFalse();
     }
 
     private static Option<Long> redriveStampAt(long monoNs) {

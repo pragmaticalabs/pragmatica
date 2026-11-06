@@ -163,8 +163,11 @@ class SliceLegBuildersS12PinsTest {
 
         var references = builders.streamReferences(ORDERS, new PublisherBeyondCount());
 
-        assertThat(references).hasSize(1);
         assertThat(references).extracting(LegCommand::kind).containsOnly(LegKind.STREAM_REF);
+        assertThat(references).extracting(leg -> leg.command().key())
+                              .as("one holder key per declared role (#1978: each acquire also carries the entry template while none exists)")
+                              .filteredOn(AetherKey.StreamRegistryHolderKey.class::isInstance)
+                              .hasSize(1);
     }
 
     /// `wiring-SliceLegBuilders-11`: a configured section with no dot has no stream-name segment, so its consumer is not registered and is raised

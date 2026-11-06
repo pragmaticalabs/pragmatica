@@ -538,6 +538,8 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `json-config-rejected` (CRITICAL — a committed `[json]` change was refused for a slice and its HTTP routes keep the JSON codec selection they had; `subject` is `<slice artifact>/json`, the message names each refused key, its value and why, and the selection kept; raised once per node on the transition into refusal; the same configuration fails the slice's next provisioning, issue #2378)
 - `json-config-applied` (INFO — the recovery: a valid `[json]` configuration was adopted after a refusal; published only after a published `json-config-rejected` for the same `subject`)
 - `instance-reap-held` (WARNING — auto-heal is disabled, so the cluster did not delete the instance of a node it would otherwise have reaped: a departed node, an orphan the sweep found, a surplus trim, the reap of a never-joined zombie, or the retry or re-check of any of them; `subject` is the node, the message names which. The instance is kept for diagnosis and keeps billing. Raised once per node by the leader that held the reap; enable auto-heal to have it reaped, or terminate it at the provider yourself)
+- `auto-heal-scaling-held` (WARNING — auto-heal is disabled, so the cluster did not provision or terminate workers or begin a community placement operation on its own initiative; `subject` is `worker <source>/<role>` or `community <id>`; raised once per subject for the run of holds. A count or `target_size` changed while disabled, and an operator-directed retirement, are not held)
+- `auto-heal-scaling-resumed` (INFO — the recovery: auto-heal is enabled again and the paths act on their own again; published only after a published `auto-heal-scaling-held` for the same `subject`)
 - `instance-reap-released` (INFO — the recovery: auto-heal is enabled again and the reap is no longer held (it is then subject to the usual liveness and refusal checks), or the instance was deleted by a directed retirement after the reap was held, or the node joined the cluster again; published only after a published `instance-reap-held` for the same `subject`. Raised by the leader that held the reap, so a leader change in between leaves the held event open)
 - `upload-node-cap-saturated` (WARNING — an upload was refused `429` because the node holds `[app-http.upload] max_concurrent` uploads; `subject` is the node; raised once per episode on the first refusal, not once per refused request; a per-principal refusal raises nothing; issue #2410)
 - `upload-node-cap-restored` (INFO — the recovery: an upload finished and the node accepts uploads again; published only after a published `upload-node-cap-saturated` for the same `subject`)
@@ -558,7 +560,9 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `storage-maintenance-started` (INFO — the recovery: the managers were activated; raised only after `storage-maintenance-not-started` was offered to the event feed for the same `subject`)
 - `storage-wal-tail-cut` (WARNING — a stream append log cut a torn tail while opening, bytes that were never acknowledged; `subject` is the instance; a cut happens once at open, so there is no recovery event)
 - `storage-volume-guard-inactive` (WARNING — the unmounted-volume guard of the instance is off: its sentinel is on the same filesystem as the guarded volume and is lost with it, so the node would boot empty on an unmounted volume instead of refusing; `subject` is the instance; decided once at boot, no recovery event)
-- `storage-wal-fail-stopped` (CRITICAL — a stream append log fail-stopped after a failed fsync, frame write or reopen and refuses every append until the node restarts; `subject` is the instance, the message names the log; raised once per instance, no recovery event)
+- `storage-wal-fail-stopped` (CRITICAL — an append log fail-stopped after a failed fsync, frame write or reopen and refuses every append; for a stream partition's WAL the `subject` is `stream[partition]` and the warning is raised once per partition log (#2201 D-01), every later publish to that partition is refused with `PartitionFailStopped` before it takes an offset, and gauge `aether.streams.wal.failstopped` counts the node's fail-stopped partitions; for any other log the `subject` is the instance, the message names the log, and it is raised once per instance; recovery for a stream partition: replace the node, see `wal.failStopped` (a node id never returns, so the replacement does not reopen the log); closed by `storage-wal-writable` when a whole-cluster restart reopens the same WAL under the same node id and it accepts a durable write, by `storage-wal-retired` when the node that raised it is removed or decommissioned (as when it is replaced), and superseded by that node's `NODE_FAILED` when it crashes; the instance subject has no recovery event. Named limit: the subject is the partition, not the node, so when two nodes fail-stop the same partition one node's close also closes the other's warning)
+- `storage-wal-retired` (INFO — the recovery of `storage-wal-fail-stopped` for a stream partition, same `subject` `stream[partition]`, raised by the node that fail-stopped when its own removal or decommission commits, as when it is replaced; the message names the node and the departure. The log is not reopened. A shutdown is not a departure)
+- `storage-wal-writable` (INFO — the recovery of `storage-wal-fail-stopped` for a stream partition, same `subject` `stream[partition]`: after a whole-cluster restart that keeps node ids, the partition's reopened WAL accepted its first durable write (a replaced node never reopens it). The fail-stop leaves a mark file `<partition>.failstopped` beside the WAL, written best-effort (a volume that refused the fsync may refuse the mark, and then no recovery is raised); the reopen that finds it raises this once and deletes the mark)
 - `storage-prefetch-not-started` (WARNING — the instance's prefetch manager could not be activated when the node reported ready; `subject` is the instance)
 - `storage-prefetch-started` (INFO — the recovery: the prefetch manager was activated; raised only after `storage-prefetch-not-started` was offered to the event feed for the same `subject`)
 - `storage-stream-disk-cap-over-space` (WARNING — `[streaming] segment_disk_max_bytes` is larger than the space usable where stream segments are kept, so stream seals fail with `TierFull` before the cap is reached; `subject` is `streams`; decided at boot, no recovery event)
@@ -602,7 +606,7 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 
 Best-effort like every per-node event: during a partition or bootstrap the publish can be dropped, and the log line is then the only record.
 
-Storage recoveries follow their warnings in order: a storage condition is offered to the event feed exactly once (when raised, or when the feed binds if it was raised before), and its recovery only after that. A condition raised and recovered before the feed binds is logged both times and published neither. Warning codes with no recovery (`storage-disk-tier-unavailable`, `storage-memory-tier-clamped`, `storage-snapshot-fell-back`, `storage-wal-tail-cut`, `storage-volume-guard-inactive`, `storage-wal-fail-stopped`, `storage-stream-disk-cap-over-space`, `storage-stream-disk-space-unreadable`, `storage-integrity-failed`) stay open for the life of the node and are never raised twice.
+Storage recoveries follow their warnings in order: a storage condition is offered to the event feed exactly once (when raised, or when the feed binds if it was raised before), and its recovery only after that. A condition raised and recovered before the feed binds is logged both times and published neither. Warning codes with no recovery (`storage-disk-tier-unavailable`, `storage-memory-tier-clamped`, `storage-snapshot-fell-back`, `storage-wal-tail-cut`, `storage-volume-guard-inactive`, `storage-wal-fail-stopped` for the instance subject, `storage-stream-disk-cap-over-space`, `storage-stream-disk-space-unreadable`, `storage-integrity-failed`) stay open for the life of the node and are never raised twice.
 
 `DEPLOYMENT_FAILED` is emitted **once per (artifact, node) pair** whose deployment attempt failed — `ClusterEventAggregator.handleDeploymentFailed` fires on each node-artifact KV transition to `FAILED`, so a blueprint spread across N nodes that fails deterministically on all of them produces N separate events, each with its own `nodeId` in `details.nodeId` and the failure text in `details.reason`. Because `cluster-events` is a single replicated stream, all N events are visible from `GET /api/v1/events` on **any** node, not only the one that failed.
 
@@ -1524,6 +1528,11 @@ decided, and `consensus_apply_timeouts_total` counts the applies that were never
 timeout (30 s by default). The engine also logs `SLOW-APPLY-RUNNING` with the worker's stack once a consensus
 task has run longer than one second.
 
+Includes the streams gauges: `aether_streams_memory_used_bytes`, `aether_streams_memory_used_ratio`,
+`aether_streams_seams_unbound_safety` (0 on a correctly wired node, #2201 A-14), and
+`aether_streams_wal_failstopped` (#2201 D-01): the number of partitions materialized on this node whose WAL fail-stopped, 0 from
+boot and at least 1 while a partition refuses every publish (`storage-wal-fail-stopped`, `wal.failStopped`). Each sample line ends in its
+value; the registry writes no timestamp.
 `consensus_consecutive_empty_slots_with_pending` (a level, #2045) counts the slots this node decided in a row
 without applying a batch while it held pending batches; it returns to 0 once a slot applies a batch or the queue
 empties. The comprehensive response carries it as `consecutiveEmptySlotsWithPending`, next to
@@ -2543,7 +2552,7 @@ the view actionable (see recovery below).
 | `wal.lastCompactedUpto` | Last offset physically reclaimed by a compaction rewrite (`-1` when the file was never compacted) |
 | `wal.fsyncCount` | Group commits completed since the WAL was opened |
 | `wal.fsyncMeanMicros` / `fsyncMaxMicros` | Mean / slowest single fsync since open, in microseconds |
-| `wal.failStopped` | `true` when this partition's WAL refused further appends after a failed fsync (#634-7 fail-stop — a retried fsync can falsely succeed after the OS drops the dirty pages, so the WAL stops instead). Every publish on the partition fails until the recovery action: **replace the node** (`POST /api/v1/nodes/replace/{id}`). A fail-stopped node is not restarted: under terminal removal a dead owner never returns and nothing reads its WAL again, so what survives is what reached the surviving replicas (see `confirmation_factor`); a refused append was never acked |
+| `wal.failStopped` | `true` when this partition's WAL refused further appends after a failed fsync (#634-7 fail-stop — a retried fsync can falsely succeed after the OS drops the dirty pages, so the WAL stops instead). The transition raises `storage-wal-fail-stopped` with subject `stream[partition]` and counts in gauge `aether.streams.wal.failstopped` (#2201 D-01). Every publish on the partition fails until the recovery action: **replace the node** (`POST /api/v1/nodes/replace/{id}`). A fail-stopped node is not restarted: under terminal removal a dead owner never returns and nothing reads its WAL again, so what survives is what reached the surviving replicas (see `confirmation_factor`); a refused append was never acked |
 | `ringTail` | Earliest offset still in the in-memory ring (`-1` when the materialized ring is EMPTY — has never held a record, e.g. right after a restart; a partition with no ring at all appears only as a segment-only row or not at all) |
 | `sealedThrough` | The durable sealed bound — what WAL truncation chases (`-1` when nothing is sealed) |
 | `reclaimedThrough` | The persisted reclaimed-through floor (#1278): the highest offset retention reclaimed for this partition, `-1` when it never reclaimed any. Written durably before the segment refs it licenses are dropped; after a restart the sealed bound is rebuilt from it, so a WAL starting at `reclaimedThrough + 1` is reclaimed history, not a lost head |
@@ -3433,7 +3442,8 @@ Provisioning diagnostics — answers "why is a core-membership deficit being or 
   "circuitBreaker": {
     "consecutiveFailures": 0,
     "tripped": false,
-    "nextAllowedMs": 0
+    "nextAllowedMs": 0,
+    "sources": {}
   },
   "lastProvisionFailure": null,
   "inventoryWaiting": false,
@@ -3456,7 +3466,7 @@ Provisioning diagnostics — answers "why is a core-membership deficit being or 
   "lastTrigger": "NONE",
   "lastReason": "Provisioning diagnostics available only on the leader that owns a cluster topology manager",
   "deficitAgeMs": 0,
-  "circuitBreaker": {"consecutiveFailures": 0, "tripped": false, "nextAllowedMs": 0},
+  "circuitBreaker": {"consecutiveFailures": 0, "tripped": false, "nextAllowedMs": 0, "sources": {}},
   "lastProvisionFailure": null,
   "inventoryWaiting": false,
   "inventoryWaits": 0,
@@ -3634,7 +3644,7 @@ during formation is routine. For a liveness judgement prefer the membership view
 
 ### GET /api/v1/cluster/topology/circuit-breaker
 
-Snapshot of the CTM (Cluster Topology Manager) provisioning circuit breaker. The breaker trips after `MAX_CONSECUTIVE_PROVISIONING_FAILURES` (default 3) failed slot-deadline expirations or provider API rejections, halting auto-heal until a recovery trigger fires (`setDesiredSize`, `onNodeReady`, phase NORMAL transition, leader handoff, or operator reset).
+Snapshot of the CTM (Cluster Topology Manager) provisioning circuit breaker. The breaker trips after `MAX_CONSECUTIVE_PROVISIONING_FAILURES` (default 3) failed slot-deadline expirations or provider API rejections, halting provisioning in that source until a recovery trigger fires. There is one breaker per source binding (spec §8.3): a failing source opens only its own, and another source keeps provisioning. Recovery triggers: `setDesiredSize` (that source), `onNodeReady` (the joined node's source; every source when it is not known), phase NORMAL transition and leader handoff (every source), or operator reset. The top-level fields aggregate the sources (worst count, latest window, tripped when any is); `sources` lists each source that holds a failure, and a refusal counted before a source was resolved appears as `(unresolved)` and gates nothing.
 
 **RBAC:** ADMIN · **Routing:** LEADER
 
@@ -3644,13 +3654,14 @@ Snapshot of the CTM (Cluster Topology Manager) provisioning circuit breaker. The
   "consecutiveFailures": 0,
   "trippedAt": 3,
   "nextAllowedMs": 0,
-  "tripped": false
+  "tripped": false,
+  "sources": {}
 }
 ```
 
 ### POST /api/v1/cluster/topology/circuit-breaker/reset
 
-Operator-triggered reset of the CTM provisioning circuit breaker. Use after fixing an underlying provisioning issue (provider credentials, network connectivity, capacity quota) when none of the auto-recovery triggers (above) have fired. Returns the prior consecutive-failure count for the audit log.
+Operator-triggered reset of the CTM provisioning circuit breaker. Use after fixing an underlying provisioning issue (provider credentials, network connectivity, capacity quota) when none of the auto-recovery triggers (above) have fired. Returns the prior consecutive-failure count for the audit log. The optional body `{"source": "<name>"}` resets only that source's breaker; with `{}`, or with no body at all, every source's breaker is reset and the count is the sum. A malformed source name, and one the committed cluster configuration does not declare (as the handling node has applied it), is refused with 400 rather than silently resetting nothing.
 
 **RBAC:** ADMIN · **Routing:** LEADER
 
@@ -3658,7 +3669,8 @@ Operator-triggered reset of the CTM provisioning circuit breaker. Use after fixi
 ```json
 {
   "status": "reset",
-  "priorFailureCount": 3
+  "priorFailureCount": 3,
+  "scope": "all"
 }
 ```
 
@@ -3712,7 +3724,7 @@ Re-enable CTM auto-heal. Writes `AutoHealStateValue(enabled=true, reason)` throu
 
 ### POST /api/v1/cluster/topology/auto-heal/disable
 
-Disable CTM auto-heal. Writes `AutoHealStateValue(enabled=false, reason)` through the same consensus-backed command path as other topology mutations; already-in-flight provisioning attempts on any node continue to completion. While disabled the cluster also deletes no instance on its own initiative (a departed node, an orphan, the retry or re-check of either): the reap is held and the `instance-reap-held` event names the node (#1038); a retirement directed from outside is not held: the node-replacement protocol's drain (`POST /nodes/replace`, upgrade runs) and a community-placement retirement. A worker scale-down (`terminateSurplusWorkers`, desired count below actual) is config-directed operator intent and is not held either. Returns the prior `enabled` state, as observed by this node's local (possibly stale) view, for the audit log. A same-state call (already disabled, by that local view) still writes through unconditionally — the write is never skipped on a local-read shortcut, since that read can lag the durable value (#685 review round 1). The disable survives a leader failover (#685) — see the staleness note under `GET .../auto-heal`.
+Disable CTM auto-heal. Writes `AutoHealStateValue(enabled=false, reason)` through the same consensus-backed command path as other topology mutations; already-in-flight provisioning attempts on any node continue to completion. While disabled the cluster also deletes no instance on its own initiative (a departed node, an orphan, the retry or re-check of either): the reap is held and the `instance-reap-held` event names the node (#1038); a retirement directed from outside is not held: the node-replacement protocol's drain (`POST /nodes/replace`, upgrade runs) and a community-placement retirement. The worker and community paths are held the same way: while disabled the cluster provisions or terminates no worker (a worker or spot source/role short of or over its desired count) and begins no community placement operation on its own initiative, and raises `auto-heal-scaling-held` once per source/role or community. Two things are not held: an operator-directed retirement, and a desired count or community `target_size` that an operator commits while auto-heal is disabled (explicit intent: the disable records each source/role's committed count and each community's `target_size`, and only a commit that changes that subject's own value releases it; a commit that leaves it unchanged releases nothing). The disable is one transaction fenced on the committed configuration it read those values from: if the configuration changed in between, the disable is refused and should be retried. Enabling auto-heal, or a release, raises `auto-heal-scaling-resumed`. Returns the prior `enabled` state, as observed by this node's local (possibly stale) view, for the audit log. A same-state call (already disabled, by that local view) still writes through unconditionally — the write is never skipped on a local-read shortcut, since that read can lag the durable value (#685 review round 1). The disable survives a leader failover (#685) — see the staleness note under `GET .../auto-heal`.
 
 **RBAC:** ADMIN · **Routing:** LEADER
 

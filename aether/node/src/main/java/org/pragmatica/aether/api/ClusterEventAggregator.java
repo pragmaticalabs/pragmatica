@@ -1569,6 +1569,49 @@ public final class ClusterEventAggregator {
         }
     }
 
+    /// #2615 (CTO ruling): a stream partition's WAL fail-stop is closed when the node that raised it leaves the cluster, on its own
+    /// committed removal or decommission (a replacement retires the old node this way), by `STORAGE_WAL_RETIRED` naming the departure:
+    /// the log is never reopened, so no `STORAGE_WAL_WRITABLE` follows. A shutdown is not a departure: a whole-cluster restart reopens the
+    /// log and raises WRITABLE. A crash publishes nothing from this node; its NODE_FAILED supersedes the open warning, as for the
+    /// observer lag (#2306). Every fail-stop still open here is closed, delivered or still awaiting delivery; a close with no open
+    /// warning publishes nothing (#752).
+    private void retireWalFailStopsWhenSelfLeaves(MembershipDecision decision) {
+        switch (decision) {
+            case MembershipDecision.NodeRemoved removed -> retireWalFailStopsIfSelf(removed.nodeId(),
+                                                                                    "was removed from the cluster");
+            case MembershipDecision.NodeDecommissioned decommissioned -> retireWalFailStopsIfSelf(decommissioned.nodeId(),
+                                                                                                  "was decommissioned");
+            default -> {}
+        }
+    }
+
+    private void retireWalFailStopsIfSelf(NodeId node, String how) {
+        if (node.equals(selfNode)) {
+            openWalFailStopSubjects().forEach(subject -> retireWalFailStop(subject, how));
+        }
+    }
+
+    private List<String> openWalFailStopSubjects() {
+        var prefix = throttleKey(OperatorWarningCode.STORAGE_WAL_FAIL_STOPPED, "");
+
+        return Stream.concat(openRecoverable.stream(),
+                             awaitingDelivery.keySet().stream())
+                     .filter(key -> key.startsWith(prefix))
+                     .map(key -> key.substring(prefix.length()))
+                     .distinct()
+                     .toList();
+    }
+
+    private void retireWalFailStop(String subject, String how) {
+        LOG.info("The fail-stopped WAL of {} on node {} is retired: the node {}", subject, selfNode.id(), how);
+        onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STORAGE_WAL_RETIRED,
+                                                          subject,
+                                                          "The fail-stopped WAL of " + subject
+                                                         + " on node " + selfNode.id()
+                                                         + " is retired: the node " + how
+                                                         + ", and its log is not reopened"));
+    }
+
     /// #2306: a non-voter's PASSIVE is never a quorum loss. An observer leaves `Observing` for reasons that have nothing to do
     /// with the cluster's quorum (a far-behind catch-up resync, an adoption still running), so the CRITICAL `QuorumLost` is
     /// withheld and the operator gets a distinct WARNING instead.
@@ -1703,6 +1746,7 @@ public final class ClusterEventAggregator {
     @Contract
     public void onMembershipDecision(MembershipDecision decision) {
         closeObserverLagWhenSelfLeaves(decision);
+        retireWalFailStopsWhenSelfLeaves(decision);
         switch (decision) {
             // NODE_FAILED moved to the ungated FSM DEAD edge (#210) — the projector can drop this
             // quorum-gated decision during post-kill churn, so it is no longer the failure source.
