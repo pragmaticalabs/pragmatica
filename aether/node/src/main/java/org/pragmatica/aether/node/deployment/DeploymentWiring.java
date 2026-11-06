@@ -39,6 +39,8 @@ import org.pragmatica.messaging.MessageRouter;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 
+import static org.pragmatica.lang.Promise.promise;
+
 
 /// **The only place an engine-dependent hook is bound** (phase-3 design 8.3, D2, W-15, W-32). Every deployment hook of the node that differs
 /// between the legacy and the FSM2 engine goes through here, and each binding is recorded as `<branch point> -> <target>`; the record is compared
@@ -475,7 +477,7 @@ public final class DeploymentWiring {
     }
 
     private static Promise<Unit> quiescedOnPool(Runnable quiesce) {
-        return Promise.promise(() -> quiesced(quiesce));
+        return promise(() -> quiesced(quiesce));
     }
 
     private static Result<Unit> quiesced(Runnable quiesce) {
