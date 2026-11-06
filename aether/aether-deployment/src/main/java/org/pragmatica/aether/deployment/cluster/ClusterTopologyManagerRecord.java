@@ -139,6 +139,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     Set<NodeId> listedAbsent,
                                     ConcurrentHashMap<NodeId, Set<String>> knownInstanceIds,
                                     Set<NodeId> drainGraceChains,
+                                    Set<NodeId> reuseEvidence,
                                     ConcurrentHashMap<NodeId, Long> incarnations,
                                     ConcurrentHashMap<NodeId, Long> failedReaps,
                                     org.pragmatica.lang.concurrent.CancellableTask unconfirmedRecheck,
@@ -147,6 +148,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     ConcurrentHashMap<NodeId, SourceName> replacementSources,
                                     AtomicLong replayRunning,
                                     AtomicLong lastSweepMs,
+                                    AtomicReference<TerminationRetirement> reapRetirement,
+                                    AtomicReference<TerminationRetirement> forcedClearRetirement,
                                     AtomicBoolean sourceUnresolved) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
     private static final int MINIMUM_CLUSTER_SIZE = 3;
@@ -297,6 +300,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 ConcurrentHashMap.newKeySet(),
                                                 new ConcurrentHashMap<>(),
                                                 ConcurrentHashMap.newKeySet(),
+                                                ConcurrentHashMap.newKeySet(),
                                                 new ConcurrentHashMap<>(),
                                                 new ConcurrentHashMap<>(),
                                                 org.pragmatica.lang.concurrent.CancellableTask.cancellableTask(),
@@ -305,6 +309,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new ConcurrentHashMap<>(),
                                                 new AtomicLong(NOT_RUN),
                                                 new AtomicLong(0L),
+                                                new AtomicReference<>(TerminationRetirement.NONE),
+                                                new AtomicReference<>(TerminationRetirement.NONE),
                                                 new AtomicBoolean(false));
     }
 
@@ -324,6 +330,14 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Override
     public org.pragmatica.utility.warning.OperatorWarningSink operatorWarningSink() {
         return warningSink.get();
+    }
+
+    @Override
+    public Unit setTerminationRetirements(TerminationRetirement onConfirmedReap, TerminationRetirement onForcedClear) {
+        reapRetirement.set(onConfirmedReap);
+        forcedClearRetirement.set(onForcedClear);
+
+        return unit();
     }
 
     @Override
@@ -2445,6 +2459,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
 
         markDirected(targetNodeId, drainReason);
+        if (drainReason == DrainReason.JOIN_GRACE_REAP) {
+            // The id was booted and never joined: evidence for a confirmed node's reap to look again ([#reuseEvidence]).
+            reuseEvidence.add(targetNodeId);
+        }
+
         retirementRefusal.get()
                          .apply(targetNodeId)
                          .onPresent(reason -> parkRefusedReap(targetNodeId, reason))
@@ -2765,8 +2784,14 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         // announce a deletion that already happened. But the memory is per NODE id and the instance that reuses the id may be another one,
         // which never joined: while auto-heal is disabled it is looked at first ([#recheckConfirmedReap]) and, being new, takes the gate like any
         // other (a directed reap is exempt there, so a second directed retirement of the node deletes the new instance). While auto-heal is
-        // enabled nothing is held, and a second reap of a confirmed node stays a no-op that asks the provider nothing ([#reapedAgain]).
-        if (confirmedReaps.contains(nodeId) && !isAutoHealEnabled()) {
+        // enabled nothing is held, so the look is taken only when the trigger itself reports an instance under the id since the confirmation
+        // ([#reuseEvidence], #2457, else it is left billing in silence): a join-grace reap (the id booted and never joined) or the orphan sweep (two
+        // reads listed it). Any other second reap of a confirmed node (NodeRemoved, the drain-grace backstop of the same drain, a directed drain)
+        // carries no such evidence and stays the no-op that asks the provider nothing ([#reapedAgain], v-2062 B1). The mark is recorded at the
+        // trigger, so it travels through the bounded retries, and dropped by a confirmation ([#reapConfirmed]: only a mark made after the latest
+        // confirmation can be read here, so a join needs no clearing of its own) and by the activation's end ([#deactivate]); one a chain leaves
+        // behind (its bound spent unconfirmed) costs a later reap one read-only listing.
+        if (confirmedReaps.contains(nodeId) && (!isAutoHealEnabled() || reuseEvidence.contains(nodeId))) {
             recheckConfirmedReap(nodeId, epoch, generation, retriesLeft);
 
             return;
@@ -3100,6 +3125,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                               cleared.providerState(),
                                                               cleared.known(),
                                                               cleared.cause());
+        if (cleared.forced()) {
+            retireIdentity(forcedClearRetirement.get(), nodeId, "forced clear");
+        }
 
         return Promise.unitPromise();
     }
@@ -3385,7 +3413,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     private void reapConfirmed(NodeId nodeId) {
+        reuseEvidence.remove(nodeId);
         closeHeldAsDeleted(nodeId);
+        retireIdentity(reapRetirement.get(), nodeId, "confirmed reap");
         replacementSources.remove(nodeId);
         failedReaps.remove(nodeId);
         var marked = unconfirmedReaps.remove(nodeId);
@@ -3403,6 +3433,18 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                   "Termination of the instance of retired node {} is now confirmed",
                                                                   nodeId.id());
         }
+    }
+
+    /// 12 item 4b (B18, B19): the termination is confirmed, so the node's directive and departure record are retired together. The retirement
+    /// retries itself until it commits or neither key is left (`TerminationRetirement`), so a failure reaching here means its retry gave up:
+    /// FER, logged and dropped; the directive and the record stay together (never one without the other).
+    @Contract
+    private void retireIdentity(TerminationRetirement retirement, NodeId nodeId, String authority) {
+        retirement.retire(nodeId)
+                  .onFailure(cause -> log.warn("CTM: {} of {} left its directive and departure record in place: {}",
+                                               authority,
+                                               nodeId,
+                                               cause.message()));
     }
 
     private void reapUnconfirmed(NodeId nodeId,
@@ -3623,6 +3665,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                  activationReplayGrace().millis());
         // UNCONFIRMED means "tried and not confirmed": the orphan is marked only if its terminate attempts fail ([#confirmedReap]); a mark a previous
         // leader left is inherited ([#adoptPersistedMarks]) and closed by whichever leader confirms.
+        // The sweep listed an instance under the id at both reads: evidence for a confirmed node's reap to look again ([#reuseEvidence]).
+        reuseEvidence.add(nodeId);
         terminateDeparted(nodeId);
     }
 
@@ -3800,6 +3844,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         abandonedReaps.clear();
         // The held mark is this leader's: the next leader's sweep finds the instance again and holds it under its own mark.
         heldReaps.clear();
+        // The evidence a trigger of this activation recorded dies with its chains (dropped by the epoch check).
+        reuseEvidence.clear();
         inventoryWaitRef.set(null);
         workerTopologyPolling.cancel();
         unconfirmedRecheck.cancel();

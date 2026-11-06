@@ -15,12 +15,15 @@ import org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeResponse;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector.ExecutionOutcome;
+import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector.Origin;
+import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector.Settlement;
 import org.pragmatica.aether.slice.ObservabilityCellRegistrar;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -195,12 +198,30 @@ class InvocationHandlerImpl implements InvocationHandler {
     public void registerSlice(Artifact artifact, SliceBridge bridge) {
         var admitted = new AdmittedSliceBridge(bridge,
                                                () -> admission,
-                                               (method, outcome) -> recordExecution(artifact, method, outcome));
+                                               (method, outcome) -> recordExecution(artifact, method, outcome),
+                                               new InternalCalls(artifact, metricsCollector));
 
         localSlices.put(artifact, admitted);
         classLoaderBridges.put(bridge.classLoader(), admitted);
         bridge.observabilityCells().forEach(cellRegistrar::register);
         log.debug("Registered slice for invocation: {}", artifact);
+    }
+
+    /// Rc6 f3a: counts the INTERNAL offered load of calls that enter a local bridge directly.
+    private record InternalCalls(Artifact artifact, Option<InvocationMetricsCollector> metricsCollector) implements AdmittedSliceBridge.CallRecorder {
+        @Override
+        public Unit arrived(String method) {
+            metricsCollector.onPresent(mc -> mc.recordArrival(artifact, method, Origin.INTERNAL));
+
+            return Unit.unit();
+        }
+
+        @Override
+        public Unit settled(String method, Settlement settlement) {
+            metricsCollector.onPresent(mc -> mc.recordSettled(artifact, method, Origin.INTERNAL, settlement));
+
+            return Unit.unit();
+        }
     }
 
     /// #1573: feeds the per-node execution outcomes the leader's all-instances-failed detector reads.
@@ -253,6 +274,7 @@ class InvocationHandlerImpl implements InvocationHandler {
     // JBCT-RET-08: absent invocation context — no principal/origin-node on this InvokeRequest path
     @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-08"})
     public void onInvokeRequest(InvokeRequest request) {
+        countArrival(request);
         if (log.isDebugEnabled()) {
             log.debug("[requestId={}] Received InvokeRequest [{}]: {}.{}",
                       request.requestId(),
@@ -269,6 +291,22 @@ class InvocationHandlerImpl implements InvocationHandler {
                                          () -> processInvokeRequest(request));
     }
 
+    /// The INTERNAL arrival, counted at the entry before the slice lookup or any admission check.
+    @Contract
+    private void countArrival(InvokeRequest request) {
+        metricsCollector.onPresent(mc -> mc.recordArrival(request.targetSlice(),
+                                                          request.method().name(),
+                                                          Origin.INTERNAL));
+    }
+
+    @Contract
+    private void countSettled(InvokeRequest request, Settlement settlement) {
+        metricsCollector.onPresent(mc -> mc.recordSettled(request.targetSlice(),
+                                                          request.method().name(),
+                                                          Origin.INTERNAL,
+                                                          settlement));
+    }
+
     private void processInvokeRequest(InvokeRequest request) {
         Option.option(localSlices.get(request.targetSlice()))
               .onEmpty(() -> handleSliceNotFound(request))
@@ -277,6 +315,7 @@ class InvocationHandlerImpl implements InvocationHandler {
 
     private void handleSliceNotFound(InvokeRequest request) {
         log.warn("[requestId={}] Slice not found for invocation: {}", request.requestId(), request.targetSlice());
+        countSettled(request, Settlement.REJECTED);
         if (request.expectResponse()) {
             sendErrorResponse(request, "Slice not found: " + request.targetSlice());
         }
@@ -312,6 +351,7 @@ class InvocationHandlerImpl implements InvocationHandler {
         var durationNs = System.nanoTime() - startTime;
         var responseBytes = responseData.length;
 
+        countSettled(request, Settlement.COMPLETED);
         if (request.expectResponse()) {
             sendSuccessResponse(request, responseData);
         }
@@ -337,6 +377,7 @@ class InvocationHandlerImpl implements InvocationHandler {
         var durationNs = System.nanoTime() - startTime;
         var errorType = cause.getClass().getSimpleName();
 
+        countSettled(request, AdmittedSliceBridge.settlementOf(cause));
         log.error("[requestId={}] Failed to complete invocation [{}]: {} (cause chain: {})",
                   request.requestId(),
                   request.correlationId(),

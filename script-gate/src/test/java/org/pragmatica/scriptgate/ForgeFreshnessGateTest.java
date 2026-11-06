@@ -63,7 +63,7 @@ class ForgeFreshnessGateTest {
     }
 
     /// A resource that ships inside the jar is source for this purpose; only counting `.java` would
-    /// miss it. `aether/aether-ttm-onnx` in the live tree is stale for exactly this reason.
+    /// miss it. A stale resource-only module is caught by exactly this rule.
     @Test
     void touchedResource_refusesJustLikeTouchedJava() {
         var resource = root.resolve("runtime-b/src/main/resources/service.properties");

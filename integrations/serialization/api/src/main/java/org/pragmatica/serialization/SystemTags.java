@@ -668,7 +668,10 @@ public interface SystemTags {
         pin(table, 2158, "org.pragmatica.aether.slice.kvstore.AetherValue.DepartureCause");
         // the observed slice state of the deployment rewrite, with the tombstone the live SliceState lacks (spec 1.6.2) -- scanned free on 2026-10-12
         pin(table, 2159, "org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState");
-        // 2160..2162 are taken by the later phases of the same rewrite (tracer wiring), which are not part of this cut
+        // the engine marker of the deployment rewrite (phase-3 design 8.2) -- scanned free across every origin branch on 2026-10-15
+        pin(table, 2160, "org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentEngineKey");
+        pin(table, 2161, "org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngineValue");
+        pin(table, 2162, "org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine");
         // A6, the DHT repair plane: stamp digests and paged migration. 2143..2162 are taken on open branches
         // (scanned across every origin branch on 2026-10-18), so these take the next free slots.
         pin(table, 2163, "org.pragmatica.dht.DHTMessage.StampDigestRequest");
@@ -736,7 +739,20 @@ public interface SystemTags {
         pin(table, 2204, "org.pragmatica.aether.stream.forward.ControlOutcomeDto.Kind");
         pin(table, 2205, "org.pragmatica.aether.stream.forward.StreamForwardMessage.ControlAppendForward");
         pin(table, 2206, "org.pragmatica.aether.stream.forward.StreamForwardMessage.ControlAppendForwardResponse");
-        // ---- 2207..16383 RESERVED ----
+        // rc6 f3a: arrival counters carried on the per-method/per-slice metrics, and the capacity sample of the system
+        // streams capacity-minute/capacity-hour. 2207..2209 were free on every origin ref, scanned 2026-11-05.
+        pin(table, 2207, "org.pragmatica.aether.worker.metrics.ArrivalCounts");
+        pin(table, 2208, "org.pragmatica.aether.worker.metrics.CapacitySample");
+        pin(table, 2209, "org.pragmatica.aether.worker.metrics.CapacityQuality");
+        // rc6 f2a: the workflow run and its conflict-key claims (spec §4.2, §4.3). 2207..2212 are taken by the rc6 f3a and f1 lanes
+        // (open, unpushed when this was written on 2026-11-05; origin showed nothing above 2209), so these take 2220..2224 and leave
+        // the gap to the other rc6 lanes.
+        pin(table, 2220, "org.pragmatica.aether.slice.kvstore.AetherKey.WorkflowRunKey");
+        pin(table, 2221, "org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowRunValue");
+        pin(table, 2222, "org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowState");
+        pin(table, 2223, "org.pragmatica.aether.slice.kvstore.AetherKey.WorkflowClaimKey");
+        pin(table, 2224, "org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowClaimValue");
+        // ---- 2225..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);

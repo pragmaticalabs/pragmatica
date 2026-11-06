@@ -21,7 +21,6 @@ import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.StreamingConfig;
-import org.pragmatica.aether.config.TtmConfig;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.environment.AutoHealConfig;
@@ -248,7 +247,6 @@ class SwimFaultyReArmBootTest {
                                 .protocol(ProtocolConfig.defaultConfig())
                                 .sliceAction(SliceActionConfig.sliceActionConfig())
                                 .cache(DHTConfig.CACHE_DEFAULT)
-                                .ttm(TtmConfig.ttmConfig())
                                 .controllerConfig(ControllerConfig.DEFAULT)
                                 .autoHeal(autoHeal)
                                 .build();

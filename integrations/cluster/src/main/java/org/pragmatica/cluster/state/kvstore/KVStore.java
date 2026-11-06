@@ -1030,11 +1030,14 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         return dispatcher.close();
     }
 
-    /// The revision of the batch being delivered on this thread, for subscribers that order their inputs by it (FSM2,
-    /// R-3.1.7): monotone per store for the life of the process, `reset()` included (CTO ruling 2026-11-05). A batch
-    /// carries the committed revision it was applied at, raised to the last delivered revision +1 when it is not above it;
-    /// a replay burst carries the revision of the state it replays, under the same floor. The reset's remove burst
-    /// therefore carries the last delivered +1. Empty outside a delivery.
+    /// The revision of the batch being delivered on this thread: its COMMIT revision, the [#committedRevision()] read under
+    /// the monitor right after the batch applied, in the same space as a snapshot's revision (CTO ruling 2026-11-05,
+    /// amending D1's monotone revision). A batch applied through [#processCommitted] carries its `nextSlot`, a replica
+    /// entry its `slot + 1`, a mutation without a slot ([#process]) the unchanged committed revision, a replay burst the
+    /// revision of the state it replays, and the reset's remove burst 0. FSM2 uses it only as the snapshot dedupe
+    /// watermark (`FsmRuntime` drops `revision <= watermark`, the watermark being `KvSnapshotter`'s committed revision of
+    /// the cut), so "the batch is in the snapshot" iff "its stamp <= the watermark"; a synthetic floor above the commit
+    /// revision would make a batch already in the snapshot step again. Empty outside a delivery.
     public Option<Long> notificationRevision() {
         return dispatcher.deliveringBatch()
                          .map(DeliveryBatch::revision);
@@ -1112,9 +1115,8 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     /// The reset's remove burst, once delivered, empties the delivered view; this applying thread never writes the
-    /// view (R3 N5). `deliverySeq` is not reset (design §3.1), and neither is the notification revision: the committed
-    /// revision returns to 0, and the dispatcher delivers the burst at the last delivered revision +1
-    /// ([#notificationRevision()]).
+    /// view (R3 N5). `deliverySeq` is not reset (design §3.1). The committed revision returns to 0, and the burst carries
+    /// revision 0 ([#notificationRevision()]): FSM2 drops it and re-snapshots on the restore.
     private Unit resetStorage() {
         committedRevision = 0;
         notifyRemoveAll();

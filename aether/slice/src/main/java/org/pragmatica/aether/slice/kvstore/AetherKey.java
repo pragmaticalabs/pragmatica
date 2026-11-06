@@ -1321,6 +1321,25 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
+    /// rc6 §4.2: one admitted workflow, by its id (`wf-…`). Runtime state: a workflow names nodes and operations a restored
+    /// cluster no longer has.
+    record WorkflowRunKey(String id) implements RuntimeKey {
+        @Override
+        public String asString() {
+            return "workflow-run/" + id;
+        }
+    }
+
+    /// rc6 §4.3: the claim of one conflict key (node incarnation, slice artifact, community, source binding, provider operation)
+    /// by the one admitted workflow holding it. Created with the run in the admission transaction, deleted in the transaction that
+    /// commits the run's terminal state. Runtime state, like the run it belongs to.
+    record WorkflowClaimKey(String conflictKey) implements RuntimeKey {
+        @Override
+        public String asString() {
+            return "workflow-claim/" + conflictKey;
+        }
+    }
+
     record CommunityPlacementAvailabilityKey(String communityId, String source, Option<String> zone) implements RuntimeKey {
         @Override
         public String asString() {
@@ -2437,6 +2456,42 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     }
 
     Fn1<Cause, String> CLUSTER_INCARNATION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid cluster-incarnation key format: %s");
+
+    /// Cluster state (deployment rewrite phase 3, design 8.2): which deployment engine the cluster runs. Minted in the same
+    /// transaction as the lineage ([ClusterIncarnationKey]), once per lineage, and read by every node's `EngineMarkerGuard`, which
+    /// refuses a node whose configured engine disagrees. **Durable, not a [RuntimeKey]:** a [RuntimeKey] is excluded from backups, so no
+    /// backup could carry the marker and every restore would turn an FSM2 cluster into LEGACY (P3-Q29).
+    record DeploymentEngineKey() implements ClusterStateKey {
+        private static final String KEY = "deployment-engine";
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static final DeploymentEngineKey SINGLETON = new DeploymentEngineKey();
+
+        @Override
+        public String asString() {
+            return KEY;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static DeploymentEngineKey deploymentEngineKey() {
+            return SINGLETON;
+        }
+
+        public static Result<DeploymentEngineKey> deploymentEngineKey(String key) {
+            if (!KEY.equals(key)) {
+                return DEPLOYMENT_ENGINE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return success(SINGLETON);
+        }
+    }
+
+    Fn1<Cause, String> DEPLOYMENT_ENGINE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid deployment-engine key format: %s");
 
     /// Runtime (#1777, CTO ruling R1b): the cluster's latest DHT replication change and how far it has settled. The
     /// leader commits it; every node derives its DHT quorums from it. Runtime, so never backed up: the DHT store is in

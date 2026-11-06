@@ -19,7 +19,6 @@ import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.config.WorkerConfig;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.TimeoutsConfig;
-import org.pragmatica.aether.config.TtmConfig;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
@@ -30,6 +29,7 @@ import org.pragmatica.aether.invoke.ObservabilityConfig;
 import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.aether.slice.blueprint.DeploymentConfig;
 import org.pragmatica.aether.slice.blueprint.DeploymentConfig.CanaryStageConfig;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.net.ClusterFormationConfig;
@@ -57,7 +57,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                DHTConfig cache,
                                Option<TlsConfig> tls,
                                TlsConfig quicTls,
-                               TtmConfig ttm,
                                AppHttpConfig appHttp,
                                ControllerConfig controllerConfig,
                                Option<ConfigurationProvider> configProvider,
@@ -79,7 +78,74 @@ public record AetherNodeConfig(TopologyConfig topology,
                                Option<ClusterName> clusterName,
                                Option<StorageEncryptionConfig> storageEncryption,
                                Option<AlertConfig> alerts,
-                               Option<String> clusterSecret) {
+                               Option<String> clusterSecret,
+                               DeploymentEngine deploymentEngine) {
+    /// The configuration without a deployment engine: the engine is LEGACY, the default of every node (phase-3 design 8.2).
+    public AetherNodeConfig(TopologyConfig topology,
+                            ProtocolConfig protocol,
+                            SliceActionConfig sliceAction,
+                            SliceConfig sliceConfig,
+                            int managementPort,
+                            DHTConfig artifactRepo,
+                            DHTConfig cache,
+                            Option<TlsConfig> tls,
+                            TlsConfig quicTls,
+                            AppHttpConfig appHttp,
+                            ControllerConfig controllerConfig,
+                            Option<ConfigurationProvider> configProvider,
+                            Option<EnvironmentIntegration> environment,
+                            AutoHealConfig autoHeal,
+                            ObservabilityConfig observability,
+                            DeploymentAtomicity atomicity,
+                            boolean activationGated,
+                            TimeoutsConfig timeouts,
+                            Option<CertificateProvider> certificateProvider,
+                            Option<WorkerConfig> workerConfig,
+                            DeploymentDefaults deploymentDefaults,
+                            HttpProtocol managementHttpProtocol,
+                            Map<String, StorageConfig> storageConfig,
+                            Option<BackupConfig> backupConfig,
+                            Option<MembershipConfig> membership,
+                            StreamingConfig streaming,
+                            ClusterFormationConfig clusterFormation,
+                            Option<ClusterName> clusterName,
+                            Option<StorageEncryptionConfig> storageEncryption,
+                            Option<AlertConfig> alerts,
+                            Option<String> clusterSecret) {
+        this(topology,
+             protocol,
+             sliceAction,
+             sliceConfig,
+             managementPort,
+             artifactRepo,
+             cache,
+             tls,
+             quicTls,
+             appHttp,
+             controllerConfig,
+             configProvider,
+             environment,
+             autoHeal,
+             observability,
+             atomicity,
+             activationGated,
+             timeouts,
+             certificateProvider,
+             workerConfig,
+             deploymentDefaults,
+             managementHttpProtocol,
+             storageConfig,
+             backupConfig,
+             membership,
+             streaming,
+             clusterFormation,
+             clusterName,
+             storageEncryption,
+             alerts,
+             clusterSecret,
+             DeploymentEngine.LEGACY);
+    }
+
     /// Cluster-wide deployment defaults. `canaryEvaluationInterval` / `defaultCanaryStages` drive
     /// progressive rollout; `communitySizing` is the leader's per-community target size and viability
     /// floor (worker-membership-spec §3.3 / §4.1) read by the cluster deployment FSM. A test/dev
@@ -106,7 +172,7 @@ public record AetherNodeConfig(TopologyConfig topology,
     }
 
     public static SelfStage builder() {
-        return self -> coreNodes -> managementPort -> sliceConfig -> artifactRepo -> coreMax -> appHttp -> tls -> quicTls -> certificateProvider -> configProvider -> environment -> managementHttpProtocol -> storageConfig -> backupConfig -> membership -> streaming -> protocol -> sliceAction -> cache -> ttm -> controllerConfig -> autoHeal -> observability -> atomicity -> activationGated -> timeouts -> workerConfig -> deploymentDefaults -> clusterFormation -> {
+        return self -> coreNodes -> managementPort -> sliceConfig -> artifactRepo -> coreMax -> appHttp -> tls -> quicTls -> certificateProvider -> configProvider -> environment -> managementHttpProtocol -> storageConfig -> backupConfig -> membership -> streaming -> protocol -> sliceAction -> cache -> controllerConfig -> autoHeal -> observability -> atomicity -> activationGated -> timeouts -> workerConfig -> deploymentDefaults -> clusterFormation -> {
             // Capacity limits do not define the initial voting electorate.
             var effectiveClusterSize = Math.max(1,
                                                 (int) coreNodes.stream()
@@ -134,7 +200,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                         cache,
                                         tls,
                                         quicTls,
-                                        ttm,
                                         appHttp,
                                         controllerConfig,
                                         configProvider,
@@ -186,7 +251,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     cache,
                                     tls,
                                     quicTls,
-                                    ttm,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
@@ -208,7 +272,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     clusterName,
                                     storageEncryption,
                                     alerts,
-                                    clusterSecret);
+                                    clusterSecret,
+                                    deploymentEngine);
     }
 
     /// #420 — replace the timeouts after construction; `timeouts` sits fourteen stages past
@@ -223,7 +288,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     cache,
                                     tls,
                                     quicTls,
-                                    ttm,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
@@ -245,7 +309,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     clusterName,
                                     storageEncryption,
                                     alerts,
-                                    clusterSecret);
+                                    clusterSecret,
+                                    deploymentEngine);
     }
 
     public AetherNodeConfig withClusterName(Option<ClusterName> clusterName) {
@@ -258,7 +323,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     cache,
                                     tls,
                                     quicTls,
-                                    ttm,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
@@ -280,7 +344,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     clusterName,
                                     storageEncryption,
                                     alerts,
-                                    clusterSecret);
+                                    clusterSecret,
+                                    deploymentEngine);
     }
 
     /// #253 — the `[storage.encryption]` keyring, when configured. Same post-build shape as
@@ -297,7 +362,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     cache,
                                     tls,
                                     quicTls,
-                                    ttm,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
@@ -319,7 +383,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     clusterName,
                                     storageEncryption,
                                     alerts,
-                                    clusterSecret);
+                                    clusterSecret,
+                                    deploymentEngine);
     }
 
     /// #957 — the `[alerts]` section: hysteresis margin (#969) and webhook delivery config. Same
@@ -336,7 +401,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     cache,
                                     tls,
                                     quicTls,
-                                    ttm,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
@@ -358,7 +422,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     clusterName,
                                     storageEncryption,
                                     alerts,
-                                    clusterSecret);
+                                    clusterSecret,
+                                    deploymentEngine);
     }
 
     /// #980 — this node's cluster secret, from which `BootstrapAdminKeyLeg` derives the
@@ -381,7 +446,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     cache,
                                     tls,
                                     quicTls,
-                                    ttm,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
@@ -403,7 +467,46 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     clusterName,
                                     storageEncryption,
                                     alerts,
-                                    clusterSecret);
+                                    clusterSecret,
+                                    deploymentEngine);
+    }
+
+    /// Phase-3 design 8.2 — the deployment engine this node is constructed with. Post-build like the other stamps: the engine is a test
+    /// and development switch with no TOML key in phase 3, and the staged builder stops before it. A committed engine marker
+    /// makes the choice cluster-wide, and a node whose engine disagrees with it refuses itself.
+    public AetherNodeConfig withDeploymentEngine(DeploymentEngine deploymentEngine) {
+        return new AetherNodeConfig(topology,
+                                    protocol,
+                                    sliceAction,
+                                    sliceConfig,
+                                    managementPort,
+                                    artifactRepo,
+                                    cache,
+                                    tls,
+                                    quicTls,
+                                    appHttp,
+                                    controllerConfig,
+                                    configProvider,
+                                    environment,
+                                    autoHeal,
+                                    observability,
+                                    atomicity,
+                                    activationGated,
+                                    timeouts,
+                                    certificateProvider,
+                                    workerConfig,
+                                    deploymentDefaults,
+                                    managementHttpProtocol,
+                                    storageConfig,
+                                    backupConfig,
+                                    membership,
+                                    streaming,
+                                    clusterFormation,
+                                    clusterName,
+                                    storageEncryption,
+                                    alerts,
+                                    clusterSecret,
+                                    deploymentEngine);
     }
 
     /// #980 — the generated `toString()` rendered the cluster secret in PLAINTEXT, and after this
@@ -434,7 +537,6 @@ public record AetherNodeConfig(TopologyConfig topology,
              + ", cache=" + cache
              + ", tls=" + tls
              + ", quicTls=" + quicTls
-             + ", ttm=" + ttm
              + ", appHttp=" + appHttp
              + ", controllerConfig=" + controllerConfig
              + ", configProvider=" + configProvider
@@ -457,6 +559,7 @@ public record AetherNodeConfig(TopologyConfig topology,
              + ", storageEncryption=" + storageEncryption
              + ", alerts=" + alerts
              + ", clusterSecret=" + redactedSecret()
+             + ", deploymentEngine=" + deploymentEngine
              + "]";
     }
 
@@ -609,18 +712,10 @@ public record AetherNodeConfig(TopologyConfig topology,
     }
 
     public interface WithCache {
-        WithTtm cache(DHTConfig config);
+        WithControllerConfig cache(DHTConfig config);
 
         default AetherNodeConfig build() {
             return cache(DHTConfig.CACHE_DEFAULT).build();
-        }
-    }
-
-    public interface WithTtm {
-        WithControllerConfig ttm(TtmConfig config);
-
-        default AetherNodeConfig build() {
-            return ttm(TtmConfig.ttmConfig()).build();
         }
     }
 

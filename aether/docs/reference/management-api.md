@@ -133,7 +133,7 @@ This is distinct from the authentication 403 (invalid API key). The authorizatio
 A management request may land on any core node, but where it is ultimately served depends on the route:
 
 - **Control-plane read/write routes forward to the leader** (the control plane is leader-only). This covers cluster/node/slice status, topology, lifecycle, scheduled-task control-plane reads, config, controller, thresholds, observability depth, routes, and workers. A request received by a follower is transparently forwarded to the current leader.
-- **Per-node diagnostic routes are served node-locally** (metrics, traces, alerts, logs, storage, TTM, DHT replication map, certificates). These report the receiving node's own view and are not forwarded.
+- **Per-node diagnostic routes are served node-locally** (metrics, traces, alerts, logs, storage, DHT replication map, certificates). These report the receiving node's own view and are not forwarded.
 - **Per-node addressed routes** (those with an `{id}` node parameter) are forwarded to the named node.
 
 ---
@@ -597,6 +597,8 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `kv-dispatch-slow-handler-returned` (INFO — its recovery, same subject: that handler returned, delivery moves again)
 - `kv-dispatch-read-ahead` (INFO — a KV notification handler read a key a later batch had already written, so it saw state ahead of its notification; the first per key type per process, subject the key type; `aether.kv.dispatch.readahead.reads` counts every one)
 - `kv-dispatcher-failed` (CRITICAL — the node's KV notification dispatcher failed: the store is closed, waiting writes fail as outcome-unknown and the node stops; a production node halts with exit code 70. Subject is the store (the node id). No recovery code: restart the node; the node log carries the failure, the batch and a thread dump. Best-effort: the halt can overtake the publish)
+- `dht-departure-sole-copy-at-risk` (CRITICAL — a draining node holds DHT keys whose only copy it may be, and no target has acknowledged them yet. Subject `<nodeId>@<drainStartMillis>`, one drain episode; `details` count and the first 16 keys are in the message, the full list in the node's WARN log. Raised once per drain. If the node halts with keys still unacknowledged the drain reports "completed with data at risk" and the event stays open (no operator closer yet): restore or re-put the named keys from their source of truth. Count 0 means the inventory was not enumerated before the drain deadline: the at-risk set is unknown)
+- `dht-departure-sole-copy-delivered` (INFO — recovery of `dht-departure-sole-copy-at-risk`, same subject: every sole-copy key was acknowledged by a target in its post-departure responsible set before the draining node halted)
 
 Best-effort like every per-node event: during a partition or bootstrap the publish can be dropped, and the log line is then the only record.
 
@@ -1930,57 +1932,6 @@ timestamp.
     }
   ]
 }
-```
-
----
-
-## TTM (Time-series Trend Model)
-
-### GET /api/v1/ttm/status
-
-Get TTM engine status including configuration, state, and latest forecast.
-
-**Response:**
-```json
-{
-  "enabled": true,
-  "active": true,
-  "state": "RUNNING",
-  "modelPath": "/models/ttm.onnx",
-  "inputWindowMinutes": 60,
-  "evaluationIntervalMs": 30000,
-  "confidenceThreshold": 0.8,
-  "hasForecast": true,
-  "lastForecast": {
-    "timestamp": 1704067200000,
-    "confidence": 0.92,
-    "recommendation": "ScaleUp"
-  }
-}
-```
-
-### GET /api/v1/ttm/training-data
-
-Export TTM training data (last 120 minute-aggregated samples).
-
-**Response:**
-```json
-[
-  {
-    "timestamp": 1704067200000,
-    "cpuUsage": 0.45,
-    "heapUsage": 0.60,
-    "eventLoopLagMs": 1.2,
-    "latencyMs": 12.3,
-    "invocations": 15000,
-    "gcPauseMs": 50,
-    "intervalMeanLatencyP50": 8.0,
-    "intervalMeanLatencyP95": 25.0,
-    "intervalMeanLatencyP99": 80.0,
-    "errorRate": 0.005,
-    "eventCount": 120
-  }
-]
 ```
 
 ---
@@ -4542,8 +4493,6 @@ separate, still in-flight consolidation effort (spec §3.2–§3.3) owns that su
 | GET | `/api/v1/controller/status` | Controller |
 | GET | `/api/v1/controller/decisions` | Controller |
 | POST | `/api/v1/controller/evaluate` | Controller |
-| GET | `/api/v1/ttm/status` | TTM |
-| GET | `/api/v1/ttm/training-data` | TTM |
 | GET | `/api/v1/alerts` | Alert Management |
 | GET | `/api/v1/alerts/active` | Alert Management |
 | GET | `/api/v1/alerts/history` | Alert Management |

@@ -17,7 +17,6 @@ Every second, Aether's control loop evaluates whether scaling is needed:
 │                                                                          │
 │  3. EVALUATE                                                             │
 │     Decision tree checks thresholds                                     │
-│     Pattern detection for predictive scaling                            │
 │                                                                          │
 │  4. DECIDE                                                               │
 │     Update blueprint (desired state)                                    │
@@ -46,22 +45,6 @@ Every second, Aether's control loop evaluates whether scaling is needed:
 |--------|-----------|--------|
 | CPU usage | < 30% sustained | Remove instance (if > min instances) |
 | Request rate | Near zero for 5 min | Remove instance |
-
-### Predictive Scaling
-
-Aether learns from the 2-hour historical window:
-
-```
-Example: E-commerce site with lunch rush
-
-11:00 - Traffic normal, 2 instances of OrderProcessor
-11:30 - Aether detects rising pattern from yesterday's data
-11:45 - Preemptively scales to 5 instances
-12:00 - Lunch rush hits, instances already warm
-12:30 - Traffic peaks, Aether adds 2 more instances
-13:30 - Traffic subsides, gradual scale down
-14:00 - Back to 2 instances
-```
 
 ## The Idempotency Requirement
 

@@ -161,7 +161,6 @@ class ClusterTimeoutsAbsenceOrderingTest {
                                 base.tls(),
                                 base.docker(),
                                 base.kubernetes(),
-                                base.ttm(),
                                 base.slice(),
                                 base.appHttp(),
                                 base.backup(),

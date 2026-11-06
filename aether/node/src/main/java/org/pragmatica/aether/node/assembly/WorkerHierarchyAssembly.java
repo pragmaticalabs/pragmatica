@@ -29,7 +29,6 @@ import org.pragmatica.aether.deployment.cluster.UpgradeRunIndex;
 import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
-import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.invoke.SliceInvoker;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.NodeReportedState;
@@ -103,7 +102,6 @@ import static org.pragmatica.aether.node.AetherNode.installedVoterIds;
 import static org.pragmatica.aether.node.AetherNode.isCoreMember;
 import static org.pragmatica.aether.node.AetherNode.metadataDirectory;
 import static org.pragmatica.aether.node.AetherNode.nodesReporting;
-import static org.pragmatica.aether.node.AetherNode.reconcileNodeActivation;
 import static org.pragmatica.aether.node.AetherNode.runtimeReady;
 
 
@@ -147,7 +145,7 @@ public sealed interface WorkerHierarchyAssembly {
                                   CommunityRetirementIndex communityRetirements,
                                   NodeReplacementIndex nodeReplacements,
                                   UpgradeRunIndex upgradeRuns,
-                                  ClusterDeploymentManager clusterDeploymentManager,
+                                  Consumer<ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue>> placementRedrive,
                                   AtomicReference<BooleanSupplier> workerProjectionFreshRef,
                                   AtomicReference<CoreSwimHealthDetector> swimHealthDetectorHolder,
                                   SliceInvoker sliceInvoker,
@@ -175,7 +173,7 @@ public sealed interface WorkerHierarchyAssembly {
         var communityRetirements = in.communityRetirements();
         var nodeReplacements = in.nodeReplacements();
         var upgradeRuns = in.upgradeRuns();
-        var clusterDeploymentManager = in.clusterDeploymentManager();
+        var placementRedrive = in.placementRedrive();
         var workerProjectionFreshRef = in.workerProjectionFreshRef();
         var swimHealthDetectorHolder = in.swimHealthDetectorHolder();
         var sliceInvoker = in.sliceInvoker();
@@ -249,7 +247,7 @@ public sealed interface WorkerHierarchyAssembly {
                                                      .onPut(AetherKey.NodePlacementKey.class,
                                                             (ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue> put) -> retryPlacedWorker(put,
                                                                                                                                                             membershipFsmRef::get,
-                                                                                                                                                            clusterDeploymentManager))
+                                                                                                                                                            placementRedrive))
                                                      .onPut(AetherKey.GossipKeyRotationKey.class,
                                                             gossipKeyRotationHandler::onGossipKeyRotationPut)
                                                      .build();
@@ -272,14 +270,14 @@ public sealed interface WorkerHierarchyAssembly {
                                 DhtWriterStaleWatch dhtWriterStaleWatch,
                                 ForwardingClusterNode<KVCommand<AetherKey>> forwardingClusterNode,
                                 AtomicReference<Supplier<Set<NodeId>>> cdmReadyNodesRef,
-                                ClusterDeploymentManager clusterDeploymentManager,
+                                Consumer<WorkerJoinDecision> workerAdmissionJoin,
                                 ClusterSyncCollector metricsCollector,
                                 AtomicReference<BooleanSupplier> workerProjectionFreshRef,
                                 NodeReportedStateHolder nodeReportedStateHolder,
                                 Supplier<Epoch> leaderEpochSupplier,
                                 ClusterEventAggregator eventAggregator,
                                 ControlLoop controlLoop,
-                                NodeDeploymentManager nodeDeploymentManager,
+                                Runnable passiveClientActivation,
                                 WorkerEndpointDirectory workerEndpointDirectory,
                                 AtomicReference<GovernorAnnouncer> governorAnnouncerHolder,
                                 CommunityMemberDirectory communityDirectory,
@@ -314,14 +312,14 @@ public sealed interface WorkerHierarchyAssembly {
         var dhtWriterStaleWatch = in.dhtWriterStaleWatch();
         var forwardingClusterNode = in.forwardingClusterNode();
         var cdmReadyNodesRef = in.cdmReadyNodesRef();
-        var clusterDeploymentManager = in.clusterDeploymentManager();
+        var workerAdmissionJoin = in.workerAdmissionJoin();
         var metricsCollector = in.metricsCollector();
         var workerProjectionFreshRef = in.workerProjectionFreshRef();
         var nodeReportedStateHolder = in.nodeReportedStateHolder();
         var leaderEpochSupplier = in.leaderEpochSupplier();
         var eventAggregator = in.eventAggregator();
         var controlLoop = in.controlLoop();
-        var nodeDeploymentManager = in.nodeDeploymentManager();
+        var passiveClientActivation = in.passiveClientActivation();
         var workerEndpointDirectory = in.workerEndpointDirectory();
         var governorAnnouncerHolder = in.governorAnnouncerHolder();
         var communityDirectory = in.communityDirectory();
@@ -401,10 +399,7 @@ public sealed interface WorkerHierarchyAssembly {
         Consumer<VoterConfiguration> installVoters = voters -> clusterNode.installPassiveVoters(voters)
                                                                           .onFailure(cause -> LOG.warn("Worker electorate install refused: {}",
                                                                                                        cause.message()));
-        Runnable workerReady = () -> becomeForwarding(switchableCluster,
-                                                      forwardingClusterNode,
-                                                      clusterNode,
-                                                      nodeDeploymentManager);
+        Runnable workerReady = () -> becomeForwarding(switchableCluster, forwardingClusterNode, passiveClientActivation);
         var workerMetadataChannel = org.pragmatica.aether.worker.metadata.WorkerMetadataChannel.workerMetadataChannel(config.self(),
                                                                                                                       configuredWorker(config),
                                                                                                                       kvStore,
@@ -576,9 +571,9 @@ public sealed interface WorkerHierarchyAssembly {
                                                                                                                                                                                             descriptor);
                                                                                                                                                      if (membershipFsm.countedMembers()
                                                                                                                                                                       .contains(peer)) {
-                                                                                                                                                         clusterDeploymentManager.onWorkerJoin(WorkerJoinDecision.workerJoinDecision(peer,
-                                                                                                                                                                                                                                     descriptor.role(),
-                                                                                                                                                                                                                                     hlcClock.now()));
+                                                                                                                                                         workerAdmissionJoin.accept(WorkerJoinDecision.workerJoinDecision(peer,
+                                                                                                                                                                                                                          descriptor.role(),
+                                                                                                                                                                                                                          hlcClock.now()));
                                                                                                                                                      }
                                                                                                                                                  }),
                                                                                                   System::nanoTime,
@@ -712,13 +707,13 @@ public sealed interface WorkerHierarchyAssembly {
                                          replicaClient);
     }
 
-    /// A worker that is ready to serve: forward writes to the cores and reconcile what this node should run.
+    /// A worker that is ready to serve: forward writes to the cores and run the engine's passive-client activation
+    /// (`DeploymentWiring.legacyGated`: on LEGACY it reconciles what this node should run).
     private static void becomeForwarding(SwitchableClusterNode<KVCommand<AetherKey>> switchableCluster,
                                          ForwardingClusterNode<KVCommand<AetherKey>> forwardingClusterNode,
-                                         RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                         NodeDeploymentManager nodeDeploymentManager) {
+                                         Runnable passiveClientActivation) {
         switchableCluster.switchTo(forwardingClusterNode);
-        reconcileNodeActivation(() -> runtimeReady(clusterNode), nodeDeploymentManager);
+        passiveClientActivation.run();
     }
 
     /// What `communityReachability` reads from the assembly built so far.
@@ -1034,14 +1029,14 @@ public sealed interface WorkerHierarchyAssembly {
 
     private static void retryPlacedWorker(ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue> put,
                                           Supplier<MembershipFsm> membership,
-                                          ClusterDeploymentManager deployment) {
+                                          Consumer<ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue>> redrive) {
         var node = put.cause().key().nodeId();
 
         Option.option(membership.get())
               .filter(fsm -> fsm.isTrackedAndNotDead(node))
               .flatMap(fsm -> fsm.memberDescriptor(node))
               .filter(descriptor -> "worker".equalsIgnoreCase(descriptor.role()) || "spot".equalsIgnoreCase(descriptor.role()))
-              .onPresent(_ -> deployment.onNodePlacementPut(put));
+              .onPresent(_ -> redrive.accept(put));
     }
 
     private static boolean eligibleGovernor(KVStore<AetherKey, AetherValue> store, NodeId self, String community) {

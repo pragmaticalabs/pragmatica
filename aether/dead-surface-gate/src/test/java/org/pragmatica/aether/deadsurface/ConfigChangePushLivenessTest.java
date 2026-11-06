@@ -52,8 +52,9 @@ class ConfigChangePushLivenessTest {
                    "#381: NodeDeploymentManager.onConfigChanged must be the DynamicConfigManager listener "
                    + "registered by AetherNode.collectRouteEntries");
         assertTrue(reachability.isReachable(MethodRef.of(DynamicConfigManager.class.getDeclaredMethod("onApplied",
+                                                                                                      String.class,
                                                                                                       java.util.function.Consumer.class))),
-                   "#381: DynamicConfigManager.onApplied must be registered by production code "
+                   "#381: DynamicConfigManager.onApplied(name, listener) must be registered by production code "
                    + "(AetherNode.collectRouteEntries), or the KV change never leaves the overlay provider");
     }
 

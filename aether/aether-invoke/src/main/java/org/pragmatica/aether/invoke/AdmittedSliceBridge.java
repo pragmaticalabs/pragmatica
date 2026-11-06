@@ -10,6 +10,7 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector.ExecutionOutcome;
+import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector.Settlement;
 import org.pragmatica.aether.slice.ObservabilityStrategyCell;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.aether.slice.SliceDefect;
@@ -29,7 +30,10 @@ import org.pragmatica.serialization.SliceCodec;
 /// #1573: it is also the one place every execution on this node passes, so it records each execution's
 /// outcome for the leader's all-instances-failed detector — success, or a [SliceDefect] the bridge
 /// produced. A failure the method returned itself, DRAINING, and a reply timeout are not recorded.
-record AdmittedSliceBridge(SliceBridge delegate, Supplier<InvocationAdmission> admission, ExecutionRecorder recorder) implements SliceBridge {
+record AdmittedSliceBridge(SliceBridge delegate,
+                           Supplier<InvocationAdmission> admission,
+                           ExecutionRecorder recorder,
+                           CallRecorder calls) implements SliceBridge {
     /// #1573: receives one outcome per finished execution.
     @FunctionalInterface
     interface ExecutionRecorder {
@@ -37,22 +41,68 @@ record AdmittedSliceBridge(SliceBridge delegate, Supplier<InvocationAdmission> a
         Unit record(String method, ExecutionOutcome outcome);
     }
 
+    /// Rc6 f3a: receives the offered-load counts of INTERNAL calls entering through [#invoke] and
+    /// [#invokeWithContext] (same-node slice-to-slice, topic, scheduled). Calls arriving from another node
+    /// are counted at the `InvocationHandler` entry instead, so [#invokeWithReply] never counts here.
+    interface CallRecorder {
+        CallRecorder NONE = new CallRecorder() {
+            @Override
+            public Unit arrived(String method) {
+                return Unit.unit();
+            }
+
+            @Override
+            public Unit settled(String method, Settlement settlement) {
+                return Unit.unit();
+            }
+        };
+
+        Unit arrived(String method);
+        Unit settled(String method, Settlement settlement);
+    }
+
+    AdmittedSliceBridge(SliceBridge delegate, Supplier<InvocationAdmission> admission, ExecutionRecorder recorder) {
+        this(delegate, admission, recorder, CallRecorder.NONE);
+    }
+
     AdmittedSliceBridge(SliceBridge delegate, Supplier<InvocationAdmission> admission) {
-        this(delegate, admission, ExecutionRecorder.NONE);
+        this(delegate, admission, ExecutionRecorder.NONE, CallRecorder.NONE);
+    }
+
+    /// A refused call is REJECTED (draining); any other failure is FAILED; a value is COMPLETED.
+    static Settlement settlementOf(Cause cause) {
+        return cause instanceof InvocationAdmission.Error
+               ? Settlement.REJECTED
+               : Settlement.FAILED;
     }
 
     @Override
     public Promise<byte[]> invoke(String methodName, byte[] input) {
-        return admission.get()
-                        .execute(() -> recorded(methodName,
-                                                delegate.invoke(methodName, input)));
+        return counted(methodName,
+                       () -> admission.get()
+                                      .execute(() -> recorded(methodName,
+                                                              delegate.invoke(methodName, input))));
     }
 
     @Override
     public Promise<byte[]> invokeWithContext(String methodName, byte[] input, MessageContext context) {
-        return admission.get()
-                        .execute(() -> recorded(methodName,
-                                                delegate.invokeWithContext(methodName, input, context)));
+        return counted(methodName,
+                       () -> admission.get()
+                                      .execute(() -> recorded(methodName,
+                                                              delegate.invokeWithContext(methodName, input, context))));
+    }
+
+    /// Counts the arrival BEFORE the admission gate runs, then how the call settled.
+    private Promise<byte[]> counted(String method, Supplier<Promise<byte[]>> call) {
+        calls.arrived(method);
+
+        return call.get()
+                   .withResult(result -> countSettled(method, result));
+    }
+
+    @Contract
+    private void countSettled(String method, Result<byte[]> result) {
+        calls.settled(method, result.fold(AdmittedSliceBridge::settlementOf, _ -> Settlement.COMPLETED));
     }
 
     /// Ordered (`withResult`): whatever the caller chains on this promise runs after the outcome is recorded.

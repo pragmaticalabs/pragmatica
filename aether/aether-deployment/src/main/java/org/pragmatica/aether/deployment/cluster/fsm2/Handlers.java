@@ -56,10 +56,6 @@ public sealed interface Handlers {
                                                                             ctx,
                                                                             gone.node(),
                                                                             DepartureCause.WORKER_LEAVE);
-            case ClusterInput.SelfShutdown gone -> DepartureFlow.onDeparture(m,
-                                                                             ctx,
-                                                                             gone.node(),
-                                                                             DepartureCause.SELF_SHUTDOWN);
             case ClusterInput.ProcessKnown known -> Joins.onProcessKnown(m, ctx, known.node(), known.token());
             case ClusterInput.NodeDraining draining -> Drains.onDraining(m, ctx, draining.node());
             case ClusterInput.Reconcile _ -> Reconcile.run(m, ctx);

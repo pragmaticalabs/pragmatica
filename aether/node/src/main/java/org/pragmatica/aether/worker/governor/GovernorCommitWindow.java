@@ -8,6 +8,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.BiConsumer;
 import java.util.function.Function;
 
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -42,13 +43,24 @@ final class GovernorCommitWindow {
     private record Batch(Promise<List<Object>> outcomes, List<KVCommand<AetherKey>> commands) {}
 
     private final Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> submit;
+    private final BiConsumer<Runnable, TimeSpan> timer;
     private final TimeSpan window;
     private final int cap;
     private final Map<AetherKey, Entry> entries = new LinkedHashMap<>();
     private Promise<List<Object>> outcomes = Promise.promise();
 
     GovernorCommitWindow(Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> submit, TimeSpan window, int cap) {
+        this(submit, SharedScheduler::schedule, window, cap);
+    }
+
+    /// `timer` runs the task it is given once the span has elapsed. Production uses the shared scheduler; a test passes
+    /// one it fires by hand, so that no assertion depends on the wall clock racing the window.
+    GovernorCommitWindow(Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> submit,
+                         BiConsumer<Runnable, TimeSpan> timer,
+                         TimeSpan window,
+                         int cap) {
         this.submit = submit;
+        this.timer = timer;
         this.window = window;
         this.cap = cap;
     }
@@ -90,7 +102,7 @@ final class GovernorCommitWindow {
     }
 
     private void scheduleFlush(Promise<List<Object>> target) {
-        SharedScheduler.schedule(() -> flush(target), window);
+        timer.accept(() -> flush(target), window);
     }
 
     /// A timer closes only the window it was started for: one that was already submitted early leaves its successor alone.

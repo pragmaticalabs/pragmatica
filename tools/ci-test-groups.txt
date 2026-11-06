@@ -81,7 +81,6 @@ g3 jbct/jbct-parser  # 1.1 s at run 41351583462
 g4 aether/aether-setup  # 0.6 s at run 41351583462
 g4 aether/aether-storage  # 3.7 s at run 41351583462
 g4 aether/aether-stream  # 517.5 s at run 41351583462
-g4 aether/aether-ttm  # 0.4 s at run 41351583462
 g4 aether/cli  # 224.1 s at run 41351583462
 g4 aether/environment-integration  # 4.3 s at run 41351583462
 g4 aether/forge/forge-core  # 14.6 s at run 41351583462

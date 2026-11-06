@@ -65,7 +65,6 @@ import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
-import org.pragmatica.aether.ttm.TTMManager;
 import org.pragmatica.aether.update.AbTestManager;
 import org.pragmatica.aether.update.DeploymentManager;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -525,8 +524,6 @@ class BlueprintDeployStatusTest {
         public AbTestManager abTestManager() { return unsupported("abTestManager"); }
         @Override
         public HttpRouteRegistry httpRouteRegistry() { return unsupported("httpRouteRegistry"); }
-        @Override
-        public TTMManager ttmManager() { return unsupported("ttmManager"); }
         @Override
         public ComprehensiveSnapshotCollector snapshotCollector() { return unsupported("snapshotCollector"); }
         @Override

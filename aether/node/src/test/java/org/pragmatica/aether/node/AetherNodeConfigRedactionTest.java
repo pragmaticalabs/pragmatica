@@ -9,6 +9,7 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.SliceConfig;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.lang.Option;
@@ -71,6 +72,18 @@ class AetherNodeConfigRedactionTest {
             .contains("clusterSecret=Some(<redacted>)");
         assertThat(minimalConfig().withClusterSecret(Option.none()).toString())
             .contains("clusterSecret=None");
+    }
+
+    /// Phase-3 design 8.2: a node is LEGACY unless something says otherwise, the engine a test sets is the engine the config carries, and the
+    /// rendering names it (an operator reading a boot log sees which engine the node was constructed with).
+    @Test
+    void theDeploymentEngine_defaultsToLegacy_isCarriedByTheWither_andIsRendered() {
+        var config = minimalConfig();
+
+        assertThat(config.deploymentEngine()).isEqualTo(DeploymentEngine.LEGACY);
+        assertThat(config.toString()).contains("deploymentEngine=LEGACY");
+        assertThat(config.withDeploymentEngine(DeploymentEngine.FSM2).deploymentEngine()).isEqualTo(DeploymentEngine.FSM2);
+        assertThat(config.withDeploymentEngine(DeploymentEngine.FSM2).toString()).contains("deploymentEngine=FSM2");
     }
 
     /// The rest of the rendering must survive — a `toString` that redacted the secret by dropping 32

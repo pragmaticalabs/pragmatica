@@ -58,6 +58,21 @@ class StreamAccessOwnerGateTest {
         assertThat(read.unwrap()).hasSize(1);
     }
 
+    /// #2682 (pins the publish half of the design's verdict item 3): an owner append on an owner that has not been
+    /// activated is refused with the transient `OwnerNotActivated` and appends nothing, so a new owner never assigns an
+    /// offset before its gate has pulled the tail a live peer holds.
+    @Test
+    void publishLocal_ownerNotActivated_isRefused_andAppendsNothing() {
+        manager.ownerServeGate((stream, partition) -> new StreamError.OwnerNotActivated(stream, partition).result());
+
+        var append = manager.publishLocal(STREAM, PARTITION, "e1".getBytes(), 2L);
+
+        assertThat(append.isFailure()).as("refused: %s", append).isTrue();
+        append.onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.OwnerNotActivated.class));
+        assertThat(manager.partitionBuffer(STREAM, PARTITION).map(ring -> ring.headOffset()).or(-1L)).as("nothing appended")
+                                                                                                    .isEqualTo(0L);
+    }
+
     private static Serializer identitySerializer() {
         return new Serializer() {
             @SuppressWarnings("unchecked")

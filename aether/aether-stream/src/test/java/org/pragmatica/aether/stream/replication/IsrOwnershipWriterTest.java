@@ -198,6 +198,18 @@ class IsrOwnershipWriterTest {
             assertThat(next.ownerEpoch().isStrictlyAfter(current.ownerEpoch())).isTrue();
         }
 
+        /// #2682: the failover takes no head into account, on purpose. The desired owner is elected from the live ISR even
+        /// when it is not the HRW-first of the live ISR members, whatever any member holds: an acknowledged record is on every
+        /// ISR member, and catching up an unacknowledged tail is the promotion gate's work (`OwnerActivation`), not the election's.
+        @Test
+        void next_ownerGone_desiredIsALiveIsrMemberNotRankedFirst_isElectedRegardlessOfHeads() {
+            var desired = ReplicaPlacement.rank(STREAM, PARTITION, List.of(B, C)).getLast();
+            var current = record(A, 3L, List.of(A, B, C), 4L);
+            var next = writer.next(STREAM, PARTITION, Option.some(current), desired, GENERATION, List.of(B, C, D)).unwrap();
+
+            assertThat(next.owner()).as("the desired member, not the HRW-first live ISR member").isEqualTo(desired);
+        }
+
         /// The election rule itself: D is live and is the desired (HRW) owner, but it is not in the ISR, so it may
         /// lack acknowledged records. A live ISR member is elected instead.
         @Test
