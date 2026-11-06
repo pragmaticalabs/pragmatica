@@ -62,6 +62,12 @@ class StreamRegistryHolderReconcilerTest {
         sliceAcquire(WORKER);
     }
 
+    /// The cadence is also the debounce (the minimum absence before a sweep): a change to it changes the safety margin.
+    @Test
+    void theInterval_isThirtySeconds() {
+        assertThat(StreamRegistryHolderReconciler.INTERVAL.millis()).isEqualTo(30_000L);
+    }
+
     /// A worker whose leave edge was never seen is swept after it was absent on two passes; nobody else is touched.
     @Test
     void aNodeAbsentOnTwoPasses_isSwept() {

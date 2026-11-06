@@ -48,13 +48,13 @@ class StreamRegistrySweepWiringTest {
         assertThat(NodeDepartureWiringTest.assemblyCode()).containsOnlyOnce("varstreamRegistry=KvBackedStreamRegistry.kvBackedStreamRegistry(clusterNode,kvStore);wireStreamRegistrySweep(aetherEntries,streamRegistry::sweepHoldersOf);");
     }
 
-    /// F6: the assembly builds the level reconcile over that registry, with the role-blind counted membership (cores and workers) and the
-    /// leader gate, and schedules it at its interval. Red when the schedule is dropped or reads a core-only projection.
+    /// F6: the assembly builds the level reconcile over that registry, with the role-blind not-DEAD membership (cores and workers; joining, member, suspected and draining) and the
+    /// leader gate, and schedules it at its interval. Red when the schedule is dropped or reads a core-only or counted-only projection (a draining node is not counted but its slices run).
     @Test
     void theAssembly_schedulesTheLevelReconcile() {
         var code = NodeDepartureWiringTest.assemblyCode();
 
-        assertThat(code).containsOnlyOnce("StreamRegistryHolderReconciler.streamRegistryHolderReconciler(streamRegistry,selfId,()->Option.option(membershipFsmRef.get()).map(MembershipFsm::countedMembers),isLeaderSupplier);");
+        assertThat(code).containsOnlyOnce("StreamRegistryHolderReconciler.streamRegistryHolderReconciler(streamRegistry,selfId,()->Option.option(membershipFsmRef.get()).map(MembershipFsm::broadcastEligibleMembers),isLeaderSupplier);");
         assertThat(code).containsOnlyOnce("periodicTasks.defer(()->SharedScheduler.scheduleAtFixedRate(streamRegistryHolderReconciler::tick,StreamRegistryHolderReconciler.INTERVAL,StreamRegistryHolderReconciler.INTERVAL));");
     }
 

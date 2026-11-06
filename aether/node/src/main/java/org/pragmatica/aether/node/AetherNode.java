@@ -3050,13 +3050,14 @@ public interface AetherNode extends ManageableNode {
         var selfId = config.self();
         // #1978 (I-36): the references a node held to stream-registry entries leave with it. Every node runs the same idempotent sweep on
         // the departure edge; the leader's level reconcile sweeps a node still holding after two passes absent from membership, which
-        // covers a missed edge and a failed sweep apply (owner ruling Q19 (a)).
+        // covers a missed edge and a failed sweep apply (owner ruling Q19 (a)). The reconcile reads the not-DEAD projection, not the counted one:
+        // a draining node is DEPARTING (not counted) while its slices still run, and a refuted drain returns it as a live member.
         var streamRegistry = KvBackedStreamRegistry.kvBackedStreamRegistry(clusterNode, kvStore);
 
         wireStreamRegistrySweep(aetherEntries, streamRegistry::sweepHoldersOf);
         var streamRegistryHolderReconciler = StreamRegistryHolderReconciler.streamRegistryHolderReconciler(streamRegistry,
                                                                                                            selfId,
-                                                                                                           () -> Option.option(membershipFsmRef.get()).map(MembershipFsm::countedMembers),
+                                                                                                           () -> Option.option(membershipFsmRef.get()).map(MembershipFsm::broadcastEligibleMembers),
                                                                                                            isLeaderSupplier);
 
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(streamRegistryHolderReconciler::tick,

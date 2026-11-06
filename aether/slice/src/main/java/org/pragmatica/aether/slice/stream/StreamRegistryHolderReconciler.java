@@ -55,7 +55,7 @@ public final class StreamRegistryHolderReconciler {
         this.isLeader = isLeader;
     }
 
-    /// `members` yields the current membership (every role: cores and workers, live or suspected), or none while it is not
+    /// `members` yields the current membership (every role: cores and workers; every node not DEAD, so joining, suspected and draining nodes still count as present), or none while it is not
     /// known yet.
     public static StreamRegistryHolderReconciler streamRegistryHolderReconciler(KvBackedStreamRegistry registry,
                                                                                 NodeId self,
