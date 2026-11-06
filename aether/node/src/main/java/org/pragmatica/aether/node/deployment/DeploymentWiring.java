@@ -32,6 +32,7 @@ import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
 
@@ -456,11 +457,30 @@ public final class DeploymentWiring {
     /// B13, the first half of the node's stop (design 7, 2a and 2b): the PASSIVE edge is routed, the FSM2 node interpreter drains (the `SUSPEND`s of the
     /// quorum loss run, within a bound), and only then the router is quiesced (design 7's order, W-16 (a): the quiesce never precedes the drain).
     /// Under LEGACY the drain is a no-op and the order is the one the node always had.
-    @Contract
-    public void leaveQuorum(Runnable routePassive, Runnable quiesce) {
+    ///
+    /// #2688: `delivered` is taken right after PASSIVE is routed and resolves once the reactions that edge queued (the `LeaderChange` the FSM routes onto
+    /// a react executor) have run; the quiesce, which would drop them, waits for it. The returned promise resolves after the quiesce. The quiesce and
+    /// whatever the caller chains on the returned promise run on a pooled thread, never on the thread that resolved `delivered`: that is the react
+    /// executor whose reactions it waited for, or the shared timeout scheduler when the caller bounded the wait, and the node's teardown chained here
+    /// blocks (the final cursor commits are awaited, bounded).
+    public Promise<Unit> leaveQuorum(Runnable routePassive, Supplier<Promise<Unit>> delivered, Runnable quiesce) {
         routePassive.run();
+        var reactionsRun = delivered.get();
+
         system.onPresent(Fsm2System::drainNode);
+
+        return reactionsRun.flatMap(DeploymentWiring::handedOff)
+                           .map(unit -> quiesced(quiesce));
+    }
+
+    private static Promise<Unit> handedOff(Unit unit) {
+        return Promise.promise(Result::unitResult);
+    }
+
+    private static Unit quiesced(Runnable quiesce) {
         quiesce.run();
+
+        return Unit.unit();
     }
 
     /// The first step of the stop sequence (B13): under LEGACY the legacy deactivation; under FSM2 the cluster interpreter deactivates and closes.

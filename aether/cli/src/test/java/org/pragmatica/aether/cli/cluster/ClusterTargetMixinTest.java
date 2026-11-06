@@ -209,6 +209,28 @@ class ClusterTargetMixinTest {
         }
     }
 
+    /// #2133: the one key resolver. A registry section name is parsed as a cluster name before it becomes a path segment of the key file.
+    @Nested
+    class ApiKeyOf {
+        @Test
+        void apiKeyOf_readsTheSavedFile_ofAValidName() throws IOException {
+            writeApiKeyFile("saved-cluster", "saved-key");
+
+            assertEquals("saved-key",
+                         ClusterTargetMixin.apiKeyOf(new ClusterRegistry.ClusterEntry("saved-cluster", "https://s:5150", none()))
+                                           .or("no key"));
+        }
+
+        @Test
+        void apiKeyOf_neverReadsAFile_forANameThatIsNotAClusterName() throws IOException {
+            writeApiKeyFile("Not_A_Cluster", "planted-key");
+
+            assertEquals("no key",
+                         ClusterTargetMixin.apiKeyOf(new ClusterRegistry.ClusterEntry("Not_A_Cluster", "https://p:5150", none()))
+                                           .or("no key"));
+        }
+    }
+
     @Nested
     class IsOverrideAcceptable {
 

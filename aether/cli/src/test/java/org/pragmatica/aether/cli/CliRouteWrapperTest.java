@@ -5,7 +5,6 @@ package org.pragmatica.aether.cli;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.cli.cluster.ClusterCommand;
-import org.pragmatica.aether.cli.ttm.TtmCommand;
 
 import java.util.Arrays;
 import java.util.stream.Collectors;
@@ -19,8 +18,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// - C2: `aether slices status` (→ `GET /api/slices/status`)
 /// - C2: `aether slices topology` (→ `GET /api/slices/topology`)
 /// - C3: `aether cluster governors` (→ `GET /api/cluster/governors`)
-/// - C4: `aether ttm status` (→ `GET /api/ttm/status`)
-/// - C4: `aether ttm training-data` (→ `GET /api/ttm/training-data`)
 ///
 /// Each test asserts that picocli resolves the subcommand path and binds it
 /// to the expected Callable/Runnable class — closing the §3.3 B, C, D, E gaps
@@ -68,32 +65,6 @@ class CliRouteWrapperTest {
         assertNotNull(governorsSpec,
                       "`cluster governors` subcommand must be registered. Known subcommands: "
                       + clusterSpec.getSubcommands().keySet());
-    }
-
-    @Test
-    void ttm_parentCommand_isRegistered() {
-        var cmd = new CommandLine(new AetherCli());
-        var ttmSpec = cmd.getSubcommands().get("ttm");
-
-        assertNotNull(ttmSpec, "`ttm` parent command must be registered on AetherCli");
-        assertTrue(TtmCommand.class.isAssignableFrom(ttmSpec.getCommand().getClass()),
-                   "Expected `ttm` to resolve to TtmCommand, got " + ttmSpec.getCommand().getClass());
-    }
-
-    @Test
-    void ttmStatus_subcommand_isRegistered() {
-        var sub = subcommandClass(new CommandLine(new AetherCli()), "ttm", "status");
-
-        assertTrue(sub.getSimpleName().equals("TtmStatusCommand"),
-                   "Expected ttm status to resolve to TtmStatusCommand, got " + sub.getSimpleName());
-    }
-
-    @Test
-    void ttmTrainingData_subcommand_isRegistered() {
-        var sub = subcommandClass(new CommandLine(new AetherCli()), "ttm", "training-data");
-
-        assertTrue(sub.getSimpleName().equals("TtmTrainingDataCommand"),
-                   "Expected ttm training-data to resolve to TtmTrainingDataCommand, got " + sub.getSimpleName());
     }
 
     private static Class<?> subcommandClass(CommandLine root, String... path) {

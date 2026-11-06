@@ -2855,26 +2855,6 @@ Management API reference for the refusals).
 
 ---
 
-## TTM (Foundation Model)
-
-### `aether ttm status`
-
-Show the foundation-model / TTM (training & model) runtime status. Wraps `GET /api/v1/ttm/status`.
-
-```bash
-aether ttm status
-```
-
-### `aether ttm training-data`
-
-Show the foundation-model / TTM training-data snapshot. Wraps `GET /api/v1/ttm/training-data`.
-
-```bash
-aether ttm training-data
-```
-
----
-
 ## DHT
 
 ### `aether dht replication-map [--limit N] [--prefix P]`

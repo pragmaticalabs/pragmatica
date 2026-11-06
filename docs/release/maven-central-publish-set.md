@@ -66,8 +66,6 @@ The limits are cumulative per month, so a second release in the same month needs
 | `aether/aether-setup` | `org.pragmatica-lite.aether:aether-setup` | jar | skip | runtime internal of the node (ships inside the node jar and image) or Aether tooling; not a dependency of a slice |
 | `aether/aether-storage` | `org.pragmatica-lite.aether:aether-storage` | jar | skip | runtime internal of the node (ships inside the node jar and image) or Aether tooling; not a dependency of a slice |
 | `aether/aether-stream` | `org.pragmatica-lite.aether:aether-stream` | jar | skip | runtime internal of the node (ships inside the node jar and image) or Aether tooling; not a dependency of a slice |
-| `aether/aether-ttm` | `org.pragmatica-lite.aether:aether-ttm` | jar | skip | runtime internal of the node (ships inside the node jar and image) or Aether tooling; not a dependency of a slice |
-| `aether/aether-ttm-onnx` | `org.pragmatica-lite.aether:aether-ttm-onnx` | jar | skip | runtime internal of the node (ships inside the node jar and image) or Aether tooling; not a dependency of a slice |
 | `aether/cli` | `org.pragmatica-lite.aether:cli` | jar | skip | runtime internal of the node (ships inside the node jar and image) or Aether tooling; not a dependency of a slice |
 | `aether/db-migrations` | `org.pragmatica-lite.aether:db-migrations` | jar | skip | shared runtime implementation bundled with Aether/Terra; not a generated slice-project dependency |
 | `aether/dead-surface-gate` | `org.pragmatica-lite.aether:dead-surface-gate` | jar | skip | build gate or build instrument; produces no consumer-facing artifact |

@@ -107,6 +107,9 @@ class NodeReplacementRealRegistryReapTest {
         @Override public <T> T read(ByteBuf buffer) { return null; }
     });
     private final java.util.List<String> warnings = new java.util.concurrent.CopyOnWriteArrayList<>();
+    /// When set, the hand-off thread holds the `instance-termination-cleared` warning (and those behind it) until this promise resolves. The sink hands every
+    /// warning to its own thread, so a warning raised before a call returns may reach `warnings` after it: the gate makes that schedule the one that runs.
+    private final AtomicReference<Promise<Unit>> clearedWarningGate = new AtomicReference<>();
     private final java.util.concurrent.atomic.AtomicBoolean lagTerminate = new java.util.concurrent.atomic.AtomicBoolean();
     /// The provider accepts a terminate but its listing never changes: the instance is still listed afterwards.
     private final java.util.concurrent.atomic.AtomicBoolean stuck = new java.util.concurrent.atomic.AtomicBoolean();
@@ -252,7 +255,7 @@ class NodeReplacementRealRegistryReapTest {
                                                                                                       () -> 3,
                                                                                                       _ -> Option.none()));
 
-        ctm.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warning -> into.add(warning.code().code() + ":" + warning.subject() + ":" + warning.message())));
+        ctm.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warning -> publish(into, warning)));
         ctm.setRetirementRefusal(_ -> Option.none());
         ctm.setNodeReplacements(index);
         ctm.setHierarchyStateWriter(org.pragmatica.aether.deployment.cluster.HierarchyStateWriter.hierarchyStateWriter(() -> store.getTyped(LeaderKey.INSTANCE, LeaderValue.class),
@@ -268,6 +271,14 @@ class NodeReplacementRealRegistryReapTest {
         ctm.activate();
 
         return ctm;
+    }
+
+    private void publish(java.util.List<String> into, org.pragmatica.utility.warning.OperatorWarning warning) {
+        if (warning.code() == org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_CLEARED && clearedWarningGate.get() != null) {
+            clearedWarningGate.get().await();
+        }
+
+        into.add(warning.code().code() + ":" + warning.subject() + ":" + warning.message());
     }
 
     private void record(NodeReplacementValue record) {
@@ -623,14 +634,18 @@ class NodeReplacementRealRegistryReapTest {
                                          .as("directive and record leave together").containsExactly(false, false));
     }
 
-    /// B19 under the LEGACY binding: the forced clear leaves both.
+    /// B19 under the LEGACY binding: the forced clear leaves both. The cleared warning reaches `warnings` through the sink's hand-off thread, after the
+    /// clear returned (#2749): the gate holds it there, so the test reads it only once it is released. Red when: the warning is read without waiting for the hand-off.
     @Test
     void aForcedClear_retiresNothing_underTheLegacyBinding() {
         unconfirmedReapOf(OLD);
+        var gate = Promise.<Unit> promise();
+        clearedWarningGate.set(gate);
 
         ctmUnderTest.clearUnconfirmed(OLD, "operator", "unknown", true).await().onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
+        gate.succeed(Unit.unit());
 
-        assertThat(warnings).anyMatch(w -> w.startsWith("instance-termination-cleared:" + OLD.id()));
+        within(10, () -> assertThat(warnings).anyMatch(w -> w.startsWith("instance-termination-cleared:" + OLD.id())));
         assertThat(List.of(holds(AetherKey.ActivationDirectiveKey.activationDirectiveKey(OLD)), holds(new AetherKey.NodeDepartureKey(OLD)))).containsExactly(true, true);
     }
 

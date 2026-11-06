@@ -38,8 +38,10 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.utility.warning.OperatorWarnings;
@@ -231,6 +233,9 @@ public final class UpgradeRunWiring {
     }
 
     static final class Service implements UpgradeRunService {
+        /// How many times an operator request is evaluated against the committed run before its `Conflict` reaches the caller.
+        static final int REQUEST_ATTEMPTS = 8;
+
         private final Inputs in;
         private final UpgradeRunReconciler.Environment environment;
 
@@ -286,6 +291,10 @@ public final class UpgradeRunWiring {
         /// pause is refused, not allowed to quietly cancel the first one's abort.
         @Override
         public Promise<UpgradeRunValue> pause() {
+            return reevaluated(this::pauseOnce, REQUEST_ATTEMPTS);
+        }
+
+        private Promise<UpgradeRunValue> pauseOnce() {
             return in.index()
                      .run()
                      .filter(run -> run.state() == UpgradeRunState.RUNNING && run.stop() == UpgradeStop.ABORT)
@@ -305,6 +314,10 @@ public final class UpgradeRunWiring {
         /// at once: through RUNNING it would announce a resume that never happened.
         @Override
         public Promise<UpgradeRunValue> abort() {
+            return reevaluated(this::abortOnce, REQUEST_ATTEMPTS);
+        }
+
+        private Promise<UpgradeRunValue> abortOnce() {
             return in.index()
                      .run()
                      .filter(UpgradeRunValue::live)
@@ -333,6 +346,10 @@ public final class UpgradeRunWiring {
         /// `inFlight` is cleared; a still-live or kept-both record is left, and the planner pauses the run again, saying why.
         @Override
         public Promise<UpgradeRunValue> resume() {
+            return reevaluated(this::resumeOnce, REQUEST_ATTEMPTS);
+        }
+
+        private Promise<UpgradeRunValue> resumeOnce() {
             return request("resume",
                            UpgradeRunState.PAUSED,
                            run -> run.with(run.index(),
@@ -370,6 +387,33 @@ public final class UpgradeRunWiring {
                      .fold(() -> notApplicable(operation),
                            run -> change(run,
                                          change.apply(run)));
+        }
+
+        /// #2737 — an operator request races the reconciler's own progress commits (the in-flight replacement advancing writes the
+        /// run), and a request that lost the compare-and-set used to answer `Conflict` to the operator. The CLI does not retry it, and
+        /// it should not have to: the request is re-decided from scratch. BER: a rejected compare-and-set committed nothing, so the
+        /// whole request (read, precondition, next value) is evaluated again against the run as committed now; the apply promise
+        /// completes only after the notifications of its batch are delivered (`KVStore.completeAfterDelivery`), so the index read by
+        /// the next attempt already holds the commit that won. Guarantee: the request lands, or is refused for the state the run is in
+        /// now (ended: NotApplicable; leadership gone: NotLeader); `Conflict` reaches the caller only after `attempts` consecutive lost
+        /// races.
+        private Promise<UpgradeRunValue> reevaluated(Supplier<Promise<UpgradeRunValue>> request, int attempts) {
+            return request.get()
+                          .fold(result -> afterAttempt(result, request, attempts));
+        }
+
+        private Promise<UpgradeRunValue> afterAttempt(Result<UpgradeRunValue> result,
+                                                      Supplier<Promise<UpgradeRunValue>> request,
+                                                      int attempts) {
+            return result.fold(cause -> afterRefusal(cause, request, attempts), Promise::success);
+        }
+
+        private Promise<UpgradeRunValue> afterRefusal(Cause cause,
+                                                      Supplier<Promise<UpgradeRunValue>> request,
+                                                      int attempts) {
+            return cause instanceof Refusal.Conflict && attempts > 1
+                   ? reevaluated(request, attempts - 1)
+                   : cause.promise();
         }
 
         private Promise<UpgradeRunValue> notApplicable(String operation) {

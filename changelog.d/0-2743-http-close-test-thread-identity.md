@@ -1,0 +1,2 @@
+### Fixed
+- `JdkHttpOperationsCloseTest` no longer fails intermittently under load: it pinned the JVM-wide count of `HttpClient-*-SelectorManager` threads against a baseline, and a selector thread of an unrelated unclosed client (the sibling test's, `HttpClientErrorTest`'s) exiting on GC between the baseline and the check made the count fall short of `baseline + 3`. The test now captures the identity of the threads its own three clients start and asserts exactly those are alive while open and dead after `close()`. Test-only; `JdkHttpOperations` is unchanged (#2743).

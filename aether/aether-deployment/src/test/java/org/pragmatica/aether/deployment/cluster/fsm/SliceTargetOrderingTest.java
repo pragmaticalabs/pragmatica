@@ -572,6 +572,40 @@ class SliceTargetOrderingTest {
         assertThat(awaitErrors()).as("and does not report the refused rebuild as a failure").isEmpty();
     }
 
+    // ---- a landed write superseded before its confirmation runs (#2679) ----
+
+    /// The confirmation of a fenced target write runs in the continuation of its apply, on another thread, so a later write can
+    /// commit first. At rc5 the confirmation re-read the store, took the later write for a refusal and rebuilt over it.
+    @Nested
+    class LandedThenSuperseded {
+        /// The publish's target put lands, then a target of another version commits before the put's continuation runs. At rc5
+        /// the continuation rebuilt the put and wrote v1 back over v2 (#2679's second target write).
+        @Test
+        void acceptedPutSupersededBeforeItsConfirmation_isNotRebuilt() {
+            publish(blueprintOf(V1, "attempt-1"));
+
+            cluster.commitThen(cluster.lastTargetWriteSeq(), () -> putTarget(targetOf(V2, Option.some(OWNER))));
+
+            assertThat(cluster.awaitHeldTargetWrite().isPresent()).as("the landed put is not rebuilt").isFalse();
+            assertThat(committedTarget().map(SliceTargetValue::currentVersion)).as("and the later write stands")
+                                                                               .isEqualTo(Option.some(V2.version()));
+        }
+
+        /// The delete's target removal lands, then an unowned target of the base is created before the removal's continuation
+        /// runs. At rc5 the continuation rebuilt the removal and removed the new target.
+        @Test
+        void acceptedRemovalSupersededBeforeItsConfirmation_isNotRebuilt() {
+            publish(blueprintOf(V1, "attempt-1"));
+            cluster.commitAllInSubmissionOrder();
+            delete();
+
+            cluster.commitThen(cluster.lastTargetWriteSeq(), () -> putTarget(targetOf(V1, Option.none())));
+
+            assertThat(cluster.awaitHeldTargetWrite().isPresent()).as("the landed removal is not rebuilt").isFalse();
+            assertThat(holdsTarget(store)).as("and the target created after it stands").isTrue();
+        }
+    }
+
     // ---- restore ----
 
     @Nested
@@ -1005,6 +1039,11 @@ class SliceTargetOrderingTest {
         active().reconcile();
     }
 
+    /// A target write that commits outside the leader (the test plays a later writer).
+    private void putTarget(SliceTargetValue value) {
+        store.process(store.createBatch(List.<KVCommand<AetherKey>> of(new KVCommand.Put<>(TARGET_KEY, value))));
+    }
+
     private void delete() {
         store.process(store.createBatch(List.<KVCommand<AetherKey>> of(new KVCommand.Remove<>(BLUEPRINT_KEY))));
     }
@@ -1135,7 +1174,7 @@ class SliceTargetOrderingTest {
         }
 
         /// The submission number of the latest batch that writes the target key, whatever its form (put, remove, transaction).
-        int lastTargetWriteSeq() {
+        synchronized int lastTargetWriteSeq() {
             return IntStream.range(0, submitted.size())
                             .filter(index -> touchesTarget(submitted.get(index)))
                             .max()
@@ -1164,20 +1203,20 @@ class SliceTargetOrderingTest {
             return heldTargetWriteSeq();
         }
 
-        int submittedCount() {
+        synchronized int submittedCount() {
             return submitted.size();
         }
 
-        List<KVCommand<AetherKey>> allSubmitted() {
+        synchronized List<KVCommand<AetherKey>> allSubmitted() {
             return submitted.stream().flatMap(List::stream).toList();
         }
 
-        int targetWritesSince(int firstIndex) {
+        synchronized int targetWritesSince(int firstIndex) {
             return (int) submitted.stream().skip(firstIndex).filter(HoldingClusterNode::touchesTarget).count();
         }
 
         /// Submissions since `firstIndex` that write a target naming this version.
-        int targetWritesNaming(org.pragmatica.aether.artifact.Version version, int firstIndex) {
+        synchronized int targetWritesNaming(org.pragmatica.aether.artifact.Version version, int firstIndex) {
             return (int) submitted.stream()
                                   .skip(firstIndex)
                                   .flatMap(List::stream)
@@ -1186,7 +1225,7 @@ class SliceTargetOrderingTest {
                                   .count();
         }
 
-        int plainTargetPutsSince(int firstIndex) {
+        synchronized int plainTargetPutsSince(int firstIndex) {
             return (int) submitted.stream()
                                   .skip(firstIndex)
                                   .flatMap(List::stream)
@@ -1220,11 +1259,18 @@ class SliceTargetOrderingTest {
 
         /// The apply of the held batch with this submission number: the real applier, then the caller's promise resolves.
         synchronized void commit(int submissionSeq) {
+            commitThen(submissionSeq, () -> {});
+        }
+
+        /// As [#commit], with `later` committed after the batch and before the caller's promise resolves: the caller's
+        /// continuation runs only once a later write has landed, the interleaving its own thread makes possible.
+        synchronized void commitThen(int submissionSeq, Runnable later) {
             var entry = held.stream().filter(h -> h.seq() == submissionSeq).findFirst().orElseThrow();
 
             held.remove(entry);
             var applied = store.<Object> process(store.createBatch(entry.batch()));
 
+            later.run();
             entry.promise().succeed(applied);
         }
 

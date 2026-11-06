@@ -483,18 +483,6 @@ public sealed interface ManagementApiResponses {
 
     record ControllerStatusResponse(boolean enabled, long evaluationIntervalMs, Object config) {}
 
-    record TtmStatusResponse(boolean enabled,
-                             boolean active,
-                             String state,
-                             String modelPath,
-                             int inputWindowMinutes,
-                             long evaluationIntervalMs,
-                             double confidenceThreshold,
-                             boolean hasForecast,
-                             Option<TtmForecast> lastForecast) {}
-
-    record TtmForecast(long timestamp, double confidence, String recommendation) {}
-
     record ControllerConfigUpdatedResponse(String status, Object config) {}
 
     record EvaluationTriggeredResponse(String status) {}

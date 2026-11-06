@@ -77,7 +77,7 @@ class AppHttpServerH3BoundsTest {
     }
 
     private static void assertConfiguredBounds(int port) throws Exception {
-        var dispatched = H3Probe.exchange(port, stream -> body(stream, port, 16)).status();
+        var dispatched = String.valueOf(H3Probe.exchange(port, stream -> body(stream, port, 16)).statusCode());
 
         assertThat(dispatched).as("control: what a request the server dispatches is answered")
                               .matches("\\d{3}")
@@ -85,16 +85,16 @@ class AppHttpServerH3BoundsTest {
 
         var oversized = H3Probe.exchange(port, stream -> body(stream, port, OVER_LIMIT));
 
-        assertThat(oversized.status()).as("max_request_size reaches the stream").isEqualTo("413");
+        assertThat(oversized.status()).as("max_request_size reaches the stream; " + oversized.diagnostics()).isEqualTo("413");
 
         var stalled = H3Probe.exchange(port, stream -> stall(stream, port));
 
-        assertThat(stalled.status()).as("read_timeout reaches the stream").isEqualTo("408");
+        assertThat(stalled.status()).as("read_timeout reaches the stream; " + stalled.diagnostics()).isEqualTo("408");
         assertThat(stalled.body()).contains("idle");
 
         var trickled = H3Probe.exchange(port, stream -> trickle(stream, port));
 
-        assertThat(trickled.status()).as("min_body_rate 0 reaches the stream: the trickle is dispatched")
+        assertThat(trickled.status()).as("min_body_rate 0 reaches the stream: the trickle is dispatched; " + trickled.diagnostics())
                                      .isEqualTo(dispatched);
     }
 

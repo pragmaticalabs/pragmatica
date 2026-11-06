@@ -5,10 +5,7 @@
 
 package org.pragmatica.aether.api;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.lang.reflect.Modifier;
-import java.net.ServerSocket;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -141,7 +138,8 @@ class ManagementServerDhtCatchUpGaugeTest {
         // Registered just before the DHT gauge; a final type the default answer leaves null.
         when(node.streamPartitionManager()).thenReturn(mock(StreamPartitionManager.class));
 
-        return ManagementServer.managementServer(freePort(),
+        // #2719: port 0 - the listener binds its own port; a probed-then-released port can be taken before the bind.
+        return ManagementServer.managementServer(0,
                                                  () -> node,
                                                  mock(EntityCheckpointDriver.class, NONE_OR_MOCK),
                                                  mock(AlertManager.class, NONE_OR_MOCK),
@@ -168,13 +166,5 @@ class ManagementServerDhtCatchUpGaugeTest {
                                                  Set::of,
                                                  org.pragmatica.aether.api.routes.NodeLifecycleRoutes.SliceFloor.sliceFloor((_, _) -> java.util.List.of(),
                                                                                                                          org.pragmatica.utility.warning.OperatorWarningSink.logOnly()));
-    }
-
-    private static int freePort() {
-        try (var socket = new ServerSocket(0)) {
-            return socket.getLocalPort();
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
     }
 }

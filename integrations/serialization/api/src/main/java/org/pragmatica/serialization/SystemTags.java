@@ -749,7 +749,15 @@ public interface SystemTags {
         pin(table, 2210, "org.pragmatica.aether.slice.kvstore.AetherKey.SliceRequirementKey");
         pin(table, 2211, "org.pragmatica.aether.slice.kvstore.AetherValue.SliceRequirementValue");
         pin(table, 2212, "org.pragmatica.aether.slice.kvstore.AetherValue.RequirementKind");
-        // ---- 2213..16383 RESERVED ----
+        // rc6 f2a: the workflow run and its conflict-key claims (spec §4.2, §4.3). 2207..2212 are taken by the rc6 f3a and f1 lanes
+        // (open, unpushed when this was written on 2026-11-05; origin showed nothing above 2209), so these take 2220..2224 and leave
+        // the gap to the other rc6 lanes.
+        pin(table, 2220, "org.pragmatica.aether.slice.kvstore.AetherKey.WorkflowRunKey");
+        pin(table, 2221, "org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowRunValue");
+        pin(table, 2222, "org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowState");
+        pin(table, 2223, "org.pragmatica.aether.slice.kvstore.AetherKey.WorkflowClaimKey");
+        pin(table, 2224, "org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowClaimValue");
+        // ---- 2225..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);

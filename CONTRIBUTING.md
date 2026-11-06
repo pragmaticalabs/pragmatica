@@ -24,7 +24,7 @@ module it lands in.** From [`LICENSE`](LICENSE) and [`tools/license/bsl-modules.
 | Path | License |
 |---|---|
 | everything not listed below (`core/`, `integrations/`, `examples/`, `jbct/`, and the rest of `aether/`) | Apache-2.0 |
-| `aether/node`, `aether/aether-deployment`, `aether/aether-control`, `aether/aether-ttm`, `aether/aether-ttm-onnx`, `aether/aether-stream`, `aether/aether-invoke`, `aether/ember`, `aether/forge/forge-api`, `aether/forge/forge-core`, `aether/forge/forge-tests` | Business Source License 1.1 |
+| `aether/node`, `aether/aether-deployment`, `aether/aether-control`, `aether/aether-stream`, `aether/aether-invoke`, `aether/ember`, `aether/forge/forge-api`, `aether/forge/forge-core`, `aether/forge/forge-tests` | Business Source License 1.1 |
 
 **BSL-1.1 is not an OSI-approved open-source license.** If your PR touches one of the BSL modules
 above, you are contributing to a source-available codebase whose Change Date is

@@ -45,6 +45,27 @@ class OperatorWarningCodeTest {
             .isEmpty();
     }
 
+    /// rc6 §4.4: the alert key of an escalated workflow and its recovery are operator-visible literals; a change would orphan open alerts.
+    @Test
+    void workflowEscalated_pinsItsCodeSubsystemAndLevel() {
+        var escalated = OperatorWarningCode.WORKFLOW_ESCALATED;
+
+        assertThat(escalated.code()).isEqualTo("workflow-escalated");
+        assertThat(escalated.subsystem()).isEqualTo("workflow");
+        assertThat(escalated.level()).isEqualTo(WarningLevel.CRITICAL);
+        assertThat(escalated.recoveryOf()).isEqualTo(Option.none());
+    }
+
+    @Test
+    void workflowResolved_pinsItsCodeSubsystemLevelAndTheAlertItCloses() {
+        var resolved = OperatorWarningCode.WORKFLOW_RESOLVED;
+
+        assertThat(resolved.code()).isEqualTo("workflow-resolved");
+        assertThat(resolved.subsystem()).isEqualTo("workflow");
+        assertThat(resolved.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(resolved.recoveryOf()).isEqualTo(Option.some(OperatorWarningCode.WORKFLOW_ESCALATED));
+    }
+
     /// #2062: the operator clear is a RECOVERY of the unconfirmed warning, announced at INFO; a higher level would open a new alert while closing one.
     @Test
     void instanceTerminationCleared_isAnInfoRecoveryThatClosesAcrossNodes() {

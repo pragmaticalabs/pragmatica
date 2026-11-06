@@ -98,6 +98,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.aether.slice.kvstore.SliceRequirements;
+import org.pragmatica.aether.slice.kvstore.SliceTargetFence;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -1936,12 +1937,12 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// superseded blueprint is refused whatever the commit order, and the put of the current attempt is the only
         /// one that can land.
         ///
-        /// A refusal is silent (the applier's result is not attributable under batch merging), so after the apply
-        /// resolves this re-reads, as the rollback does: a committed blueprint that is no longer `source` means the
-        /// refusal was the fence working, and nothing is written for it (a newer publish writes its own targets);
-        /// a target that does not yet declare the blueprint while the blueprint is unchanged was refused for a moved
-        /// target (an autoscaler write), and is rebuilt against the current one, bounded by
-        /// [#MAX_OUTCOME_MERGE_ATTEMPTS].
+        /// The outcome is read from the transaction's own `TransactionResult`, matched on its id (correlation survives
+        /// batch merging): an accepted put landed, and nothing is re-read or rebuilt for it (#2679). Only a put the
+        /// results do not report accepted re-reads: a committed blueprint that is no longer `source` means the refusal
+        /// was the fence working, and nothing is written for it (a newer publish writes its own targets); a target that
+        /// does not yet declare the blueprint while the blueprint is unchanged was refused for a moved target (an
+        /// autoscaler write), and is rebuilt against the current one, bounded by [#MAX_OUTCOME_MERGE_ATTEMPTS].
         private void submitFencedTargetPuts(WriteSite site,
                                             AppBlueprintValue source,
                                             List<ResolvedSlice> slices,
@@ -1950,19 +1951,27 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 return;
             }
 
+            var transactionId = UUID.randomUUID().toString();
+
             termWriter.<Object> writeUnder(site,
-                                           leader -> targetPutTransaction(leader, source, slices))
-                      .onSuccess(_ -> confirmTargetPuts(site, source, slices, attempt))
+                                           leader -> targetPutTransaction(leader, transactionId, source, slices))
+                      .onSuccess(results -> confirmTargetPuts(site,
+                                                              source,
+                                                              slices,
+                                                              attempt,
+                                                              SliceTargetFence.accepted(results, transactionId)))
                       .onFailure(cause -> logTargetWriteFailure(site, cause));
         }
 
         private List<KVCommand<AetherKey>> targetPutTransaction(LeaderValue leader,
+                                                                String transactionId,
                                                                 AppBlueprintValue source,
                                                                 List<ResolvedSlice> slices) {
             var expanded = source.blueprint();
             var mutations = distinctByBase(slices).stream().map(slice -> targetPutMutation(expanded, slice)).toList();
 
             return fencedTransaction(leader,
+                                     transactionId,
                                      appBlueprintWitness(expanded.id(), Option.some(source)),
                                      mutations);
         }
@@ -1975,8 +1984,18 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private static List<KVCommand<AetherKey>> fencedTransaction(LeaderValue leader,
                                                                     KVCommand.ReadWitness<AetherKey> fence,
                                                                     List<KVCommand.Mutation<AetherKey, AetherValue>> mutations) {
+            return fencedTransaction(leader,
+                                     UUID.randomUUID().toString(),
+                                     fence,
+                                     mutations);
+        }
+
+        private static List<KVCommand<AetherKey>> fencedTransaction(LeaderValue leader,
+                                                                    String transactionId,
+                                                                    KVCommand.ReadWitness<AetherKey> fence,
+                                                                    List<KVCommand.Mutation<AetherKey, AetherValue>> mutations) {
             return List.of(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(mutations.getFirst().key(),
-                                                                                   UUID.randomUUID().toString(),
+                                                                                   transactionId,
                                                                                    leader,
                                                                                    List.of(fence),
                                                                                    mutations));
@@ -2010,7 +2029,14 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private void confirmTargetPuts(WriteSite site,
                                        AppBlueprintValue source,
                                        List<ResolvedSlice> slices,
-                                       int attempt) {
+                                       int attempt,
+                                       boolean accepted) {
+            // #2679: the put landed. A committed target that differs now was written AFTER it, by a later writer, and
+            // re-reading would misread that write as a refusal and rebuild this blueprint's value over it.
+            if (accepted) {
+                return;
+            }
+
             var expanded = source.blueprint();
             // Design-out: the fence refused this attempt's stale write, so a delete or a newer attempt owns the
             // targets and the refusal needs no repair. Rebuilding here would only be refused again.
@@ -2074,9 +2100,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// The transaction's read set holds `AppBlueprintKey(removed)` as ABSENT and each mutation holds the target it
         /// read, so a publish of the same id that committed first refuses the removal (its targets are not removed from
         /// under it), and a target that moved is rebuilt against the current one, bounded by
-        /// [#MAX_OUTCOME_MERGE_ATTEMPTS]. A target not committed when this is built is not written for here: the put
-        /// that would commit it later is the one the blueprint fence of [#submitFencedTargetPuts] refuses. This is also
-        /// the sweep for an orphan found at restore, which is a target whose blueprint is already absent.
+        /// [#MAX_OUTCOME_MERGE_ATTEMPTS]; an accepted removal (its own `TransactionResult`) is not re-read (#2679). A
+        /// target not committed when this is built is not written for here: the put that would commit it later is the
+        /// one the blueprint fence of [#submitFencedTargetPuts] refuses. This is also the sweep for an orphan found at
+        /// restore, which is a target whose blueprint is already absent.
         private void submitFencedTargetRemovals(WriteSite site,
                                                 BlueprintId removed,
                                                 List<ArtifactBase> bases,
@@ -2087,12 +2114,19 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 return;
             }
 
+            var transactionId = UUID.randomUUID().toString();
+
             termWriter.<Object> writeUnder(site,
                                            leader -> fencedTransaction(leader,
+                                                                       transactionId,
                                                                        appBlueprintWitness(removed,
                                                                                            Option.none()),
                                                                        mutations))
-                      .onSuccess(_ -> confirmTargetRemovals(site, removed, bases, attempt))
+                      .onSuccess(results -> confirmTargetRemovals(site,
+                                                                  removed,
+                                                                  bases,
+                                                                  attempt,
+                                                                  SliceTargetFence.accepted(results, transactionId)))
                       .onFailure(cause -> logTargetWriteFailure(site, cause));
         }
 
@@ -2133,8 +2167,14 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                          .isPresent();
         }
 
-        private void confirmTargetRemovals(WriteSite site, BlueprintId removed, List<ArtifactBase> bases, int attempt) {
-            if (ctx.kvStore().get(AppBlueprintKey.appBlueprintKey(removed)).isPresent()) {
+        private void confirmTargetRemovals(WriteSite site,
+                                           BlueprintId removed,
+                                           List<ArtifactBase> bases,
+                                           int attempt,
+                                           boolean accepted) {
+            // #2679, as for the puts: the removal landed. A removable target found now was created AFTER it (an unowned
+            // target written for the same base), and re-reading would misread it as a refusal and remove it.
+            if (accepted || ctx.kvStore().get(AppBlueprintKey.appBlueprintKey(removed)).isPresent()) {
                 return;
             }
 

@@ -229,6 +229,15 @@ public final class PartitionBackfill {
 
     private volatile Runnable releaseWindowHook = () -> {};
 
+    /// Test seam (#2599): runs after a compare's response was applied and acked ([#ackBackfillToOwner]) and before the copy is
+    /// marked verified ([#markVerifiedIfCompared]). A live batch landing in that window is the one whose ack the gate held. The
+    /// compare runs on a per-run view, which takes the hook set on the shared instance when the run starts.
+    private volatile Runnable verifyWindowHook = () -> {};
+
+    /// #2599 G3: where [#ackBackfillToOwner] hands its ack. Production wires `ReplicationReceiveHandler::ackBackfill`, which
+    /// sends it inside the partition's deferred-ack section; the default sends it on the replication transport. A run's view
+    /// takes the sink set on the shared instance when the run starts.
+    private volatile BackfillAckSink backfillAckSink = this::ackOnTransport;
     /// #2574 F1: the per-partition hold a refused flight keeps its slot for ([RefusalBackoff]); shared by every run.
     private final RefusalBackoff<PartitionKey> refusalBackoff;
 
@@ -302,6 +311,8 @@ public final class PartitionBackfill {
         this.oversizedOrder = shared.oversizedOrder;
         this.current = current;
         this.refusalBackoff = shared.refusalBackoff;
+        this.verifyWindowHook = shared.verifyWindowHook;
+        this.backfillAckSink = shared.backfillAckSink;
     }
 
     /// Backward-compatible factory: no cold-start self-promotion (probe is a no-op that never reports a
@@ -710,6 +721,11 @@ public final class PartitionBackfill {
     @Contract
     void releaseWindowHook(Runnable hook) {
         this.releaseWindowHook = hook;
+    }
+
+    @Contract
+    void verifyWindowHook(Runnable hook) {
+        this.verifyWindowHook = hook;
     }
 
     /// #2574 F2: the re-run of a landed joined flight. It never joins: if a call already took the slot, that flight serves
@@ -1242,6 +1258,7 @@ public final class PartitionBackfill {
     /// epoch's start. Only a response that carried records compared anything.
     @Contract
     private void markVerifiedIfCompared(String streamName, int partition, Epoch epoch, boolean carriedRecords) {
+        verifyWindowHook.run();
         if (carriedRecords && !epoch.equals(Epoch.ZERO) && committedOwnerIsSender(streamName, partition)) {
             quarantine.verifiedForEpoch(streamName, partition, epoch);
         }
@@ -1426,13 +1443,17 @@ public final class PartitionBackfill {
     /// the owner.
     private void ackBackfillToOwner(String streamName, int partition, long watermark) {
         hrwOwner(streamName, partition).filter(owner -> !owner.equals(self) && current.getAsBoolean())
-                .onPresent(owner -> replicationTransport.send(owner,
-                                                              replicateAck(self,
-                                                                           streamName,
-                                                                           partition,
-                                                                           watermark,
-                                                                           quarantine.committedEpoch(streamName,
-                                                                                                     partition))));
+                .onPresent(owner -> backfillAckSink.ack(owner,
+                                                        streamName,
+                                                        partition,
+                                                        watermark,
+                                                        quarantine.committedEpoch(streamName, partition)));
+    }
+
+    /// The default [BackfillAckSink]: the ack goes straight out on the replication transport.
+    @Contract
+    private void ackOnTransport(NodeId owner, String streamName, int partition, long watermark, Epoch ownerEpoch) {
+        replicationTransport.send(owner, replicateAck(self, streamName, partition, watermark, ownerEpoch));
     }
 
     /// Apply every recovered event in order via a sequential fail-fast fold. A truncated response
@@ -1597,6 +1618,19 @@ public final class PartitionBackfill {
     @Contract
     public void ownerResolver(OwnerResolver resolver) {
         this.ownerResolver = resolver;
+    }
+
+    /// Where a backfill's ack of its watermark to the owner goes (#2599 G3, [#ackBackfillToOwner]).
+    @FunctionalInterface
+    public interface BackfillAckSink {
+        @Contract
+        void ack(NodeId owner, String streamName, int partition, long watermark, Epoch ownerEpoch);
+    }
+
+    /// Late-bind the [BackfillAckSink] (#2599 G3). Set once at wiring.
+    @Contract
+    public void backfillAckSink(BackfillAckSink sink) {
+        this.backfillAckSink = sink;
     }
 
     /// Where a promoted owner's catch-up refused for a peer's oversized event is reported (#1937, like the activation gate's

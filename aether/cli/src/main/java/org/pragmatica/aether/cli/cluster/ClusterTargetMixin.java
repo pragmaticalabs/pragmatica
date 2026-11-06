@@ -11,10 +11,13 @@ import java.util.function.Supplier;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
-import picocli.CommandLine.Option;
+import picocli.CommandLine;
+
+import static org.pragmatica.lang.Option.option;
 
 
 public class ClusterTargetMixin {
@@ -22,7 +25,7 @@ public class ClusterTargetMixin {
     static Supplier<Result<ClusterRegistry>> registryLoader = ClusterRegistry::load;
     static Function<String, Path> apiKeyPathResolver = ClusterTargetMixin::defaultApiKeyPath;
 
-    @Option(names = "--cluster", description = "Override active cluster — target named cluster instead (CLI > active-context)")
+    @CommandLine.Option(names = "--cluster", description = "Override active cluster — target named cluster instead (CLI > active-context)")
     private String clusterName;
 
     @Contract
@@ -71,7 +74,7 @@ public class ClusterTargetMixin {
     }
 
     private Result<Unit> installOverrides(ClusterRegistry.ClusterEntry entry) {
-        return installEndpoint(entry).onSuccess(_ -> installApiKey(entry.name()));
+        return installEndpoint(entry).onSuccess(_ -> installApiKey(entry));
     }
 
     /// A blank `endpoint` used to return early and leave whatever `main` installed — the active
@@ -87,8 +90,33 @@ public class ClusterTargetMixin {
     }
 
     @Contract
-    private static void installApiKey(String name) {
-        readApiKeyFile(name).onSuccess(ClusterHttpClient::setApiKeyOverride);
+    private static void installApiKey(ClusterRegistry.ClusterEntry entry) {
+        apiKeyOf(entry).onPresent(ClusterHttpClient::setApiKeyOverride);
+    }
+
+    /// #2133 — THE key of a registered cluster, for every path that dials that cluster: `--cluster X`,
+    /// `cluster destroy --cluster X`, and the active context behind a plain `aether status` /
+    /// `aether cluster topology`. The saved `~/.aether/clusters/<name>/api-key` comes first, then the env
+    /// var the entry records in `api_key_env`.
+    ///
+    /// The file is first because it is what `cluster bootstrap` and `cluster rotate-key` write: a fresh
+    /// shell after bootstrap has no `AETHER_<NAME>_API_KEY` exported, and after a rotation an exported
+    /// one holds the revoked key. Before #2133 only `--cluster` read the file, so the plain commands sent
+    /// no key at all and the operator got a bare 401.
+    ///
+    /// The name is parsed as a [ClusterName] before it becomes a path segment, so a hand-edited registry
+    /// section name cannot point the read outside `~/.aether/clusters/`. Whether this key may travel at
+    /// all is the caller's decision: it belongs only to this entry's own endpoint (#584).
+    public static Option<String> apiKeyOf(ClusterRegistry.ClusterEntry entry) {
+        return ClusterName.clusterName(entry.name())
+                          .flatMap(name -> readApiKeyFile(name.value()))
+                          .option()
+                          .orElse(() -> recordedApiKey(entry));
+    }
+
+    private static Option<String> recordedApiKey(ClusterRegistry.ClusterEntry entry) {
+        return entry.apiKeyEnv()
+                    .flatMap(envName -> option(System.getenv(envName)));
     }
 
     @SuppressWarnings("JBCT-EX-01")
