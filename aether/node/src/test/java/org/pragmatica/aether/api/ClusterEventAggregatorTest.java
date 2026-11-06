@@ -2744,6 +2744,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.PROVISION_ADMISSION_RESUMED,
                 OperatorWarningCode.CORE_CAPACITY_DURABLE_RESOLVED,
                 OperatorWarningCode.CORE_REPLACEMENT_SOURCE_RESOLVED,
+                OperatorWarningCode.WORKFLOW_RESOLVED,
                 OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED,
                 OperatorWarningCode.COMMUNITY_GROWTH_RESUMED,
                 OperatorWarningCode.COMMUNITY_PLACEMENT_RESUMED,
