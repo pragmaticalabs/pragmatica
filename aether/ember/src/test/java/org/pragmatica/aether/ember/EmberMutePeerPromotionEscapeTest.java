@@ -66,6 +66,8 @@ class EmberMutePeerPromotionEscapeTest {
     /// 2 s), the no-op consensus round, the epoch-start commit and a publish round, with slack.
     static final long WRITABLE_BOUND_MS = 150_000L;
     private static final long POLL_EVERY_MS = 3_000L;
+    /// How long after the stream turned writable the escape event may take to reach the events stream (#2774).
+    private static final long EVENT_VISIBLE_BOUND_MS = 60_000L;
     private static final String STREAM_NAMESPACE = "ember";
     private static final int MAX_STREAM_TRIES = 8;
 
@@ -161,9 +163,31 @@ class EmberMutePeerPromotionEscapeTest {
             .containsIgnoringCase("member");
         assertThat(writableAtMs).as("the stream accepts a publish within " + WRITABLE_BOUND_MS + " ms of its creation (-1 = never)")
                                 .isBetween(0L, WRITABLE_BOUND_MS);
+        awaitEscapeEvent(owner, victimId.id());
         assertThat(owner.eventAggregator().events().await().or(List.of()))
             .as("the owner reported the escape as an operator event")
             .anySatisfy(event -> assertThat(String.valueOf(event)).contains("stream-promotion-past-unreachable-peers").contains(victimId.id()));
+    }
+
+    /// The escape event is raised by the activation continuation and then travels through the cluster-events stream (publish, replication,
+    /// read), so it is visible some time AFTER the stream accepts a publish (#2774: logged 1.2 s before a single read missed it). Waits on
+    /// that condition; the assertion that follows reports the failure if the event never lands.
+    private static void awaitEscapeEvent(AetherNode owner, String mutePeer) {
+        var deadline = System.currentTimeMillis() + EVENT_VISIBLE_BOUND_MS;
+
+        while (System.currentTimeMillis() < deadline && !escapeEventVisible(owner, mutePeer)) {
+            sleepQuietly(500L);
+        }
+    }
+
+    private static boolean escapeEventVisible(AetherNode owner, String mutePeer) {
+        return owner.eventAggregator()
+                    .events()
+                    .await()
+                    .or(List.of())
+                    .stream()
+                    .map(String::valueOf)
+                    .anyMatch(event -> event.contains("stream-promotion-past-unreachable-peers") && event.contains(mutePeer));
     }
 
     private static String record(AetherNode node, String stream) {
