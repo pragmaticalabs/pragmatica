@@ -26,12 +26,15 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceRequirementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.RequirementKind;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceRequirementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -479,6 +482,81 @@ class ClusterDeploymentStateTransactionalTest {
                                      && batch.stream().anyMatch(c -> c.key().equals(outcomeKey)))
                     .findFirst();
             assertThat(atomicBatch).isPresent();
+        }
+    }
+
+    /// v2713c d03-d07: a rollback that removes a slice's target removes its committed requirements in the same batch, one Remove per
+    /// requirement key even when several versions of one base are rolled back (the `.distinct()` over the bases pins that: a duplicate
+    /// Remove is not relied upon to be harmless).
+    @Nested
+    class RequirementRemoval {
+        private void seedRequirements(Artifact artifact) {
+            kvStore.put(SliceRequirementKey.sliceRequirementKey(artifact.base(), RequirementKind.OPERATOR),
+                        SliceRequirementValue.sliceRequirementValue(8, "aether scale", Option.none(), 0L));
+            kvStore.put(SliceRequirementKey.sliceRequirementKey(artifact.base(), RequirementKind.REACTIVE),
+                        SliceRequirementValue.sliceRequirementValue(4, "reactive", Option.none(), 0L));
+        }
+
+        private static List<AetherKey> requirementKeys(Artifact artifact) {
+            return List.of(SliceRequirementKey.sliceRequirementKey(artifact.base(), RequirementKind.OPERATOR),
+                           SliceRequirementKey.sliceRequirementKey(artifact.base(), RequirementKind.REACTIVE));
+        }
+
+        private static long removesOf(List<KVCommand<AetherKey>> batch, AetherKey key) {
+            return batch.stream().filter(c -> c instanceof KVCommand.Remove<AetherKey> && c.key().equals(key)).count();
+        }
+
+        /// d03, d04, d06: the unload of a failed blueprint with no previous removes the requirements of every rolled-back base, once each.
+        @Test
+        void unload_removesTheRequirementsOfTheRolledBackBasesOncePerKey() {
+            var v1 = artifact("slice-a", V1);
+            var v2 = artifact("slice-a", V2);
+            var failing = ExpandedBlueprint.expandedBlueprint(blueprintId("app", V1),
+                                                              List.of(ResolvedSlice.resolvedSlice(v1, 3, false).unwrap(),
+                                                                      ResolvedSlice.resolvedSlice(v2, 3, false).unwrap()));
+
+            kvStore.put(AppBlueprintKey.appBlueprintKey(failing.id()), AppBlueprintValue.appBlueprintValue(failing));
+            seedRequirements(v1);
+            var inflight = ClusterDeploymentState.Active.InFlightBlueprint.inFlightBlueprint(failing.id(), failing, Option.empty());
+            activeState().inFlightBlueprints().put(failing.id(), inflight);
+
+            var failValue = new NodeArtifactValue(SliceState.FAILED, Option.some("boom: disk full"), true, 0, List.of(), 0L);
+            var putCommand = new KVCommand.Put<>(NodeArtifactKey.nodeArtifactKey(NODE_A, v1), failValue);
+            harness.dispatch(new NodeArtifactPutReceived(new ValuePut<>(putCommand, Option.none())));
+
+            var batch = cluster.batches.stream()
+                                       .filter(b -> b.stream().anyMatch(c -> c.key().equals(AppBlueprintKey.appBlueprintKey(failing.id()))))
+                                       .findFirst();
+            assertThat(batch).as("the unload batch was emitted").isPresent();
+            requirementKeys(v1).forEach(key -> assertThat(removesOf(batch.get(), key)).as("exactly one Remove of " + key).isEqualTo(1L));
+        }
+
+        /// d03, d05, d07: the same-id restore removes the requirements of the bases only the rolled-back attempt added, once each, and
+        /// leaves those of a base the restored blueprint still declares.
+        @Test
+        void sameIdRestore_removesTheAddedBasesRequirementsOncePerKey_andKeepsTheSharedOnes() {
+            var shared = artifact("shared", V1);
+            var addedV1 = artifact("netnew", V1);
+            var addedV2 = artifact("netnew", V2);
+            var id = blueprintId("app", V1);
+            var prior = ExpandedBlueprint.expandedBlueprint(id, List.of(ResolvedSlice.resolvedSlice(shared, 3, false).unwrap()));
+            var failing = ExpandedBlueprint.expandedBlueprint(id,
+                                                              List.of(ResolvedSlice.resolvedSlice(shared, 3, false).unwrap(),
+                                                                      ResolvedSlice.resolvedSlice(addedV1, 3, false).unwrap(),
+                                                                      ResolvedSlice.resolvedSlice(addedV2, 3, false).unwrap()));
+
+            kvStore.put(AppBlueprintKey.appBlueprintKey(id), AppBlueprintValue.appBlueprintValue(failing));
+            seedRequirements(shared);
+            seedRequirements(addedV1);
+            var inflight = ClusterDeploymentState.Active.InFlightBlueprint.inFlightBlueprint(id, failing, Option.some(prior));
+
+            activeState().restorePreviousBlueprintForTest(inflight, prior, "boom: disk full");
+
+            var outcomeKey = DeploymentOutcomeKey.deploymentOutcomeKey(id);
+            var batch = cluster.batches.stream().filter(b -> b.stream().anyMatch(c -> c.key().equals(outcomeKey))).findFirst();
+            assertThat(batch).as("the restore batch was emitted").isPresent();
+            requirementKeys(addedV1).forEach(key -> assertThat(removesOf(batch.get(), key)).as("exactly one Remove of " + key).isEqualTo(1L));
+            requirementKeys(shared).forEach(key -> assertThat(removesOf(batch.get(), key)).as("the shared base keeps " + key).isZero());
         }
     }
 

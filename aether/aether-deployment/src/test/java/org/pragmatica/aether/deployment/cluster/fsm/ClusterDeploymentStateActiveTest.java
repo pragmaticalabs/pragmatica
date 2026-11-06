@@ -989,6 +989,51 @@ class ClusterDeploymentStateActiveTest {
 
             assertThat(codes()).containsExactly("slice-target-exceeds-placement", "slice-target-placement-restored");
         }
+
+        private String messageOf(String code) {
+            codes();
+            synchronized (warnings) {
+                return warnings.stream().filter(w -> w.code().code().equals(code)).map(w -> w.message()).findFirst().orElse("");
+            }
+        }
+
+        /// v2713c d13, d20: the reconcile path names the exact target, the exact eligible count and the exact excess (target minus eligible).
+        @Test
+        void reconcilePath_namesTheExactTargetEligibleAndExcess() {
+            var shortfall = activeState().ctx().placementShortfalls().get(ARTIFACT);
+
+            assertThat(shortfall.desired()).isEqualTo(5);
+            assertThat(shortfall.placeable()).as("the audience is SELF and NODE_A").isEqualTo(2);
+            assertThat(messageOf("slice-target-exceeds-placement")).contains("committed target of 5 instances")
+                                                                    .contains("has 2 eligible nodes")
+                                                                    .contains("so 3 stay unplaced");
+        }
+
+        /// v2713c d19, d21: the target-put path (a NEW slice, never reconciled before) observes the shortfall with the exact numbers.
+        @Test
+        void targetPutPath_observesTheShortfallWithTheExactNumbers() {
+            var other = Artifact.artifact("org.example:slice-b:1.0.0").unwrap();
+            var key = SliceTargetKey.sliceTargetKey(other.base());
+            var value = SliceTargetValue.sliceTargetValue(other.version(), 7);
+
+            kvStore.put(key, value);
+            harness.dispatch(new SliceTargetPutReceived(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none())));
+
+            var shortfall = activeState().ctx().placementShortfalls().get(other);
+
+            assertThat(shortfall).as("the target put raised the shortfall of the new slice").isNotNull();
+            assertThat(shortfall.desired()).isEqualTo(7);
+            assertThat(shortfall.placeable()).isEqualTo(2);
+        }
+
+        /// v2713c d16: the restored warning says why the shortfall closed.
+        @Test
+        void sliceNoLongerDesired_restoredWarningSaysWhy() {
+            activeState().blueprints().remove(ARTIFACT);
+            activeState().reconcile();
+
+            assertThat(messageOf("slice-target-placement-restored")).contains("the slice is no longer desired");
+        }
     }
 
     /// #1109 (round 2): the gate moved the stall from the node to the leader. A target put that is LOST (never applied, never notified) left the

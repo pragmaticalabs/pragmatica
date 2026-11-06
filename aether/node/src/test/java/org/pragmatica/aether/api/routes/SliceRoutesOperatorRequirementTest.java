@@ -75,6 +75,26 @@ class SliceRoutesOperatorRequirementTest {
         assertThat(rebase.replacement().map(v -> ((SliceRequirementValue) v).instances())).isEqualTo(Option.some(4));
     }
 
+    /// v2713c n30: a release that also changes the placement still re-bases REACTIVE to the held count in the same transaction
+    /// (the placement branch builds its requirement mutations with the observed target, not the bare requirement write).
+    @Test
+    void operatorReleaseWithPlacement_rebasesReactiveToTheHeldCountInTheSameTransaction() {
+        var store = storeWithTarget(4);
+        commit(store, OPERATOR_KEY, SliceRequirementValue.sliceRequirementValue(7, "aether scale", Option.none(), 0L));
+
+        var transaction = SliceRoutes.operatorTransaction(store, ARTIFACT, Option.none(), Option.some("CORE_ONLY")).unwrap();
+
+        var reactiveKey = SliceRequirementKey.sliceRequirementKey(ARTIFACT.base(), RequirementKind.REACTIVE);
+        var operator = transaction.mutations().stream().filter(m -> m.key().equals(OPERATOR_KEY)).toList();
+        var rebase = transaction.mutations().stream().filter(m -> m.key().equals(reactiveKey)).toList();
+
+        assertThat(operator).as("the release removes the OPERATOR record").hasSize(1);
+        assertThat(operator.getFirst().replacement().isEmpty()).isTrue();
+        assertThat(rebase).as("REACTIVE is re-based in the same transaction").hasSize(1);
+        assertThat(rebase.getFirst().replacement().map(v -> ((SliceRequirementValue) v).instances())).isEqualTo(Option.some(4));
+        assertThat(targetKeysWritten(transaction)).as("the placement change writes the target").hasSize(1);
+    }
+
     @Test
     void operatorRelease_withNothingCommitted_writesNothing() {
         var outcome = SliceRoutes.operatorTransaction(storeWithTarget(4), ARTIFACT, Option.none(), Option.none());
