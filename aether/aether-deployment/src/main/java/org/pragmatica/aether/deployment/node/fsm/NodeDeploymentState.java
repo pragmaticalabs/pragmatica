@@ -76,6 +76,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicTier;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.BlueprintStreamAddresses;
+import org.pragmatica.aether.slice.stream.KvBackedStreamRegistry;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.resource.ScheduleConfig;
 import org.pragmatica.aether.slice.StreamConfig;
@@ -2256,7 +2257,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// has one instance of an artifact at a time; acquire and release of the same instance name the same key. The release carries
         /// the value the key holds now as its witness, so a release still in flight (retried by [#applyWithRetry]) when the next
         /// instance acquires again is refused instead of removing the new instance's reference.
-        private void appendRefCommands(org.pragmatica.aether.slice.stream.KvBackedStreamRegistry registry,
+        private void appendRefCommands(KvBackedStreamRegistry registry,
                                        List<KVCommand<AetherKey>> sink,
                                        SliceNodeKey sliceKey,
                                        ResourceAddress address,
@@ -2267,11 +2268,11 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                                      sliceKey.artifact(),
                                                                      SLICE_HOLDER_ATTEMPT,
                                                                      ctx.nowMs()));
-                case RELEASE -> sink.add(org.pragmatica.aether.slice.stream.KvBackedStreamRegistry.releaseCommand(ctx.kvStore(),
-                                                                                                                  address,
-                                                                                                                  ctx.self(),
-                                                                                                                  sliceKey.artifact(),
-                                                                                                                  SLICE_HOLDER_ATTEMPT));
+                case RELEASE -> sink.add(KvBackedStreamRegistry.releaseCommand(ctx.kvStore(),
+                                                                               address,
+                                                                               ctx.self(),
+                                                                               sliceKey.artifact(),
+                                                                               SLICE_HOLDER_ATTEMPT));
             }
         }
 
@@ -2281,9 +2282,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                  Instant.ofEpochMilli(ctx.nowMs()));
         }
 
-        private org.pragmatica.aether.slice.stream.KvBackedStreamRegistry streamRegistry() {
-            return org.pragmatica.aether.slice.stream.KvBackedStreamRegistry.kvBackedStreamRegistry(ctx.cluster(),
-                                                                                                    ctx.kvStore());
+        private KvBackedStreamRegistry streamRegistry() {
+            return KvBackedStreamRegistry.kvBackedStreamRegistry(ctx.cluster(), ctx.kvStore());
         }
 
         private Option<BlueprintStreamBindingsValue> lookupStreamBindings(SliceNodeKey sliceKey) {

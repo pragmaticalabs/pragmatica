@@ -3052,12 +3052,13 @@ public interface AetherNode extends ManageableNode {
         // the departure edge; the leader's level reconcile sweeps a node still holding after two passes absent from membership, which
         // covers a missed edge and a failed sweep apply (owner ruling Q19 (a)).
         var streamRegistry = KvBackedStreamRegistry.kvBackedStreamRegistry(clusterNode, kvStore);
+
         wireStreamRegistrySweep(aetherEntries, streamRegistry::sweepHoldersOf);
         var streamRegistryHolderReconciler = StreamRegistryHolderReconciler.streamRegistryHolderReconciler(streamRegistry,
                                                                                                            selfId,
-                                                                                                           () -> Option.option(membershipFsmRef.get())
-                                                                                                                       .map(MembershipFsm::countedMembers),
+                                                                                                           () -> Option.option(membershipFsmRef.get()).map(MembershipFsm::countedMembers),
                                                                                                            isLeaderSupplier);
+
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(streamRegistryHolderReconciler::tick,
                                                                       StreamRegistryHolderReconciler.INTERVAL,
                                                                       StreamRegistryHolderReconciler.INTERVAL));
