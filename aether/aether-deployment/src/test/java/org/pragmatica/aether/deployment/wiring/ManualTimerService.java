@@ -50,6 +50,20 @@ final class ManualTimerService implements FsmTimers.TimerService {
         nowMs = target;
     }
 
+    /// Moves time to `now + ms` FIRST, then runs every due body. A body hands its tick to the consumer thread, which reads the injected clock when
+    /// it steps; with [#advance] that read can land between a body's due time and the final `target`, so the step sees a time short of the window
+    /// the test advanced over (#2813). Here every step that follows reads `target`.
+    void jump(long ms) {
+        var target = nowMs + ms;
+
+        nowMs = target;
+        snapshot().stream()
+               .filter(entry -> !entry.cancelled && !entry.ran && entry.dueMs <= target)
+               .sorted(Comparator.comparingLong(entry -> entry.dueMs))
+               .toList()
+               .forEach(ManualTimerService::run);
+    }
+
     private void runAtDueTime(Entry entry) {
         nowMs = entry.dueMs;
         run(entry);
