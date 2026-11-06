@@ -582,6 +582,31 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(resets.get()).as("the provisioner state was reset once").isEqualTo(1);
     }
 
+    /// v2711 survivor 9 (c01): a joined node belongs to the source its replacement was provisioned in, even when the lifecycle's committed
+    /// placement names another one; the join closes that source's breaker and leaves the other's.
+    @Test
+    void nodeReady_closesTheBreakerOfTheSourceItsReplacementWasProvisionedIn() {
+        var members = Set.of(SELF, PEER_A, PEER_B);
+        var first = org.pragmatica.aether.environment.SourceName.sourceName("eu-1").unwrap();
+        var second = org.pragmatica.aether.environment.SourceName.sourceName("eu-2").unwrap();
+        var replacement = NodeId.randomNodeId();
+        lifecycleManager.committedSources.put(PEER_A, first);
+        lifecycleManager.committedSources.put(PEER_B, second);
+        lifecycleManager.committedSources.put(replacement, second);
+
+        ctm.activate();
+        lifecycleManager.failProvisions();
+        ctm.provisionReplacement(NodeId.randomNodeId(), Option.some(PEER_A), members, NodeRole.CORE).await();
+        ctm.provisionReplacement(NodeId.randomNodeId(), Option.some(PEER_B), members, NodeRole.CORE).await();
+        assertThat(ctm.circuitBreakerStates().keySet()).containsExactly("eu-1", "eu-2");
+        lifecycleManager.allowProvisions();
+        var disposition = ctm.provisionReplacement(replacement, Option.some(PEER_A), members, NodeRole.CORE).await();
+        ctm.onNodeReady(replacement);
+
+        assertThat(disposition.unwrap()).isInstanceOf(ProvisionDisposition.Dispatched.class);
+        assertThat(ctm.circuitBreakerStates().keySet()).as("the replacement's source closed, not the committed one").containsExactly("eu-2");
+    }
+
     /// The operator events of the lifecycle (the release of an abandoned dispatch) reach the sink the node gives the manager: the manager
     /// hands its sink on to the lifecycle it owns.
     @Test
@@ -2784,6 +2809,13 @@ class ClusterTopologyManagerActuatorTest {
 
         void failProvisions() {
             failProvision.set(true);
+        }
+
+        /// The committed placement the lifecycle reports for a node (a test double of the capacity ledger); empty for an unlisted node.
+        private final ConcurrentHashMap<NodeId, org.pragmatica.aether.environment.SourceName> committedSources = new ConcurrentHashMap<>();
+
+        @Override public Option<org.pragmatica.aether.environment.SourceName> committedSourceOf(NodeId nodeId) {
+            return Option.option(committedSources.get(nodeId));
         }
 
         private volatile org.pragmatica.lang.Cause provisionFailure = org.pragmatica.lang.utils.Causes.cause("stub provision failure");

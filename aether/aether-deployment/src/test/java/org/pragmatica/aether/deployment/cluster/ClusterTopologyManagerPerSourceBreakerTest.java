@@ -373,28 +373,6 @@ class ClusterTopologyManagerPerSourceBreakerTest {
         assertThat(manager.circuitBreakerStates()).isEmpty();
     }
 
-    /// v2711 survivor 9 (c01): a node that joins is attributed to the source its replacement was provisioned in, ahead of any
-    /// placement committed for it; the join closes that source's breaker only.
-    @Test
-    void nodeJoins_attributedToTheSourceItsReplacementWasProvisionedIn_notToACommittedPlacement() {
-        placeBoth();
-        failingSources.addAll(Set.of("eu-1", "eu-2"));
-        failHeals(FROM_SECOND, 3);
-        failHeals(FROM_FIRST, 1);
-        failingSources.remove("eu-1");
-        var replacement = NodeId.randomNodeId();
-        var placedElsewhere = committedSource.get();
-        committedSource.set(asked -> asked.equals(replacement)
-                                     ? Result.success(SECOND)
-                                     : placedElsewhere.apply(asked));
-
-        var disposition = manager.provisionReplacement(replacement, Option.some(FROM_FIRST), MEMBERS, NodeRole.CORE).await();
-        manager.onNodeReady(replacement);
-
-        assertThat(disposition.unwrap()).isInstanceOf(ProvisionDisposition.Dispatched.class);
-        assertThat(manager.circuitBreakerStates().keySet()).as("only the replacement's source was closed").containsExactly("eu-2");
-    }
-
     /// v2711 survivor 9 (c56, c57): a manager that keeps no breaker of its own has none to report, and a reset naming a source is the
     /// reset it has, whatever the source.
     @Test
