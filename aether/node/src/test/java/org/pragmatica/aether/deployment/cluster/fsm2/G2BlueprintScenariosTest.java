@@ -26,6 +26,7 @@ import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 import static org.pragmatica.aether.deployment.cluster.fsm2.LcSupport.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
+
 /// CF-8 (#2759), G2 P2 (blueprint lifecycle writes) ported to fsm2: each write of the blueprint lifecycle (delete, SUCCEEDED, the
 /// BEST_EFFORT outcome, the rollback) converges when it fails once or is lost with its term. Mechanism: a removal is parked and
 /// replayed, and every other write is re-derived by the reconcile from committed facts (outcome sweep, failure sweep, the durable
@@ -33,7 +34,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 class G2BlueprintScenariosTest {
     private static final String APP = "org.example:app:1.0.0";
     private static final long TICK_SECONDS = Timing.DEFAULT.tick() / 1_000L;
+
     private static final AppBlueprintValue FIRST = blueprint(APP, false, "attempt-1", slice(ORDERS, 1, 1, Set.of()));
+
     private static final AppBlueprintValue SECOND = blueprint(APP, false, "attempt-2", slice(ORDERS_V2, 1, 1, Set.of()));
 
     private static Option<DeploymentOutcomeStatus> outcomeStatus(FsmHarness h) {
@@ -82,13 +85,15 @@ class G2BlueprintScenariosTest {
         h.seedRemove(new AppBlueprintKey(blueprintId(APP)));
         h.drain();
         h.held.clear();
-        assertThat(h.store.get(new SliceTargetKey(ORDERS.base())).isPresent()).as("control: the removal batch failed").isTrue();
+        assertThat(h.store.get(new SliceTargetKey(ORDERS.base())).isPresent()).as("control: the removal batch failed")
+                  .isTrue();
         h.policy = FsmHarness.SettlePolicy.APPLY;
         h.advanceBySeconds(TICK_SECONDS * 3);
-
         assertThat(h.store.get(new SliceTargetKey(ORDERS.base()))).as("the target is removed").isEqualTo(Option.none());
-        assertThat(h.store.get(new SliceDesiredKey(CORE_1, ORDERS)).map(SliceDesiredValue.class::cast).map(SliceDesiredValue::goal))
-                  .as("the instance is unloaded").isEqualTo(Option.some(SliceGoal.UNLOADED));
+        assertThat(h.store.get(new SliceDesiredKey(CORE_1, ORDERS))
+                          .map(SliceDesiredValue.class::cast)
+                          .map(SliceDesiredValue::goal)).as("the instance is unloaded")
+                  .isEqualTo(Option.some(SliceGoal.UNLOADED));
     }
 
     // G2 P2 succeeded_writeFailed_singleSlice_recorded
@@ -105,10 +110,10 @@ class G2BlueprintScenariosTest {
         node.follows(ORDERS);
         h.drain();
         h.held.clear();
-        assertThat(outcomeStatus(h)).as("control: the SUCCEEDED write failed").isEqualTo(Option.some(DeploymentOutcomeStatus.IN_PROGRESS));
+        assertThat(outcomeStatus(h)).as("control: the SUCCEEDED write failed")
+                  .isEqualTo(Option.some(DeploymentOutcomeStatus.IN_PROGRESS));
         h.policy = FsmHarness.SettlePolicy.APPLY;
         h.advanceBySeconds(TICK_SECONDS * 3);
-
         assertThat(outcomeStatus(h)).isEqualTo(Option.some(DeploymentOutcomeStatus.SUCCEEDED));
     }
 
@@ -126,10 +131,10 @@ class G2BlueprintScenariosTest {
         node.fails(ORDERS, true);
         h.drain();
         h.held.clear();
-        assertThat(outcomeStatus(h)).as("control: the failure write failed").isEqualTo(Option.some(DeploymentOutcomeStatus.IN_PROGRESS));
+        assertThat(outcomeStatus(h)).as("control: the failure write failed")
+                  .isEqualTo(Option.some(DeploymentOutcomeStatus.IN_PROGRESS));
         h.policy = FsmHarness.SettlePolicy.APPLY;
         h.advanceBySeconds(TICK_SECONDS * 3);
-
         assertThat(outcomeStatus(h)).isEqualTo(Option.some(DeploymentOutcomeStatus.FAILED));
     }
 
@@ -147,7 +152,6 @@ class G2BlueprintScenariosTest {
         assertThat(committedBlueprint(h)).as("control: the rollback write failed").isEqualTo(Option.some(SECOND));
         h.policy = FsmHarness.SettlePolicy.APPLY;
         h.advanceBySeconds(TICK_SECONDS * 5);
-
         assertThat(committedBlueprint(h).map(AppBlueprintValue::blueprint)).isEqualTo(Option.some(FIRST.blueprint()));
         assertThat(outcomeStatus(h)).isEqualTo(Option.some(DeploymentOutcomeStatus.ROLLED_BACK));
     }
@@ -169,9 +173,35 @@ class G2BlueprintScenariosTest {
         assertThat(committedBlueprint(h)).as("control: the rollback write failed").isEqualTo(Option.some(FIRST));
         h.policy = FsmHarness.SettlePolicy.APPLY;
         h.advanceBySeconds(TICK_SECONDS * 5);
-
         assertThat(committedBlueprint(h)).isEqualTo(Option.none());
         assertThat(outcomeStatus(h)).isEqualTo(Option.some(DeploymentOutcomeStatus.ROLLED_BACK));
+    }
+
+    // CF-8 rollbackMarked, the open-apply guard: the permanent-failure mark of a SUCCEEDED apply never derives a rollback
+    // Red when: the re-derivation from the mark rolls back an apply whose outcome is already terminal.
+    @Test
+    void succeededApply_laterPermanentFailure_isNotRolledBack() {
+        var h = active();
+        var node = node(h, CORE_1, 11);
+
+        publish(h, FIRST);
+        node.follows(ORDERS);
+        h.drain();
+        node.follows(ORDERS);
+        h.drain();
+        publish(h, SECOND, Option.some(FIRST));
+        node.follows(ORDERS_V2);
+        h.drain();
+        node.follows(ORDERS_V2);
+        h.drain();
+        h.advanceBySeconds(TICK_SECONDS * 2);
+        assertThat(outcomeStatus(h)).as("control: the apply succeeded")
+                  .isEqualTo(Option.some(DeploymentOutcomeStatus.SUCCEEDED));
+        node.fails(ORDERS_V2, true);
+        h.drain();
+        h.advanceBySeconds(TICK_SECONDS * 5);
+        assertThat(h.submits(SubmitKind.ROLLBACK)).as("a terminal apply is not rolled back by a later mark").isEmpty();
+        assertThat(committedBlueprint(h).map(AppBlueprintValue::blueprint)).isEqualTo(Option.some(SECOND.blueprint()));
     }
 
     // G2 P2 newLeader_rollbackIntent_rollbackCompleted, and the residual rollbackIntent_intentLostThenLeaderChange: the decision to
@@ -189,7 +219,8 @@ class G2BlueprintScenariosTest {
         var failure = h.submits(SubmitKind.FAILURE).getFirst();
 
         h.policy = FsmHarness.SettlePolicy.LOSE;
-        h.settle(failure, h.applyHeld(failure.correlationId()));
+        h.settle(failure,
+                 h.applyHeld(failure.correlationId()));
         h.drain();
         assertThat(h.submits(SubmitKind.ROLLBACK)).as("control: the rollback was sent, and lost").hasSize(1);
         assertThat(committedBlueprint(h)).as("control: nothing rolled back").isEqualTo(Option.some(SECOND));
@@ -200,7 +231,6 @@ class G2BlueprintScenariosTest {
         h.drain();
         h.activate();
         h.advanceBySeconds(TICK_SECONDS * 5);
-
         assertThat(committedBlueprint(h).map(AppBlueprintValue::blueprint)).isEqualTo(Option.some(FIRST.blueprint()));
     }
 }

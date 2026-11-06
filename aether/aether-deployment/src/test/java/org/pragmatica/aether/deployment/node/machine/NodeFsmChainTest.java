@@ -442,6 +442,26 @@ class NodeFsmChainTest {
             assertThat(h.submitsOf(SliceObservedState.FAILED)).isEmpty();
         }
 
+        /// G2 N01 (CF-8): a teardown whose stream-reference RELEASE could not be prepared must still unpublish the routes and unload the slice, and
+        /// say so at WARN. The legacy chain stopped at the failed release (`releaseStreamReferences` without a recover); the machine's teardown
+        /// preparation is best-effort (FER), so the RELEASE is only lost, not the unpublish or the unload. Red when: a failed preparation skips
+        /// UNPUBLISH or UNLOAD, writes FAILED, or is not logged.
+        @Test
+        @DisplayName("N01: a failed stream-reference release prepare still unpublishes the routes and unloads the slice")
+        void n01_unload_streamRefReleaseFailed_routesUnpublishedAndSliceUnloaded() {
+            var h = active();
+
+            h.script(LocalStep.PREPARE_TEARDOWN, LocalOutcome.failed(Causes.cause("stream reference release failed")));
+            h.clearEffects().goal(ARTIFACT, SliceGoal.UNLOADED, G2);
+
+            assertThat(h.localSteps()).contains(LocalStep.PREPARE_TEARDOWN, LocalStep.UNPUBLISH, LocalStep.UNLOAD);
+            assertThat(stateOf(h)).isEqualTo(SliceObservedState.UNLOADED);
+            assertThat(h.submitsOf(SliceObservedState.FAILED)).isEmpty();
+            assertThat(h.effectsOf(NodeFsmEffect.Log.class)).anyMatch(log -> log.level() == NodeFsmEffect.Level.WARN
+                                                                           && log.message().contains("PREPARE_TEARDOWN")
+                                                                           && log.message().contains("stream reference release failed"));
+        }
+
         /// Red when: the unload chain runs twice (a second UNLOAD step or a second UNLOADING write) on a re-delivered goal or on
         /// the node's own committed UNLOADING row.
         @Test
