@@ -93,6 +93,32 @@ class WorkflowRunIndexTest {
         assertThat(probe.settled()).as("a restore is not a transition").isEmpty();
     }
 
+    /// F4 (v2803): the snapshot is taken inside the index's lock, so a live put absorbed while the restore is in progress waits and
+    /// lands AFTER the restore instead of being overwritten by the older snapshot.
+    @Test
+    void restoreFrom_aPutAbsorbedDuringTheRestore_isNotOverwrittenByTheSnapshot() throws Exception {
+        var index = WorkflowRunIndex.workflowRunIndex();
+        var older = run("wf-a", 10L);
+        var newer = older.in(WorkflowState.ESCALATED, "newer");
+        var putter = new Thread(() -> index.put(newer));
+
+        index.restoreFrom(() -> startAndAwaitBlockedOrDone(putter, Map.of(new WorkflowRunKey("wf-a"), older)));
+        putter.join(5_000L);
+        assertThat(index.runs()).containsExactly(newer);
+    }
+
+    private static Map<?, ?> startAndAwaitBlockedOrDone(Thread putter, Map<?, ?> snapshot) {
+        putter.start();
+
+        var deadline = System.nanoTime() + 2_000_000_000L;
+
+        while (putter.getState() == Thread.State.RUNNABLE && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+
+        return snapshot;
+    }
+
     //--- the announce: owner-only, never on replay, ESCALATED on entry, RESOLVED on terminal exit, RESUMED on resume
 
     @Test

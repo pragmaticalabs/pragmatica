@@ -287,6 +287,24 @@ class WorkflowAdmissionTest {
         assertThat(WorkflowAdmission.runId("ab", "c").unwrap()).as("the separator keeps the parts apart").isNotEqualTo(WorkflowAdmission.runId("a", "bc").unwrap());
     }
 
+    /// F3 (v2803): the NUL separator's premise is enforced, not assumed: ("a\0b", "c") and ("a", "b\0c") would share an id.
+    @Test
+    void runId_aKindHoldingNul_isRefused() {
+        assertThat(WorkflowAdmission.runId("a\0b", "c").isFailure()).isTrue();
+        assertThat(refusal(WorkflowAdmission.runId("a\0b", "c"))).isEqualTo(new AdmissionRefusal.InvalidKindName("a\0b"));
+        assertThat(WorkflowAdmission.runId("a", "b\0c").isSuccess()).as("a NUL in the request key is harmless").isTrue();
+    }
+
+    /// F5 (v2803): the read-back compares kind and params only, so equal params with other conflict keys answer the first run.
+    @Test
+    void admit_sameRequestKeyWithEqualParamsButOtherConflictKeys_answersTheFirstRun() {
+        var first = admission.admit("pilot", Map.of(), List.of("node:n1"), 1L, "req-f5").await().unwrap();
+        var again = admission.admit("pilot", Map.of(), List.of("node:n2"), 2L, "req-f5").await();
+
+        assertThat(again.unwrap()).isEqualTo(first);
+        assertThat(cluster.claim("node:n2")).as("the second request's keys are not claimed").isEqualTo(Option.none());
+    }
+
     /// The client never saw the first answer and resends the same request: the applier refuses the second create (the run key
     /// exists), and the read-back answers THE SAME run as a success, admitting nothing new.
     @Test

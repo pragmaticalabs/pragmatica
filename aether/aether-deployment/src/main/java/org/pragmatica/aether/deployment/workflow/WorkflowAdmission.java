@@ -32,8 +32,10 @@ import org.pragmatica.lang.io.TimeSpan;
 ///
 /// Keyed admission (f2b §5): the run id is derived from the kind and the caller's request key ([#runId]), so a retry of one request
 /// names the SAME run. A retry after a lost answer is refused by the applier (the run key is expected absent); the read-back then
-/// finds the committed run and, when its kind and params equal the request's, answers THAT run as the success. The same request key
-/// with a different kind or params is [AdmissionRefusal.RequestKeyReused]. A create left unanswered past `bound` is uncertain: the
+/// finds the committed run and, when its kind and params equal the request's, answers THAT run as the success. The read-back compares
+/// kind and params ONLY: the same request key with equal params but different `conflictKeys` answers the first run as a success, with
+/// the first run's keys, and a request key re-admitted after its run is DONE answers the DONE run (nothing is admitted). The same
+/// request key with a different kind or params is [AdmissionRefusal.RequestKeyReused]. A create left unanswered past `bound` is uncertain: the
 /// same read-back resolves it when the run is already visible, and otherwise the refusal is [AdmissionRefusal.Unanswered], which the
 /// caller resolves by retrying with the same request key. Bound: idempotency holds while the run is retained (not yet deleted), so
 /// the retention of terminal runs must be at least the client's retry window.
@@ -111,14 +113,26 @@ public interface WorkflowAdmission {
             }
         }
 
+        /// The kind name holds a NUL, which the run id's separator takes as its own: ("a\0b", "c") and ("a", "b\0c") would share an id.
+        record InvalidKindName(String kind) implements AdmissionRefusal {
+            @Override
+            public String message() {
+                return "Workflow kind name " + kind.replace("\0", "\\0") + " must not contain a NUL";
+            }
+        }
+
         NotLeader NOT_LEADER = new NotLeader();
         InvalidRequestKey INVALID_REQUEST_KEY = new InvalidRequestKey();
     }
 
     /// The run id of the request `requestKey` for `kind`: `wf-` and the first 16 hex characters of SHA-256 over the kind, a NUL
-    /// separator and the request key (the separator keeps (`ab`, `c`) and (`a`, `bc`) apart; a kind name holds no NUL).
+    /// separator and the request key (the separator keeps (`ab`, `c`) and (`a`, `bc`) apart). The separator's premise, a kind name without
+    /// a NUL, is enforced here: a kind that holds one is refused as [AdmissionRefusal.InvalidKindName].
     static Result<String> runId(String kind, String requestKey) {
-        return Result.lift(() -> MessageDigest.getInstance("SHA-256"))
+        return Verify.ensure(kind,
+                             name -> name.indexOf('\0') < 0,
+                             new AdmissionRefusal.InvalidKindName(kind))
+                     .flatMap(_ -> Result.lift(() -> MessageDigest.getInstance("SHA-256")))
                      .map(digest -> digest.digest((kind + "\0" + requestKey).getBytes(StandardCharsets.UTF_8)))
                      .map(hash -> "wf-" + HexFormat.of()
                                                    .formatHex(hash)
@@ -213,6 +227,7 @@ public interface WorkflowAdmission {
                                    existing -> sameRequest(run, existing, requestKey));
             }
 
+            /// The read-back compares kind and params only; `conflictKeys` and the run's state are not compared (F5).
             private static Promise<WorkflowRunValue> sameRequest(WorkflowRunValue run,
                                                                  WorkflowRunValue existing,
                                                                  String requestKey) {

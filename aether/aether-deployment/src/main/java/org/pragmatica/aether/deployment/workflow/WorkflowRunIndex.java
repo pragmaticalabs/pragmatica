@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 
 import org.pragmatica.aether.slice.kvstore.AetherKey.WorkflowRunKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowRunValue;
@@ -93,7 +94,8 @@ public final class WorkflowRunIndex {
     }
 
     /// Replace the whole view from a KV snapshot (state restore): any entry that is not a run is ignored. No event is raised: a
-    /// restore is not a transition.
+    /// restore is not a transition. The snapshot is already taken, so a put absorbed between taking it and this call is overwritten;
+    /// a caller that can race live puts uses [#restoreFrom].
     public synchronized Unit restore(Map<?, ?> snapshot) {
         var updated = new HashMap<String, WorkflowRunValue>();
 
@@ -101,6 +103,12 @@ public final class WorkflowRunIndex {
         runs = Map.copyOf(updated);
 
         return Unit.unit();
+    }
+
+    /// As [#restore], but the snapshot is taken INSIDE the index's lock: a put absorbed meanwhile waits for the lock and is applied
+    /// after the restore, so a restore never overwrites a newer put (v2803 F4).
+    public synchronized Unit restoreFrom(Supplier<Map<?, ?>> snapshot) {
+        return restore(snapshot.get());
     }
 
     private static Unit collectRun(Map<String, WorkflowRunValue> target, Object key, Object value) {
@@ -144,10 +152,14 @@ public final class WorkflowRunIndex {
     /// - [OperatorWarningCode#WORKFLOW_RESUMED] (INFO, not a recovery: the incident stays open) when `before` was `ESCALATED` and `after`
     ///   is `RUNNING` or `WAITING`. A run that escalates again after a resume opens a new incident.
     ///
-    /// Guarantee: each event is raised AT MOST ONCE per committed transition, by the cluster-events owner that applies it. Mechanism:
-    /// the raise is derived from the applied (before, after) pair on the owner, never from a commit's answer, so a slow or failed
-    /// answer no longer loses it. It is lost only when the owner dies between the apply and the raise (or the sink drops it); the
-    /// committed run keeps the incident as its `detail` in every case. `[design intent, unverified]` on a live cluster.
+    /// Guarantee per operation. RAISE: at most once per owner tenure; an owner hand-off can duplicate or lose it. Mechanism: the raise is
+    /// derived from the applied (before, after) pair, never from a commit's answer, so a slow or failed answer does not lose it. Within a
+    /// tenure it is deduped by the owner gate (`ownsClusterEvents`), the replay bit, and the (before, after) pair looked up by run id (the
+    /// index holds the new run afterwards, so a redelivered identical transition raises nothing). Across a hand-off the gate is the live
+    /// placement of the events partition read at each node's own apply time, not at a log index: the old owner can apply before it gives
+    /// up and the new one after it took over (two raises), or the new one before and the old one after (none); before the controller is
+    /// bound the gate reads false everywhere (#957); an owner dying between apply and raise loses it. The committed run keeps the incident
+    /// as its `detail` in every case. `[design intent, unverified]` on a live cluster.
     public static TransitionListener announcer(BooleanSupplier ownsClusterEvents, OperatorWarningSink warnings) {
         return (before, after, replayed) -> !replayed && ownsClusterEvents.getAsBoolean()
                                             ? announce(warnings, before, after)
