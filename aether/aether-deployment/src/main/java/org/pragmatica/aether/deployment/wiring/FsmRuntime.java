@@ -30,12 +30,23 @@ import org.slf4j.LoggerFactory;
 /// ACTIVE, so the burst carries install-time values and would regress keys) or if its revision is at or below the revision of the last
 /// snapshot (the snapshot already contains it). Both are counted `inputs_total{result=dropped_replay|dropped_revision}`. A worker's interpreter
 /// runs the [ReplayRule#WORKER] rule instead: a replay-flagged input is a fact, deduplicated by the same revision (design D8).
+///
+/// **A worker's install resets the watermark (CTO ruling D8, know `5b4db3a518`).** On a worker every replica snapshot install (an incarnation
+/// change, `AHEAD`, any `restoreCommittedSnapshot`) is a new snapshot for the node FSM: its burst, the replay-flagged inputs stamped with the
+/// install's revision, is stepped as the authoritative diff, and the watermark becomes that revision, whether it is above or below the old one.
+/// An install is recognised by its revision: a replay at a revision other than the last install's (or the entry snapshot's) opens a new burst,
+/// which stays open until the next input that is not replay-flagged or the next entry snapshot. A later replay at the same revision is that
+/// install again and is deduplicated. Named limits: a different install at the same revision as the last one read is taken for it (its
+/// inputs are stepped only while that burst is still open), because the stamp carries no incarnation tag; and a same-incarnation install
+/// below what the worker already stepped (a lagging core) steps a regressed burst, #2776, as LEGACY does.
 abstract class FsmRuntime<I, K, A> {
     private static final Logger log = LoggerFactory.getLogger(FsmRuntime.class);
     /// How long a stop waits for an interpreter (design 7, 2b; the cluster's stop bound): `[guess: 10 s; settled by E-07]`.
     public static final long STOP_WAIT_MS = 10_000L;
     /// How long the mailbox is joined once the consumer has reached `Close`: it exits at once, so this only bounds a consumer that stalls after it.
     private static final long JOIN_MS = 5_000L;
+    /// No install has been read yet: no revision is negative.
+    private static final long NO_INSTALL = -1L;
 
     private final String name;
     private final long stopWaitMs;
@@ -47,6 +58,10 @@ abstract class FsmRuntime<I, K, A> {
     private final CountDownLatch stopped = new CountDownLatch(1);
     private final ReplayRule replayRule;
     private long watermark;
+    /// The revision of the last install the FSM has read: the open burst's, or the entry snapshot's. A worker's only (design D8).
+    private long installRevision = NO_INSTALL;
+    /// Whether the burst of the install at [#installRevision] is still being delivered (a worker's only).
+    private boolean burstOpen;
 
     FsmRuntime(String threadName, FsmTimers.TimerService clock) {
         this(threadName, clock, STOP_WAIT_MS);
@@ -172,13 +187,26 @@ abstract class FsmRuntime<I, K, A> {
     }
 
     private void keyValue(FsmItem.Kv<I, K> kv) {
+        burstOpen = burstOpen && kv.replay();
         if (kv.replay() && replayRule == ReplayRule.CORE) {
             count(inputName(kv.input()), "dropped_replay");
+        } else if (kv.replay() && kv.revision() != installRevision) {
+            installed(kv.revision());
+            step(kv.input());
+        } else if (kv.replay() && burstOpen) {
+            step(kv.input());
         } else if (kv.revision() <= watermark) {
             count(inputName(kv.input()), "dropped_revision");
         } else {
             step(kv.input());
         }
+    }
+
+    /// A worker's replica install at `revision` (design D8): its burst is the authoritative diff, and what follows dedupes against `revision`.
+    private void installed(long revision) {
+        watermark = revision;
+        installRevision = revision;
+        burstOpen = true;
     }
 
     private void tick(FsmTimers.Tick<K> tick) {
@@ -237,9 +265,12 @@ abstract class FsmRuntime<I, K, A> {
         return Unit.unit();
     }
 
-    /// The snapshot at `revision` was taken: everything stamped at or below it is already in it.
+    /// The snapshot at `revision` was taken: everything stamped at or below it is already in it. On a worker it is also the install the FSM has
+    /// read, so a burst at `revision` that follows it is that install's, and deduplicated.
     final Unit snapshotTakenAt(long revision) {
         watermark = Math.max(watermark, revision);
+        installRevision = revision;
+        burstOpen = false;
 
         return Unit.unit();
     }

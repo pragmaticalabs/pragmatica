@@ -80,6 +80,15 @@ final class NodeRig implements AutoCloseable {
 
     /// `ops` replaces the scriptable local runtime: the real executor over the real adapter, for the tests that run a chain end to end.
     NodeRig(NodeFsmTimings timings, boolean started, LocalOps ops) {
+        this(timings, started, ops, ReplayRule.CORE);
+    }
+
+    /// A node of the role `replayRule` names (design D8): [ReplayRule#WORKER] for a worker's interpreter.
+    NodeRig(ReplayRule replayRule) {
+        this(NodeFsmTimings.nodeFsmTimings(), true, null, replayRule);
+    }
+
+    private NodeRig(NodeFsmTimings timings, boolean started, LocalOps ops, ReplayRule replayRule) {
         this.timings = timings;
         var config = NodeFsmConfig.nodeFsmConfig(SELF, PROCESS).withTimings(timings);
         var fsm = NodeFsm.nodeFsm(config, () -> wall);
@@ -102,7 +111,9 @@ final class NodeRig implements AutoCloseable {
                                                                                          (_, input, _) -> {
                                                                                              stepThreads.add(Thread.currentThread().getName());
                                                                                              stepped.add(input);
-                                                                                         }));
+                                                                                         }),
+                                                                  FsmRuntime.STOP_WAIT_MS,
+                                                                  replayRule);
         routes();
         applier.commitLeader(LEADER);
 

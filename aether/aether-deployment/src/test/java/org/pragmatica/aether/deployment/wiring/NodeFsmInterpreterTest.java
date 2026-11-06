@@ -284,6 +284,99 @@ class NodeFsmInterpreterTest {
         }
     }
 
+    /// The worker replay rule (CTO ruling D8, know `5b4db3a518`): every replica install resets the watermark to its revision and its burst is
+    /// stepped as the authoritative diff; what follows the burst, and the same install replayed again, dedupe against that revision. The core
+    /// rule is [SnapshotRevision]'s.
+    @Nested
+    class WorkerReplay {
+        /// A new history installed BELOW the entry revision: its burst (two inputs, so the open burst is what steps the second) is stepped, a
+        /// later fact at or below the install's revision is dropped, the same install replayed after its burst closed is dropped, and the next
+        /// revision is stepped. Mutations: a monotone `max` watermark with no reset drops the burst and the next revision; a reset on every KV
+        /// input steps the later fact; a burst not kept open drops its second input; a burst not closed by a plain input steps the replay again.
+        @Test
+        void anInstallBelowTheEntryRevision_isStepped_andWhatFollowsDedupesAgainstIt() {
+            try (var rig = new NodeRig(ReplayRule.WORKER)) {
+                var entered = rig.permit(ORDERS).goal(ORDERS, SliceGoal.LOADED).applier.slot();
+
+                rig.enter();
+                assertThat(entered).as("the install below lands under the entry watermark").isGreaterThan(1L);
+                var desired = rig.countOf("DesiredPut");
+                var targets = rig.countOf("TargetPut");
+
+                rig.interpreter.deliverKv(new NodeFsmInput.DesiredPut(BILLING, desired(SliceGoal.LOADED)), 1L, true);
+                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(BILLING.base(), BILLING.version()), 1L, true);
+                rig.interpreter.deliverKv(new NodeFsmInput.DesiredPut(AUDIT, desired(SliceGoal.LOADED)), 1L, false);
+                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(AUDIT.base(), AUDIT.version()), 1L, true);
+                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(ORDERS.base(), ORDERS.version()), 2L, false);
+                rig.settle();
+
+                assertThat(rig.countOf("DesiredPut")).as("the burst's goal is stepped").isEqualTo(desired + 1);
+                assertThat(rig.countOf("TargetPut")).as("the burst's second input and the next revision are stepped").isEqualTo(targets + 2);
+                assertThat(rig.metric("DesiredPut", "dropped_revision")).as("a later fact at the install's revision is in it").isEqualTo(1);
+                assertThat(rig.metric("TargetPut", "dropped_revision")).as("the same install, replayed after its burst closed").isEqualTo(1);
+            }
+        }
+
+        /// The entry snapshot is the install the FSM has read: a burst at its revision that follows the entry is that install's, and dropped.
+        /// Mutation: the entry not recording its revision as the install's (the burst is stepped as a new install).
+        @Test
+        void aBurstAtTheEntryRevision_afterTheEntry_isDropped() {
+            try (var rig = new NodeRig(ReplayRule.WORKER)) {
+                var entered = rig.permit(ORDERS).goal(ORDERS, SliceGoal.LOADED).applier.slot();
+
+                rig.enter();
+                var targets = rig.countOf("TargetPut");
+
+                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(BILLING.base(), BILLING.version()), entered, true);
+                rig.settle();
+
+                assertThat(rig.countOf("TargetPut")).as("the entry snapshot already holds it").isEqualTo(targets);
+                assertThat(rig.metric("TargetPut", "dropped_revision")).isEqualTo(1);
+            }
+        }
+
+        /// A burst open before the entry is closed by it: the same revision after the entry is the install the snapshot read, and dropped.
+        /// Mutation: the entry not closing the open burst (the input is stepped as its continuation).
+        @Test
+        void aBurstOpenBeforeTheEntry_isClosedByIt() {
+            try (var rig = new NodeRig(ReplayRule.WORKER)) {
+                var entered = rig.permit(ORDERS).goal(ORDERS, SliceGoal.LOADED).applier.slot();
+
+                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(AUDIT.base(), AUDIT.version()), entered, true);
+                rig.enter();
+                var targets = rig.countOf("TargetPut");
+
+                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(BILLING.base(), BILLING.version()), entered, true);
+                rig.settle();
+
+                assertThat(rig.countOf("TargetPut")).as("the entry snapshot already holds it").isEqualTo(targets);
+                assertThat(rig.metric("TargetPut", "dropped_revision")).isEqualTo(1);
+            }
+        }
+
+        /// Control for both: a burst ABOVE the entry revision is stepped too, and the core rule still drops the same burst (`dropped_replay`).
+        @Test
+        void anInstallAboveTheEntryRevision_isStepped_andACoreStillDropsIt() {
+            try (var worker = new NodeRig(ReplayRule.WORKER); var core = new NodeRig()) {
+                var entered = worker.permit(ORDERS).goal(ORDERS, SliceGoal.LOADED).applier.slot();
+
+                worker.enter();
+                core.permit(ORDERS).goal(ORDERS, SliceGoal.LOADED).enter();
+                var stepped = worker.countOf("TargetPut");
+                var coreStepped = core.countOf("TargetPut");
+
+                worker.interpreter.deliverKv(new NodeFsmInput.TargetPut(BILLING.base(), BILLING.version()), entered + 5, true);
+                core.interpreter.deliverKv(new NodeFsmInput.TargetPut(BILLING.base(), BILLING.version()), entered + 5, true);
+                worker.settle();
+                core.settle();
+
+                assertThat(worker.countOf("TargetPut")).isEqualTo(stepped + 1);
+                assertThat(core.countOf("TargetPut")).as("the core rule is unchanged").isEqualTo(coreStepped);
+                assertThat(core.metric("TargetPut", "dropped_replay")).isEqualTo(1);
+            }
+        }
+    }
+
     @Nested
     class Writes {
         /// W-07: the Submits of one step leave in one `apply`.

@@ -9,13 +9,15 @@ package org.pragmatica.aether.deployment.wiring;
 /// | Rule | A replay-flagged input | Any KV input at or below the snapshot revision |
 /// |---|---|---|
 /// | `CORE` | dropped, `dropped_replay`: a restore never runs while the engine is ACTIVE, and is bracketed by the genuine quorum edges | dropped, `dropped_revision` |
-/// | `WORKER` | a fact: stepped when above the snapshot revision | dropped, `dropped_revision` |
+/// | `WORKER` | a fact: a burst at a new install's revision is stepped as the authoritative diff and resets the snapshot revision to it (ruling D8, know `5b4db3a518`); the same install replayed again is deduplicated | dropped, `dropped_revision` |
 ///
 /// **Why a worker steps a replay.** A worker's store is a replica fed by a core (owner ruling QJ-7, know `23ca0fd65f` D.2): a re-subscription
 /// installs a snapshot and replays the difference to what was delivered (`ReplicaApplier.install`, `KVStore.replayNotifications`), while the
 /// worker's node FSM stays ACTIVE. That burst is the only carrier of the goals committed during the gap; dropping it would freeze the worker
 /// (review C1). The dedupe by revision is sound on a worker because the replica carries the cores' revisions (`KVStore.applyEffects` sets
-/// `slot + 1`, an install sets the snapshot's revision), so a stamp at or below the snapshot revision is in the snapshot.
+/// `slot + 1`, an install sets the snapshot's revision), so a stamp at or below the snapshot revision is in the snapshot. An install can move
+/// that revision DOWN (`KVStore.restoreCommittedSnapshot` assigns it: a new incarnation, or `AHEAD` against a lagging core), so the snapshot
+/// revision a worker dedupes against is the last install's, never a monotone maximum.
 public enum ReplayRule {
     CORE,
     WORKER

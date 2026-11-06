@@ -41,8 +41,9 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// - That worker's departure (B9 `WorkerLeave`) is recorded DEPARTED by the leader, which removes the worker's desired keys.
 ///
 /// Without the core-side admission (`DeploymentWiring.workerJoin` bound as a counted drop) no directive is written and the worker never becomes
-/// placeable (`worker-assignment-overdue`): the directive and desired-key waits time out. This test is also the only kill of the AetherNode binding
-/// lines of B4, B10, B11 and B9 (worker leave) and of the worker flag handed to the FSM2 system.
+/// placeable (`worker-assignment-overdue`): the directive and desired-key waits time out. This test is the only kill of AetherNode's B4 entry
+/// edge, of its attach condition and of the worker flag handed to the FSM2 system (each probed RED). AetherNode's B10, B11 and B9 (worker leave)
+/// binding lines are also killed by `DeploymentWiringBootTest`; here only the B10 bindings were probed (RED), B11 and B9 were not.
 @PortBudget
 class EmberFsm2WorkerArmTest {
     private static final int CORES = 3;
