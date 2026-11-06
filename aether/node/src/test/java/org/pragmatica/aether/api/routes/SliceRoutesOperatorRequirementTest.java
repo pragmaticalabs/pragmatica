@@ -63,10 +63,16 @@ class SliceRoutesOperatorRequirementTest {
 
         var transaction = SliceRoutes.operatorTransaction(store, ARTIFACT, Option.none(), Option.none()).unwrap();
 
-        assertThat(transaction.mutations()).hasSize(1);
+        // v2713 item 2: a release never commands a scale-down, so the same transaction re-bases REACTIVE to the held count.
+        assertThat(transaction.mutations()).hasSize(2);
         assertThat(transaction.mutations().getFirst().key()).isEqualTo(OPERATOR_KEY);
         assertThat(transaction.mutations().getFirst().replacement().isEmpty()).as("a release removes the record").isTrue();
         assertThat(transaction.mutations().getFirst().expected().isPresent()).as("and expects the committed record").isTrue();
+        var rebase = transaction.mutations().getLast();
+
+        assertThat(rebase.key()).as("REACTIVE is re-based in the same transaction").isNotEqualTo(OPERATOR_KEY);
+        assertThat(rebase.replacement().isPresent()).as("to the held count, not removed").isTrue();
+        assertThat(rebase.replacement().map(v -> ((SliceRequirementValue) v).instances())).isEqualTo(Option.some(4));
     }
 
     @Test
