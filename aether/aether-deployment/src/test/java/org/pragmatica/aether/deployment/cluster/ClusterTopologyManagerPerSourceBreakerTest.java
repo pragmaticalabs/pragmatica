@@ -224,6 +224,35 @@ class ClusterTopologyManagerPerSourceBreakerTest {
         assertThat(manager.circuitBreakerState().consecutiveFailures()).as("the aggregate is the worst source, not the sum").isEqualTo(2);
     }
 
+    /// Two sources with different counts and windows: the aggregate is the worst count, the latest window, tripped when any source is;
+    /// each source keeps its own window and trip state.
+    @Test
+    void aggregate_isWorstCountLatestWindowAndAnyTripped_whileEachSourceKeepsItsOwn() throws InterruptedException {
+        placeBoth();
+        failingSources.addAll(Set.of("eu-1", "eu-2"));
+
+        failHeals(FROM_FIRST, 3);
+        failHeals(FROM_SECOND, 1);
+
+        var firstWindow = manager.circuitBreakerStates().get("eu-1").nextAllowedMs();
+        assertThat(firstWindow).as("the tripped source armed a window").isPositive();
+        assertThat(manager.circuitBreakerStates().get("eu-2").nextAllowedMs()).as("a source below the cap has no window").isZero();
+        assertThat(manager.circuitBreakerStates().get("eu-2").consecutiveFailures()).isEqualTo(1);
+        assertThat(manager.circuitBreakerStates().get("eu-2").tripped()).isFalse();
+        var oneTripped = manager.circuitBreakerState();
+        assertThat(oneTripped.consecutiveFailures()).as("the worst count, not the least").isEqualTo(3);
+        assertThat(oneTripped.nextAllowedMs()).as("the latest window, not the least").isEqualTo(firstWindow);
+        assertThat(oneTripped.tripped()).as("tripped when any source is, not only when all are").isTrue();
+
+        Thread.sleep(10);
+        failHeals(FROM_SECOND, 2);
+
+        var secondWindow = manager.circuitBreakerStates().get("eu-2").nextAllowedMs();
+        assertThat(secondWindow).as("the later trip armed a later window").isGreaterThan(firstWindow);
+        assertThat(manager.circuitBreakerStates().get("eu-1").nextAllowedMs()).as("the first window is untouched").isEqualTo(firstWindow);
+        assertThat(manager.circuitBreakerState().nextAllowedMs()).as("the latest window of the two").isEqualTo(secondWindow);
+    }
+
     @Test
     void operatorResetWithSource_closesOnlyThatSource() {
         placeBoth();
