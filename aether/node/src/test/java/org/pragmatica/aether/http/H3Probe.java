@@ -9,10 +9,13 @@ import java.nio.charset.StandardCharsets;
 import java.security.cert.X509Certificate;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.channel.ChannelInitializer;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.nio.NioIoHandler;
@@ -38,9 +41,34 @@ import io.netty.util.concurrent.Future;
 public final class H3Probe {
     private H3Probe() {}
 
-    /// The response to one request: its status and body. The status is `closed` when the stream or the connection ended
-    /// without one, and `no-connection` when the QUIC handshake did not complete.
-    public record Answer(String status, String body) {}
+    /// The response to one request: its status, body and `diagnostics`, the timed event log of the exchange (connect,
+    /// handshake, request written, headers, data, input end, close causes, and why the answer was finished). The status
+    /// is `closed` when the stream or the connection ended without one, and `no-connection` when the QUIC handshake did
+    /// not complete (#2746: a bare `closed` named no cause).
+    public record Answer(String status, String body, String diagnostics) {
+        /// The numeric status, or an [IllegalStateException] carrying the diagnostics when the exchange produced none.
+        public int statusCode() {
+            if (status.isEmpty() || !status.chars().allMatch(Character::isDigit)) {
+                throw new IllegalStateException("no HTTP status: '" + status + "'; " + diagnostics);
+            }
+
+            return Integer.parseInt(status);
+        }
+    }
+
+    /// Timed event log of one exchange; events arrive from the client's event loop and the test thread.
+    private static final class Trace {
+        private final long start = System.nanoTime();
+        private final StringBuilder events = new StringBuilder();
+
+        synchronized void add(String event) {
+            events.append(event).append('@').append((System.nanoTime() - start) / 1_000_000).append("ms ");
+        }
+
+        synchronized String render() {
+            return "events: " + events.toString().trim();
+        }
+    }
 
     /// Writes one request on a fresh request stream. It may block (to stall or trickle a body), and need not end the
     /// stream's output.
@@ -69,27 +97,36 @@ public final class H3Probe {
     /// Opens a connection, lets `writer` write one request, and waits up to 10 s after it returns for the response.
     public static Answer exchange(int port, RequestWriter writer) throws Exception {
         var group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+        var trace = new Trace();
 
         try {
             var channel = clientChannel(group);
-            var connect = connect(channel, port);
+
+            trace.add("connect-start");
+
+            var connect = connect(channel, port, trace);
 
             if (!connect.await(10, TimeUnit.SECONDS) || !connect.isSuccess()) {
+                trace.add("connect-failed(" + connect.cause() + ")");
                 channel.close().sync();
 
-                return new Answer("no-connection", "");
+                return new Answer("no-connection", "", trace.render());
             }
 
-            var quic = connect.getNow();
-            var reader = new AnswerReader();
+            trace.add("connected");
 
-            quic.closeFuture().addListener(_ -> reader.finish());
+            var quic = connect.getNow();
+            var reader = new AnswerReader(trace);
+
+            quic.closeFuture().addListener(_ -> reader.finish("quic-closed"));
 
             var stream = Http3.newRequestStream(quic, reader).sync().getNow();
 
+            trace.add("stream-open");
             writer.write(stream);
+            trace.add("request-written");
 
-            var answer = reader.answer.get(10, TimeUnit.SECONDS);
+            var answer = awaitAnswer(reader, trace);
 
             quic.close().sync();
             channel.close().sync();
@@ -100,13 +137,22 @@ public final class H3Probe {
         }
     }
 
+    private static Answer awaitAnswer(AnswerReader reader, Trace trace) throws Exception {
+        try {
+            return reader.answer.get(10, TimeUnit.SECONDS);
+        } catch (TimeoutException e) {
+            trace.add("answer-timeout");
+            throw new TimeoutException("no answer within 10 s; " + trace.render());
+        }
+    }
+
     /// Completes a QUIC handshake and returns the leaf certificate the listener presented.
     public static X509Certificate presentedCertificate(int port) throws Exception {
         var group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
 
         try {
             var channel = clientChannel(group);
-            var quic = connect(channel, port).get(10, TimeUnit.SECONDS);
+            var quic = connect(channel, port, new Trace()).get(10, TimeUnit.SECONDS);
             var certificate = (X509Certificate) quic.sslEngine().getSession().getPeerCertificates()[0];
 
             quic.close().sync();
@@ -138,11 +184,31 @@ public final class H3Probe {
                               .channel();
     }
 
-    private static Future<QuicChannel> connect(Channel channel, int port) {
+    private static Future<QuicChannel> connect(Channel channel, int port, Trace trace) {
         return QuicChannel.newBootstrap(channel)
-                          .handler(new Http3ClientConnectionHandler())
+                          .handler(new ChannelInitializer<QuicChannel>() {
+                              @Override
+                              protected void initChannel(QuicChannel ch) {
+                                  ch.pipeline().addLast(new Http3ClientConnectionHandler(), new EventRecorder(trace));
+                              }
+                          })
                           .remoteAddress(new InetSocketAddress("127.0.0.1", port))
                           .connect();
+    }
+
+    /// Records every user event on the QUIC connection (close causes included) into the trace.
+    private static final class EventRecorder extends ChannelInboundHandlerAdapter {
+        private final Trace trace;
+
+        EventRecorder(Trace trace) {
+            this.trace = trace;
+        }
+
+        @Override
+        public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
+            trace.add("quic-event(" + evt + ")");
+            super.userEventTriggered(ctx, evt);
+        }
     }
 
     /// Collects the first status and the body. Completes when the stream's input ends, when the stream or the
@@ -150,13 +216,19 @@ public final class H3Probe {
     private static final class AnswerReader extends Http3RequestStreamInboundHandler {
         private final CompletableFuture<Answer> answer = new CompletableFuture<>();
         private final StringBuilder body = new StringBuilder();
+        private final Trace trace;
         private String status = "closed";
+
+        AnswerReader(Trace trace) {
+            this.trace = trace;
+        }
 
         @Override
         protected void channelRead(ChannelHandlerContext ctx, Http3HeadersFrame frame) {
             synchronized (body) {
                 if ("closed".equals(status)) {
                     status = String.valueOf(frame.headers().status());
+                    trace.add("headers(" + status + ")");
                 }
             }
         }
@@ -164,6 +236,7 @@ public final class H3Probe {
         @Override
         protected void channelRead(ChannelHandlerContext ctx, Http3DataFrame frame) {
             synchronized (body) {
+                trace.add("data(" + frame.content().readableBytes() + "B)");
                 body.append(frame.content().toString(StandardCharsets.UTF_8));
             }
             ReferenceCountUtil.release(frame);
@@ -171,24 +244,25 @@ public final class H3Probe {
 
         @Override
         protected void channelInputClosed(ChannelHandlerContext ctx) {
-            finish();
+            finish("input-closed");
         }
 
         @Override
         public void channelInactive(ChannelHandlerContext ctx) {
-            finish();
+            finish("stream-inactive");
             ctx.fireChannelInactive();
         }
 
         @Override
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-            finish();
+            finish("exception(" + cause + ")");
             ctx.close();
         }
 
-        void finish() {
+        void finish(String reason) {
             synchronized (body) {
-                answer.complete(new Answer(status, body.toString()));
+                trace.add("finish:" + reason);
+                answer.complete(new Answer(status, body.toString(), trace.render()));
             }
         }
     }
