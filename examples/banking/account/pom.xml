@@ -56,18 +56,19 @@
         </dependency>
 
         <!-- #2712: annotationProcessorPaths adds no reactor ordering edge, so under -T the processors may not be built and
-             installed yet. provided scope gives Maven the edge without putting them on the runtime classpath. -->
+             installed yet. test scope gives Maven the edge without touching the slice manifest: provided scope would be
+             recorded by PackageSlicesMojo as a shared dependency in META-INF/dependencies/*Factory, test scope is not. -->
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>slice-processor</artifactId>
             <version>${project.version}</version>
-            <scope>provided</scope>
+            <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>jbct-async-check</artifactId>
             <version>${project.version}</version>
-            <scope>provided</scope>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 
