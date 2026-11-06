@@ -2800,6 +2800,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STREAM_SEGMENT_DHT_FULL,
                 OperatorWarningCode.STREAM_SEGMENT_DISK_PRESSURE,
                 OperatorWarningCode.PROVISION_ADMISSION_DEFERRED,
+                OperatorWarningCode.AUTO_HEAL_SCALING_HELD,
                 OperatorWarningCode.CORE_CAPACITY_AWAITING_DURABLE,
                 OperatorWarningCode.CORE_REPLACEMENT_SOURCE_UNRESOLVED,
                 OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
