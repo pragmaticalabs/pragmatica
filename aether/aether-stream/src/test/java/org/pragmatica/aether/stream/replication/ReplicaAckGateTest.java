@@ -27,6 +27,10 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -67,6 +71,7 @@ class ReplicaAckGateTest {
     private final ConcurrentLinkedQueue<Promise<Unit>> heldSyncs = new ConcurrentLinkedQueue<>();
     /// The next-expected offset the handler reads, lowered by a test to stand for a repair that cut the tail.
     private final AtomicLong cutNext = new AtomicLong(Long.MAX_VALUE);
+    private final ConcurrentLinkedQueue<OperatorWarning> warnings = new ConcurrentLinkedQueue<>();
 
     private StreamPartitionManager replica;
     private ReplicationReceiveHandler handler;
@@ -87,7 +92,8 @@ class ReplicaAckGateTest {
                                             AcceptingReplicationTransport.accepting((_, message) -> acks.add((ReplicationMessage.ReplicateAck) message)),
                                             (_, _) -> gapRepairs.incrementAndGet(),
                                             this::sync,
-                                            committedOwners());
+                                            committedOwners(),
+                                            OperatorWarningSink.handingOffTo(warnings::add));
         // The production wiring (StreamAssembly).
         handler.ackGate(replica::replicaVerified);
         replica.onEpochVerified(handler::releaseDeferredAck);
@@ -181,6 +187,46 @@ class ReplicaAckGateTest {
         drain(releaseSync);
 
         assertThat(ackOffsets(E2)).as("the owner's last ack is the highest").containsExactly(7L);
+    }
+
+    /// The other side of G3: a live ack LOWER than the deferred one (an old duplicate re-delivered after verification) does not
+    /// cover it, so the release still sends the higher offset, after the live one.
+    @Test
+    void deferredAck_higherThanALaterLiveDuplicateAck_isStillReleased() {
+        unverifiedCopyUnderE2();
+        handler.onReplicateEvents(liveBatch(5, 3, E2));
+        holdSyncs.set(true);
+        replica.markVerifiedForEpoch(STREAM, PARTITION, E2);
+        handler.onReplicateEvents(liveBatch(5, 1, E2));
+
+        var releaseSync = heldSyncs.poll();
+        var liveSync = heldSyncs.poll();
+
+        drain(liveSync);
+        drain(releaseSync);
+
+        assertThat(ackOffsets(E2)).containsExactly(5L, 7L);
+    }
+
+    /// The release's durability barrier failed: the ack is withheld, as a live one is, and the operator is told.
+    @Test
+    void deferredAck_releaseSyncFails_isWithheldAndWarned() {
+        unverifiedCopyUnderE2();
+        handler.onReplicateEvents(liveBatch(5, 1, E2));
+        holdSyncs.set(true);
+        replica.markVerifiedForEpoch(STREAM, PARTITION, E2);
+
+        var held = heldSyncs.poll();
+        var drained = new CountDownLatch(1);
+
+        held.onResult(_ -> drained.countDown());
+        held.resolve(Causes.cause("fsync failed").result());
+
+        assertThat(awaitLatch(drained)).isTrue();
+        assertThat(acks).isEmpty();
+        assertThat(eventually(() -> warnings.stream().anyMatch(warning -> warning.code() == OperatorWarningCode.REPLICA_FSYNC_FAILED)))
+                  .as("warnings = %s", warnings)
+                  .isTrue();
     }
 
     /// G4: a repair cut the copy below the deferred offset between the deferral and the release. The ack is capped at the head
