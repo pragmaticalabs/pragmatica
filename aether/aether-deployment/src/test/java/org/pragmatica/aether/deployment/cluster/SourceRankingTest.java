@@ -384,7 +384,9 @@ class SourceRankingTest {
     // ---- fixtures ----
     @SuppressWarnings("unchecked")
     private static Comparator<Location> productionLocationOrder() throws Exception {
-        Method method = CommunityPlacementReconciler.class.getDeclaredMethod("locationOrder");
+        // locationOrder() is private static on the package-private PlacementReconciler record (same file as the
+        // CommunityPlacementReconciler interface); reflection is the narrowest seam and needs no production change.
+        Method method = Class.forName("org.pragmatica.aether.deployment.cluster.PlacementReconciler").getDeclaredMethod("locationOrder");
 
         method.setAccessible(true);
 
