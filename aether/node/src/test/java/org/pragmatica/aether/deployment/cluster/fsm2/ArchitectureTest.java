@@ -201,8 +201,8 @@ class ArchitectureTest {
             for (var type : commandTypes()) {
                 var imported = Pattern.compile("import\\s+[\\w.]*KVCommand\\s*\\.\\s*(" + type + "|\\*)\\s*;").matcher(text).find();
                 var qualifier = imported
-                                ? "(?:KVCommand\\s*\\.\\s*)?"
-                                : "KVCommand\\s*\\.\\s*";
+                                ? "(?:(?:\\w+\\s*\\.\\s*)*KVCommand\\s*\\.\\s*)?"
+                                : "(?:\\w+\\s*\\.\\s*)*KVCommand\\s*\\.\\s*";
                 found.addAll(matches(name, type, text, qualifier + type));
             }
 
@@ -211,8 +211,8 @@ class ArchitectureTest {
                                  "Submit",
                                  text,
                                  (submitImported
-                                  ? "(?:ClusterEffect\\s*\\.\\s*)?"
-                                  : "ClusterEffect\\s*\\.\\s*") + "Submit"));
+                                  ? "(?:(?:\\w+\\s*\\.\\s*)*ClusterEffect\\s*\\.\\s*)?"
+                                  : "(?:\\w+\\s*\\.\\s*)*ClusterEffect\\s*\\.\\s*") + "Submit"));
         });
 
         return found;
@@ -322,11 +322,14 @@ class ArchitectureTest {
         planted.put("Comment.java",
                     strip("class C { // new KVCommand.Put<>(k, v)\n /* new ClusterEffect.Submit( */ String s = \"new KVCommand.Remove<>(\"; }"));
         planted.put("Unimported.java", strip("class U { Object p = new Put(k, v); }"));
+        planted.put("FullyQualified.java",
+                    strip("class F { Object p = new org.pragmatica.cluster.state.kvstore.KVCommand.Put<>(k, v); }"));
 
         assertThat(commandConstructions(planted)).containsExactlyInAnyOrder("Qualified.java: Put",
                                                                             "Qualified.java: Remove",
                                                                             "Imported.java: LeaderTransaction",
                                                                             "Reference.java: Put",
-                                                                            "Reference.java: Submit");
+                                                                            "Reference.java: Submit",
+                                                                            "FullyQualified.java: Put");
     }
 }

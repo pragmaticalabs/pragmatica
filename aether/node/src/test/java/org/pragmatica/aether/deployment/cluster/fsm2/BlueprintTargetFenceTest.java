@@ -128,16 +128,24 @@ class BlueprintTargetFenceTest {
                                               .isEqualTo(Option.none());
     }
 
-    // CF-5, the fence's own arm
-    // Red when: a target put carries no witness on its owner blueprint at the value the declaration read.
+    // CF-5, the fence's own arm, on the declaration and on the awaited-target re-send
+    // Red when: a target put, first sent or re-sent at the awaited-target bound, carries no witness on its owner blueprint at the
+    // value the declaration read.
     @Test
     void everyTargetPut_witnessesItsOwnerBlueprint() {
         var h = active();
         var value = app(ATTEMPT, ORDERS);
 
+        h.policy = FsmHarness.SettlePolicy.HOLD;
         publish(h, value);
+        var first = h.submits(SubmitKind.TARGETS).getFirst();
 
-        assertThat(h.submits(SubmitKind.TARGETS)).as("control: the declaration's batch").isNotEmpty();
+        h.held.clear();
+        h.policy = FsmHarness.SettlePolicy.APPLY;
+        h.settleHeld(first, h.refused(first));
+        h.advance(h.settings.timing().awaitedTarget() + 31_000L);
+
+        assertThat(h.submits(SubmitKind.TARGETS)).as("control: the declaration's batch and the re-send at the bound").hasSize(2);
         assertThat(h.submits(SubmitKind.TARGETS)).allSatisfy(submit -> assertThat(submit.transaction().guards())
                                                                        .anyMatch(guard -> guard.key()
                                                                                                .equals(new AppBlueprintKey(blueprintId(APP)))
