@@ -768,6 +768,30 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
         assertThat(terminates.get()).isEqualTo(2);
     }
 
+    /// #2457: the evidence dies with the activation. A join-grace re-look cut off by a deactivation leaves no mark for the next activation, whose
+    /// NodeRemoved of the confirmed node asks the provider nothing.
+    @Test
+    void confirmedReap_joinGraceReLookCutOffByDeactivation_thenNodeRemovedAfterReactivation_autoHealEnabled_asksTheProviderNothing() {
+        lost();
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+        settle();
+        var before = listings.get();
+        onNextListing.set(ctm::deactivate);
+
+        ctm.drainNode(LOST, DrainReason.JOIN_GRACE_REAP);
+        await().atMost(Duration.ofSeconds(5)).until(() -> listings.get() > before);
+        settle();
+        ctm.activate();
+        settle();
+        var asked = listings.get();
+
+        lost();
+        settle();
+
+        assertThat(listings.get()).as("no provider call: the mark of the cut-off re-look did not survive the activation").isEqualTo(asked);
+        assertThat(terminates.get()).isEqualTo(1);
+    }
+
     /// Auto-heal enabled: nothing is held, so a second reap of a confirmed node whose trigger reports no instance under the id (NodeRemoved again)
     /// stays a no-op that asks the provider nothing (#2457 looks again only for a join-grace reap or the orphan sweep).
     @Test

@@ -2788,8 +2788,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         // ([#reuseEvidence], #2457, else it is left billing in silence): a join-grace reap (the id booted and never joined) or the orphan sweep (two
         // reads listed it). Any other second reap of a confirmed node (NodeRemoved, the drain-grace backstop of the same drain, a directed drain)
         // carries no such evidence and stays the no-op that asks the provider nothing ([#reapedAgain], v-2062 B1). The mark is recorded at the
-        // trigger, so it travels through the bounded retries, and dropped by a confirmation ([#reapConfirmed]), a join ([#forgetIncarnation]) and
-        // the activation's end ([#deactivate]); one a chain leaves behind (its bound spent unconfirmed) costs a later reap one read-only listing.
+        // trigger, so it travels through the bounded retries, and dropped by a confirmation ([#reapConfirmed]: only a mark made after the latest
+        // confirmation can be read here, so a join needs no clearing of its own) and by the activation's end ([#deactivate]); one a chain leaves
+        // behind (its bound spent unconfirmed) costs a later reap one read-only listing.
         if (confirmedReaps.contains(nodeId) && (!isAutoHealEnabled() || reuseEvidence.contains(nodeId))) {
             recheckConfirmedReap(nodeId, epoch, generation, retriesLeft);
 
@@ -3385,7 +3386,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         lifecycleManager.readmitExternal(nodeId).onFailure(cause -> rejoinNotReconciled(nodeId, cause));
         replacementSources.remove(nodeId);
         confirmedReaps.remove(nodeId);
-        reuseEvidence.remove(nodeId);
         seenInstances.remove(nodeId);
         knownInstanceIds.remove(nodeId);
         listedAbsent.remove(nodeId);
