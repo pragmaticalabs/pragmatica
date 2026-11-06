@@ -22,6 +22,7 @@ import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentApplyKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
@@ -117,7 +118,29 @@ public sealed interface Blueprints {
 
         expanded.loadOrder().forEach(slice -> mutations.addAll(declareSlice(m, ctx, id, slice, republish)));
 
-        return submitAll(m, SubmitKind.TARGETS, mutations);
+        return submitTargets(m, id, mutations);
+    }
+
+    /// CF-5 (#2759): a target batch commits only while its owner blueprint is still the value the declaration read. The witness
+    /// makes a put that would land after the blueprint's delete (or after a republish) a refusal by the applier, in any commit
+    /// order and across a leader change (plan D.9): a put that commits first is a committed target the delete's removal batch
+    /// removes, and a put that would commit after it is refused.
+    private static ClusterModel submitTargets(ClusterModel m,
+                                              BlueprintId owner,
+                                              List<KVCommand.Mutation<AetherKey, AetherValue>> mutations) {
+        return mutations.isEmpty()
+               ? m
+               : Outbox.direct(m,
+                               TxDraft.draft(SubmitKind.TARGETS,
+                                             mutations.getFirst().key(),
+                                             mutations)
+                                      .withGuards(List.of(ownerWitness(m, owner))));
+    }
+
+    /// The owner blueprint at the value the mirror holds: the committed value the declaration was derived from.
+    private static KVCommand.ReadWitness<AetherKey> ownerWitness(ClusterModel m, BlueprintId owner) {
+        return new KVCommand.ReadWitness<>(new AppBlueprintKey(owner),
+                                           m.blueprints.get(owner).map(value -> (Object) value));
     }
 
     /// One declared slice: its target is recorded as in flight and put; a republish drops the artifact's judgment in the same
@@ -401,7 +424,7 @@ public sealed interface Blueprints {
                                       long bound) {
         var artifact = base.withVersion(pending.currentVersion());
 
-        if (permits(m, artifact) || !m.blueprintsByArtifact.containsKey(artifact)) {
+        if (permits(m, artifact) || !m.blueprintsByArtifact.containsKey(artifact) || !ownerPublished(m, pending)) {
             endAwaited(m,
                        ctx,
                        artifact,
@@ -434,13 +457,18 @@ public sealed interface Blueprints {
         }
 
         if (resubmit) {
-            var mutation = targetPut(m, base, pending);
-
-            Outbox.direct(m,
-                          TxDraft.draft(SubmitKind.TARGETS, mutation.key(), List.of(mutation)));
+            pending.owningBlueprint().onPresent(owner -> submitTargets(m, owner, List.of(targetPut(m, base, pending))));
         }
 
         return m;
+    }
+
+    /// The blueprint that declared the pending put is still published: a re-send is witnessed on it (CF-5), so a put whose owner is
+    /// gone is not re-sent at all.
+    private static boolean ownerPublished(ClusterModel m, SliceTargetValue pending) {
+        return pending.owningBlueprint()
+                      .filter(m.blueprints::containsKey)
+                      .isPresent();
     }
 
     private static ClusterModel endAwaited(ClusterModel m, Ctx ctx, Artifact artifact, String why) {
