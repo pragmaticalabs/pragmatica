@@ -16,6 +16,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.lang.Option;
 
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
@@ -126,6 +127,47 @@ class BlueprintTargetFenceTest {
 
         assertThat(h.store.get(ORDERS_TARGET)).as("no target of the deleted blueprint survives the leader change")
                                               .isEqualTo(Option.none());
+    }
+
+    /// The target committed, the delete committed, and the leader's removal batch was lost with its term: a new leader rebuilds
+    /// from a snapshot that holds a target whose owner blueprint is absent, and sees no remove event to act on.
+    private static FsmHarness orphanedByALostRemovalBatch() {
+        var h = active();
+
+        publish(h, app(ATTEMPT, ORDERS));
+        assertThat(committedTargetVersion(h)).as("control: the target committed").isEqualTo(Option.some(ORDERS.version()));
+        h.policy = FsmHarness.SettlePolicy.HOLD;
+        delete(h);
+        h.held.clear();
+        h.policy = FsmHarness.SettlePolicy.APPLY;
+        h.commitLeader(CORE_2, 2L);
+        h.drain();
+        h.deliver(new ClusterInput.Deactivate());
+        h.commitLeader(FsmHarness.SELF, 3L);
+        h.drain();
+        h.activate();
+        assertThat(h.isActive()).as("control: the new term rebuilt").isTrue();
+        h.advance(h.settings.timing().tick() * 3);
+
+        return h;
+    }
+
+    // CF-5 residual, ENABLED TRIPWIRE asserting today's behaviour: the witness fences a put against a delete, not a removal batch
+    // lost with its leader's term. Removing such an orphan needs the R2-style reconcile step (a target whose owner blueprint is
+    // absent is removed, with the 2-tick hysteresis and the restore guard of G2 6.5): CF-8's `newLeader_orphanTarget_removed`.
+    // When this goes red, the orphan is removed: delete this tripwire and enable the test below.
+    @Test
+    void tripwire_removalBatchLostWithTheTerm_orphanTargetSurvivesTheRebuild() {
+        assertThat(orphanedByALostRemovalBatch().store.get(ORDERS_TARGET).isPresent())
+                  .as("today the orphan survives; when this fails, enable newLeader_orphanTarget_removed")
+                  .isTrue();
+    }
+
+    // CF-8 newLeader_orphanTarget_removed (G2 P2), the real assertion of the tripwire above.
+    @Disabled("CF-8: needs the orphan-target reconcile step; the tripwire above pins today's behaviour")
+    @Test
+    void newLeader_orphanTarget_removed() {
+        assertThat(orphanedByALostRemovalBatch().store.get(ORDERS_TARGET)).isEqualTo(Option.none());
     }
 
     // CF-5, the fence's own arm, on the declaration and on the awaited-target re-send
