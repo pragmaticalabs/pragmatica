@@ -26,6 +26,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -44,6 +45,8 @@ class UpgradeRunServiceTest {
     /// commit is rejected and the index (as the delivered notification would) moves to the winner before the reject is answered.
     private final Deque<UpgradeRunValue> racingProgress = new ArrayDeque<>();
     private boolean progressForever = false;
+    private boolean leaderLostOnRace = false;
+    private boolean commitFails = false;
     private Map<NodeId, NodeReplacementValue> records = Map.of();
     private boolean leader = true;
 
@@ -62,6 +65,10 @@ class UpgradeRunServiceTest {
         public Promise<Boolean> commit(UpgradeRunValue expected, UpgradeRunValue next) {
             expectations.add(expected);
 
+            if (commitFails) {
+                return Causes.cause("outcome unknown").<Boolean> promise();
+            }
+
             if (progressForever) {
                 index.put(expected.with(expected.index(), expected.inFlight(), expected.state(), expected.stop(), expected.reason(), expected.updatedAtMs() + 1));
 
@@ -70,6 +77,7 @@ class UpgradeRunServiceTest {
 
             if (!racingProgress.isEmpty()) {
                 index.put(racingProgress.removeFirst());
+                leader = !leaderLostOnRace;
 
                 return Promise.success(false);
             }
@@ -291,6 +299,55 @@ class UpgradeRunServiceTest {
         result.onFailure(cause -> assertThat(cause).isInstanceOf(Refusal.Conflict.class));
         assertThat(expectations).as("one compare-and-set per attempt, and no more").hasSize(UpgradeRunWiring.Service.REQUEST_ATTEMPTS);
         assertThat(committed).isEmpty();
+    }
+
+    @Test
+    void requestThatLosesTheCompareAndSetAndThenLeadership_isRefusedNotLeader_andDoesNotLoop() {
+        index.put(run(UpgradeRunState.RUNNING, UpgradeStop.NONE, "a"));
+        racingProgress.add(new UpgradeRunValue("2.0.0", List.of(A, B), 1, "b", UpgradeRunState.RUNNING, UpgradeStop.NONE, "why", 1L, 2L, 1L));
+        leaderLostOnRace = true;
+
+        var result = service().abort().await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause).isInstanceOf(Refusal.NotLeader.class));
+        assertThat(expectations).hasSize(1);
+        assertThat(committed).isEmpty();
+    }
+
+    @Test
+    void pauseThatLosesTheCompareAndSetToAnAbort_isRefusedForTheAbortPending() {
+        index.put(run(UpgradeRunState.RUNNING, UpgradeStop.NONE, "a"));
+        racingProgress.add(new UpgradeRunValue("2.0.0", List.of(A, B), 1, "a", UpgradeRunState.RUNNING, UpgradeStop.ABORT, "why", 1L, 2L, 1L));
+
+        var result = service().pause().await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause).isInstanceOf(Refusal.NotApplicable.class));
+        assertThat(committed).isEmpty();
+    }
+
+    @Test
+    void resumeThatLosesTheCompareAndSetToARunningRun_isRefusedNotApplicable() {
+        index.put(run(UpgradeRunState.PAUSED, UpgradeStop.NONE, ""));
+        racingProgress.add(new UpgradeRunValue("2.0.0", List.of(A, B), 1, "a", UpgradeRunState.RUNNING, UpgradeStop.NONE, "why", 1L, 2L, 1L));
+
+        var result = service().resume().await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause).isInstanceOf(Refusal.NotApplicable.class));
+        assertThat(committed).isEmpty();
+    }
+
+    @Test
+    void anApplyThatFails_isNotRetried_itsOutcomeIsUnknown() {
+        index.put(run(UpgradeRunState.RUNNING, UpgradeStop.NONE, "a"));
+        commitFails = true;
+
+        var result = service().abort().await();
+
+        assertThat(result.isFailure()).isTrue();
+        assertThat(expectations).hasSize(1);
     }
 
     @Test
