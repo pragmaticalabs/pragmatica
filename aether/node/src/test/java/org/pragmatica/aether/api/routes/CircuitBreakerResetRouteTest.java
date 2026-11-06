@@ -78,6 +78,19 @@ class CircuitBreakerResetRouteTest {
         assertThat(resets).as("nothing was reset").isEmpty();
     }
 
+    /// A request that carries no body at all (`bodyAsString()` answers null, not an empty string) still means "reset every source".
+    @Test
+    void reset_nullBody_resetsEverySource() {
+        var response = resetRoute().handler()
+                                   .handle(requestWithNullBody())
+                                   .await()
+                                   .map(CircuitBreakerResetResponse.class::cast)
+                                   .unwrap();
+
+        assertThat(response.scope()).isEqualTo("all");
+        assertThat(resets).containsExactly(Option.none());
+    }
+
     @Test
     void reset_reportsStatusAndThePriorFailureCount() {
         var response = handle("{\"source\":\"eu-1\"}").unwrap();
@@ -169,6 +182,17 @@ class CircuitBreakerResetRouteTest {
                    : Option.none());
 
         return PRIOR;
+    }
+
+    private static RequestContext requestWithNullBody() {
+        InvocationHandler handler = (proxy, method, args) -> switch (method.getName()) {
+            case "bodyAsString" -> null;
+            default -> InvocationHandler.invokeDefault(proxy, method, args);
+        };
+
+        return (RequestContext) Proxy.newProxyInstance(RequestContext.class.getClassLoader(),
+                                                       new Class[]{RequestContext.class},
+                                                       handler);
     }
 
     private static RequestContext requestWith(String body) {
