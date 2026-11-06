@@ -27,6 +27,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.NodeAddress;
 
 import java.net.SocketAddress;
@@ -36,6 +37,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -51,6 +53,8 @@ class BootstrapModuleTest {
 
     private static final NodeId SELF = new NodeId("node-self");
     private static final long FIXTURE_RABIA_TERM = 1L;
+    /// #2654: a committed incarnation (genesis); at `Epoch.NO_INCARNATION` the module mints no ownership epoch.
+    private static final long FIXTURE_INCARNATION = 1L;
 
     @Nested
     class CorePartitionBootstrap {
@@ -83,7 +87,7 @@ class BootstrapModuleTest {
             assertThat(ownership.ownerNodeId()).isEqualTo(SELF);
             assertThat(ownership.ownerEpoch())
                 .as("the initial core-partition ownerEpoch couples rabiaTerm with the initial ownershipTerm 1")
-                .isEqualTo(Epoch.epoch(0L, FIXTURE_RABIA_TERM, 1L));
+                .isEqualTo(Epoch.epoch(FIXTURE_INCARNATION, FIXTURE_RABIA_TERM, 1L));
             assertThat(ownership.ownershipTerm()).isEqualTo(1L);
         }
 
@@ -96,7 +100,7 @@ class BootstrapModuleTest {
             var deposed = new NodeId("node-deposed");
             var existing = DhtPartitionOwnershipValue.dhtPartitionOwnershipValue(deposed,
                                                                                  BootstrapModule.CORE_COMMUNITY_ID,
-                                                                                 Epoch.epoch(0L, FIXTURE_RABIA_TERM, 1L),
+                                                                                 Epoch.epoch(FIXTURE_INCARNATION, FIXTURE_RABIA_TERM, 1L),
                                                                                  1L,
                                                                                  HlcTimestamp.ZERO);
             var fixture = newFixture(/* initialCoreSize */ 1);
@@ -110,7 +114,7 @@ class BootstrapModuleTest {
                 .isEqualTo(SELF);
             assertThat(ownership.ownerEpoch())
                 .as("same-term stale-owner takeover advances the epoch via the ownershipTerm local counter")
-                .isEqualTo(Epoch.epoch(0L, FIXTURE_RABIA_TERM, 2L));
+                .isEqualTo(Epoch.epoch(FIXTURE_INCARNATION, FIXTURE_RABIA_TERM, 2L));
             assertThat(ownership.ownerEpoch().isStrictlyAfter(existing.ownerEpoch()))
                 .as("(rabiaTerm, 2) strictly dominates the deposed owner's (rabiaTerm, 1) at the SAME term — fence holds")
                 .isTrue();
@@ -277,6 +281,157 @@ class BootstrapModuleTest {
         }
     }
 
+    /// #2654 as amended for the core DHT site (know 0cced4f7d6): before the life's cluster incarnation commits (the mirror
+    /// reads `Epoch.NO_INCARNATION`, e.g. while a #1533 restore is blocked) the core partition is still owned, through a
+    /// PROVISIONAL record minted at incarnation 0 that does not complete the bootstrap. The incarnation commit re-drives the
+    /// module, which rewrites it at ownershipTerm + 1 under the committed incarnation. A record committed under an
+    /// incarnation is never taken over at incarnation 0.
+    @Nested
+    class MintBeforeIncarnationCommit {
+        @Test
+        void onLeaderGained_incarnationNone_mintsAProvisionalCoreRecord() {
+            var fixture = newFixture(/* initialCoreSize */ 1);
+            fixture.incarnation.set(Epoch.NO_INCARNATION);
+
+            fixture.module.onLeaderGained();
+
+            var provisional = coreOwnershipPut(fixture.cluster.batches);
+            assertThat(provisional.ownerNodeId()).isEqualTo(SELF);
+            assertThat(provisional.ownerEpoch())
+                .as("the core partition is owned while the incarnation is uncommitted, at incarnation 0")
+                .isEqualTo(Epoch.epoch(Epoch.NO_INCARNATION, FIXTURE_RABIA_TERM, 1L));
+            assertThat(provisional.ownershipTerm()).isEqualTo(1L);
+        }
+
+        @Test
+        void incarnationCommit_rewritesTheProvisionalRecord_atTheNextTerm_underTheCommittedIncarnation() {
+            var fixture = newFixture(/* initialCoreSize */ 1);
+            fixture.incarnation.set(Epoch.NO_INCARNATION);
+            fixture.module.onLeaderGained();
+            var provisional = coreOwnershipPut(fixture.cluster.batches);
+            fixture.kv.put(DhtPartitionOwnershipKey.dhtPartitionOwnershipKey(BootstrapModule.CORE_PARTITION_ID), provisional);
+            // More passes than the attempt budget while still uncommitted: the held provisional record is not rewritten
+            // (and spends no attempt), so the budget is left for the commit's rewrite.
+            for (var pass = 0; pass < BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS; pass++) {
+                fixture.module.retryIfNeeded();
+            }
+            assertThat(corePartitionPutCount(fixture.cluster.batches)).as("no rewrite before the commit").isEqualTo(1L);
+
+            fixture.incarnation.set(FIXTURE_INCARNATION);
+            fixture.module.retryIfNeeded();
+
+            var rewritten = lastCoreOwnershipPut(fixture.cluster.batches);
+            assertThat(rewritten.ownerNodeId()).as("the live provisional owner keeps the partition").isEqualTo(SELF);
+            assertThat(rewritten.ownershipTerm()).isEqualTo(2L);
+            assertThat(rewritten.ownerEpoch())
+                .as("the provisional bootstrap was not complete: the commit's re-drive supersedes it under the committed incarnation")
+                .isEqualTo(Epoch.epoch(FIXTURE_INCARNATION, FIXTURE_RABIA_TERM, 2L));
+            assertThat(rewritten.ownerEpoch().isStrictlyAfter(provisional.ownerEpoch())).isTrue();
+        }
+
+        @Test
+        void incarnationNone_neverTakesOverARecordCommittedUnderAnIncarnation() {
+            var deposed = new NodeId("node-deposed");
+            var committed = DhtPartitionOwnershipValue.dhtPartitionOwnershipValue(deposed,
+                                                                                  BootstrapModule.CORE_COMMUNITY_ID,
+                                                                                  Epoch.epoch(FIXTURE_INCARNATION, FIXTURE_RABIA_TERM, 1L),
+                                                                                  1L,
+                                                                                  HlcTimestamp.ZERO);
+            var fixture = newFixture(/* initialCoreSize */ 1);
+            fixture.kv.put(DhtPartitionOwnershipKey.dhtPartitionOwnershipKey(BootstrapModule.CORE_PARTITION_ID), committed);
+            fixture.incarnation.set(Epoch.NO_INCARNATION);
+
+            fixture.module.onLeaderGained();
+
+            assertThat(collectPuts(fixture.cluster.batches))
+                .as("a takeover at incarnation 0 would rank below the committed record: it waits for the commit")
+                .noneMatch(p -> p.key() instanceof DhtPartitionOwnershipKey);
+        }
+
+        /// H2 (v2691): a provisional mint spends an attempt like any core write. Two failed core writes before it make the
+        /// provisional mint the LAST attempt; the incarnation commit must still rewrite the record, so it re-opens the
+        /// budget. Red if the commit only re-drives (`retryIfNeeded` with the budget spent): the record stays at incarnation 0.
+        @Test
+        void incarnationCommit_afterAProvisionalMintSpentTheLastAttempt_stillRewritesTheRecord() {
+            var fixture = newFixture(/* initialCoreSize */ 1);
+            fixture.incarnation.set(Epoch.NO_INCARNATION);
+            fixture.cluster.failCoreWrites(BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS - 1);
+            fixture.module.onLeaderGained();
+            for (var pass = 1; pass < BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS; pass++) {
+                fixture.module.retryIfNeeded();
+            }
+            var provisional = lastCoreOwnershipPut(fixture.cluster.batches);
+            fixture.kv.put(DhtPartitionOwnershipKey.dhtPartitionOwnershipKey(BootstrapModule.CORE_PARTITION_ID), provisional);
+            fixture.module.retryIfNeeded();
+            assertThat(corePartitionPutCount(fixture.cluster.batches)).as("two failed core writes, then the provisional mint: the budget is spent")
+                                                                      .isEqualTo(BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS);
+            assertThat(provisional.ownerEpoch().incarnation()).isEqualTo(Epoch.NO_INCARNATION);
+
+            fixture.incarnation.set(FIXTURE_INCARNATION);
+            fixture.module.onIncarnationCommitted();
+
+            assertThat(corePartitionPutCount(fixture.cluster.batches)).as("the commit rewrites the provisional record")
+                                                                      .isEqualTo(BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS + 1L);
+            var rewritten = lastCoreOwnershipPut(fixture.cluster.batches);
+            assertThat(rewritten.ownerNodeId()).isEqualTo(SELF);
+            assertThat(rewritten.ownershipTerm()).isEqualTo(2L);
+            assertThat(rewritten.ownerEpoch()).isEqualTo(Epoch.epoch(FIXTURE_INCARNATION, FIXTURE_RABIA_TERM, 2L));
+        }
+
+        /// N4 (v2691): a provisional mint through the retry path (the leader-change write failed) does not complete the
+        /// bootstrap either, so the commit still rewrites it. Red if the retry path's write completes the bootstrap.
+        @Test
+        void retryPath_provisionalMint_leavesTheBootstrapOpen_andTheCommitRewritesIt() {
+            var fixture = newFixture(/* initialCoreSize */ 1);
+            fixture.incarnation.set(Epoch.NO_INCARNATION);
+            fixture.cluster.failCoreWrites(1);
+            fixture.module.onLeaderGained();
+            fixture.module.retryIfNeeded();
+            var provisional = lastCoreOwnershipPut(fixture.cluster.batches);
+            assertThat(corePartitionPutCount(fixture.cluster.batches)).as("the failed leader-change write, then the retry's provisional mint")
+                                                                      .isEqualTo(2L);
+            assertThat(provisional.ownerEpoch().incarnation()).isEqualTo(Epoch.NO_INCARNATION);
+            fixture.kv.put(DhtPartitionOwnershipKey.dhtPartitionOwnershipKey(BootstrapModule.CORE_PARTITION_ID), provisional);
+
+            fixture.incarnation.set(FIXTURE_INCARNATION);
+            fixture.module.onIncarnationCommitted();
+
+            var rewritten = lastCoreOwnershipPut(fixture.cluster.batches);
+            assertThat(rewritten.ownershipTerm()).isEqualTo(2L);
+            assertThat(rewritten.ownerEpoch()).isEqualTo(Epoch.epoch(FIXTURE_INCARNATION, FIXTURE_RABIA_TERM, 2L));
+        }
+
+        /// The budget bounds provisional mints while the incarnation stays uncommitted: a mint that commits but is not yet
+        /// seen in the KV snapshot is planned again on the next pass, and only the commit re-opens the budget. Red if a
+        /// provisional mint resets the budget (b3): every pass then writes again, without bound.
+        @Test
+        void incarnationNone_provisionalMintsStayWithinTheAttemptBudget() {
+            var fixture = newFixture(/* initialCoreSize */ 1);
+            fixture.incarnation.set(Epoch.NO_INCARNATION);
+            fixture.module.onLeaderGained();
+            for (var pass = 0; pass < 2 * BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS; pass++) {
+                fixture.module.retryIfNeeded();
+            }
+
+            assertThat(corePartitionPutCount(fixture.cluster.batches)).as("provisional mints while the incarnation is uncommitted")
+                                                                      .isEqualTo(BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS);
+        }
+
+        private static long corePartitionPutCount(List<List<KVCommand<AetherKey>>> batches) {
+            return collectPuts(batches).stream()
+                                       .filter(p -> p.key() instanceof DhtPartitionOwnershipKey)
+                                       .count();
+        }
+
+        private static DhtPartitionOwnershipValue lastCoreOwnershipPut(List<List<KVCommand<AetherKey>>> batches) {
+            return collectPuts(batches).stream()
+                                       .filter(p -> p.key() instanceof DhtPartitionOwnershipKey)
+                                       .map(p -> (DhtPartitionOwnershipValue) p.value())
+                                       .reduce((first, second) -> second)
+                                       .orElseThrow(() -> new AssertionError("expected a core DhtPartitionOwnership Put"));
+        }
+    }
+
     @Nested
     class LeaderLossResetsBootstrapState {
         @Test
@@ -332,8 +487,9 @@ class BootstrapModuleTest {
         Map<AetherKey, AetherValue> kv = new HashMap<>();
         var isLeader = new AtomicBoolean(true);
         var cluster = new RecordingClusterNode(lateCommits);
+        var incarnation = new AtomicLong(FIXTURE_INCARNATION);
         var module = BootstrapModule.bootstrapModule(isLeader::get,
-                                                      () -> Epoch.epoch(0L, FIXTURE_RABIA_TERM, 0L),
+                                                      () -> Epoch.epoch(incarnation.get(), FIXTURE_RABIA_TERM, 0L),
                                                       () -> Option.<Long>none(),
                                                       hlcClock,
                                                       () -> Set.<NodeId>of(),
@@ -341,7 +497,7 @@ class BootstrapModuleTest {
                                                       () -> SELF,
                                                       () -> baseline,
                                                       cluster);
-        return new Fixture(module, cluster, kv);
+        return new Fixture(module, cluster, kv, incarnation);
     }
 
     @SuppressWarnings({"unchecked"})
@@ -372,11 +528,13 @@ class BootstrapModuleTest {
         final BootstrapModule module;
         final RecordingClusterNode cluster;
         final Map<AetherKey, AetherValue> kv;
+        final AtomicLong incarnation;
 
-        Fixture(BootstrapModule module, RecordingClusterNode cluster, Map<AetherKey, AetherValue> kv) {
+        Fixture(BootstrapModule module, RecordingClusterNode cluster, Map<AetherKey, AetherValue> kv, AtomicLong incarnation) {
             this.module = module;
             this.cluster = cluster;
             this.kv = kv;
+            this.incarnation = incarnation;
         }
     }
 
@@ -384,6 +542,7 @@ class BootstrapModuleTest {
         final List<List<KVCommand<AetherKey>>> batches = new ArrayList<>();
         private final boolean lateCommits;
         private Promise<?> applied = Promise.success(Unit.unit());
+        private int coreWriteFailures;
 
         RecordingClusterNode() {
             this(false);
@@ -391,6 +550,12 @@ class BootstrapModuleTest {
 
         RecordingClusterNode(boolean lateCommits) {
             this.lateCommits = lateCommits;
+        }
+
+        /// The next `count` batches that carry a core-partition ownership write fail; the config seed, submitted apart from
+        /// it, is not affected.
+        void failCoreWrites(int count) {
+            coreWriteFailures = count;
         }
 
         /// The promise the most recent batch's `apply` handed back.
@@ -411,9 +576,19 @@ class BootstrapModuleTest {
         @SuppressWarnings({"unchecked", "rawtypes"})
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
             batches.add(List.copyOf(commands));
+            if (coreWriteFailures > 0 && carriesCoreWrite(commands)) {
+                coreWriteFailures--;
+                applied = Promise.failure(Causes.cause("injected core write failure"));
+                return (Promise) applied;
+            }
             applied = lateCommits ? LateResolution.later(List.of()) : Promise.success(List.of());
             return (Promise) applied;
         }
+    }
+
+    private static boolean carriesCoreWrite(List<KVCommand<AetherKey>> commands) {
+        return commands.stream()
+                       .anyMatch(cmd -> cmd instanceof KVCommand.Put<?, ?> put && put.key() instanceof DhtPartitionOwnershipKey);
     }
 
     /// Minimal SWIM/NTT-free topology stub. Membership-v2 finale: the bootstrap now sources

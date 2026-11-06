@@ -61,6 +61,13 @@ public interface BootstrapModule {
     @Contract
     void retryIfNeeded();
 
+    /// #2654 (H2): the life's cluster incarnation committed. A provisional core record minted while the incarnation read
+    /// NONE spends an attempt like any core write, so the pass that rewrites it under the committed incarnation cannot rest
+    /// on what is left of the budget: a provisional mint that was the last attempt would leave the record at incarnation 0.
+    /// This re-opens the budget, then re-drives as [#retryIfNeeded] does, in the same one reaction.
+    @Contract
+    void onIncarnationCommitted();
+
     /// The executor `retryIfNeeded` runs its attempt on. A node installs its gated executor once, at assembly; until
     /// then (and in a host that installs none) the attempt runs inline, as before D1-react.
     default Unit installReactExecutor(ReactExecutor executor) {
@@ -138,6 +145,18 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         react.get().react("bootstrap-retry", this::retryBootstrapIfNeeded);
     }
 
+    @Contract
+    @Override
+    public void onIncarnationCommitted() {
+        react.get().react("bootstrap-incarnation-commit", this::reopenBudgetAndRetry);
+    }
+
+    @Contract
+    private void reopenBudgetAndRetry() {
+        bootstrapAttempts.set(0);
+        retryBootstrapIfNeeded();
+    }
+
     @Override
     public Unit installReactExecutor(ReactExecutor executor) {
         react.set(executor);
@@ -187,6 +206,7 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
 
         corePlan.onPresent(this::logCoreBootstrap);
         var hasCore = corePlan.isPresent();
+        var provisional = corePlan.filter(CoreBootstrapPlan::provisional).isPresent();
 
         if (hasCore) {
             bootstrapAttempts.incrementAndGet();
@@ -200,7 +220,7 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
                                                   bootstrapAttempts.get(),
                                                   BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS,
                                                   cause.message()))
-                   .withSuccess(_ -> onLeaderChangeBootstrapCommitted(hasCore, commandCount));
+                   .withSuccess(_ -> onLeaderChangeBootstrapCommitted(hasCore, provisional, commandCount));
     }
 
     private boolean leaderEpochChanged(Option<Long> captured) {
@@ -219,9 +239,9 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
     }
 
     @Contract
-    private void onLeaderChangeBootstrapCommitted(boolean hasCore, int commandCount) {
+    private void onLeaderChangeBootstrapCommitted(boolean hasCore, boolean provisional, int commandCount) {
         if (hasCore) {
-            bootstrapComplete.set(true);
+            onCoreBootstrapCommitted(provisional);
         }
 
         log.info("Leader-change bootstrap committed: {} commands", commandCount);
@@ -245,14 +265,22 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         if (bootstrapComplete.get()) {
             return Option.none();
         }
-
+        // #2654, amended for this site by know 0cced4f7d6: the core partition is runtime state and #1533 never holds it
+        // hostage to a blocked restore, which keeps the life's incarnation uncommitted. So while the base is refused (the
+        // incarnation is not committed) the core record is minted PROVISIONALLY at incarnation 0 and the bootstrap is NOT
+        // complete. The incarnation commit re-drives the plan (`ClusterBootstrapAssembly.onIncarnationCommit` calls
+        // retryIfNeeded), which rewrites the provisional record at ownershipTerm + 1 under the committed incarnation, so the
+        // record that completes the bootstrap never ranks below the committed life's epochs.
+        var epoch = currentEpoch();
+        var provisional = epoch.mintable().isFailure();
         var self = selfSupplier.get();
         var partitions = collectPartitions(kvSnapshotSupplier.get());
         var existing = Option.option(partitions.get(BootstrapModule.CORE_PARTITION_ID));
 
-        return decideCoreOwnership(existing, coreMembers, self).map(command -> new CoreBootstrapPlan(command,
-                                                                                                     existing,
-                                                                                                     self));
+        return decideCoreOwnership(existing, coreMembers, self, epoch, provisional).map(command -> new CoreBootstrapPlan(command,
+                                                                                                                         existing,
+                                                                                                                         self,
+                                                                                                                         provisional));
     }
 
     private Option<ClusterConfigSeedPlan> planClusterConfigSeed() {
@@ -362,16 +390,54 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
 
     private Option<KVCommand<AetherKey>> decideCoreOwnership(Option<DhtPartitionOwnershipValue> existing,
                                                              Set<NodeId> coreMembers,
-                                                             NodeId self) {
-        return existing.fold(() -> Option.some(buildInitialCorePartition(self)),
-                             owner -> rewriteIfOwnerStale(owner, coreMembers, self));
+                                                             NodeId self,
+                                                             Epoch epoch,
+                                                             boolean provisional) {
+        return existing.fold(() -> Option.some(buildInitialCorePartition(self, epoch)),
+                             owner -> provisional
+                                      ? rewriteProvisionalIfOwnerStale(owner, coreMembers, self, epoch)
+                                      : rewriteIfProvisionalOrStale(owner, coreMembers, self, epoch));
+    }
+
+    /// Under an uncommitted incarnation only a provisional record is ever replaced: a record committed under an
+    /// incarnation (an earlier life, read before this node observed the commit) waits for the commit, because a takeover at
+    /// incarnation 0 would rank below it.
+    private Option<KVCommand<AetherKey>> rewriteProvisionalIfOwnerStale(DhtPartitionOwnershipValue owner,
+                                                                        Set<NodeId> coreMembers,
+                                                                        NodeId self,
+                                                                        Epoch epoch) {
+        return isProvisional(owner)
+               ? rewriteIfOwnerStale(owner, coreMembers, self, epoch)
+               : Option.none();
+    }
+
+    /// A committed base supersedes a provisional record (minted at incarnation 0 while the incarnation was uncommitted) at
+    /// ownershipTerm + 1. Its owner keeps the partition while it is a live core member; a stale one is taken over as before.
+    private Option<KVCommand<AetherKey>> rewriteIfProvisionalOrStale(DhtPartitionOwnershipValue owner,
+                                                                     Set<NodeId> coreMembers,
+                                                                     NodeId self,
+                                                                     Epoch epoch) {
+        if (shouldRewriteCoreOwnership(owner, coreMembers, self)) {
+            return Option.some(buildRewrittenCorePartition(owner, self, epoch));
+        }
+
+        return isProvisional(owner)
+               ? Option.some(buildCorePartitionCommand(owner.ownerNodeId(), epoch, owner.ownershipTerm() + 1L))
+               : Option.none();
+    }
+
+    private static boolean isProvisional(DhtPartitionOwnershipValue owner) {
+        return owner.ownerEpoch()
+                    .mintable()
+                    .isFailure();
     }
 
     private Option<KVCommand<AetherKey>> rewriteIfOwnerStale(DhtPartitionOwnershipValue owner,
                                                              Set<NodeId> coreMembers,
-                                                             NodeId self) {
+                                                             NodeId self,
+                                                             Epoch epoch) {
         return shouldRewriteCoreOwnership(owner, coreMembers, self)
-               ? Option.some(buildRewrittenCorePartition(owner, self))
+               ? Option.some(buildRewrittenCorePartition(owner, self, epoch))
                : Option.none();
     }
 
@@ -389,12 +455,14 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         return ! coreMembers.contains(recordedOwner);
     }
 
-    private KVCommand<AetherKey> buildInitialCorePartition(NodeId self) {
-        return buildCorePartitionCommand(self, currentEpoch(), 1L);
+    private KVCommand<AetherKey> buildInitialCorePartition(NodeId self, Epoch epoch) {
+        return buildCorePartitionCommand(self, epoch, 1L);
     }
 
-    private KVCommand<AetherKey> buildRewrittenCorePartition(DhtPartitionOwnershipValue owner, NodeId self) {
-        return buildCorePartitionCommand(self, currentEpoch(), owner.ownershipTerm() + 1L);
+    private KVCommand<AetherKey> buildRewrittenCorePartition(DhtPartitionOwnershipValue owner,
+                                                             NodeId self,
+                                                             Epoch epoch) {
+        return buildCorePartitionCommand(self, epoch, owner.ownershipTerm() + 1L);
     }
 
     private Epoch currentEpoch() {
@@ -448,7 +516,20 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
                                                 bootstrapAttempts.get(),
                                                 BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS,
                                                 cause.message()))
-                   .withSuccess(_ -> bootstrapComplete.set(true));
+                   .withSuccess(_ -> onCoreBootstrapCommitted(plan.provisional()));
+    }
+
+    /// A provisional record owns the partition but does not complete the bootstrap: the incarnation commit must still
+    /// supersede it.
+    @Contract
+    private void onCoreBootstrapCommitted(boolean provisional) {
+        if (provisional) {
+            log.info("Core DhtPartitionOwnership minted PROVISIONALLY (incarnation not committed); the incarnation commit rewrites it");
+
+            return;
+        }
+
+        bootstrapComplete.set(true);
     }
 
     private static Map<String, DhtPartitionOwnershipValue> collectPartitions(Map<AetherKey, AetherValue> kv) {
@@ -461,7 +542,8 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
 
     private record CoreBootstrapPlan(KVCommand<AetherKey> command,
                                      Option<DhtPartitionOwnershipValue> existing,
-                                     NodeId self) {}
+                                     NodeId self,
+                                     boolean provisional) {}
 
     private record ClusterConfigSeedPlan(KVCommand<AetherKey> command, int coreCount, int coreMin, int coreMax) {}
 }
